@@ -13,7 +13,7 @@ import {
 
 import {
   to = google_cloud_run_v2_service_iam_member.public["us-central1"]
-  id = "projects/hop-mesh/locations/us-central1/services/hop-relay-us-central1/roles/run.invoker/allUsers"
+  id = "projects/hop-mesh/locations/us-central1/services/hop-relay-us-central1 roles/run.invoker allUsers"
 }
 
 import {
