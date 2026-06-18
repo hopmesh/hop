@@ -1,0 +1,11 @@
+# Build the hop-relayd image in-cloud (no local docker / no arm64→amd64 cross-build).
+#   gcloud builds submit --config infra/cloudbuild.yaml \
+#     --substitutions _IMAGE=us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:TAG .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'crates/hop-relayd/Dockerfile', '-t', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'
+options:
+  machineType: E2_HIGHCPU_8 # the firestore build pulls reqwest/rustls; give it cores
+timeout: 1800s

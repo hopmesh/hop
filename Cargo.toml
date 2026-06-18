@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hop-core",
+    "crates/hop-gateway",
+    "crates/hop-sim",
+    "crates/hop-ffi",
+    "crates/hop-store-sqlite",
+    "crates/hop-relay",
+    "crates/hop-relayd",
+    "crates/hop-store-firestore",
+]
+exclude = ["site"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+# FSL-1.1-ALv2 is not an SPDX identifier, so reference the file directly.
+license-file = "LICENSE.md"
+repository = "https://github.com/jwaldrip/hop"
+
+[workspace.dependencies]
+hop-core = { path = "crates/hop-core" }
+hop-store-sqlite = { path = "crates/hop-store-sqlite" }
+hop-store-firestore = { path = "crates/hop-store-firestore" }
+
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+blake3 = "1"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+thiserror = "2"
+miniz_oxide = "0.8"
+snow = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }

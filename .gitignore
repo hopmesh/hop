@@ -1,0 +1,29 @@
+# ---- Rust ----
+/target
+# the wasm site is excluded from the workspace, so it has its own target dir
+site/target/
+**/*.rs.bk
+Cargo.lock
+# relay identity seeds + on-disk stores (never commit secrets/state)
+*.db
+*.db.key
+
+# ---- macOS ----
+.DS_Store
+
+# ---- iOS / Xcode ----
+# generated XCFramework + Swift bindings
+apple/generated/
+# regenerate with xcodegen
+*.xcodeproj
+# xcodebuild output / DerivedData
+apple/HopDemo/build/
+**/xcuserdata/
+
+# ---- Android ----
+android/HopDemo/generated/
+.gradle/
+android/HopDemo/.gradle/
+android/HopDemo/build/
+android/HopDemo/app/build/
+android/HopDemo/local.properties

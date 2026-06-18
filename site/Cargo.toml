@@ -1,0 +1,12 @@
+[package]
+name = "hop-site"
+version = "0.1.0"
+edition = "2021"
+description = "Marketing/demo site for Hop, built with Dioxus."
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+
+# Detach from the parent Cargo workspace so the wasm/Dioxus dependency tree
+# never enters the core crates' build or `cargo test --workspace`.
+[workspace]

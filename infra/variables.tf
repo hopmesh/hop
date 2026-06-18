@@ -1,0 +1,84 @@
+variable "project_id" {
+  description = "GCP project that hosts the Hop relay fleet."
+  type        = string
+  default     = "hop-mesh"
+}
+
+variable "regions" {
+  description = <<-EOT
+    Regions to run a Cloud Run relay entrance/exit in. Each becomes a serverless
+    NEG behind the single global load balancer; GCP routes every device to its
+    nearest healthy region (DESIGN.md §21). All regions share one identity and
+    one Firestore store, so they are the same logical Hop node.
+  EOT
+  type        = set(string)
+  default     = ["us-central1", "europe-west1", "asia-southeast1"]
+}
+
+variable "domain" {
+  description = "DNS name clients connect to (anycast across all regions)."
+  type        = string
+  default     = "relay.hopme.sh"
+}
+
+variable "relay_image" {
+  description = <<-EOT
+    Full container image reference for hop-relayd, e.g.
+    us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest. Build & push with
+    `make -C infra image` (see infra/README.md). The container runs the relay's
+    WebSocket bearer on $PORT so Cloud Run can front it.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "max_instances_per_region" {
+  description = <<-EOT
+    Upper bound on Cloud Run instances per region. Pin to 1 until the relay shares
+    its directory/store across instances: presence and the bundle hot-path are
+    in-memory per process, so a second instance is a second, disconnected node.
+  EOT
+  type        = number
+  default     = 1
+}
+
+variable "cloud_run_ingress" {
+  description = <<-EOT
+    Who may reach the Cloud Run services directly. "INGRESS_TRAFFIC_ALL" exposes the
+    *.run.app URL (valid Google TLS, no custom DNS needed) — use this to test before
+    DNS exists. Switch to "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" once the LB +
+    relay.hopme.sh are the front door. Auth is the Noise handshake either way.
+  EOT
+  type    = string
+  default = "INGRESS_TRAFFIC_ALL"
+}
+
+variable "firestore_location" {
+  description = "Firestore location. Use a multi-region (nam5, eur3) for the durable store."
+  type        = string
+  default     = "nam5"
+}
+
+variable "ws_request_timeout_seconds" {
+  description = "Max lifetime of a single WebSocket connection before the client must reconnect (Cloud Run cap is 3600)."
+  type        = number
+  default     = 3600
+}
+
+variable "manage_dns" {
+  description = "If true, create/manage a Cloud DNS zone for the domain. Leave false while hopme.sh DNS lives elsewhere — then add the A record by hand to the LB IP."
+  type        = bool
+  default     = false
+}
+
+variable "dns_zone_name" {
+  description = "Cloud DNS managed-zone resource name (only used when manage_dns = true)."
+  type        = string
+  default     = "hopme-sh"
+}
+
+variable "dns_zone_dns_name" {
+  description = "The zone apex with trailing dot (only used when manage_dns = true), e.g. hopme.sh."
+  type        = string
+  default     = "hopme.sh."
+}

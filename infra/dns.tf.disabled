@@ -1,0 +1,12 @@
+# DNS is external (hopme.sh lives off-GCP), so by default this module only tells
+# you what record to add — see the `dns_setup` output. Flip manage_dns = true once
+# the zone is delegated to Cloud DNS and this will manage the A record for you.
+resource "google_dns_record_set" "relay" {
+  count = var.manage_dns ? 1 : 0
+
+  name         = "${var.domain}."
+  managed_zone = var.dns_zone_name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [google_compute_global_address.relay.address]
+}
