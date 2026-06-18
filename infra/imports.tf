@@ -28,12 +28,12 @@ import {
 
 import {
   to = google_project_iam_member.relay_firestore
-  id = "hop-mesh/roles/datastore.user/serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
+  id = "hop-mesh roles/datastore.user serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
 }
 
 import {
   to = google_project_iam_member.relay_logs
-  id = "hop-mesh/roles/logging.logWriter/serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
+  id = "hop-mesh roles/logging.logWriter serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
 }
 
 import {
@@ -73,7 +73,7 @@ import {
 
 import {
   to = google_secret_manager_secret_iam_member.relay_identity
-  id = "projects/hop-mesh/secrets/hop-relay-identity/roles/secretmanager.secretAccessor/serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
+  id = "projects/hop-mesh/secrets/hop-relay-identity roles/secretmanager.secretAccessor serviceAccount:hop-relay@hop-mesh.iam.gserviceaccount.com"
 }
 
 import {
