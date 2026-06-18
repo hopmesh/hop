@@ -1,0 +1,13 @@
+# Keep `gcloud builds submit` uploads small: only the Rust workspace is needed to
+# build hop-relayd. Everything here is excluded from the build context.
+.git
+target
+apple
+android
+site
+infra/.terraform
+infra/*.tfstate
+infra/*.tfstate.*
+**/node_modules
+**/*.db
+**/*.db.key

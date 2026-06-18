@@ -1,0 +1,10 @@
+[package]
+name = "hop-sim"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Discrete-event mesh simulator for validating Hop routing (DESIGN.md §12)."
+
+[dependencies]
+hop-core.workspace = true
