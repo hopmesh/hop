@@ -67,7 +67,10 @@ resource "google_service_account_iam_member" "impersonate" {
 }
 
 # The credential-config Spacelift mounts (GOOGLE_APPLICATION_CREDENTIALS points here).
-# Contains no secrets — only federation wiring — so it's safe to commit.
+# Contains no secrets — only federation wiring (the real secret is the per-run OIDC
+# token Spacelift drops at credential_source.file). It's gitignored anyway: the copy
+# the stack uses is mounted into the stack env via `spacectl stack environment mount`,
+# and this resource regenerates it locally on demand.
 locals {
   credential_config = {
     type               = "external_account"

@@ -21,11 +21,16 @@ State is local and holds no secrets.
 
 ## Wiring up the Spacelift stack
 
-`terraform apply` writes `infra/spacelift-gcp-credentials.json` (federation config,
-no secrets — commit it). On the Spacelift stack for `infra/`:
+`terraform apply` writes `infra/spacelift-gcp-credentials.json` — a federation config
+that holds **no secrets** (the real secret is the per-run OIDC token Spacelift drops
+at `/mnt/workspace/spacelift.oidc`). It's **gitignored**: don't commit it; mount its
+contents into the stack instead. On the Spacelift stack for `infra/`:
 
-1. Mount `spacelift-gcp-credentials.json` at `/mnt/workspace/spacelift-gcp-credentials.json`
-   (a stack mounted file or an attached context).
+1. Mount the file into the stack (uploads the contents to Spacelift):
+   ```sh
+   spacectl stack environment mount --id <stack> \
+     spacelift-gcp-credentials.json infra/spacelift-gcp-credentials.json
+   ```
 2. Set env var `GOOGLE_APPLICATION_CREDENTIALS=/mnt/workspace/spacelift-gcp-credentials.json`.
 3. Ensure the stack lives in space `root` (or update `spacelift_space_id` and re-apply).
 

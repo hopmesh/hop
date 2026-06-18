@@ -11,7 +11,7 @@ output "provider_resource" {
 }
 
 output "credential_config_file" {
-  description = "Commit this and mount it in Spacelift; point GOOGLE_APPLICATION_CREDENTIALS at it."
+  description = "Federation config (no secrets, gitignored). Mount into the stack via `spacectl stack environment mount`; point GOOGLE_APPLICATION_CREDENTIALS at the mount."
   value       = local_file.credential_config.filename
 }
 
