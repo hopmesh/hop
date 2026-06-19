@@ -61,6 +61,8 @@ fn main() {
     let mut identity_file: Option<String> = None;
     let mut peers: Vec<String> = Vec::new();
     let mut firestore: Option<String> = None;
+    let mut region: Option<String> = None;
+    let mut advertise: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -69,6 +71,8 @@ fn main() {
             "--db" => db = args.next().unwrap_or(db),
             "--identity-file" => identity_file = args.next(),
             "--firestore" => firestore = args.next(), // GCP project id → durable per-node store
+            "--region" => region = args.next(),       // this node's region (registry, §28)
+            "--advertise" => advertise = args.next(), // our connectable wss:// endpoint for peers
             "--peer" => {
                 if let Some(p) = args.next() {
                     peers.push(p);
@@ -122,6 +126,18 @@ fn main() {
             }
         });
     }
+
+    // Backbone (DESIGN.md §28): heartbeat into the passive liveness registry and dial
+    // currently-online peer relays (pull-on-wake). Cloud-only (needs Firestore + a TLS
+    // WebSocket client); a node is summoned by clients, never by a peer.
+    #[cfg(feature = "firestore")]
+    if let (Some(project), Some(region), Some(advertise)) =
+        (firestore.clone(), region.clone(), advertise.clone())
+    {
+        backbone::spawn(project, region, advertise, addr.to_vec(), tx.clone());
+    }
+    #[cfg(not(feature = "firestore"))]
+    let _ = (&region, &advertise);
 
     // Dial backbone peer relays over TCP, reconnecting forever.
     for peer in peers {
@@ -314,4 +330,139 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
 
 fn bs58_addr(addr: &[u8]) -> String {
     bs58::encode(addr).into_string()
+}
+
+/// The backbone: passive-registry heartbeat + pull-on-wake dialing of online peers
+/// (DESIGN.md §28). Cloud-only — needs Firestore (the registry) and a TLS WebSocket
+/// client (to dial `wss://` peer endpoints). A node announces itself and reaches *out*
+/// to peers already marked online; it never dials a sleeping node (clients are the only
+/// wake source), and reading the registry wakes no one.
+#[cfg(feature = "firestore")]
+mod backbone {
+    use std::collections::HashSet;
+    use std::io::ErrorKind;
+    use std::net::TcpStream;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::{self, Sender, TryRecvError};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use hop_core::prelude::Role;
+    use hop_store_firestore::Registry;
+    use tungstenite::stream::MaybeTlsStream;
+    use tungstenite::Message;
+
+    use super::{now_ms, Ev, NEXT_LINK};
+
+    const HEARTBEAT_SECS: u64 = 30;
+    const DISCOVER_SECS: u64 = 15;
+    const TTL_MS: u64 = 90_000; // a peer silent longer than this is treated as offline
+
+    /// Start the heartbeat + discovery threads.
+    pub fn spawn(project: String, region: String, advertise: String, addr: Vec<u8>, ev_tx: Sender<Ev>) {
+        let reg = Arc::new(Registry::new(&project, &addr));
+        let me = bs58::encode(&addr).into_string();
+        eprintln!("backbone: region={region} advertise={advertise}");
+
+        // Announce: heartbeat our presence so online peers discover us.
+        {
+            let reg = reg.clone();
+            std::thread::spawn(move || loop {
+                if let Err(e) = reg.heartbeat(&region, &advertise, now_ms()) {
+                    eprintln!("backbone: heartbeat failed: {e}");
+                }
+                std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
+            });
+        }
+
+        // Discover + dial currently-online peers. Only the lexicographically-greater
+        // node id dials, so a pair forms exactly one link (no double-dial).
+        std::thread::spawn(move || {
+            let dialed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+            loop {
+                match reg.online(now_ms(), TTL_MS) {
+                    Ok(peers) => {
+                        let live: HashSet<String> = peers.iter().map(|p| p.node.clone()).collect();
+                        dialed.lock().unwrap().retain(|n| live.contains(n));
+                        for p in peers {
+                            if me <= p.node {
+                                continue; // the greater id dials; avoids double links
+                            }
+                            if !dialed.lock().unwrap().insert(p.node.clone()) {
+                                continue; // already linked
+                            }
+                            let ev_tx = ev_tx.clone();
+                            let dialed = dialed.clone();
+                            let (node, url) = (p.node.clone(), p.endpoint.clone());
+                            std::thread::spawn(move || {
+                                eprintln!("backbone: dialing {node} at {url}");
+                                serve_ws_client(&url, &ev_tx);
+                                dialed.lock().unwrap().remove(&node); // allow re-dial later
+                            });
+                        }
+                    }
+                    Err(e) => eprintln!("backbone: registry read failed: {e}"),
+                }
+                std::thread::sleep(Duration::from_secs(DISCOVER_SECS));
+            }
+        });
+    }
+
+    fn tcp_of(s: &MaybeTlsStream<TcpStream>) -> Option<&TcpStream> {
+        match s {
+            MaybeTlsStream::Plain(t) => Some(t),
+            MaybeTlsStream::Rustls(t) => Some(t.get_ref()),
+            _ => None,
+        }
+    }
+
+    /// Dial a peer relay over a (TLS) WebSocket and drive it as a Hop link (Initiator).
+    /// Same interleave-by-read-timeout pattern as the inbound `serve_ws`.
+    fn serve_ws_client(url: &str, ev_tx: &Sender<Ev>) {
+        let (mut ws, _resp) = match tungstenite::connect(url) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("backbone: connect {url} failed: {e}");
+                return;
+            }
+        };
+        if let Some(t) = tcp_of(ws.get_ref()) {
+            let _ = t.set_nodelay(true);
+            let _ = t.set_read_timeout(Some(Duration::from_millis(100)));
+        }
+        let link = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+        let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
+        if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
+            return;
+        }
+        'conn: loop {
+            loop {
+                match out_rx.try_recv() {
+                    Ok(b) => {
+                        if ws.write(Message::Binary(b.into())).is_err() {
+                            break 'conn;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break 'conn,
+                }
+            }
+            if ws.flush().is_err() {
+                break;
+            }
+            match ws.read() {
+                Ok(Message::Binary(b)) => {
+                    if ev_tx.send(Ev::Data(link, b.to_vec())).is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e))
+                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        let _ = ev_tx.send(Ev::Down(link));
+    }
 }
