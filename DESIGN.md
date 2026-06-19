@@ -1367,3 +1367,28 @@ or the endpoint in its registry entry — and those endpoints must accept node-t
 from online peers even when client ingress is locked to the LB. Crucially, **never
 probe/health-check region endpoints** to infer liveness (that would wake them) — liveness
 comes only from registry heartbeats.
+
+### Device check-in (mailbox pull) vs. relay-to-relay pull
+
+Sending a message wakes a relay (the client's connection summons the region's node,
+§28). **Receiving** needs the reverse: a device must **check in** to discover messages
+waiting for it. The delivery itself is already automatic — on link-up a relay *offers*
+its stored bundles and anything addressed to the device is delivered (then ACK-purged) —
+so check-in is purely **"connect so the offer happens."**
+
+The asymmetry with the backbone:
+
+- **A relay** pulls from **every other online relay** (it reads the liveness registry and
+  dials all live peers), because it must aggregate the whole mesh.
+- **A device** only ever connects to the **single anycast name `relay.hopme.sh`** — which
+  resolves to its **closest topographical node** and **wakes that node** as it connects.
+  The device never talks to the backbone directly; it trusts the backbone to have moved
+  any message destined for it into the node it lands on (cross-partition handoff / region
+  routing, §28). One address, nearest node, no fan-out.
+
+So the client keeps a connection to `relay.hopme.sh` (reconnecting on drop / on
+foreground / on background-wake), which continuously checks in: it wakes the nearest
+node and receives whatever is pending. Persistent connection = real-time receive +
+keeps that one node warm; periodic reconnect (the delay-tolerant mode) lets the node
+scale to zero between check-ins at the cost of receive latency. The device's existing
+background wakes (beacon region entry, BG fetch) double as periodic check-in triggers.

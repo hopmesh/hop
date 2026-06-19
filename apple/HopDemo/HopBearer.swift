@@ -47,6 +47,9 @@ final class HopBearer: NSObject, ObservableObject {
     static let presenceService = "presence"
     /// MultipeerConnectivity service type for the Wi-Fi bearer (≤15 chars).
     static let mcServiceType = "hop-mesh"
+    /// Default cloud relay: the anycast address resolves to the device's nearest node,
+    /// which it checks into for pending messages (DESIGN.md §28).
+    static let defaultRelay = "wss://relay.hopme.sh/"
     /// How long a presence advert lives before it must be refreshed (10 min).
     static let presenceTtlMs: UInt32 = 600_000
 
@@ -141,6 +144,8 @@ final class HopBearer: NSObject, ObservableObject {
     private var relayConn: NWConnection?
     private var relayWS: URLSessionWebSocketTask?
     private var relaySession: URLSession?
+    private var relayURL: String?              // last relay endpoint (for auto check-in)
+    private var relayReconnectScheduled = false
     private let relayLinkId: UInt64 = 20_000    // distinct id range from BLE/Wi-Fi
     private var l2capPsm: [UUID: CBL2CAPPSM] = [:]    // last PSM read per peripheral
     private var l2capAttempts: [UUID: Int] = [:]      // L2CAP open retry counter
@@ -179,6 +184,10 @@ final class HopBearer: NSObject, ObservableObject {
         // neighbours, so no periodic re-publish is needed.
         _ = try? node.publishPrekey()
 
+        // Check in with our nearest cloud node (anycast) for pending messages, and keep
+        // checked in by auto-reconnecting on drop/foreground (DESIGN.md §28).
+        connectRelay(HopBearer.defaultRelay)
+
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
         #if canImport(UIKit)
@@ -187,7 +196,9 @@ final class HopBearer: NSObject, ObservableObject {
         // word until we return — peers show that as our state).
         let nc = NotificationCenter.default
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.appActive = true; self?.publishPresence(); self?.restartWiFi(); self?.pump()
+            self?.appActive = true; self?.publishPresence(); self?.restartWiFi()
+            self?.scheduleRelayReconnect()   // re-check-in on foreground (§28)
+            self?.pump()
         }
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             self?.appActive = false; self?.publishPresence(); self?.pump()
@@ -299,10 +310,26 @@ final class HopBearer: NSObject, ObservableObject {
     /// same relay discover and message each other across the internet (DESIGN.md §19, §21).
     func connectRelay(_ input: String) {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
+        relayURL = trimmed   // remembered so we auto-reconnect (check-in) on drop (§28)
         if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
             connectRelayWS(trimmed)
         } else {
             connectRelayTCP(trimmed)
+        }
+    }
+
+    /// Reconnect to the last relay after a backoff — this is the device "check-in"
+    /// (DESIGN.md §28): reconnecting to the anycast address wakes our nearest node and
+    /// pulls any pending messages. Triggered on drop and on foreground.
+    private func scheduleRelayReconnect() {
+        guard let url = relayURL, !relayReconnectScheduled else { return }
+        relayReconnectScheduled = true
+        let delay = 5.0 + Double.random(in: 0...3)   // small backoff + jitter
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.relayReconnectScheduled = false
+            // Only reconnect if we're not already connected.
+            if self.relayStatus != "connected" { self.connectRelay(url) }
         }
     }
 
@@ -920,6 +947,8 @@ extension HopBearer: URLSessionWebSocketDelegate {
                     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         relayStatus = "disconnected"
         node.disconnected(link: relayLinkId)
+        relayWS = nil
+        scheduleRelayReconnect()   // re-check-in (§28)
         pump()
     }
 
@@ -927,6 +956,8 @@ extension HopBearer: URLSessionWebSocketDelegate {
         guard task === relayWS else { return }
         if let error { relayStatus = "failed: \(error.localizedDescription)" }
         node.disconnected(link: relayLinkId)
+        relayWS = nil
+        scheduleRelayReconnect()   // re-check-in (§28)
         pump()
     }
 }
