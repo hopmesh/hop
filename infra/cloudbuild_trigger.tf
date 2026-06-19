@@ -28,7 +28,7 @@ resource "google_cloudbuildv2_repository" "hop" {
 # and write build logs.
 resource "google_service_account" "build" {
   count        = local.build_enabled ? 1 : 0
-  account_id   = "hop-build"
+  account_id   = "hop-cloudbuild"
   display_name = "Hop Cloud Build"
 }
 
