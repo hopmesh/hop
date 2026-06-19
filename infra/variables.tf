@@ -5,12 +5,31 @@ variable "project_id" {
 }
 
 variable "excluded_regions" {
-  description = <<-EOT
-    Regions to skip when deploying to all available regions (regions.tf). Add any
-    region that can't host Cloud Run (a few compute regions can't) or that you don't
-    want a relay in. The set of target regions is `all available − excluded`.
-  EOT
+  description = "Regions to skip when going all-regions (only used when region_allowlist is empty)."
   type        = set(string)
+  # me-central2 returns 403 (not available to this project).
+  default = ["me-central2"]
+}
+
+variable "build_connection_name" {
+  description = "Cloud Build 2nd-gen GitHub connection name (from the Cloud Build GitHub App). Empty disables the GitOps build trigger."
+  type        = string
+  default     = ""
+}
+
+variable "spacelift_commit_sha" {
+  description = "Injected by Spacelift (TF_VAR_spacelift_commit_sha). Used to derive the deploy image tag so it matches the commit Cloud Build built."
+  type        = string
+  default     = ""
+}
+
+variable "region_allowlist" {
+  description = <<-EOT
+    If non-empty, deploy ONLY to these regions (overrides the all-regions data source).
+    Use this to pin a working curated set within the project's Cloud Run region quota;
+    empty = all available regions minus excluded_regions (needs quota for ~43 regions).
+  EOT
+  type        = list(string)
   default     = []
 }
 

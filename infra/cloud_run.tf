@@ -28,7 +28,7 @@ resource "google_cloud_run_v2_service" "relay" {
     }
 
     containers {
-      image = var.relay_image
+      image = local.relay_image
 
       # Cloud Run injects $PORT; the relay serves its WebSocket bearer there.
       ports {

@@ -1,0 +1,21 @@
+# GitOps image build, run by the GitHub-connected Cloud Build trigger (no GitHub
+# Actions). On each push it builds hop-relayd and pushes two tags: the commit
+# $SHORT_SHA (what Spacelift deploys — it derives the same tag from the run's
+# commit) and :latest (convenience). See infra/cloudbuild_trigger.tf.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - crates/hop-relayd/Dockerfile
+      - -t
+      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:$SHORT_SHA
+      - -t
+      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest
+      - .
+images:
+  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:$SHORT_SHA
+  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 1800s

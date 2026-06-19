@@ -14,7 +14,7 @@ output "test_endpoints" {
 }
 
 output "relay_image" {
-  value = var.relay_image
+  value = local.relay_image
 }
 
 output "name_servers" {
