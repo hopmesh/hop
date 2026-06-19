@@ -43,21 +43,17 @@ fn hex8(b: &[u8; 8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Human label for a trace hop's carrying app (DESIGN.md §27): "Hop Relay" for the
-/// relay daemon, this app's own name for our own hops, else the short hex.
-fn label_app(app: &ShortApp, own: &Option<(ShortApp, String)>) -> String {
+/// Human label for a trace hop's carrying app (DESIGN.md §27). Only public infra
+/// nodes self-identify ("Hop Relay"); end-user devices stamp the generic fabric app
+/// so a trace never advertises which app a device runs (privacy, §27).
+fn label_app(app: &ShortApp) -> String {
     if *app == short_app(&relay_app_id()) {
-        return "Hop Relay".to_string();
+        "Hop Relay".to_string()
+    } else if *app == short_app(&FABRIC_APP) {
+        "device".to_string()
+    } else {
+        hex8(app)
     }
-    if let Some((own_app, name)) = own {
-        if app == own_app {
-            return name.clone();
-        }
-    }
-    if *app == short_app(&FABRIC_APP) {
-        return "fabric".to_string();
-    }
-    hex8(app)
 }
 
 /// Opaque bytes to ship over the bearer on a given connection.
@@ -173,9 +169,6 @@ fn to32(v: &[u8]) -> std::result::Result<[u8; 32], FfiError> {
 #[derive(uniffi::Object)]
 pub struct HopNode {
     inner: Mutex<Node<SqliteStore>>,
-    /// This app's `(short app id, display name)`, set via [`HopNode::set_app`], used to
-    /// label our own hops in a trace (DESIGN.md §27).
-    app: Mutex<Option<(ShortApp, String)>>,
 }
 
 #[uniffi::export]
@@ -186,7 +179,6 @@ impl HopNode {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
         Arc::new(Self {
             inner: Mutex::new(Node::with_store(Identity::generate(), store)),
-            app: Mutex::new(None),
         })
     }
 
@@ -197,7 +189,6 @@ impl HopNode {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
         Arc::new(Self {
             inner: Mutex::new(Node::with_store(identity_from(&secret), store)),
-            app: Mutex::new(None),
         })
     }
 
@@ -211,17 +202,13 @@ impl HopNode {
             .expect("sqlite store");
         Arc::new(Self {
             inner: Mutex::new(Node::with_store(identity_from(&secret), store)),
-            app: Mutex::new(None),
         })
     }
 
-    /// Set this app's identity (reverse-DNS name, e.g. "net.waldrip.hop.demo"). Stamped
-    /// into trace hops so a route shows which app carried each hop (DESIGN.md §27).
-    pub fn set_app(&self, name: String) {
-        let id = app_id(&name);
-        self.inner.lock().unwrap().set_app(id);
-        *self.app.lock().unwrap() = Some((short_app(&id), name));
-    }
+    // Note: there is intentionally no `set_app` here. End-user devices must NOT stamp
+    // their app id into trace hops — that would advertise which app a device runs to
+    // every relay on the path (DESIGN.md §27 privacy). Devices stay on FABRIC_APP;
+    // only infra relays self-identify (hop-relayd calls Node::set_app(relay_app_id())).
 
     /// Export this node's identity secret to persist (store it in the Keychain).
     pub fn secret(&self) -> Vec<u8> {
@@ -428,7 +415,6 @@ impl HopNode {
     pub fn take_inbox(&self) -> Vec<InboxMessage> {
         let mut node = self.inner.lock().unwrap();
         let bundles = node.take_inbox();
-        let own = self.app.lock().unwrap().clone();
         bundles
             .iter()
             .filter_map(|b| match node.read_message(b) {
@@ -438,11 +424,11 @@ impl HopNode {
                     body: m.body,
                     hops: b.env.hops,
                     created_at: b.inner.created_at,
-                    // "<app carrier>·<node>" per hop, e.g. "Hop Relay·a1b2c3".
+                    // "<carrier>·<node>" per hop: "Hop Relay·a1b2c3" or "device·a1b2c3".
                     trace: b
                         .trace()
                         .iter()
-                        .map(|h| format!("{}·{}", label_app(&h.app, &own), &hex8(&h.node)[..6]))
+                        .map(|h| format!("{}·{}", label_app(&h.app), &hex8(&h.node)[..6]))
                         .collect(),
                 }),
                 _ => None,

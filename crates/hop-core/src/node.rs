@@ -318,8 +318,13 @@ impl<S: Store> Node<S> {
         self.routes.set_capacity(cap);
     }
 
-    /// Set this node's app identity, stamped into each trace hop (DESIGN.md §27). The
-    /// embedding app sets its own id; a relay sets [`crate::relay_app_id`].
+    /// Set the app id this node **publicly stamps** into each trace hop (DESIGN.md §27).
+    ///
+    /// Privacy: this advertises "this node carries app X" to every relay on the path,
+    /// so ONLY public infra nodes should set it — a relay sets [`crate::relay_app_id`]
+    /// to show as "Hop Relay". **End-user devices must leave this at [`FABRIC_APP`]**
+    /// (the default) so they never advertise which app they run. (The FFI deliberately
+    /// exposes no setter for this.)
     pub fn set_app(&mut self, app: AppId) {
         self.app = app;
     }

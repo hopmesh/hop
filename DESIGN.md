@@ -1261,6 +1261,15 @@ N hops; let a sender **opt out** of tracing (no learning, maximum privacy); or s
 hop so traces are tamper-evident but still readable. Same class of metadata exposure as
 §19's mailbox-sees-`(AppId, dst)` — payloads (§4) are unaffected.
 
+**The per-hop app id is the sensitive part — gate it.** The node address in a hop is
+already public (it's the address, broadcast via presence, §23), so it's no new exposure.
+But the **carrier app id** would advertise *which app a device runs* to everyone on the
+path — a real app/social-graph leak. So **only public infra nodes stamp a real app id**
+(a relay stamps [`relay_app_id`] → "Hop Relay"); **end-user devices stay on `FABRIC_APP`**
+(shown as "device") and never reveal their app. The route layer keys on node addresses,
+not the app field, so this costs nothing functionally. The FFI exposes no app-setter, so
+a device *can't* leak its app even by mistake; the relay daemon sets it explicitly.
+
 ### Status
 
 Design only. Building blocks exist: epidemic + vaccine (`routing`/`node`), §18
