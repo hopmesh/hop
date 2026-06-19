@@ -172,31 +172,7 @@ impl FirestoreClient {
 
     /// A cached OAuth token: metadata server (Cloud Run/GCE) or `FIRESTORE_ACCESS_TOKEN`.
     fn token(&self) -> Result<String, String> {
-        if let Some((tok, at)) = self.token.lock().unwrap().clone() {
-            if at.elapsed() < Duration::from_secs(3000) {
-                return Ok(tok);
-            }
-        }
-        let tok = self.fetch_token()?;
-        *self.token.lock().unwrap() = Some((tok.clone(), Instant::now()));
-        Ok(tok)
-    }
-
-    fn fetch_token(&self) -> Result<String, String> {
-        if let Ok(t) = std::env::var("FIRESTORE_ACCESS_TOKEN") {
-            if !t.is_empty() {
-                return Ok(t);
-            }
-        }
-        let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
-        let resp = self
-            .http
-            .get(url)
-            .header("Metadata-Flavor", "Google")
-            .send()
-            .map_err(|e| e.to_string())?;
-        let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
-        v["access_token"].as_str().map(|s| s.to_string()).ok_or_else(|| "no access_token".into())
+        cached_token(&self.token, &self.http)
     }
 
     fn put_bundle(&self, id: &BundleId, data: &[u8], expires_at: u64) -> Result<(), String> {
@@ -269,6 +245,164 @@ impl FirestoreClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared GCP auth (used by the store and the liveness registry).
+// ---------------------------------------------------------------------------
+
+/// Fetch a GCP OAuth token: the `FIRESTORE_ACCESS_TOKEN` env var (local runs) or the
+/// GCE/Cloud Run metadata server (workload identity).
+fn fetch_gcp_token(http: &reqwest::blocking::Client) -> Result<String, String> {
+    if let Ok(t) = std::env::var("FIRESTORE_ACCESS_TOKEN") {
+        if !t.is_empty() {
+            return Ok(t);
+        }
+    }
+    let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+    let resp =
+        http.get(url).header("Metadata-Flavor", "Google").send().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    v["access_token"].as_str().map(|s| s.to_string()).ok_or_else(|| "no access_token".into())
+}
+
+/// A token with a ~50-minute cache (tokens last 1h).
+fn cached_token(
+    cache: &Mutex<Option<(String, Instant)>>,
+    http: &reqwest::blocking::Client,
+) -> Result<String, String> {
+    if let Some((tok, at)) = cache.lock().unwrap().clone() {
+        if at.elapsed() < Duration::from_secs(3000) {
+            return Ok(tok);
+        }
+    }
+    let tok = fetch_gcp_token(http)?;
+    *cache.lock().unwrap() = Some((tok.clone(), Instant::now()));
+    Ok(tok)
+}
+
+// ---------------------------------------------------------------------------
+// Liveness registry (DESIGN.md §28): the passive discovery plane for the backbone.
+// ---------------------------------------------------------------------------
+
+/// An online peer relay discovered via the registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerInfo {
+    /// base58 node address (the relay's identity).
+    pub node: String,
+    pub region: String,
+    /// Connectable endpoint for node-to-node links (e.g. `wss://eu-west1.relay.hopme.sh/`).
+    pub endpoint: String,
+    pub heartbeat_ms: u64,
+}
+
+/// Is a heartbeat still fresh? (A read of a stale entry means the node is offline.)
+fn is_fresh(heartbeat_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
+    now_ms.saturating_sub(heartbeat_ms) <= ttl_ms
+}
+
+/// The passive liveness registry. Online relays heartbeat a doc keyed by their node
+/// id into a top-level `registry` collection; readers filter by freshness. **Reading
+/// never wakes a node** (it's a Firestore read), so a node is only ever woken by its
+/// own clients — never by a peer (DESIGN.md §28).
+pub struct Registry {
+    http: reqwest::blocking::Client,
+    collection_url: String, // .../documents/registry
+    me: String,             // our node id (excluded from `online`)
+    token: Mutex<Option<(String, Instant)>>,
+}
+
+impl Registry {
+    pub fn new(project: &str, node_addr: &[u8]) -> Self {
+        let me = bs58::encode(node_addr).into_string();
+        let base = "https://firestore.googleapis.com/v1";
+        let collection_url =
+            format!("{base}/projects/{project}/databases/(default)/documents/registry");
+        Self {
+            http: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("http client"),
+            collection_url,
+            me,
+            token: Mutex::new(None),
+        }
+    }
+
+    fn token(&self) -> Result<String, String> {
+        cached_token(&self.token, &self.http)
+    }
+
+    /// Announce we're online (call on wake, then periodically). Idempotent upsert.
+    pub fn heartbeat(&self, region: &str, endpoint: &str, now_ms: u64) -> Result<(), String> {
+        let url = format!("{}/{}", self.collection_url, self.me);
+        let body = registry_doc_json(&self.me, region, endpoint, now_ms);
+        let token = self.token()?;
+        let resp =
+            self.http.patch(&url).bearer_auth(token).json(&body).send().map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("heartbeat {}", resp.status()))
+        }
+    }
+
+    /// Currently-online peers (fresh heartbeat within `ttl_ms`), excluding ourselves.
+    /// A pure Firestore read — wakes no one.
+    pub fn online(&self, now_ms: u64, ttl_ms: u64) -> Result<Vec<PeerInfo>, String> {
+        let token = self.token()?;
+        let resp = self
+            .http
+            .get(&self.collection_url)
+            .query(&[("pageSize", "300")])
+            .bearer_auth(&token)
+            .send()
+            .map_err(|e| e.to_string())?;
+        if resp.status().as_u16() == 404 {
+            return Ok(Vec::new()); // no registry yet
+        }
+        if !resp.status().is_success() {
+            return Err(format!("online {}", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        if let Some(docs) = v["documents"].as_array() {
+            for d in docs {
+                if let Some(p) = parse_registry_doc(d) {
+                    if p.node != self.me && is_fresh(p.heartbeat_ms, now_ms, ttl_ms) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Build a Firestore document body for a registry heartbeat.
+fn registry_doc_json(node: &str, region: &str, endpoint: &str, heartbeat_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "fields": {
+            "node": { "stringValue": node },
+            "region": { "stringValue": region },
+            "endpoint": { "stringValue": endpoint },
+            "heartbeatAt": { "integerValue": heartbeat_ms.to_string() },
+        }
+    })
+}
+
+/// Parse a Firestore registry document into a [`PeerInfo`].
+fn parse_registry_doc(d: &serde_json::Value) -> Option<PeerInfo> {
+    let f = d.get("fields")?;
+    Some(PeerInfo {
+        node: f["node"]["stringValue"].as_str()?.to_string(),
+        region: f["region"]["stringValue"].as_str().unwrap_or("").to_string(),
+        endpoint: f["endpoint"]["stringValue"].as_str()?.to_string(),
+        heartbeat_ms: f["heartbeatAt"]["integerValue"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    })
+}
+
 /// Build a Firestore document body for a bundle.
 fn doc_json(data: &[u8], expires_at: u64) -> serde_json::Value {
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
@@ -307,5 +441,28 @@ mod tests {
     #[test]
     fn parse_doc_rejects_garbage() {
         assert!(parse_doc(&serde_json::json!({"name": "x"})).is_none());
+    }
+
+    #[test]
+    fn registry_doc_round_trips() {
+        let json = registry_doc_json("Node123", "eu-west1", "wss://eu-west1.relay.hopme.sh/", 9000);
+        let doc = serde_json::json!({ "name": "x", "fields": json["fields"] });
+        let p = parse_registry_doc(&doc).expect("parse");
+        assert_eq!(p.node, "Node123");
+        assert_eq!(p.region, "eu-west1");
+        assert_eq!(p.endpoint, "wss://eu-west1.relay.hopme.sh/");
+        assert_eq!(p.heartbeat_ms, 9000);
+    }
+
+    #[test]
+    fn parse_registry_doc_rejects_garbage() {
+        assert!(parse_registry_doc(&serde_json::json!({"name": "x"})).is_none());
+    }
+
+    #[test]
+    fn freshness_is_a_ttl_window() {
+        assert!(is_fresh(1_000, 1_000, 90_000), "same instant is fresh");
+        assert!(is_fresh(1_000, 90_000, 90_000), "within ttl is fresh");
+        assert!(!is_fresh(1_000, 200_000, 90_000), "past ttl is stale (offline)");
     }
 }
