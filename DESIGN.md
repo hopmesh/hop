@@ -1283,12 +1283,16 @@ traffic and goes dark when idle. *Only end-user devices bring cloud nodes online
   the region node scales to zero and later wakes for the next device, it reloads its
   partition and resumes. The durable store is what makes ephemeral compute safe.
 
-- **The mesh forms dynamically as regions light up.** If device A is up in `us-central1`
-  and device B brings up a `europe-west` (UK) node, the two region nodes discover each other
-  over the backbone (membership/gossip, §21) and relay between them — `us-central1` pushes
-  B-bound bundles to the UK node. Add more active regions, the mesh grows; as regions empty,
-  they drop out. The backbone's shape at any instant is just "which regions have a device
-  attached right now."
+- **The mesh forms dynamically as regions light up — but nodes never wake each other.** A
+  cloud node comes online *only* when a client in its region connects (client traffic is what
+  wakes Cloud Run; that is the **only** wake trigger). When a node wakes, it announces itself
+  to the liveness registry and **reaches out to the peers already marked online** — pulling in
+  the bundles bound its way, and those online peers, seeing the new arrival, push its traffic
+  to it. No node ever dials a sleeping region to wake it. Example: device B's connection
+  brings up the `europe-west` (UK) node; the UK node then announces and `us-central1` (already
+  up via device A) pushes B-bound bundles over. Add active regions, the mesh grows; as they
+  empty, they drop out. The backbone's shape at any instant is just "which regions have a
+  device attached right now."
 
 - **Prioritize and flush (§27).** While online, each region node ranks what it holds by
   learned utility and, under cache pressure, **flushes low-utility / unknown-destination
@@ -1322,25 +1326,35 @@ Three different "addresses" are in play and must not be conflated:
 - The **client entrance** is the single anycast name `relay.hopme.sh` (§21) — it routes a
   *device* to the *nearest* region. A region node **can't** use it to reach a *specific*
   peer region: anycast would just send it back to the nearest entrance (possibly itself).
-- So node-to-node peering needs **per-region network locators** — a **unique region-specific
-  domain per node**, e.g. `us-central1.relay.hopme.sh`, `eu-west1.relay.hopme.sh`, each
-  resolving to that region's own endpoint. Any region node can then dial any other directly.
+- So node-to-node peering needs a **per-region network locator** — each node's connectable
+  endpoint, either a region-specific record like `us-central1.relay.hopme.sh` or just the
+  endpoint stored in its registry entry. But a locator is used **only to connect to a peer
+  already known-online** (next paragraph) — *never* to dial a sleeping node, which would wake
+  it and defeat scale-to-zero.
 
 This is the **internal discovery plane**, separate from the client-facing anycast name and
-from the pubkey identity. On top of the per-region domains sits the membership layer (§21),
-which matters more here because nodes are demand-summoned (§28) so the live set is always
-changing:
+the pubkey identity. The hard rule: **a node is woken only by its own clients; nodes never
+wake nodes.** So discovery must be *passive* — reading it cannot cause a wake:
 
-- A **registry + liveness** signal: which region domains exist, and which are *currently
-  online*. Seed list + SWIM-style gossip keeps it self-healing as regions wink in and out.
-- A newly-summoned region node **registers** (its region domain + "I'm up") and learns the
-  current set; peers measure RTT and form the lowest-latency backbone graph (§21).
-- The registry is also the **rendezvous** that makes the cross-partition handoff (§28) work
-  across non-overlapping windows: a node looks up the destination region's domain/partition
-  instead of needing a live link.
+- **Passive liveness registry.** Online nodes heartbeat into a shared store (a well-known
+  Firestore doc/collection) with a short TTL; on scale-to-zero the heartbeat stops and the
+  entry expires. **Reading the registry is just a Firestore read — it wakes no one**, and a
+  sleeping node simply isn't listed.
+- **Pull-on-wake.** When a client summons a node, the node heartbeats itself in, reads the
+  registry, and **connects out to the currently-online peers** to exchange relayed traffic —
+  pushing what it carries for them, pulling what they carry for it. The newly-woken node is
+  always the initiator.
+- **Never connect to an absent node.** Connections only ever target registry-live endpoints,
+  so a node→node connection can't be what wakes a region. Clients are the sole wake source.
+- **Offline destination ⇒ no connection at all.** For the cross-partition handoff (§28) you
+  don't dial the destination region — you **write the sealed bundle into its durable
+  partition** (a Firestore write, which does **not** wake it), and it's delivered whenever a
+  client next wakes that region.
 
-**Infra implication:** alongside `relay.hopme.sh` (anycast), publish per-region records
-`<region>.relay.hopme.sh` in the same Cloud DNS zone, each pointing at that region's own
-endpoint (not the anycast IP); and the per-region endpoints must accept node-to-node links
-even when client ingress is locked to the LB. Run a small registry/liveness store (a
-well-known Firestore doc or a tiny membership service) that nodes read/write on startup.
+**Infra implication:** the core need is a **passive liveness registry** (a well-known
+Firestore doc nodes heartbeat into) plus the per-region durable partitions (§27). Each online
+node needs a connectable endpoint for live peers — a per-region record `<region>.relay.hopme.sh`
+or the endpoint in its registry entry — and those endpoints must accept node-to-node links
+from online peers even when client ingress is locked to the LB. Crucially, **never
+probe/health-check region endpoints** to infer liveness (that would wake them) — liveness
+comes only from registry heartbeats.
