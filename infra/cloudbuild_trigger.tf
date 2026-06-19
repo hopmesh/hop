@@ -55,8 +55,10 @@ resource "google_cloudbuild_trigger" "image" {
     }
   }
 
-  filename        = "infra/cloudbuild.trigger.yaml"
-  included_files  = ["crates/**", "infra/cloudbuild.trigger.yaml"]
+  filename = "infra/cloudbuild.trigger.yaml"
+  # Build on EVERY push to main (no path filter): the deploy derives the image tag from
+  # the commit sha, so every commit must have a matching image (else the deploy can't
+  # find it). Builds are cheap (~2-3 min) and produce a fresh :$SHORT_SHA each time.
   service_account = google_service_account.build[0].id
 
   depends_on = [google_project_service.this, google_project_iam_member.build]
