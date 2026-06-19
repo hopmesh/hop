@@ -1170,3 +1170,101 @@ Sidewalk's reach is bounded by Amazon hardware ownership; Hop's reach is bounded
 by who installs a Hop-enabled app or plugs in a $5 board — which is how it could end
 up *more* ubiquitous. The cost is that ubiquity is earned adoption-by-adoption rather
 than shipped in a billion devices on day one (§17 adoption curve).
+
+## 27. Provenance traces & learned routes — utility-prioritized epidemic
+
+Epidemic flood + the delivery-ACK vaccine gets a message everywhere and dedups it at
+the destination (§7, the `immune` set). That's robust, but blind flooding spends a
+node's finite transmit time and storage on copies that will never matter to it. Each
+node should instead spend that budget on the messages most likely to reach their
+destination *through it* — and it can learn which those are from the traffic itself,
+with no global topology and no coordinator. This section layers that utility on top of
+the flood; it does not replace it.
+
+### Every node has its own key — tables and storage are node-local
+
+Identity is per node: the address *is* the keypair (§23). A node's **peer table**,
+**learned routes**, and **bundle store** are all keyed to its own identity and are
+**node-local**. Two nodes must never share an identity — that would merge their tables
+and stores, which is exactly what we don't want, because prioritization depends on
+*what this node has seen*.
+
+- **Cloud relays are no exception: one key per region node**, not one key for the whole
+  fleet. Region-specific storage and peer tables are the *point* — a region prioritizes
+  by what it has observed, and the backbone is a mesh of distinct region nodes that
+  flood between themselves (§21), each learning independently.
+- Within a region, instances that share that region's identity + store partition act as
+  one logical region node; **across** regions, identities differ.
+- *Course-correction:* the current Cloud Run bootstrap shares one Secret Manager seed
+  across all regions (a deploy shortcut). The target is **one identity per region**, so
+  each region keeps its own store partition (`relays/{node}/bundles`) and peer/route
+  table.
+
+### Trace metadata — provenance recorded on every hop
+
+Each bundle carries a **trace**: an ordered list of **short hop addresses** (the same
+truncated-pubkey short form the UI shows). On forward, a node appends its own short
+address before handing the bundle off. The delivery ACK carries *its own* trace back
+along whatever path it travels.
+
+The trace is **authenticated header metadata, not sealed payload** — forwarders must be
+able to read it to use it. That exposes the path to relays (privacy tradeoff below);
+the payload itself stays sealed end-to-end (§4).
+
+### Learning routes from ACK/trace correlation
+
+When a node forwards a send and later sees the **delivered-ACK for the same bundle pass
+through it**, and the ACK's trace **overlaps the send's trace at this node**, the node
+has learned it sits on a *working path between src and dst — in both directions* — even
+if it never directly encountered either endpoint.
+
+- It records a **route**: `(src ↔ dst) → preferred neighbor(s)`, with a recency-decayed
+  confidence (same half-life discipline as §18/§21, so stale routes fade).
+- Over time the node accumulates a routing table learned **purely from observed
+  deliveries**. **Peer-of-peer reach** falls out of this for free: a node can prioritize
+  toward a dst it can reach via a known peer two hops away, not only dsts it has met.
+
+### Utility-prioritized epidemic (flood, but order and retain by utility)
+
+Still epidemic: a node offers a bundle to every neighbor while hop-limit remains, and
+the destination dedups — *we don't care how many copies exist*. What changes is **order
+and retention**:
+
+- **Transmit order:** messages whose dst the node has a relationship/route to go first —
+  `direct encounter > learned route > peer-of-peer > unknown`. This matters most during
+  short BLE contacts where only a few bundles will fit.
+- **Retention / eviction:** under store pressure, keep high-utility bundles and evict
+  toward-unknown-destination ones first. *A cloud peer that has never seen the receiver
+  deprioritizes that message* (lower transmit priority, first to evict) rather than
+  dropping it outright.
+
+This is the message-level analogue of §18: §18 ranks **topics** by demand/supply; §27
+ranks **individual bundles** by learned route quality to their destination.
+
+### Tiered tables — cloud nodes are the long memory
+
+Table and store capacity scale with the node tier:
+
+- **Mobile nodes** keep small, recent, high-utility tables (limited RAM/storage, evict
+  aggressively) — they forget routes quickly.
+- **Cloud nodes** keep much larger peer/route tables and stores, so they retain what
+  phones forget. They become the **route-learning backbone**: from the traffic they
+  relay they accumulate a broad, long-lived map of `(endpoint-pair → path)` and can
+  prioritize far better than any single phone. Region-specific (§21): each region node
+  learns the routes *its* region's traffic reveals.
+
+### Privacy tradeoff (honest)
+
+The trace exposes the forwarding path (a list of short addresses) to every relay on it.
+That is the cost of learned routing. Mitigations to weigh: cap trace length to the last
+N hops; let a sender **opt out** of tracing (no learning, maximum privacy); or sign each
+hop so traces are tamper-evident but still readable. Same class of metadata exposure as
+§19's mailbox-sees-`(AppId, dst)` — payloads (§4) are unaffected.
+
+### Status
+
+Design only. Building blocks exist: epidemic + vaccine (`routing`/`node`), §18
+reliability-weighted relay, §21 `RegionRouter`. To build: a **trace** field on the
+bundle header; ACK/trace correlation → a per-node **route table** with decay;
+utility-ranked transmit/evict ordering; tier-aware table sizing; and **per-region relay
+identities** (replacing the single shared Cloud Run seed).
