@@ -3,7 +3,7 @@
 # drops (the user's "go offline automatically if no nodes are connected"). Ingress
 # is var.cloud_run_ingress: open while testing via *.run.app, LB-only once DNS lands.
 resource "google_cloud_run_v2_service" "relay" {
-  for_each = var.regions
+  for_each = local.regions
 
   name     = "hop-relay-${each.value}"
   location = each.value

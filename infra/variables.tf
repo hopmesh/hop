@@ -4,15 +4,14 @@ variable "project_id" {
   default     = "hop-mesh"
 }
 
-variable "regions" {
+variable "excluded_regions" {
   description = <<-EOT
-    Regions to run a Cloud Run relay entrance/exit in. Each becomes a serverless
-    NEG behind the single global load balancer; GCP routes every device to its
-    nearest healthy region (DESIGN.md §21). All regions share one identity and
-    one Firestore store, so they are the same logical Hop node.
+    Regions to skip when deploying to all available regions (regions.tf). Add any
+    region that can't host Cloud Run (a few compute regions can't) or that you don't
+    want a relay in. The set of target regions is `all available − excluded`.
   EOT
   type        = set(string)
-  default     = ["us-central1", "europe-west1", "asia-southeast1"]
+  default     = []
 }
 
 variable "domain" {
