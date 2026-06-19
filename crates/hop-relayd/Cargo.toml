@@ -15,6 +15,7 @@ hop-core.workspace = true
 hop-store-sqlite.workspace = true
 hop-store-firestore = { workspace = true, optional = true }
 bs58 = "0.5"
+blake3.workspace = true
 # Sync WebSocket bearer. Default features = handshake only (no TLS): the global
 # load balancer terminates TLS, so the daemon speaks plain ws:// on $PORT.
 tungstenite = "0.24"
