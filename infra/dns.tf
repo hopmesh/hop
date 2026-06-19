@@ -10,5 +10,12 @@ resource "google_dns_managed_zone" "hopme" {
   depends_on = [google_project_service.this]
 }
 
-# relay.hopme.sh is added once we pick its entry point (global LB anycast IP or a
-# Cloud Run domain mapping). Held until the zone is delegated and propagating.
+# relay.hopme.sh → the global LB's anycast IP. Once this resolves, the managed TLS
+# cert provisions and wss://relay.hopme.sh/ routes to the nearest Cloud Run region.
+resource "google_dns_record_set" "relay" {
+  name         = "${var.domain}." # relay.hopme.sh.
+  managed_zone = google_dns_managed_zone.hopme.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [google_compute_global_address.relay.address]
+}

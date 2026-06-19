@@ -21,3 +21,13 @@ output "name_servers" {
   description = "Set these as the nameservers for hopme.sh at the registrar to delegate the zone."
   value       = google_dns_managed_zone.hopme.name_servers
 }
+
+output "lb_ip" {
+  description = "Anycast IP behind relay.hopme.sh."
+  value       = google_compute_global_address.relay.address
+}
+
+output "endpoint" {
+  description = "What devices put in the Cloud relay field once the cert is ACTIVE."
+  value       = "wss://${var.domain}/"
+}
