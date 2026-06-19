@@ -30,6 +30,19 @@ resource "google_cloud_run_v2_service" "relay" {
     containers {
       image = local.relay_image
 
+      # Explicit command/args (overrides the Dockerfile CMD) so each region runs as a
+      # distinct backbone node: --region derives a per-region identity, --advertise is
+      # this region's stable Cloud Run URL that peers dial (DESIGN.md §28). The presence
+      # of --region + --advertise + --firestore activates the registry + pull-on-wake.
+      command = ["hop-relayd"]
+      args = [
+        "--ws", "0.0.0.0:8080",
+        "--firestore", var.project_id,
+        "--identity-file", "/etc/hop/identity",
+        "--region", each.value,
+        "--advertise", "wss://hop-relay-${each.value}-${data.google_project.this.number}.${each.value}.run.app/",
+      ]
+
       # Cloud Run injects $PORT; the relay serves its WebSocket bearer there.
       ports {
         container_port = 8080

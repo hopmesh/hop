@@ -86,7 +86,20 @@ fn main() {
         listen = Some("0.0.0.0:9443".to_string());
     }
 
-    let identity = load_identity(&identity_file, &format!("{db}.key"));
+    let mut identity = load_identity(&identity_file, &format!("{db}.key"));
+    // Per-region backbone node: derive a stable, distinct identity from the shared seed
+    // and the region name, so each region is its own node (own Firestore partition +
+    // liveness-registry entry) without needing a separate secret per region (§27/§28).
+    if let Some(r) = &region {
+        let base = identity.to_secret_bytes();
+        let mut h = blake3::Hasher::new();
+        h.update(b"hop.relay.region.v1");
+        h.update(&base);
+        h.update(r.as_bytes());
+        let seed: [u8; 32] = *h.finalize().as_bytes();
+        identity = Identity::from_secret_bytes(&seed);
+        println!("hop-relayd: region={r} derived address {}", bs58_addr(&identity.address()));
+    }
     let addr = identity.address();
     let store = build_store(&firestore, &db, &addr);
     let mut node = Node::with_store(identity, store);

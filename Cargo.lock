@@ -832,6 +832,7 @@ dependencies = [
 name = "hop-relayd"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "bs58",
  "hop-core",
  "hop-store-firestore",
