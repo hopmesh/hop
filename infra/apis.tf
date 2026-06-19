@@ -8,6 +8,7 @@ locals {
     "artifactregistry.googleapis.com", # container image
     "secretmanager.googleapis.com",    # relay identity seed
     "cloudbuild.googleapis.com",       # build the image in-cloud (no local docker)
+    "dns.googleapis.com",              # public DNS zone for hopme.sh
   ]
 }
 

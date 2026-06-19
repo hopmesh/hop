@@ -49,8 +49,8 @@ variable "cloud_run_ingress" {
     DNS exists. Switch to "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" once the LB +
     relay.hopme.sh are the front door. Auth is the Noise handshake either way.
   EOT
-  type    = string
-  default = "INGRESS_TRAFFIC_ALL"
+  type        = string
+  default     = "INGRESS_TRAFFIC_ALL"
 }
 
 variable "firestore_location" {

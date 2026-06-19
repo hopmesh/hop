@@ -16,3 +16,8 @@ output "test_endpoints" {
 output "relay_image" {
   value = var.relay_image
 }
+
+output "name_servers" {
+  description = "Set these as the nameservers for hopme.sh at the registrar to delegate the zone."
+  value       = google_dns_managed_zone.hopme.name_servers
+}
