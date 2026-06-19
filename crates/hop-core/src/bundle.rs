@@ -8,7 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::{self, Identity, PubKeyBytes, Sealed, ShortAddr, XPubKeyBytes};
 use crate::error::{Error, Result};
-use crate::{AppId, FABRIC_APP};
+use crate::{AppId, ShortApp, FABRIC_APP};
+
+/// One entry in a bundle's provenance trace (DESIGN.md §27): the forwarder's short
+/// address plus the short id of the app that carried it (e.g. a relay stamps the Hop
+/// relay app). Together they show *who* and *what* moved the bundle on each hop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceHop {
+    pub node: ShortAddr,
+    pub app: ShortApp,
+}
 
 /// Wire format version.
 pub const BUNDLE_VERSION: u8 = 1;
@@ -149,10 +158,10 @@ pub struct Envelope {
     /// Hops travelled from the source so far — incremented on each forward. Lets
     /// the destination see the path length A→B. Not signed (advisory).
     pub hops: u8,
-    /// Provenance: the `short_addr` of each node that forwarded this bundle, in
-    /// order (DESIGN.md §27). Not signed — it's mutable forwarding metadata. Lets the
-    /// destination see the path and nodes learn routes from ACK/trace correlation.
-    pub trace: Vec<ShortAddr>,
+    /// Provenance: one [`TraceHop`] per forwarder, in order (DESIGN.md §27). Not
+    /// signed — it's mutable forwarding metadata. Lets the destination see the path
+    /// (who + which app) and nodes learn routes from ACK/trace correlation.
+    pub trace: Vec<TraceHop>,
 }
 
 /// Delivery options for a new bundle. Use `..Default::default()` for the rest.
@@ -284,17 +293,17 @@ impl Bundle {
         self.decrement_hop()
     }
 
-    /// Append a forwarder's short address to the provenance trace (DESIGN.md §27).
-    /// Capped so a long-lived bundle can't grow an unbounded header.
-    pub fn add_hop(&mut self, who: ShortAddr) {
+    /// Append a forwarder (node + carrying app) to the provenance trace (DESIGN.md
+    /// §27). Capped so a long-lived bundle can't grow an unbounded header.
+    pub fn add_hop(&mut self, node: ShortAddr, app: ShortApp) {
         const MAX_TRACE: usize = 16;
         if self.env.trace.len() < MAX_TRACE {
-            self.env.trace.push(who);
+            self.env.trace.push(TraceHop { node, app });
         }
     }
 
-    /// The provenance trace: short addresses of the nodes that forwarded this bundle.
-    pub fn trace(&self) -> &[ShortAddr] {
+    /// The provenance trace: who (and which app) forwarded this bundle, in order.
+    pub fn trace(&self) -> &[TraceHop] {
         &self.env.trace
     }
 

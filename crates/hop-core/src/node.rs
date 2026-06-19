@@ -26,6 +26,7 @@ use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
 use crate::link::{BearerEvent, LinkHandshake, LinkId, LinkSession, Role};
 use crate::route::RouteTable;
 use crate::routing::{BundleMeta, ForwardDecision, Router, SprayAndWait};
+use crate::{short_app, AppId, FABRIC_APP};
 use crate::session::Session;
 use crate::store::{MemoryStore, Store};
 
@@ -208,6 +209,10 @@ pub struct Node<S: Store = MemoryStore> {
     /// returning delivery-ACK for one of these means we're on its path → learn the
     /// route. Bounded; pruned by age in [`Node::tick`].
     forwarded: HashMap<BundleId, (PubKeyBytes, PubKeyBytes, u64)>,
+    /// This node's app identity, stamped into each trace hop so a route shows which
+    /// app carried it (DESIGN.md §27). Defaults to the shared fabric; set by the
+    /// embedding app (or [`crate::relay_app_id`] for a relay).
+    app: AppId,
 }
 
 impl Node<MemoryStore> {
@@ -258,6 +263,7 @@ impl<S: Store> Node<S> {
             http_responses: Vec::new(),
             routes: RouteTable::new(DEFAULT_MAX_ROUTES),
             forwarded: HashMap::new(),
+            app: FABRIC_APP,
         };
         node.rehydrate();
         node
@@ -310,6 +316,12 @@ impl<S: Store> Node<S> {
     /// set this high to become the long-memory backbone; mobile nodes keep the default.
     pub fn set_route_capacity(&mut self, cap: usize) {
         self.routes.set_capacity(cap);
+    }
+
+    /// Set this node's app identity, stamped into each trace hop (DESIGN.md §27). The
+    /// embedding app sets its own id; a relay sets [`crate::relay_app_id`].
+    pub fn set_app(&mut self, app: AppId) {
+        self.app = app;
     }
 
     /// Decayed learned reachability toward `dst` (0.0 if no route is known). Higher
@@ -1032,6 +1044,7 @@ impl<S: Store> Node<S> {
     /// Offer stored bundles to one link, applying binary spray-and-wait.
     fn offer_bundles_to_link(&mut self, link: LinkId) {
         let me_short = short_addr(&self.identity.address());
+        let me_app = short_app(&self.app);
         let now = self.now_ms;
         // Snapshot ids, ordered by utility so the most-likely-to-deliver bundles go
         // first during a short contact (DESIGN.md §27).
@@ -1072,7 +1085,7 @@ impl<S: Store> Node<S> {
                 ForwardDecision::Forward if direct => {
                     let mut copy = b.clone();
                     if copy.forwarded() {
-                        copy.add_hop(me_short); // provenance (§27)
+                        copy.add_hop(me_short, me_app); // provenance (§27)
                         if !own {
                             self.store.remove(&id); // relayed: release custody on delivery
                         }
@@ -1090,7 +1103,7 @@ impl<S: Store> Node<S> {
                     // by the hop limit and reclaimed by the delivery-ACK vaccine.
                     let mut copy = b.clone();
                     if copy.forwarded() {
-                        copy.add_hop(me_short); // provenance (§27)
+                        copy.add_hop(me_short, me_app); // provenance (§27)
                         Some(copy)
                     } else {
                         None
@@ -1494,9 +1507,11 @@ mod tests {
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1);
         let trace = inbox[0].trace();
-        assert!(trace.contains(&s0), "source's hop recorded");
-        assert!(trace.contains(&s1), "relay's hop recorded");
+        assert!(trace.iter().any(|h| h.node == s0), "source's hop recorded");
+        assert!(trace.iter().any(|h| h.node == s1), "relay's hop recorded");
         assert_eq!(trace.len(), 2, "exactly the two forwarders, in order");
+        // App defaults to the shared fabric here (no set_app), stamped on each hop.
+        assert!(trace.iter().all(|h| h.app == short_app(&FABRIC_APP)), "carrier app stamped");
     }
 
     #[test]

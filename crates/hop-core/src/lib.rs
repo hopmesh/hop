@@ -44,6 +44,27 @@ pub fn app_id(name: &str) -> AppId {
     id
 }
 
+/// A compact 8-byte form of an [`AppId`], stamped into each trace hop alongside the
+/// node's short address so a route shows *which app carried it* (DESIGN.md §27) — e.g.
+/// a relay hop carries [`relay_app_id`]'s short form.
+pub type ShortApp = [u8; 8];
+
+/// The 8-byte short form of an app id.
+pub fn short_app(app: &AppId) -> ShortApp {
+    let mut s = [0u8; 8];
+    s.copy_from_slice(&app[..8]);
+    s
+}
+
+/// Reverse-DNS name of the Hop relay daemon's app identity.
+pub const RELAY_APP_NAME: &str = "sh.hopme.relay";
+
+/// Well-known [`AppId`] for the Hop relay daemon, so a relay-carried hop is labeled
+/// "Hop Relay" in traces rather than an opaque address.
+pub fn relay_app_id() -> AppId {
+    app_id(RELAY_APP_NAME)
+}
+
 /// Common imports for working with hop-core.
 pub mod prelude {
     pub use crate::bundle::{
@@ -67,5 +88,6 @@ pub mod prelude {
     };
     pub use crate::store::{HaveSet, MemoryStore, Store};
     pub use crate::util::{compress, decompress};
-    pub use crate::{app_id, AppId, FABRIC_APP};
+    pub use crate::bundle::TraceHop;
+    pub use crate::{app_id, relay_app_id, short_app, AppId, ShortApp, FABRIC_APP, RELAY_APP_NAME};
 }

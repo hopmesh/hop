@@ -38,6 +38,28 @@ pub fn address_from_base58(text: String) -> Vec<u8> {
     bs58::decode(text).into_vec().unwrap_or_default()
 }
 
+/// Hex of a short (8-byte) trace hop for display.
+fn hex8(b: &[u8; 8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Human label for a trace hop's carrying app (DESIGN.md §27): "Hop Relay" for the
+/// relay daemon, this app's own name for our own hops, else the short hex.
+fn label_app(app: &ShortApp, own: &Option<(ShortApp, String)>) -> String {
+    if *app == short_app(&relay_app_id()) {
+        return "Hop Relay".to_string();
+    }
+    if let Some((own_app, name)) = own {
+        if app == own_app {
+            return name.clone();
+        }
+    }
+    if *app == short_app(&FABRIC_APP) {
+        return "fabric".to_string();
+    }
+    hex8(app)
+}
+
 /// Opaque bytes to ship over the bearer on a given connection.
 #[derive(uniffi::Record)]
 pub struct OutPacket {
@@ -57,6 +79,9 @@ pub struct InboxMessage {
     /// Sender's clock (ms) when the message was created — signed by the sender.
     /// Subtract from local receive time for an end-to-end latency estimate.
     pub created_at: u64,
+    /// Provenance: short hex of each node that forwarded this message, in order
+    /// (DESIGN.md §27). Empty for a direct (0-relay) delivery.
+    pub trace: Vec<String>,
 }
 
 /// A service advert discovered via gossip (direct or relayed). The `publisher` is
@@ -148,6 +173,9 @@ fn to32(v: &[u8]) -> std::result::Result<[u8; 32], FfiError> {
 #[derive(uniffi::Object)]
 pub struct HopNode {
     inner: Mutex<Node<SqliteStore>>,
+    /// This app's `(short app id, display name)`, set via [`HopNode::set_app`], used to
+    /// label our own hops in a trace (DESIGN.md §27).
+    app: Mutex<Option<(ShortApp, String)>>,
 }
 
 #[uniffi::export]
@@ -156,7 +184,10 @@ impl HopNode {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
-        Arc::new(Self { inner: Mutex::new(Node::with_store(Identity::generate(), store)) })
+        Arc::new(Self {
+            inner: Mutex::new(Node::with_store(Identity::generate(), store)),
+            app: Mutex::new(None),
+        })
     }
 
     /// Restore a node from a saved identity secret with ephemeral storage. Pass
@@ -164,7 +195,10 @@ impl HopNode {
     #[uniffi::constructor]
     pub fn with_secret(secret: Vec<u8>) -> Arc<Self> {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
-        Arc::new(Self { inner: Mutex::new(Node::with_store(identity_from(&secret), store)) })
+        Arc::new(Self {
+            inner: Mutex::new(Node::with_store(identity_from(&secret), store)),
+            app: Mutex::new(None),
+        })
     }
 
     /// Open a node with **persistent** storage at `db_path` (messages survive
@@ -175,7 +209,18 @@ impl HopNode {
         let store = SqliteStore::open(&db_path)
             .or_else(|_| SqliteStore::open_in_memory())
             .expect("sqlite store");
-        Arc::new(Self { inner: Mutex::new(Node::with_store(identity_from(&secret), store)) })
+        Arc::new(Self {
+            inner: Mutex::new(Node::with_store(identity_from(&secret), store)),
+            app: Mutex::new(None),
+        })
+    }
+
+    /// Set this app's identity (reverse-DNS name, e.g. "net.waldrip.hop.demo"). Stamped
+    /// into trace hops so a route shows which app carried each hop (DESIGN.md §27).
+    pub fn set_app(&self, name: String) {
+        let id = app_id(&name);
+        self.inner.lock().unwrap().set_app(id);
+        *self.app.lock().unwrap() = Some((short_app(&id), name));
     }
 
     /// Export this node's identity secret to persist (store it in the Keychain).
@@ -335,6 +380,15 @@ impl HopNode {
         self.inner.lock().unwrap().peers().iter().map(|a| a.to_vec()).collect()
     }
 
+    /// Whether this node has learned a live route toward `address` from observed
+    /// deliveries (DESIGN.md §27). Drives a "known route" indicator in the UI.
+    pub fn knows_route(&self, address: Vec<u8>) -> bool {
+        match to32(&address) {
+            Ok(a) => self.inner.lock().unwrap().knows_route(&a),
+            Err(_) => false,
+        }
+    }
+
     /// Live links `(address, link id)` — the host maps link ids to transports to show
     /// the route to each direct neighbour.
     pub fn peer_links(&self) -> Vec<PeerLink> {
@@ -374,6 +428,7 @@ impl HopNode {
     pub fn take_inbox(&self) -> Vec<InboxMessage> {
         let mut node = self.inner.lock().unwrap();
         let bundles = node.take_inbox();
+        let own = self.app.lock().unwrap().clone();
         bundles
             .iter()
             .filter_map(|b| match node.read_message(b) {
@@ -383,6 +438,12 @@ impl HopNode {
                     body: m.body,
                     hops: b.env.hops,
                     created_at: b.inner.created_at,
+                    // "<app carrier>·<node>" per hop, e.g. "Hop Relay·a1b2c3".
+                    trace: b
+                        .trace()
+                        .iter()
+                        .map(|h| format!("{}·{}", label_app(&h.app, &own), &hex8(&h.node)[..6]))
+                        .collect(),
                 }),
                 _ => None,
             })

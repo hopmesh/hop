@@ -67,6 +67,7 @@ final class HopBearer: NSObject, ObservableObject {
         // Incoming metadata (shown under the bubble).
         var hops: UInt8 = 0
         var latencyMs: UInt64? = nil      // received time − sender's send time
+        var trace: [String] = []          // short hex of each forwarding hop (§27)
         // Outgoing delivery tracking.
         var sentAt: Date = Date()
         var deliveredAt: Date? = nil
@@ -90,6 +91,7 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var reachable: [Peer] = []   // discovered now (direct + mesh)
     @Published var seen: [Peer] = []        // historical, not currently reachable
     @Published var secured: Set<Data> = []  // addresses we have a forward-secret session with
+    @Published var routed: Set<Data> = []   // addresses we've learned a live route to (§27)
     @Published var transports: [TransportStatus] = []  // per-bearer status (all run at once)
     @Published var relayStatus = "not connected"        // cloud relay link state
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
@@ -164,6 +166,8 @@ final class HopBearer: NSObject, ObservableObject {
         myName = name
         myAddress = HopBearer.base58(node.address())
         idNote = "\(IdentityStore.note) → \(myAddress.prefix(8))"
+        // Identify our app so a trace hop shows which app carried it (DESIGN.md §27).
+        node.setApp(name: Bundle.main.bundleIdentifier ?? "net.waldrip.hop.demo")
         // Presence is an app-level service (DESIGN.md §23): we publish our display
         // name on the "presence" topic and subscribe so discovered records are
         // retained. The protocol knows nothing about names — contacts live here.
@@ -438,7 +442,7 @@ final class HopBearer: NSObject, ObservableObject {
             let now = HopBearer.nowMs()
             let latency = now >= m.createdAt ? now - m.createdAt : 0  // clamp clock skew
             messages.append(Message(peer: who, text: text, incoming: true,
-                                    hops: m.hops, latencyMs: latency))
+                                    hops: m.hops, latencyMs: latency, trace: m.trace))
             if who != activePeer { unread[who, default: 0] += 1 }  // badge unless viewing
             notifyIfBackgrounded(from: who, text: text)
         }
@@ -533,6 +537,8 @@ final class HopBearer: NSObject, ObservableObject {
 
         // Which contacts we're talking to over a forward-secret session (lock icon).
         secured = Set(contacts.keys.filter { node.isSecured(address: $0) })
+        // Which contacts we've learned a live route to from deliveries (§27).
+        routed = Set(contacts.keys.filter { node.knowsRoute(address: $0) })
 
         // Per-transport status — both bearers run at once (DESIGN.md §26).
         let bleActive = peripheralMgr?.state == .poweredOn || centralMgr?.state == .poweredOn

@@ -148,6 +148,10 @@ struct ContentView: View {
                         if bearer.secured.contains(peer.address) {
                             Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.green)
                         }
+                        if bearer.routed.contains(peer.address) {
+                            Image(systemName: "arrow.triangle.branch").font(.caption2)
+                                .foregroundStyle(.blue).help("learned route")
+                        }
                     }
                     Text(subline(peer)).font(.caption).foregroundStyle(.secondary)
                 }
@@ -215,6 +219,12 @@ struct ChatView: View {
                             }
                             Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: m.incoming ? .leading : .trailing)
+                            // Provenance: who/what carried each hop (DESIGN.md §27).
+                            if m.incoming, !m.trace.isEmpty {
+                                Text("path: " + m.trace.joined(separator: " → "))
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
