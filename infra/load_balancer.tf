@@ -20,12 +20,13 @@ resource "google_compute_region_network_endpoint_group" "relay" {
   }
 }
 
-# Single backend gathering all regional NEGs. WebSocket-friendly timeout.
+# Single backend gathering all regional NEGs. timeout_sec is NOT allowed on
+# serverless-NEG backends — the WebSocket lifetime is governed by the Cloud Run
+# service's own request timeout (var.ws_request_timeout_seconds, set in cloud_run.tf).
 resource "google_compute_backend_service" "relay" {
   name                  = "hop-relay-backend"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   protocol              = "HTTP"
-  timeout_sec           = var.ws_request_timeout_seconds
 
   dynamic "backend" {
     for_each = google_compute_region_network_endpoint_group.relay
