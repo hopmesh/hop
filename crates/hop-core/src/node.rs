@@ -20,10 +20,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::{Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload};
-use crate::crypto::{self, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
+use crate::crypto::{self, short_addr, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
 use crate::link::{BearerEvent, LinkHandshake, LinkId, LinkSession, Role};
+use crate::route::RouteTable;
 use crate::routing::{BundleMeta, ForwardDecision, Router, SprayAndWait};
 use crate::session::Session;
 use crate::store::{MemoryStore, Store};
@@ -83,6 +84,14 @@ pub const DEFAULT_RETX_INTERVAL_MS: u64 = 30_000;
 /// Default cap on relayed (not-ours) bundles held for forwarding. Our own messages
 /// are never counted or evicted; relayed ones decay under this bound.
 pub const DEFAULT_MAX_RELAYED: usize = 128;
+
+/// Default cap on the learned-route table (DESIGN.md §27). Mobile-tier; cloud nodes
+/// raise it via [`Node::set_route_capacity`] to become the long-memory backbone.
+pub const DEFAULT_MAX_ROUTES: usize = 2_048;
+
+/// Default cap on the "bundles I forwarded" memory used to correlate a returning
+/// delivery-ACK with the forward path. Bounded; pruned by age in [`Node::tick`].
+pub const DEFAULT_MAX_FORWARDED: usize = 4_096;
 
 /// TTL for a published prekey advert (7 days). Re-publish before it lapses so peers
 /// can always open a session (DESIGN.md §25).
@@ -192,6 +201,13 @@ pub struct Node<S: Store = MemoryStore> {
     http_requests: Vec<HttpReqItem>,
     /// HTTP responses sealed back to us (as a requester).
     http_responses: Vec<HttpRespItem>,
+    /// Learned reachability per endpoint, from observed deliveries (DESIGN.md §27):
+    /// orders transmissions (best first) and eviction (flush unknown-dst first).
+    routes: RouteTable,
+    /// Device-addressed bundles we've forwarded/originated, `id → (src, dst, at)`. A
+    /// returning delivery-ACK for one of these means we're on its path → learn the
+    /// route. Bounded; pruned by age in [`Node::tick`].
+    forwarded: HashMap<BundleId, (PubKeyBytes, PubKeyBytes, u64)>,
 }
 
 impl Node<MemoryStore> {
@@ -240,6 +256,8 @@ impl<S: Store> Node<S> {
             immune: HashMap::new(),
             http_requests: Vec::new(),
             http_responses: Vec::new(),
+            routes: RouteTable::new(DEFAULT_MAX_ROUTES),
+            forwarded: HashMap::new(),
         };
         node.rehydrate();
         node
@@ -286,6 +304,23 @@ impl<S: Store> Node<S> {
     /// Advance the node's advisory clock (used for advert expiry/discovery).
     pub fn set_time(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+    }
+
+    /// Raise (or lower) the learned-route table capacity (DESIGN.md §27). Cloud nodes
+    /// set this high to become the long-memory backbone; mobile nodes keep the default.
+    pub fn set_route_capacity(&mut self, cap: usize) {
+        self.routes.set_capacity(cap);
+    }
+
+    /// Decayed learned reachability toward `dst` (0.0 if no route is known). Higher
+    /// means this node is a better path to `dst` right now.
+    pub fn route_utility(&self, dst: &PubKeyBytes) -> f64 {
+        self.routes.utility(dst, self.now_ms)
+    }
+
+    /// Whether this node has learned any live route toward `dst`.
+    pub fn knows_route(&self, dst: &PubKeyBytes) -> bool {
+        self.routes.knows(dst, self.now_ms)
     }
 
     /// Subscribe the local directory to a service topic.
@@ -342,6 +377,8 @@ impl<S: Store> Node<S> {
         )?;
         let id = bundle.id();
         self.tx.entry(id).or_default(); // track delivery status for the UI
+        // Remember our own send so the returning delivery-ACK teaches us the route (§27).
+        self.forwarded.insert(id, (self.identity.address(), dst, self.now_ms));
         self.submit(bundle);
         Ok(id)
     }
@@ -621,6 +658,8 @@ impl<S: Store> Node<S> {
         self.relay_order.retain(|id| self.store.contains(id));
         // Expire vaccine immunity after a bundle could no longer be live (1h).
         self.immune.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
+        // Forget forwarded-route memory for bundles that can no longer ACK back (§27).
+        self.forwarded.retain(|_, (_, _, t)| now_ms.saturating_sub(*t) < 3_600_000);
 
         let mut retransmit = false;
         for id in self.pending.keys().copied().collect::<Vec<_>>() {
@@ -804,6 +843,10 @@ impl<S: Store> Node<S> {
                         info.delivered = true;
                         info.delivered_hops = delivery_hops;
                     }
+                    // Our message reached its destination: learn the route (§27).
+                    if let Some((s, d, _)) = self.forwarded.remove(&for_bundle_id) {
+                        self.routes.learn(&s, &d, self.now_ms);
+                    }
                 }
             } else {
                 // Route by payload: HTTP req/resp go to their own queues; peer/session
@@ -857,14 +900,30 @@ impl<S: Store> Node<S> {
                 self.store.remove(&delivered);
                 self.relay_order.retain(|x| *x != delivered);
                 self.immune.insert(delivered, self.now_ms);
+                // The ACK for a bundle we forwarded is passing back through us — we're
+                // on a working path between its endpoints, in both directions (§27).
+                if let Some((s, d, _)) = self.forwarded.remove(&delivered) {
+                    self.routes.learn(&s, &d, self.now_ms);
+                }
             }
         } else if self.immune.contains_key(&id) {
             return; // already delivered elsewhere — don't re-store or re-flood it
         }
 
         // Not ours: store for onward relay, then offer to every other live link.
+        let relay_src = bundle.inner.src;
+        let relay_dst = match bundle.inner.dst {
+            Destination::Device(d) => Some(d),
+            _ => None,
+        };
         if self.store.put(bundle, self.now_ms) {
             self.relay_order.push(id);
+            // Remember we're carrying this toward `dst` so a returning ACK teaches the
+            // route (§27). `or_insert` keeps our own-send record if we have one.
+            if let Some(d) = relay_dst {
+                self.forwarded.entry(id).or_insert((relay_src, d, self.now_ms));
+                self.prune_forwarded_if_needed();
+            }
             self.evict_relayed_if_needed();
             let links: Vec<LinkId> =
                 self.links.keys().copied().filter(|l| *l != from_link).collect();
@@ -878,20 +937,39 @@ impl<S: Store> Node<S> {
     /// the lowest-priority, then oldest, relayed bundle — peer traffic decays while
     /// newer/higher-priority messages are kept. Our own messages are never here.
     fn evict_relayed_if_needed(&mut self) {
+        let now = self.now_ms;
         while self.relay_order.len() > self.max_relayed {
-            // Pick the victim: lowest priority, tie-broken by oldest (earliest index).
+            // Pick the victim: lowest utility (lowest priority band, then weakest learned
+            // route toward its destination), tie-broken by oldest — so a bundle toward a
+            // destination we can't route to is flushed before one we can (DESIGN.md §27).
             let victim = self
                 .relay_order
                 .iter()
                 .enumerate()
-                .min_by_key(|(idx, id)| {
-                    let prio = self.store.get(id).map(|b| b.inner.priority).unwrap_or(0);
-                    (prio, *idx) // lowest priority first, then oldest
+                .min_by(|(ia, a), (ib, b)| {
+                    self.bundle_utility(a, now)
+                        .partial_cmp(&self.bundle_utility(b, now))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(ia.cmp(ib))
                 })
                 .map(|(idx, id)| (idx, *id));
             let Some((idx, id)) = victim else { break };
             self.relay_order.remove(idx);
             self.store.remove(&id);
+        }
+    }
+
+    /// Bound the forwarded-route memory (§27): drop the oldest entries past the cap.
+    fn prune_forwarded_if_needed(&mut self) {
+        if self.forwarded.len() <= DEFAULT_MAX_FORWARDED {
+            return;
+        }
+        let drop_n = self.forwarded.len() - DEFAULT_MAX_FORWARDED;
+        let mut by_age: Vec<(BundleId, u64)> =
+            self.forwarded.iter().map(|(k, v)| (*k, v.2)).collect();
+        by_age.sort_by_key(|(_, t)| *t);
+        for (k, _) in by_age.into_iter().take(drop_n) {
+            self.forwarded.remove(&k);
         }
     }
 
@@ -938,10 +1016,31 @@ impl<S: Store> Node<S> {
         }
     }
 
+    /// Utility of a stored bundle for transmit-ordering and eviction (DESIGN.md §27):
+    /// service priority dominates (×100 keeps priority bands separate), and learned
+    /// reachability toward the destination orders bundles *within* a band — so a bundle
+    /// toward a destination we have a route to beats one toward an unknown destination.
+    fn bundle_utility(&self, id: &BundleId, now: u64) -> f64 {
+        let Some(b) = self.store.get(id) else { return 0.0 };
+        let route = match b.inner.dst {
+            Destination::Device(d) => self.routes.utility(&d, now),
+            _ => 0.0,
+        };
+        b.inner.priority as f64 * 100.0 + route
+    }
+
     /// Offer stored bundles to one link, applying binary spray-and-wait.
     fn offer_bundles_to_link(&mut self, link: LinkId) {
-        // Snapshot ids first so we can mutate the store while iterating.
-        let ids = self.store.have().ids;
+        let me_short = short_addr(&self.identity.address());
+        let now = self.now_ms;
+        // Snapshot ids, ordered by utility so the most-likely-to-deliver bundles go
+        // first during a short contact (DESIGN.md §27).
+        let mut ids = self.store.have().ids;
+        ids.sort_by(|a, b| {
+            self.bundle_utility(b, now)
+                .partial_cmp(&self.bundle_utility(a, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for id in ids {
             let Some(LinkState::Up(est)) = self.links.get(&link) else {
                 return;
@@ -973,6 +1072,7 @@ impl<S: Store> Node<S> {
                 ForwardDecision::Forward if direct => {
                     let mut copy = b.clone();
                     if copy.forwarded() {
+                        copy.add_hop(me_short); // provenance (§27)
                         if !own {
                             self.store.remove(&id); // relayed: release custody on delivery
                         }
@@ -990,6 +1090,7 @@ impl<S: Store> Node<S> {
                     // by the hop limit and reclaimed by the delivery-ACK vaccine.
                     let mut copy = b.clone();
                     if copy.forwarded() {
+                        copy.add_hop(me_short); // provenance (§27)
                         Some(copy)
                     } else {
                         None
@@ -1369,6 +1470,60 @@ mod tests {
         assert!(delivered, "should be delivered across the relay");
         assert!(nodes[1].queue().is_empty(), "relay copy purged by the delivery-ACK vaccine");
         assert!(nodes[0].queue().is_empty(), "source releases its copy on ACK");
+    }
+
+    #[test]
+    fn trace_records_each_relay_hop() {
+        // 0 <-> 1 <-> 2; a message 0 → 2 should arrive carrying the short address of
+        // each node that forwarded it (DESIGN.md §27).
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 10, 1, 11);
+        net.connect(&mut nodes, 1, 12, 2, 13);
+        let s0 = short_addr(&nodes[0].address());
+        let s1 = short_addr(&nodes[1].address());
+
+        let b = msg(&nodes[0], &nodes[2], b"trace me");
+        nodes[0].submit(b);
+        net.pump(&mut nodes);
+
+        let inbox = nodes[2].take_inbox();
+        assert_eq!(inbox.len(), 1);
+        let trace = inbox[0].trace();
+        assert!(trace.contains(&s0), "source's hop recorded");
+        assert!(trace.contains(&s1), "relay's hop recorded");
+        assert_eq!(trace.len(), 2, "exactly the two forwarders, in order");
+    }
+
+    #[test]
+    fn relay_and_source_learn_route_from_returning_ack() {
+        // 0 <-> 1 <-> 2. After 0 → 2 is delivered and the ACK floods back, the relay (1)
+        // has learned it sits on the 0↔2 route — in both directions — and the source (0)
+        // has learned it can reach 2 (DESIGN.md §27).
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 10, 1, 11);
+        net.connect(&mut nodes, 1, 12, 2, 13);
+        let a0 = nodes[0].address();
+        let a2 = nodes[2].address();
+
+        assert!(!nodes[1].knows_route(&a2), "relay starts with no learned route");
+        nodes[0]
+            .send_message(a2, "text/plain".into(), b"learn me".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert!(nodes[1].knows_route(&a0), "relay learned the route toward the source");
+        assert!(nodes[1].knows_route(&a2), "relay learned the route toward the destination");
+        assert!(nodes[0].knows_route(&a2), "source learned it can reach the destination");
     }
 
     #[test]

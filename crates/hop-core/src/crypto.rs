@@ -24,6 +24,19 @@ pub type PubKeyBytes = [u8; 32];
 /// 32-byte X25519 public key, used as a sealing target.
 pub type XPubKeyBytes = [u8; 32];
 
+/// A compact 8-byte form of an address, used in the on-wire hop trace (DESIGN.md
+/// §27): each forwarder appends its `short_addr` so the path is recorded cheaply.
+/// 8 bytes keeps a full-hop-limit trace small while collisions stay negligible for
+/// route correlation (a node recognizes its *own* short form unambiguously).
+pub type ShortAddr = [u8; 8];
+
+/// The 8-byte short form of an address (the leading bytes of the public key).
+pub fn short_addr(addr: &PubKeyBytes) -> ShortAddr {
+    let mut s = [0u8; 8];
+    s.copy_from_slice(&addr[..8]);
+    s
+}
+
 /// A node's secret identity — a single Ed25519 keypair. The address *is* the public
 /// key; the X25519 keys used for sealing are **derived** from it (Montgomery), so an
 /// address alone is enough to both verify signatures from and seal messages to a
