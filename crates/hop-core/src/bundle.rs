@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{self, Identity, PubKeyBytes, Sealed, XPubKeyBytes};
+use crate::crypto::{self, Identity, PubKeyBytes, Sealed, ShortAddr, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::{AppId, FABRIC_APP};
 
@@ -149,6 +149,10 @@ pub struct Envelope {
     /// Hops travelled from the source so far — incremented on each forward. Lets
     /// the destination see the path length A→B. Not signed (advisory).
     pub hops: u8,
+    /// Provenance: the `short_addr` of each node that forwarded this bundle, in
+    /// order (DESIGN.md §27). Not signed — it's mutable forwarding metadata. Lets the
+    /// destination see the path and nodes learn routes from ACK/trace correlation.
+    pub trace: Vec<ShortAddr>,
 }
 
 /// Delivery options for a new bundle. Use `..Default::default()` for the rest.
@@ -227,6 +231,7 @@ impl Bundle {
             custody: opts.flags.custody_requested.then_some(src),
             copies: opts.copies.max(1),
             hops: 0,
+            trace: Vec::new(),
         };
 
         Ok(Bundle { inner, env, sig })
@@ -277,6 +282,20 @@ impl Bundle {
     pub fn forwarded(&mut self) -> bool {
         self.env.hops = self.env.hops.saturating_add(1);
         self.decrement_hop()
+    }
+
+    /// Append a forwarder's short address to the provenance trace (DESIGN.md §27).
+    /// Capped so a long-lived bundle can't grow an unbounded header.
+    pub fn add_hop(&mut self, who: ShortAddr) {
+        const MAX_TRACE: usize = 16;
+        if self.env.trace.len() < MAX_TRACE {
+            self.env.trace.push(who);
+        }
+    }
+
+    /// The provenance trace: short addresses of the nodes that forwarded this bundle.
+    pub fn trace(&self) -> &[ShortAddr] {
+        &self.env.trace
     }
 
     /// Decrement the hop limit for forwarding. Returns false if undeliverable.

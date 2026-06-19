@@ -86,6 +86,9 @@ fn main() {
     let addr = identity.address();
     let store = build_store(&firestore, &db, &addr);
     let mut node = Node::with_store(identity, store);
+    // Cloud node: a much larger learned-route table than a phone (DESIGN.md §27) so the
+    // backbone becomes the long-memory route learner.
+    node.set_route_capacity(200_000);
     println!(
         "hop-relayd: address {} {}{}{} backbone peer(s)",
         bs58_addr(&addr),

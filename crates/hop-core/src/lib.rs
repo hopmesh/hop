@@ -14,6 +14,7 @@ pub mod error;
 pub mod link;
 pub mod node;
 pub mod relay;
+pub mod route;
 pub mod routing;
 pub mod session;
 pub mod store;
@@ -49,7 +50,10 @@ pub mod prelude {
         Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload, StreamId, StreamKind,
     };
     pub use crate::stream::{StreamBuffer, StreamReassembler};
-    pub use crate::crypto::{seal, verify, Identity, PubKeyBytes, Sealed, XPubKeyBytes};
+    pub use crate::crypto::{
+        seal, short_addr, verify, Identity, PubKeyBytes, Sealed, ShortAddr, XPubKeyBytes,
+    };
+    pub use crate::route::RouteTable;
     pub use crate::discover::{Advert, AdvertBody, AdvertId, AdvertKind, Directory};
     pub use crate::error::{Error, Result};
     pub use crate::link::{
