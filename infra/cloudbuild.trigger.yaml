@@ -22,3 +22,5 @@ options:
   # Cloud Build logs bucket).
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s
+
+# autodeploy e2e test marker
