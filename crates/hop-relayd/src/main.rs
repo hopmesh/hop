@@ -91,8 +91,10 @@ fn main() {
     let store = build_store(&firestore, &db, &addr);
     let mut node = Node::with_store(identity, store);
     // Cloud node: a much larger learned-route table than a phone (DESIGN.md §27) so the
-    // backbone becomes the long-memory route learner.
+    // backbone becomes the long-memory route learner, and stamp the Hop-relay app id so
+    // a relay hop shows as "Hop Relay" in traces.
     node.set_route_capacity(200_000);
+    node.set_app(hop_core::relay_app_id());
     println!(
         "hop-relayd: address {} {}{}{} backbone peer(s)",
         bs58_addr(&addr),
