@@ -1268,3 +1268,79 @@ reliability-weighted relay, §21 `RegionRouter`. To build: a **trace** field on 
 bundle header; ACK/trace correlation → a per-node **route table** with decay;
 utility-ranked transmit/evict ordering; tier-aware table sizing; and **per-region relay
 identities** (replacing the single shared Cloud Run seed).
+
+## 28. Demand-summoned cloud nodes — the backbone exists only while devices hold it up
+
+Cloud nodes are **scale-to-zero**: a region node exists only while at least one end-user
+device holds a connection to it. No device in a region ⇒ that region's node winks out and
+costs nothing. This **refines the "always-on" language of §19/§21**: the backbone is not a
+permanently-running fleet — it is an **emergent, demand-driven mesh** that lights up under
+traffic and goes dark when idle. *Only end-user devices bring cloud nodes online.*
+
+- **A device summons its nearest region node** (the entrance, §21) and that node holds the
+  device's relayed bundles in its **region-local durable store** (the per-region partition,
+  §27 — `relays/{node}/bundles`). Compute is ephemeral; the **mailbox is persistent**: when
+  the region node scales to zero and later wakes for the next device, it reloads its
+  partition and resumes. The durable store is what makes ephemeral compute safe.
+
+- **The mesh forms dynamically as regions light up.** If device A is up in `us-central1`
+  and device B brings up a `europe-west` (UK) node, the two region nodes discover each other
+  over the backbone (membership/gossip, §21) and relay between them — `us-central1` pushes
+  B-bound bundles to the UK node. Add more active regions, the mesh grows; as regions empty,
+  they drop out. The backbone's shape at any instant is just "which regions have a device
+  attached right now."
+
+- **Prioritize and flush (§27).** While online, each region node ranks what it holds by
+  learned utility and, under cache pressure, **flushes low-utility / unknown-destination
+  bundles first**. A node relays what it can, evicts what it must; what survives is what's
+  most likely to reach its destination through it.
+
+### Honest open question — non-overlapping online windows
+
+Two region nodes that are **never online at the same time** can't relay directly: if A
+(us-central1) holds a bundle for B and A scales to zero before B's UK node ever wakes, a
+*live* push never happens. The robust fix is **destination-keyed handoff**: when a node
+learns the destination's home region (presence / `RegionRouter`, §21), it writes the sealed
+bundle into **that region's durable partition**, so the exit node finds it whenever it next
+wakes — no simultaneity required, because Firestore is reachable regardless of which compute
+is currently up. So:
+
+- **Live relay** (both region nodes up) is the fast path.
+- **Cross-partition handoff** (write to the destination region's mailbox) is the
+  delay-tolerant backstop for non-overlapping windows.
+
+Unknown/stale destination region ⇒ fall back to holding locally and/or fanning to active
+regions (§21 broadcast fallback). This handoff is the next piece to design; everything
+above is the lifecycle it has to fit.
+
+### Backbone addressing — region-specific domains, separate from the relay identity
+
+Three different "addresses" are in play and must not be conflated:
+
+- The **relay identity** is its pubkey (§23) — used for Noise link auth and as the
+  store/table key (§27). It is **not** a network locator; you can't dial a pubkey.
+- The **client entrance** is the single anycast name `relay.hopme.sh` (§21) — it routes a
+  *device* to the *nearest* region. A region node **can't** use it to reach a *specific*
+  peer region: anycast would just send it back to the nearest entrance (possibly itself).
+- So node-to-node peering needs **per-region network locators** — a **unique region-specific
+  domain per node**, e.g. `us-central1.relay.hopme.sh`, `eu-west1.relay.hopme.sh`, each
+  resolving to that region's own endpoint. Any region node can then dial any other directly.
+
+This is the **internal discovery plane**, separate from the client-facing anycast name and
+from the pubkey identity. On top of the per-region domains sits the membership layer (§21),
+which matters more here because nodes are demand-summoned (§28) so the live set is always
+changing:
+
+- A **registry + liveness** signal: which region domains exist, and which are *currently
+  online*. Seed list + SWIM-style gossip keeps it self-healing as regions wink in and out.
+- A newly-summoned region node **registers** (its region domain + "I'm up") and learns the
+  current set; peers measure RTT and form the lowest-latency backbone graph (§21).
+- The registry is also the **rendezvous** that makes the cross-partition handoff (§28) work
+  across non-overlapping windows: a node looks up the destination region's domain/partition
+  instead of needing a live link.
+
+**Infra implication:** alongside `relay.hopme.sh` (anycast), publish per-region records
+`<region>.relay.hopme.sh` in the same Cloud DNS zone, each pointing at that region's own
+endpoint (not the anycast IP); and the per-region endpoints must accept node-to-node links
+even when client ingress is locked to the LB. Run a small registry/liveness store (a
+well-known Firestore doc or a tiny membership service) that nodes read/write on startup.
