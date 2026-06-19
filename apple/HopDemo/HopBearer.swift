@@ -166,8 +166,9 @@ final class HopBearer: NSObject, ObservableObject {
         myName = name
         myAddress = HopBearer.base58(node.address())
         idNote = "\(IdentityStore.note) → \(myAddress.prefix(8))"
-        // Identify our app so a trace hop shows which app carried it (DESIGN.md §27).
-        node.setApp(name: Bundle.main.bundleIdentifier ?? "net.waldrip.hop.demo")
+        // Note: we deliberately do NOT stamp our app id into trace hops — that would
+        // advertise which app this device runs to every relay on the path (§27 privacy).
+        // Device hops show as "device"; only infra relays self-identify as "Hop Relay".
         // Presence is an app-level service (DESIGN.md §23): we publish our display
         // name on the "presence" topic and subscribe so discovered records are
         // retained. The protocol knows nothing about names — contacts live here.
