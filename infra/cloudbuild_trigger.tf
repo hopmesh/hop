@@ -1,11 +1,10 @@
-# GitOps image build: a GitHub-connected Cloud Build trigger (no GitHub Actions).
-# Inert until `build_connection_name` names the 2nd-gen connection created via the
-# Cloud Build GitHub App (console, one-time). On push to main it builds + pushes
-# hop-relayd:$SHORT_SHA; Spacelift deploys that same tag (derived from the run's
-# commit), so build and deploy converge on the commit with no bridge secret.
+# GitOps image build (no GitHub Actions): a GitHub-triggered Cloud Build. Reuses the
+# Cloud Build GitHub App already installed on hopmesh/hop (1st-gen `github` form, so
+# no 2nd-gen connection needed). On push to main it builds + pushes
+# hop-relayd:$SHORT_SHA + :latest; Spacelift deploys the $SHORT_SHA tag (derived from
+# the run's commit), so build and deploy converge on the commit — no bridge secret.
 locals {
-  build_enabled = var.build_connection_name != ""
-  ar_image      = "us-central1-docker.pkg.dev/${var.project_id}/hop/hop-relayd"
+  ar_image = "us-central1-docker.pkg.dev/${var.project_id}/hop/hop-relayd"
 
   # Deploy tag: an explicit relay_image wins; else the commit Spacelift is running
   # (build + deploy converge on it); else :latest as a fallback.
@@ -16,21 +15,13 @@ locals {
   )
 }
 
-resource "google_cloudbuildv2_repository" "hop" {
-  count             = local.build_enabled ? 1 : 0
-  name              = "hop"
-  location          = "us-central1"
-  parent_connection = "projects/${var.project_id}/locations/us-central1/connections/${var.build_connection_name}"
-  remote_uri        = "https://github.com/hopmesh/hop.git"
-}
-
 resource "google_cloudbuild_trigger" "image" {
-  count    = local.build_enabled ? 1 : 0
   name     = "hop-relayd-image"
-  location = "us-central1"
+  location = "global"
 
-  repository_event_config {
-    repository = google_cloudbuildv2_repository.hop[0].id
+  github {
+    owner = "hopmesh"
+    name  = "hop"
     push {
       branch = "^main$"
     }

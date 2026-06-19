@@ -3,7 +3,6 @@
 # the wasm site is excluded from the workspace, so it has its own target dir
 site/target/
 **/*.rs.bk
-Cargo.lock
 # relay identity seeds + on-disk stores (never commit secrets/state)
 *.db
 *.db.key

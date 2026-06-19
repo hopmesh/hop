@@ -11,12 +11,6 @@ variable "excluded_regions" {
   default = ["me-central2"]
 }
 
-variable "build_connection_name" {
-  description = "Cloud Build 2nd-gen GitHub connection name (from the Cloud Build GitHub App). Empty disables the GitOps build trigger."
-  type        = string
-  default     = ""
-}
-
 variable "spacelift_commit_sha" {
   description = "Injected by Spacelift (TF_VAR_spacelift_commit_sha). Used to derive the deploy image tag so it matches the commit Cloud Build built."
   type        = string
