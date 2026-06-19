@@ -18,4 +18,7 @@ images:
   - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest
 options:
   machineType: E2_HIGHCPU_8
+  # Required when the build runs as a user-specified service account (no default
+  # Cloud Build logs bucket).
+  logging: CLOUD_LOGGING_ONLY
 timeout: 1800s

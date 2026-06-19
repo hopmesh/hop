@@ -23,6 +23,26 @@ resource "google_cloudbuildv2_repository" "hop" {
   remote_uri        = "https://github.com/hopmesh/hop.git"
 }
 
+# Dedicated build identity. This (fresh) project has no legacy Cloud Build SA, so a
+# trigger MUST specify its own service account; needs to push to Artifact Registry
+# and write build logs.
+resource "google_service_account" "build" {
+  count        = local.build_enabled ? 1 : 0
+  account_id   = "hop-build"
+  display_name = "Hop Cloud Build"
+}
+
+resource "google_project_iam_member" "build" {
+  for_each = local.build_enabled ? toset([
+    "roles/cloudbuild.builds.builder",
+    "roles/artifactregistry.writer",
+    "roles/logging.logWriter",
+  ]) : []
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.build[0].email}"
+}
+
 resource "google_cloudbuild_trigger" "image" {
   count    = local.build_enabled ? 1 : 0
   name     = "hop-relayd-image"
@@ -35,8 +55,9 @@ resource "google_cloudbuild_trigger" "image" {
     }
   }
 
-  filename       = "infra/cloudbuild.trigger.yaml"
-  included_files = ["crates/**", "infra/cloudbuild.trigger.yaml"]
+  filename        = "infra/cloudbuild.trigger.yaml"
+  included_files  = ["crates/**", "infra/cloudbuild.trigger.yaml"]
+  service_account = google_service_account.build[0].id
 
-  depends_on = [google_project_service.this]
+  depends_on = [google_project_service.this, google_project_iam_member.build]
 }
