@@ -1323,8 +1323,37 @@ is currently up. So:
   delay-tolerant backstop for non-overlapping windows.
 
 Unknown/stale destination region ⇒ fall back to holding locally and/or fanning to active
-regions (§21 broadcast fallback). This handoff is the next piece to design; everything
-above is the lifecycle it has to fit.
+regions (§21 broadcast fallback).
+
+### Cross-partition handoff — implementation
+
+The handoff is the offline-destination mailbox, built on two passive Firestore structures
+(no node ever wakes another):
+
+- **Presence index** (`presence/{device}` = `{region, heartbeatAt}`). When a device checks
+  in to its nearest region (§ device check-in), that region records the device's presence.
+  This is the device→region map every node reads to find a destination's home region.
+  Presence is recorded only for **device** peers — a peer relay (identified because its node
+  id appears in the liveness registry) is skipped.
+- **Cross-partition write** (`put_bundle_to`). A relay holding a `Device`-addressed bundle it
+  can't deliver locally looks up the destination's region via presence; if that region differs
+  from its own and is fresh, it derives that region's **node address** from the shared seed +
+  region name (the same derivation every node computes, §27) and writes the sealed bundle into
+  **that region's partition** (`relays/{destNode}/bundles`). It never opens the bundle — it
+  hands the ciphertext across verbatim. A node only writes a given bundle to a given region
+  once (a per-worker dedup set), retrying only on write failure.
+
+The destination region ingests the handoff two ways:
+
+- **Cold start** — when a client next wakes that region, `FirestoreStore::open` rehydrates the
+  whole partition into the node, and the bundle is offered to the checking-in device.
+- **Warm reload** — an already-running node re-reads its own partition on a slow timer and
+  ingests bundles that landed after it started (deduped by bundle id, then by the store's own
+  `seen` set), so it doesn't have to scale to zero first.
+
+All blocking Firestore I/O runs on dedicated worker threads; the single-owner driver loop only
+hands the worker a periodic snapshot of `(connected peers, undeliverable device bundles)` and
+applies `Ingest` events it sends back.
 
 ### Backbone addressing — region-specific domains, separate from the relay identity
 
