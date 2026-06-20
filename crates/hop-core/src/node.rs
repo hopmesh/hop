@@ -798,6 +798,18 @@ impl<S: Store> Node<S> {
         self.on_bundle(LinkId::MAX, bundle);
     }
 
+    /// Drop everything we're currently holding: our own undelivered messages (stop
+    /// retransmitting them) and any bundles we're relaying for peers. Clears the relay
+    /// queue shown in the UI. Delivery-status history (`tx`) is kept so already-sent
+    /// messages still render their last state; sessions/directory are untouched.
+    pub fn clear_queue(&mut self) {
+        for id in self.store.have().ids {
+            self.store.remove(&id);
+        }
+        self.relay_order.clear();
+        self.pending.clear();
+    }
+
     /// Addresses of currently-connected, authenticated peers (handshake complete).
     pub fn peers(&self) -> Vec<PubKeyBytes> {
         self.links

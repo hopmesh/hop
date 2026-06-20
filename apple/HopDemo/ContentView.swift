@@ -141,7 +141,7 @@ struct ContentView: View {
                     }
                 }
 
-                Section("Relay queue (\(bearer.queue.count))") {
+                Section {
                     if bearer.queue.isEmpty { Text("empty").foregroundStyle(.secondary) }
                     ForEach(bearer.queue) { row in
                         HStack {
@@ -150,6 +150,17 @@ struct ContentView: View {
                             Text(row.own ? "yours → \(row.to)" : "relay → \(row.to)")
                             Spacer()
                             Text("p\(row.priority) · \(row.hops)h").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Relay queue (\(bearer.queue.count))")
+                        Spacer()
+                        if !bearer.queue.isEmpty {
+                            Button(role: .destructive) { bearer.clearQueue() } label: {
+                                Label("Clear", systemImage: "trash").labelStyle(.titleAndIcon)
+                            }
+                            .textCase(nil)
                         }
                     }
                 }
