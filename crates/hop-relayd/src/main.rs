@@ -213,6 +213,10 @@ fn main() {
     // backbone becomes the long-memory route learner, and stamp the Hop-relay app id so
     // a relay hop shows as "Hop Relay" in traces.
     node.set_route_capacity(200_000);
+    // Cloud relays run a large custody window — with forward-before-evict this is a
+    // sliding window of concurrent in-flight bundles (incl. chunked media), not a cap on
+    // transfer size, so many simultaneous large transfers can pass through (DESIGN.md §6).
+    node.set_max_relayed(8192);
     node.set_app(hop_core::relay_app_id());
     // Answer hop.identify as a relay, named by its public domain (the host of --advertise,
     // e.g. us-central1.relay.hopme.sh) so trace resolution shows relays by domain (§29).

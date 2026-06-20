@@ -71,8 +71,10 @@ resource "google_cloud_run_v2_service" "relay" {
 
       resources {
         limits = {
-          cpu    = "1"
-          memory = "512Mi"
+          cpu = "1"
+          # Headroom for the larger custody window (set_max_relayed=8192): at the 48 KiB
+          # media-chunk size that's ~400 MiB worst case; 2 GiB leaves room for the rest.
+          memory = "2Gi"
         }
         cpu_idle = true # bill CPU only while requests/connections are in flight
       }
