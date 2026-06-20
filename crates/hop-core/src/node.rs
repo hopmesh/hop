@@ -769,14 +769,19 @@ impl<S: Store> Node<S> {
         let mut out = Vec::new();
         for id in self.store.have().ids {
             let Some(b) = self.store.get(&id) else { continue };
-            if let Destination::Device(d) = b.inner.dst {
-                if connected.contains(&d) {
-                    continue; // deliverable directly on this node — no handoff needed
-                }
-                if let Ok(bytes) = b.to_bytes() {
-                    let expires = b.inner.created_at.saturating_add(b.inner.lifetime_ms as u64);
-                    out.push((id, d, bytes, expires));
-                }
+            // Both user messages (Device) and delivery-ACKs (AckTo) are addressed to a
+            // specific node, so both ride the handoff — otherwise an ACK back to an
+            // offline cross-region sender would never arrive (no live peering, §28).
+            let dst = match b.inner.dst {
+                Destination::Device(d) | Destination::AckTo(d, _) => d,
+                Destination::InternetEgress => continue,
+            };
+            if connected.contains(&dst) {
+                continue; // deliverable directly on this node — no handoff needed
+            }
+            if let Ok(bytes) = b.to_bytes() {
+                let expires = b.inner.created_at.saturating_add(b.inner.lifetime_ms as u64);
+                out.push((id, dst, bytes, expires));
             }
         }
         out

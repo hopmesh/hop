@@ -1351,9 +1351,35 @@ The destination region ingests the handoff two ways:
   ingests bundles that landed after it started (deduped by bundle id, then by the store's own
   `seen` set), so it doesn't have to scale to zero first.
 
+Both user messages (`Device`) and delivery-ACKs (`AckTo`) ride the handoff, so a confirmation
+travels back to an offline cross-region sender the same way.
+
 All blocking Firestore I/O runs on dedicated worker threads; the single-owner driver loop only
-hands the worker a periodic snapshot of `(connected peers, undeliverable device bundles)` and
-applies `Ingest` events it sends back.
+hands the worker a periodic snapshot of `(connected peers, undeliverable bundles)` and applies
+`Ingest` events it sends back.
+
+### The handoff is the *only* cross-region path — nodes never dial nodes
+
+An earlier design had online nodes **dial** each other (pull-on-wake) for a live relay fast
+path. That broke the core invariant in practice: a dial goes through the LB and **cold-starts
+(wakes) the target region**, even when the registry only listed it because its heartbeat hadn't
+yet aged out (TTL 90s > scale-to-zero). With a full mesh, one client anywhere kept dialing peers
+that re-heartbeated and re-dialed — the whole fleet stayed lit, and each single instance
+saturated with long-lived peer WS connections and started returning **429** to real device
+check-ins.
+
+So live peer dialing is **removed**. The backbone now only:
+
+- **heartbeats** its liveness into the registry (so tooling/handoff can see which regions are
+  warm), and
+- **reads** the registry passively (to tell a peer relay from a device when recording presence).
+
+Cross-region delivery is **exclusively** the cross-partition handoff above — a Firestore write
+into the destination region's partition, which wakes no one. The destination drains it when its
+*own* clients next wake it (cold rehydrate or warm reload). This makes "a node is woken only by
+its own clients; nodes never wake nodes" actually hold, and lets idle regions truly scale to
+zero. The trade-off: cross-region delivery is delay-tolerant (it waits for the destination's
+next check-in) rather than real-time — which is the whole point of a DTN backbone.
 
 ### Backbone addressing — region-specific domains, separate from the relay identity
 
@@ -1364,11 +1390,10 @@ Three different "addresses" are in play and must not be conflated:
 - The **client entrance** is the single anycast name `relay.hopme.sh` (§21) — it routes a
   *device* to the *nearest* region. A region node **can't** use it to reach a *specific*
   peer region: anycast would just send it back to the nearest entrance (possibly itself).
-- So node-to-node peering needs a **per-region network locator** — each node's connectable
-  endpoint, either a region-specific record like `us-central1.relay.hopme.sh` or just the
-  endpoint stored in its registry entry. But a locator is used **only to connect to a peer
-  already known-online** (next paragraph) — *never* to dial a sleeping node, which would wake
-  it and defeat scale-to-zero.
+- Each region still gets a **per-region domain** `us-central1.relay.hopme.sh` (one wildcard
+  cert, host-routed to that region; §ops). It is the region's stable public name — what
+  `hop.identify` returns for that relay (§29) and a region-specific entrance — but, per the
+  decision above, it is **not** used for node-to-node dialing.
 
 This is the **internal discovery plane**, separate from the client-facing anycast name and
 the pubkey identity. The hard rule: **a node is woken only by its own clients; nodes never
@@ -1377,11 +1402,11 @@ wake nodes.** So discovery must be *passive* — reading it cannot cause a wake:
 - **Passive liveness registry.** Online nodes heartbeat into a shared store (a well-known
   Firestore doc/collection) with a short TTL; on scale-to-zero the heartbeat stops and the
   entry expires. **Reading the registry is just a Firestore read — it wakes no one**, and a
-  sleeping node simply isn't listed.
-- **Pull-on-wake.** When a client summons a node, the node heartbeats itself in, reads the
-  registry, and **connects out to the currently-online peers** to exchange relayed traffic —
-  pushing what it carries for them, pulling what they carry for it. The newly-woken node is
-  always the initiator.
+  sleeping node simply isn't listed. The registry is now used only for *observability* and to
+  tell a peer relay from a device — not for dialing.
+- **No peer dialing.** A node never connects out to a peer (that would wake it). Cross-region
+  traffic is moved by the **cross-partition handoff** (a Firestore write into the destination
+  region's partition), so a region's only inbound connections are from its own clients.
 - **Never connect to an absent node.** Connections only ever target registry-live endpoints,
   so a node→node connection can't be what wakes a region. Clients are the sole wake source.
 - **Offline destination ⇒ no connection at all.** For the cross-partition handoff (§28) you
@@ -1390,14 +1415,13 @@ wake nodes.** So discovery must be *passive* — reading it cannot cause a wake:
   client next wakes that region.
 
 **Infra implication:** the core need is a **passive liveness registry** (a well-known
-Firestore doc nodes heartbeat into) plus the per-region durable partitions (§27). Each online
-node needs a connectable endpoint for live peers — a per-region record `<region>.relay.hopme.sh`
-or the endpoint in its registry entry — and those endpoints must accept node-to-node links
-from online peers even when client ingress is locked to the LB. Crucially, **never
-probe/health-check region endpoints** to infer liveness (that would wake them) — liveness
+Firestore doc nodes heartbeat into) plus the per-region durable partitions (§27). The per-region
+domains `<region>.relay.hopme.sh` exist as stable public names (the relay's `hop.identify` name,
+§29) and region-specific entrances — not as peer-dial targets (no node-to-node links). Crucially,
+**never probe/health-check region endpoints** to infer liveness (that would wake them) — liveness
 comes only from registry heartbeats.
 
-### Device check-in (mailbox pull) vs. relay-to-relay pull
+### Device check-in (mailbox pull)
 
 Sending a message wakes a relay (the client's connection summons the region's node,
 §28). **Receiving** needs the reverse: a device must **check in** to discover messages
@@ -1405,10 +1429,11 @@ waiting for it. The delivery itself is already automatic — on link-up a relay 
 its stored bundles and anything addressed to the device is delivered (then ACK-purged) —
 so check-in is purely **"connect so the offer happens."**
 
-The asymmetry with the backbone:
+How a region gets a bundle in the first place:
 
-- **A relay** pulls from **every other online relay** (it reads the liveness registry and
-  dials all live peers), because it must aggregate the whole mesh.
+- **The backbone** never pulls between relays (no node-to-node links; see above). A bundle
+  for another region is placed there by the **cross-partition handoff** — a Firestore write
+  into that region's partition — which the region drains on its own next check-in.
 - **A device** only ever connects to the **single anycast name `relay.hopme.sh`** — which
   resolves to its **closest topographical node** and **wakes that node** as it connects.
   The device never talks to the backbone directly; it trusts the backbone to have moved
