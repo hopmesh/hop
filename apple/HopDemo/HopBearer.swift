@@ -158,6 +158,13 @@ final class HopBearer: NSObject, ObservableObject {
     private var relayURL: String?              // last relay endpoint (for auto check-in)
     private var relayReconnectScheduled = false
     private let relayLinkId: UInt64 = 20_000    // distinct id range from BLE/Wi-Fi
+    // Direct WS links to hops:// endpoints (DESIGN.md §30). The client dials the endpoint at
+    // wss://<domain> — it does NOT transit our relay (domain traffic stays off the fleet) — so
+    // the endpoint authenticates via Noise as its HNS-published address and becomes a direct
+    // peer we can seal requests to. Keyed by a distinct link-id range.
+    private var endpointWS: [UInt64: URLSessionWebSocketTask] = [:]
+    private var endpointLinkByDomain: [String: UInt64] = [:]
+    private var nextEndpointLinkId: UInt64 = 30_000
     private var l2capPsm: [UUID: CBL2CAPPSM] = [:]    // last PSM read per peripheral
     private var l2capAttempts: [UUID: Int] = [:]      // L2CAP open retry counter
     private var didSetupPeripheral = false            // peripheral published this power cycle
@@ -445,6 +452,46 @@ final class HopBearer: NSObject, ObservableObject {
         }
     }
 
+    /// Open (or reuse) a direct WS link to a hops:// endpoint at `wss://<domain>/` (DESIGN.md
+    /// §30). The endpoint authenticates via Noise as its HNS-published address, becoming a
+    /// direct peer; the sealed hops request then delivers straight to it. Returns the link id.
+    @discardableResult
+    private func dialEndpoint(_ domain: String) -> UInt64 {
+        if let id = endpointLinkByDomain[domain], endpointWS[id] != nil { return id }
+        let id = nextEndpointLinkId; nextEndpointLinkId += 1
+        endpointLinkByDomain[domain] = id
+        guard let url = URL(string: "wss://\(domain)/") else { return id }
+        let session = relaySession ?? URLSession(configuration: .default, delegate: self, delegateQueue: .main)
+        relaySession = session
+        let task = session.webSocketTask(with: url)
+        endpointWS[id] = task
+        task.resume()   // node.connected fires in didOpenWithProtocol (we're the initiator)
+        receiveEndpoint(id)
+        return id
+    }
+
+    private func receiveEndpoint(_ id: UInt64) {
+        endpointWS[id]?.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                if case .data(let d) = message {
+                    DispatchQueue.main.async { self.node.received(link: id, bytes: d); self.pump() }
+                }
+                self.receiveEndpoint(id)
+            case .failure:
+                DispatchQueue.main.async {
+                    self.node.disconnected(link: id); self.endpointWS[id] = nil; self.pump()
+                }
+            }
+        }
+    }
+
+    /// The endpoint link id whose WS task is `task`, if any (used by the URLSession delegate).
+    private func endpointLink(for task: URLSessionTask) -> UInt64? {
+        endpointWS.first(where: { $0.value === task })?.key
+    }
+
     /// Connect to a `hop-relayd` at `host:port` over TCP. Framing matches the daemon
     /// (4-byte big-endian length prefix).
     private func connectRelayTCP(_ hostPort: String) {
@@ -540,6 +587,8 @@ final class HopBearer: NSObject, ObservableObject {
                 try? mcSession?.send(pkt.bytes, toPeers: [peer], with: .reliable) // Wi-Fi link
             } else if pkt.link == relayLinkId {
                 relaySend(pkt.bytes)                       // cloud relay (TCP) link
+            } else if let ws = endpointWS[pkt.link] {
+                ws.send(.data(pkt.bytes)) { _ in }         // direct hops:// endpoint link (§30)
             }
         }
         refresh()
@@ -688,6 +737,10 @@ final class HopBearer: NSObject, ObservableObject {
     /// Issue the sealed hops:// GET to a resolved endpoint and remember the request id so
     /// the response can be matched back (DESIGN.md §30).
     private func fireHops(domain: String, path: String, endpoint: Data) {
+        // Open a direct link to the endpoint (wss://<domain>) so the sealed request has a path
+        // to it — the endpoint doesn't transit our relay (§30). Spray-and-wait holds the
+        // bundle and delivers it the moment the Noise handshake on this link completes.
+        dialEndpoint(domain)
         guard let id = try? node.sendHopsRequest(endpoint: endpoint, host: domain,
                                                  method: "GET", url: path,
                                                  body: Data(), maxResp: 8 * 1024 * 1024) else {
@@ -696,6 +749,7 @@ final class HopBearer: NSObject, ObservableObject {
         }
         hopsReqs[id] = domain
         hopsResults[domain] = "fetching…"
+        pump()
     }
 
     /// Split `hops://<domain>/<path>` (or a bare `<domain>`) into (domain, path). The path
@@ -1229,6 +1283,11 @@ extension HopBearer: CLLocationManagerDelegate {
 extension HopBearer: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol protocol: String?) {
+        if let id = endpointLink(for: webSocketTask) {   // a hops:// endpoint link (§30)
+            node.connected(link: id, initiator: true)    // dialer = Noise initiator
+            pump()
+            return
+        }
         relayStatus = "connected"
         node.connected(link: relayLinkId, initiator: true)   // dialer = Noise initiator
         receiveRelayWS()
@@ -1237,6 +1296,10 @@ extension HopBearer: URLSessionWebSocketDelegate {
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        if let id = endpointLink(for: webSocketTask) {
+            node.disconnected(link: id); endpointWS[id] = nil; pump()
+            return
+        }
         relayStatus = "disconnected"
         node.disconnected(link: relayLinkId)
         relayWS = nil
@@ -1245,6 +1308,10 @@ extension HopBearer: URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let id = endpointLink(for: task) {
+            node.disconnected(link: id); endpointWS[id] = nil; pump()
+            return
+        }
         guard task === relayWS else { return }
         if let error { relayStatus = "failed: \(error.localizedDescription)" }
         node.disconnected(link: relayLinkId)
