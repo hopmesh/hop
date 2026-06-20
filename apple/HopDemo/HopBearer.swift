@@ -167,6 +167,10 @@ final class HopBearer: NSObject, ObservableObject {
     private var advBeaconNow = false
     private var started = false
     private var appActive = true   // our app foreground state, carried in presence
+    // Real Wi-Fi availability (MC's session object stays non-nil even when the radio is
+    // off in Settings, so we can't infer the radio from it).
+    private let pathMonitor = NWPathMonitor()
+    private var wifiUp = false
 
     /// The app embedding Hop on this device (shown to peers via presence).
     static let appName: String =
@@ -219,6 +223,16 @@ final class HopBearer: NSObject, ObservableObject {
             options: [CBCentralManagerOptionRestoreIdentifierKey: "hop.central"])
 
         startWiFi()
+
+        // Reflect the real Wi-Fi radio in the indicator (MC's session stays non-nil even
+        // when Wi-Fi is switched off, which kept it showing green).
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.wifiUp = path.status == .satisfied && path.usesInterfaceType(.wifi)
+                self?.refresh()
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
 
         // iBeacon region monitoring → background/killed wake (§22).
         location.delegate = self
@@ -645,20 +659,21 @@ final class HopBearer: NSObject, ObservableObject {
         // Which contacts we've learned a live route to from deliveries (§27).
         routed = Set(contacts.keys.filter { node.knowsRoute(address: $0) })
 
-        // Per-transport status — both bearers run at once (DESIGN.md §26). Count links
-        // from the node's *authenticated* peer links (the source of truth), bucketed by
-        // link-id range, so the totals match what's actually linked (not half-open dials).
+        // Per-transport status — both bearers run at once (DESIGN.md §26). The headline
+        // count is the *actual transport-level connections* (what the user means by
+        // "linked"), not just handshake-complete Hop links — otherwise a peer that's
+        // connected but mid-Noise-handshake shows as zero. The expandable list below
+        // shows the identified peers (and notes any still establishing).
         let bleActive = peripheralMgr?.state == .poweredOn || centralMgr?.state == .poweredOn
-        let wifiActive = mcSession != nil && !wifiBlocked
+        // MC keeps its session object even when Wi-Fi is off; trust the real radio (or
+        // the presence of live MC links) instead.
+        let wifiActive = !wifiBlocked && (wifiUp || !mcPeerByLink.isEmpty)
         let relayActive = (relayConn != nil || relayWS != nil) && relayStatus == "connected"
         let pls = node.peerLinks()
         transports = [
-            TransportStatus(id: "Bluetooth", active: bleActive,
-                            links: pls.filter { $0.link < 10_000 }.count),
-            TransportStatus(id: "Wi-Fi", active: wifiActive,
-                            links: pls.filter { $0.link >= 10_000 && $0.link < 20_000 }.count),
-            TransportStatus(id: "Relay", active: relayActive,
-                            links: pls.filter { $0.link >= 20_000 }.count),
+            TransportStatus(id: "Bluetooth", active: bleActive, links: links.count),
+            TransportStatus(id: "Wi-Fi", active: wifiActive, links: mcPeerByLink.count),
+            TransportStatus(id: "Relay", active: relayActive, links: relayActive ? 1 : 0),
         ]
 
         // Map each direct neighbour to the transport(s) carrying it (the route).
