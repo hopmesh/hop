@@ -89,6 +89,13 @@ pub const DEFAULT_RETX_INTERVAL_MS: u64 = 30_000;
 /// are never counted or evicted; relayed ones decay under this bound.
 pub const DEFAULT_MAX_RELAYED: usize = 128;
 
+/// After we've relayed a not-ours bundle to ≥1 peer, keep it at least this long before
+/// it becomes eviction-eligible — so in a populated area it can be handed off again, and
+/// so a flood of big transfers can't immediately evict freshly-relayed traffic (DESIGN.md
+/// §6). Under cap pressure, eviction *prefers* such already-relayed, past-grace bundles
+/// and only drops a not-yet-relayed bundle when nothing else can be freed.
+pub const EVICT_GRACE_MS: u64 = 180_000; // 3 minutes
+
 /// Default cap on the learned-route table (DESIGN.md §27). Mobile-tier; cloud nodes
 /// raise it via [`Node::set_route_capacity`] to become the long-memory backbone.
 pub const DEFAULT_MAX_ROUTES: usize = 2_048;
@@ -248,6 +255,9 @@ pub struct Node<S: Store = MemoryStore> {
     /// Insertion order of relayed (not-ours) bundles, for capacity eviction.
     relay_order: Vec<BundleId>,
     max_relayed: usize,
+    /// First time we relayed each not-ours bundle to a peer (custody policy, §6): eviction
+    /// prefers bundles we've already handed off and held past [`EVICT_GRACE_MS`].
+    relay_fwd: HashMap<BundleId, u64>,
     /// Our current signed prekey (published so peers can open sessions to us).
     prekey: SignedPreKey,
     /// Retained prekey secrets by public, so late session inits still resolve.
@@ -330,6 +340,7 @@ impl<S: Store> Node<S> {
             tx: HashMap::new(),
             relay_order: Vec::new(),
             max_relayed: DEFAULT_MAX_RELAYED,
+            relay_fwd: HashMap::new(),
             prekey,
             spk_secrets,
             sessions: HashMap::new(),
@@ -397,6 +408,14 @@ impl<S: Store> Node<S> {
     /// set this high to become the long-memory backbone; mobile nodes keep the default.
     pub fn set_route_capacity(&mut self, cap: usize) {
         self.routes.set_capacity(cap);
+    }
+
+    /// Set the relayed-bundle custody window (`max_relayed`). With the forward-before-evict
+    /// policy this is a *sliding window* of concurrent custody, not a transfer-size limit,
+    /// so a cloud relay can run a large window for many in-flight chunked transfers.
+    pub fn set_max_relayed(&mut self, cap: usize) {
+        self.max_relayed = cap.max(1);
+        self.evict_relayed_if_needed();
     }
 
     /// Set the app id this node **publicly stamps** into each trace hop (DESIGN.md §27).
@@ -904,6 +923,7 @@ impl<S: Store> Node<S> {
             self.store.remove(&id);
         }
         self.relay_order.clear();
+        self.relay_fwd.clear();
         self.pending.clear();
     }
 
@@ -959,6 +979,7 @@ impl<S: Store> Node<S> {
         self.store.prune(now_ms);
         // Drop relay-queue entries whose bundles have been delivered or expired.
         self.relay_order.retain(|id| self.store.contains(id));
+        self.relay_fwd.retain(|id, _| self.store.contains(id));
         // Expire vaccine immunity after a bundle could no longer be live (1h).
         self.immune.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
         // Forget forwarded-route memory for bundles that can no longer ACK back (§27).
@@ -1285,30 +1306,48 @@ impl<S: Store> Node<S> {
         }
     }
 
-    /// Keep relayed (not-ours) bundles within `max_relayed`. Under pressure, evict
-    /// the lowest-priority, then oldest, relayed bundle — peer traffic decays while
-    /// newer/higher-priority messages are kept. Our own messages are never here.
+    /// Keep relayed (not-ours) bundles within `max_relayed`. Custody policy (DESIGN.md §6):
+    /// **never drop a bundle we haven't relayed at least once if we can avoid it** — so a
+    /// flood of big transfers can't evict legitimate, not-yet-forwarded messages, and so
+    /// the cap acts as a *sliding window* (chunks flow through: relayed, then evicted after
+    /// a grace window) rather than a hard limit on transfer size. Eviction therefore
+    /// prefers already-relayed, past-grace bundles, and only falls back to dropping a
+    /// not-yet-relayed (or in-grace) bundle when nothing else can be freed (to bound
+    /// memory). Within a tier the victim is the lowest-utility (priority, then route,
+    /// then oldest). Our own messages are never here.
     fn evict_relayed_if_needed(&mut self) {
         let now = self.now_ms;
         while self.relay_order.len() > self.max_relayed {
-            // Pick the victim: lowest utility (lowest priority band, then weakest learned
-            // route toward its destination), tie-broken by oldest — so a bundle toward a
-            // destination we can't route to is flushed before one we can (DESIGN.md §27).
-            let victim = self
-                .relay_order
-                .iter()
-                .enumerate()
-                .min_by(|(ia, a), (ib, b)| {
-                    self.bundle_utility(a, now)
-                        .partial_cmp(&self.bundle_utility(b, now))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(ia.cmp(ib))
-                })
-                .map(|(idx, id)| (idx, *id));
+            let victim =
+                self.pick_evict_victim(now, true).or_else(|| self.pick_evict_victim(now, false));
             let Some((idx, id)) = victim else { break };
             self.relay_order.remove(idx);
             self.store.remove(&id);
+            self.relay_fwd.remove(&id);
         }
+    }
+
+    /// Choose an eviction victim by lowest utility (priority, route, oldest). When
+    /// `settled_only`, consider only bundles we've already relayed once and held past
+    /// [`EVICT_GRACE_MS`] — the preferred, safe-to-drop set.
+    fn pick_evict_victim(&self, now: u64, settled_only: bool) -> Option<(usize, BundleId)> {
+        self.relay_order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| {
+                !settled_only
+                    || self
+                        .relay_fwd
+                        .get(*id)
+                        .is_some_and(|t| now.saturating_sub(*t) >= EVICT_GRACE_MS)
+            })
+            .min_by(|(ia, a), (ib, b)| {
+                self.bundle_utility(a, now)
+                    .partial_cmp(&self.bundle_utility(b, now))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(ia.cmp(ib))
+            })
+            .map(|(idx, id)| (idx, *id))
     }
 
     /// Bound the forwarded-route memory (§27): drop the oldest entries past the cap.
@@ -1455,6 +1494,11 @@ impl<S: Store> Node<S> {
                 self.send_record(link, &Wire::Bundle(copy));
                 if let Some(LinkState::Up(est)) = self.links.get_mut(&link) {
                     est.sent_bundles.insert(id);
+                }
+                // Record the first handoff of a not-ours bundle so eviction can prefer
+                // already-relayed, settled bundles over ones we haven't relayed yet (§6).
+                if !own {
+                    self.relay_fwd.entry(id).or_insert(now);
                 }
                 // "Sent N peers" counts relay handoffs only — not direct delivery to
                 // the destination itself (that shows as Delivered once the ACK is back).
@@ -1723,6 +1767,48 @@ mod tests {
             }
             _ => panic!("wrong payload"),
         }
+    }
+
+    #[test]
+    fn eviction_prefers_already_relayed_over_not_yet_relayed() {
+        // Custody policy (§6): under cap pressure, a bundle we've already relayed (and held
+        // past the grace window) is evicted before one we haven't relayed yet — so a flood
+        // of big transfers can't push out legitimate, not-yet-forwarded messages.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].set_time(0);
+        nodes[0].set_max_relayed(1);
+
+        let third = Identity::generate().address();
+        let mk = |b: &[u8]| {
+            Bundle::create(
+                &Identity::generate(),
+                Destination::Device(third),
+                &third,
+                &Payload::PeerMessage { content_type: "t".into(), body: b.to_vec() },
+                BundleOpts::default(),
+            )
+            .unwrap()
+        };
+
+        // A: relayed onward to node1, so it's "already relayed".
+        let a = mk(b"a");
+        let a_id = a.id();
+        nodes[0].ingest(a);
+        net.pump(&mut nodes);
+        // Lose the peer so the next bundle has nowhere to go (stays not-yet-relayed), and
+        // age A past the grace window.
+        nodes[0].handle(BearerEvent::Disconnected(1));
+        nodes[0].set_time(EVICT_GRACE_MS);
+
+        // B: cannot be forwarded (no peer) → not-yet-relayed. Ingesting it trips the cap.
+        let b = mk(b"b");
+        let b_id = b.id();
+        nodes[0].ingest(b);
+
+        assert!(!nodes[0].store.contains(&a_id), "already-relayed, past-grace bundle is evicted");
+        assert!(nodes[0].store.contains(&b_id), "not-yet-relayed bundle is kept");
     }
 
     #[test]
