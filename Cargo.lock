@@ -848,6 +848,8 @@ dependencies = [
  "hop-core",
  "hop-store-firestore",
  "hop-store-sqlite",
+ "reqwest",
+ "serde_json",
  "tungstenite",
 ]
 

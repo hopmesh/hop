@@ -129,6 +129,14 @@ pub const DEFAULT_MAX_FORWARDED: usize = 4_096;
 /// can always open a session (DESIGN.md §25).
 pub const PREKEY_TTL_MS: u32 = 604_800_000;
 
+/// Floor on a cached HNS record's lifetime (DESIGN.md §30): even a 0-TTL DNS answer is held
+/// briefly so a burst of lookups for the same domain coalesces.
+pub const MIN_HNS_TTL_MS: u64 = 1_000;
+
+/// Ceiling on a cached HNS record's lifetime (1 day) — a stale endpoint address can't linger
+/// forever even if DNS hands back an absurd TTL.
+pub const MAX_HNS_TTL_MS: u64 = 86_400_000;
+
 /// Delivery tracking for a message we originated (for status: Sending/Sent N/Delivered).
 #[derive(Default)]
 struct TxInfo {
@@ -182,11 +190,42 @@ pub struct ReadMessage {
 pub struct HttpReqItem {
     pub from: PubKeyBytes,
     pub id: BundleId,
+    /// The domain this request targets. A `hops://` endpoint MUST validate this against the
+    /// single domain it is authorized to serve and refuse anything else (no open proxy).
+    pub host: String,
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub max_resp: u32,
+}
+
+/// A cached HNS record (DESIGN.md §30). `address` is `None` for a negative (no such hops
+/// endpoint) entry. Both honor the DNS TTL via `expires_at_ms`.
+#[derive(Clone, Copy)]
+pub struct HnsEntry {
+    pub address: Option<PubKeyBytes>,
+    pub expires_at_ms: u64,
+}
+
+/// A finished HNS resolution surfaced to the app. `address` is `None` when the domain has no
+/// `_hopaddress` record (resolution error — e.g. `hops://thisdoesnotexist.com`).
+pub struct HnsResult {
+    pub domain: String,
+    pub address: Option<PubKeyBytes>,
+}
+
+/// The outcome of starting an HNS resolution (DESIGN.md §30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HnsLookup {
+    /// Served from a fresh cache entry. `Some(addr)` resolved; `None` is a cached negative.
+    Cached(Option<PubKeyBytes>),
+    /// A lookup was kicked off (real DNS via the host, or a mesh query); the result will
+    /// arrive via [`Node::take_hns_results`].
+    Pending,
+    /// This node can't resolve on its own (no internet) and no resolver was given. Call
+    /// [`Node::resolve_hns_via`] with a known internet-connected peer (e.g. a relay).
+    NeedsResolver,
 }
 
 /// An HTTP response a gateway sealed back to the requester.
@@ -326,6 +365,22 @@ pub struct Node<S: Store = MemoryStore> {
     /// Last time we emitted a delivery-ACK for a given delivered message id — throttles
     /// re-ACKs so duplicate floods can't cause an ACK storm.
     last_ack: HashMap<BundleId, u64>,
+    /// Whether this node can reach the public internet (and thus public DNS). Any node with
+    /// this set resolves HNS itself — no relay round-trip required (DESIGN.md §30). Off by
+    /// default; a relay or an internet-connected phone turns it on.
+    internet: bool,
+    /// HNS resolution cache: `domain → (address?, expires_at_ms)`. `None` is a negative
+    /// (NXDOMAIN-like) cache entry. Honors the DNS TTL and propagates like a DNS resolver.
+    hns_cache: HashMap<String, HnsEntry>,
+    /// Domains we need the host to look up in real DNS (drained by [`Node::take_dns_lookups`]),
+    /// with the in-flight set so we ask for each only once.
+    dns_lookups: Vec<String>,
+    dns_inflight: HashSet<String>,
+    /// Remote HNS queries awaiting our DNS answer: `domain → [(asker, query_id)]`. When the
+    /// host feeds the answer back we seal an [`Payload::HnsAnswer`] to each asker.
+    dns_waiters: HashMap<String, Vec<(PubKeyBytes, BundleId)>>,
+    /// Completed HNS resolutions for the app to consume ([`Node::take_hns_results`]).
+    hns_results: Vec<HnsResult>,
 }
 
 impl Node<MemoryStore> {
@@ -386,6 +441,12 @@ impl<S: Store> Node<S> {
             stream_seq: 0,
             ack_replicate: HashMap::new(),
             last_ack: HashMap::new(),
+            internet: false,
+            hns_cache: HashMap::new(),
+            dns_lookups: Vec::new(),
+            dns_inflight: HashSet::new(),
+            dns_waiters: HashMap::new(),
+            hns_results: Vec::new(),
         };
         node.rehydrate();
         node
@@ -636,6 +697,7 @@ impl<S: Store> Node<S> {
     pub fn send_hops_request(
         &mut self,
         endpoint: PubKeyBytes,
+        host: String,
         method: String,
         url: String,
         headers: Vec<(String, String)>,
@@ -646,7 +708,7 @@ impl<S: Store> Node<S> {
             &self.identity,
             Destination::Device(endpoint),
             &endpoint,
-            &Payload::HttpRequest { method, url, headers, body, max_resp_bytes: max_resp },
+            &Payload::HttpRequest { host, method, url, headers, body, max_resp_bytes: max_resp },
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         )?;
         let id = bundle.id();
@@ -656,29 +718,129 @@ impl<S: Store> Node<S> {
         Ok(id)
     }
 
-    /// Send an internet-egress HTTP request (Use Case A, §9): sealed to `gateway`'s
-    /// address and addressed `InternetEgress` so any gateway able to open it fulfills.
-    /// The reply arrives as an [`HttpRespItem`] via [`Node::take_http_responses`].
-    pub fn send_http_request(
-        &mut self,
-        gateway: PubKeyBytes,
-        method: String,
-        url: String,
-        headers: Vec<(String, String)>,
-        body: Vec<u8>,
-        max_resp: u32,
-    ) -> Result<BundleId> {
+    // ---- HNS: the Hop Name System (DESIGN.md §30) ----------------------------------------
+    //
+    // HNS maps a domain to its hops endpoint address via a `_hopaddress.<domain>` TXT record,
+    // resolved against ordinary public DNS. Resolution is built into core and performed by
+    // ANY internet-connected peer — no relay round-trip is required (a relay may answer too,
+    // but need not). Records carry the DNS TTL and are cached + propagated like DNS.
+
+    /// Declare whether this node can reach the public internet (and thus public DNS). When
+    /// on, the node resolves HNS itself (surfacing real-DNS lookups via
+    /// [`Node::take_dns_lookups`]) and can answer other peers' [`Payload::HnsQuery`].
+    pub fn set_internet(&mut self, on: bool) {
+        self.internet = on;
+    }
+
+    /// Whether this node is internet-connected (see [`Node::set_internet`]).
+    pub fn is_internet(&self) -> bool {
+        self.internet
+    }
+
+    /// A fresh cached HNS record for `domain`, if any: `Some(Some(addr))` resolved,
+    /// `Some(None)` a cached negative, `None` not cached (or expired).
+    pub fn cached_hns(&self, domain: &str) -> Option<Option<PubKeyBytes>> {
+        let key = normalize_domain(domain);
+        self.hns_cache
+            .get(&key)
+            .filter(|e| e.expires_at_ms > self.now_ms)
+            .map(|e| e.address)
+    }
+
+    /// Resolve `domain` to its hops endpoint address (DESIGN.md §30). Serves from cache when
+    /// fresh; otherwise, if this node is internet-connected, kicks off a real-DNS lookup
+    /// (drained via [`Node::take_dns_lookups`]); otherwise returns [`HnsLookup::NeedsResolver`]
+    /// so the caller can ask a known internet peer via [`Node::resolve_hns_via`]. Results
+    /// arrive on [`Node::take_hns_results`].
+    pub fn resolve_hns(&mut self, domain: &str) -> HnsLookup {
+        let key = normalize_domain(domain);
+        if let Some(addr) = self.cached_hns(&key) {
+            return HnsLookup::Cached(addr);
+        }
+        if self.internet {
+            self.queue_dns_lookup(&key);
+            HnsLookup::Pending
+        } else {
+            HnsLookup::NeedsResolver
+        }
+    }
+
+    /// Resolve `domain` by asking a specific internet-connected peer (e.g. a relay) over the
+    /// mesh: seals an [`Payload::HnsQuery`] to `resolver`. The answer is cached and surfaced
+    /// via [`Node::take_hns_results`]. Use when this node has no internet of its own.
+    pub fn resolve_hns_via(&mut self, resolver: PubKeyBytes, domain: &str) -> Result<BundleId> {
+        let key = normalize_domain(domain);
         let bundle = Bundle::create(
             &self.identity,
-            Destination::InternetEgress,
-            &gateway,
-            &Payload::HttpRequest { method, url, headers, body, max_resp_bytes: max_resp },
+            Destination::Device(resolver),
+            &resolver,
+            &Payload::HnsQuery { domain: key },
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         )?;
         let id = bundle.id();
         self.tx.entry(id).or_default();
+        self.forwarded.insert(id, (self.identity.address(), resolver, self.now_ms));
         self.deliver(bundle);
         Ok(id)
+    }
+
+    /// Domains the host must look up in real DNS (the `_hopaddress.<domain>` TXT record),
+    /// clearing the queue. The host feeds each result back via [`Node::provide_dns_answer`].
+    pub fn take_dns_lookups(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.dns_lookups)
+    }
+
+    /// Feed back a real-DNS result for `domain` (DESIGN.md §30). `address` is `None` when the
+    /// `_hopaddress` TXT record is absent (a resolution error — cached negatively so we don't
+    /// hammer DNS). `ttl_secs` is the DNS TTL. Caches the record, surfaces an [`HnsResult`],
+    /// and answers any peers whose [`Payload::HnsQuery`] was waiting on this domain.
+    pub fn provide_dns_answer(&mut self, domain: &str, address: Option<PubKeyBytes>, ttl_secs: u32) {
+        let key = normalize_domain(domain);
+        self.dns_inflight.remove(&key);
+        let ttl_ms = (ttl_secs as u64).clamp(MIN_HNS_TTL_MS / 1000, MAX_HNS_TTL_MS / 1000) * 1000;
+        self.hns_cache.insert(
+            key.clone(),
+            HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
+        );
+        self.hns_results.push(HnsResult { domain: key.clone(), address });
+        // Answer any mesh queries that were parked waiting for this domain.
+        if let Some(waiters) = self.dns_waiters.remove(&key) {
+            for (asker, query_id) in waiters {
+                self.seal_hns_answer(asker, &key, address, ttl_secs, query_id);
+            }
+        }
+    }
+
+    /// Finished HNS resolutions (positive or negative), clearing the queue.
+    pub fn take_hns_results(&mut self) -> Vec<HnsResult> {
+        std::mem::take(&mut self.hns_results)
+    }
+
+    /// Queue a real-DNS lookup for the host, deduped while one is in flight.
+    fn queue_dns_lookup(&mut self, key: &str) {
+        if self.dns_inflight.insert(key.to_string()) {
+            self.dns_lookups.push(key.to_string());
+        }
+    }
+
+    /// Seal an [`Payload::HnsAnswer`] back to a querier.
+    fn seal_hns_answer(
+        &mut self,
+        to: PubKeyBytes,
+        domain: &str,
+        address: Option<PubKeyBytes>,
+        ttl_secs: u32,
+        for_query: BundleId,
+    ) {
+        if let Ok(bundle) = Bundle::create(
+            &self.identity,
+            Destination::Device(to),
+            &to,
+            &Payload::HnsAnswer { domain: domain.to_string(), address, ttl_secs, for_query },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        ) {
+            self.deliver(bundle);
+        }
     }
 
     /// Seal an HTTP response back to a requester (gateway side).
@@ -1276,10 +1438,11 @@ impl<S: Store> Node<S> {
                     }
                     // A hops:// request sealed to us (we're a hop-endpoint, §30): surface
                     // it for the operator's translator to execute against its backend.
-                    Ok(Payload::HttpRequest { method, url, headers, body, max_resp_bytes }) => {
+                    Ok(Payload::HttpRequest { host, method, url, headers, body, max_resp_bytes }) => {
                         self.http_requests.push(HttpReqItem {
                             from: bundle.inner.src,
                             id,
+                            host,
                             method,
                             url,
                             headers,
@@ -1322,6 +1485,42 @@ impl<S: Store> Node<S> {
                             });
                         }
                     }
+                    // An HNS query sealed to us (a peer is asking us — an internet-connected
+                    // node — to resolve a domain, §30). Answer from cache if fresh; else, if
+                    // we have internet, park the asker and kick off a real-DNS lookup; if we
+                    // can't help (no internet, not cached), stay silent and let it time out.
+                    Ok(Payload::HnsQuery { domain }) => {
+                        let key = normalize_domain(&domain);
+                        let from = bundle.inner.src;
+                        if let Some(addr) = self.cached_hns(&key) {
+                            let ttl = self
+                                .hns_cache
+                                .get(&key)
+                                .map(|e| ((e.expires_at_ms.saturating_sub(self.now_ms)) / 1000) as u32)
+                                .unwrap_or(0);
+                            self.seal_hns_answer(from, &key, addr, ttl, id);
+                        } else if self.internet {
+                            self.dns_waiters.entry(key.clone()).or_default().push((from, id));
+                            self.queue_dns_lookup(&key);
+                        }
+                    }
+                    // An HNS answer to a query we sent (§30): cache it (honoring the DNS TTL),
+                    // surface the result, and purge the query bundle so it stops being held.
+                    Ok(Payload::HnsAnswer { domain, address, ttl_secs, for_query }) => {
+                        let key = normalize_domain(&domain);
+                        let ttl_ms =
+                            (ttl_secs as u64).clamp(MIN_HNS_TTL_MS / 1000, MAX_HNS_TTL_MS / 1000) * 1000;
+                        self.hns_cache.insert(
+                            key.clone(),
+                            HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
+                        );
+                        self.hns_results.push(HnsResult { domain: key, address });
+                        self.pending.remove(&for_query);
+                        self.store.remove(&for_query);
+                        self.relay_order.retain(|x| *x != for_query);
+                        self.immune.insert(for_query, self.now_ms);
+                        self.tx.remove(&for_query);
+                    }
                     // A transport carrier chunk: reassemble (§20); once complete, reconstruct
                     // the original bundle and process it as if it had arrived whole.
                     // (Application streams use StreamData and are delivered progressively.)
@@ -1351,12 +1550,13 @@ impl<S: Store> Node<S> {
         // surface it for fulfillment. Still relayed below so other gateways can serve
         // it too; gateway-side dedup prevents double fulfillment (§9).
         if matches!(bundle.inner.dst, Destination::InternetEgress) && !self.store.seen(&id) {
-            if let Ok(Payload::HttpRequest { method, url, headers, body, max_resp_bytes }) =
+            if let Ok(Payload::HttpRequest { host, method, url, headers, body, max_resp_bytes }) =
                 bundle.open(&self.identity)
             {
                 self.http_requests.push(HttpReqItem {
                     from: bundle.inner.src,
                     id,
+                    host,
                     method,
                     url,
                     headers,
@@ -1690,6 +1890,12 @@ impl<S: Store> Node<S> {
     }
 }
 
+/// Canonicalize a domain for HNS cache keys/lookups: lowercase, no trailing dot, no
+/// surrounding whitespace. (DNS is case-insensitive; the root dot is implicit.)
+fn normalize_domain(domain: &str) -> String {
+    domain.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
 /// Is this bundle destined for `addr` (direct delivery)?
 fn is_for(bundle: &Bundle, addr: &PubKeyBytes) -> bool {
     use crate::bundle::Destination::*;
@@ -1900,13 +2106,22 @@ mod tests {
         let endpoint = nodes[1].address();
 
         let req = nodes[0]
-            .send_hops_request(endpoint, "GET".into(), "/hello".into(), vec![], vec![], 64_000)
+            .send_hops_request(
+                endpoint,
+                "example.hopme.sh".into(),
+                "GET".into(),
+                "/hello".into(),
+                vec![],
+                vec![],
+                64_000,
+            )
             .unwrap();
         net.pump(&mut nodes);
 
         // Endpoint side: the request is surfaced for the operator's translator.
         let reqs = nodes[1].take_http_requests();
         assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].host, "example.hopme.sh");
         assert_eq!(reqs[0].method, "GET");
         assert_eq!(reqs[0].url, "/hello");
         let (from, rid) = (reqs[0].from, reqs[0].id);
@@ -1920,6 +2135,77 @@ mod tests {
         assert_eq!(resps[0].status, 200);
         assert_eq!(resps[0].body, b"world");
         assert!(!nodes[0].store.contains(&req), "request purged once answered");
+    }
+
+    #[test]
+    fn internet_peer_resolves_hns_locally_no_relay() {
+        // An internet-connected node resolves HNS itself: resolve_hns surfaces a real-DNS
+        // lookup for the host to perform; provide_dns_answer caches it and yields the result.
+        // No bundle, no relay round-trip (DESIGN.md §30).
+        let mut node = Node::new(Identity::generate());
+        node.set_internet(true);
+
+        assert_eq!(node.resolve_hns("Example.HopMe.sh."), HnsLookup::Pending);
+        let lookups = node.take_dns_lookups();
+        assert_eq!(lookups, vec!["example.hopme.sh".to_string()], "normalized + queued for host");
+
+        let endpoint = Identity::generate().address();
+        node.provide_dns_answer("example.hopme.sh", Some(endpoint), 300);
+
+        let results = node.take_hns_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].domain, "example.hopme.sh");
+        assert_eq!(results[0].address, Some(endpoint));
+
+        // Now cached: a second resolve serves from cache with no new lookup.
+        assert_eq!(node.resolve_hns("example.hopme.sh"), HnsLookup::Cached(Some(endpoint)));
+        assert!(node.take_dns_lookups().is_empty());
+    }
+
+    #[test]
+    fn hns_missing_record_is_a_negative_result() {
+        // hops://thisdoesnotexist.com — no _hopaddress TXT. The host reports None; we cache
+        // the negative and surface a resolution error (address None), so we don't hammer DNS.
+        let mut node = Node::new(Identity::generate());
+        node.set_internet(true);
+        assert_eq!(node.resolve_hns("thisdoesnotexist.com"), HnsLookup::Pending);
+        node.provide_dns_answer("thisdoesnotexist.com", None, 60);
+
+        let results = node.take_hns_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, None, "no endpoint → resolution error");
+        assert_eq!(node.resolve_hns("thisdoesnotexist.com"), HnsLookup::Cached(None));
+    }
+
+    #[test]
+    fn offline_node_resolves_hns_via_internet_peer() {
+        // A node with no internet asks an internet-connected peer (e.g. a relay) over the
+        // mesh. The peer does the DNS lookup and seals the answer back; the asker caches it.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[1].set_internet(true); // node 1 is the resolver
+        let resolver = nodes[1].address();
+
+        // Offline node can't resolve on its own.
+        assert_eq!(nodes[0].resolve_hns("example.hopme.sh"), HnsLookup::NeedsResolver);
+
+        // ...so it asks the resolver over the mesh.
+        nodes[0].resolve_hns_via(resolver, "example.hopme.sh").unwrap();
+        net.pump(&mut nodes);
+
+        // Resolver surfaced the lookup to its host; host answers.
+        let endpoint = Identity::generate().address();
+        let lookups = nodes[1].take_dns_lookups();
+        assert_eq!(lookups, vec!["example.hopme.sh".to_string()]);
+        nodes[1].provide_dns_answer("example.hopme.sh", Some(endpoint), 300);
+        net.pump(&mut nodes);
+
+        // Asker received and cached the record.
+        let results = nodes[0].take_hns_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, Some(endpoint));
+        assert_eq!(nodes[0].cached_hns("example.hopme.sh"), Some(Some(endpoint)));
     }
 
     #[test]
@@ -2160,45 +2446,6 @@ mod tests {
             Payload::PeerMessage { body, .. } => assert_eq!(body, b"relay me"),
             _ => panic!("wrong payload"),
         }
-    }
-
-    #[test]
-    fn internet_egress_request_response_via_relay() {
-        // phone(0) <-> relay(1) <-> gateway(2). Phone has no direct link to the gateway.
-        // Phone sends an egress HTTP request; it floods to the gateway, which fulfills
-        // (HTTP faked inline) and seals the response back to the phone.
-        let mut nodes = [
-            Node::new(Identity::generate()), // phone
-            Node::new(Identity::generate()), // relay
-            Node::new(Identity::generate()), // gateway
-        ];
-        let mut net = Wire2::new();
-        net.connect(&mut nodes, 0, 10, 1, 11);
-        net.connect(&mut nodes, 1, 12, 2, 13);
-        let gw = nodes[2].address();
-        let phone = nodes[0].address();
-
-        nodes[0]
-            .send_http_request(gw, "GET".into(), "https://example.com".into(), vec![], vec![], 64_000)
-            .unwrap();
-        net.pump(&mut nodes);
-
-        // Gateway surfaced the request (even though it arrived via the relay).
-        let reqs = nodes[2].take_http_requests();
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].url, "https://example.com");
-        assert_eq!(reqs[0].from, phone);
-
-        // Gateway "fetches" and seals the response back to the phone.
-        nodes[2]
-            .send_http_response(reqs[0].from, reqs[0].id, 200, vec![], b"hello from the web".to_vec())
-            .unwrap();
-        net.pump(&mut nodes);
-
-        let resps = nodes[0].take_http_responses();
-        assert_eq!(resps.len(), 1);
-        assert_eq!(resps[0].status, 200);
-        assert_eq!(resps[0].body, b"hello from the web");
     }
 
     #[test]

@@ -316,6 +316,7 @@ mod tests {
             Destination::InternetEgress,
             &gw.address(),
             &Payload::HttpRequest {
+                host: String::new(),
                 method: "GET".into(),
                 url: "https://example.com".into(),
                 headers: vec![],
