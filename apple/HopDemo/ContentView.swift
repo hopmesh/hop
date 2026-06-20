@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -265,6 +266,7 @@ struct ChatView: View {
     @ObservedObject var bearer: HopBearer
     let peer: HopBearer.Peer
     @State private var draft = ""
+    @State private var photoItem: PhotosPickerItem? = nil
 
     private var thread: [HopBearer.Message] {
         // Key by address (stable across renames); fall back to name for older messages.
@@ -298,10 +300,17 @@ struct ChatView: View {
                         VStack(alignment: m.incoming ? .leading : .trailing, spacing: 2) {
                             HStack {
                                 if !m.incoming { Spacer() }
-                                Text(m.text)
-                                    .padding(8)
-                                    .background(m.incoming ? Color.gray.opacity(0.2) : Color.accentColor.opacity(0.25))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                if let data = m.imageData, let img = UIImage(data: data) {
+                                    Image(uiImage: img)
+                                        .resizable().scaledToFit()
+                                        .frame(maxWidth: 220, maxHeight: 220)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                } else {
+                                    Text(m.text)
+                                        .padding(8)
+                                        .background(m.incoming ? Color.gray.opacity(0.2) : Color.accentColor.opacity(0.25))
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
                                 if m.incoming { Spacer() }
                             }
                             Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
@@ -319,6 +328,9 @@ struct ChatView: View {
                 .padding()
             }
             HStack {
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: "photo").imageScale(.large)
+                }
                 TextField("Message \(peer.name)", text: $draft).textFieldStyle(.roundedBorder)
                 Button("Send") {
                     let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -328,6 +340,16 @@ struct ChatView: View {
                 }
             }
             .padding()
+            .onChange(of: photoItem) { item in
+                guard let item else { return }
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let jpeg = UIImage(data: data)?.jpegData(compressionQuality: 0.7) {
+                        bearer.sendImage(jpeg, to: peer)
+                    }
+                    photoItem = nil
+                }
+            }
         }
         .onAppear { bearer.openChat(peer.name); bearer.identify(peer.address) }
         .onDisappear { bearer.closeChat() }

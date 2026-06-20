@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bundle::{Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload};
+use crate::bundle::{
+    Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload, StreamId,
+};
+use crate::stream::StreamReassembler;
 use crate::crypto::{self, short_addr, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
@@ -209,6 +212,21 @@ pub struct ServiceRespItem {
     pub body: Vec<u8>,
 }
 
+/// In-progress reassembly of an inbound **carrier stream** (DESIGN.md §20): a bundle too
+/// large to send in one shot is split into ordered chunks; when they're all here the
+/// original bundle bytes are reconstructed and re-processed as if received whole. Keyed
+/// by `(sender, stream_id)`.
+struct IncomingStream {
+    reassembler: StreamReassembler,
+    data: Vec<u8>,
+    at: u64, // last activity, for pruning abandoned transfers
+}
+
+/// A bundle whose encoding exceeds this is carried as a stream of `STREAM_CHUNK`-sized
+/// chunks (transparently); anything smaller goes as one bundle. Sized to fit comfortably
+/// in one link record on every bearer (well under the 1 MiB frame cap).
+const STREAM_CHUNK: usize = 48 * 1024;
+
 /// A running Hop node, generic over its [`Store`] backend (in-memory by default;
 /// `hop-store-sqlite` for persistence).
 pub struct Node<S: Store = MemoryStore> {
@@ -266,6 +284,10 @@ pub struct Node<S: Store = MemoryStore> {
     service_requests: Vec<ServiceReqItem>,
     /// Service responses sealed back to us as a caller.
     service_responses: Vec<ServiceRespItem>,
+    /// In-progress inbound carrier-stream reassembly, keyed by `(sender, stream_id)` (§20).
+    incoming_streams: HashMap<(PubKeyBytes, StreamId), IncomingStream>,
+    /// Monotonic counter for our outbound stream ids.
+    stream_seq: u64,
 }
 
 impl Node<MemoryStore> {
@@ -321,6 +343,8 @@ impl<S: Store> Node<S> {
             kind: NodeKind::Device,
             service_requests: Vec::new(),
             service_responses: Vec::new(),
+            incoming_streams: HashMap::new(),
+            stream_seq: 0,
         };
         node.rehydrate();
         node
@@ -453,7 +477,7 @@ impl<S: Store> Node<S> {
         self.tx.entry(id).or_default(); // track delivery status for the UI
         // Remember our own send so the returning delivery-ACK teaches us the route (§27).
         self.forwarded.insert(id, (self.identity.address(), dst, self.now_ms));
-        self.submit(bundle);
+        self.deliver(bundle);
         Ok(id)
     }
 
@@ -574,7 +598,7 @@ impl<S: Store> Node<S> {
         )?;
         let id = bundle.id();
         self.tx.entry(id).or_default();
-        self.submit(bundle);
+        self.deliver(bundle);
         Ok(id)
     }
 
@@ -595,7 +619,7 @@ impl<S: Store> Node<S> {
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         )?;
         let id = bundle.id();
-        self.submit(bundle);
+        self.deliver(bundle);
         Ok(id)
     }
 
@@ -653,7 +677,7 @@ impl<S: Store> Node<S> {
         self.tx.entry(id).or_default();
         // Remember the send so a returning delivery learns the route (§27).
         self.forwarded.insert(id, (self.identity.address(), dst, self.now_ms));
-        self.submit(bundle);
+        self.deliver(bundle);
         Ok(id)
     }
 
@@ -674,7 +698,7 @@ impl<S: Store> Node<S> {
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         )?;
         let id = bundle.id();
-        self.submit(bundle);
+        self.deliver(bundle);
         Ok(id)
     }
 
@@ -687,6 +711,79 @@ impl<S: Store> Node<S> {
     /// Drain service responses sealed back to us (as a caller).
     pub fn take_service_responses(&mut self) -> Vec<ServiceRespItem> {
         std::mem::take(&mut self.service_responses)
+    }
+
+    // --- transparent carrier streaming (DESIGN.md §20) ------------------------
+
+    /// A fresh stream id, unique per this node.
+    fn next_stream_id(&mut self) -> StreamId {
+        self.stream_seq += 1;
+        let mut id = [0u8; 16];
+        id[..8].copy_from_slice(&self.stream_seq.to_be_bytes());
+        id[8..].copy_from_slice(&short_addr(&self.identity.address()));
+        id
+    }
+
+    /// Submit a locally-originated bundle, **auto-streaming if it's too large**. Small
+    /// bundles go as one (the common case). A large one (e.g. an image message, or a big
+    /// service request/response) is split into ordered `StreamData` chunks carrying its
+    /// raw bytes, each sealed to the destination and ACK-tracked for reliable transport;
+    /// the receiver reassembles and processes the original bundle as if it arrived whole —
+    /// so id, request_ack, delivery status and dedup are all preserved. Transparent: every
+    /// `send_*` path funnels through here, so any payload type streams when needed.
+    fn deliver(&mut self, bundle: Bundle) {
+        let encoded = match bundle.to_bytes() {
+            Ok(b) if b.len() > STREAM_CHUNK => b,
+            _ => return self.submit(bundle), // small, or un-encodable: send as one
+        };
+        let dst = match bundle.inner.dst {
+            Destination::Device(d) | Destination::AckTo(d, _) => d,
+            Destination::InternetEgress => return self.submit(bundle), // no single dst to stream to
+        };
+        let sid = self.next_stream_id();
+        let opts = BundleOpts {
+            created_at: self.now_ms,
+            flags: BundleFlags { request_ack: true, ..Default::default() },
+            ..Default::default()
+        };
+        let chunks: Vec<&[u8]> = encoded.chunks(STREAM_CHUNK).collect();
+        let n = chunks.len();
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            if let Ok(carrier) = Bundle::create(
+                &self.identity,
+                Destination::Device(dst),
+                &dst,
+                &Payload::StreamData { stream_id: sid, seq: i as u64, bytes: chunk.to_vec(), fin: i + 1 == n },
+                opts,
+            ) {
+                self.submit(carrier); // request_ack → tracked in `pending` for retransmit
+            }
+        }
+    }
+
+    /// Feed one inbound carrier chunk into reassembly; returns the reconstructed original
+    /// bundle bytes once the stream is complete (else `None`).
+    fn accept_stream_chunk(
+        &mut self,
+        from: PubKeyBytes,
+        stream_id: StreamId,
+        seq: u64,
+        bytes: Vec<u8>,
+        fin: bool,
+    ) -> Option<Vec<u8>> {
+        let now = self.now_ms;
+        let entry = self.incoming_streams.entry((from, stream_id)).or_insert_with(|| {
+            IncomingStream { reassembler: StreamReassembler::new(), data: Vec::new(), at: now }
+        });
+        entry.at = now;
+        for chunk in entry.reassembler.accept(seq, bytes, fin) {
+            entry.data.extend_from_slice(&chunk);
+        }
+        if entry.reassembler.is_finished() {
+            self.incoming_streams.remove(&(from, stream_id)).map(|s| s.data)
+        } else {
+            None
+        }
     }
 
     /// Publish (and gossip) a signed service advert so others discover it across the
@@ -866,6 +963,8 @@ impl<S: Store> Node<S> {
         self.immune.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
         // Forget forwarded-route memory for bundles that can no longer ACK back (§27).
         self.forwarded.retain(|_, (_, _, t)| now_ms.saturating_sub(*t) < 3_600_000);
+        // Drop abandoned half-received carrier streams (sender vanished mid-transfer).
+        self.incoming_streams.retain(|_, s| now_ms.saturating_sub(s.at) < 3_600_000);
 
         let mut retransmit = false;
         for id in self.pending.keys().copied().collect::<Vec<_>>() {
@@ -1100,6 +1199,18 @@ impl<S: Store> Node<S> {
                                 method,
                                 args,
                             });
+                        }
+                    }
+                    // A carrier-stream chunk: reassemble (§20); once complete, reconstruct
+                    // the original bundle and process it as if it had arrived whole.
+                    Ok(Payload::StreamData { stream_id, seq, bytes, fin }) => {
+                        let from = bundle.inner.src;
+                        if let Some(inner_bytes) =
+                            self.accept_stream_chunk(from, stream_id, seq, bytes, fin)
+                        {
+                            if let Ok(inner) = Bundle::from_bytes(&inner_bytes) {
+                                self.on_bundle(from_link, inner);
+                            }
                         }
                     }
                     _ => self.inbox.push(bundle.clone()),
@@ -1586,6 +1697,32 @@ mod tests {
         // The response is the return-path delete: the request no longer lingers in our
         // store (service calls carry no ACK-vaccine, so without this it would pin forever).
         assert!(!nodes[0].store.contains(&req_id), "request purged once its response arrives");
+    }
+
+    #[test]
+    fn large_message_auto_streams_and_arrives_whole() {
+        // A big message (e.g. an image body) exceeds one bundle, so it's transparently
+        // carried as a stream of chunks and reassembled — arriving as a normal inbox
+        // message with the right content type and exact bytes (DESIGN.md §20).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect(); // ~200KB → multi-chunk
+        nodes[0]
+            .send_message(nodes[1].address(), "image/jpeg".into(), body.clone(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 1, "reassembled into exactly one message");
+        match inbox[0].open(&nodes[1].identity).unwrap() {
+            Payload::PeerMessage { content_type, body: got } => {
+                assert_eq!(content_type, "image/jpeg");
+                assert_eq!(got, body, "bytes reassembled exactly, in order");
+            }
+            _ => panic!("wrong payload"),
+        }
     }
 
     #[test]
