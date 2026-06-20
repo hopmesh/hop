@@ -40,12 +40,30 @@ struct ContentView: View {
 
                 Section("Transports") {
                     ForEach(bearer.transports) { t in
-                        HStack {
-                            Circle().fill(t.active ? Color.green : Color.red).frame(width: 8, height: 8)
-                            Text(t.id)
-                            Spacer()
-                            Text(t.active ? "\(t.links) linked" : "off")
-                                .font(.caption).foregroundStyle(.secondary)
+                        DisclosureGroup {
+                            let addrs = peersOn(t.id)
+                            if addrs.isEmpty {
+                                Text("no peers").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                ForEach(addrs, id: \.self) { addr in
+                                    HStack {
+                                        Image(systemName: transportIcon(transportTag(t.id)))
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                        Text(bearer.displayName(addr))
+                                        Spacer()
+                                        Text(HopBearer.shortHex(addr))
+                                            .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Circle().fill(t.active ? Color.green : Color.red).frame(width: 8, height: 8)
+                                Text(t.id)
+                                Spacer()
+                                Text(t.active ? "\(t.links) linked" : "off")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -60,6 +78,26 @@ struct ContentView: View {
                         }
                     }
                     LabeledContent("Relay", value: bearer.relayStatus).font(.caption)
+                }
+
+                if !bearer.relays.isEmpty {
+                    Section("Relays (backbone)") {
+                        ForEach(bearer.relays) { r in
+                            HStack {
+                                Image(systemName: "cloud.fill").foregroundStyle(.blue)
+                                VStack(alignment: .leading) {
+                                    Text(r.name)
+                                    Text(HopBearer.shortHex(r.address))
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if bearer.routed.contains(r.address) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .font(.caption2).foregroundStyle(.blue).help("learned route")
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Section("Web via gateway (Use Case A)") {
@@ -162,19 +200,41 @@ struct ContentView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.red).clipShape(Capsule())
                 }
-                Text(route(peer)).font(.caption).foregroundStyle(.secondary)
+                // A symbol per live link (one per transport carrying this peer); the hop
+                // count for a peer reached only through the mesh.
+                let tags = bearer.linkTransports[peer.address] ?? []
+                if !tags.isEmpty {
+                    HStack(spacing: 3) {
+                        ForEach(tags.sorted(), id: \.self) { tag in
+                            Image(systemName: transportIcon(tag)).font(.caption2)
+                                .foregroundStyle(.secondary).help(tag)
+                        }
+                    }
+                } else {
+                    Text("\(peer.hops) hops").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
 
-    /// How we currently reach this peer: the transport(s) for a direct neighbour,
-    /// or the hop distance through the mesh.
-    private func route(_ peer: HopBearer.Peer) -> String {
-        if peer.hops <= 1 {
-            let t = bearer.linkTransports[peer.address] ?? []
-            return t.isEmpty ? "direct" : t.sorted().joined(separator: "+")
+    /// SF Symbol for a transport tag ("BT" / "Wi-Fi" / "Relay").
+    private func transportIcon(_ tag: String) -> String {
+        switch tag {
+        case "BT": return "dot.radiowaves.left.and.right"
+        case "Wi-Fi": return "wifi"
+        case "Relay": return "cloud.fill"
+        default: return "link"
         }
-        return "\(peer.hops) hops"
+    }
+
+    /// Map a TransportStatus id to the tag used in `linkTransports`.
+    private func transportTag(_ id: String) -> String { id == "Bluetooth" ? "BT" : id }
+
+    /// Addresses currently linked over a given transport (by its status id).
+    private func peersOn(_ id: String) -> [Data] {
+        let tag = transportTag(id)
+        return bearer.linkTransports.filter { $0.value.contains(tag) }.map { $0.key }
+            .sorted { bearer.displayName($0) < bearer.displayName($1) }
     }
 }
 
@@ -219,9 +279,10 @@ struct ChatView: View {
                             }
                             Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: m.incoming ? .leading : .trailing)
-                            // Provenance: who/what carried each hop (DESIGN.md §27).
+                            // Provenance: who/what carried each hop, resolved to display
+                            // names where known (DESIGN.md §27/§29).
                             if m.incoming, !m.trace.isEmpty {
-                                Text("path: " + m.trace.joined(separator: " → "))
+                                Text("path: " + m.trace.map { bearer.traceLabel($0) }.joined(separator: " → "))
                                     .font(.caption2).foregroundStyle(.tertiary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -241,13 +302,16 @@ struct ChatView: View {
             }
             .padding()
         }
-        .onAppear { bearer.openChat(peer.name) }
+        .onAppear { bearer.openChat(peer.name); bearer.identify(peer.address) }
         .onDisappear { bearer.closeChat() }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 5) {
                     Text(peer.hops <= 1 ? peer.name : "\(peer.name) · \(peer.hops)h").font(.headline)
+                    if let kind = bearer.identity(peer.address)?.kind, kind == "relay" {
+                        Image(systemName: "cloud.fill").font(.caption).foregroundStyle(.blue)
+                    }
                     if bearer.secured.contains(peer.address) {
                         Image(systemName: "lock.fill").font(.caption).foregroundStyle(.green)
                     }
