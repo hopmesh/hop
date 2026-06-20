@@ -621,6 +621,41 @@ impl<S: Store> Node<S> {
         items
     }
 
+    /// For the cloud backbone's cross-partition handoff (DESIGN.md §28): the
+    /// device-addressed bundles we're holding whose destination is **not** currently
+    /// connected to us, as `(id, dst, sealed bytes, expires_at_ms)`. The relay hands
+    /// these into the destination region's Firestore mailbox so an offline device
+    /// collects them when it next checks in (or that region cold-starts). Returns the
+    /// sealed wire bytes untouched — the relay never opens what it forwards.
+    pub fn undeliverable_device_bundles(&self) -> Vec<(BundleId, PubKeyBytes, Vec<u8>, u64)> {
+        let connected: HashSet<PubKeyBytes> = self.peers().into_iter().collect();
+        let mut out = Vec::new();
+        for id in self.store.have().ids {
+            let Some(b) = self.store.get(&id) else { continue };
+            if let Destination::Device(d) = b.inner.dst {
+                if connected.contains(&d) {
+                    continue; // deliverable directly on this node — no handoff needed
+                }
+                if let Ok(bytes) = b.to_bytes() {
+                    let expires = b.inner.created_at.saturating_add(b.inner.lifetime_ms as u64);
+                    out.push((id, d, bytes, expires));
+                }
+            }
+        }
+        out
+    }
+
+    /// Ingest a foreign (relayed) bundle pulled from durable storage — e.g. a
+    /// cross-partition handoff written into our Firestore partition while we were
+    /// already warm (DESIGN.md §28). Stores it for onward relay and offers it to live
+    /// links, exactly as if a peer had handed it over. A cold-started node gets the same
+    /// bundles for free via [`Node::with_store`]'s rehydrate.
+    pub fn ingest(&mut self, bundle: Bundle) {
+        // A phantom link id that matches no real connection, so the bundle is offered to
+        // every live link (the offer step skips only the link it arrived on).
+        self.on_bundle(LinkId::MAX, bundle);
+    }
+
     /// Addresses of currently-connected, authenticated peers (handshake complete).
     pub fn peers(&self) -> Vec<PubKeyBytes> {
         self.links
@@ -1256,6 +1291,37 @@ mod tests {
             BundleOpts::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn ingest_holds_offline_device_bundle_for_handoff() {
+        // A relay ingests a foreign alice→bob bundle from durable storage. With neither
+        // endpoint connected it reports the bundle as undeliverable (so the backbone can
+        // hand it into bob's region's mailbox, §28), preserving the sealed bytes verbatim.
+        let mut relay = Node::new(Identity::generate());
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let b = Bundle::create(
+            &alice,
+            Destination::Device(bob.address()),
+            &bob.address(),
+            &Payload::PeerMessage { content_type: "t".into(), body: b"hi".to_vec() },
+            BundleOpts::default(),
+        )
+        .unwrap();
+        let id = b.id();
+
+        relay.ingest(b.clone());
+        let u = relay.undeliverable_device_bundles();
+        assert_eq!(u.len(), 1, "the held device bundle is undeliverable while bob is offline");
+        assert_eq!(u[0].0, id);
+        assert_eq!(u[0].1, bob.address());
+        let round = Bundle::from_bytes(&u[0].2).expect("sealed bytes round-trip");
+        assert_eq!(round.id(), id);
+
+        // Re-ingesting the same bundle is a no-op (dedup), not a duplicate.
+        relay.ingest(b);
+        assert_eq!(relay.undeliverable_device_bundles().len(), 1);
     }
 
     #[test]

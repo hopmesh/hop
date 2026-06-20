@@ -403,6 +403,188 @@ fn parse_registry_doc(d: &serde_json::Value) -> Option<PeerInfo> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Cross-partition handoff (DESIGN.md §28): the offline-destination mailbox.
+// ---------------------------------------------------------------------------
+
+/// A device's last-known region, learned from where it checked in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevicePresence {
+    /// base58 device address.
+    pub device: String,
+    pub region: String,
+    pub heartbeat_ms: u64,
+}
+
+/// The presence index + cross-partition write plane.
+///
+/// When a relay holds a `Device`-addressed bundle it can't deliver locally, it looks
+/// up where that device was last seen (`region_of`) and writes the bundle into *that
+/// region's own partition* (`put_bundle_to`, deriving the region's node address the
+/// same way every node does — shared seed + region name). The destination region then
+/// delivers it on its next cold-start / device check-in by rehydrating its partition.
+///
+/// Presence is a passive Firestore write/read: looking up a device's region **wakes no
+/// node** — only the destination region's own clients ever wake it (DESIGN.md §28).
+pub struct Presence {
+    http: reqwest::blocking::Client,
+    project: String,
+    presence_url: String, // .../documents/presence
+    token: Mutex<Option<(String, Instant)>>,
+}
+
+impl Presence {
+    pub fn new(project: &str) -> Self {
+        let base = "https://firestore.googleapis.com/v1";
+        let presence_url =
+            format!("{base}/projects/{project}/databases/(default)/documents/presence");
+        Self {
+            http: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("http client"),
+            project: project.to_string(),
+            presence_url,
+            token: Mutex::new(None),
+        }
+    }
+
+    fn token(&self) -> Result<String, String> {
+        cached_token(&self.token, &self.http)
+    }
+
+    /// Record that `device` (base58) checked in from `region`. Idempotent upsert.
+    pub fn set_presence(&self, device: &str, region: &str, now_ms: u64) -> Result<(), String> {
+        let url = format!("{}/{}", self.presence_url, device);
+        let body = presence_doc_json(device, region, now_ms);
+        let token = self.token()?;
+        let resp =
+            self.http.patch(&url).bearer_auth(token).json(&body).send().map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("set_presence {}", resp.status()))
+        }
+    }
+
+    /// Where was `device` (base58) last seen, if its check-in is still fresh within
+    /// `ttl_ms`? A pure read — wakes no node. `Ok(None)` means unknown or stale.
+    pub fn region_of(
+        &self,
+        device: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<Option<String>, String> {
+        let url = format!("{}/{}", self.presence_url, device);
+        let token = self.token()?;
+        let resp = self.http.get(&url).bearer_auth(token).send().map_err(|e| e.to_string())?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(format!("region_of {}", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+        match parse_presence_doc(&v) {
+            Some(p) if is_fresh(p.heartbeat_ms, now_ms, ttl_ms) => Ok(Some(p.region)),
+            _ => Ok(None),
+        }
+    }
+
+    /// List the bundles held in `node`'s (base58) partition, as `(sealed bytes,
+    /// expires_at)`. A warm node polls **its own** partition this way to ingest
+    /// cross-partition handoffs that landed after it started (cold starts get them via
+    /// the store's rehydrate instead).
+    pub fn list_bundles_of(&self, node: &str) -> Result<Vec<(Vec<u8>, u64)>, String> {
+        let base = "https://firestore.googleapis.com/v1";
+        let collection_url = format!(
+            "{base}/projects/{}/databases/(default)/documents/relays/{node}/bundles",
+            self.project
+        );
+        let token = self.token()?;
+        let mut out = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut url = format!("{collection_url}?pageSize=300");
+            if let Some(t) = &page_token {
+                url.push_str(&format!("&pageToken={t}"));
+            }
+            let resp =
+                self.http.get(&url).bearer_auth(&token).send().map_err(|e| e.to_string())?;
+            if resp.status().as_u16() == 404 {
+                return Ok(out);
+            }
+            if !resp.status().is_success() {
+                return Err(format!("list_bundles_of {}", resp.status()));
+            }
+            let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+            if let Some(docs) = v["documents"].as_array() {
+                for d in docs {
+                    if let Some(pair) = parse_doc(d) {
+                        out.push(pair);
+                    }
+                }
+            }
+            match v["nextPageToken"].as_str() {
+                Some(t) if !t.is_empty() => page_token = Some(t.to_string()),
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Write a bundle into `node`'s (base58) partition — used to hand a bundle off into
+    /// the destination region's mailbox. The owning node ingests it on its next
+    /// partition reload (warm) or cold-start rehydrate.
+    pub fn put_bundle_to(
+        &self,
+        node: &str,
+        id: &BundleId,
+        data: &[u8],
+        expires_at: u64,
+    ) -> Result<(), String> {
+        let base = "https://firestore.googleapis.com/v1";
+        let doc = bs58::encode(id).into_string();
+        let url = format!(
+            "{base}/projects/{}/databases/(default)/documents/relays/{node}/bundles/{doc}",
+            self.project
+        );
+        let body = doc_json(data, expires_at);
+        let token = self.token()?;
+        let resp =
+            self.http.patch(&url).bearer_auth(token).json(&body).send().map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("put_bundle_to {}", resp.status()))
+        }
+    }
+}
+
+/// Build a Firestore document body for a device presence record.
+fn presence_doc_json(device: &str, region: &str, heartbeat_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "fields": {
+            "device": { "stringValue": device },
+            "region": { "stringValue": region },
+            "heartbeatAt": { "integerValue": heartbeat_ms.to_string() },
+        }
+    })
+}
+
+/// Parse a Firestore presence document into a [`DevicePresence`].
+fn parse_presence_doc(d: &serde_json::Value) -> Option<DevicePresence> {
+    let f = d.get("fields")?;
+    Some(DevicePresence {
+        device: f["device"]["stringValue"].as_str()?.to_string(),
+        region: f["region"]["stringValue"].as_str()?.to_string(),
+        heartbeat_ms: f["heartbeatAt"]["integerValue"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    })
+}
+
 /// Build a Firestore document body for a bundle.
 fn doc_json(data: &[u8], expires_at: u64) -> serde_json::Value {
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
@@ -457,6 +639,21 @@ mod tests {
     #[test]
     fn parse_registry_doc_rejects_garbage() {
         assert!(parse_registry_doc(&serde_json::json!({"name": "x"})).is_none());
+    }
+
+    #[test]
+    fn presence_doc_round_trips() {
+        let json = presence_doc_json("Dev9", "europe-north1", 4242);
+        let doc = serde_json::json!({ "name": "x", "fields": json["fields"] });
+        let p = parse_presence_doc(&doc).expect("parse");
+        assert_eq!(p.device, "Dev9");
+        assert_eq!(p.region, "europe-north1");
+        assert_eq!(p.heartbeat_ms, 4242);
+    }
+
+    #[test]
+    fn parse_presence_doc_rejects_garbage() {
+        assert!(parse_presence_doc(&serde_json::json!({"name": "x"})).is_none());
     }
 
     #[test]

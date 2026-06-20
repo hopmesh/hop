@@ -48,6 +48,11 @@ enum Ev {
     Up(u64, Role, Sender<Vec<u8>>),
     Data(u64, Vec<u8>),
     Down(u64),
+    /// A sealed bundle pulled from durable storage (a cross-partition handoff that
+    /// landed in our Firestore partition while warm) to store + relay (DESIGN.md §28).
+    /// Only produced by the cloud handoff worker (the `firestore` feature).
+    #[cfg_attr(not(feature = "firestore"), allow(dead_code))]
+    Ingest(Vec<u8>),
 }
 
 fn now_ms() -> u64 {
@@ -87,17 +92,14 @@ fn main() {
     }
 
     let mut identity = load_identity(&identity_file, &format!("{db}.key"));
+    // The shared base seed — every region derives its node identity from this same seed,
+    // so any node can compute any other region's address (cross-partition handoff, §28).
+    let base_seed = identity.to_secret_bytes();
     // Per-region backbone node: derive a stable, distinct identity from the shared seed
     // and the region name, so each region is its own node (own Firestore partition +
     // liveness-registry entry) without needing a separate secret per region (§27/§28).
     if let Some(r) = &region {
-        let base = identity.to_secret_bytes();
-        let mut h = blake3::Hasher::new();
-        h.update(b"hop.relay.region.v1");
-        h.update(&base);
-        h.update(r.as_bytes());
-        let seed: [u8; 32] = *h.finalize().as_bytes();
-        identity = Identity::from_secret_bytes(&seed);
+        identity = Identity::from_secret_bytes(&region_seed(&base_seed, r));
         println!("hop-relayd: region={r} derived address {}", bs58_addr(&identity.address()));
     }
     let addr = identity.address();
@@ -142,6 +144,12 @@ fn main() {
         });
     }
 
+    // The set of relay node ids (base58) we've seen in the liveness registry — used to
+    // tell a device peer from a peer relay when recording device presence (§28).
+    #[cfg(feature = "firestore")]
+    let known_relays: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
     // Backbone (DESIGN.md §28): heartbeat into the passive liveness registry and dial
     // currently-online peer relays (pull-on-wake). Cloud-only (needs Firestore + a TLS
     // WebSocket client); a node is summoned by clients, never by a peer.
@@ -149,10 +157,26 @@ fn main() {
     if let (Some(project), Some(region), Some(advertise)) =
         (firestore.clone(), region.clone(), advertise.clone())
     {
-        backbone::spawn(project, region, advertise, addr.to_vec(), tx.clone());
+        backbone::spawn(project, region, advertise, addr.to_vec(), known_relays.clone(), tx.clone());
     }
     #[cfg(not(feature = "firestore"))]
     let _ = (&region, &advertise);
+
+    // Cross-partition handoff (DESIGN.md §28): record device presence, hand undeliverable
+    // device bundles into the destination region's mailbox, and reload our own partition
+    // so a warm node ingests handoffs others wrote. Cloud-only.
+    #[cfg(feature = "firestore")]
+    let handoff_tx = match (firestore.clone(), region.clone()) {
+        (Some(project), Some(region)) => Some(handoff::spawn(
+            project,
+            region,
+            base_seed,
+            addr.to_vec(),
+            known_relays.clone(),
+            tx.clone(),
+        )),
+        _ => None,
+    };
 
     // Dial backbone peer relays over TCP, reconnecting forever.
     for peer in peers {
@@ -171,6 +195,8 @@ fn main() {
 
     // Driver: the sole owner of the node + the per-link outgoing senders.
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
+    #[cfg(feature = "firestore")]
+    let mut last_handoff_ms: u64 = 0;
     loop {
         match rx.recv_timeout(Duration::from_millis(1000)) {
             Ok(Ev::Up(link, role, out)) => {
@@ -182,6 +208,11 @@ fn main() {
                 writers.remove(&link);
                 node.handle(BearerEvent::Disconnected(link));
             }
+            Ok(Ev::Ingest(bytes)) => {
+                if let Ok(b) = Bundle::from_bytes(&bytes) {
+                    node.ingest(b);
+                }
+            }
             Err(RecvTimeoutError::Timeout) => node.tick(now_ms()),
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -192,8 +223,46 @@ fn main() {
                 }
             }
         }
+
+        // Feed the handoff worker a fresh snapshot of who's connected and what we can't
+        // deliver locally, on a slow timer (the worker does the blocking Firestore I/O
+        // off this thread, §28).
+        #[cfg(feature = "firestore")]
+        if let Some(htx) = &handoff_tx {
+            let now = now_ms();
+            if now.saturating_sub(last_handoff_ms) >= HANDOFF_INTERVAL_MS {
+                last_handoff_ms = now;
+                let _ = htx.send(handoff::Snapshot {
+                    now_ms: now,
+                    devices: node.peers(),
+                    undeliverable: node.undeliverable_device_bundles(),
+                });
+            }
+        }
     }
 }
+
+/// Derive a region's backbone identity seed from the shared base seed + region name.
+/// Every node computes this the same way, so a node can address any region's partition
+/// (and the dest node it belongs to) without a per-region secret (DESIGN.md §27/§28).
+fn region_seed(base: &[u8; 32], region: &str) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"hop.relay.region.v1");
+    h.update(base);
+    h.update(region.as_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// The node address (base58) of `region`'s backbone relay, derived from the shared seed.
+#[cfg(feature = "firestore")]
+fn region_node_b58(base: &[u8; 32], region: &str) -> String {
+    let addr = Identity::from_secret_bytes(&region_seed(base, region)).address();
+    bs58::encode(addr).into_string()
+}
+
+/// How often the driver hands the worker a fresh handoff snapshot.
+#[cfg(feature = "firestore")]
+const HANDOFF_INTERVAL_MS: u64 = 20_000;
 
 /// Drive one raw-TCP connection: a writer thread owns the write half and drains the
 /// outgoing channel; this thread reads length-framed packets off the read half.
@@ -266,7 +335,7 @@ fn serve_ws(stream: TcpStream, ev_tx: &Sender<Ev>) {
         loop {
             match out_rx.try_recv() {
                 Ok(bytes) => {
-                    if ws.write(Message::Binary(bytes.into())).is_err() {
+                    if ws.write(Message::Binary(bytes)).is_err() {
                         break 'conn;
                     }
                 }
@@ -374,9 +443,17 @@ mod backbone {
     const TTL_MS: u64 = 90_000; // a peer silent longer than this is treated as offline
 
     /// Start the heartbeat + discovery threads.
-    pub fn spawn(project: String, region: String, advertise: String, addr: Vec<u8>, ev_tx: Sender<Ev>) {
+    pub fn spawn(
+        project: String,
+        region: String,
+        advertise: String,
+        addr: Vec<u8>,
+        known_relays: Arc<Mutex<HashSet<String>>>,
+        ev_tx: Sender<Ev>,
+    ) {
         let reg = Arc::new(Registry::new(&project, &addr));
         let me = bs58::encode(&addr).into_string();
+        known_relays.lock().unwrap().insert(me.clone());
         eprintln!("backbone: region={region} advertise={advertise}");
 
         // Announce: heartbeat our presence so online peers discover us.
@@ -398,6 +475,9 @@ mod backbone {
                 match reg.online(now_ms(), TTL_MS) {
                     Ok(peers) => {
                         let live: HashSet<String> = peers.iter().map(|p| p.node.clone()).collect();
+                        // Remember every relay we see so presence-recording can tell a
+                        // device peer from a peer relay (§28).
+                        known_relays.lock().unwrap().extend(live.iter().cloned());
                         dialed.lock().unwrap().retain(|n| live.contains(n));
                         for p in peers {
                             if me <= p.node {
@@ -454,7 +534,7 @@ mod backbone {
             loop {
                 match out_rx.try_recv() {
                     Ok(b) => {
-                        if ws.write(Message::Binary(b.into())).is_err() {
+                        if ws.write(Message::Binary(b)).is_err() {
                             break 'conn;
                         }
                     }
@@ -479,5 +559,139 @@ mod backbone {
             }
         }
         let _ = ev_tx.send(Ev::Down(link));
+    }
+}
+
+/// Cross-partition handoff (DESIGN.md §28): the offline-destination mailbox.
+///
+/// Each region's relay owns a Firestore partition. When a relay holds a device-addressed
+/// bundle it can't deliver locally, it looks up where that device last checked in
+/// (presence) and writes the bundle into *that region's* partition — the destination
+/// region then delivers it on its next device check-in (cold start rehydrates; a warm
+/// node ingests via the reload loop below). Presence is recorded for connected device
+/// peers (a peer relay, identified via the registry, is skipped). All blocking Firestore
+/// I/O runs here, off the single-owner driver thread.
+#[cfg(feature = "firestore")]
+mod handoff {
+    use std::collections::HashSet;
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use hop_core::bundle::BundleId;
+    use hop_core::crypto::PubKeyBytes;
+    use hop_store_firestore::Presence;
+
+    use super::{region_node_b58, Ev};
+
+    /// A device-presence record is trusted this long after check-in (matches the
+    /// registry TTL — beyond it, we don't know where the device is, so we don't hand off).
+    const PRESENCE_TTL_MS: u64 = 90_000;
+    /// How often a warm node re-reads its own partition for handoffs others wrote.
+    const RELOAD_SECS: u64 = 30;
+
+    /// What the driver tells the worker each cycle: who's connected, and what we hold
+    /// that we can't deliver locally.
+    pub struct Snapshot {
+        pub now_ms: u64,
+        pub devices: Vec<PubKeyBytes>,
+        pub undeliverable: Vec<(BundleId, PubKeyBytes, Vec<u8>, u64)>,
+    }
+
+    /// Start the presence/handoff worker and the warm-reload thread. Returns the channel
+    /// the driver pushes [`Snapshot`]s into.
+    pub fn spawn(
+        project: String,
+        region: String,
+        base_seed: [u8; 32],
+        addr: Vec<u8>,
+        known_relays: Arc<Mutex<HashSet<String>>>,
+        ev_tx: Sender<Ev>,
+    ) -> Sender<Snapshot> {
+        let me = bs58::encode(&addr).into_string();
+
+        // Worker: consume driver snapshots, record device presence, and hand undeliverable
+        // bundles into their destination region's partition.
+        let (snap_tx, snap_rx) = mpsc::channel::<Snapshot>();
+        {
+            let presence = Presence::new(&project);
+            let region = region.clone();
+            let known_relays = known_relays.clone();
+            std::thread::spawn(move || {
+                // Bundles already handed off (id → dest region), so we don't re-write them
+                // every cycle. Bounded reset keeps it from growing unboundedly.
+                let mut handed: HashSet<(BundleId, String)> = HashSet::new();
+                for snap in snap_rx {
+                    if handed.len() > 100_000 {
+                        handed.clear();
+                    }
+                    // Record presence for connected device peers (skip peer relays).
+                    for dev in &snap.devices {
+                        let b58 = bs58::encode(dev).into_string();
+                        if known_relays.lock().unwrap().contains(&b58) {
+                            continue;
+                        }
+                        if let Err(e) = presence.set_presence(&b58, &region, snap.now_ms) {
+                            eprintln!("handoff: set_presence failed: {e}");
+                        }
+                    }
+                    // Hand off what we can't deliver locally to the dest device's region.
+                    for (id, dst, bytes, expires) in &snap.undeliverable {
+                        let dst_b58 = bs58::encode(dst).into_string();
+                        let dst_region =
+                            match presence.region_of(&dst_b58, snap.now_ms, PRESENCE_TTL_MS) {
+                                Ok(Some(r)) => r,
+                                Ok(None) => continue, // unknown/stale — nowhere to hand off yet
+                                Err(e) => {
+                                    eprintln!("handoff: region_of failed: {e}");
+                                    continue;
+                                }
+                            };
+                        if dst_region == region {
+                            continue; // already in our partition; we'll deliver on reconnect
+                        }
+                        if !handed.insert((*id, dst_region.clone())) {
+                            continue; // already written this cycle-set
+                        }
+                        let dest_node = region_node_b58(&base_seed, &dst_region);
+                        if let Err(e) = presence.put_bundle_to(&dest_node, id, bytes, *expires) {
+                            eprintln!("handoff: put_bundle_to {dst_region} failed: {e}");
+                            handed.remove(&(*id, dst_region)); // let a later cycle retry
+                        } else {
+                            eprintln!("handoff: bundle → region {dst_region}");
+                        }
+                    }
+                }
+            });
+        }
+
+        // Warm reload: re-read our own partition so handoffs written by other regions
+        // while we're already up get ingested (a cold start gets them via rehydrate).
+        {
+            let presence = Presence::new(&project);
+            std::thread::spawn(move || {
+                let mut ingested: HashSet<BundleId> = HashSet::new();
+                loop {
+                    std::thread::sleep(Duration::from_secs(RELOAD_SECS));
+                    match presence.list_bundles_of(&me) {
+                        Ok(bundles) => {
+                            for (bytes, _expires) in bundles {
+                                if let Ok(b) = hop_core::bundle::Bundle::from_bytes(&bytes) {
+                                    if !ingested.insert(b.id()) {
+                                        continue; // already pushed to the driver
+                                    }
+                                    if ev_tx.send(Ev::Ingest(bytes)).is_err() {
+                                        return; // driver gone
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("handoff: partition reload failed: {e}"),
+                    }
+                }
+            });
+        }
+
+        snap_tx
     }
 }
