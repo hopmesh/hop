@@ -414,6 +414,12 @@ impl HopNode {
         }
     }
 
+    /// Clear the relay queue: drop our undelivered messages (stop retransmitting) and any
+    /// bundles held for peers. Does not touch chat history or sessions.
+    pub fn clear_queue(&self) {
+        self.inner.lock().unwrap().clear_queue();
+    }
+
     /// The relay queue: our messages awaiting send (pinned) + peers' awaiting relay.
     pub fn queue(&self) -> Vec<QueueItem> {
         self.inner

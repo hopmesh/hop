@@ -283,6 +283,12 @@ final class HopBearer: NSObject, ObservableObject {
         pump()
     }
 
+    /// Clear the relay queue (our undelivered messages + bundles held for peers).
+    func clearQueue() {
+        node.clearQueue()
+        pump()
+    }
+
     func send(_ text: String, to peer: Peer) {
         let id = try? node.sendMessage(dst: peer.address,
                                        contentType: "text/plain", body: Data(text.utf8),
