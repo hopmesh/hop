@@ -109,7 +109,6 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var messages: [Message] = []
     @Published var queue: [QueueRow] = []
     @Published var unread: [String: Int] = [:]   // peer name → unread incoming count
-    @Published var httpResults: [String] = []    // egress request/response log (Use Case A)
     private var activePeer: String?              // chat currently on screen (not counted)
 
     /// Stable identity across launches. Stored in the **Keychain**, not UserDefaults:
@@ -534,7 +533,6 @@ final class HopBearer: NSObject, ObservableObject {
             if who != activePeer { unread[who, default: 0] += 1 }  // badge unless viewing
             notifyIfBackgrounded(from: who, text: text)
         }
-        serveHttpRequests()  // gateway role + collect any egress responses
         drainServices()      // hop.identify replies + custom service calls (§29)
     }
 
@@ -615,41 +613,10 @@ final class HopBearer: NSObject, ObservableObject {
         }
     }
 
-    /// Use Case A: ask `gateway` to fetch `urlString` on our behalf (sealed to it).
-    func fetch(_ urlString: String, via gateway: Peer) {
-        _ = try? node.sendHttpRequest(gateway: gateway.address, method: "GET",
-                                      url: urlString, body: Data(), maxResp: 64_000)
-        httpResults.insert("→ GET \(urlString) via \(gateway.name)", at: 0)
-        pump()
-    }
-
-    /// Gateway role: fulfill egress HTTP requests from mesh peers if we have internet.
-    /// Restricted to HTTPS GET for safety (a real gateway would apply an allowlist).
-    private func serveHttpRequests() {
-        for r in node.takeHttpRequests() {
-            guard r.method.uppercased() == "GET", r.url.hasPrefix("https://"),
-                  let url = URL(string: r.url) else {
-                try? node.sendHttpResponse(to: r.from, forRequestId: r.requestId,
-                                           status: 403, body: Data("blocked".utf8))
-                continue
-            }
-            URLSession.shared.dataTask(with: url) { [weak self] data, resp, _ in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    let status = UInt16((resp as? HTTPURLResponse)?.statusCode ?? 502)
-                    var body = data ?? Data()
-                    if body.count > Int(r.maxResp) { body = body.prefix(Int(r.maxResp)) }
-                    try? self.node.sendHttpResponse(to: r.from, forRequestId: r.requestId,
-                                                    status: status, body: body)
-                    self.pump()
-                }
-            }.resume()
-        }
-        for r in node.takeHttpResponses() {
-            let text = String(data: r.body, encoding: .utf8) ?? "<\(r.body.count) bytes>"
-            httpResults.insert("← HTTP \(r.status): \(text.prefix(400))", at: 0)
-        }
-    }
+    // Open-web HTTP fetch via a third-party gateway was removed: a gateway that fetches
+    // https:// on your behalf terminates TLS = a MitM (DESIGN.md §25). The model is now
+    // origin-run gateways reached via `hops://<domain>` (the gateway serves *its own*
+    // service over the mesh, no third party in the middle).
 
     /// The chat for `peer` is on screen: clear its badge and stop counting it.
     func openChat(_ peer: String) { activePeer = peer; unread[peer] = 0 }
