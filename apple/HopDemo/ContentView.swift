@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var started = false
     @State private var nameField = ""
     @State private var relayField = ""
+    @State private var hopsField = ""
     @State private var showAddContact = false
 
     private var deviceName: String {
@@ -84,6 +85,25 @@ struct ContentView: View {
                         }
                     }
                     LabeledContent("Relay", value: bearer.relayStatus).font(.caption)
+                }
+
+                // Fetch a site served over the mesh by its origin (DESIGN.md §30). The domain
+                // resolves via HNS to a hops endpoint; the GET is sealed end-to-end (no third
+                // party terminating TLS, unlike the old https gateway).
+                Section("hops://") {
+                    HStack {
+                        TextField("example.hopme.sh", text: $hopsField)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                            .onSubmit { fetchHops() }
+                        Button("Fetch") { fetchHops() }
+                            .disabled(hopsField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    ForEach(bearer.hopsResults.sorted(by: { $0.key < $1.key }), id: \.key) { domain, text in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(domain).font(.caption).monospaced().foregroundStyle(.secondary)
+                            Text(text).font(.caption).textSelection(.enabled)
+                        }
+                    }
                 }
 
                 if !bearer.relays.isEmpty {
@@ -185,6 +205,13 @@ struct ContentView: View {
             nameField = name
             bearer.start(name: name)
         }
+    }
+
+    /// Fetch the entered hops:// URL (DESIGN.md §30).
+    private func fetchHops() {
+        let s = hopsField.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        bearer.openHops(s)
     }
 
     /// "iOS" / "Android" / "" from the raw platform tag.

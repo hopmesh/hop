@@ -812,6 +812,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hop-example-origin"
+version = "0.0.1"
+
+[[package]]
 name = "hop-ffi"
 version = "0.0.1"
 dependencies = [
