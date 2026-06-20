@@ -67,6 +67,8 @@ final class HopBearer: NSObject, ObservableObject {
         let id = UUID()
         let peer: String; let text: String; let incoming: Bool
         var peerAddr: Data? = nil   // the other party's address — stable across renames
+        var contentType: String = "text/plain"
+        var imageData: Data? = nil  // raw bytes for an image message (content_type image/*)
         var bundleId: Data? = nil
         // Incoming metadata (shown under the bubble).
         var hops: UInt8 = 0
@@ -319,6 +321,19 @@ final class HopBearer: NSObject, ObservableObject {
         pump()
     }
 
+    /// Send an image. It's just a message with an image content type and the raw bytes as
+    /// the body — the core auto-streams it in chunks if it's too big for one bundle, and
+    /// the far side reassembles it back into one message (DESIGN.md §20).
+    func sendImage(_ data: Data, to peer: Peer) {
+        let id = try? node.sendMessage(dst: peer.address,
+                                       contentType: "image/jpeg", body: data,
+                                       requestAck: true)
+        messages.append(Message(peer: peer.name, text: "", incoming: false,
+                                peerAddr: peer.address, contentType: "image/jpeg",
+                                imageData: data, bundleId: id))
+        pump()
+    }
+
     // MARK: - Wi-Fi (MultipeerConnectivity) bearer
 
     /// Stand up the Wi-Fi bearer: advertise + browse for nearby Hop peers and shuttle
@@ -517,12 +532,14 @@ final class HopBearer: NSObject, ObservableObject {
         refresh()
         for m in node.takeInbox() {
             let who = nameByAddr[m.from] ?? HopBearer.shortHex(m.from)
-            let text = String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>"
+            let isImage = m.contentType.hasPrefix("image/")
+            let text = isImage ? "" : (String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>")
             let now = HopBearer.nowMs()
             let latency = now >= m.createdAt ? now - m.createdAt : 0  // clamp clock skew
             messages.append(Message(peer: who, text: text, incoming: true,
-                                    peerAddr: m.from, hops: m.hops, latencyMs: latency,
-                                    trace: m.trace))
+                                    peerAddr: m.from, contentType: m.contentType,
+                                    imageData: isImage ? m.body : nil,
+                                    hops: m.hops, latencyMs: latency, trace: m.trace))
             // A sender that isn't in our nearby/contacts must still be reachable in the UI,
             // or the message vanishes. Make them a contact (so a row + chat exist) and run
             // hop.identify to resolve their name (their input, or their id if unset, §29).
