@@ -1099,6 +1099,27 @@ gateway stays in the design **only** as a compatibility shim for the legacy web 
 don't control; origin-side ingress is the real answer for anything that wants to be
 properly Hop-reachable.
 
+### Decision: drop open-web fetch; `hops://` is origin-run gateways
+
+We are **dropping the open-web HTTP fetch entirely** (no third-party gateway fetches
+arbitrary `https://` on your behalf — that's the MitM, and the demo's "fetch via a
+peer" feature is removed). The net is not something Hop bridges.
+
+Instead, an app that wants to be reachable over Hop **runs its own gateway node**, and
+clients reach it at **`hops://<domain>`**. That scheme:
+
+- speaks ordinary HTTP **to the app**, but the transport underneath is the Hop network
+  (sealed bundles / sessions), not TCP/TLS to a public IP;
+- resolves to the operator's **Hop address** (its pubkey, via a service advert / a
+  `hops`-record), and the request is **sealed to that gateway** — which is the
+  destination/origin, so there is **no third party in the middle** (same trust model as
+  hitting the origin's own HTTPS server);
+- lands on the box running the **Hop gateway**, listening on a known, unreserved port —
+  default **`9444`** (configurable; sits next to the path-A relay's `9443`).
+
+So the `HttpRequest`/`HttpResponse` payloads stay — repurposed for this origin ingress
+(client → `hops://domain` → that domain's gateway), not for fetching the open web.
+
 ## 26. Transports & portability — the bearer is the only thing that changes
 
 > **Status: vision + architecture.** The transport-agnostic seam exists today; the

@@ -7,7 +7,6 @@ struct ContentView: View {
     @StateObject private var bearer = HopBearer.shared
     @State private var started = false
     @State private var nameField = ""
-    @State private var urlField = "https://example.com"
     @State private var relayField = ""
     @State private var showAddContact = false
 
@@ -103,24 +102,6 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    }
-                }
-
-                Section("Web via gateway (Use Case A)") {
-                    TextField("https://…", text: $urlField)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    if bearer.reachable.isEmpty {
-                        Text("no gateway peer reachable").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(bearer.reachable) { gw in
-                            Button("Fetch via \(gw.name)") {
-                                let u = urlField.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !u.isEmpty { bearer.fetch(u, via: gw) }
-                            }
-                        }
-                    }
-                    ForEach(Array(bearer.httpResults.prefix(6).enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
 
