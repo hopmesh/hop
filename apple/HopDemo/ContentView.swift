@@ -42,19 +42,24 @@ struct ContentView: View {
                     ForEach(bearer.transports) { t in
                         DisclosureGroup {
                             let addrs = peersOn(t.id)
-                            if addrs.isEmpty {
-                                Text("no peers").font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                ForEach(addrs, id: \.self) { addr in
-                                    HStack {
-                                        Image(systemName: transportIcon(transportTag(t.id)))
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                        Text(bearer.displayName(addr))
-                                        Spacer()
-                                        Text(HopBearer.shortHex(addr))
-                                            .font(.caption2).monospaced().foregroundStyle(.secondary)
-                                    }
+                            ForEach(addrs, id: \.self) { addr in
+                                HStack {
+                                    Image(systemName: transportIcon(transportTag(t.id)))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                    Text(bearer.displayName(addr))
+                                    Spacer()
+                                    Text(HopBearer.shortHex(addr))
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
                                 }
+                            }
+                            // Links connected at the transport level but not yet through
+                            // the Noise handshake (so we don't know the peer address yet).
+                            let establishing = t.links - addrs.count
+                            if establishing > 0 {
+                                Text("\(establishing) establishing…")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else if addrs.isEmpty {
+                                Text("no peers").font(.caption).foregroundStyle(.secondary)
                             }
                         } label: {
                             HStack {
