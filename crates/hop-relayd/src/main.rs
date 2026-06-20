@@ -25,11 +25,12 @@
 //! Secret Manager secret) when given, else persisted next to the db (`<db>.key`),
 //! so the relay's address is stable across restarts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hop_core::prelude::*;
@@ -57,6 +58,109 @@ enum Ev {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// UTC `HH:MM:SS` from epoch ms (for the log stream).
+fn hms(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{:02}:{:02}:{:02}", (s / 3600) % 24, (s / 60) % 60, s % 60)
+}
+
+// ---------------------------------------------------------------------------
+// Live network-log hub: a ring buffer + fan-out to HTTP viewers. Visiting a relay
+// over plain HTTP (e.g. relay.hopme.sh in a browser) streams these events live; the
+// stream leads with this node's region+address so you know which region the anycast
+// name routed you to.
+// ---------------------------------------------------------------------------
+
+struct LogHub {
+    inner: Mutex<LogInner>,
+}
+struct LogInner {
+    who: String, // this relay's identity header (region + address)
+    ring: VecDeque<String>,
+    subs: Vec<Sender<String>>,
+}
+
+impl LogHub {
+    fn set_identity(&self, who: String) {
+        self.inner.lock().unwrap().who = who;
+    }
+
+    /// Append a timestamped line: store in the ring, fan out to viewers, mirror to stderr
+    /// (so it also lands in Cloud Logging).
+    fn emit(&self, line: String) {
+        let stamped = format!("{} {}", hms(now_ms()), line);
+        eprintln!("{stamped}");
+        let mut g = self.inner.lock().unwrap();
+        g.ring.push_back(stamped.clone());
+        while g.ring.len() > 400 {
+            g.ring.pop_front();
+        }
+        g.subs.retain(|s| s.send(stamped.clone()).is_ok());
+    }
+
+    /// Register a viewer: returns this node's identity, the recent backlog, and a stream
+    /// of future lines.
+    fn subscribe(&self) -> (String, Vec<String>, Receiver<String>) {
+        let (tx, rx) = mpsc::channel();
+        let mut g = self.inner.lock().unwrap();
+        g.subs.push(tx);
+        (g.who.clone(), g.ring.iter().cloned().collect(), rx)
+    }
+}
+
+static LOG: OnceLock<LogHub> = OnceLock::new();
+
+fn log_hub() -> &'static LogHub {
+    LOG.get_or_init(|| LogHub {
+        inner: Mutex::new(LogInner { who: String::new(), ring: VecDeque::new(), subs: Vec::new() }),
+    })
+}
+
+/// Emit a line to the live network log (ring + HTTP viewers + stderr).
+fn netlog(line: impl Into<String>) {
+    log_hub().emit(line.into());
+}
+
+/// Stream the live network log to a plain-HTTP visitor (text/plain, incremental). Leads
+/// with this node's identity so a visitor to the anycast name sees which region answered.
+fn serve_log_stream(mut stream: TcpStream) {
+    let _ = stream.set_read_timeout(None);
+    let (who, backlog, rx) = log_hub().subscribe();
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\
+                  Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    let who = if who.is_empty() { "(starting)".to_string() } else { who };
+    if stream.write_all(format!("== hop relay :: {who} ==\n").as_bytes()).is_err() {
+        return;
+    }
+    for line in backlog {
+        if stream.write_all(format!("{line}\n").as_bytes()).is_err() {
+            return;
+        }
+    }
+    if stream.flush().is_err() {
+        return;
+    }
+    netlog("http: log viewer connected");
+    loop {
+        match rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(line) => {
+                if stream.write_all(format!("{line}\n").as_bytes()).is_err() || stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if stream.write_all(b": ping\n").is_err() || stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 fn main() {
@@ -123,6 +227,14 @@ fn main() {
         ws.as_deref().map(|w| format!("ws {w} ")).unwrap_or_default(),
         peers.len(),
     );
+    // Identify this node in the live HTTP log stream (so a visitor to the anycast name
+    // sees which region answered).
+    log_hub().set_identity(format!(
+        "region={} node={}",
+        region.as_deref().unwrap_or("local"),
+        bs58_addr(&addr)
+    ));
+    netlog(format!("relay up: region={} node={}", region.as_deref().unwrap_or("local"), bs58_addr(&addr)));
 
     let (tx, rx) = mpsc::channel::<Ev>();
 
@@ -201,21 +313,26 @@ fn main() {
 
     // Driver: the sole owner of the node + the per-link outgoing senders.
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
+    let mut prev_peers: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut last_stats_ms: u64 = 0;
     #[cfg(feature = "firestore")]
     let mut last_handoff_ms: u64 = 0;
     loop {
         match rx.recv_timeout(Duration::from_millis(1000)) {
             Ok(Ev::Up(link, role, out)) => {
                 writers.insert(link, out);
+                netlog(format!("conn up: link={link} ({role:?})"));
                 node.handle(BearerEvent::Connected(link, role));
             }
             Ok(Ev::Data(link, bytes)) => node.handle(BearerEvent::Data(link, bytes)),
             Ok(Ev::Down(link)) => {
                 writers.remove(&link);
+                netlog(format!("conn down: link={link}"));
                 node.handle(BearerEvent::Disconnected(link));
             }
             Ok(Ev::Ingest(bytes)) => {
                 if let Ok(b) = Bundle::from_bytes(&bytes) {
+                    netlog("handoff: ingested a bundle from our partition");
                     node.ingest(b);
                 }
             }
@@ -228,6 +345,23 @@ fn main() {
                     writers.remove(&link); // connection's writer thread is gone
                 }
             }
+        }
+
+        // Log authenticated peer joins/leaves (by address) and periodic stats to the live
+        // network log — so a viewer can see who's connected and what's held for relay.
+        let cur: std::collections::HashSet<Vec<u8>> =
+            node.peers().iter().map(|a| a.to_vec()).collect();
+        for p in cur.difference(&prev_peers) {
+            netlog(format!("peer connected: {}", short_b58(p)));
+        }
+        for p in prev_peers.difference(&cur) {
+            netlog(format!("peer left: {}", short_b58(p)));
+        }
+        prev_peers = cur;
+        let now = now_ms();
+        if now.saturating_sub(last_stats_ms) >= 10_000 {
+            last_stats_ms = now;
+            netlog(format!("stats: peers={} held={}", node.peers().len(), node.queue().len()));
         }
 
         // Feed the handoff worker a fresh snapshot of who's connected and what we can't
@@ -321,13 +455,14 @@ fn serve_tcp(stream: TcpStream, role: Role, ev_tx: &Sender<Ev>) {
 /// Drive one WebSocket connection: one thread both reads binary frames and, on a
 /// short read timeout, drains the outgoing channel. The LB terminates TLS, so this
 /// is plain `ws://`; each link packet is one binary frame (no extra framing).
-fn serve_ws(mut stream: TcpStream, ev_tx: &Sender<Ev>) {
+fn serve_ws(stream: TcpStream, ev_tx: &Sender<Ev>) {
     let _ = stream.set_nodelay(true);
     // Cloud Run sends plain HTTP requests to $PORT (connectivity checks, health probes,
     // any non-WS GET). If we just close those, Cloud Run sees a malformed/empty response
     // and recycles the instance in a loop — starving real WS clients (503s). So peek the
-    // request first and answer anything that isn't a WebSocket upgrade with a tiny 200,
-    // keeping the instance healthy. A non-consuming peek leaves the bytes for tungstenite.
+    // request first; anything that isn't a WebSocket upgrade gets the live network-log
+    // stream (a valid 200, so the instance stays healthy). A non-consuming peek leaves the
+    // bytes for tungstenite.
     {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut head = [0u8; 1024];
@@ -335,11 +470,7 @@ fn serve_ws(mut stream: TcpStream, ev_tx: &Sender<Ev>) {
             Ok(n) if n > 0 => {
                 let req = String::from_utf8_lossy(&head[..n]).to_ascii_lowercase();
                 if !req.contains("upgrade: websocket") {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
-                          Content-Length: 3\r\nConnection: close\r\n\r\nhop",
-                    );
-                    let _ = stream.flush();
+                    serve_log_stream(stream);
                     return;
                 }
             }
@@ -444,6 +575,11 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
 
 fn bs58_addr(addr: &[u8]) -> String {
     bs58::encode(addr).into_string()
+}
+
+/// A short base58 prefix of an address for compact log lines.
+fn short_b58(addr: &[u8]) -> String {
+    bs58::encode(addr).into_string().chars().take(10).collect()
 }
 
 /// The host of a `wss://`/`ws://` URL — the relay's identify name (DESIGN.md §29).
@@ -610,10 +746,10 @@ mod handoff {
                         }
                         let dest_node = region_node_b58(&base_seed, &dst_region);
                         if let Err(e) = presence.put_bundle_to(&dest_node, id, bytes, *expires) {
-                            eprintln!("handoff: put_bundle_to {dst_region} failed: {e}");
+                            super::netlog(format!("handoff: → {dst_region} FAILED: {e}"));
                             handed.remove(&(*id, dst_region)); // let a later cycle retry
                         } else {
-                            eprintln!("handoff: bundle → region {dst_region}");
+                            super::netlog(format!("handoff: bundle → region {dst_region}"));
                         }
                     }
                 }
