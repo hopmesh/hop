@@ -10,7 +10,7 @@
 //!
 //! Usage:  hop-example-origin [--listen 127.0.0.1:8080]
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
 fn main() {
@@ -60,7 +60,8 @@ fn read_request_path(stream: &mut TcpStream) -> Option<String> {
     }
     // "GET /path HTTP/1.1"
     let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
-    // Drain headers (up to the blank line) so the client's write completes cleanly.
+    // Drain headers (up to the blank line), then respond. We don't read any body — a GET has
+    // none, and blocking on more bytes here would hang the client (it's waiting on us).
     let mut line = String::new();
     loop {
         line.clear();
@@ -71,14 +72,6 @@ fn read_request_path(stream: &mut TcpStream) -> Option<String> {
             Err(_) => break,
         }
     }
-    // Defensively discard anything else without blocking forever.
-    let _ = reader.fill_buf().map(|b| b.len()).and_then(|n| {
-        if n > 0 {
-            let mut sink = vec![0u8; n];
-            reader.read_exact(&mut sink).ok();
-        }
-        Ok(())
-    });
     Some(path)
 }
 
