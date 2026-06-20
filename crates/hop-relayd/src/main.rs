@@ -321,11 +321,35 @@ fn serve_tcp(stream: TcpStream, role: Role, ev_tx: &Sender<Ev>) {
 /// Drive one WebSocket connection: one thread both reads binary frames and, on a
 /// short read timeout, drains the outgoing channel. The LB terminates TLS, so this
 /// is plain `ws://`; each link packet is one binary frame (no extra framing).
-fn serve_ws(stream: TcpStream, ev_tx: &Sender<Ev>) {
+fn serve_ws(mut stream: TcpStream, ev_tx: &Sender<Ev>) {
     let _ = stream.set_nodelay(true);
+    // Cloud Run sends plain HTTP requests to $PORT (connectivity checks, health probes,
+    // any non-WS GET). If we just close those, Cloud Run sees a malformed/empty response
+    // and recycles the instance in a loop — starving real WS clients (503s). So peek the
+    // request first and answer anything that isn't a WebSocket upgrade with a tiny 200,
+    // keeping the instance healthy. A non-consuming peek leaves the bytes for tungstenite.
+    {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut head = [0u8; 1024];
+        match stream.peek(&mut head) {
+            Ok(n) if n > 0 => {
+                let req = String::from_utf8_lossy(&head[..n]).to_ascii_lowercase();
+                if !req.contains("upgrade: websocket") {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                          Content-Length: 3\r\nConnection: close\r\n\r\nhop",
+                    );
+                    let _ = stream.flush();
+                    return;
+                }
+            }
+            _ => return, // no data / probe with no payload — nothing to serve
+        }
+        let _ = stream.set_read_timeout(None); // hand a clean blocking socket to tungstenite
+    }
     let mut ws = match tungstenite::accept(stream) {
         Ok(w) => w,
-        Err(_) => return, // not a WebSocket upgrade (e.g. a TCP health probe)
+        Err(_) => return, // malformed upgrade
     };
     // A read timeout lets the single owner thread interleave writes with reads.
     let _ = ws.get_ref().set_read_timeout(Some(Duration::from_millis(100)));
