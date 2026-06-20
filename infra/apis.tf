@@ -3,12 +3,13 @@
 locals {
   services = [
     "run.googleapis.com",
-    "compute.googleapis.com",          # global load balancer, NEGs, certs, IP
-    "firestore.googleapis.com",        # durable per-node store
-    "artifactregistry.googleapis.com", # container image
-    "secretmanager.googleapis.com",    # relay identity seed
-    "cloudbuild.googleapis.com",       # build the image in-cloud (no local docker)
-    "dns.googleapis.com",              # public DNS zone for hopme.sh
+    "compute.googleapis.com",            # global load balancer, NEGs, certs, IP
+    "certificatemanager.googleapis.com", # wildcard *.relay.hopme.sh cert (per-region subdomains)
+    "firestore.googleapis.com",          # durable per-node store
+    "artifactregistry.googleapis.com",   # container image
+    "secretmanager.googleapis.com",      # relay identity seed
+    "cloudbuild.googleapis.com",         # build the image in-cloud (no local docker)
+    "dns.googleapis.com",                # public DNS zone for hopme.sh
   ]
 }
 

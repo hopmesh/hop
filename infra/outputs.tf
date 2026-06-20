@@ -23,8 +23,18 @@ output "name_servers" {
 }
 
 output "lb_ip" {
-  description = "Anycast IP behind relay.hopme.sh."
+  description = "Anycast IPv4 behind relay.hopme.sh."
   value       = google_compute_global_address.relay.address
+}
+
+output "lb_ip_v6" {
+  description = "Anycast IPv6 behind relay.hopme.sh."
+  value       = google_compute_global_address.relay_v6.address
+}
+
+output "region_endpoints" {
+  description = "Per-region wss:// locators (the §28 backbone advertises these)."
+  value       = { for r in local.regions : r => "wss://${r}.${var.domain}/" }
 }
 
 output "endpoint" {
