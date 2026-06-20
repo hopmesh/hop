@@ -134,9 +134,23 @@ struct ContentView: View {
                 }
 
                 if !bearer.seen.isEmpty {
-                    Section("Seen before (offline)") {
+                    Section("Conversations & seen (offline)") {
                         ForEach(bearer.seen) { peer in
-                            Text(peer.name).foregroundStyle(.secondary)
+                            NavigationLink(value: peer) {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(peer.name)
+                                        Text(HopBearer.shortHex(peer.address))
+                                            .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if let n = bearer.unread[peer.name], n > 0 {
+                                        Text("\(n)").font(.caption2).bold().foregroundStyle(.white)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(Color.red).clipShape(Capsule())
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -260,7 +274,11 @@ struct ChatView: View {
     @State private var draft = ""
 
     private var thread: [HopBearer.Message] {
-        bearer.messages.filter { $0.peer == peer.name }
+        // Key by address (stable across renames); fall back to name for older messages.
+        bearer.messages.filter {
+            if let a = $0.peerAddr { return a == peer.address }
+            return $0.peer == peer.name
+        }
     }
 
     /// One-line metadata under a bubble.
