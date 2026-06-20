@@ -80,10 +80,31 @@ struct PendingTx {
     created_at: u64,
     lifetime_ms: u32,
     next_retx_at: u64,
+    /// Current backoff gap; doubles each retransmit up to [`MAX_RETX_INTERVAL_MS`].
+    retx_interval: u64,
 }
 
-/// Default gap between retransmission attempts for an unacked bundle.
+/// Default *initial* gap between retransmission attempts for an unacked bundle. The gap
+/// then backs off exponentially up to [`MAX_RETX_INTERVAL_MS`], so a days-long hop costs a
+/// handful of retransmits rather than thousands.
 pub const DEFAULT_RETX_INTERVAL_MS: u64 = 30_000;
+
+/// Ceiling on the retransmission backoff (15 min). Past this, retries pace at this rate
+/// for the rest of the bundle's lifetime.
+pub const MAX_RETX_INTERVAL_MS: u64 = 900_000;
+
+/// How many distinct peers a delivery-ACK is replicated to before it stops spreading
+/// (DESIGN.md §7). Until then it rides along to every new contact — the ACK both confirms
+/// delivery and vaccinates the mesh, so it's worth replicating, but bounded.
+pub const ACK_REPLICATION_TARGET: usize = 3;
+
+/// Hard cap on a delivery-ACK's lifetime (7 days). The ACK otherwise lives as long as the
+/// message it confirms.
+pub const MAX_ACK_LIFETIME_MS: u32 = 7 * 86_400_000;
+
+/// Don't re-emit a delivery-ACK for the same message more often than this — a burst of
+/// duplicate copies can't trigger an ACK storm (the re-ACK recovers a lost ACK; §7).
+pub const REACK_MIN_INTERVAL_MS: u64 = 30_000;
 
 /// Default cap on relayed (not-ours) bundles held for forwarding. Our own messages
 /// are never counted or evicted; relayed ones decay under this bound.
@@ -298,6 +319,13 @@ pub struct Node<S: Store = MemoryStore> {
     incoming_streams: HashMap<(PubKeyBytes, StreamId), IncomingStream>,
     /// Monotonic counter for our outbound stream ids.
     stream_seq: u64,
+    /// Delivery-ACKs we originated, → the distinct peers we've handed each to. The ACK
+    /// keeps riding to new contacts until it reaches [`ACK_REPLICATION_TARGET`] peers,
+    /// then stops (DESIGN.md §7).
+    ack_replicate: HashMap<BundleId, HashSet<PubKeyBytes>>,
+    /// Last time we emitted a delivery-ACK for a given delivered message id — throttles
+    /// re-ACKs so duplicate floods can't cause an ACK storm.
+    last_ack: HashMap<BundleId, u64>,
 }
 
 impl Node<MemoryStore> {
@@ -356,6 +384,8 @@ impl<S: Store> Node<S> {
             service_responses: Vec::new(),
             incoming_streams: HashMap::new(),
             stream_seq: 0,
+            ack_replicate: HashMap::new(),
+            last_ack: HashMap::new(),
         };
         node.rehydrate();
         node
@@ -380,6 +410,7 @@ impl<S: Store> Node<S> {
                             created_at: b.inner.created_at,
                             lifetime_ms: b.inner.lifetime_ms,
                             next_retx_at: 0, // re-offer on the next tick
+                            retx_interval: self.retx_interval_ms,
                         },
                     );
                 }
@@ -455,6 +486,7 @@ impl<S: Store> Node<S> {
             created_at: bundle.inner.created_at,
             lifetime_ms: bundle.inner.lifetime_ms,
             next_retx_at: self.now_ms.saturating_add(self.retx_interval_ms),
+            retx_interval: self.retx_interval_ms,
         };
         if self.store.put(bundle, self.now_ms) {
             if track {
@@ -924,6 +956,7 @@ impl<S: Store> Node<S> {
         }
         self.relay_order.clear();
         self.relay_fwd.clear();
+        self.ack_replicate.clear();
         self.pending.clear();
     }
 
@@ -986,6 +1019,10 @@ impl<S: Store> Node<S> {
         self.forwarded.retain(|_, (_, _, t)| now_ms.saturating_sub(*t) < 3_600_000);
         // Drop abandoned half-received carrier streams (sender vanished mid-transfer).
         self.incoming_streams.retain(|_, s| now_ms.saturating_sub(s.at) < 3_600_000);
+        // ACK bookkeeping: forget replication tracking for ACKs no longer held, and age
+        // out the re-ACK throttle map.
+        self.ack_replicate.retain(|id, _| self.store.contains(id));
+        self.last_ack.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
 
         let mut retransmit = false;
         for id in self.pending.keys().copied().collect::<Vec<_>>() {
@@ -1008,7 +1045,10 @@ impl<S: Store> Node<S> {
                     }
                 }
                 if let Some(p) = self.pending.get_mut(&id) {
-                    p.next_retx_at = now_ms.saturating_add(self.retx_interval_ms);
+                    // Exponential backoff so a long-lived bundle retries a handful of
+                    // times over its lifetime, not every 30s for days.
+                    p.retx_interval = p.retx_interval.saturating_mul(2).min(MAX_RETX_INTERVAL_MS);
+                    p.next_retx_at = now_ms.saturating_add(p.retx_interval);
                 }
                 retransmit = true;
             }
@@ -1155,7 +1195,19 @@ impl<S: Store> Node<S> {
 
         if is_for(&bundle, &self.address()) {
             if self.store.seen(&id) {
-                return; // a duplicate copy of something we already handled
+                // A duplicate of something we already delivered. If it wanted an ACK, our
+                // ACK may have been lost — re-emit it (throttled) so the sender can stop
+                // retransmitting. Never re-deliver to the inbox.
+                if !bundle.inner.flags.is_ack && bundle.inner.flags.request_ack {
+                    let due = match self.last_ack.get(&id) {
+                        Some(&t) => self.now_ms.saturating_sub(t) >= REACK_MIN_INTERVAL_MS,
+                        None => true,
+                    };
+                    if due {
+                        self.emit_ack(&bundle);
+                    }
+                }
+                return;
             }
             if bundle.inner.flags.is_ack {
                 // An ACK for one of our sent bundles: stop tracking & carrying it,
@@ -1366,6 +1418,10 @@ impl<S: Store> Node<S> {
 
     /// Emit an ACK bundle back to the origin of `orig`, sealed to its address.
     fn emit_ack(&mut self, orig: &Bundle) {
+        // The ACK should survive as long as the message it confirms (so the sender keeps
+        // hearing it while it's still retransmitting over a long hop), capped, and ride a
+        // notch above bulk traffic so confirmations aren't stuck behind big transfers.
+        let lifetime = orig.inner.lifetime_ms.min(MAX_ACK_LIFETIME_MS);
         let ack = Bundle::create(
             &self.identity,
             Destination::AckTo(orig.inner.src, orig.id()),
@@ -1373,11 +1429,17 @@ impl<S: Store> Node<S> {
             &Payload::Ack { for_bundle_id: orig.id(), status: 0, delivery_hops: orig.env.hops },
             BundleOpts {
                 created_at: self.now_ms,
+                lifetime_ms: lifetime,
+                priority: orig.inner.priority.saturating_add(1),
                 flags: BundleFlags { is_ack: true, ..Default::default() },
                 ..Default::default()
             },
         );
         if let Ok(ack) = ack {
+            // Track this ACK for replication (ride to N peers, then stop) and remember we
+            // just acked this message (re-ACK throttle on duplicates).
+            self.ack_replicate.entry(ack.id()).or_default();
+            self.last_ack.insert(orig.id(), self.now_ms);
             self.submit(ack);
         }
     }
@@ -1499,6 +1561,16 @@ impl<S: Store> Node<S> {
                 // already-relayed, settled bundles over ones we haven't relayed yet (§6).
                 if !own {
                     self.relay_fwd.entry(id).or_insert(now);
+                }
+                // A delivery-ACK we originated: count distinct peers it's reached; once it
+                // has spread to ACK_REPLICATION_TARGET, it's done — drop it so it stops
+                // riding to every contact (DESIGN.md §7).
+                if let Some(peers) = self.ack_replicate.get_mut(&id) {
+                    peers.insert(peer);
+                    if peers.len() >= ACK_REPLICATION_TARGET {
+                        self.ack_replicate.remove(&id);
+                        self.store.remove(&id);
+                    }
                 }
                 // "Sent N peers" counts relay handoffs only — not direct delivery to
                 // the destination itself (that shows as Delivered once the ACK is back).
@@ -1767,6 +1839,35 @@ mod tests {
             }
             _ => panic!("wrong payload"),
         }
+    }
+
+    #[test]
+    fn duplicate_to_destination_re_acks_then_throttles() {
+        // If our delivery-ACK is lost, the sender retransmits; a duplicate reaching the
+        // destination must re-emit the ACK (so the sender can stop) — but throttled, so a
+        // burst of duplicates can't cause an ACK storm (DESIGN.md §7).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        let id = nodes[0]
+            .send_to(&nodes[1].address(), "t".into(), b"hi".to_vec(), true)
+            .unwrap()
+            .unwrap();
+        let msg = nodes[0].store.get(&id).expect("our message is in the store");
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_inbox().len() == 1, "delivered once");
+
+        // A duplicate arrives after the throttle window → re-ACK (something to send).
+        nodes[1].set_time(REACK_MIN_INTERVAL_MS + 1);
+        let _ = nodes[1].drain_outgoing();
+        nodes[1].ingest(msg.clone());
+        assert!(!nodes[1].drain_outgoing().is_empty(), "re-acked the duplicate");
+        assert!(nodes[1].take_inbox().is_empty(), "but did NOT re-deliver to the inbox");
+
+        // Another duplicate immediately → within throttle → no new ACK.
+        nodes[1].ingest(msg);
+        assert!(nodes[1].drain_outgoing().is_empty(), "throttled: no ACK storm");
     }
 
     #[test]

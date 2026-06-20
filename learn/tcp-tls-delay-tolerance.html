@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TCP, TLS &amp; Delay Tolerance — an interactive primer</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#0e1420; --ink:#e6edf6; --muted:#9aa7bd;
+    --line:#223049; --accent:#5ec8ff; --accent2:#8b7bff; --good:#37d39b; --warn:#ffcf5e;
+    --bad:#ff6b6b; --client:#5ec8ff; --server:#8b7bff; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0,transparent 60%),var(--bg);
+    color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:880px;margin:0 auto;padding:0 22px 120px}
+  header.hero{padding:74px 0 30px}
+  .kicker{font:600 13px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(30px,5vw,46px);line-height:1.08;margin:14px 0 10px;letter-spacing:-.02em}
+  h2{font-size:clamp(22px,3.4vw,30px);margin:0 0 6px;letter-spacing:-.01em}
+  h3{font-size:17px;margin:26px 0 6px;color:var(--ink)}
+  p{color:#d4ddec}
+  .lead{font-size:19px;color:var(--muted);max-width:60ch}
+  section{padding:46px 0;border-top:1px solid var(--line)}
+  .sec-no{font:600 12px/1 var(--mono);color:var(--muted);letter-spacing:.18em;text-transform:uppercase}
+  .muted{color:var(--muted)}
+  code,.k{font-family:var(--mono);font-size:.92em;background:#0c1322;border:1px solid var(--line);
+    padding:.08em .4em;border-radius:6px;color:#cfe6ff}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
+    border-radius:16px;padding:18px;margin:18px 0}
+  .verdict{display:flex;gap:14px;align-items:flex-start;border-radius:14px;padding:14px 16px;margin:18px 0;
+    border:1px solid var(--line)}
+  .verdict.bad{background:rgba(255,107,107,.08);border-color:rgba(255,107,107,.35)}
+  .verdict.mixed{background:rgba(255,207,94,.08);border-color:rgba(255,207,94,.35)}
+  .verdict.good{background:rgba(55,211,155,.08);border-color:rgba(55,211,155,.35)}
+  .verdict .tag{font:700 12px/1 var(--mono);letter-spacing:.12em;padding:6px 9px;border-radius:8px;white-space:nowrap}
+  .verdict.bad .tag{background:var(--bad);color:#1a0a0a}
+  .verdict.mixed .tag{background:var(--warn);color:#241a00}
+  .verdict.good .tag{background:var(--good);color:#04140d}
+
+  /* wire diagram */
+  .stage{position:relative;margin:8px 0 6px}
+  .ends{display:flex;justify-content:space-between;font:600 13px/1 var(--mono)}
+  .end{display:flex;flex-direction:column;align-items:center;gap:8px;width:120px;text-align:center}
+  .node{width:74px;height:74px;border-radius:16px;display:grid;place-items:center;font-size:28px;
+    border:1px solid var(--line);background:#0c1322}
+  .node.client{box-shadow:0 0 0 1px rgba(94,200,255,.25),0 8px 30px rgba(94,200,255,.08)}
+  .node.server{box-shadow:0 0 0 1px rgba(139,123,255,.25),0 8px 30px rgba(139,123,255,.08)}
+  .end .label{color:var(--muted)}
+  .state{font:600 11px/1 var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:6px;border:1px solid var(--line);color:var(--muted)}
+  .state.up{color:var(--good);border-color:rgba(55,211,155,.4)}
+  .state.dead{color:var(--bad);border-color:rgba(255,107,107,.4)}
+  .lane{position:relative;height:62px;margin:10px 0}
+  .lane:before{content:"";position:absolute;left:60px;right:60px;top:50%;height:2px;
+    background:repeating-linear-gradient(90deg,var(--line) 0 8px,transparent 8px 16px)}
+  .pkt{position:absolute;top:50%;left:60px;transform:translate(0,-50%);background:#0c1322;border:1px solid var(--accent);
+    color:#dff1ff;font:600 12px/1 var(--mono);padding:7px 10px;border-radius:9px;white-space:nowrap;opacity:0;
+    transition:left .9s cubic-bezier(.5,.05,.4,1),opacity .25s, top .9s;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+  .pkt.s2c{border-color:var(--server);color:#ece8ff}
+  .pkt.show{opacity:1}
+  .pkt.drop{border-color:var(--bad);color:#ffd9d9}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+  button{appearance:none;border:1px solid var(--line);background:#13203a;color:var(--ink);font:600 13px/1 inherit;
+    padding:10px 14px;border-radius:10px;cursor:pointer;transition:.15s}
+  button:hover{border-color:var(--accent);background:#16263f}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:var(--accent);color:#04121d;border-color:transparent}
+  button.ghost{background:transparent}
+  .log{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:#0a0f1a;border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;margin-top:12px;min-height:46px;white-space:pre-wrap}
+  .log b{color:var(--ink);font-weight:600}
+  .row{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+  input[type=range]{width:230px;accent-color:var(--accent)}
+  .pill{font:600 12px/1 var(--mono);padding:5px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .pill.live{color:var(--good);border-color:rgba(55,211,155,.4)}
+  .pill.timeout{color:var(--bad);border-color:rgba(255,107,107,.4)}
+  ul{color:#d4ddec} li{margin:4px 0}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font:600 12px/1 var(--mono);color:var(--muted);margin-top:8px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px;margin-right:6px}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:640px){.twocol{grid-template-columns:1fr}}
+  .toc{position:sticky;top:0;background:rgba(11,15,23,.82);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+    z-index:5;padding:10px 0}
+  .toc .wrap{display:flex;gap:14px;overflow:auto;padding-top:0;padding-bottom:0;font:600 12px/1 var(--mono)}
+  .toc a{color:var(--muted);text-decoration:none;white-space:nowrap;padding:6px 2px}
+  .toc a:hover{color:var(--accent)}
+  .big{font-size:20px}
+  .hl-tcp{color:var(--accent)} .hl-tls{color:var(--accent2)} .hl-hop{color:var(--good)}
+  footer{padding:50px 0 0;color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+<nav class="toc"><div class="wrap">
+  <a href="#models">Circuits vs DTN</a>
+  <a href="#tcp">TCP handshake</a>
+  <a href="#retransmit">Reliability</a>
+  <a href="#timeout">Timeouts</a>
+  <a href="#tcp-verdict">TCP verdict</a>
+  <a href="#tls">TLS</a>
+  <a href="#tls-verdict">TLS verdict</a>
+  <a href="#hop">What it means for Hop</a>
+</div></nav>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="kicker">Interactive primer</div>
+    <h1>TCP, TLS &amp; why the legacy web<br>isn’t delay-tolerant</h1>
+    <p class="lead">A scroll-through, click-through tour of how a connection actually gets made and secured —
+    and exactly where the “must be live right now” assumption is baked in. Everything below is interactive:
+    press the buttons, drag the sliders, break things.</p>
+  </header>
+
+  <!-- ───────────────────────── MODELS ───────────────────────── -->
+  <section id="models">
+    <div class="sec-no">01 — the core idea</div>
+    <h2>Two ways to move a message</h2>
+    <p>Almost every networking question comes down to which of these two worlds you’re in.</p>
+    <div class="twocol">
+      <div class="card">
+        <h3 class="hl-tcp">① Circuit (TCP / TLS)</h3>
+        <p class="muted">A live, two-way conversation. Both ends keep <b>state</b> (sequence numbers, buffers,
+        keys) and assume the other side is reachable <b>continuously</b>. Silence past a timeout = the line is dead.</p>
+        <p class="muted">Like a phone call: if the other person stops talking for 30s, you hang up.</p>
+      </div>
+      <div class="card">
+        <h3 class="hl-hop">② Store-and-forward (DTN / Hop)</h3>
+        <p class="muted">A sealed message is handed node-to-node, <b>held</b> when there’s no onward path, and
+        forwarded later. No end-to-end liveness required. Minutes, hours, or a walk across town are fine.</p>
+        <p class="muted">Like passing a sealed letter through whoever’s headed the right way.</p>
+      </div>
+    </div>
+    <p>TCP and TLS are firmly world ①. The rest of this page shows <em>where</em> that liveness is enforced,
+    so the boundary with world ② is unmistakable.</p>
+  </section>
+
+  <!-- ───────────────────────── TCP HANDSHAKE ───────────────────────── -->
+  <section id="tcp">
+    <div class="sec-no">02 — opening a connection</div>
+    <h2>TCP’s 3-way handshake</h2>
+    <p>Before <b>any</b> data moves, TCP must establish a connection: three packets, each carrying
+    <span class="k">SEQ</span>/<span class="k">ACK</span> numbers so both sides agree where the byte-stream starts.
+    Step through it.</p>
+
+    <div class="card">
+      <div class="stage" data-stage="tcp">
+        <div class="ends">
+          <div class="end"><div class="node client">💻</div><div class="label">Client</div><div class="state" data-role="cstate">CLOSED</div></div>
+          <div class="end"><div class="node server">🖥️</div><div class="label">Server</div><div class="state" data-role="sstate">LISTEN</div></div>
+        </div>
+        <div class="lane" data-lane></div>
+      </div>
+      <div class="controls">
+        <button class="primary" data-act="step">Next step ▸</button>
+        <button class="ghost" data-act="reset">Reset</button>
+        <span class="pill" data-role="phase">step 0 / 3</span>
+      </div>
+      <div class="log" data-role="log">Press <b>Next step</b> to send the first <b>SYN</b>.</div>
+    </div>
+
+    <h3>What the three packets mean</h3>
+    <ul>
+      <li><b>SYN</b> — “let’s talk; my byte-stream starts at <span class="k">SEQ=x</span>.”</li>
+      <li><b>SYN-ACK</b> — “ok; mine starts at <span class="k">SEQ=y</span>, and I got yours (<span class="k">ACK=x+1</span>).”</li>
+      <li><b>ACK</b> — “got yours (<span class="k">ACK=y+1</span>). We’re <span class="hl-tcp">ESTABLISHED</span>.”</li>
+    </ul>
+    <p class="muted">Only now can a single byte of your actual request travel. That’s one full round-trip
+    (1&nbsp;RTT) spent just agreeing to begin — and it requires the peer to answer <em>right now</em>.</p>
+  </section>
+
+  <!-- ───────────────────────── RETRANSMIT ───────────────────────── -->
+  <section id="retransmit">
+    <div class="sec-no">03 — why TCP feels reliable</div>
+    <h2>Sequence numbers &amp; retransmission</h2>
+    <p>TCP turns an unreliable packet network into an ordered, lossless byte-stream with two tricks:
+    every byte is <b>numbered</b>, and the receiver <b>ACKs</b> what it has. Anything not ACKed before a
+    timer (the <span class="k">RTO</span>) fires gets <b>resent</b>. Try dropping a segment:</p>
+
+    <div class="card">
+      <div class="stage" data-stage="rtx">
+        <div class="ends">
+          <div class="end"><div class="node client">💻</div><div class="label">Sender</div></div>
+          <div class="end"><div class="node server">🖥️</div><div class="label">Receiver</div></div>
+        </div>
+        <div class="lane" data-lane></div>
+      </div>
+      <div class="controls">
+        <button class="primary" data-act="send">Send segment</button>
+        <label class="pill"><input type="checkbox" data-role="drop"> drop the next segment</label>
+        <button class="ghost" data-act="reset">Reset</button>
+      </div>
+      <div class="log" data-role="log">Send a data segment. Tick the box first to watch it get lost and re-sent.</div>
+    </div>
+    <p class="muted">This is real delay <em>tolerance — but only of the small kind</em>: jitter, a dropped packet,
+    a few seconds of congestion. The <span class="k">RTO</span> backs off (1s, 2s, 4s, 8s…) and retries a bounded
+    number of times. Cross that bound and the connection doesn’t wait — it dies. Which is the next demo.</p>
+  </section>
+
+  <!-- ───────────────────────── TIMEOUT ───────────────────────── -->
+  <section id="timeout">
+    <div class="sec-no">04 — the hard wall</div>
+    <h2>Timeouts: where “delay-tolerant” ends</h2>
+    <p>Every TCP connection is on a clock. Drag the round-trip delay up and watch the same handshake
+    succeed… until the delay crosses the socket’s <b>connect timeout</b>, where it simply fails.</p>
+
+    <div class="card">
+      <div class="stage" data-stage="to">
+        <div class="ends">
+          <div class="end"><div class="node client">💻</div><div class="label">Client</div><div class="state" data-role="cstate">CLOSED</div></div>
+          <div class="end"><div class="node server">🖥️</div><div class="label">Server</div><div class="state" data-role="sstate">LISTEN</div></div>
+        </div>
+        <div class="lane" data-lane></div>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label class="muted">network delay one-way: <b data-role="delayval">1.0 s</b></label>
+        <input type="range" min="200" max="12000" step="100" value="1000" data-role="delay">
+        <span class="pill" data-role="budget">timeout budget: 5 s</span>
+      </div>
+      <div class="controls">
+        <button class="primary" data-act="connect">connect()</button>
+        <button class="ghost" data-act="reset">Reset</button>
+        <span class="pill" data-role="status">idle</span>
+      </div>
+      <div class="log" data-role="log">Set a delay, then call <b>connect()</b>. Push past ~2.5 s one-way and the 5 s budget blows.</div>
+    </div>
+
+    <p>Real numbers: an app-set connect timeout is typically <b>2–10 seconds</b>; the OS default is tens of
+    seconds. After the connection is up, idle TCP is torn down by the OS or middleboxes (NATs, load balancers)
+    in <b>minutes</b> unless keepalives are sent. There is <b>no</b> setting that means “hold this connection
+    open across a 3-hour subway tunnel.”</p>
+  </section>
+
+  <section id="tcp-verdict">
+    <div class="verdict bad">
+      <span class="tag">VERDICT</span>
+      <div><b>TCP is not delay-tolerant.</b> It tolerates <em>milliseconds-to-seconds</em> of loss and jitter via
+      retransmission, but it’s a live circuit: a hard connect timeout to start, bounded retransmission once running,
+      and idle teardown by the OS/middleboxes. A multi-minute partition kills it. You cannot store-and-forward a
+      TCP connection — the state (sequence numbers, windows, the open socket) lives at <em>both</em> ends and expires.</div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── TLS ───────────────────────── -->
+  <section id="tls">
+    <div class="sec-no">05 — adding encryption</div>
+    <h2>TLS rides <span class="hl-tcp">on top of</span> TCP</h2>
+    <p>This is the key structural fact: <b>TLS is not its own transport.</b> It’s a handshake that runs
+    <em>inside</em> an already-established TCP connection. So step ① is always “TCP connects” (everything above),
+    and only then does TLS begin. Here’s a TLS&nbsp;1.3 handshake (1-RTT) over that pipe:</p>
+
+    <div class="card">
+      <div class="stage" data-stage="tls">
+        <div class="ends">
+          <div class="end"><div class="node client">💻</div><div class="label">Client</div><div class="state" data-role="cstate">TCP up</div></div>
+          <div class="end"><div class="node server">🖥️</div><div class="label">Server</div><div class="state" data-role="sstate">TCP up</div></div>
+        </div>
+        <div class="lane" data-lane></div>
+      </div>
+      <div class="controls">
+        <button class="primary" data-act="step">Next step ▸</button>
+        <button class="ghost" data-act="reset">Reset</button>
+        <span class="pill" data-role="phase">step 0 / 4</span>
+      </div>
+      <div class="log" data-role="log">Assume TCP is already connected. Press <b>Next step</b> for the ClientHello.</div>
+    </div>
+
+    <h3>The TLS 1.3 flow</h3>
+    <ul>
+      <li><b>ClientHello</b> — supported ciphers + the client’s ephemeral key share (Diffie–Hellman).</li>
+      <li><b>ServerHello</b> — chosen cipher + the server’s key share. <span class="muted">Both sides can now derive the shared secret.</span></li>
+      <li><b>Certificate + CertificateVerify</b> — the server proves it owns the name (a signature chain to a CA the client trusts). <span class="muted">This is what stops impersonation.</span></li>
+      <li><b>Finished</b> (both ways) — a MAC over the whole transcript, so neither side was tampered with. Then <span class="hl-tls">encrypted application data</span> flows.</li>
+    </ul>
+    <p class="muted">TLS&nbsp;1.2 needs <b>2</b> round-trips here; 1.3 needs <b>1</b>. Either way it’s a stateful, ordered,
+    timeout-bound conversation — layered on a transport that was <em>already</em> a stateful, timeout-bound conversation.</p>
+  </section>
+
+  <section id="tls-verdict">
+    <div class="verdict bad">
+      <span class="tag">VERDICT</span>
+      <div><b>TLS is even less delay-tolerant than TCP</b> — it inherits every TCP timeout (it can’t start until TCP
+      is up) and adds its own: a stalled handshake fails, and the negotiated keys/session live only in the two
+      endpoints’ memory for that connection. Plus certificates have validity windows. End-to-end TLS to the legacy
+      web fundamentally needs a <em>live, continuous path</em> for the life of the session.</div>
+    </div>
+    <div class="card">
+      <h3>The “connect timeout” starter problem you flagged</h3>
+      <p class="muted">You’re right that this is the hard part. To talk to <code>https://anything.com</code> you need:
+      <b>(1)</b> a TCP socket that connects within seconds, and <b>(2)</b> a TLS handshake that completes within
+      seconds, and <b>(3)</b> the socket to stay alive for the whole exchange. A store-and-forward mesh can’t satisfy
+      any of the three for the <em>origin</em> server, because the origin is a dumb legacy box that will <code>RST</code>
+      a half-open socket in seconds. The delay-tolerance has to live somewhere the legacy timeouts don’t reach.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── HOP ───────────────────────── -->
+  <section id="hop">
+    <div class="sec-no">06 — so what does Hop do</div>
+    <h2>Where Hop puts the liveness</h2>
+    <p>Two cases, and they behave completely differently:</p>
+
+    <div class="twocol">
+      <div class="verdict mixed" style="display:block">
+        <span class="tag">LIVE CIRCUIT</span>
+        <h3 style="margin-top:12px">Reaching the legacy TLS web</h3>
+        <p class="muted">No way around it: a gateway opens the real TCP+TLS connection, and the bytes are tunneled
+        across the mesh as a <b>live circuit</b> — every hop must be up <em>simultaneously</em> for the session’s
+        lifetime (HTTP <code>CONNECT</code> semantics, so TLS still terminates end-to-end at <em>your</em> device,
+        not the gateway = no man-in-the-middle). It traverses the <b>connected</b> mesh; it is <b>not</b> DTN.
+        This is purely a tax for talking to legacy boxes with legacy timeouts.</p>
+      </div>
+      <div class="verdict good" style="display:block">
+        <span class="tag">DELAY-TOLERANT</span>
+        <h3 style="margin-top:12px">Hop endpoint → Hop endpoint</h3>
+        <p class="muted">Here there’s <b>no socket in the middle that can expire.</b> A message is a sealed,
+        signed <b>bundle</b> addressed to a public key. Session state (the X3DH/double-ratchet keys) lives
+        <em>only</em> at the two endpoints — nothing between them holds a timer. So it store-and-forwards across
+        minutes, hours, or a partition, and still arrives ordered and encrypted. <b>This</b> is the world Hop is
+        native to.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>The one-line takeaway</h3>
+      <p class="big">Delay-tolerance can’t be added to TCP/TLS — it has to live at the <span class="hl-hop">endpoints</span>.
+      So Hop is delay-tolerant between Hop-aware peers, and only falls back to a live circuit when it has to speak to
+      the legacy, timeout-bound web.</p>
+      <p class="muted">That’s the fork in the road for <code>hops://</code>: anything Hop-native is free and
+      delay-tolerant; anything that has to reach a classic TLS origin drags the live-circuit requirement in with it.</p>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--client)"></span>client → server</span>
+      <span><span class="dot" style="background:var(--server)"></span>server → client</span>
+      <span><span class="dot" style="background:var(--bad)"></span>lost / timed out</span>
+    </div>
+  </section>
+
+  <footer>
+    Built for Hop · interactive, offline, no dependencies. Drag, click, and break the demos above —
+    the timeouts are the whole point.
+  </footer>
+</div>
+
+<script>
+(function(){
+  const C = getComputedStyle(document.documentElement);
+  const COL = {c2s:C.getPropertyValue('--client').trim(), s2c:C.getPropertyValue('--server').trim()};
+
+  // generic: animate a packet across a lane. dir: 'c2s' or 's2c'. returns a promise.
+  function fly(lane, label, dir, opts={}){
+    return new Promise(res=>{
+      const p=document.createElement('div');
+      p.className='pkt '+(dir==='s2c'?'s2c':'c2s')+(opts.drop?' drop':'');
+      p.textContent=label;
+      lane.appendChild(p);
+      const W=lane.clientWidth;
+      const startLeft = dir==='c2s'? 60 : W-60;
+      const endLeft   = dir==='c2s'? W-60 : 60;
+      p.style.left=startLeft+'px';
+      p.style.transform = dir==='c2s'?'translate(0,-50%)':'translate(-100%,-50%)';
+      requestAnimationFrame(()=>{ p.classList.add('show');
+        requestAnimationFrame(()=>{
+          if(opts.drop){ p.style.left=((startLeft+endLeft)/2)+'px'; p.style.top='115%'; p.style.opacity='0'; }
+          else { p.style.left=endLeft+'px'; }
+        });
+      });
+      setTimeout(()=>{ if(!opts.keep) p.remove(); res(p); }, opts.drop?900:950);
+    });
+  }
+  const log=(el,html)=>{ el.innerHTML=html; };
+  const setState=(el,role,txt,cls)=>{ const n=el.querySelector(`[data-role="${role}"]`); if(!n)return;
+    n.textContent=txt; n.className='state'+(cls?(' '+cls):''); };
+
+  /* ---- 02: TCP handshake (step) ---- */
+  (function(){
+    const root=document.querySelector('[data-stage="tcp"]').closest('.card');
+    const lane=root.querySelector('[data-lane]'); const lg=root.querySelector('[data-role="log"]');
+    const phase=root.querySelector('[data-role="phase"]'); let step=0; const stage=root.querySelector('.stage');
+    const steps=[
+      async()=>{ await fly(lane,'SYN  seq=x','c2s'); setState(stage,'cstate','SYN-SENT');
+        log(lg,'<b>SYN</b> → “let’s talk; my stream starts at <b>seq=x</b>.”'); },
+      async()=>{ await fly(lane,'SYN-ACK  seq=y, ack=x+1','s2c'); setState(stage,'sstate','SYN-RCVD');
+        log(lg,'<b>SYN-ACK</b> ← “ok, mine starts at <b>seq=y</b>; got yours (<b>ack=x+1</b>).”'); },
+      async()=>{ await fly(lane,'ACK  ack=y+1','c2s'); setState(stage,'cstate','ESTABLISHED','up'); setState(stage,'sstate','ESTABLISHED','up');
+        log(lg,'<b>ACK</b> → “got yours.” Both sides <b>ESTABLISHED</b>. <span class="muted">Now — and only now — real data can flow.</span>'); },
+    ];
+    root.querySelector('[data-act="step"]').onclick=async(e)=>{
+      if(step>=steps.length) return; e.target.disabled=true; await steps[step](); step++;
+      phase.textContent=`step ${step} / 3`; e.target.disabled = step>=steps.length;
+      if(step>=steps.length) phase.classList.add('live');
+    };
+    root.querySelector('[data-act="reset"]').onclick=()=>{ step=0; lane.innerHTML=''; phase.textContent='step 0 / 3';
+      phase.classList.remove('live'); root.querySelector('[data-act="step"]').disabled=false;
+      setState(stage,'cstate','CLOSED'); setState(stage,'sstate','LISTEN');
+      log(lg,'Press <b>Next step</b> to send the first <b>SYN</b>.'); };
+  })();
+
+  /* ---- 03: retransmission ---- */
+  (function(){
+    const root=document.querySelector('[data-stage="rtx"]').closest('.card');
+    const lane=root.querySelector('[data-lane]'); const lg=root.querySelector('[data-role="log"]');
+    const drop=root.querySelector('[data-role="drop"]'); let seq=1;
+    root.querySelector('[data-act="send"]').onclick=async(e)=>{
+      e.target.disabled=true;
+      if(drop.checked){
+        log(lg,`<b>seq=${seq}</b> sent… <span style="color:var(--bad)">lost in the network.</span>`);
+        await fly(lane,`DATA seq=${seq}`,'c2s',{drop:true});
+        log(lg,`No <b>ACK</b> arrives. RTO timer fires → <b>retransmit seq=${seq}</b> (backoff 1s→2s→4s…).`);
+        await new Promise(r=>setTimeout(r,500));
+        await fly(lane,`DATA seq=${seq} (retx)`,'c2s');
+        await fly(lane,`ACK=${seq+1}`,'s2c');
+        log(lg,`Retransmit delivered. <b>ACK=${seq+1}</b> ← stream stays in order. <span class="muted">Small delay absorbed.</span>`);
+        drop.checked=false;
+      } else {
+        await fly(lane,`DATA seq=${seq}`,'c2s');
+        await fly(lane,`ACK=${seq+1}`,'s2c');
+        log(lg,`<b>seq=${seq}</b> delivered, <b>ACK=${seq+1}</b> returned. Clean round-trip.`);
+      }
+      seq+=1; e.target.disabled=false;
+    };
+    root.querySelector('[data-act="reset"]').onclick=()=>{ seq=1; lane.innerHTML=''; drop.checked=false;
+      log(lg,'Send a data segment. Tick the box first to watch it get lost and re-sent.'); };
+  })();
+
+  /* ---- 04: connect timeout ---- */
+  (function(){
+    const root=document.querySelector('[data-stage="to"]').closest('.card');
+    const lane=root.querySelector('[data-lane]'); const lg=root.querySelector('[data-role="log"]');
+    const delay=root.querySelector('[data-role="delay"]'); const dval=root.querySelector('[data-role="delayval"]');
+    const status=root.querySelector('[data-role="status"]'); const stage=root.querySelector('.stage');
+    const BUDGET=5000; // ms — the connect() timeout
+    const upd=()=>{ dval.textContent=(delay.value/1000).toFixed(1)+' s'; };
+    delay.oninput=upd; upd();
+    root.querySelector('[data-act="connect"]').onclick=async(e)=>{
+      e.target.disabled=true; status.textContent='connecting…'; status.className='pill';
+      setState(stage,'cstate','SYN-SENT');
+      const one=+delay.value; // one-way delay
+      // SYN needs to reach server AND SYN-ACK return = 2× one-way before we can ACK.
+      const rtt=one*2;
+      log(lg,`<b>connect()</b> with a <b>${BUDGET/1000}s</b> budget. One round-trip ≈ <b>${(rtt/1000).toFixed(1)}s</b>.`);
+      // animate SYN
+      const synMs=Math.min(one,1400);
+      lane.innerHTML='';
+      await fly(lane,'SYN','c2s',{});
+      if(rtt>BUDGET){
+        // server's reply won't make it back in time
+        await new Promise(r=>setTimeout(r, Math.min(BUDGET-synMs, 1200)));
+        setState(stage,'cstate','TIMED OUT','dead');
+        status.textContent='ETIMEDOUT'; status.className='pill timeout';
+        log(lg,`Round-trip (<b>${(rtt/1000).toFixed(1)}s</b>) > budget (<b>${BUDGET/1000}s</b>). The socket gives up: <b style="color:var(--bad)">connect() → ETIMEDOUT</b>. Nothing was ever sent.`);
+      } else {
+        await fly(lane,'SYN-ACK','s2c');
+        await fly(lane,'ACK','c2s');
+        setState(stage,'cstate','ESTABLISHED','up'); setState(stage,'sstate','ESTABLISHED','up');
+        status.textContent='connected'; status.className='pill live';
+        log(lg,`Round-trip (<b>${(rtt/1000).toFixed(1)}s</b>) fit inside the budget. <b style="color:var(--good)">Connected.</b> Now drag the delay past ~2.5s one-way and try again.`);
+      }
+      e.target.disabled=false;
+    };
+    root.querySelector('[data-act="reset"]').onclick=()=>{ lane.innerHTML=''; status.textContent='idle'; status.className='pill';
+      setState(stage,'cstate','CLOSED'); setState(stage,'sstate','LISTEN');
+      log(lg,'Set a delay, then call <b>connect()</b>. Push past ~2.5 s one-way and the 5 s budget blows.'); };
+  })();
+
+  /* ---- 05: TLS 1.3 handshake ---- */
+  (function(){
+    const root=document.querySelector('[data-stage="tls"]').closest('.card');
+    const lane=root.querySelector('[data-lane]'); const lg=root.querySelector('[data-role="log"]');
+    const phase=root.querySelector('[data-role="phase"]'); let step=0; const stage=root.querySelector('.stage');
+    const steps=[
+      async()=>{ await fly(lane,'ClientHello + key share','c2s');
+        log(lg,'<b>ClientHello</b> → ciphers I support + my ephemeral <b>DH key share</b>.'); },
+      async()=>{ await fly(lane,'ServerHello + key share','s2c');
+        log(lg,'<b>ServerHello</b> ← chosen cipher + server key share. <span class="muted">Both sides derive the shared secret now.</span>'); },
+      async()=>{ await fly(lane,'Certificate + CertVerify','s2c');
+        log(lg,'<b>Certificate</b> ← a CA-signed chain proving the server owns the name + a signature over the transcript. <span class="muted">This blocks impersonation.</span>'); },
+      async()=>{ await fly(lane,'Finished','s2c'); await fly(lane,'Finished','c2s');
+        setState(stage,'cstate','SECURE','up'); setState(stage,'sstate','SECURE','up');
+        log(lg,'<b>Finished</b> both ways (MAC over the whole transcript). <span class="hl-tls">Encrypted application data flows.</span> That was 1 RTT — on top of the TCP RTT before it.'); },
+    ];
+    root.querySelector('[data-act="step"]').onclick=async(e)=>{
+      if(step>=steps.length) return; e.target.disabled=true; await steps[step](); step++;
+      phase.textContent=`step ${step} / 4`; e.target.disabled = step>=steps.length;
+      if(step>=steps.length) phase.classList.add('live');
+    };
+    root.querySelector('[data-act="reset"]').onclick=()=>{ step=0; lane.innerHTML=''; phase.textContent='step 0 / 4';
+      phase.classList.remove('live'); root.querySelector('[data-act="step"]').disabled=false;
+      setState(stage,'cstate','TCP up'); setState(stage,'sstate','TCP up');
+      log(lg,'Assume TCP is already connected. Press <b>Next step</b> for the ClientHello.'); };
+  })();
+})();
+</script>
+</body>
+</html>
