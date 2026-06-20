@@ -1491,3 +1491,106 @@ address — compact, and not reversible to a full address. The app resolves a ho
 relay it's connected to) by their short form and matching; `hop.identify` is how it learns
 the name for an address (and a relay's domain). Unresolved hops fall back to the short id —
 so a trace reads `you → us-central1.relay.hopme.sh → Bob` instead of opaque hex.
+
+## 30. Protocol layering — `hdp`, `hops`, and HNS
+
+Hop is now framed as three named layers, lowest to highest.
+
+### `hdp://` — the Hop Datagram Protocol (the substrate)
+
+`hdp` is Hop's UDP: a connectionless, sealed, addressed **datagram** (a bundle) that is
+store-and-forwarded across the mesh. **All Hop traffic rides on `hdp`** — messages,
+service calls, ACKs, adverts, name lookups, and `hops` requests/responses are all bundles.
+
+A datagram differs from UDP in two directions:
+- *Below* UDP: it's **store-and-forward** (held when there's no onward path, not dropped)
+  and **sealed + signed** (UDP is naked).
+- *Above* UDP: TCP's two useful guarantees are rebuilt **at the endpoints**, where they
+  need no live circuit — **reliable delivery** (`request_ack` + retransmit + epidemic
+  spray, collapsed by the delivery-ACK vaccine) and **in-order large transfers** (carrier
+  transport, §31). State lives only at the two endpoints, so nothing in the middle holds a
+  timer that can expire. That's why `hdp` is delay-tolerant where TCP/TLS can't be.
+
+Addressing: `hdp://<hop-address>` (a base58 pubkey) or `hdp://<domain>` (resolved to an
+address via HNS).
+
+### `hops://` — HTTP over `hdp` (origin-run, no MitM)
+
+`hops` is Hop's HTTP: the **same request/response semantics** as HTTP, carried as `hdp`
+datagrams (`Payload::HttpRequest` / `HttpResponse`), sealed to the destination. It requires
+a new operator-run component, the **`hop-endpoint`**, which runs on the service's own
+infrastructure and does the `hops → http/https` translation: it receives a `hops` request,
+**executes it against its own backend** (localhost / its LAN), and returns the response
+back through the mesh to the client.
+
+Because the endpoint terminates HTTP for **its own** service (it *is* the origin, like an
+nginx sidecar), there is **no man-in-the-middle** — unlike a third-party fetch gateway,
+which is why open-web fetch was dropped (§25). The only "live" hop is endpoint↔backend, on
+the operator's own wire; the client↔endpoint path stays fully delay-tolerant.
+
+**An endpoint is bound to its own domain — never an open proxy.** `hops://google.com/x`
+can resolve *only* to `https://google.com/x`, and only because `google.com` published its
+`_hopaddress.google.com` TXT record pointing at its endpoint. The request carries just a
+**path**; the endpoint prepends its *own* configured origin and refuses any other host — so
+there's no open-relay abuse and no laundering arbitrary web traffic through someone else's
+endpoint. You reach a domain's content only through that domain's own endpoint.
+
+Response sizes map onto §31:
+- **Finite** response (Content-Length) → rides the **carrier transport** (auto-chunked,
+  reassembled into one response). Free.
+- **Live / open-ended** response (SSE, chunked, WebSocket, progressive media) → rides an
+  **application stream** (`StreamOpen`/`StreamData`/`StreamAck`/`StreamClose`): the endpoint
+  holds the live upstream and relays numbered chunks the client reassembles in order and
+  **catches up on after a gap**. The upstream's liveness is confined to the operator side.
+
+### HNS — the Hop Name System
+
+Name→address resolution, delay-tolerant. A domain owner publishes a TXT record at
+`_hopaddress.{FQDN}` holding the Hop **address** (pubkey) of their `hop-endpoint`. To reach
+`hops://example.com`, a client resolves `_hopaddress.example.com` → pubkey, then speaks
+`hdp` to that address.
+
+Resolution itself runs over `hdp` and is **mesh-cached**:
+- A resolution query walks the mesh; **any node that already holds the answer and whose DNS
+  TTL hasn't expired answers immediately** (popular names resolve locally, off cache).
+- On a cold miss / expiry, the query must reach an **internet-connected node**, which does
+  the real DNS lookup and returns the address; the answer is cached along the return path
+  with its TTL.
+
+Trust: the name→key binding inherits DNS's trust model (harden with DNSSEC / a signed
+record). But once resolved, the channel is **end-to-end sealed to the resolved pubkey**, so
+the live session is authenticated regardless of how the binding was learned.
+
+## 31. Reliable, ordered, delay-tolerant delivery on `hdp`
+
+Everything below is built on plain datagrams; none of it requires a live end-to-end path.
+
+- **Epidemic spray + ACK-vaccine (§6/§7).** A bundle is replicated to new peers as they're
+  met (spray-and-wait, bounded by copy budget + hop limit + lifetime). The destination's
+  delivery-ACK travels back as an **anti-packet/vaccine**: every node it passes drops its
+  copy and refuses future ones (`immune`), collapsing the flood. Reliability = redundant
+  persistent replication that an acknowledgment later cancels.
+- **Reliable ACKs over long hops (§7).** Delivery-ACKs are first-class: **re-emitted on a
+  duplicate** (throttled) so a lost ACK self-heals; **replicated to N peers then settled**
+  (`ACK_REPLICATION_TARGET`); **lifetime-matched** to the message (capped 7 d) and ridden a
+  priority notch above bulk traffic; **route-biased** toward a hot return path via learned
+  routes (§27) without sacrificing redundancy.
+- **Custody / forward-before-evict (§6).** A node won't drop a relayed bundle it hasn't
+  handed to ≥1 peer if anything else can be freed, and keeps it ~3 min after forwarding for
+  opportunistic re-handoff. This stops a flood of big transfers from evicting legitimate
+  not-yet-relayed messages, and turns a node's custody cap into a **sliding window** of
+  concurrent in-flight bundles rather than a limit on transfer size. Cloud relays run a
+  large window (`set_max_relayed`).
+- **Carrier transport (§20).** A bundle too large for one link record is transparently
+  split into ordered `Payload::Carrier` chunks (each a sealed, ACK-tracked datagram) and
+  reassembled into the original bundle at the destination — preserving id, request_ack,
+  delivery status, and dedup. So a 5 MB image "message" just works; the cap is a sliding
+  window, so even video streams through.
+- **Application streams (§20).** For genuinely open-ended data, `StreamData` chunks are
+  delivered to the app **progressively** (in order, deduped, gap-buffered, resumable after
+  the receiver was offline) — distinct from carrier transport, which reassembles into one
+  bundle.
+- **DTN-scale timing.** Default bundle lifetime is **24 h** (settable longer), and
+  retransmission **backs off exponentially** (30 s → … → 15 min cap) so a long-lived bundle
+  costs a handful of retries, not thousands. A message persists and keeps seeking the
+  destination across contacts for its whole lifetime.

@@ -802,6 +802,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hop-endpoint"
+version = "0.0.1"
+dependencies = [
+ "bs58",
+ "hop-core",
+ "reqwest",
+ "tungstenite",
+]
+
+[[package]]
 name = "hop-ffi"
 version = "0.0.1"
 dependencies = [

@@ -1,0 +1,13 @@
+[package]
+name = "hop-endpoint"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "hops:// origin endpoint — a listening Hop node that translates hops requests to its OWN HTTP backend (DESIGN.md §30). Operator-run; bound to one domain; never an open proxy."
+
+[dependencies]
+hop-core.workspace = true
+tungstenite = "0.24"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+bs58 = "0.5"

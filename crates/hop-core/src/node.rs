@@ -628,6 +628,34 @@ impl<S: Store> Node<S> {
         }
     }
 
+    /// Send a `hops://` request to a specific endpoint (DESIGN.md §30): a normal HTTP
+    /// request sealed and addressed to the endpoint's Hop address (not the open-web
+    /// InternetEgress). The endpoint executes it against its own backend and the reply
+    /// arrives as an [`HttpRespItem`] via [`Node::take_http_responses`]. Returns the
+    /// request id (the response correlates by it).
+    pub fn send_hops_request(
+        &mut self,
+        endpoint: PubKeyBytes,
+        method: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+        max_resp: u32,
+    ) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Device(endpoint),
+            &endpoint,
+            &Payload::HttpRequest { method, url, headers, body, max_resp_bytes: max_resp },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.tx.entry(id).or_default();
+        self.forwarded.insert(id, (self.identity.address(), endpoint, self.now_ms));
+        self.deliver(bundle);
+        Ok(id)
+    }
+
     /// Send an internet-egress HTTP request (Use Case A, §9): sealed to `gateway`'s
     /// address and addressed `InternetEgress` so any gateway able to open it fulfills.
     /// The reply arrives as an [`HttpRespItem`] via [`Node::take_http_responses`].
@@ -804,7 +832,7 @@ impl<S: Store> Node<S> {
                 &self.identity,
                 Destination::Device(dst),
                 &dst,
-                &Payload::StreamData { stream_id: sid, seq: i as u64, bytes: chunk.to_vec(), fin: i + 1 == n },
+                &Payload::Carrier { stream_id: sid, seq: i as u64, bytes: chunk.to_vec(), fin: i + 1 == n },
                 opts,
             ) {
                 self.submit(carrier); // request_ack → tracked in `pending` for retransmit
@@ -1231,12 +1259,32 @@ impl<S: Store> Node<S> {
                 // messages stay raw for read_message (sessions need stateful decrypt).
                 match bundle.open(&self.identity) {
                     Ok(Payload::HttpResponse { status, headers, body, for_bundle_id }) => {
+                        // The response answers our request → drop the request bundle so it
+                        // stops being held/re-offered, and vaccinate any in-flight copies.
+                        self.pending.remove(&for_bundle_id);
+                        self.store.remove(&for_bundle_id);
+                        self.relay_order.retain(|x| *x != for_bundle_id);
+                        self.immune.insert(for_bundle_id, self.now_ms);
+                        self.tx.remove(&for_bundle_id);
                         self.http_responses.push(HttpRespItem {
                             from: bundle.inner.src,
                             for_id: for_bundle_id,
                             status,
                             headers,
                             body,
+                        });
+                    }
+                    // A hops:// request sealed to us (we're a hop-endpoint, §30): surface
+                    // it for the operator's translator to execute against its backend.
+                    Ok(Payload::HttpRequest { method, url, headers, body, max_resp_bytes }) => {
+                        self.http_requests.push(HttpReqItem {
+                            from: bundle.inner.src,
+                            id,
+                            method,
+                            url,
+                            headers,
+                            body,
+                            max_resp: max_resp_bytes,
                         });
                     }
                     Ok(Payload::ServiceResponse { for_bundle_id, status, body }) => {
@@ -1274,9 +1322,10 @@ impl<S: Store> Node<S> {
                             });
                         }
                     }
-                    // A carrier-stream chunk: reassemble (§20); once complete, reconstruct
+                    // A transport carrier chunk: reassemble (§20); once complete, reconstruct
                     // the original bundle and process it as if it had arrived whole.
-                    Ok(Payload::StreamData { stream_id, seq, bytes, fin }) => {
+                    // (Application streams use StreamData and are delivered progressively.)
+                    Ok(Payload::Carrier { stream_id, seq, bytes, fin }) => {
                         let from = bundle.inner.src;
                         if let Some(inner_bytes) =
                             self.accept_stream_chunk(from, stream_id, seq, bytes, fin)
@@ -1839,6 +1888,38 @@ mod tests {
             }
             _ => panic!("wrong payload"),
         }
+    }
+
+    #[test]
+    fn hops_request_response_round_trips() {
+        // A hops:// request sealed to an endpoint surfaces there as an HTTP request; the
+        // endpoint replies and the client gets the response, correlated by request id (§30).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        let endpoint = nodes[1].address();
+
+        let req = nodes[0]
+            .send_hops_request(endpoint, "GET".into(), "/hello".into(), vec![], vec![], 64_000)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        // Endpoint side: the request is surfaced for the operator's translator.
+        let reqs = nodes[1].take_http_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].url, "/hello");
+        let (from, rid) = (reqs[0].from, reqs[0].id);
+        nodes[1].send_http_response(from, rid, 200, vec![], b"world".to_vec()).unwrap();
+        net.pump(&mut nodes);
+
+        // Client side: the response arrives, correlated to the request.
+        let resps = nodes[0].take_http_responses();
+        assert_eq!(resps.len(), 1);
+        assert_eq!(resps[0].for_id, req);
+        assert_eq!(resps[0].status, 200);
+        assert_eq!(resps[0].body, b"world");
+        assert!(!nodes[0].store.contains(&req), "request purged once answered");
     }
 
     #[test]
