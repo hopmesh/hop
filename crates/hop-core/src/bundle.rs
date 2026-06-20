@@ -142,6 +142,17 @@ pub enum Payload {
         status: u16,
         body: Vec<u8>,
     },
+    /// **Transport carrier** for an oversized bundle (DESIGN.md §20). A bundle too large
+    /// to send in one shot is split into ordered `Carrier` chunks carrying its raw bytes;
+    /// the receiver reassembles them and processes the original bundle as if it arrived
+    /// whole. This is invisible plumbing — distinct from `StreamData`, which is an
+    /// *application* stream delivered to the app progressively (SSE/WebSocket/live).
+    Carrier {
+        stream_id: StreamId,
+        seq: u64,
+        bytes: Vec<u8>,
+        fin: bool,
+    },
 }
 
 /// The signed portion of a bundle. The source signature covers this exactly.

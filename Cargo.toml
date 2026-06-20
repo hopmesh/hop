@@ -9,6 +9,7 @@ members = [
     "crates/hop-relay",
     "crates/hop-relayd",
     "crates/hop-store-firestore",
+    "crates/hop-endpoint",
 ]
 exclude = ["site"]
 
