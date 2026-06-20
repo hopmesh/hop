@@ -1421,3 +1421,27 @@ node and receives whatever is pending. Persistent connection = real-time receive
 keeps that one node warm; periodic reconnect (the delay-tolerant mode) lets the node
 scale to zero between check-ins at the cost of receive latency. The device's existing
 background wakes (beacon region entry, BG fetch) double as periodic check-in triggers.
+
+## 29. Services & commands — calling a node
+
+Beyond fire-and-forget messages, a node can **call a service** on any address: a
+request/response over the bundle layer, sealed end-to-end like everything else. A
+`ServiceRequest { service, method, args }` is addressed to a node; the reply comes back as
+a `ServiceResponse { for_bundle_id, status, body }` correlated by the request's id (the
+same shape as the HTTP-egress pair, §9, but device-to-device).
+
+- **Built-in services** are namespaced under `hop.` and answered by the **node itself** —
+  they never surface to the app. The first is **`hop.identify`**: call it on any address to
+  get an `IdentityRecord { name, kind, address }`. `name` is `None` by default for a device
+  (so a caller falls back to the short address), a user can set it, and a **relay reports
+  its region domain** (`us-central1.relay.hopme.sh`). `kind` is device / relay / gateway.
+- **Custom services** (any non-`hop.` name) are **dispatched to the embedding app**, which
+  fulfills them and seals a response back. This is the "call a device with a command"
+  primitive — an app registers whatever services it wants on top.
+
+**Why identify matters for traces (§27).** A trace records each hop as an 8-byte short
+address — compact, and not reversible to a full address. The app resolves a hop to a
+**display name** by indexing the full addresses it already knows (peers, contacts, the
+relay it's connected to) by their short form and matching; `hop.identify` is how it learns
+the name for an address (and a relay's domain). Unresolved hops fall back to the short id —
+so a trace reads `you → us-central1.relay.hopme.sh → Bob` instead of opaque hex.

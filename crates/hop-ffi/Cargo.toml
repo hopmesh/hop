@@ -17,6 +17,7 @@ hop-store-sqlite.workspace = true
 uniffi = "0.28"
 thiserror.workspace = true
 bs58 = "0.5"
+postcard.workspace = true
 
 # Binary that generates the Swift/Kotlin bindings from the compiled library.
 [[bin]]

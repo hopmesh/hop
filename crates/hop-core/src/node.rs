@@ -167,6 +167,48 @@ pub struct HttpRespItem {
     pub body: Vec<u8>,
 }
 
+/// The built-in identity service (DESIGN.md §29): call it on any address to learn that
+/// node's display name + kind. Answered by the node itself, not the app.
+pub const SERVICE_IDENTIFY: &str = "hop.identify";
+
+/// What kind of node this is, reported by [`SERVICE_IDENTIFY`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeKind {
+    Device,
+    Relay,
+    Gateway,
+}
+
+/// The reply body of [`SERVICE_IDENTIFY`]: who a node is. `name` is `None` when unset
+/// (a device by default) — callers fall back to the short address. A relay sets its name
+/// to its region domain. Carries the full `address` so a caller can resolve a short trace
+/// hop it received against the responder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRecord {
+    pub name: Option<String>,
+    pub kind: NodeKind,
+    pub address: PubKeyBytes,
+}
+
+/// A service request addressed to this node that the embedding app should fulfill
+/// (built-in `hop.` services are answered by the node and never surface here).
+pub struct ServiceReqItem {
+    pub from: PubKeyBytes,
+    /// The request bundle's id — pass it to [`Node::send_service_response`] to reply.
+    pub id: BundleId,
+    pub service: String,
+    pub method: String,
+    pub args: Vec<u8>,
+}
+
+/// A service response sealed back to us (as the caller).
+pub struct ServiceRespItem {
+    pub from: PubKeyBytes,
+    pub for_id: BundleId,
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
 /// A running Hop node, generic over its [`Store`] backend (in-memory by default;
 /// `hop-store-sqlite` for persistence).
 pub struct Node<S: Store = MemoryStore> {
@@ -213,6 +255,17 @@ pub struct Node<S: Store = MemoryStore> {
     /// app carried it (DESIGN.md §27). Defaults to the shared fabric; set by the
     /// embedding app (or [`crate::relay_app_id`] for a relay).
     app: AppId,
+    /// This node's display name, returned by the built-in `hop.identify` service
+    /// (DESIGN.md §29). `None` by default (a device) → callers show the short address;
+    /// a relay sets it to its region domain.
+    name: Option<String>,
+    /// What kind of node this is, returned by `hop.identify`. Defaults to `Device`.
+    kind: NodeKind,
+    /// Egress service requests addressed to us that the app must fulfill (custom,
+    /// non-`hop.` services). Built-in services are answered by the node itself.
+    service_requests: Vec<ServiceReqItem>,
+    /// Service responses sealed back to us as a caller.
+    service_responses: Vec<ServiceRespItem>,
 }
 
 impl Node<MemoryStore> {
@@ -264,6 +317,10 @@ impl<S: Store> Node<S> {
             routes: RouteTable::new(DEFAULT_MAX_ROUTES),
             forwarded: HashMap::new(),
             app: FABRIC_APP,
+            name: None,
+            kind: NodeKind::Device,
+            service_requests: Vec::new(),
+            service_responses: Vec::new(),
         };
         node.rehydrate();
         node
@@ -550,6 +607,86 @@ impl<S: Store> Node<S> {
     /// Drain HTTP responses sealed back to us (as a requester).
     pub fn take_http_responses(&mut self) -> Vec<HttpRespItem> {
         std::mem::take(&mut self.http_responses)
+    }
+
+    // --- service calls (DESIGN.md §29) ----------------------------------------
+
+    /// Set this node's display name (returned by `hop.identify`). `None` clears it.
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
+    }
+
+    /// This node's display name, if set.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Set what kind of node this is (returned by `hop.identify`).
+    pub fn set_kind(&mut self, kind: NodeKind) {
+        self.kind = kind;
+    }
+
+    /// This node's identity record, as the built-in `hop.identify` service reports it.
+    pub fn identity_record(&self) -> IdentityRecord {
+        IdentityRecord { name: self.name.clone(), kind: self.kind, address: self.address() }
+    }
+
+    /// Call a service/command on `dst` (DESIGN.md §29). `service` is namespaced
+    /// (`hop.identify` and other `hop.` names are answered by the destination node
+    /// itself; anything else is dispatched to its app). The reply arrives as a
+    /// [`ServiceRespItem`] via [`Node::take_service_responses`]. Returns the request id.
+    pub fn send_service_request(
+        &mut self,
+        dst: PubKeyBytes,
+        service: String,
+        method: String,
+        args: Vec<u8>,
+    ) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Device(dst),
+            &dst,
+            &Payload::ServiceRequest { service, method, args },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.tx.entry(id).or_default();
+        // Remember the send so a returning delivery learns the route (§27).
+        self.forwarded.insert(id, (self.identity.address(), dst, self.now_ms));
+        self.submit(bundle);
+        Ok(id)
+    }
+
+    /// Seal a service response back to a caller (app side, for a custom service). Reply
+    /// to a [`ServiceReqItem`] using its `from` (as `to`) and `id` (as `for_id`).
+    pub fn send_service_response(
+        &mut self,
+        to: PubKeyBytes,
+        for_id: BundleId,
+        status: u16,
+        body: Vec<u8>,
+    ) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Device(to),
+            &to,
+            &Payload::ServiceResponse { for_bundle_id: for_id, status, body },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.submit(bundle);
+        Ok(id)
+    }
+
+    /// Drain custom service requests addressed to us (built-in `hop.` services are
+    /// answered by the node and never appear here).
+    pub fn take_service_requests(&mut self) -> Vec<ServiceReqItem> {
+        std::mem::take(&mut self.service_requests)
+    }
+
+    /// Drain service responses sealed back to us (as a caller).
+    pub fn take_service_responses(&mut self) -> Vec<ServiceRespItem> {
+        std::mem::take(&mut self.service_responses)
     }
 
     /// Publish (and gossip) a signed service advert so others discover it across the
@@ -912,6 +1049,32 @@ impl<S: Store> Node<S> {
                             headers,
                             body,
                         });
+                    }
+                    Ok(Payload::ServiceResponse { for_bundle_id, status, body }) => {
+                        self.service_responses.push(ServiceRespItem {
+                            from: bundle.inner.src,
+                            for_id: for_bundle_id,
+                            status,
+                            body,
+                        });
+                    }
+                    Ok(Payload::ServiceRequest { service, method, args }) => {
+                        let from = bundle.inner.src;
+                        if service == SERVICE_IDENTIFY {
+                            // Built-in: the node answers with its own identity record.
+                            let body = postcard::to_allocvec(&self.identity_record())
+                                .unwrap_or_default();
+                            let _ = self.send_service_response(from, id, 0, body);
+                        } else {
+                            // Custom service: hand to the embedding app to fulfill.
+                            self.service_requests.push(ServiceReqItem {
+                                from,
+                                id,
+                                service,
+                                method,
+                                args,
+                            });
+                        }
                     }
                     _ => self.inbox.push(bundle.clone()),
                 }
@@ -1322,6 +1485,78 @@ mod tests {
         // Re-ingesting the same bundle is a no-op (dedup), not a duplicate.
         relay.ingest(b);
         assert_eq!(relay.undeliverable_device_bundles().len(), 1);
+    }
+
+    #[test]
+    fn identify_service_round_trips() {
+        // Calling the built-in hop.identify on a peer returns its name/kind/address,
+        // answered by the node itself — nothing surfaces to the responder's app (§29).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[1].set_name(Some("Bob's Phone".into()));
+
+        nodes[0]
+            .send_service_request(nodes[1].address(), SERVICE_IDENTIFY.into(), String::new(), vec![])
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert!(nodes[1].take_service_requests().is_empty(), "built-in is auto-answered");
+        let resps = nodes[0].take_service_responses();
+        assert_eq!(resps.len(), 1);
+        assert_eq!(resps[0].status, 0);
+        let rec: IdentityRecord = postcard::from_bytes(&resps[0].body).unwrap();
+        assert_eq!(rec.name.as_deref(), Some("Bob's Phone"));
+        assert_eq!(rec.kind, NodeKind::Device);
+        assert_eq!(rec.address, nodes[1].address());
+    }
+
+    #[test]
+    fn unnamed_node_identifies_with_no_name() {
+        // A device with no name set returns None — the caller falls back to its short
+        // address. The full address still comes back so the caller can resolve it.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        nodes[0]
+            .send_service_request(nodes[1].address(), SERVICE_IDENTIFY.into(), String::new(), vec![])
+            .unwrap();
+        net.pump(&mut nodes);
+
+        let resps = nodes[0].take_service_responses();
+        let rec: IdentityRecord = postcard::from_bytes(&resps[0].body).unwrap();
+        assert_eq!(rec.name, None);
+        assert_eq!(rec.address, nodes[1].address());
+    }
+
+    #[test]
+    fn custom_service_dispatches_to_app_and_replies() {
+        // A non-hop. service surfaces to the responder's app, which replies; the caller
+        // gets the response correlated by the request id.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        let req_id = nodes[0]
+            .send_service_request(nodes[1].address(), "app.echo".into(), "say".into(), b"hi".to_vec())
+            .unwrap();
+        net.pump(&mut nodes);
+
+        let reqs = nodes[1].take_service_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].service, "app.echo");
+        assert_eq!(reqs[0].method, "say");
+        assert_eq!(reqs[0].args, b"hi");
+        assert_eq!(reqs[0].id, req_id);
+        let (from, for_id) = (reqs[0].from, reqs[0].id);
+        nodes[1].send_service_response(from, for_id, 0, b"hi back".to_vec()).unwrap();
+        net.pump(&mut nodes);
+
+        let resps = nodes[0].take_service_responses();
+        assert_eq!(resps.len(), 1);
+        assert_eq!(resps[0].for_id, req_id);
+        assert_eq!(resps[0].body, b"hi back");
     }
 
     #[test]

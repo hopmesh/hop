@@ -81,16 +81,6 @@ resource "google_compute_url_map" "relay" {
   }
 }
 
-# Google-managed TLS cert for the apex relay.hopme.sh. Stays on the proxy through
-# Phase 1; Phase 2 swaps the proxy onto the wildcard cert map below (then this can go).
-resource "google_compute_managed_ssl_certificate" "relay" {
-  name = "hop-relay-cert"
-
-  managed {
-    domains = [var.domain]
-  }
-}
-
 # --- Wildcard cert via Certificate Manager (relay.hopme.sh + *.relay.hopme.sh) --------
 # A DNS-authorized managed cert: one authorization on the apex also authorizes the
 # wildcard, so it covers every current and future region subdomain and renews without
@@ -135,11 +125,10 @@ resource "google_certificate_manager_certificate_map_entry" "relay" {
 }
 
 resource "google_compute_target_https_proxy" "relay" {
-  name             = "hop-relay-https-proxy"
-  url_map          = google_compute_url_map.relay.id
-  ssl_certificates = [google_compute_managed_ssl_certificate.relay.id]
-  # Phase 2: replace ssl_certificates with
-  #   certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.relay.id}"
+  name    = "hop-relay-https-proxy"
+  url_map = google_compute_url_map.relay.id
+  # The wildcard cert map serves relay.hopme.sh + every <region>.relay.hopme.sh.
+  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.relay.id}"
 }
 
 resource "google_compute_global_forwarding_rule" "https" {

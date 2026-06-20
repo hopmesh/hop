@@ -808,6 +808,7 @@ dependencies = [
  "bs58",
  "hop-core",
  "hop-store-sqlite",
+ "postcard",
  "thiserror 2.0.18",
  "uniffi",
 ]
