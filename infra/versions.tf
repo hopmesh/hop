@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 6.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.12"
+    }
   }
 
   # State is managed by Spacelift by default. To run locally instead, uncomment

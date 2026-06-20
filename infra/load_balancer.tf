@@ -97,9 +97,19 @@ resource "google_compute_managed_ssl_certificate" "relay" {
 # re-touching the proxy. (A compute managed cert can't do wildcards and re-provisions
 # whenever its domain list changes.) Phase 1 just creates it; the proxy is switched onto
 # the cert map in Phase 2, once the cert reports ACTIVE.
+# A freshly-enabled API needs a moment to propagate before it accepts calls, so gate
+# the Certificate Manager resources on the API enable + a short wait (avoids the
+# "API has not been used before" 403 on a cold project).
+resource "time_sleep" "certmanager_ready" {
+  depends_on      = [google_project_service.this]
+  create_duration = "120s"
+}
+
 resource "google_certificate_manager_dns_authorization" "relay" {
   name   = "hop-relay-dnsauth"
   domain = var.domain # relay.hopme.sh — also authorizes *.relay.hopme.sh
+
+  depends_on = [time_sleep.certmanager_ready]
 }
 
 resource "google_certificate_manager_certificate" "relay" {
@@ -113,6 +123,8 @@ resource "google_certificate_manager_certificate" "relay" {
 
 resource "google_certificate_manager_certificate_map" "relay" {
   name = "hop-relay-certmap"
+
+  depends_on = [time_sleep.certmanager_ready]
 }
 
 resource "google_certificate_manager_certificate_map_entry" "relay" {
