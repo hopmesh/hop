@@ -1068,6 +1068,15 @@ impl<S: Store> Node<S> {
                         });
                     }
                     Ok(Payload::ServiceResponse { for_bundle_id, status, body }) => {
+                        // A response is the return-path "delete" for our request: service
+                        // calls carry no ACK-vaccine of their own, so without this the
+                        // request bundle would sit pinned in our store forever. Drop it
+                        // everywhere and vaccinate so any in-flight copy is dropped too.
+                        self.pending.remove(&for_bundle_id);
+                        self.store.remove(&for_bundle_id);
+                        self.relay_order.retain(|x| *x != for_bundle_id);
+                        self.immune.insert(for_bundle_id, self.now_ms);
+                        self.tx.remove(&for_bundle_id);
                         self.service_responses.push(ServiceRespItem {
                             from: bundle.inner.src,
                             for_id: for_bundle_id,
@@ -1574,6 +1583,9 @@ mod tests {
         assert_eq!(resps.len(), 1);
         assert_eq!(resps[0].for_id, req_id);
         assert_eq!(resps[0].body, b"hi back");
+        // The response is the return-path delete: the request no longer lingers in our
+        // store (service calls carry no ACK-vaccine, so without this it would pin forever).
+        assert!(!nodes[0].store.contains(&req_id), "request purged once its response arrives");
     }
 
     #[test]
