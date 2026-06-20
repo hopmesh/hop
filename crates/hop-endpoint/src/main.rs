@@ -24,6 +24,7 @@
 //! is no code path by which this process fetches anything other than `<origin><path>`.
 
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -95,7 +96,7 @@ fn main() {
     println!("hop-endpoint: authorized domain {domain}  (rejects any other host)");
     println!("hop-endpoint: serving origin {origin}");
     println!("hop-endpoint: publish DNS →  _hopaddress.{domain}  TXT  \"{}\"", bs58::encode(addr).into_string());
-    println!("hop-endpoint: listening (ws) on {listen}");
+    println!("hop-endpoint: listening on {listen} (ws = hops:// bearer, http = reverse-proxy to origin)");
 
     // Redirects are disabled: the backend can never bounce us to a different host.
     let http = reqwest::blocking::Client::builder()
@@ -105,15 +106,21 @@ fn main() {
         .expect("http client");
 
     let (tx, rx) = mpsc::channel::<Ev>();
+    // A cheap clone (Arc inside) for the accept threads' plain-HTTP reverse proxy; the
+    // original `http` is owned by the driver for hops:// fetches.
+    let http_accept = http.clone();
 
-    // Accept inbound client WebSocket connections (one thread per connection).
+    // Accept inbound connections (one thread per connection). A connection is either a
+    // WebSocket (the hops:// Hop bearer) or a plain HTTP request, which we reverse-proxy to
+    // our own origin so https://<domain>/ serves the same content as hops://<domain>/.
     {
         let tx = tx.clone();
         let listener = TcpListener::bind(&listen).expect("bind --listen address");
+        let origin = origin.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let tx = tx.clone();
-                std::thread::spawn(move || serve_ws(stream, &tx));
+                let (tx, origin, http) = (tx.clone(), origin.clone(), http_accept.clone());
+                std::thread::spawn(move || serve_conn(stream, &tx, &origin, &http, max_resp));
             }
         });
     }
@@ -221,10 +228,104 @@ fn path_of(url: &str) -> String {
     }
 }
 
-/// Drive one inbound client WebSocket as a Hop link (we're the Responder). Same
-/// interleave-by-read-timeout pattern as the relay's WS bearer.
-fn serve_ws(stream: TcpStream, ev_tx: &Sender<Ev>) {
+/// Serve a plain HTTP request by reverse-proxying it to our OWN origin (path only) — the
+/// standard-HTTPS sibling of the hops:// path. The LB terminates TLS, so we speak plain HTTP
+/// here. Like the hops:// path it can never reach any host but our configured origin, so
+/// there's no open-proxy surface. v1 is GET/HEAD.
+fn serve_http_proxy(
+    mut stream: TcpStream,
+    origin: &str,
+    http: &reqwest::blocking::Client,
+    max_resp: u32,
+) {
+    // Read the request line + headers (up to the blank line); we only need method + path.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+        return;
+    }
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let raw_path = parts.next().unwrap_or("/").to_string();
+    // Drain the rest of the headers so the client's send completes cleanly.
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) if line == "\r\n" || line == "\n" => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+
+    let head_only = method.eq_ignore_ascii_case("HEAD");
+    let (status, ctype, body) = if !method.eq_ignore_ascii_case("GET") && !head_only {
+        (405u16, "text/plain; charset=utf-8".to_string(), b"hop-endpoint: only GET/HEAD over plain HTTP".to_vec())
+    } else {
+        let url = format!("{origin}{}", path_of(&raw_path));
+        match http.get(&url).send() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let ctype = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let mut body = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
+                if body.len() > max_resp as usize {
+                    body.truncate(max_resp as usize);
+                }
+                (status, ctype, body)
+            }
+            Err(_) => (502, "text/plain; charset=utf-8".to_string(), b"hop-endpoint: backend unreachable".to_vec()),
+        }
+    };
+
+    let reason = if status == 200 { "OK" } else { "" };
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    if !head_only {
+        let _ = stream.write_all(&body);
+    }
+    let _ = stream.flush();
+}
+
+/// Handle one inbound connection: a WebSocket becomes a Hop link (hops:// bearer); anything
+/// else is a plain HTTP request we reverse-proxy to our own origin, so `https://<domain>/`
+/// serves the same content as `hops://<domain>/`. We peek (non-consuming) to decide, leaving
+/// the bytes intact for whichever handler takes over (the relay's WS bearer does the same).
+fn serve_conn(
+    stream: TcpStream,
+    ev_tx: &Sender<Ev>,
+    origin: &str,
+    http: &reqwest::blocking::Client,
+    max_resp: u32,
+) {
     let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut head = [0u8; 1024];
+    match stream.peek(&mut head) {
+        Ok(n) if n > 0 => {
+            let req = String::from_utf8_lossy(&head[..n]).to_ascii_lowercase();
+            if !req.contains("upgrade: websocket") {
+                serve_http_proxy(stream, origin, http, max_resp);
+                return;
+            }
+        }
+        _ => return, // no data (e.g. a bare TCP probe) — nothing to serve
+    }
+    let _ = stream.set_read_timeout(None); // hand a clean blocking socket to tungstenite
+
     let mut ws = match tungstenite::accept(stream) {
         Ok(w) => w,
         Err(_) => return,
