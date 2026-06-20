@@ -160,6 +160,7 @@ final class HopBearer: NSObject, ObservableObject {
     private var didSetupPeripheral = false            // peripheral published this power cycle
     private var nameByAddr: [Data: String] = [:]
     private var contacts: [Data: Peer] = [:]   // app-side contact book (address → peer)
+    private var userNamed = Set<Data>()        // contacts the user named (identify won't override)
     private var lastRelayLog = -1
     private var lastReachLog = -1
     private var tickTimer: Timer?
@@ -282,6 +283,26 @@ final class HopBearer: NSObject, ObservableObject {
         UserDefaults.standard.set(trimmed, forKey: "hop.displayName")
         publishPresence()
         pump()
+    }
+
+    /// Add a contact to the address book by base58 address. An empty `name` falls back to
+    /// the address (and hop.identify will fill in the device's own name if it has one); a
+    /// provided name is kept as your local alias. Returns false if the address is invalid.
+    @discardableResult
+    func addContact(name: String, address base58: String) -> Bool {
+        let addr = addressFromBase58(text: base58.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard addr.count == 32, addr != node.address() else { return false }
+        let alias = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = alias.isEmpty ? HopBearer.shortHex(addr) : alias
+        nameByAddr[addr] = label
+        contacts[addr] = Peer(address: addr, name: label, hops: 0)
+        if alias.isEmpty {
+            queueIdentify(addr)   // resolve their device name if they set one
+        } else {
+            userNamed.insert(addr) // keep my alias
+        }
+        pump()
+        return true
     }
 
     /// Clear the relay queue (our undelivered messages + bundles held for peers).
@@ -568,10 +589,13 @@ final class HopBearer: NSObject, ObservableObject {
                 identities[Data(info.address)] = info
                 let addr = Data(info.address)
                 let label = info.name.isEmpty ? HopBearer.shortHex(addr) : info.name
-                nameByAddr[addr] = label
                 // Keep the contact's display name in sync (the chat is keyed by address,
                 // so renames are safe) — this is how an unknown sender gets its real name.
-                if let c = contacts[addr] {
+                // A contact the user named locally keeps that alias.
+                if !userNamed.contains(addr) {
+                    nameByAddr[addr] = label
+                }
+                if let c = contacts[addr], !userNamed.contains(addr) {
                     contacts[addr] = Peer(address: addr, name: label, hops: c.hops,
                                           active: c.active, platform: c.platform, app: c.app)
                 }

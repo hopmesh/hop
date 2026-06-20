@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var nameField = ""
     @State private var urlField = "https://example.com"
     @State private var relayField = ""
+    @State private var showAddContact = false
 
     private var deviceName: String {
         #if canImport(UIKit)
@@ -183,6 +184,17 @@ struct ContentView: View {
             .navigationDestination(for: HopBearer.Peer.self) { peer in
                 ChatView(bearer: bearer, peer: peer)
             }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showAddContact = true } label: {
+                        Image(systemName: "person.badge.plus")
+                    }
+                    .accessibilityLabel("Add contact")
+                }
+            }
+            .sheet(isPresented: $showAddContact) {
+                AddContactView(bearer: bearer)
+            }
         }
         .onAppear {
             guard !started else { return }
@@ -349,6 +361,51 @@ struct ChatView: View {
                     if bearer.secured.contains(peer.address) {
                         Image(systemName: "lock.fill").font(.caption).foregroundStyle(.green)
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Manually add a contact to the address book by base58 address (an empty name falls back
+/// to the address; hop.identify fills in the device's own name if it has one).
+struct AddContactView: View {
+    @ObservedObject var bearer: HopBearer
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var address = ""
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("New contact") {
+                    TextField("Name (optional)", text: $name)
+                        .textInputAutocapitalization(.words)
+                    TextField("Address (base58)", text: $address, axis: .vertical)
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        .font(.system(.body, design: .monospaced)).lineLimit(1...4)
+                    Button("Paste address") {
+                        #if canImport(UIKit)
+                        if let s = UIPasteboard.general.string { address = s }
+                        #endif
+                    }
+                }
+                if let error { Text(error).foregroundStyle(.red).font(.caption) }
+            }
+            .navigationTitle("Add contact")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        if bearer.addContact(name: name, address: address) {
+                            dismiss()
+                        } else {
+                            error = "Invalid address — need a 32-byte base58 key (and not your own)."
+                        }
+                    }
+                    .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
