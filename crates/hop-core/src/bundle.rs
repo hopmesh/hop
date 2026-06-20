@@ -61,7 +61,13 @@ pub enum StreamKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload {
     HttpRequest {
+        /// The target domain this request is for (e.g. `example.com`). Part of the signed
+        /// bundle, so a `hop-endpoint` can validate it against the single domain it's
+        /// authorized to serve and refuse anything else — the endpoint can never be steered
+        /// to a different origin (DESIGN.md §30).
+        host: String,
         method: String,
+        /// Path + query only (no scheme/authority). The endpoint prepends its own origin.
         url: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
@@ -72,6 +78,23 @@ pub enum Payload {
         headers: Vec<(String, String)>,
         body: Vec<u8>,
         for_bundle_id: BundleId,
+    },
+    /// HNS resolution query (DESIGN.md §30): "what is the hops endpoint address for this
+    /// domain?" Sealed and addressed to an internet-connected peer (e.g. a relay) that can
+    /// reach the public DNS. Any such peer may answer; a relay *may* serve this but need not.
+    HnsQuery {
+        /// The fully-qualified domain to resolve (the resolver looks up `_hopaddress.<domain>`).
+        domain: String,
+    },
+    /// HNS resolution answer (DESIGN.md §30): the result of looking up `_hopaddress.<domain>`
+    /// TXT in public DNS. `address` is `None` when no such record exists (NXDOMAIN-like — the
+    /// domain has no hops endpoint). Carries the DNS `ttl_secs` so the record expires and
+    /// propagates exactly like a DNS cache entry.
+    HnsAnswer {
+        domain: String,
+        address: Option<PubKeyBytes>,
+        ttl_secs: u32,
+        for_query: BundleId,
     },
     PeerMessage {
         content_type: String,

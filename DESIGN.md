@@ -1535,6 +1535,21 @@ can resolve *only* to `https://google.com/x`, and only because `google.com` publ
 there's no open-relay abuse and no laundering arbitrary web traffic through someone else's
 endpoint. You reach a domain's content only through that domain's own endpoint.
 
+**Domain binding is enforced at the protocol level, not by convention.** Every `hops`
+request carries a signed `host` field inside the sealed bundle (`Payload::HttpRequest.host`).
+The endpoint is configured with exactly one authorized `--domain` and **rejects any request
+whose `host` ≠ that domain with a 403, before it ever touches the backend**. The URL it
+fetches is built *solely* from its configured `--origin` plus the request path — the
+request's own bytes never choose a host — and HTTP redirects are disabled, so the backend
+can't bounce it off-origin either. There is no code path by which a `hop-endpoint` process
+fetches anything other than `<origin><path>`. An attacker who forges a different `host`
+simply gets a 403; an attacker who tampers with the signed bundle breaks the seal.
+
+**Direct-address form bypasses HNS.** A client that already knows an endpoint's address can
+speak straight to it — `send_hops_request(<address>, host, …)` (or `hdp://<address>`) — with
+no name lookup at all. HNS is only the *discovery* step that turns a domain into that
+address; once you have the address, resolution is skipped entirely.
+
 Response sizes map onto §31:
 - **Finite** response (Content-Length) → rides the **carrier transport** (auto-chunked,
   reassembled into one response). Free.
@@ -1545,21 +1560,43 @@ Response sizes map onto §31:
 
 ### HNS — the Hop Name System
 
-Name→address resolution, delay-tolerant. A domain owner publishes a TXT record at
-`_hopaddress.{FQDN}` holding the Hop **address** (pubkey) of their `hop-endpoint`. To reach
-`hops://example.com`, a client resolves `_hopaddress.example.com` → pubkey, then speaks
-`hdp` to that address.
+Name→address resolution, delay-tolerant, **built into hop-core**. A domain owner publishes a
+TXT record at `_hopaddress.{FQDN}` holding the base58 Hop **address** (pubkey) of their
+`hop-endpoint`. To reach `hops://example.com`, a client resolves `_hopaddress.example.com` →
+pubkey, then speaks `hdp` to that address.
 
-Resolution itself runs over `hdp` and is **mesh-cached**:
-- A resolution query walks the mesh; **any node that already holds the answer and whose DNS
-  TTL hasn't expired answers immediately** (popular names resolve locally, off cache).
-- On a cold miss / expiry, the query must reach an **internet-connected node**, which does
-  the real DNS lookup and returns the address; the answer is cached along the return path
-  with its TTL.
+**Resolution is every internet-connected peer's job — not a relay round-trip.** It lives in
+core (`Node::resolve_hns`), so any node that can reach the public internet resolves on its
+own. A relay *may* answer too (it's just a convenient always-on resolver), but nothing
+*requires* one. The split that keeps core network-agnostic:
+
+- **Core owns the protocol + the cache.** The HNS cache maps `domain → (address?, expiry)`,
+  honoring the DNS TTL. `resolve_hns(domain)` serves a fresh cache entry immediately;
+  otherwise, for an internet-connected node, it enqueues a real-DNS lookup.
+- **The host owns the actual DNS call.** Core surfaces the domains it needs looked up via
+  `take_dns_lookups()`; the host (which has the network) does the `_hopaddress.<domain>` TXT
+  query however it likes (the cloud relay uses DNS-over-HTTPS) and feeds the result back via
+  `provide_dns_answer(domain, address?, ttl_secs)`. Core caches it and surfaces the result.
+- **Offline nodes ask a peer.** A node with no internet calls `resolve_hns_via(resolver,
+  domain)`, which seals a `Payload::HnsQuery` to a known internet-connected peer; that peer
+  resolves (cache or real DNS) and seals back a `Payload::HnsAnswer` carrying the address and
+  DNS TTL. The asker caches it. This is the optional relay-assisted path.
+- **Records propagate like DNS.** Every node that learns a record caches it under its TTL and
+  can then answer other peers' queries from cache — exactly the recursive-resolver caching
+  model. Entries expire at their TTL (clamped to [1 s, 24 h]); the population of caching
+  resolvers grows as queries flow.
+
+**Missing records are first-class errors.** `hops://thisdoesnotexist.com` — no `_hopaddress`
+TXT — resolves to a **negative** answer (`address = None`), cached briefly (so we don't
+hammer DNS) and surfaced as a resolution error rather than a hang. The caller gets "no such
+hops endpoint," not a silent timeout.
 
 Trust: the name→key binding inherits DNS's trust model (harden with DNSSEC / a signed
 record). But once resolved, the channel is **end-to-end sealed to the resolved pubkey**, so
 the live session is authenticated regardless of how the binding was learned.
+
+**Wire types:** `Payload::HnsQuery { domain }` and `Payload::HnsAnswer { domain, address?,
+ttl_secs, for_query }`, both ordinary sealed `hdp` bundles.
 
 ## 31. Reliable, ordered, delay-tolerant delivery on `hdp`
 

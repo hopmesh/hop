@@ -183,6 +183,8 @@ pub struct HttpReq {
     pub from: Vec<u8>,
     /// The request bundle id (pass back as `for_request_id`).
     pub request_id: Vec<u8>,
+    /// The authorized target domain (the endpoint validates this against its own origin).
+    pub host: String,
     pub method: String,
     pub url: String,
     pub body: Vec<u8>,
@@ -196,6 +198,27 @@ pub struct HttpResp {
     pub for_request_id: Vec<u8>,
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+/// A finished HNS resolution (DESIGN.md §30). `address` empty = the domain has no
+/// `_hopaddress` record (a resolution error, e.g. `hops://thisdoesnotexist.com`).
+#[derive(uniffi::Record)]
+pub struct HnsRecord {
+    pub domain: String,
+    pub address: Vec<u8>,
+}
+
+/// Outcome of starting an HNS resolution (DESIGN.md §30).
+#[derive(uniffi::Enum)]
+pub enum HnsLookupResult {
+    /// Served from a fresh cache entry. `address` empty = a cached negative.
+    Cached { address: Vec<u8> },
+    /// A lookup was kicked off; the result arrives via `take_hns_results`. If this device
+    /// is internet-connected the host must service `take_dns_lookups`.
+    Pending,
+    /// This device has no internet and no resolver was given — call `resolve_hns_via` with a
+    /// known internet-connected peer (e.g. a relay address).
+    NeedsResolver,
 }
 
 /// A live link to a directly-connected peer: its address + the bearer link id. The
@@ -541,25 +564,95 @@ impl HopNode {
         self.inner.lock().unwrap().pending_count() as u32
     }
 
-    /// Send an internet-egress HTTP request, sealed to `gateway`'s address (Use Case
-    /// A, §9). Returns the request bundle id. The response arrives via
-    /// [`take_http_responses`].
-    pub fn send_http_request(
+    /// Send a `hops://` request sealed and addressed to a specific endpoint's Hop address
+    /// (DESIGN.md §30). `host` is the authorized domain (the endpoint validates it and
+    /// refuses anything else); `url` is the path+query only. Returns the request bundle id;
+    /// the response arrives via [`take_http_responses`].
+    pub fn send_hops_request(
         &self,
-        gateway: Vec<u8>,
+        endpoint: Vec<u8>,
+        host: String,
         method: String,
         url: String,
         body: Vec<u8>,
         max_resp: u32,
     ) -> std::result::Result<Vec<u8>, FfiError> {
-        let gw = to32(&gateway)?;
+        let ep = to32(&endpoint)?;
         let id = self
             .inner
             .lock()
             .unwrap()
-            .send_http_request(gw, method, url, vec![], body, max_resp)
+            .send_hops_request(ep, host, method, url, vec![], body, max_resp)
             .map_err(|e| FfiError::Hop(e.to_string()))?;
         Ok(id.to_vec())
+    }
+
+    // ---- HNS: the Hop Name System (DESIGN.md §30) ----------------------------------------
+
+    /// Declare whether this device can reach the public internet (and thus public DNS). When
+    /// on, the host must service `take_dns_lookups` so the node can resolve HNS on its own
+    /// without any relay round-trip.
+    pub fn set_internet(&self, on: bool) {
+        self.inner.lock().unwrap().set_internet(on);
+    }
+
+    /// Whether this device is marked internet-connected.
+    pub fn is_internet(&self) -> bool {
+        self.inner.lock().unwrap().is_internet()
+    }
+
+    /// Resolve `domain` to its hops endpoint address (DESIGN.md §30). See [`HnsLookupResult`].
+    pub fn resolve_hns(&self, domain: String) -> HnsLookupResult {
+        match self.inner.lock().unwrap().resolve_hns(&domain) {
+            HnsLookup::Cached(Some(addr)) => HnsLookupResult::Cached { address: addr.to_vec() },
+            HnsLookup::Cached(None) => HnsLookupResult::Cached { address: vec![] },
+            HnsLookup::Pending => HnsLookupResult::Pending,
+            HnsLookup::NeedsResolver => HnsLookupResult::NeedsResolver,
+        }
+    }
+
+    /// Resolve `domain` by asking a known internet-connected peer (e.g. a relay) over the
+    /// mesh. The answer arrives via `take_hns_results`. Returns the query bundle id.
+    pub fn resolve_hns_via(
+        &self,
+        resolver: Vec<u8>,
+        domain: String,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let r = to32(&resolver)?;
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .resolve_hns_via(r, &domain)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Domains the node needs the host to look up in real DNS (`_hopaddress.<domain>` TXT),
+    /// clearing the queue. Feed each result back via `provide_dns_answer`.
+    pub fn take_dns_lookups(&self) -> Vec<String> {
+        self.inner.lock().unwrap().take_dns_lookups()
+    }
+
+    /// Feed back a real-DNS result (DESIGN.md §30). An empty `address` means no `_hopaddress`
+    /// record exists (cached negatively). `ttl_secs` is the DNS TTL.
+    pub fn provide_dns_answer(&self, domain: String, address: Vec<u8>, ttl_secs: u32) {
+        let addr = if address.is_empty() { None } else { to32(&address).ok() };
+        self.inner.lock().unwrap().provide_dns_answer(&domain, addr, ttl_secs);
+    }
+
+    /// Finished HNS resolutions (positive or negative), clearing the queue.
+    pub fn take_hns_results(&self) -> Vec<HnsRecord> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take_hns_results()
+            .into_iter()
+            .map(|r| HnsRecord {
+                domain: r.domain,
+                address: r.address.map(|a| a.to_vec()).unwrap_or_default(),
+            })
+            .collect()
     }
 
     /// Seal an HTTP response back to a requester (gateway side).
@@ -590,6 +683,7 @@ impl HopNode {
             .map(|r| HttpReq {
                 from: r.from.to_vec(),
                 request_id: r.id.to_vec(),
+                host: r.host,
                 method: r.method,
                 url: r.url,
                 body: r.body,

@@ -179,7 +179,7 @@ impl<C: HttpClient, P: EgressPolicy> Gateway<C, P> {
             return Ok(FulfillOutcome::Duplicate);
         }
 
-        let Payload::HttpRequest { method, url, headers, body, max_resp_bytes } =
+        let Payload::HttpRequest { method, url, headers, body, max_resp_bytes, .. } =
             request.open(&self.identity)?
         else {
             return Ok(FulfillOutcome::NotForUs);
@@ -256,6 +256,7 @@ mod tests {
             Destination::InternetEgress,
             gw_x,
             &Payload::HttpRequest {
+                host: String::new(),
                 method: method.into(),
                 url: url.into(),
                 headers: vec![],

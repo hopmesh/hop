@@ -82,7 +82,8 @@ pub mod prelude {
         Role,
     };
     pub use crate::node::{
-        IdentityRecord, Node, NodeKind, ServiceReqItem, ServiceRespItem, SERVICE_IDENTIFY,
+        HnsLookup, HnsResult, IdentityRecord, Node, NodeKind, ServiceReqItem, ServiceRespItem,
+        SERVICE_IDENTIFY,
     };
     pub use crate::relay::RelayScorer;
     pub use crate::routing::{

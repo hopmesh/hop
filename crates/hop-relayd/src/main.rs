@@ -54,6 +54,10 @@ enum Ev {
     /// Only produced by the cloud handoff worker (the `firestore` feature).
     #[cfg_attr(not(feature = "firestore"), allow(dead_code))]
     Ingest(Vec<u8>),
+    /// A resolved HNS record `(domain, address?, ttl_secs)` from the DoH worker (DESIGN.md
+    /// §30). `None` address = no `_hopaddress` TXT (negative). Only in the cloud build.
+    #[cfg(feature = "firestore")]
+    Dns(String, Option<[u8; 32]>, u32),
 }
 
 fn now_ms() -> u64 {
@@ -224,6 +228,11 @@ fn main() {
     if let Some(adv) = &advertise {
         node.set_name(Some(host_of(adv)));
     }
+    // The cloud relay is internet-connected, so it serves as an HNS resolver for peers that
+    // ask it (DESIGN.md §30). Resolution still works without it — any internet-connected peer
+    // resolves on its own — but an always-on relay is a convenient recursive resolver.
+    #[cfg(feature = "firestore")]
+    node.set_internet(true);
     println!(
         "hop-relayd: address {} {}{}{} backbone peer(s)",
         bs58_addr(&addr),
@@ -315,6 +324,31 @@ fn main() {
         });
     }
 
+    // HNS resolver worker (DESIGN.md §30): drains domains the node wants resolved, looks up
+    // `_hopaddress.<domain>` TXT over DNS-over-HTTPS off this thread, and feeds the result
+    // back as Ev::Dns. Cloud-only (needs the HTTP client).
+    #[cfg(feature = "firestore")]
+    let dns_tx: Sender<String> = {
+        let (dtx, drx) = mpsc::channel::<String>();
+        let ev_tx = tx.clone();
+        std::thread::spawn(move || {
+            let http = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("dns http client");
+            for domain in drx {
+                let (addr, ttl) = resolve_hopaddress(&http, &domain);
+                if let Some(a) = &addr {
+                    netlog(format!("hns: {domain} → {}", short_b58(a)));
+                } else {
+                    netlog(format!("hns: {domain} → no _hopaddress record"));
+                }
+                let _ = ev_tx.send(Ev::Dns(domain, addr, ttl));
+            }
+        });
+        dtx
+    };
+
     // Driver: the sole owner of the node + the per-link outgoing senders.
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
     let mut prev_peers: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
@@ -344,8 +378,15 @@ fn main() {
                     node.ingest(b);
                 }
             }
+            #[cfg(feature = "firestore")]
+            Ok(Ev::Dns(domain, addr, ttl)) => node.provide_dns_answer(&domain, addr, ttl),
             Err(RecvTimeoutError::Timeout) => node.tick(now_ms()),
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        // Dispatch any HNS lookups the node wants to the DoH worker (DESIGN.md §30).
+        #[cfg(feature = "firestore")]
+        for domain in node.take_dns_lookups() {
+            let _ = dns_tx.send(domain);
         }
         for (link, bytes) in node.drain_outgoing() {
             if let Some(out) = writers.get(&link) {
@@ -588,6 +629,43 @@ fn bs58_addr(addr: &[u8]) -> String {
 /// A short base58 prefix of an address for compact log lines.
 fn short_b58(addr: &[u8]) -> String {
     bs58::encode(addr).into_string().chars().take(10).collect()
+}
+
+/// Resolve `_hopaddress.<domain>` TXT via DNS-over-HTTPS (DESIGN.md §30), returning the hops
+/// endpoint address (decoded from base58) and the record's DNS TTL. `(None, ttl)` means no
+/// such record (a negative answer — e.g. `hops://thisdoesnotexist.com`). On any DNS error we
+/// also return a negative with a short TTL so a transient failure retries soon.
+#[cfg(feature = "firestore")]
+fn resolve_hopaddress(http: &reqwest::blocking::Client, domain: &str) -> (Option<[u8; 32]>, u32) {
+    const NEG_TTL: u32 = 60;
+    let name = format!("_hopaddress.{domain}");
+    // Google DoH JSON API: {"Status":0,"Answer":[{"name":..,"type":16,"TTL":300,"data":"\"..\""}]}
+    let url = format!("https://dns.google/resolve?name={name}&type=TXT");
+    let resp = match http.get(&url).send().and_then(|r| r.json::<serde_json::Value>()) {
+        Ok(v) => v,
+        Err(_) => return (None, NEG_TTL),
+    };
+    // Status 0 = NOERROR; 3 = NXDOMAIN. Anything non-zero (or no Answer) → negative.
+    let answers = match resp.get("Answer").and_then(|a| a.as_array()) {
+        Some(a) => a,
+        None => return (None, NEG_TTL),
+    };
+    for ans in answers {
+        // TXT records only (type 16), data is the quoted string value.
+        if ans.get("type").and_then(|t| t.as_u64()) != Some(16) {
+            continue;
+        }
+        let Some(data) = ans.get("data").and_then(|d| d.as_str()) else { continue };
+        // Strip the surrounding quotes DNS uses for character-strings, plus any whitespace.
+        let txt = data.trim().trim_matches('"').trim();
+        if let Ok(bytes) = bs58::decode(txt).into_vec() {
+            if let Ok(addr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                let ttl = ans.get("TTL").and_then(|t| t.as_u64()).unwrap_or(300) as u32;
+                return (Some(addr), ttl);
+            }
+        }
+    }
+    (None, NEG_TTL)
 }
 
 /// The host of a `wss://`/`ws://` URL — the relay's identify name (DESIGN.md §29).

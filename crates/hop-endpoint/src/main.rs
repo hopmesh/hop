@@ -11,8 +11,17 @@
 //! like the relay fleet.
 //!
 //! Usage:
-//!   hop-endpoint --listen 0.0.0.0:9444 --origin https://localhost:8080 \
-//!                [--identity-file PATH] [--max-resp BYTES]
+//!   hop-endpoint --listen 0.0.0.0:9444 --domain example.hopme.sh \
+//!                --origin http://localhost:8080 [--identity-file PATH] [--max-resp BYTES]
+//!
+//! ## Protocol-level domain binding
+//!
+//! Every `hops://` request carries a signed `host` field. The endpoint is configured with
+//! exactly one `--domain` and **rejects any request whose `host` is not that domain** (403)
+//! before it ever touches the backend. The URL it fetches is built *solely* from the
+//! configured `--origin` plus the request path — the request's own bytes never choose a host.
+//! Redirects are disabled, so the backend cannot bounce the endpoint off-origin either. There
+//! is no code path by which this process fetches anything other than `<origin><path>`.
 
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
@@ -41,6 +50,7 @@ fn now_ms() -> u64 {
 fn main() {
     let mut listen = "0.0.0.0:9444".to_string();
     let mut origin: Option<String> = None;
+    let mut domain: Option<String> = None;
     let mut identity_file: Option<String> = None;
     let mut max_resp: u32 = 8 * 1024 * 1024; // 8 MiB cap on a translated response
     let mut args = std::env::args().skip(1);
@@ -48,29 +58,39 @@ fn main() {
         match a.as_str() {
             "--listen" => listen = args.next().unwrap_or(listen),
             "--origin" => origin = args.next(),
+            "--domain" => domain = args.next(),
             "--identity-file" => identity_file = args.next(),
             "--max-resp" => max_resp = args.next().and_then(|s| s.parse().ok()).unwrap_or(max_resp),
             other => eprintln!("ignoring unknown arg: {other}"),
         }
     }
     let origin = origin.unwrap_or_else(|| {
-        eprintln!("--origin https://your-backend is required (the ONLY host this endpoint serves)");
+        eprintln!("--origin http://your-backend is required (the ONLY backend this endpoint serves)");
+        std::process::exit(2);
+    });
+    let domain = domain.unwrap_or_else(|| {
+        eprintln!("--domain example.com is required (the ONLY hops:// host this endpoint answers for)");
         std::process::exit(2);
     });
     // Bind to a single origin: scheme://host[:port], no trailing slash. Requests only ever
     // get this prefix + their path — never an arbitrary host (no open proxy).
     let origin = origin.trim_end_matches('/').to_string();
+    // The single authorized domain, normalized (case-insensitive, no trailing dot).
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
 
     let identity = load_identity(&identity_file);
     let addr = identity.address();
     let node = Node::new(identity);
     println!("hop-endpoint: address {}", bs58::encode(addr).into_string());
+    println!("hop-endpoint: authorized domain {domain}  (rejects any other host)");
     println!("hop-endpoint: serving origin {origin}");
-    println!("hop-endpoint: publish DNS →  _hopaddress.<domain>  TXT  \"{}\"", bs58::encode(addr).into_string());
+    println!("hop-endpoint: publish DNS →  _hopaddress.{domain}  TXT  \"{}\"", bs58::encode(addr).into_string());
     println!("hop-endpoint: listening (ws) on {listen}");
 
+    // Redirects are disabled: the backend can never bounce us to a different host.
     let http = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("http client");
 
@@ -88,13 +108,14 @@ fn main() {
         });
     }
 
-    run(node, origin, http, max_resp, tx, rx);
+    run(node, domain, origin, http, max_resp, tx, rx);
 }
 
 /// The driver: sole owner of the node. Routes outgoing bytes to per-link writers, and on a
 /// `hops` request spawns a worker to fetch the origin, replying when it returns.
 fn run(
     mut node: Node,
+    domain: String,
     origin: String,
     http: reqwest::blocking::Client,
     max_resp: u32,
@@ -122,6 +143,15 @@ fn run(
 
         // Translate any inbound hops requests against our OWN origin (path only).
         for r in node.take_http_requests() {
+            // Protocol-level domain binding: refuse anything not addressed to our domain
+            // BEFORE spawning a fetch. The signed `host` must equal our single --domain.
+            let req_host = r.host.trim_end_matches('.').to_ascii_lowercase();
+            if req_host != domain {
+                eprintln!("hop-endpoint: refusing host {:?} (authorized: {domain})", r.host);
+                let body = format!("hop-endpoint: this endpoint only serves {domain}").into_bytes();
+                let _ = tx.send(Ev::Fetched(r.from, r.id, 403, body));
+                continue;
+            }
             let (origin, http, tx) = (origin.clone(), http.clone(), tx.clone());
             std::thread::spawn(move || {
                 let (status, body) = fetch(&http, &origin, &r, max_resp);
