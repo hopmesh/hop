@@ -110,6 +110,12 @@ fn main() {
     // a relay hop shows as "Hop Relay" in traces.
     node.set_route_capacity(200_000);
     node.set_app(hop_core::relay_app_id());
+    // Answer hop.identify as a relay, named by its public domain (the host of --advertise,
+    // e.g. us-central1.relay.hopme.sh) so trace resolution shows relays by domain (§29).
+    node.set_kind(NodeKind::Relay);
+    if let Some(adv) = &advertise {
+        node.set_name(Some(host_of(adv)));
+    }
     println!(
         "hop-relayd: address {} {}{}{} backbone peer(s)",
         bs58_addr(&addr),
@@ -414,6 +420,13 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
 
 fn bs58_addr(addr: &[u8]) -> String {
     bs58::encode(addr).into_string()
+}
+
+/// The host of a `wss://`/`ws://` URL — the relay's identify name (DESIGN.md §29).
+/// `wss://us-central1.relay.hopme.sh/` → `us-central1.relay.hopme.sh`.
+fn host_of(url: &str) -> String {
+    let s = url.strip_prefix("wss://").or_else(|| url.strip_prefix("ws://")).unwrap_or(url);
+    s.split('/').next().unwrap_or(s).to_string()
 }
 
 /// The backbone: passive-registry heartbeat + pull-on-wake dialing of online peers

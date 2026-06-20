@@ -43,6 +43,40 @@ fn hex8(b: &[u8; 8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The 8-byte short form of a full address — matches what trace hops carry, so the app
+/// can index its known addresses by this and resolve trace hops to display names (§27).
+#[uniffi::export]
+pub fn short_address(address: Vec<u8>) -> Vec<u8> {
+    match to32(&address) {
+        Ok(a) => short_addr(&a).to_vec(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The built-in identity service name (`hop.identify`) — call it on a peer to learn its
+/// display name + kind (DESIGN.md §29).
+#[uniffi::export]
+pub fn service_identify() -> String {
+    SERVICE_IDENTIFY.to_string()
+}
+
+/// Decode a `hop.identify` response body into an [`IdentityInfo`]. Returns `None` if the
+/// bytes aren't a valid identity record (e.g. the response was for a different service).
+#[uniffi::export]
+pub fn decode_identity(body: Vec<u8>) -> Option<IdentityInfo> {
+    let rec: IdentityRecord = postcard::from_bytes(&body).ok()?;
+    Some(IdentityInfo {
+        address: rec.address.to_vec(),
+        name: rec.name.unwrap_or_default(),
+        kind: match rec.kind {
+            NodeKind::Device => "device",
+            NodeKind::Relay => "relay",
+            NodeKind::Gateway => "gateway",
+        }
+        .to_string(),
+    })
+}
+
 /// Human label for a trace hop's carrying app (DESIGN.md §27). Only public infra
 /// nodes self-identify ("Hop Relay"); end-user devices stamp the generic fabric app
 /// so a trace never advertises which app a device runs (privacy, §27).
@@ -75,9 +109,53 @@ pub struct InboxMessage {
     /// Sender's clock (ms) when the message was created — signed by the sender.
     /// Subtract from local receive time for an end-to-end latency estimate.
     pub created_at: u64,
-    /// Provenance: short hex of each node that forwarded this message, in order
-    /// (DESIGN.md §27). Empty for a direct (0-relay) delivery.
-    pub trace: Vec<String>,
+    /// Provenance: one hop per node that forwarded this message, in order (DESIGN.md
+    /// §27). Empty for a direct (0-relay) delivery. Each hop carries the forwarder's
+    /// 8-byte short address (resolve it against your address book to a display name via
+    /// `short_address`) plus a label for the carrying app.
+    pub trace: Vec<TraceHopInfo>,
+}
+
+/// One forwarding hop in a message's provenance trace (DESIGN.md §27).
+#[derive(uniffi::Record)]
+pub struct TraceHopInfo {
+    /// The forwarder's 8-byte short address. Compare to `short_address(full)` of a known
+    /// peer/relay/contact to resolve it to a display name; show hex if unknown.
+    pub node: Vec<u8>,
+    /// Carrying-app label: "Hop Relay" for infra, "device" for end-user nodes, else hex.
+    pub app_label: String,
+}
+
+/// A node's identity, decoded from a `hop.identify` response (DESIGN.md §29).
+#[derive(uniffi::Record)]
+pub struct IdentityInfo {
+    /// The node's full hop address.
+    pub address: Vec<u8>,
+    /// Display name, if the node set one. Empty string = unset → show the short address
+    /// (devices are unnamed by default; relays report their region domain).
+    pub name: String,
+    /// "device" | "relay" | "gateway".
+    pub kind: String,
+}
+
+/// A custom (non-`hop.`) service request addressed to this node for the app to fulfill.
+#[derive(uniffi::Record)]
+pub struct ServiceReq {
+    pub from: Vec<u8>,
+    /// Request id — pass back to `send_service_response` as `for_request_id`.
+    pub request_id: Vec<u8>,
+    pub service: String,
+    pub method: String,
+    pub args: Vec<u8>,
+}
+
+/// A service response sealed back to this node as a caller.
+#[derive(uniffi::Record)]
+pub struct ServiceResp {
+    pub from: Vec<u8>,
+    pub for_request_id: Vec<u8>,
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 /// A service advert discovered via gossip (direct or relayed). The `publisher` is
@@ -424,11 +502,14 @@ impl HopNode {
                     body: m.body,
                     hops: b.env.hops,
                     created_at: b.inner.created_at,
-                    // "<carrier>·<node>" per hop: "Hop Relay·a1b2c3" or "device·a1b2c3".
+                    // Structured hops so the app can resolve each forwarder to a name.
                     trace: b
                         .trace()
                         .iter()
-                        .map(|h| format!("{}·{}", label_app(&h.app), &hex8(&h.node)[..6]))
+                        .map(|h| TraceHopInfo {
+                            node: h.node.to_vec(),
+                            app_label: label_app(&h.app),
+                        })
                         .collect(),
                 }),
                 _ => None,
@@ -519,6 +600,96 @@ impl HopNode {
             .take_http_responses()
             .into_iter()
             .map(|r| HttpResp {
+                from: r.from.to_vec(),
+                for_request_id: r.for_id.to_vec(),
+                status: r.status,
+                body: r.body,
+            })
+            .collect()
+    }
+
+    // --- service calls (DESIGN.md §29) ----------------------------------------
+
+    /// Set this node's display name, returned by the built-in `hop.identify` service.
+    /// Pass an empty string to clear it (then identify reports no name → peers show the
+    /// short address).
+    pub fn set_name(&self, name: String) {
+        let name = if name.is_empty() { None } else { Some(name) };
+        self.inner.lock().unwrap().set_name(name);
+    }
+
+    /// This node's display name (empty string if unset).
+    pub fn name(&self) -> String {
+        self.inner.lock().unwrap().name().unwrap_or_default().to_string()
+    }
+
+    /// Call a service/command on `dst` (DESIGN.md §29). For the built-in identity
+    /// service pass `service_identify()` as `service`; the reply arrives via
+    /// `take_service_responses` (decode an identify reply with `decode_identity`).
+    /// Returns the request id.
+    pub fn send_service_request(
+        &self,
+        dst: Vec<u8>,
+        service: String,
+        method: String,
+        args: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let dst = to32(&dst)?;
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .send_service_request(dst, service, method, args)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Seal a response to a custom service request back to its caller (app side). Use
+    /// the [`ServiceReq`]'s `from` as `to` and its `request_id` as `for_request_id`.
+    pub fn send_service_response(
+        &self,
+        to: Vec<u8>,
+        for_request_id: Vec<u8>,
+        status: u16,
+        body: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let to = to32(&to)?;
+        let for_id = to32(&for_request_id)?;
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .send_service_response(to, for_id, status, body)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Drain custom service requests addressed to this node (built-in `hop.` services
+    /// are answered by the node and never appear here).
+    pub fn take_service_requests(&self) -> Vec<ServiceReq> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take_service_requests()
+            .into_iter()
+            .map(|r| ServiceReq {
+                from: r.from.to_vec(),
+                request_id: r.id.to_vec(),
+                service: r.service,
+                method: r.method,
+                args: r.args,
+            })
+            .collect()
+    }
+
+    /// Drain service responses sealed back to this node as a caller.
+    pub fn take_service_responses(&self) -> Vec<ServiceResp> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take_service_responses()
+            .into_iter()
+            .map(|r| ServiceResp {
                 from: r.from.to_vec(),
                 for_request_id: r.for_id.to_vec(),
                 status: r.status,

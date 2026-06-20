@@ -125,6 +125,23 @@ pub enum Payload {
         stream_id: StreamId,
         reason: u16,
     },
+    /// Invoke a service/command on the destination node (DESIGN.md §29). `service` is a
+    /// namespaced name — built-in ones start `hop.` (e.g. `hop.identify`) and are answered
+    /// by the node itself; others are dispatched to the embedding app. `method` is a
+    /// command within the service; `args` is an opaque, app-defined request body. The
+    /// reply comes back as a [`Payload::ServiceResponse`] correlated by the request id.
+    ServiceRequest {
+        service: String,
+        method: String,
+        args: Vec<u8>,
+    },
+    /// A reply to a [`Payload::ServiceRequest`], sealed back to the caller. `status` is 0
+    /// on success (else an app/service error code); `body` is the opaque result.
+    ServiceResponse {
+        for_bundle_id: BundleId,
+        status: u16,
+        body: Vec<u8>,
+    },
 }
 
 /// The signed portion of a bundle. The source signature covers this exactly.

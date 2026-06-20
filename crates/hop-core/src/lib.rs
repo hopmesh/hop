@@ -81,7 +81,9 @@ pub mod prelude {
         fragment, Bearer, BearerEvent, Frame, LinkHandshake, LinkId, LinkSession, Reassembler,
         Role,
     };
-    pub use crate::node::Node;
+    pub use crate::node::{
+        IdentityRecord, Node, NodeKind, ServiceReqItem, ServiceRespItem, SERVICE_IDENTIFY,
+    };
     pub use crate::relay::RelayScorer;
     pub use crate::routing::{
         BundleMeta, ForwardDecision, GatewayBeacon, PeerId, Router, SprayAndWait,
