@@ -60,6 +60,12 @@ variable "max_instances_per_region" {
   default     = 1
 }
 
+variable "example_region" {
+  description = "Region for the example.hopme.sh hops:// demo endpoint (one region is enough)."
+  type        = string
+  default     = "us-central1"
+}
+
 variable "cloud_run_ingress" {
   description = <<-EOT
     Who may reach the Cloud Run services directly. "INGRESS_TRAFFIC_ALL" exposes the

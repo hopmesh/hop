@@ -53,6 +53,7 @@ fn main() {
     let mut domain: Option<String> = None;
     let mut identity_file: Option<String> = None;
     let mut max_resp: u32 = 8 * 1024 * 1024; // 8 MiB cap on a translated response
+    let mut print_address = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -61,8 +62,17 @@ fn main() {
             "--domain" => domain = args.next(),
             "--identity-file" => identity_file = args.next(),
             "--max-resp" => max_resp = args.next().and_then(|s| s.parse().ok()).unwrap_or(max_resp),
+            // Load the identity, print its base58 address, and exit. Used to fill in the
+            // `_hopaddress.<domain>` TXT record before the endpoint ever serves traffic.
+            "--print-address" => print_address = true,
             other => eprintln!("ignoring unknown arg: {other}"),
         }
+    }
+
+    if print_address {
+        let identity = load_identity(&identity_file);
+        println!("{}", bs58::encode(identity.address()).into_string());
+        return;
     }
     let origin = origin.unwrap_or_else(|| {
         eprintln!("--origin http://your-backend is required (the ONLY backend this endpoint serves)");

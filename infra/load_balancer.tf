@@ -59,7 +59,8 @@ resource "google_compute_backend_service" "relay_region" {
   }
 }
 
-# relay.hopme.sh → nearest region (default); <region>.relay.hopme.sh → that exact region.
+# relay.hopme.sh → nearest region (default); <region>.relay.hopme.sh → that exact region;
+# example.hopme.sh → the hops:// demo endpoint backend (DESIGN.md §30).
 resource "google_compute_url_map" "relay" {
   name            = "hop-relay-urlmap"
   default_service = google_compute_backend_service.relay.id
@@ -78,6 +79,16 @@ resource "google_compute_url_map" "relay" {
       name            = "region-${path_matcher.key}"
       default_service = path_matcher.value.id
     }
+  }
+
+  host_rule {
+    hosts        = [local.example_domain]
+    path_matcher = "example"
+  }
+
+  path_matcher {
+    name            = "example"
+    default_service = google_compute_backend_service.example.id
   }
 }
 

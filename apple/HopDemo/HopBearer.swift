@@ -109,6 +109,8 @@ final class HopBearer: NSObject, ObservableObject {
     private var identifyAsked = Set<Data>()              // addresses we've sent hop.identify to
     private var identifyReqs = Set<Data>()               // outstanding identify request bundle ids
     @Published var messages: [Message] = []
+    /// Latest hops:// result per domain, rendered for the UI ("200 · <body>" or an error).
+    @Published var hopsResults: [String: String] = [:]   // domain → rendered text (§30)
     @Published var queue: [QueueRow] = []
     @Published var unread: [String: Int] = [:]   // peer name → unread incoming count
     private var activePeer: String?              // chat currently on screen (not counted)
@@ -162,6 +164,12 @@ final class HopBearer: NSObject, ObservableObject {
     private var nameByAddr: [Data: String] = [:]
     private var contacts: [Data: Peer] = [:]   // app-side contact book (address → peer)
     private var userNamed = Set<Data>()        // contacts the user named (identify won't override)
+    // hops:// fetches awaiting an HNS resolution: domain → the path to request once the
+    // record resolves (DESIGN.md §30).
+    private var pendingHops: [String: String] = [:]
+    // In-flight hops:// requests: request id → the domain it's for, so a response can be
+    // matched back and rendered into `hopsResults`.
+    private var hopsReqs: [Data: String] = [:]
     private var lastRelayLog = -1
     private var lastReachLog = -1
     private var tickTimer: Timer?
@@ -231,8 +239,13 @@ final class HopBearer: NSObject, ObservableObject {
         // when Wi-Fi is switched off, which kept it showing green).
         pathMonitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
-                self?.wifiUp = path.status == .satisfied && path.usesInterfaceType(.wifi)
-                self?.refresh()
+                guard let self else { return }
+                self.wifiUp = path.status == .satisfied && path.usesInterfaceType(.wifi)
+                // Declare whether we can reach the public internet (any interface — Wi-Fi,
+                // cellular or wired). An internet-connected phone resolves HNS itself by
+                // servicing `takeDnsLookups()` in `pump()` (DESIGN.md §30).
+                self.node.setInternet(on: path.status == .satisfied)
+                self.refresh()
             }
         }
         pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
@@ -551,6 +564,7 @@ final class HopBearer: NSObject, ObservableObject {
             notifyIfBackgrounded(from: who, text: text)
         }
         drainServices()      // hop.identify replies + custom service calls (§29)
+        drainHns()           // HNS lookups + hops:// responses (§30)
     }
 
     // MARK: - Services & commands (DESIGN.md §29)
@@ -634,6 +648,131 @@ final class HopBearer: NSObject, ObservableObject {
     // https:// on your behalf terminates TLS = a MitM (DESIGN.md §25). The model is now
     // origin-run gateways reached via `hops://<domain>` (the gateway serves *its own*
     // service over the mesh, no third party in the middle).
+
+    // MARK: - HNS & hops:// (DESIGN.md §30)
+
+    /// Open a `hops://<domain>/<path>` URL (a bare `<domain>` is also accepted). Resolves
+    /// the domain to its hops endpoint address via the Hop Name System, then sends a GET
+    /// over the mesh. The endpoint validates `host`, so we always pass the bare domain.
+    func openHops(_ urlString: String) {
+        let (domain, path) = Self.parseHops(urlString)
+        guard !domain.isEmpty else {
+            hopsResults["?"] = "error: not a hops:// url"
+            return
+        }
+        hopsResults[domain] = "resolving…"
+        switch node.resolveHns(domain: domain) {
+        case .cached(let address):
+            if address.isEmpty {
+                // A cached negative — the domain has no `_hopaddress` record.
+                hopsResults[domain] = "error: no hops endpoint for \(domain)"
+            } else {
+                fireHops(domain: domain, path: path, endpoint: address)
+            }
+        case .pending:
+            // The node kicked off a lookup (it'll service `takeDnsLookups()` itself if we're
+            // internet-connected); fire the request when its record lands in `takeHnsResults()`.
+            pendingHops[domain] = path
+        case .needsResolver:
+            // No internet on this device — ask a connected relay to resolve over the mesh.
+            if let relay = relays.first?.address {
+                _ = try? node.resolveHnsVia(resolver: relay, domain: domain)
+                pendingHops[domain] = path   // answer arrives via `takeHnsResults()` too
+            } else {
+                hopsResults[domain] = "error: offline, no resolver"
+            }
+        }
+        pump()
+    }
+
+    /// Issue the sealed hops:// GET to a resolved endpoint and remember the request id so
+    /// the response can be matched back (DESIGN.md §30).
+    private func fireHops(domain: String, path: String, endpoint: Data) {
+        guard let id = try? node.sendHopsRequest(endpoint: endpoint, host: domain,
+                                                 method: "GET", url: path,
+                                                 body: Data(), maxResp: 8 * 1024 * 1024) else {
+            hopsResults[domain] = "error: could not send request to \(domain)"
+            return
+        }
+        hopsReqs[id] = domain
+        hopsResults[domain] = "fetching…"
+    }
+
+    /// Split `hops://<domain>/<path>` (or a bare `<domain>`) into (domain, path). The path
+    /// defaults to "/" and is path+query only — what `sendHopsRequest` expects.
+    private static func parseHops(_ raw: String) -> (domain: String, path: String) {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = s.range(of: "hops://") { s.removeSubrange(s.startIndex..<r.upperBound) }
+        guard let slash = s.firstIndex(of: "/") else { return (s, "/") }
+        let domain = String(s[s.startIndex..<slash])
+        let path = String(s[slash...])
+        return (domain, path.isEmpty ? "/" : path)
+    }
+
+    /// Drain finished HNS resolutions (firing any queued hops:// fetch) and hops:// HTTP
+    /// responses (matching them back to the in-flight request). The core caches records,
+    /// so we keep no extra cache here. Also service the host DNS hook: any `_hopaddress`
+    /// TXT lookups the node needs are resolved over DNS-over-HTTPS off the main queue and
+    /// fed back via `provideDnsAnswer` (DESIGN.md §30).
+    private func drainHns() {
+        for rec in node.takeHnsResults() {
+            guard let path = pendingHops.removeValue(forKey: rec.domain) else { continue }
+            if rec.address.isEmpty {
+                hopsResults[rec.domain] = "error: no hops endpoint for \(rec.domain)"
+            } else {
+                fireHops(domain: rec.domain, path: path, endpoint: rec.address)
+            }
+        }
+        for resp in node.takeHttpResponses() {
+            guard let domain = hopsReqs.removeValue(forKey: resp.forRequestId) else { continue }
+            let text = String(data: resp.body, encoding: .utf8) ?? "<\(resp.body.count) bytes>"
+            hopsResults[domain] = "\(resp.status) · \(text)"
+        }
+        // Host DNS hook: resolve each requested `_hopaddress.<domain>` TXT record and feed
+        // it back. Kicked off async (DoH over URLSession); the answer is marshalled back to
+        // the main queue the node is driven on, exactly like the relay receive paths.
+        for domain in node.takeDnsLookups() {
+            resolveHopAddressDns(domain)
+        }
+    }
+
+    /// DNS-over-HTTPS TXT lookup for `_hopaddress.<domain>` via Google's resolver, feeding
+    /// the result back to the node. The TXT value is a base58 Hop address; an empty answer
+    /// (no record, or any failure) is fed back as a negative so the resolution completes.
+    private func resolveHopAddressDns(_ domain: String) {
+        let name = "_hopaddress.\(domain)"
+        guard let url = URL(string:
+            "https://dns.google/resolve?name=\(name)&type=TXT") else {
+            DispatchQueue.main.async { self.node.provideDnsAnswer(domain: domain, address: Data(), ttlSecs: 60) }
+            return
+        }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self else { return }
+            // Parse the first TXT (type 16) answer: { "Answer": [ { "type":16, "TTL":300,
+            // "data":"\"<base58>\"" } ] }. Strip the surrounding quotes/whitespace and
+            // base58-decode to a 32-byte Hop address.
+            var addr = Data()
+            var ttl: UInt32 = 300
+            if let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let answers = json["Answer"] as? [[String: Any]],
+               let txt = answers.first(where: { ($0["type"] as? Int) == 16 }) {
+                if let t = txt["TTL"] as? Int, t > 0 { ttl = UInt32(t) }
+                if let raw = txt["data"] as? String {
+                    let b58 = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n"))
+                    let decoded = addressFromBase58(text: b58)
+                    if decoded.count == 32 { addr = decoded }
+                }
+            }
+            // Marshal back onto the main queue (where the node is driven), like the relay
+            // receive callbacks, then pump so the resolution surfaces in `takeHnsResults()`.
+            DispatchQueue.main.async {
+                self.node.provideDnsAnswer(domain: domain, address: addr,
+                                           ttlSecs: addr.isEmpty ? 60 : ttl)
+                self.pump()
+            }
+        }.resume()
+    }
 
     /// The chat for `peer` is on screen: clear its badge and stop counting it.
     func openChat(_ peer: String) { activePeer = peer; unread[peer] = 0 }
