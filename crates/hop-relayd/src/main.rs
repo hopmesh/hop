@@ -332,7 +332,11 @@ fn main() {
             }
             Ok(Ev::Ingest(bytes)) => {
                 if let Ok(b) = Bundle::from_bytes(&bytes) {
-                    netlog("handoff: ingested a bundle from our partition");
+                    let dst = match b.inner.dst {
+                        Destination::Device(d) | Destination::AckTo(d, _) => short_b58(&d),
+                        Destination::InternetEgress => "egress".to_string(),
+                    };
+                    netlog(format!("ingest: msg {} → dst {}", short_b58(&b.id()), dst));
                     node.ingest(b);
                 }
             }
@@ -746,10 +750,18 @@ mod handoff {
                         }
                         let dest_node = region_node_b58(&base_seed, &dst_region);
                         if let Err(e) = presence.put_bundle_to(&dest_node, id, bytes, *expires) {
-                            super::netlog(format!("handoff: → {dst_region} FAILED: {e}"));
+                            super::netlog(format!(
+                                "handoff FAILED: msg {} → {} (region {dst_region}): {e}",
+                                super::short_b58(id),
+                                super::short_b58(dst)
+                            ));
                             handed.remove(&(*id, dst_region)); // let a later cycle retry
                         } else {
-                            super::netlog(format!("handoff: bundle → region {dst_region}"));
+                            super::netlog(format!(
+                                "handoff: msg {} → dst {} (region {dst_region})",
+                                super::short_b58(id),
+                                super::short_b58(dst)
+                            ));
                         }
                     }
                 }

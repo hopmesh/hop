@@ -66,6 +66,7 @@ final class HopBearer: NSObject, ObservableObject {
     struct Message: Identifiable {
         let id = UUID()
         let peer: String; let text: String; let incoming: Bool
+        var peerAddr: Data? = nil   // the other party's address — stable across renames
         var bundleId: Data? = nil
         // Incoming metadata (shown under the bubble).
         var hops: UInt8 = 0
@@ -293,7 +294,8 @@ final class HopBearer: NSObject, ObservableObject {
         let id = try? node.sendMessage(dst: peer.address,
                                        contentType: "text/plain", body: Data(text.utf8),
                                        requestAck: true)
-        messages.append(Message(peer: peer.name, text: text, incoming: false, bundleId: id))
+        messages.append(Message(peer: peer.name, text: text, incoming: false,
+                                peerAddr: peer.address, bundleId: id))
         pump()
     }
 
@@ -499,7 +501,15 @@ final class HopBearer: NSObject, ObservableObject {
             let now = HopBearer.nowMs()
             let latency = now >= m.createdAt ? now - m.createdAt : 0  // clamp clock skew
             messages.append(Message(peer: who, text: text, incoming: true,
-                                    hops: m.hops, latencyMs: latency, trace: m.trace))
+                                    peerAddr: m.from, hops: m.hops, latencyMs: latency,
+                                    trace: m.trace))
+            // A sender that isn't in our nearby/contacts must still be reachable in the UI,
+            // or the message vanishes. Make them a contact (so a row + chat exist) and run
+            // hop.identify to resolve their name (their input, or their id if unset, §29).
+            if contacts[m.from] == nil {
+                contacts[m.from] = Peer(address: m.from, name: who, hops: m.hops)
+            }
+            queueIdentify(m.from)
             if who != activePeer { unread[who, default: 0] += 1 }  // badge unless viewing
             notifyIfBackgrounded(from: who, text: text)
         }
@@ -556,8 +566,15 @@ final class HopBearer: NSObject, ObservableObject {
             if identifyReqs.remove(resp.forRequestId) != nil, resp.status == 0,
                let info = decodeIdentity(body: resp.body) {
                 identities[Data(info.address)] = info
-                let label = info.name.isEmpty ? HopBearer.shortHex(Data(info.address)) : info.name
-                nameByAddr[Data(info.address)] = label
+                let addr = Data(info.address)
+                let label = info.name.isEmpty ? HopBearer.shortHex(addr) : info.name
+                nameByAddr[addr] = label
+                // Keep the contact's display name in sync (the chat is keyed by address,
+                // so renames are safe) — this is how an unknown sender gets its real name.
+                if let c = contacts[addr] {
+                    contacts[addr] = Peer(address: addr, name: label, hops: c.hops,
+                                          active: c.active, platform: c.platform, app: c.app)
+                }
                 serviceLog.insert("identify ← \(label) (\(info.kind))", at: 0)
                 refresh()
             } else {
