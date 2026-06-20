@@ -202,7 +202,7 @@ impl Default for BundleOpts {
         Self {
             app: FABRIC_APP,
             created_at: 0,
-            lifetime_ms: 3_600_000, // 1h
+            lifetime_ms: 86_400_000, // 24h — a delay-tolerant default (hops can take a long time)
             hop_limit: 8,
             copies: 8,
             priority: 4,
