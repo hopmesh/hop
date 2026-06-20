@@ -70,7 +70,7 @@ final class HopBearer: NSObject, ObservableObject {
         // Incoming metadata (shown under the bubble).
         var hops: UInt8 = 0
         var latencyMs: UInt64? = nil      // received time − sender's send time
-        var trace: [String] = []          // short hex of each forwarding hop (§27)
+        var trace: [TraceHopInfo] = []    // each forwarding hop, resolved at render (§27)
         // Outgoing delivery tracking.
         var sentAt: Date = Date()
         var deliveredAt: Date? = nil
@@ -98,6 +98,13 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var transports: [TransportStatus] = []  // per-bearer status (all run at once)
     @Published var relayStatus = "not connected"        // cloud relay link state
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
+    @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
+    /// Resolved display name per 8-byte short address, for resolving trace hops (§27/§29).
+    @Published var nameByShort: [Data: String] = [:]
+    @Published var serviceLog: [String] = []   // hop.identify + custom service-call activity (§29)
+    private var identities: [Data: IdentityInfo] = [:]   // address → identify record
+    private var identifyAsked = Set<Data>()              // addresses we've sent hop.identify to
+    private var identifyReqs = Set<Data>()               // outstanding identify request bundle ids
     @Published var messages: [Message] = []
     @Published var queue: [QueueRow] = []
     @Published var unread: [String: Int] = [:]   // peer name → unread incoming count
@@ -169,6 +176,7 @@ final class HopBearer: NSObject, ObservableObject {
         guard !started else { return }
         started = true
         myName = name
+        node.setName(name: name)   // what hop.identify reports for us (§29)
         myAddress = HopBearer.base58(node.address())
         idNote = "\(IdentityStore.note) → \(myAddress.prefix(8))"
         // Note: we deliberately do NOT stamp our app id into trace hops — that would
@@ -255,6 +263,7 @@ final class HopBearer: NSObject, ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != myName else { return }
         myName = trimmed
+        node.setName(name: trimmed)   // update what hop.identify reports (§29)
         UserDefaults.standard.set(trimmed, forKey: "hop.displayName")
         publishPresence()
         pump()
@@ -475,6 +484,74 @@ final class HopBearer: NSObject, ObservableObject {
             notifyIfBackgrounded(from: who, text: text)
         }
         serveHttpRequests()  // gateway role + collect any egress responses
+        drainServices()      // hop.identify replies + custom service calls (§29)
+    }
+
+    // MARK: - Services & commands (DESIGN.md §29)
+
+    /// Queue a built-in identity call to `address` (once per session per address) so we
+    /// learn its display name / a relay's domain — and can resolve it in traces. Does not
+    /// pump (safe to call from `refresh`); the next tick flushes it.
+    private func queueIdentify(_ address: Data) {
+        guard !identifyAsked.contains(address) else { return }
+        identifyAsked.insert(address)
+        if let id = try? node.sendServiceRequest(dst: address, service: serviceIdentify(),
+                                                 method: "", args: Data()) {
+            identifyReqs.insert(id)
+        }
+    }
+
+    /// Identify `address` now (from the UI), flushing immediately.
+    func identify(_ address: Data) {
+        queueIdentify(address)
+        pump()
+    }
+
+    /// The resolved identity (name + kind) we've learned for an address, if any.
+    func identity(_ address: Data) -> IdentityInfo? { identities[address] }
+
+    /// Best display name for a full address: an identify name, a known peer/relay's name,
+    /// else the short address.
+    func displayName(_ address: Data) -> String {
+        if let info = identities[address], !info.name.isEmpty { return info.name }
+        if let p = (reachable + relays + seen).first(where: { $0.address == address }) {
+            return p.name
+        }
+        return HopBearer.shortHex(address)
+    }
+
+    /// Resolve a trace hop to a display label: a known node's name (or a relay's domain),
+    /// else the carrying-app label + the hop's short address in hex (§27).
+    func traceLabel(_ hop: TraceHopInfo) -> String {
+        if hop.node == HopBearer.shortData(node.address()) { return "you" }
+        if let name = nameByShort[hop.node], !name.isEmpty { return name }
+        return "\(hop.appLabel) \(HopBearer.hex(hop.node))"
+    }
+
+    /// Drain identify replies and custom service traffic. Identify replies update the
+    /// address book (names + relay domains); custom requests get a "not implemented"
+    /// reply so callers aren't left hanging (the demo registers no app services yet).
+    private func drainServices() {
+        for resp in node.takeServiceResponses() {
+            if identifyReqs.remove(resp.forRequestId) != nil, resp.status == 0,
+               let info = decodeIdentity(body: resp.body) {
+                identities[Data(info.address)] = info
+                let label = info.name.isEmpty ? HopBearer.shortHex(Data(info.address)) : info.name
+                nameByAddr[Data(info.address)] = label
+                serviceLog.insert("identify ← \(label) (\(info.kind))", at: 0)
+                refresh()
+            } else {
+                let text = String(data: resp.body, encoding: .utf8) ?? "<\(resp.body.count) bytes>"
+                serviceLog.insert("service ← \(resp.status): \(text.prefix(120))", at: 0)
+            }
+        }
+        for req in node.takeServiceRequests() {
+            // No custom services registered in the demo yet — reply 501 so the caller
+            // gets a definite answer instead of a timeout.
+            serviceLog.insert("service → \(req.service)/\(req.method) (501)", at: 0)
+            try? node.sendServiceResponse(to: req.from, forRequestId: req.requestId,
+                                          status: 501, body: Data())
+        }
     }
 
     /// Use Case A: ask `gateway` to fetch `urlString` on our behalf (sealed to it).
@@ -568,15 +645,20 @@ final class HopBearer: NSObject, ObservableObject {
         // Which contacts we've learned a live route to from deliveries (§27).
         routed = Set(contacts.keys.filter { node.knowsRoute(address: $0) })
 
-        // Per-transport status — both bearers run at once (DESIGN.md §26).
+        // Per-transport status — both bearers run at once (DESIGN.md §26). Count links
+        // from the node's *authenticated* peer links (the source of truth), bucketed by
+        // link-id range, so the totals match what's actually linked (not half-open dials).
         let bleActive = peripheralMgr?.state == .poweredOn || centralMgr?.state == .poweredOn
         let wifiActive = mcSession != nil && !wifiBlocked
         let relayActive = (relayConn != nil || relayWS != nil) && relayStatus == "connected"
         let pls = node.peerLinks()
         transports = [
-            TransportStatus(id: "Bluetooth", active: bleActive, links: links.count),
-            TransportStatus(id: "Wi-Fi", active: wifiActive, links: mcPeerByLink.count),
-            TransportStatus(id: "Relay", active: relayActive, links: pls.filter { $0.link >= 20_000 }.count),
+            TransportStatus(id: "Bluetooth", active: bleActive,
+                            links: pls.filter { $0.link < 10_000 }.count),
+            TransportStatus(id: "Wi-Fi", active: wifiActive,
+                            links: pls.filter { $0.link >= 10_000 && $0.link < 20_000 }.count),
+            TransportStatus(id: "Relay", active: relayActive,
+                            links: pls.filter { $0.link >= 20_000 }.count),
         ]
 
         // Map each direct neighbour to the transport(s) carrying it (the route).
@@ -586,6 +668,27 @@ final class HopBearer: NSObject, ObservableObject {
             lt[pl.address, default: []].insert(t)
         }
         linkTransports = lt
+
+        // Connected cloud relays (the relay-link peers), named by their region domain via
+        // hop.identify (DESIGN.md §29). Shown as their own list section so the backbone is
+        // visible alongside device peers.
+        relays = pls.filter { $0.link >= 20_000 }.map { pl in
+            let name = identities[pl.address]?.name.isEmpty == false
+                ? identities[pl.address]!.name
+                : (nameByAddr[pl.address] ?? "relay")
+            return Peer(address: pl.address, name: name, hops: 1, platform: "cloud", app: "Hop Relay")
+        }
+        .sorted { $0.name < $1.name }
+
+        // Learn the name/kind of everyone we're directly linked to (the relay's domain,
+        // a peer's kind) so traces resolve and relays show by domain (§29).
+        for pl in pls { queueIdentify(pl.address) }
+
+        // Index every known full address by its 8-byte short form so trace hops (§27)
+        // resolve to display names.
+        var ns = [Data: String]()
+        for (addr, name) in nameByAddr { ns[HopBearer.shortData(addr)] = name }
+        nameByShort = ns
 
         queue = node.queue().map {
             QueueRow(id: $0.id, own: $0.own,
@@ -664,6 +767,10 @@ final class HopBearer: NSObject, ObservableObject {
     /// Compact base58 prefix for display (full base58 via `addressBase58`).
     static func shortHex(_ d: Data) -> String { String(addressBase58(address: d).prefix(8)) }
     static func base58(_ d: Data) -> String { addressBase58(address: d) }
+    /// The 8-byte short form of a full address — matches what trace hops carry (§27).
+    static func shortData(_ d: Data) -> Data { shortAddress(address: d) }
+    /// Hex of an arbitrary byte string (for an unresolved short trace hop).
+    static func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
 }
 
 // MARK: - Peripheral

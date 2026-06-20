@@ -81,6 +81,18 @@ resource "google_compute_url_map" "relay" {
   }
 }
 
+# The original single-domain managed cert. No longer attached to the proxy (the cert map
+# below serves TLS now), but kept so Terraform doesn't try to delete it *while* the proxy
+# still references it in the same apply (that ordering fails: resourceInUseByAnother). A
+# later apply can remove this once the proxy is confirmed on the cert map.
+resource "google_compute_managed_ssl_certificate" "relay" {
+  name = "hop-relay-cert"
+
+  managed {
+    domains = [var.domain]
+  }
+}
+
 # --- Wildcard cert via Certificate Manager (relay.hopme.sh + *.relay.hopme.sh) --------
 # A DNS-authorized managed cert: one authorization on the apex also authorizes the
 # wildcard, so it covers every current and future region subdomain and renews without
