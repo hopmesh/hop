@@ -137,10 +137,18 @@ resource "google_certificate_manager_certificate_map_entry" "relay" {
 }
 
 resource "google_compute_target_https_proxy" "relay" {
-  name    = "hop-relay-https-proxy"
+  # New name (was hop-relay-https-proxy): a target_https_proxy can't be switched from
+  # ssl_certificates to a certificate_map in place (the API 412s mid-transition), so we
+  # create a fresh proxy already on the cert map and let the forwarding rules repoint to
+  # it before the old proxy is destroyed (create_before_destroy).
+  name    = "hop-relay-https-proxy-cm"
   url_map = google_compute_url_map.relay.id
   # The wildcard cert map serves relay.hopme.sh + every <region>.relay.hopme.sh.
   certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.relay.id}"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_compute_global_forwarding_rule" "https" {
