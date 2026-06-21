@@ -349,7 +349,7 @@ final class HopBearer: NSObject, ObservableObject {
 
     func send(_ text: String, to peer: Peer) {
         let id = try? node.sendMessage(dst: peer.address,
-                                       contentType: "text/plain", body: Data(text.utf8),
+                                       contentType: "text/plain; charset=utf-8", body: Data(text.utf8),
                                        requestAck: true)
         messages.append(Message(peer: peer.name, text: text, incoming: false,
                                 peerAddr: peer.address, bundleId: id))
@@ -781,13 +781,13 @@ final class HopBearer: NSObject, ObservableObject {
     /// if needed, and times out gracefully. Drives everything on the main queue.
     func hopsFetch(domain: String, path: String, completion: @escaping (HopResponse) -> Void) {
         guard !domain.isEmpty else {
-            completion(HopResponse(status: 400, contentType: "text/plain", body: Data("bad hops url".utf8)))
+            completion(HopResponse(status: 400, contentType: "text/plain; charset=utf-8", body: Data("bad hops url".utf8)))
             return
         }
         switch node.resolveHns(domain: domain) {
         case .cached(let address):
             if address.isEmpty {
-                completion(HopResponse(status: 502, contentType: "text/plain",
+                completion(HopResponse(status: 502, contentType: "text/plain; charset=utf-8",
                                        body: Data("no hops endpoint for \(domain)".utf8)))
             } else {
                 fireHopsWeb(domain: domain, path: path, endpoint: address, completion: completion)
@@ -796,7 +796,7 @@ final class HopBearer: NSObject, ObservableObject {
             // Our own DNS, or (no internet) a query broadcast to connected peers (§30).
             hopsWebPending[domain, default: []].append((path, completion))
         case .needsResolver:
-            completion(HopResponse(status: 503, contentType: "text/plain",
+            completion(HopResponse(status: 503, contentType: "text/plain; charset=utf-8",
                                    body: Data("offline — no internet or peers to resolve \(domain)".utf8)))
         }
         pump()
@@ -809,7 +809,7 @@ final class HopBearer: NSObject, ObservableObject {
         guard let id = try? node.sendHopsRequest(endpoint: endpoint, host: domain,
                                                  method: "GET", url: path,
                                                  body: Data(), maxResp: 8 * 1024 * 1024) else {
-            completion(HopResponse(status: 502, contentType: "text/plain",
+            completion(HopResponse(status: 502, contentType: "text/plain; charset=utf-8",
                                    body: Data("could not send request".utf8)))
             return
         }
@@ -818,7 +818,7 @@ final class HopBearer: NSObject, ObservableObject {
         // node, but the WebView shouldn't spin forever).
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self, let done = self.hopsWebReqs.removeValue(forKey: id) else { return }
-            done(HopResponse(status: 504, contentType: "text/plain",
+            done(HopResponse(status: 504, contentType: "text/plain; charset=utf-8",
                              body: Data("hops timeout for \(domain)\(path)".utf8)))
         }
         pump()
@@ -854,7 +854,7 @@ final class HopBearer: NSObject, ObservableObject {
             if let queued = hopsWebPending.removeValue(forKey: rec.domain) {
                 for (path, completion) in queued {
                     if rec.address.isEmpty {
-                        completion(HopResponse(status: 502, contentType: "text/plain",
+                        completion(HopResponse(status: 502, contentType: "text/plain; charset=utf-8",
                                                body: Data("no hops endpoint for \(rec.domain)".utf8)))
                     } else {
                         fireHopsWeb(domain: rec.domain, path: path, endpoint: rec.address,
