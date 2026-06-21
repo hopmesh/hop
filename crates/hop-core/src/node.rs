@@ -137,6 +137,9 @@ pub const MIN_HNS_TTL_MS: u64 = 1_000;
 /// forever even if DNS hands back an absurd TTL.
 pub const MAX_HNS_TTL_MS: u64 = 86_400_000;
 
+/// How often to re-attempt a still-unresolved HNS query (delay-tolerant resolution, §30).
+pub const HNS_RETRY_INTERVAL_MS: u64 = 15_000;
+
 /// Delivery tracking for a message we originated (for status: Sending/Sent N/Delivered).
 #[derive(Default)]
 struct TxInfo {
@@ -383,6 +386,13 @@ pub struct Node<S: Store = MemoryStore> {
     dns_waiters: HashMap<String, Vec<(PubKeyBytes, BundleId)>>,
     /// Completed HNS resolutions for the app to consume ([`Node::take_hns_results`]).
     hns_results: Vec<HnsResult>,
+    /// Domains we're still trying to resolve (DESIGN.md §30). Resolution is delay-tolerant:
+    /// if no internet/peer can answer right now, the domain stays here and is re-attempted as
+    /// peers connect, when we gain internet, and periodically — until it resolves or the caller
+    /// stops caring. Cleared once a record (positive or negative) arrives.
+    pending_resolves: HashSet<String>,
+    /// Last time we re-attempted pending resolutions, to throttle the periodic retry.
+    last_resolve_retry_ms: u64,
 }
 
 impl Node<MemoryStore> {
@@ -449,6 +459,8 @@ impl<S: Store> Node<S> {
             dns_inflight: HashSet::new(),
             dns_waiters: HashMap::new(),
             hns_results: Vec::new(),
+            pending_resolves: HashSet::new(),
+            last_resolve_retry_ms: 0,
         };
         node.rehydrate();
         node
@@ -731,7 +743,14 @@ impl<S: Store> Node<S> {
     /// on, the node resolves HNS itself (surfacing real-DNS lookups via
     /// [`Node::take_dns_lookups`]) and can answer other peers' [`Payload::HnsQuery`].
     pub fn set_internet(&mut self, on: bool) {
+        let gained = on && !self.internet;
         self.internet = on;
+        // Just got internet → resolve anything that was waiting on it, ourselves.
+        if gained {
+            for key in self.pending_resolves.iter().cloned().collect::<Vec<_>>() {
+                self.queue_dns_lookup(&key);
+            }
+        }
     }
 
     /// Whether this node is internet-connected (see [`Node::set_internet`]).
@@ -759,21 +778,25 @@ impl<S: Store> Node<S> {
         if let Some(addr) = self.cached_hns(&key) {
             return HnsLookup::Cached(addr);
         }
-        if self.internet {
-            self.queue_dns_lookup(&key);
-            return HnsLookup::Pending;
-        }
-        // No internet of our own: ask every connected peer (DESIGN.md §30). Whichever is
-        // internet-connected resolves and answers; the rest ignore it. So a phone with Wi-Fi
-        // off still resolves through a nearby phone that has internet — no relay needed.
-        let peers = self.peers();
-        if peers.is_empty() {
-            return HnsLookup::NeedsResolver;
-        }
-        for p in peers {
-            self.send_hns_query(p, &key);
-        }
+        // Delay-tolerant: remember we want this and attempt now. If nothing can answer yet
+        // (no internet, no peers) it stays pending and is retried as peers connect, when we
+        // gain internet, and periodically — like any other store-and-forward request (§30).
+        self.pending_resolves.insert(key.clone());
+        self.attempt_resolve(&key);
         HnsLookup::Pending
+    }
+
+    /// Try to resolve `key` right now: our own DNS if we're internet-connected, else broadcast
+    /// the query to every connected peer (whichever has internet answers). A no-op if neither
+    /// is available — the domain stays in `pending_resolves` for a later retry.
+    fn attempt_resolve(&mut self, key: &str) {
+        if self.internet {
+            self.queue_dns_lookup(key);
+        } else {
+            for p in self.peers() {
+                self.send_hns_query(p, key);
+            }
+        }
     }
 
     /// Resolve `domain` by asking a specific internet-connected peer (e.g. a relay) over the
@@ -817,6 +840,7 @@ impl<S: Store> Node<S> {
     pub fn provide_dns_answer(&mut self, domain: &str, address: Option<PubKeyBytes>, ttl_secs: u32) {
         let key = normalize_domain(domain);
         self.dns_inflight.remove(&key);
+        self.pending_resolves.remove(&key); // resolved (positive or negative) — stop retrying
         let ttl_ms = (ttl_secs as u64).clamp(MIN_HNS_TTL_MS / 1000, MAX_HNS_TTL_MS / 1000) * 1000;
         self.hns_cache.insert(
             key.clone(),
@@ -1251,6 +1275,16 @@ impl<S: Store> Node<S> {
         // endpoint's DNS-derived TTL lapses it's dropped, so the next request re-resolves
         // all the way back to DNS rather than reusing a stale address.
         self.hns_cache.retain(|_, e| e.expires_at_ms > now_ms);
+        // Delay-tolerant resolution: periodically re-attempt anything still unresolved, so a
+        // query placed while offline eventually completes once internet/a peer appears (§30).
+        if !self.pending_resolves.is_empty()
+            && now_ms.saturating_sub(self.last_resolve_retry_ms) >= HNS_RETRY_INTERVAL_MS
+        {
+            self.last_resolve_retry_ms = now_ms;
+            for key in self.pending_resolves.iter().cloned().collect::<Vec<_>>() {
+                self.attempt_resolve(&key);
+            }
+        }
 
         let mut retransmit = false;
         for id in self.pending.keys().copied().collect::<Vec<_>>() {
@@ -1393,6 +1427,13 @@ impl<S: Store> Node<S> {
             );
             self.offer_bundles_to_link(link);
             self.offer_adverts_to_link(link);
+            // A new peer might be able to resolve names we're still waiting on — ask it
+            // (delay-tolerant HNS, §30). Skip if we have internet (we resolve ourselves).
+            if !self.internet && !self.pending_resolves.is_empty() {
+                for key in self.pending_resolves.iter().cloned().collect::<Vec<_>>() {
+                    self.send_hns_query(peer, &key);
+                }
+            }
         } else {
             self.links.insert(link, LinkState::Handshaking(Box::new(state)));
         }
@@ -1552,6 +1593,7 @@ impl<S: Store> Node<S> {
                             key.clone(),
                             HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
                         );
+                        self.pending_resolves.remove(&key); // resolved — stop retrying
                         self.hns_results.push(HnsResult { domain: key, address });
                         self.pending.remove(&for_query);
                         self.store.remove(&for_query);
@@ -2244,10 +2286,19 @@ mod tests {
     }
 
     #[test]
-    fn isolated_node_needs_resolver() {
-        // With no internet AND no connected peers, there's no one to ask.
+    fn isolated_node_keeps_resolution_pending_then_resolves_on_internet() {
+        // Resolution is delay-tolerant: with no internet and no peers, the request doesn't
+        // fail — it stays pending and completes once we gain internet (§30).
         let mut node = Node::new(Identity::generate());
-        assert_eq!(node.resolve_hns("example.hopme.sh"), HnsLookup::NeedsResolver);
+        assert_eq!(node.resolve_hns("example.hopme.sh"), HnsLookup::Pending);
+        assert!(node.take_dns_lookups().is_empty(), "nothing to look up while offline");
+
+        // Gain internet → the pending domain is queued for our own DNS lookup.
+        node.set_internet(true);
+        assert_eq!(node.take_dns_lookups(), vec!["example.hopme.sh".to_string()]);
+        let endpoint = Identity::generate().address();
+        node.provide_dns_answer("example.hopme.sh", Some(endpoint), 300);
+        assert_eq!(node.cached_hns("example.hopme.sh"), Some(Some(endpoint)));
     }
 
     #[test]
