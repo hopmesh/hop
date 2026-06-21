@@ -197,6 +197,9 @@ pub struct HttpResp {
     pub from: Vec<u8>,
     pub for_request_id: Vec<u8>,
     pub status: u16,
+    /// The response's content-type (e.g. `text/html`), so a WebView renders it correctly.
+    /// Empty if the responder didn't set one.
+    pub content_type: String,
     pub body: Vec<u8>,
 }
 
@@ -703,6 +706,12 @@ impl HopNode {
                 from: r.from.to_vec(),
                 for_request_id: r.for_id.to_vec(),
                 status: r.status,
+                content_type: r
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default(),
                 body: r.body,
             })
             .collect()

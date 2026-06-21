@@ -98,6 +98,12 @@ struct ContentView: View {
                         Button("Fetch") { fetchHops() }
                             .disabled(hopsField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                    // A full browser, every request served over the mesh (DESIGN.md §30).
+                    NavigationLink {
+                        HopBrowserView(bearer: bearer, start: hopsField.isEmpty ? "example.hopme.sh" : hopsField)
+                    } label: {
+                        Label("Open in hops:// browser", systemImage: "globe")
+                    }
                     ForEach(bearer.hopsResults.sorted(by: { $0.key < $1.key }), id: \.key) { domain, text in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(domain).font(.caption).monospaced().foregroundStyle(.secondary)
