@@ -25,3 +25,5 @@ rsa = "0.9"
 base64 = "0.22"
 # Parse DoH (DNS-over-HTTPS) JSON responses in core, so the host stays a dumb fetcher.
 serde_json = "1"
+# Decode the base58 hops endpoint address out of a validated _hopaddress TXT record.
+bs58 = "0.5"
