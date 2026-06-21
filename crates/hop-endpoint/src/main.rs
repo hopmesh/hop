@@ -157,12 +157,17 @@ fn dial_relay(url: String, ev_tx: Sender<Ev>) {
         match tungstenite::connect(&url) {
             Ok((mut ws, _resp)) => {
                 eprintln!("hop-endpoint: connected to relay {url}");
+                // Non-blocking socket: a read MUST NOT block, or the loop never gets back to
+                // send our outgoing Noise handshake msg1 (it's produced by the driver right
+                // after Ev::Up) — that deadlock leaves the WS open but the handshake unstarted,
+                // so the relay never registers us as a peer. (A read timeout on a TLS stream
+                // didn't reliably surface as WouldBlock; non-blocking does.)
                 match ws.get_ref() {
                     MaybeTlsStream::Plain(s) => {
-                        let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+                        let _ = s.set_nonblocking(true);
                     }
                     MaybeTlsStream::Rustls(t) => {
-                        let _ = t.get_ref().set_read_timeout(Some(Duration::from_millis(100)));
+                        let _ = t.get_ref().set_nonblocking(true);
                     }
                     _ => {}
                 }
@@ -171,20 +176,34 @@ fn dial_relay(url: String, ev_tx: Sender<Ev>) {
                 if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
                     return;
                 }
+                let mut hello = false;
                 'conn: loop {
+                    // Flush any queued outgoing (handshake + bundles), retrying WouldBlock.
+                    let mut wrote = false;
                     loop {
                         match out_rx.try_recv() {
                             Ok(bytes) => {
-                                if ws.write(Message::Binary(bytes)).is_err() {
-                                    break 'conn;
+                                wrote = true;
+                                match ws.write(Message::Binary(bytes)) {
+                                    Ok(()) => {}
+                                    Err(tungstenite::Error::Io(e))
+                                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                                    Err(_) => break 'conn,
                                 }
                             }
                             Err(mpsc::TryRecvError::Empty) => break,
                             Err(mpsc::TryRecvError::Disconnected) => break 'conn,
                         }
                     }
-                    if ws.flush().is_err() {
-                        break;
+                    match ws.flush() {
+                        Ok(()) => {
+                            if wrote && !hello {
+                                hello = true;
+                                eprintln!("hop-endpoint: sent handshake to relay");
+                            }
+                        }
+                        Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => break,
                     }
                     match ws.read() {
                         Ok(Message::Binary(b)) => {
@@ -196,7 +215,10 @@ fn dial_relay(url: String, ev_tx: Sender<Ev>) {
                         Ok(_) => {}
                         Err(tungstenite::Error::Io(e))
                             if e.kind() == std::io::ErrorKind::WouldBlock
-                                || e.kind() == std::io::ErrorKind::TimedOut => {}
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
                         Err(_) => break,
                     }
                 }
