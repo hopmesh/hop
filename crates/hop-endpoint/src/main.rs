@@ -209,7 +209,8 @@ fn fetch(
     }
     let path = path_of(&r.url);
     let url = format!("{origin}{path}");
-    match http.get(&url).send() {
+    // Tell the origin this request arrived over the mesh, so it can word itself accordingly.
+    match http.get(&url).header("x-hop-scheme", "hops").send() {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let ctype = resp
@@ -284,7 +285,8 @@ fn serve_http_proxy(
         (405u16, "text/plain; charset=utf-8".to_string(), b"hop-endpoint: only GET/HEAD over plain HTTP".to_vec())
     } else {
         let url = format!("{origin}{}", path_of(&raw_path));
-        match http.get(&url).send() {
+        // The LB terminated TLS for us; tell the origin this came over standard https.
+        match http.get(&url).header("x-hop-scheme", "https").send() {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 let ctype = resp
