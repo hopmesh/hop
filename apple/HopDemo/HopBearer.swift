@@ -103,6 +103,15 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
     @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
     @Published var endpoints: [Peer] = []   // directly-dialed hops:// endpoints (§30; not relays)
+    @Published var hnsCache: [HnsCacheRow] = []   // live HNS cache w/ ticking TTLs (§30, debug)
+
+    /// One HNS cache entry for the debug view: domain → address, with remaining TTL (seconds).
+    struct HnsCacheRow: Identifiable {
+        var id: String { domain }
+        let domain: String
+        let address: Data    // empty = a cached negative (no such endpoint)
+        let ttl: UInt32      // remaining lifetime, ticking down to expiry
+    }
     /// Resolved display name per 8-byte short address, for resolving trace hops (§27/§29).
     @Published var nameByShort: [Data: String] = [:]
     @Published var serviceLog: [String] = []   // hop.identify + custom service-call activity (§29)
@@ -1035,6 +1044,10 @@ final class HopBearer: NSObject, ObservableObject {
             QueueRow(id: $0.id, own: $0.own,
                      to: $0.to.isEmpty ? "internet" : HopBearer.shortHex($0.to),
                      priority: $0.priority, hops: $0.hops)
+        }
+        // Live HNS cache snapshot (ticks down each refresh as the node clock advances, §30).
+        hnsCache = node.hnsCache().map {
+            HnsCacheRow(domain: $0.domain, address: $0.address, ttl: $0.ttlSecs)
         }
         if reachable.count != lastReachLog { NSLog("HOPLOG reachable=\(reachable.count)"); lastReachLog = reachable.count }
         let relayN = queue.filter { !$0.own }.count

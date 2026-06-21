@@ -147,6 +147,29 @@ struct ContentView: View {
                     }
                 }
 
+                // HNS cache (debug): each resolved domain, its endpoint address, and the
+                // remaining DNS-derived TTL ticking down to expiry, after which it's pruned
+                // and the next request re-resolves via DNS (DESIGN.md §30).
+                if !bearer.hnsCache.isEmpty {
+                    Section("HNS cache (debug)") {
+                        ForEach(bearer.hnsCache) { rec in
+                            HStack {
+                                Image(systemName: rec.address.isEmpty ? "xmark.circle" : "magnifyingglass")
+                                    .foregroundStyle(rec.address.isEmpty ? .red : .green)
+                                VStack(alignment: .leading) {
+                                    Text(rec.domain).font(.callout)
+                                    Text(rec.address.isEmpty ? "no record (negative)" : HopBearer.shortHex(rec.address))
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("TTL \(rec.ttl)s")
+                                    .font(.caption2).monospaced()
+                                    .foregroundStyle(rec.ttl < 30 ? .orange : .secondary)
+                            }
+                        }
+                    }
+                }
+
                 Section("Nearby (direct)") {
                     if direct.isEmpty { Text("none").foregroundStyle(.secondary) }
                     ForEach(direct) { peer in peerRow(peer) }
