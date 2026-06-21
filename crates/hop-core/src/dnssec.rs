@@ -372,6 +372,150 @@ pub fn validate_to_root(chain: &DnssecChain, now: u32) -> Result<(), DnssecError
     validate_chain(chain, &root_anchors(), now)
 }
 
+// --- DoH JSON parsing (host stays a dumb fetcher; core parses) -------------------------------
+//
+// The host fetches each chain record over DNS-over-HTTPS (the Google/Cloudflare JSON API with
+// `do=1`) and hands core the raw response body. Core parses it here into our typed records, so
+// there's a single parser shared by every host (no Swift/Rust duplication), and the parsed
+// records flow into [`validate_chain`].
+
+/// The records extracted from one DoH JSON response. Owners are presentation names (with the
+/// trailing dot), as returned by the resolver.
+#[derive(Clone, Debug, Default)]
+pub struct DohAnswer {
+    /// The resolver's own DNSSEC-validated flag (advisory only — we re-verify ourselves).
+    pub ad: bool,
+    /// DNS response status (0 = NOERROR, 3 = NXDOMAIN).
+    pub status: u32,
+    pub txt: Vec<(String, String)>,    // (owner, value)
+    pub dnskeys: Vec<(String, Dnskey)>,
+    pub ds: Vec<(String, Ds)>,
+    pub rrsigs: Vec<(String, Rrsig)>,
+}
+
+/// Map an RRSIG "type covered" token to its numeric type.
+fn rrtype_from_str(s: &str) -> Option<u16> {
+    match s.to_ascii_uppercase().as_str() {
+        "A" => Some(1),
+        "NS" => Some(2),
+        "CNAME" => Some(5),
+        "SOA" => Some(6),
+        "TXT" => Some(16),
+        "AAAA" => Some(28),
+        "DS" => Some(43),
+        "RRSIG" => Some(46),
+        "NSEC" => Some(47),
+        "DNSKEY" => Some(48),
+        other => other.strip_prefix("TYPE").and_then(|n| n.parse().ok()),
+    }
+}
+
+fn b64d(s: &str) -> Option<Vec<u8>> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD.decode(s.replace(' ', "")).ok()
+}
+
+fn hexd(s: &str) -> Option<Vec<u8>> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// Parse a DNSKEY presentation rdata: `flags protocol algorithm <base64 key>`.
+fn parse_dnskey(data: &str) -> Option<Dnskey> {
+    let mut p = data.split_whitespace();
+    let flags = p.next()?.parse().ok()?;
+    let protocol = p.next()?.parse().ok()?;
+    let algorithm = p.next()?.parse().ok()?;
+    let public_key = b64d(&p.collect::<Vec<_>>().join(""))?;
+    Some(Dnskey { flags, protocol, algorithm, public_key })
+}
+
+/// Parse a DS presentation rdata: `key_tag algorithm digest_type <hex digest>`.
+fn parse_ds(data: &str) -> Option<Ds> {
+    let mut p = data.split_whitespace();
+    let key_tag = p.next()?.parse().ok()?;
+    let algorithm = p.next()?.parse().ok()?;
+    let digest_type = p.next()?.parse().ok()?;
+    let digest = hexd(&p.collect::<Vec<_>>().join(""))?;
+    Some(Ds { key_tag, algorithm, digest_type, digest })
+}
+
+/// Parse an RRSIG presentation rdata:
+/// `type_covered algorithm labels orig_ttl sig_exp sig_inc key_tag signer <base64 sig>`.
+/// (DoH gives `sig_exp`/`sig_inc` as unix seconds.)
+fn parse_rrsig(data: &str) -> Option<Rrsig> {
+    let mut p = data.split_whitespace();
+    let type_covered = rrtype_from_str(p.next()?)?;
+    let algorithm = p.next()?.parse().ok()?;
+    let labels = p.next()?.parse().ok()?;
+    let original_ttl = p.next()?.parse().ok()?;
+    let sig_expiration = p.next()?.parse().ok()?;
+    let sig_inception = p.next()?.parse().ok()?;
+    let key_tag = p.next()?.parse().ok()?;
+    let signer_name = name_to_wire(p.next()?);
+    let signature = b64d(&p.collect::<Vec<_>>().join(""))?;
+    Some(Rrsig {
+        type_covered,
+        algorithm,
+        labels,
+        original_ttl,
+        sig_expiration,
+        sig_inception,
+        key_tag,
+        signer_name,
+        signature,
+    })
+}
+
+/// Parse a DoH JSON response body into typed records. Tolerant: unparseable records are
+/// skipped (a missing piece simply fails chain assembly/validation later — never a false pass).
+pub fn parse_doh(json: &str) -> Result<DohAnswer, DnssecError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| DnssecError::Malformed("bad DoH JSON"))?;
+    let mut out = DohAnswer {
+        ad: v.get("AD").and_then(|b| b.as_bool()).unwrap_or(false),
+        status: v.get("Status").and_then(|s| s.as_u64()).unwrap_or(0) as u32,
+        ..Default::default()
+    };
+    // DS records and NSEC live in the Authority section on a delegation; the rest in Answer.
+    for section in ["Answer", "Authority"] {
+        let Some(arr) = v.get(section).and_then(|a| a.as_array()) else {
+            continue;
+        };
+        for rec in arr {
+            let rtype = rec.get("type").and_then(|t| t.as_u64()).unwrap_or(0);
+            let name = rec.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+            let data = rec.get("data").and_then(|d| d.as_str()).unwrap_or("");
+            match rtype {
+                16 => out.txt.push((name, data.trim_matches('"').to_string())),
+                46 => {
+                    if let Some(r) = parse_rrsig(data) {
+                        out.rrsigs.push((name, r));
+                    }
+                }
+                48 => {
+                    if let Some(k) = parse_dnskey(data) {
+                        out.dnskeys.push((name, k));
+                    }
+                }
+                43 => {
+                    if let Some(d) = parse_ds(data) {
+                        out.ds.push((name, d));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,5 +750,37 @@ mod tests {
     /// Decode a hex string to bytes (test helper).
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn parses_real_doh_txt_response_and_verifies() {
+        // A real dns.google `do=1` response for the TXT record (+ its RRSIG), parsed by core,
+        // then verified against the real ZSK — proving the DoH parser feeds validation correctly.
+        let json = r#"{
+          "Status": 0, "AD": true,
+          "Answer": [
+            {"name":"_hopaddress.example.hopme.sh.","type":16,"TTL":300,
+             "data":"J8XGeYT2VA3aq6KeP85LEujpAjg3LBbLLvivyoNFWTFr"},
+            {"name":"_hopaddress.example.hopme.sh.","type":46,"TTL":300,
+             "data":"txt 8 4 300 1783834978 1781934178 30700 hopme.sh. rOfIOdr7ooOk0JK7SZbt71avK+VisW7mWtLt8oi7pbTcHwe6Tq5+PZog5ExVHe0EAqdXjGersLgue+z3hb75j/hNXvK/zKt2l2a+FFtwfVc9oUnxq5zh0c5Bz5CAjMeJ5lZvlRgiwbtTfGd0ezYDqgS8P0s1CyV9GCvbvElELUI="}
+          ]}"#;
+        let parsed = parse_doh(json).unwrap();
+        assert!(parsed.ad);
+        assert_eq!(parsed.txt.len(), 1);
+        assert_eq!(parsed.rrsigs.len(), 1);
+
+        let zsk = Dnskey {
+            flags: 256, protocol: 3, algorithm: 8,
+            public_key: b64(
+                "AwEAAdZm1zOo0FSOc/5gbJtNPoNpLmk8i3BvAUmgM//nsFHO68cVopMr\
+                 jTEjmD+tb89QrEpmmATDEE3IqnalP1gaSGC+OferlNmCPFbuttNLCRf+\
+                 XnKXbz9CJ/FUKWhCipRds8lBDVU/iTQbC4y0VHRZkr759yNXRHU1i/bN\
+                 b3vptTKj",
+            ),
+        };
+        let (owner, value) = &parsed.txt[0];
+        let rr = Rr { owner: name_to_wire(owner), rtype: 16, class: 1, rdata: txt_rdata(value) };
+        let (_, rrsig) = &parsed.rrsigs[0];
+        verify_rrsig(&[rr], rrsig, &zsk).expect("parsed-from-DoH RRSIG must verify");
     }
 }
