@@ -72,6 +72,7 @@ pub fn decode_identity(body: Vec<u8>) -> Option<IdentityInfo> {
             NodeKind::Device => "device",
             NodeKind::Relay => "relay",
             NodeKind::Gateway => "gateway",
+            NodeKind::Endpoint => "endpoint",
         }
         .to_string(),
     })

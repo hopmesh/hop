@@ -91,7 +91,11 @@ fn main() {
 
     let identity = load_identity(&identity_file);
     let addr = identity.address();
-    let node = Node::new(identity);
+    let mut node = Node::new(identity);
+    // Answer hop.identify as the domain we back (DESIGN.md §29/§30), so a peer that resolves
+    // or traces this address sees `example.hopme.sh`, not a bare short address.
+    node.set_kind(NodeKind::Endpoint);
+    node.set_name(Some(domain.clone()));
     println!("hop-endpoint: address {}", bs58::encode(addr).into_string());
     println!("hop-endpoint: authorized domain {domain}  (rejects any other host)");
     println!("hop-endpoint: serving origin {origin}");
