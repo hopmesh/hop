@@ -473,6 +473,112 @@ fn parse_rrsig(data: &str) -> Option<Rrsig> {
     })
 }
 
+/// Decode a length-prefixed wire-form DNS name back to a lowercase dotted string (no trailing
+/// dot). Root → "".
+pub fn wire_to_name(w: &[u8]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < w.len() {
+        let len = w[i] as usize;
+        if len == 0 {
+            break;
+        }
+        i += 1;
+        if i + len > w.len() {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(&String::from_utf8_lossy(&w[i..i + len]).to_ascii_lowercase());
+        i += len;
+    }
+    out
+}
+
+/// Normalize a presentation name for comparison: no trailing dot, lowercase.
+fn norm(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// The parent zone of `z` (one label up); the root's parent is itself-empty.
+fn parent_zone(z: &str) -> String {
+    match z.find('.') {
+        Some(i) => z[i + 1..].to_string(),
+        None => String::new(),
+    }
+}
+
+/// Assemble a [`DnssecChain`] for `_hopaddress.<domain>` from the parsed DoH responses (the
+/// TXT record plus DNSKEY/DS for each zone up to root). The leaf zone is taken from the
+/// record's RRSIG signer, then we walk up to root. Missing pieces → `Malformed` so a partial
+/// chain can never validate.
+pub fn assemble_chain(domain: &str, dohs: &[DohAnswer]) -> Result<DnssecChain, DnssecError> {
+    // Flatten every response into combined, owner-tagged lists.
+    let mut txt: Vec<(String, String)> = Vec::new();
+    let mut dnskeys: Vec<(String, Dnskey)> = Vec::new();
+    let mut ds: Vec<(String, Ds)> = Vec::new();
+    let mut rrsigs: Vec<(String, Rrsig)> = Vec::new();
+    for d in dohs {
+        txt.extend(d.txt.iter().cloned());
+        dnskeys.extend(d.dnskeys.iter().cloned());
+        ds.extend(d.ds.iter().cloned());
+        rrsigs.extend(d.rrsigs.iter().cloned());
+    }
+
+    let record_name = format!("_hopaddress.{}", norm(domain));
+    // The answer RRset (TXT) and its signature.
+    let record: Vec<Rr> = txt
+        .iter()
+        .filter(|(o, _)| norm(o) == record_name)
+        .map(|(o, v)| Rr { owner: name_to_wire(o), rtype: 16, class: 1, rdata: txt_rdata(v) })
+        .collect();
+    if record.is_empty() {
+        return Err(DnssecError::Malformed("no TXT record"));
+    }
+    let record_rrsig = rrsigs
+        .iter()
+        .find(|(o, r)| norm(o) == record_name && r.type_covered == 16)
+        .map(|(_, r)| r.clone())
+        .ok_or(DnssecError::Malformed("no record RRSIG"))?;
+
+    // Leaf zone = the RRSIG's signer; walk up to root.
+    let leaf = wire_to_name(&record_rrsig.signer_name);
+    let mut zones = Vec::new();
+    let mut z = leaf;
+    loop {
+        let is_root = z.is_empty();
+        let zone_keys: Vec<Dnskey> =
+            dnskeys.iter().filter(|(o, _)| norm(o) == z).map(|(_, k)| k.clone()).collect();
+        if zone_keys.is_empty() {
+            return Err(DnssecError::Malformed("missing DNSKEY for a zone"));
+        }
+        let dnskey_rrsig = rrsigs
+            .iter()
+            .find(|(o, r)| norm(o) == z && r.type_covered == TYPE_DNSKEY)
+            .map(|(_, r)| r.clone())
+            .ok_or(DnssecError::Malformed("missing DNSKEY RRSIG"))?;
+        let (zone_ds, ds_rrsig) = if is_root {
+            (Vec::new(), None)
+        } else {
+            let zd: Vec<Ds> =
+                ds.iter().filter(|(o, _)| norm(o) == z).map(|(_, d)| d.clone()).collect();
+            let dsr = rrsigs
+                .iter()
+                .find(|(o, r)| norm(o) == z && r.type_covered == TYPE_DS)
+                .map(|(_, r)| r.clone());
+            (zd, dsr)
+        };
+        zones.push(ZoneProof { name: z.clone(), dnskeys: zone_keys, dnskey_rrsig, ds: zone_ds, ds_rrsig });
+        if is_root {
+            break;
+        }
+        z = parent_zone(&z);
+    }
+
+    Ok(DnssecChain { record, record_rrsig, zones })
+}
+
 /// Parse a DoH JSON response body into typed records. Tolerant: unparseable records are
 /// skipped (a missing piece simply fails chain assembly/validation later — never a false pass).
 pub fn parse_doh(json: &str) -> Result<DohAnswer, DnssecError> {
@@ -690,8 +796,8 @@ mod tests {
         let zone_ksk = dnskey_of(&zone_ksk_sk, 257);
         let zone_zsk = dnskey_of(&zone_zsk_sk, 256);
 
-        // Leaf record: a TXT at _x.example, signed by the zone ZSK.
-        let rec = Rr { owner: name_to_wire("_x.example"), rtype: 16, class: 1, rdata: txt_rdata("hello") };
+        // Leaf record: the _hopaddress TXT, signed by the zone ZSK.
+        let rec = Rr { owner: name_to_wire("_hopaddress.example"), rtype: 16, class: 1, rdata: txt_rdata("hello") };
         let record_rrsig = sign(&zone_zsk_sk, &zone_zsk, "example", &[rec.clone()], 16, 2, now);
 
         // Zone DNSKEY set self-signed by the zone KSK.
@@ -724,6 +830,42 @@ mod tests {
     fn validates_synthetic_chain_to_anchor() {
         let (chain, anchors, now) = build_chain();
         validate_chain(&chain, &anchors, now).expect("well-formed chain must validate");
+    }
+
+    /// Flatten a chain into the owner-tagged DoH form (as if returned by resolvers).
+    fn flatten(chain: &DnssecChain) -> DohAnswer {
+        let mut d = DohAnswer { ad: true, ..Default::default() };
+        for rr in &chain.record {
+            if rr.rtype == 16 {
+                let len = rr.rdata[0] as usize;
+                let val = String::from_utf8_lossy(&rr.rdata[1..1 + len]).to_string();
+                d.txt.push((wire_to_name(&rr.owner), val));
+            }
+        }
+        d.rrsigs.push((wire_to_name(&chain.record[0].owner), chain.record_rrsig.clone()));
+        for z in &chain.zones {
+            for k in &z.dnskeys {
+                d.dnskeys.push((z.name.clone(), k.clone()));
+            }
+            d.rrsigs.push((z.name.clone(), z.dnskey_rrsig.clone()));
+            for ds in &z.ds {
+                d.ds.push((z.name.clone(), ds.clone()));
+            }
+            if let Some(r) = &z.ds_rrsig {
+                d.rrsigs.push((z.name.clone(), r.clone()));
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn assembles_then_validates_synthetic_chain() {
+        // Flatten a known-good chain into DoH records, re-assemble from those flat records,
+        // and validate — proving assemble_chain wires the pieces back together correctly.
+        let (chain, anchors, now) = build_chain();
+        let doh = flatten(&chain);
+        let rebuilt = assemble_chain("example", &[doh]).expect("assemble");
+        validate_chain(&rebuilt, &anchors, now).expect("assembled chain validates");
     }
 
     #[test]
