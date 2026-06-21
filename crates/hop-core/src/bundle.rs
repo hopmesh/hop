@@ -34,6 +34,10 @@ pub enum Destination {
     InternetEgress,
     /// An ACK routed back to `origin` for a given bundle id.
     AckTo(PubKeyBytes, BundleId),
+    /// Flood to everyone: every node relays it onward AND processes it locally (deduped by id).
+    /// Used by `hps://` publishes, which fan out to subscribers the publisher doesn't enumerate
+    /// (DESIGN.md §32).
+    Broadcast,
 }
 
 /// Per-bundle flags. Plain bools to avoid a bitflags dependency.
@@ -174,6 +178,26 @@ pub enum Payload {
         seq: u64,
         bytes: Vec<u8>,
         fin: bool,
+    },
+    // --- hps:// pub/sub (DESIGN.md §32). Appended at the end to keep earlier discriminants. ---
+    /// Subscribe to a topic at `path` on the recipient node (sealed to the host). The host
+    /// replies with [`Payload::HpsKeys`] if the path is registered and access is allowed.
+    HpsSubscribe { path: String },
+    /// The keys for a subscribed topic, sealed back to the subscriber. `service_pubkey` is
+    /// `Some` for a service (verify broadcasts against it) and `None` for a channel (verify
+    /// each post against its sender's address).
+    HpsKeys {
+        path: String,
+        content_key: [u8; 32],
+        service_pubkey: Option<[u8; 32]>,
+    },
+    /// A published message, flooded ([`Destination::Broadcast`]) to all subscribers. The body
+    /// is content-key encrypted; `sig` is the sender's signature over `path‖nonce‖ciphertext`.
+    HpsPublish {
+        path: String,
+        nonce: Vec<u8>,
+        ciphertext: Vec<u8>,
+        sig: Vec<u8>,
     },
 }
 
