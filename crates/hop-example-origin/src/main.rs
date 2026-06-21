@@ -100,8 +100,9 @@ const HOME: &str = "<!doctype html>\
 <html><head><meta charset=\"utf-8\"><title>example.hopme.sh</title></head>\
 <body style=\"font-family:system-ui;max-width:40rem;margin:3rem auto;line-height:1.5\">\
 <h1>example.hopme.sh</h1>\
-<p>You fetched this over <code>hops://</code> — an HTTP request that crossed the Hop mesh as \
-sealed datagrams, terminated at this domain's own <code>hop-endpoint</code>, and was served \
-by a tiny origin on localhost. No man-in-the-middle, no open proxy.</p>\
+<p>You fetched this over <code>hops://</code> — the request crossed the Hop mesh as sealed \
+datagrams, was terminated at this domain's own <code>hop-endpoint</code>, and served by a \
+tiny origin on localhost. It never touched the public internet's HTTP stack — no third party \
+in the middle, no open proxy.</p>\
 <p>Try <code>hops://example.hopme.sh/hello</code> for a JSON payload.</p>\
 </body></html>";
