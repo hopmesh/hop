@@ -54,10 +54,10 @@ enum Ev {
     /// Only produced by the cloud handoff worker (the `firestore` feature).
     #[cfg_attr(not(feature = "firestore"), allow(dead_code))]
     Ingest(Vec<u8>),
-    /// A resolved HNS record `(domain, address?, ttl_secs)` from the DoH worker (DESIGN.md
-    /// §30). `None` address = no `_hopaddress` TXT (negative). Only in the cloud build.
+    /// Raw DoH response bodies for a domain's full DNSSEC chain (DESIGN.md §30), from the DoH
+    /// worker; core validates + caches. `(domain, bodies)`. Only in the cloud build.
     #[cfg(feature = "firestore")]
-    Dns(String, Option<[u8; 32]>, u32),
+    DnsProof(String, Vec<String>),
 }
 
 fn now_ms() -> u64 {
@@ -324,9 +324,9 @@ fn main() {
         });
     }
 
-    // HNS resolver worker (DESIGN.md §30): drains domains the node wants resolved, looks up
-    // `_hopaddress.<domain>` TXT over DNS-over-HTTPS off this thread, and feeds the result
-    // back as Ev::Dns. Cloud-only (needs the HTTP client).
+    // HNS resolver worker (DESIGN.md §30): drains domains the node wants resolved, fetches the
+    // whole DNSSEC chain over DNS-over-HTTPS (TXT + DNSKEY/DS up to the root) off this thread,
+    // and hands the raw response bodies back as Ev::DnsProof — core validates. Cloud-only.
     #[cfg(feature = "firestore")]
     let dns_tx: Sender<String> = {
         let (dtx, drx) = mpsc::channel::<String>();
@@ -337,13 +337,9 @@ fn main() {
                 .build()
                 .expect("dns http client");
             for domain in drx {
-                let (addr, ttl) = resolve_hopaddress(&http, &domain);
-                if let Some(a) = &addr {
-                    netlog(format!("hns: {domain} → {}", short_b58(a)));
-                } else {
-                    netlog(format!("hns: {domain} → no _hopaddress record"));
-                }
-                let _ = ev_tx.send(Ev::Dns(domain, addr, ttl));
+                let bodies = fetch_dnssec_chain(&http, &domain);
+                netlog(format!("hns: fetched {} chain records for {domain}", bodies.len()));
+                let _ = ev_tx.send(Ev::DnsProof(domain, bodies));
             }
         });
         dtx
@@ -379,7 +375,7 @@ fn main() {
                 }
             }
             #[cfg(feature = "firestore")]
-            Ok(Ev::Dns(domain, addr, ttl)) => node.provide_dns_answer(&domain, addr, ttl),
+            Ok(Ev::DnsProof(domain, bodies)) => node.provide_dns_proof(&domain, bodies),
             Err(RecvTimeoutError::Timeout) => node.tick(now_ms()),
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -631,41 +627,39 @@ fn short_b58(addr: &[u8]) -> String {
     bs58::encode(addr).into_string().chars().take(10).collect()
 }
 
-/// Resolve `_hopaddress.<domain>` TXT via DNS-over-HTTPS (DESIGN.md §30), returning the hops
-/// endpoint address (decoded from base58) and the record's DNS TTL. `(None, ttl)` means no
-/// such record (a negative answer — e.g. `hops://thisdoesnotexist.com`). On any DNS error we
-/// also return a negative with a short TTL so a transient failure retries soon.
+/// Fetch a domain's full DNSSEC chain over DNS-over-HTTPS (DESIGN.md §30) as raw JSON response
+/// bodies for core to validate: the `_hopaddress.<domain>` TXT, plus DNSKEY + DS for every zone
+/// from the domain up to the root (all with `do=1` so the RRSIG/DNSKEY/DS records are returned).
+/// Core does the parsing + validation; the relay never decides the address.
 #[cfg(feature = "firestore")]
-fn resolve_hopaddress(http: &reqwest::blocking::Client, domain: &str) -> (Option<[u8; 32]>, u32) {
-    const NEG_TTL: u32 = 60;
-    let name = format!("_hopaddress.{domain}");
-    // Google DoH JSON API: {"Status":0,"Answer":[{"name":..,"type":16,"TTL":300,"data":"\"..\""}]}
-    let url = format!("https://dns.google/resolve?name={name}&type=TXT");
-    let resp = match http.get(&url).send().and_then(|r| r.json::<serde_json::Value>()) {
-        Ok(v) => v,
-        Err(_) => return (None, NEG_TTL),
+fn fetch_dnssec_chain(http: &reqwest::blocking::Client, domain: &str) -> Vec<String> {
+    let doh = |name: &str, qtype: u16| -> Option<String> {
+        let url = format!("https://dns.google/resolve?name={name}&type={qtype}&do=1");
+        http.get(&url).send().ok()?.text().ok()
     };
-    // Status 0 = NOERROR; 3 = NXDOMAIN. Anything non-zero (or no Answer) → negative.
-    let answers = match resp.get("Answer").and_then(|a| a.as_array()) {
-        Some(a) => a,
-        None => return (None, NEG_TTL),
-    };
-    for ans in answers {
-        // TXT records only (type 16), data is the quoted string value.
-        if ans.get("type").and_then(|t| t.as_u64()) != Some(16) {
-            continue;
-        }
-        let Some(data) = ans.get("data").and_then(|d| d.as_str()) else { continue };
-        // Strip the surrounding quotes DNS uses for character-strings, plus any whitespace.
-        let txt = data.trim().trim_matches('"').trim();
-        if let Ok(bytes) = bs58::decode(txt).into_vec() {
-            if let Ok(addr) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                let ttl = ans.get("TTL").and_then(|t| t.as_u64()).unwrap_or(300) as u32;
-                return (Some(addr), ttl);
-            }
-        }
+    let mut bodies = Vec::new();
+    if let Some(b) = doh(&format!("_hopaddress.{domain}"), 16) {
+        bodies.push(b);
     }
-    (None, NEG_TTL)
+    // Walk zones: domain, parent, …, then the root (".").
+    let mut zone = domain.to_string();
+    loop {
+        let is_root = zone == ".";
+        if let Some(b) = doh(&zone, 48) {
+            bodies.push(b); // DNSKEY
+        }
+        if is_root {
+            break;
+        }
+        if let Some(b) = doh(&zone, 43) {
+            bodies.push(b); // DS (lives in the parent, queried by the child name)
+        }
+        zone = match zone.find('.') {
+            Some(i) => zone[i + 1..].to_string(),
+            None => ".".to_string(),
+        };
+    }
+    bodies
 }
 
 /// The host of a `wss://`/`ws://` URL — the relay's identify name (DESIGN.md §29).

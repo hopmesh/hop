@@ -25,6 +25,7 @@ use crate::bundle::{
 use crate::stream::StreamReassembler;
 use crate::crypto::{self, short_addr, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
 use crate::error::{Error, Result};
+use crate::dnssec;
 use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
 use crate::link::{BearerEvent, LinkHandshake, LinkId, LinkSession, Role};
 use crate::route::RouteTable;
@@ -833,10 +834,41 @@ impl<S: Store> Node<S> {
         std::mem::take(&mut self.dns_lookups)
     }
 
-    /// Feed back a real-DNS result for `domain` (DESIGN.md §30). `address` is `None` when the
-    /// `_hopaddress` TXT record is absent (a resolution error — cached negatively so we don't
-    /// hammer DNS). `ttl_secs` is the DNS TTL. Caches the record, surfaces an [`HnsResult`],
-    /// and answers any peers whose [`Payload::HnsQuery`] was waiting on this domain.
+    /// Feed back the raw DoH response bodies for a domain's full DNSSEC chain (DESIGN.md §30):
+    /// the `_hopaddress` TXT plus the DNSKEY/DS records for every zone up to the root. Core
+    /// validates the chain to the baked-in root anchors and only then caches the resolved
+    /// address — so the host (or a relaying node) is never trusted, just the cryptography. Any
+    /// validation failure caches a short negative. Answers any parked mesh queries.
+    pub fn provide_dns_proof(&mut self, domain: &str, bodies: Vec<String>) {
+        let key = normalize_domain(domain);
+        self.dns_inflight.remove(&key);
+        self.pending_resolves.remove(&key);
+        let now_secs = (self.now_ms / 1000) as u32;
+        let dohs: Vec<dnssec::DohAnswer> =
+            bodies.iter().filter_map(|b| dnssec::parse_doh(b).ok()).collect();
+        let (address, ttl_secs) = match dnssec::validate_and_extract_to_root(&key, &dohs, now_secs)
+        {
+            Ok((addr, ttl)) => (Some(addr), ttl),
+            Err(_) => (None, 60), // unvalidatable → short negative cache
+        };
+        let ttl_ms =
+            (ttl_secs as u64).clamp(MIN_HNS_TTL_MS / 1000, MAX_HNS_TTL_MS / 1000) * 1000;
+        self.hns_cache.insert(
+            key.clone(),
+            HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
+        );
+        self.hns_results.push(HnsResult { domain: key.clone(), address });
+        if let Some(waiters) = self.dns_waiters.remove(&key) {
+            for (asker, query_id) in waiters {
+                self.seal_hns_answer(asker, &key, address, ttl_secs, query_id);
+            }
+        }
+    }
+
+    /// Test-only: inject a pre-trusted resolution result, bypassing DNSSEC, to drive the
+    /// resolution state machine (cache/waiters/pending) in unit tests. Production always goes
+    /// through [`Node::provide_dns_proof`].
+    #[cfg(test)]
     pub fn provide_dns_answer(&mut self, domain: &str, address: Option<PubKeyBytes>, ttl_secs: u32) {
         let key = normalize_domain(domain);
         self.dns_inflight.remove(&key);

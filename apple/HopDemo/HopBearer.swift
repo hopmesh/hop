@@ -874,50 +874,47 @@ final class HopBearer: NSObject, ObservableObject {
             let text = String(data: resp.body, encoding: .utf8) ?? "<\(resp.body.count) bytes>"
             hopsResults[domain] = "\(resp.status) · \(text)"
         }
-        // Host DNS hook: resolve each requested `_hopaddress.<domain>` TXT record and feed
-        // it back. Kicked off async (DoH over URLSession); the answer is marshalled back to
-        // the main queue the node is driven on, exactly like the relay receive paths.
+        // Host DNS hook (DESIGN.md §30): for each domain the node wants resolved, fetch its
+        // full DNSSEC chain over DoH and hand core the raw response bodies — core validates the
+        // chain to the root anchors and decides the address; the app never does.
         for domain in node.takeDnsLookups() {
-            resolveHopAddressDns(domain)
+            fetchDnssecChain(domain)
         }
     }
 
-    /// DNS-over-HTTPS TXT lookup for `_hopaddress.<domain>` via Google's resolver, feeding
-    /// the result back to the node. The TXT value is a base58 Hop address; an empty answer
-    /// (no record, or any failure) is fed back as a negative so the resolution completes.
-    private func resolveHopAddressDns(_ domain: String) {
-        let name = "_hopaddress.\(domain)"
-        guard let url = URL(string:
-            "https://dns.google/resolve?name=\(name)&type=TXT") else {
-            DispatchQueue.main.async { self.node.provideDnsAnswer(domain: domain, address: Data(), ttlSecs: 60) }
-            return
+    /// Fetch a domain's full DNSSEC chain over DNS-over-HTTPS and feed the raw JSON bodies to
+    /// core via `provideDnsProof`: the `_hopaddress.<domain>` TXT plus DNSKEY + DS for every
+    /// zone up to the root, all with `do=1`. Runs the GETs concurrently, then marshals back to
+    /// the main queue (where the node is driven) once they're all in.
+    private func fetchDnssecChain(_ domain: String) {
+        // The DoH queries: TXT for the record, then DNSKEY+DS for each zone up to root.
+        var queries: [(String, Int)] = [("_hopaddress.\(domain)", 16)]
+        var zone = domain
+        while true {
+            queries.append((zone, 48)) // DNSKEY
+            if zone == "." { break }
+            queries.append((zone, 43)) // DS
+            zone = zone.contains(".") ? String(zone[zone.index(after: zone.firstIndex(of: ".")!)...]) : "."
         }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self else { return }
-            // Parse the first TXT (type 16) answer: { "Answer": [ { "type":16, "TTL":300,
-            // "data":"\"<base58>\"" } ] }. Strip the surrounding quotes/whitespace and
-            // base58-decode to a 32-byte Hop address.
-            var addr = Data()
-            var ttl: UInt32 = 300
-            if let data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let answers = json["Answer"] as? [[String: Any]],
-               let txt = answers.first(where: { ($0["type"] as? Int) == 16 }) {
-                if let t = txt["TTL"] as? Int, t > 0 { ttl = UInt32(t) }
-                if let raw = txt["data"] as? String {
-                    let b58 = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n"))
-                    let decoded = addressFromBase58(text: b58)
-                    if decoded.count == 32 { addr = decoded }
+
+        let group = DispatchGroup()
+        var bodies: [String] = []
+        let lock = NSLock()
+        for (name, qtype) in queries {
+            guard let url = URL(string: "https://dns.google/resolve?name=\(name)&type=\(qtype)&do=1") else { continue }
+            group.enter()
+            URLSession.shared.dataTask(with: url) { data, _, _ in
+                if let data, let body = String(data: data, encoding: .utf8) {
+                    lock.lock(); bodies.append(body); lock.unlock()
                 }
-            }
-            // Marshal back onto the main queue (where the node is driven), like the relay
-            // receive callbacks, then pump so the resolution surfaces in `takeHnsResults()`.
-            DispatchQueue.main.async {
-                self.node.provideDnsAnswer(domain: domain, address: addr,
-                                           ttlSecs: addr.isEmpty ? 60 : ttl)
-                self.pump()
-            }
-        }.resume()
+                group.leave()
+            }.resume()
+        }
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.node.provideDnsProof(domain: domain, bodies: bodies)
+            self.pump()
+        }
     }
 
     /// The chat for `peer` is on screen: clear its badge and stop counting it.

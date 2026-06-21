@@ -641,17 +641,19 @@ impl HopNode {
         Ok(id.to_vec())
     }
 
-    /// Domains the node needs the host to look up in real DNS (`_hopaddress.<domain>` TXT),
-    /// clearing the queue. Feed each result back via `provide_dns_answer`.
+    /// Domains the node needs the host to resolve (DESIGN.md §30). For each, fetch the full
+    /// DNSSEC chain over DoH — the `_hopaddress.<domain>` TXT (`type=16`) plus, for every zone
+    /// from the domain up to the root, DNSKEY (`type=48`) and DS (`type=43`) — all with `do=1`,
+    /// then hand the raw response bodies to `provide_dns_proof`. Core validates; the host never
+    /// decides the address.
     pub fn take_dns_lookups(&self) -> Vec<String> {
         self.inner.lock().unwrap().take_dns_lookups()
     }
 
-    /// Feed back a real-DNS result (DESIGN.md §30). An empty `address` means no `_hopaddress`
-    /// record exists (cached negatively). `ttl_secs` is the DNS TTL.
-    pub fn provide_dns_answer(&self, domain: String, address: Vec<u8>, ttl_secs: u32) {
-        let addr = if address.is_empty() { None } else { to32(&address).ok() };
-        self.inner.lock().unwrap().provide_dns_answer(&domain, addr, ttl_secs);
+    /// Feed back the raw DoH response bodies for a domain's chain. Core validates the DNSSEC
+    /// chain to the root anchors and caches the address only if it verifies (DESIGN.md §30).
+    pub fn provide_dns_proof(&self, domain: String, bodies: Vec<String>) {
+        self.inner.lock().unwrap().provide_dns_proof(&domain, bodies);
     }
 
     /// A snapshot of the live HNS cache (for the debug view): each cached domain, its address
