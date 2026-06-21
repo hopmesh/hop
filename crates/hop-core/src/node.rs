@@ -818,6 +818,20 @@ impl<S: Store> Node<S> {
         std::mem::take(&mut self.hns_results)
     }
 
+    /// A diagnostic snapshot of the live HNS cache: `(domain, address?, remaining_ttl_ms)`
+    /// for each fresh entry (DESIGN.md §30). `None` address is a cached negative. The
+    /// remaining TTL ticks down as the node's clock advances and the entry is pruned at zero.
+    pub fn hns_cache_snapshot(&self) -> Vec<(String, Option<PubKeyBytes>, u64)> {
+        let mut out: Vec<_> = self
+            .hns_cache
+            .iter()
+            .filter(|(_, e)| e.expires_at_ms > self.now_ms)
+            .map(|(d, e)| (d.clone(), e.address, e.expires_at_ms - self.now_ms))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// Queue a real-DNS lookup for the host, deduped while one is in flight.
     fn queue_dns_lookup(&mut self, key: &str) {
         if self.dns_inflight.insert(key.to_string()) {

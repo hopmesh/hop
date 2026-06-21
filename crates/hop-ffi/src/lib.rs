@@ -212,6 +212,15 @@ pub struct HnsRecord {
     pub address: Vec<u8>,
 }
 
+/// A live HNS cache entry for the debug view (DESIGN.md §30). `address` empty = a cached
+/// negative; `ttl_secs` is the remaining lifetime, ticking down to expiry.
+#[derive(uniffi::Record)]
+pub struct HnsCacheEntry {
+    pub domain: String,
+    pub address: Vec<u8>,
+    pub ttl_secs: u32,
+}
+
 /// Outcome of starting an HNS resolution (DESIGN.md §30).
 #[derive(uniffi::Enum)]
 pub enum HnsLookupResult {
@@ -643,6 +652,22 @@ impl HopNode {
     pub fn provide_dns_answer(&self, domain: String, address: Vec<u8>, ttl_secs: u32) {
         let addr = if address.is_empty() { None } else { to32(&address).ok() };
         self.inner.lock().unwrap().provide_dns_answer(&domain, addr, ttl_secs);
+    }
+
+    /// A snapshot of the live HNS cache (for the debug view): each cached domain, its address
+    /// (empty = negative), and the remaining TTL in seconds (ticks down to expiry).
+    pub fn hns_cache(&self) -> Vec<HnsCacheEntry> {
+        self.inner
+            .lock()
+            .unwrap()
+            .hns_cache_snapshot()
+            .into_iter()
+            .map(|(domain, addr, remaining_ms)| HnsCacheEntry {
+                domain,
+                address: addr.map(|a| a.to_vec()).unwrap_or_default(),
+                ttl_secs: (remaining_ms / 1000) as u32,
+            })
+            .collect()
     }
 
     /// Finished HNS resolutions (positive or negative), clearing the queue.
