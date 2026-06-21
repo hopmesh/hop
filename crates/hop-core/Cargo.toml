@@ -10,7 +10,7 @@ description = "Core protocol for Hop: bundles, crypto, store-and-forward, and ro
 serde.workspace = true
 postcard.workspace = true
 blake3.workspace = true
-sha2.workspace = true
+sha2 = { workspace = true, features = ["oid"] }
 ed25519-dalek.workspace = true
 x25519-dalek.workspace = true
 chacha20poly1305.workspace = true
@@ -18,3 +18,10 @@ rand_core.workspace = true
 thiserror.workspace = true
 miniz_oxide.workspace = true
 snow.workspace = true
+# DNSSEC validation (DESIGN.md §30): verify RRSIG chains to the root anchor in core so
+# multi-hop HNS resolution is trustless. RSA/SHA-256 (alg 8) covers the .sh/hopme.sh chain.
+rsa = "0.9"
+
+[dev-dependencies]
+# Decode base64 DNSSEC test vectors (dig presentation form) in unit tests only.
+base64 = "0.22"

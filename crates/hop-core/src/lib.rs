@@ -10,6 +10,7 @@
 pub mod bundle;
 pub mod crypto;
 pub mod discover;
+pub mod dnssec;
 pub mod error;
 pub mod link;
 pub mod node;
