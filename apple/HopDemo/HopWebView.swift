@@ -134,7 +134,7 @@ struct HopBrowserView: View {
         }
         .navigationTitle("hops:// browser")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: controller.currentURL) { _, new in
+        .onChange(of: controller.currentURL) { new in
             if !new.isEmpty { address = new }   // reflect link navigations in the bar
         }
     }
