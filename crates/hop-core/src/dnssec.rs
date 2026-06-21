@@ -372,6 +372,43 @@ pub fn validate_to_root(chain: &DnssecChain, now: u32) -> Result<(), DnssecError
     validate_chain(chain, &root_anchors(), now)
 }
 
+/// The one-shot trustless resolution: assemble the chain from DoH responses, validate it to
+/// `anchors`, then decode the `_hopaddress` TXT value as a base58 32-byte Hop address. Returns
+/// `(address, ttl_secs)`. Any failure (bad chain, bad signature, expired, non-base58) is an
+/// error — never a partial trust. `now` is unix seconds.
+pub fn validate_and_extract(
+    domain: &str,
+    dohs: &[DohAnswer],
+    anchors: &[Dnskey],
+    now: u32,
+) -> Result<([u8; 32], u32), DnssecError> {
+    let chain = assemble_chain(domain, dohs)?;
+    validate_chain(&chain, anchors, now)?;
+    // The validated TXT value: rdata is `<len><bytes>`.
+    let rd = &chain.record.first().ok_or(DnssecError::Malformed("no record"))?.rdata;
+    if rd.is_empty() {
+        return Err(DnssecError::Malformed("empty TXT"));
+    }
+    let len = rd[0] as usize;
+    let value = rd.get(1..1 + len).ok_or(DnssecError::Malformed("bad TXT len"))?;
+    let bytes = bs58::decode(value)
+        .into_vec()
+        .map_err(|_| DnssecError::Malformed("TXT not base58"))?;
+    let addr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| DnssecError::Malformed("address not 32 bytes"))?;
+    Ok((addr, chain.record_rrsig.original_ttl))
+}
+
+/// [`validate_and_extract`] against the real IANA root anchors.
+pub fn validate_and_extract_to_root(
+    domain: &str,
+    dohs: &[DohAnswer],
+    now: u32,
+) -> Result<([u8; 32], u32), DnssecError> {
+    validate_and_extract(domain, dohs, &root_anchors(), now)
+}
+
 // --- DoH JSON parsing (host stays a dumb fetcher; core parses) -------------------------------
 //
 // The host fetches each chain record over DNS-over-HTTPS (the Google/Cloudflare JSON API with
@@ -788,6 +825,10 @@ mod tests {
     }
 
     fn build_chain() -> (DnssecChain, Vec<Dnskey>, u32) {
+        build_chain_v("hello")
+    }
+
+    fn build_chain_v(value: &str) -> (DnssecChain, Vec<Dnskey>, u32) {
         let now = 1_700_000_000u32;
         let (root_ksk_sk, root_zsk_sk) = (gen(), gen());
         let (zone_ksk_sk, zone_zsk_sk) = (gen(), gen());
@@ -797,7 +838,7 @@ mod tests {
         let zone_zsk = dnskey_of(&zone_zsk_sk, 256);
 
         // Leaf record: the _hopaddress TXT, signed by the zone ZSK.
-        let rec = Rr { owner: name_to_wire("_hopaddress.example"), rtype: 16, class: 1, rdata: txt_rdata("hello") };
+        let rec = Rr { owner: name_to_wire("_hopaddress.example"), rtype: 16, class: 1, rdata: txt_rdata(value) };
         let record_rrsig = sign(&zone_zsk_sk, &zone_zsk, "example", &[rec.clone()], 16, 2, now);
 
         // Zone DNSKEY set self-signed by the zone KSK.
@@ -866,6 +907,30 @@ mod tests {
         let doh = flatten(&chain);
         let rebuilt = assemble_chain("example", &[doh]).expect("assemble");
         validate_chain(&rebuilt, &anchors, now).expect("assembled chain validates");
+    }
+
+    #[test]
+    fn validate_and_extract_pulls_the_address() {
+        // End-to-end: a chain whose TXT is a base58 32-byte address → assemble + validate +
+        // decode yields exactly that address, with the record's TTL.
+        let addr = [7u8; 32];
+        let value = bs58::encode(addr).into_string();
+        let (chain, anchors, now) = build_chain_v(&value);
+        let doh = flatten(&chain);
+        let (got, ttl) = validate_and_extract("example", &[doh], &anchors, now).expect("extract");
+        assert_eq!(got, addr);
+        assert_eq!(ttl, 300);
+    }
+
+    #[test]
+    fn validate_and_extract_rejects_unvalidatable() {
+        // Wrong anchor → no trust → error, no address leaks through.
+        let addr = [7u8; 32];
+        let value = bs58::encode(addr).into_string();
+        let (chain, _anchors, now) = build_chain_v(&value);
+        let doh = flatten(&chain);
+        let stranger = dnskey_of(&gen(), 257);
+        assert!(validate_and_extract("example", &[doh], &[stranger], now).is_err());
     }
 
     #[test]
