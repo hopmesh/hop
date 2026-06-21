@@ -86,14 +86,13 @@ pub enum Payload {
         /// The fully-qualified domain to resolve (the resolver looks up `_hopaddress.<domain>`).
         domain: String,
     },
-    /// HNS resolution answer (DESIGN.md §30): the result of looking up `_hopaddress.<domain>`
-    /// TXT in public DNS. `address` is `None` when no such record exists (NXDOMAIN-like — the
-    /// domain has no hops endpoint). Carries the DNS `ttl_secs` so the record expires and
-    /// propagates exactly like a DNS cache entry.
+    /// HNS resolution answer (DESIGN.md §30): the **raw DoH response bodies** making up the
+    /// domain's full DNSSEC chain. The asker re-validates this proof itself against the root
+    /// anchors — so it never trusts the answering node, only the cryptography. (Carrying the
+    /// proof, not a bare address, is what makes multi-hop resolution trustless.)
     HnsAnswer {
         domain: String,
-        address: Option<PubKeyBytes>,
-        ttl_secs: u32,
+        proof: Vec<String>,
         for_query: BundleId,
     },
     PeerMessage {

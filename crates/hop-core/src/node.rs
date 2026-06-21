@@ -858,9 +858,11 @@ impl<S: Store> Node<S> {
             HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
         );
         self.hns_results.push(HnsResult { domain: key.clone(), address });
+        // Answer parked mesh queries by handing back the raw proof — the asker re-validates it
+        // itself (trustless), rather than trusting our address.
         if let Some(waiters) = self.dns_waiters.remove(&key) {
             for (asker, query_id) in waiters {
-                self.seal_hns_answer(asker, &key, address, ttl_secs, query_id);
+                self.seal_hns_answer(asker, &key, bodies.clone(), query_id);
             }
         }
     }
@@ -879,12 +881,9 @@ impl<S: Store> Node<S> {
             HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
         );
         self.hns_results.push(HnsResult { domain: key.clone(), address });
-        // Answer any mesh queries that were parked waiting for this domain.
-        if let Some(waiters) = self.dns_waiters.remove(&key) {
-            for (asker, query_id) in waiters {
-                self.seal_hns_answer(asker, &key, address, ttl_secs, query_id);
-            }
-        }
+        // (Test path doesn't answer mesh waiters — that requires a real DNSSEC proof, which
+        // only provide_dns_proof produces.)
+        self.dns_waiters.remove(&key);
     }
 
     /// Finished HNS resolutions (positive or negative), clearing the queue.
@@ -913,20 +912,13 @@ impl<S: Store> Node<S> {
         }
     }
 
-    /// Seal an [`Payload::HnsAnswer`] back to a querier.
-    fn seal_hns_answer(
-        &mut self,
-        to: PubKeyBytes,
-        domain: &str,
-        address: Option<PubKeyBytes>,
-        ttl_secs: u32,
-        for_query: BundleId,
-    ) {
+    /// Seal an [`Payload::HnsAnswer`] (the DNSSEC `proof`) back to a querier.
+    fn seal_hns_answer(&mut self, to: PubKeyBytes, domain: &str, proof: Vec<String>, for_query: BundleId) {
         if let Ok(bundle) = Bundle::create(
             &self.identity,
             Destination::Device(to),
             &to,
-            &Payload::HnsAnswer { domain: domain.to_string(), address, ttl_secs, for_query },
+            &Payload::HnsAnswer { domain: domain.to_string(), proof, for_query },
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         ) {
             self.deliver(bundle);
@@ -1601,32 +1593,23 @@ impl<S: Store> Node<S> {
                     // we have internet, park the asker and kick off a real-DNS lookup; if we
                     // can't help (no internet, not cached), stay silent and let it time out.
                     Ok(Payload::HnsQuery { domain }) => {
+                        // A peer asks us to resolve. Only an internet-connected node can fetch
+                        // the chain; park the asker and re-fetch so we answer with a *fresh
+                        // proof* the asker can validate (we don't serve a bare cached address —
+                        // there'd be nothing for them to verify). If we have no internet, stay
+                        // silent and let it reach someone who does.
                         let key = normalize_domain(&domain);
                         let from = bundle.inner.src;
-                        if let Some(addr) = self.cached_hns(&key) {
-                            let ttl = self
-                                .hns_cache
-                                .get(&key)
-                                .map(|e| ((e.expires_at_ms.saturating_sub(self.now_ms)) / 1000) as u32)
-                                .unwrap_or(0);
-                            self.seal_hns_answer(from, &key, addr, ttl, id);
-                        } else if self.internet {
+                        if self.internet {
                             self.dns_waiters.entry(key.clone()).or_default().push((from, id));
                             self.queue_dns_lookup(&key);
                         }
                     }
-                    // An HNS answer to a query we sent (§30): cache it (honoring the DNS TTL),
-                    // surface the result, and purge the query bundle so it stops being held.
-                    Ok(Payload::HnsAnswer { domain, address, ttl_secs, for_query }) => {
-                        let key = normalize_domain(&domain);
-                        let ttl_ms =
-                            (ttl_secs as u64).clamp(MIN_HNS_TTL_MS / 1000, MAX_HNS_TTL_MS / 1000) * 1000;
-                        self.hns_cache.insert(
-                            key.clone(),
-                            HnsEntry { address, expires_at_ms: self.now_ms.saturating_add(ttl_ms) },
-                        );
-                        self.pending_resolves.remove(&key); // resolved — stop retrying
-                        self.hns_results.push(HnsResult { domain: key, address });
+                    // An HNS answer (a DNSSEC proof) to a query we sent (§30): validate it
+                    // ourselves and cache on success, then purge the query bundle. We never
+                    // trust the answering node — only the proof.
+                    Ok(Payload::HnsAnswer { domain, proof, for_query }) => {
+                        self.provide_dns_proof(&domain, proof);
                         self.pending.remove(&for_query);
                         self.store.remove(&for_query);
                         self.relay_order.retain(|x| *x != for_query);
@@ -2290,10 +2273,12 @@ mod tests {
     }
 
     #[test]
-    fn offline_node_resolves_hns_through_connected_peer() {
-        // A node with no internet, connected only to a peer that DOES have internet (e.g. a
-        // phone with Wi-Fi off next to one with cellular), resolves by broadcasting the query
-        // to its peers — no relay needed. The internet peer does the DNS lookup and answers.
+    fn offline_node_queries_through_connected_peer() {
+        // A node with no internet, connected only to a peer that DOES have internet, resolves
+        // by broadcasting the query to its peers — no relay needed. Here we verify the query
+        // reaches the internet peer and is surfaced for a DNS lookup; the peer then answers with
+        // a DNSSEC proof the asker re-validates (that round-trip needs real DNSSEC data, so it's
+        // covered by the dnssec module tests + live verification, not here).
         let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
@@ -2303,18 +2288,9 @@ mod tests {
         assert_eq!(nodes[0].resolve_hns("example.hopme.sh"), HnsLookup::Pending);
         net.pump(&mut nodes);
 
-        // The internet peer surfaced the lookup to its host; host answers.
-        let endpoint = Identity::generate().address();
+        // The internet peer received the query and surfaced the domain for a chain fetch.
         let lookups = nodes[1].take_dns_lookups();
         assert_eq!(lookups, vec!["example.hopme.sh".to_string()]);
-        nodes[1].provide_dns_answer("example.hopme.sh", Some(endpoint), 300);
-        net.pump(&mut nodes);
-
-        // Asker received and cached the record.
-        let results = nodes[0].take_hns_results();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].address, Some(endpoint));
-        assert_eq!(nodes[0].cached_hns("example.hopme.sh"), Some(Some(endpoint)));
     }
 
     #[test]
