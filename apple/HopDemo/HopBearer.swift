@@ -102,6 +102,7 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var relayStatus = "not connected"        // cloud relay link state
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
     @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
+    @Published var endpoints: [Peer] = []   // directly-dialed hops:// endpoints (§30; not relays)
     /// Resolved display name per 8-byte short address, for resolving trace hops (§27/§29).
     @Published var nameByShort: [Data: String] = [:]
     @Published var serviceLog: [String] = []   // hop.identify + custom service-call activity (§29)
@@ -994,14 +995,25 @@ final class HopBearer: NSObject, ObservableObject {
         }
         linkTransports = lt
 
-        // Connected cloud relays (the relay-link peers), named by their region domain via
-        // hop.identify (DESIGN.md §29). Shown as their own list section so the backbone is
-        // visible alongside device peers.
-        relays = pls.filter { $0.link >= 20_000 }.map { pl in
+        // Connected cloud relays (the relay-link range 20_000–29_999), named by their region
+        // domain via hop.identify (§29). Endpoints (≥30_000) are NOT relays — they're dialed
+        // directly and never join the backbone (§30) — so they're listed separately below.
+        relays = pls.filter { (20_000..<30_000).contains($0.link) }.map { pl in
             let name = identities[pl.address]?.name.isEmpty == false
                 ? identities[pl.address]!.name
                 : (nameByAddr[pl.address] ?? "relay")
             return Peer(address: pl.address, name: name, hops: 1, platform: "cloud", app: "Hop Relay")
+        }
+        .sorted { $0.name < $1.name }
+
+        // Connected hops:// endpoints (the directly-dialed origin links, ≥30_000). These are
+        // not part of the relay backbone; we reach them straight (DESIGN.md §30). Named by the
+        // domain they back via hop.identify.
+        endpoints = pls.filter { $0.link >= 30_000 }.map { pl in
+            let name = identities[pl.address]?.name.isEmpty == false
+                ? identities[pl.address]!.name
+                : (nameByAddr[pl.address] ?? "endpoint")
+            return Peer(address: pl.address, name: name, hops: 1, platform: "cloud", app: "hops endpoint")
         }
         .sorted { $0.name < $1.name }
 

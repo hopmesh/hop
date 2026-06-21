@@ -132,6 +132,21 @@ struct ContentView: View {
                     }
                 }
 
+                if !bearer.endpoints.isEmpty {
+                    Section("hops:// endpoints") {
+                        ForEach(bearer.endpoints) { e in
+                            HStack {
+                                Image(systemName: "globe").foregroundStyle(.green)
+                                VStack(alignment: .leading) {
+                                    Text(e.name)
+                                    Text(HopBearer.shortHex(e.address))
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Nearby (direct)") {
                     if direct.isEmpty { Text("none").foregroundStyle(.secondary) }
                     ForEach(direct) { peer in peerRow(peer) }
