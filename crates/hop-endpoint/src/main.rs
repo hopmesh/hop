@@ -40,8 +40,8 @@ enum Ev {
     Up(u64, Role, Sender<Vec<u8>>),
     Data(u64, Vec<u8>),
     Down(u64),
-    /// A finished HTTP fetch: reply (to, for_request_id, status, body).
-    Fetched(PubKeyBytes, BundleId, u16, Vec<u8>),
+    /// A finished HTTP fetch: reply (to, for_request_id, status, content_type, body).
+    Fetched(PubKeyBytes, BundleId, u16, String, Vec<u8>),
 }
 
 fn now_ms() -> u64 {
@@ -151,8 +151,16 @@ fn run(
                 writers.remove(&link);
                 node.handle(BearerEvent::Disconnected(link));
             }
-            Ok(Ev::Fetched(to, for_id, status, body)) => {
-                let _ = node.send_http_response(to, for_id, status, vec![], body);
+            Ok(Ev::Fetched(to, for_id, status, content_type, body)) => {
+                // Carry the origin's content-type back so a hops:// client (e.g. a WebView)
+                // renders each resource correctly (HTML/CSS/JS/image).
+                let _ = node.send_http_response(
+                    to,
+                    for_id,
+                    status,
+                    vec![("content-type".to_string(), content_type)],
+                    body,
+                );
             }
             Err(RecvTimeoutError::Timeout) => node.tick(now_ms()),
             Err(RecvTimeoutError::Disconnected) => break,
@@ -166,13 +174,14 @@ fn run(
             if req_host != domain {
                 eprintln!("hop-endpoint: refusing host {:?} (authorized: {domain})", r.host);
                 let body = format!("hop-endpoint: this endpoint only serves {domain}").into_bytes();
-                let _ = tx.send(Ev::Fetched(r.from, r.id, 403, body));
+                let ct = "text/plain; charset=utf-8".to_string();
+                let _ = tx.send(Ev::Fetched(r.from, r.id, 403, ct, body));
                 continue;
             }
             let (origin, http, tx) = (origin.clone(), http.clone(), tx.clone());
             std::thread::spawn(move || {
-                let (status, body) = fetch(&http, &origin, &r, max_resp);
-                let _ = tx.send(Ev::Fetched(r.from, r.id, status, body));
+                let (status, ctype, body) = fetch(&http, &origin, &r, max_resp);
+                let _ = tx.send(Ev::Fetched(r.from, r.id, status, ctype, body));
             });
         }
 
@@ -193,22 +202,29 @@ fn fetch(
     origin: &str,
     r: &hop_core::node::HttpReqItem,
     max_resp: u32,
-) -> (u16, Vec<u8>) {
+) -> (u16, String, Vec<u8>) {
+    let plain = "text/plain; charset=utf-8".to_string();
     if !r.method.eq_ignore_ascii_case("GET") {
-        return (405, b"hop-endpoint: only GET in v1".to_vec());
+        return (405, plain, b"hop-endpoint: only GET in v1".to_vec());
     }
     let path = path_of(&r.url);
     let url = format!("{origin}{path}");
     match http.get(&url).send() {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            let ctype = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
             let mut body = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
             if body.len() > max_resp as usize {
                 body.truncate(max_resp as usize);
             }
-            (status, body)
+            (status, ctype, body)
         }
-        Err(_) => (502, b"hop-endpoint: backend unreachable".to_vec()),
+        Err(_) => (502, plain, b"hop-endpoint: backend unreachable".to_vec()),
     }
 }
 

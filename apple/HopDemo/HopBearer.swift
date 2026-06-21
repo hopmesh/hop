@@ -177,6 +177,11 @@ final class HopBearer: NSObject, ObservableObject {
     // In-flight hops:// requests: request id → the domain it's for, so a response can be
     // matched back and rendered into `hopsResults`.
     private var hopsReqs: [Data: String] = [:]
+    // The hops:// WebView path (DESIGN.md §30): callback-style fetches that feed a WKWebView
+    // (the manual `hopsResults` field above is for the text test box only). Request id →
+    // completion, and per-domain queues for requests issued before HNS resolves.
+    private var hopsWebReqs: [Data: (HopResponse) -> Void] = [:]
+    private var hopsWebPending: [String: [(path: String, completion: (HopResponse) -> Void)]] = [:]
     private var lastRelayLog = -1
     private var lastReachLog = -1
     private var tickTimer: Timer?
@@ -752,6 +757,67 @@ final class HopBearer: NSObject, ObservableObject {
         pump()
     }
 
+    // MARK: - hops:// for the WebView (callback-style, per-resource)
+
+    /// One hops:// HTTP response handed to the WebView's scheme handler.
+    struct HopResponse {
+        let status: Int
+        let contentType: String
+        let body: Data
+    }
+
+    /// Fetch a single hops:// resource (the WebView's document or any sub-resource) and call
+    /// `completion` when the sealed response returns over the mesh. Resolves the domain via
+    /// HNS (cached after the first hit, so sub-resources fire immediately), dials the endpoint
+    /// if needed, and times out gracefully. Drives everything on the main queue.
+    func hopsFetch(domain: String, path: String, completion: @escaping (HopResponse) -> Void) {
+        guard !domain.isEmpty else {
+            completion(HopResponse(status: 400, contentType: "text/plain", body: Data("bad hops url".utf8)))
+            return
+        }
+        switch node.resolveHns(domain: domain) {
+        case .cached(let address):
+            if address.isEmpty {
+                completion(HopResponse(status: 502, contentType: "text/plain",
+                                       body: Data("no hops endpoint for \(domain)".utf8)))
+            } else {
+                fireHopsWeb(domain: domain, path: path, endpoint: address, completion: completion)
+            }
+        case .pending:
+            hopsWebPending[domain, default: []].append((path, completion))
+        case .needsResolver:
+            if let relay = relays.first?.address {
+                _ = try? node.resolveHnsVia(resolver: relay, domain: domain)
+                hopsWebPending[domain, default: []].append((path, completion))
+            } else {
+                completion(HopResponse(status: 503, contentType: "text/plain",
+                                       body: Data("offline, no resolver".utf8)))
+            }
+        }
+        pump()
+    }
+
+    private func fireHopsWeb(domain: String, path: String, endpoint: Data,
+                             completion: @escaping (HopResponse) -> Void) {
+        dialEndpoint(domain)   // direct link to the endpoint (§30)
+        guard let id = try? node.sendHopsRequest(endpoint: endpoint, host: domain,
+                                                 method: "GET", url: path,
+                                                 body: Data(), maxResp: 8 * 1024 * 1024) else {
+            completion(HopResponse(status: 502, contentType: "text/plain",
+                                   body: Data("could not send request".utf8)))
+            return
+        }
+        hopsWebReqs[id] = completion
+        // Fail gracefully if nothing comes back (the request is still held & retried by the
+        // node, but the WebView shouldn't spin forever).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, let done = self.hopsWebReqs.removeValue(forKey: id) else { return }
+            done(HopResponse(status: 504, contentType: "text/plain",
+                             body: Data("hops timeout for \(domain)\(path)".utf8)))
+        }
+        pump()
+    }
+
     /// Split `hops://<domain>/<path>` (or a bare `<domain>`) into (domain, path). The path
     /// defaults to "/" and is path+query only — what `sendHopsRequest` expects.
     private static func parseHops(_ raw: String) -> (domain: String, path: String) {
@@ -770,14 +836,34 @@ final class HopBearer: NSObject, ObservableObject {
     /// fed back via `provideDnsAnswer` (DESIGN.md §30).
     private func drainHns() {
         for rec in node.takeHnsResults() {
-            guard let path = pendingHops.removeValue(forKey: rec.domain) else { continue }
-            if rec.address.isEmpty {
-                hopsResults[rec.domain] = "error: no hops endpoint for \(rec.domain)"
-            } else {
-                fireHops(domain: rec.domain, path: path, endpoint: rec.address)
+            // The manual text-box fetch (one path per domain).
+            if let path = pendingHops.removeValue(forKey: rec.domain) {
+                if rec.address.isEmpty {
+                    hopsResults[rec.domain] = "error: no hops endpoint for \(rec.domain)"
+                } else {
+                    fireHops(domain: rec.domain, path: path, endpoint: rec.address)
+                }
+            }
+            // WebView fetches queued on this domain's resolution (may be several).
+            if let queued = hopsWebPending.removeValue(forKey: rec.domain) {
+                for (path, completion) in queued {
+                    if rec.address.isEmpty {
+                        completion(HopResponse(status: 502, contentType: "text/plain",
+                                               body: Data("no hops endpoint for \(rec.domain)".utf8)))
+                    } else {
+                        fireHopsWeb(domain: rec.domain, path: path, endpoint: rec.address,
+                                    completion: completion)
+                    }
+                }
             }
         }
         for resp in node.takeHttpResponses() {
+            // WebView completion (per-resource) takes priority over the text box.
+            if let completion = hopsWebReqs.removeValue(forKey: resp.forRequestId) {
+                completion(HopResponse(status: Int(resp.status),
+                                       contentType: resp.contentType, body: resp.body))
+                continue
+            }
             guard let domain = hopsReqs.removeValue(forKey: resp.forRequestId) else { continue }
             let text = String(data: resp.body, encoding: .utf8) ?? "<\(resp.body.count) bytes>"
             hopsResults[domain] = "\(resp.status) · \(text)"
