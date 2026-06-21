@@ -743,6 +743,9 @@ final class HopBearer: NSObject, ObservableObject {
     /// Issue the sealed hops:// GET to a resolved endpoint and remember the request id so
     /// the response can be matched back (DESIGN.md §30).
     private func fireHops(domain: String, path: String, endpoint: Data) {
+        // We learned domain↔address from HNS, so label the endpoint by its domain right away
+        // (no need to wait for a hop.identify round-trip) — shows in the endpoints list + traces.
+        nameByAddr[endpoint] = domain
         // Open a direct link to the endpoint (wss://<domain>) so the sealed request has a path
         // to it — the endpoint doesn't transit our relay (§30). Spray-and-wait holds the
         // bundle and delivers it the moment the Noise handshake on this link completes.
@@ -800,6 +803,7 @@ final class HopBearer: NSObject, ObservableObject {
 
     private func fireHopsWeb(domain: String, path: String, endpoint: Data,
                              completion: @escaping (HopResponse) -> Void) {
+        nameByAddr[endpoint] = domain   // label by domain from HNS (no identify needed)
         dialEndpoint(domain)   // direct link to the endpoint (§30)
         guard let id = try? node.sendHopsRequest(endpoint: endpoint, host: domain,
                                                  method: "GET", url: path,
@@ -1001,7 +1005,7 @@ final class HopBearer: NSObject, ObservableObject {
         relays = pls.filter { (20_000..<30_000).contains($0.link) }.map { pl in
             let name = identities[pl.address]?.name.isEmpty == false
                 ? identities[pl.address]!.name
-                : (nameByAddr[pl.address] ?? "relay")
+                : (nameByAddr[pl.address] ?? HopBearer.shortHex(pl.address))
             return Peer(address: pl.address, name: name, hops: 1, platform: "cloud", app: "Hop Relay")
         }
         .sorted { $0.name < $1.name }
@@ -1012,7 +1016,7 @@ final class HopBearer: NSObject, ObservableObject {
         endpoints = pls.filter { $0.link >= 30_000 }.map { pl in
             let name = identities[pl.address]?.name.isEmpty == false
                 ? identities[pl.address]!.name
-                : (nameByAddr[pl.address] ?? "endpoint")
+                : (nameByAddr[pl.address] ?? HopBearer.shortHex(pl.address))
             return Peer(address: pl.address, name: name, hops: 1, platform: "cloud", app: "hops endpoint")
         }
         .sorted { $0.name < $1.name }

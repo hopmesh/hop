@@ -55,6 +55,9 @@ fn main() {
     let mut identity_file: Option<String> = None;
     let mut max_resp: u32 = 8 * 1024 * 1024; // 8 MiB cap on a translated response
     let mut print_address = false;
+    // Dial a relay so the endpoint is reachable by its address on the mesh (can send/receive
+    // messages), as a leaf that never carries others' traffic (DESIGN.md §30). Default on.
+    let mut relay: Option<String> = Some("wss://relay.hopme.sh/".to_string());
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -63,6 +66,8 @@ fn main() {
             "--domain" => domain = args.next(),
             "--identity-file" => identity_file = args.next(),
             "--max-resp" => max_resp = args.next().and_then(|s| s.parse().ok()).unwrap_or(max_resp),
+            "--relay" => relay = args.next(),
+            "--no-relay" => relay = None, // run isolated (listening only), e.g. for local tests
             // Load the identity, print its base58 address, and exit. Used to fill in the
             // `_hopaddress.<domain>` TXT record before the endpoint ever serves traffic.
             "--print-address" => print_address = true,
@@ -96,6 +101,9 @@ fn main() {
     // or traces this address sees `example.hopme.sh`, not a bare short address.
     node.set_kind(NodeKind::Endpoint);
     node.set_name(Some(domain.clone()));
+    // A leaf: routable by address, but it never relays other nodes' bundles (§30) — domain
+    // traffic and the backbone don't flow *through* an endpoint.
+    node.set_max_relayed(0);
     println!("hop-endpoint: address {}", bs58::encode(addr).into_string());
     println!("hop-endpoint: authorized domain {domain}  (rejects any other host)");
     println!("hop-endpoint: serving origin {origin}");
@@ -129,7 +137,75 @@ fn main() {
         });
     }
 
+    // Dial the relay (if configured) so the endpoint joins the mesh as a routable leaf —
+    // reachable by its address for messages, reconnecting forever (DESIGN.md §30).
+    if let Some(relay_url) = relay {
+        let tx = tx.clone();
+        println!("hop-endpoint: joining mesh via relay {relay_url} (routable leaf)");
+        std::thread::spawn(move || dial_relay(relay_url, tx));
+    }
+
     run(node, domain, origin, http, max_resp, tx, rx);
+}
+
+/// Dial a relay over `wss://` and bridge it as a Hop bearer link (we're the Initiator), so
+/// this endpoint is reachable by its address through the mesh. Reconnects forever. Same
+/// read-timeout interleave as the inbound bearer, but as a TLS WebSocket client.
+fn dial_relay(url: String, ev_tx: Sender<Ev>) {
+    use tungstenite::stream::MaybeTlsStream;
+    loop {
+        match tungstenite::connect(&url) {
+            Ok((mut ws, _resp)) => {
+                eprintln!("hop-endpoint: connected to relay {url}");
+                match ws.get_ref() {
+                    MaybeTlsStream::Plain(s) => {
+                        let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+                    }
+                    MaybeTlsStream::Rustls(t) => {
+                        let _ = t.get_ref().set_read_timeout(Some(Duration::from_millis(100)));
+                    }
+                    _ => {}
+                }
+                let link = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+                let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
+                if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
+                    return;
+                }
+                'conn: loop {
+                    loop {
+                        match out_rx.try_recv() {
+                            Ok(bytes) => {
+                                if ws.write(Message::Binary(bytes)).is_err() {
+                                    break 'conn;
+                                }
+                            }
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => break 'conn,
+                        }
+                    }
+                    if ws.flush().is_err() {
+                        break;
+                    }
+                    match ws.read() {
+                        Ok(Message::Binary(b)) => {
+                            if ev_tx.send(Ev::Data(link, b.to_vec())).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(Message::Close(_)) => break,
+                        Ok(_) => {}
+                        Err(tungstenite::Error::Io(e))
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut => {}
+                        Err(_) => break,
+                    }
+                }
+                let _ = ev_tx.send(Ev::Down(link));
+            }
+            Err(e) => eprintln!("hop-endpoint: relay {url} unreachable ({e}); retrying"),
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
 }
 
 /// The driver: sole owner of the node. Routes outgoing bytes to per-link writers, and on a
