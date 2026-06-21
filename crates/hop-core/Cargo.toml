@@ -19,8 +19,10 @@ thiserror.workspace = true
 miniz_oxide.workspace = true
 snow.workspace = true
 # DNSSEC validation (DESIGN.md §30): verify RRSIG chains to the root anchor in core so
-# multi-hop HNS resolution is trustless. RSA/SHA-256 (alg 8) covers the .sh/hopme.sh chain.
+# multi-hop HNS resolution is trustless. RSA/SHA-256 (alg 8) covers the .sh/hopme.sh chain;
+# ECDSA P-256/SHA-256 (alg 13) covers most modern zones (Cloudflare etc.).
 rsa = "0.9"
+p256 = { version = "0.13", features = ["ecdsa"] }
 # Decode the baked root trust anchors (base64) and DNSSEC test vectors.
 base64 = "0.22"
 # Parse DoH (DNS-over-HTTPS) JSON responses in core, so the host stays a dumb fetcher.

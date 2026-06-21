@@ -162,6 +162,22 @@ pub fn verify_rrsig(rrset: &[Rr], rrsig: &Rrsig, key: &Dnskey) -> Result<(), Dns
             pk.verify(Pkcs1v15Sign::new::<Sha256>(), &digest, &rrsig.signature)
                 .map_err(|_| DnssecError::BadSignature)
         }
+        ALG_ECDSAP256SHA256 => {
+            use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+            // DNSKEY carries the raw uncompressed point (x‖y, 64 bytes, RFC 6605); prepend the
+            // SEC1 0x04 tag. The signature is r‖s (64 bytes). Verifier hashes with SHA-256.
+            if key.public_key.len() != 64 {
+                return Err(DnssecError::Malformed("bad P-256 key length"));
+            }
+            let mut sec1 = Vec::with_capacity(65);
+            sec1.push(0x04);
+            sec1.extend_from_slice(&key.public_key);
+            let vk = VerifyingKey::from_sec1_bytes(&sec1)
+                .map_err(|_| DnssecError::Malformed("bad P-256 key"))?;
+            let sig = Signature::from_slice(&rrsig.signature)
+                .map_err(|_| DnssecError::Malformed("bad P-256 signature"))?;
+            vk.verify(&data, &sig).map_err(|_| DnssecError::BadSignature)
+        }
         other => Err(DnssecError::Unsupported(other)),
     }
 }
@@ -945,6 +961,40 @@ mod tests {
         let (chain, anchors, now) = build_chain();
         // now far past every signature's expiration.
         assert_eq!(validate_chain(&chain, &anchors, now + 200_000), Err(DnssecError::Expired));
+    }
+
+    #[test]
+    fn verifies_ecdsa_p256_rrsig() {
+        // Generate a P-256 zone key, sign a TXT RRset (ECDSA/SHA-256, alg 13), and verify —
+        // covering the algorithm most modern zones (Cloudflare etc.) use.
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let sk = SigningKey::random(&mut rand_core::OsRng);
+        let point = sk.verifying_key().to_encoded_point(false); // 0x04 ‖ x ‖ y
+        let dnskey = Dnskey {
+            flags: 256,
+            protocol: 3,
+            algorithm: ALG_ECDSAP256SHA256,
+            public_key: point.as_bytes()[1..].to_vec(), // strip the 0x04 tag → x ‖ y
+        };
+        let mut rrsig = Rrsig {
+            type_covered: 16,
+            algorithm: ALG_ECDSAP256SHA256,
+            labels: 2,
+            original_ttl: 300,
+            sig_inception: 1,
+            sig_expiration: u32::MAX,
+            key_tag: dnskey.key_tag(),
+            signer_name: name_to_wire("example"),
+            signature: Vec::new(),
+        };
+        let rr = Rr { owner: name_to_wire("_x.example"), rtype: 16, class: 1, rdata: txt_rdata("hi") };
+        let sig: Signature = sk.sign(&signed_data(&rrsig, &[rr.clone()]));
+        rrsig.signature = sig.to_bytes().to_vec();
+
+        verify_rrsig(&[rr.clone()], &rrsig, &dnskey).expect("ECDSA P-256 RRSIG must verify");
+
+        let bad = Rr { owner: name_to_wire("_x.example"), rtype: 16, class: 1, rdata: txt_rdata("xx") };
+        assert_eq!(verify_rrsig(&[bad], &rrsig, &dnskey), Err(DnssecError::BadSignature));
     }
 
     #[test]
