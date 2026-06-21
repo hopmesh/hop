@@ -21,6 +21,9 @@ pub enum Error {
 
     #[error("bundle expired or hop limit reached")]
     Undeliverable,
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

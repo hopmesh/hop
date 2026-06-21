@@ -734,17 +734,13 @@ final class HopBearer: NSObject, ObservableObject {
                 fireHops(domain: domain, path: path, endpoint: address)
             }
         case .pending:
-            // The node kicked off a lookup (it'll service `takeDnsLookups()` itself if we're
-            // internet-connected); fire the request when its record lands in `takeHnsResults()`.
+            // A lookup was kicked off — either our own DNS (if we have internet) or, if not,
+            // a query broadcast to our connected peers (a nearby internet phone/relay resolves
+            // it). Fire the request when its record lands in `takeHnsResults()`.
             pendingHops[domain] = path
         case .needsResolver:
-            // No internet on this device — ask a connected relay to resolve over the mesh.
-            if let relay = relays.first?.address {
-                _ = try? node.resolveHnsVia(resolver: relay, domain: domain)
-                pendingHops[domain] = path   // answer arrives via `takeHnsResults()` too
-            } else {
-                hopsResults[domain] = "error: offline, no resolver"
-            }
+            // Genuinely isolated: no internet AND no connected peers to resolve through.
+            hopsResults[domain] = "error: offline — no internet or peers to resolve \(domain)"
         }
         pump()
     }
@@ -797,15 +793,11 @@ final class HopBearer: NSObject, ObservableObject {
                 fireHopsWeb(domain: domain, path: path, endpoint: address, completion: completion)
             }
         case .pending:
+            // Our own DNS, or (no internet) a query broadcast to connected peers (§30).
             hopsWebPending[domain, default: []].append((path, completion))
         case .needsResolver:
-            if let relay = relays.first?.address {
-                _ = try? node.resolveHnsVia(resolver: relay, domain: domain)
-                hopsWebPending[domain, default: []].append((path, completion))
-            } else {
-                completion(HopResponse(status: 503, contentType: "text/plain",
-                                       body: Data("offline, no resolver".utf8)))
-            }
+            completion(HopResponse(status: 503, contentType: "text/plain",
+                                   body: Data("offline — no internet or peers to resolve \(domain)".utf8)))
         }
         pump()
     }

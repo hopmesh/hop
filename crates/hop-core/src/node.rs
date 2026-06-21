@@ -761,10 +761,19 @@ impl<S: Store> Node<S> {
         }
         if self.internet {
             self.queue_dns_lookup(&key);
-            HnsLookup::Pending
-        } else {
-            HnsLookup::NeedsResolver
+            return HnsLookup::Pending;
         }
+        // No internet of our own: ask every connected peer (DESIGN.md §30). Whichever is
+        // internet-connected resolves and answers; the rest ignore it. So a phone with Wi-Fi
+        // off still resolves through a nearby phone that has internet — no relay needed.
+        let peers = self.peers();
+        if peers.is_empty() {
+            return HnsLookup::NeedsResolver;
+        }
+        for p in peers {
+            self.send_hns_query(p, &key);
+        }
+        HnsLookup::Pending
     }
 
     /// Resolve `domain` by asking a specific internet-connected peer (e.g. a relay) over the
@@ -772,18 +781,27 @@ impl<S: Store> Node<S> {
     /// via [`Node::take_hns_results`]. Use when this node has no internet of its own.
     pub fn resolve_hns_via(&mut self, resolver: PubKeyBytes, domain: &str) -> Result<BundleId> {
         let key = normalize_domain(domain);
+        self.send_hns_query(resolver, &key)
+            .ok_or_else(|| Error::Other("could not seal HNS query".into()))
+    }
+
+    /// Seal + send an [`Payload::HnsQuery`] for `key` to `resolver`. Returns the query id, or
+    /// `None` if it couldn't be created. Used both for an explicit resolver and the no-internet
+    /// broadcast to all connected peers.
+    fn send_hns_query(&mut self, resolver: PubKeyBytes, key: &str) -> Option<BundleId> {
         let bundle = Bundle::create(
             &self.identity,
             Destination::Device(resolver),
             &resolver,
-            &Payload::HnsQuery { domain: key },
+            &Payload::HnsQuery { domain: key.to_string() },
             BundleOpts { created_at: self.now_ms, ..Default::default() },
-        )?;
+        )
+        .ok()?;
         let id = bundle.id();
         self.tx.entry(id).or_default();
         self.forwarded.insert(id, (self.identity.address(), resolver, self.now_ms));
         self.deliver(bundle);
-        Ok(id)
+        Some(id)
     }
 
     /// Domains the host must look up in real DNS (the `_hopaddress.<domain>` TXT record),
@@ -2198,23 +2216,20 @@ mod tests {
     }
 
     #[test]
-    fn offline_node_resolves_hns_via_internet_peer() {
-        // A node with no internet asks an internet-connected peer (e.g. a relay) over the
-        // mesh. The peer does the DNS lookup and seals the answer back; the asker caches it.
+    fn offline_node_resolves_hns_through_connected_peer() {
+        // A node with no internet, connected only to a peer that DOES have internet (e.g. a
+        // phone with Wi-Fi off next to one with cellular), resolves by broadcasting the query
+        // to its peers — no relay needed. The internet peer does the DNS lookup and answers.
         let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[1].set_internet(true); // node 1 is the resolver
-        let resolver = nodes[1].address();
+        nodes[1].set_internet(true); // the nearby peer has internet
 
-        // Offline node can't resolve on its own.
-        assert_eq!(nodes[0].resolve_hns("example.hopme.sh"), HnsLookup::NeedsResolver);
-
-        // ...so it asks the resolver over the mesh.
-        nodes[0].resolve_hns_via(resolver, "example.hopme.sh").unwrap();
+        // resolve_hns auto-broadcasts to connected peers (Pending, not NeedsResolver).
+        assert_eq!(nodes[0].resolve_hns("example.hopme.sh"), HnsLookup::Pending);
         net.pump(&mut nodes);
 
-        // Resolver surfaced the lookup to its host; host answers.
+        // The internet peer surfaced the lookup to its host; host answers.
         let endpoint = Identity::generate().address();
         let lookups = nodes[1].take_dns_lookups();
         assert_eq!(lookups, vec!["example.hopme.sh".to_string()]);
@@ -2226,6 +2241,13 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].address, Some(endpoint));
         assert_eq!(nodes[0].cached_hns("example.hopme.sh"), Some(Some(endpoint)));
+    }
+
+    #[test]
+    fn isolated_node_needs_resolver() {
+        // With no internet AND no connected peers, there's no one to ask.
+        let mut node = Node::new(Identity::generate());
+        assert_eq!(node.resolve_hns("example.hopme.sh"), HnsLookup::NeedsResolver);
     }
 
     #[test]
