@@ -247,6 +247,8 @@ pub enum NodeKind {
     Device,
     Relay,
     Gateway,
+    /// A `hops://` origin endpoint (DESIGN.md §30); its `name` is the domain it serves.
+    Endpoint,
 }
 
 /// The reply body of [`SERVICE_IDENTIFY`]: who a node is. `name` is `None` when unset
