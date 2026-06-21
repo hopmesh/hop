@@ -1894,6 +1894,34 @@ mandate overrides migration with a **declared home region** that **pins** the in
 migration) to the declared store. Absent a declaration, store-near-use + migration is the right
 default (§33).
 
+**Detect for locality; declare for residency.** The two needs take opposite signals, and
+conflating them is a mistake:
+
+- **Locality (performance) — detect automatically, no user input.** This is just the migration
+  affinity above: *sustained* region-of-connection over a window. It can be sharpened with IP
+  geolocation (the strongest single auto-signal, but noisy under VPN/proxy/travel *and* itself
+  personal data, so geolocating means **persisting more PII**) or device locale/timezone (weak).
+  Sustained affinity is the **privacy-cheaper** signal — it needs no stored IPs — so it's the
+  default; IP/locale are optional accuracy boosts, not requirements.
+- **Residency (legal/compliance) — the user must declare it; never infer it.** An inferred
+  residence cannot drive a localization decision, for reasons that all point the same way:
+  1. **Not authoritative** — only the person (or an authority) knows their legal residence;
+     topology can't establish a legal fact. `"user asserted EU residency"` is auditable; `"we
+     geolocated their IP"` is not.
+  2. **A confident wrong guess is a breach** — misclassify one VPN user and their data goes to the
+     wrong continent *while you believe you're compliant*.
+  3. **Inference is self-defeating** — detecting residence means collecting/persisting more
+     personal data (IP, location history, locale) and building the person↔location linkage the
+     no-registry design (§23) deliberately avoids; you'd do more surveillance to satisfy a
+     privacy requirement.
+
+  (And recall §33: GDPR proper keys on the *service's* targeting/monitoring, not per-user
+  residence — so for GDPR itself you need no detection at all.)
+- **The middle ground — suggest, then confirm.** Pre-fill a likely home from sustained affinity,
+  **suggest** it, and let the user confirm or override. The inference only pre-fills the field; the
+  **user's confirmation is what carries the legal weight** — one-tap setup for most people, an
+  auditable declaration for compliance, and no guess ever treated as the answer.
+
 ### Open / abuse
 
 Anyone can create an inbox for any address (it's a write-only drop box; content is sealed; only X's
