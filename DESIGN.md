@@ -1717,3 +1717,80 @@ from the rotation).
 - `hps://` — pub/sub services & channels at paths on any node (this section).
 - HNS resolves a `{host}` to an address for any of them; the `hps://`/`hops://` grammar and the
   signature/key handling live in core, not the hosts.
+
+## 33. Data protection & GDPR — what the durable store holds and where
+
+> Engineering-compliance map, not legal advice. The point is to be honest about what
+> personal data the backbone persists, where it physically lives, and which knobs move it.
+
+The only place Hop persists user-derived data at rest is the **durable Firestore store** (§27/§28).
+Everything else is ephemeral compute or on-device. Three things land there, and they are **not**
+equal under GDPR:
+
+- **Sealed bundles** (`relays/{node}/bundles`) — **ciphertext**. Relays carry the payload
+  end-to-end encrypted and **never hold keys**, so message *content* is opaque to the store. But
+  the bundle header carries **source + destination public keys, timestamps, size, and app/topic
+  labels**. A persistent pseudonymous identifier tied to an individual is personal data (GDPR
+  Recital 26 / *Breyer*), so the **metadata** is in scope even though the content is not.
+- **Presence index** (`presence/{device}` = region + heartbeat, §28) — the sharp one. It maps a
+  pseudonymous device address to a coarse **location + activity timeline**. Movement/timing
+  metadata over time is the most sensitive dataset in the system.
+- **Delivery ACKs** (`AckTo`) — same metadata character as bundles.
+
+### What the design already gets right (data protection by design, Art. 25)
+
+- **End-to-end encryption, relays hold no keys.** Content exposure at rest is essentially nil — a
+  strong Art. 32 safeguard and the core of any transfer-risk argument.
+- **No central identity/name registry (§23).** Addresses are pseudonymous public keys with no
+  account mapping. Pseudonymization and data minimization by construction.
+- **TTL eviction** on bundles (`infra/firestore.tf`) and heartbeat staleness on presence —
+  storage limitation (Art. 5(1)(e)) is built in, not bolted on.
+
+### The actual exposures
+
+1. **International transfer (Chapter V).** The durable store is a **single Firestore database in
+   one location** — default `nam5`, a **US** multi-region (`infra/variables.tf`). Every region's
+   partition (including EU nodes') is just a collection in that one US database, so EU users'
+   personal data (addresses, presence, metadata) is **transferred to and stored in the US**. Post
+   *Schrems II* that needs a mechanism: the **EU-US Data Privacy Framework** (Google Cloud is
+   DPF-certified) or **SCCs + a transfer impact assessment**. The mechanism exists and must be
+   actively relied on and documented — US storage is not automatically unlawful, but it is the
+   first thing a regulator asks about.
+2. **Presence is location data.** Coarse region + timestamps per address is the highest-risk set.
+   Minimize it: shortest viable retention, coarsest viable granularity, and prefer in-memory on a
+   warm node over persistence where delivery allows.
+3. **Erasure is awkward — by design.** With no address→person map, enumerating "all of one
+   person's data" for an Art. 15/17 request is hard. Pseudonymity aids minimization but
+   complicates rights fulfilment unless a subject proves they hold an address (then
+   deletion-by-address is feasible).
+
+### Globality & replication of the store (precise)
+
+The Firestore database is **globally reachable and strongly consistent, but US-centric in latency
+and residency**:
+
+- **Consistency:** one logical DB — any relay anywhere sees a consistent view; no cross-region
+  eventual-consistency races.
+- **Replication:** within the multi-region only. `nam5` synchronously replicates across several
+  **US** regions (survives a US-region outage); it does **not** replicate to Europe.
+- **Locality: none.** A non-US relay's "region-local durable store" (the §28 phrasing is logical,
+  keyed by node) is **physically in the US**. So an EU relay's reads/writes are trans-Atlantic
+  (~80–100 ms each) and all data sits under **US residency**. For a delay-tolerant backbone the
+  handoff cadence (tens of seconds, §28) dwarfs that RTT, so it's a residency question, not a
+  performance one.
+
+### The levers (ranked)
+
+- **Near term (cheapest):** rely on Google's DPF certification / SCCs, write the transfer-impact
+  assessment, and lean on the E2E-encryption + pseudonymity posture. Standard, defensible for
+  EU-serving infra on GCP.
+- **Tighten the sensitive set:** shrink presence retention/granularity; keep bundle/ACK TTLs as
+  short as delivery allows.
+- **Full EU data residency (architectural fork):** a single global DB **cannot** be in two
+  locations. Residency means splitting into **per-continent databases** (`nam5` + `eur3`) and
+  routing each region's partition — and the presence index — to its continent's DB, with the
+  cross-partition handoff (§28) choosing the destination DB by the destination's continent. This
+  trades away the single-consistent-store simplicity for cross-DB routing. The device-keyed
+  mailbox fallback (offline-destination delivery) does **not** dodge this: a per-device mailbox is
+  still personal data wherever it lands, so its store location must also key off the device's
+  region. Not built; documented here so the cost of residency is known before it's required.
