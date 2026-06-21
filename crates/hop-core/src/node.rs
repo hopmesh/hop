@@ -1215,6 +1215,10 @@ impl<S: Store> Node<S> {
         // out the re-ACK throttle map.
         self.ack_replicate.retain(|id, _| self.store.contains(id));
         self.last_ack.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
+        // Expired HNS records leave the device entirely (DESIGN.md §30): once a cached
+        // endpoint's DNS-derived TTL lapses it's dropped, so the next request re-resolves
+        // all the way back to DNS rather than reusing a stale address.
+        self.hns_cache.retain(|_, e| e.expires_at_ms > now_ms);
 
         let mut retransmit = false;
         for id in self.pending.keys().copied().collect::<Vec<_>>() {
