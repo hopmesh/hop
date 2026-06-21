@@ -58,8 +58,11 @@ resource "google_cloud_run_v2_service" "example" {
     service_account = google_service_account.relay.email
     timeout         = "${var.ws_request_timeout_seconds}s"
 
+    # Always-on (min = 1): the endpoint must stay connected to the relay to be routable by
+    # its address — a scaled-to-zero endpoint disconnects, so messages to it just sit held on
+    # the relay. As a routable mesh leaf (DESIGN.md §30) it needs a persistent presence.
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = 1
     }
 
@@ -88,7 +91,10 @@ resource "google_cloud_run_v2_service" "example" {
           cpu    = "1"
           memory = "512Mi"
         }
-        cpu_idle = true
+        # Always-allocated CPU (not idle-throttled): the endpoint keeps a persistent outbound
+        # WebSocket to the relay in a background thread, which would stall under request-only
+        # CPU. Pairs with min_instance_count = 1.
+        cpu_idle = false
       }
     }
 
