@@ -21,7 +21,5 @@ snow.workspace = true
 # DNSSEC validation (DESIGN.md §30): verify RRSIG chains to the root anchor in core so
 # multi-hop HNS resolution is trustless. RSA/SHA-256 (alg 8) covers the .sh/hopme.sh chain.
 rsa = "0.9"
-
-[dev-dependencies]
-# Decode base64 DNSSEC test vectors (dig presentation form) in unit tests only.
+# Decode the baked root trust anchors (base64) and DNSSEC test vectors.
 base64 = "0.22"

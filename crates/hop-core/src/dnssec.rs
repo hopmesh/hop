@@ -202,6 +202,176 @@ pub fn txt_rdata(value: &str) -> Vec<u8> {
     out
 }
 
+/// RR type numbers we encode for signing.
+const TYPE_DS: u16 = 43;
+const TYPE_DNSKEY: u16 = 48;
+
+/// A DS record (RFC 4034 §5.1): the parent's hash of a child zone's KSK.
+#[derive(Clone, Debug)]
+pub struct Ds {
+    pub key_tag: u16,
+    pub algorithm: u8,
+    pub digest_type: u8,
+    pub digest: Vec<u8>,
+}
+
+impl Ds {
+    fn rdata(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + self.digest.len());
+        v.extend_from_slice(&self.key_tag.to_be_bytes());
+        v.push(self.algorithm);
+        v.push(self.digest_type);
+        v.extend_from_slice(&self.digest);
+        v
+    }
+}
+
+/// One zone level of a DNSSEC proof. The chain is ordered leaf-zone → … → root.
+#[derive(Clone, Debug)]
+pub struct ZoneProof {
+    /// Zone name, e.g. `"hopme.sh"`, `"sh"`, or `""` for the root.
+    pub name: String,
+    /// This zone's DNSKEY RRset.
+    pub dnskeys: Vec<Dnskey>,
+    /// RRSIG over the DNSKEY RRset (made by this zone's KSK — a key in `dnskeys`).
+    pub dnskey_rrsig: Rrsig,
+    /// The DS RRset for THIS zone, as published in the parent (empty for the root).
+    pub ds: Vec<Ds>,
+    /// RRSIG over the DS RRset (made by the PARENT zone's ZSK; `None` for the root).
+    pub ds_rrsig: Option<Rrsig>,
+}
+
+/// A full DNSSEC proof for one answer record: the signed record plus every zone level up to
+/// the root, enough to validate without trusting whoever supplied it.
+#[derive(Clone, Debug)]
+pub struct DnssecChain {
+    /// The answer RRset being proven (e.g. the `_hopaddress` TXT).
+    pub record: Vec<Rr>,
+    /// RRSIG over the record (made by the leaf zone's ZSK).
+    pub record_rrsig: Rrsig,
+    /// Zone levels, leaf-zone first, root last.
+    pub zones: Vec<ZoneProof>,
+}
+
+/// Is `now` (unix seconds) within the RRSIG validity window? (Direct compare; the RFC-1982
+/// serial wrap near 2106 is ignored.)
+fn within_window(rrsig: &Rrsig, now: u32) -> bool {
+    rrsig.sig_inception <= now && now <= rrsig.sig_expiration
+}
+
+/// Find the key in `keys` whose tag matches `key_tag`.
+fn find_key(keys: &[Dnskey], key_tag: u16) -> Option<&Dnskey> {
+    keys.iter().find(|k| k.key_tag() == key_tag)
+}
+
+/// Verify an RRSIG over an RRset with whichever key in `keys` it names, enforcing the validity
+/// window. Returns the verifying key on success.
+fn verify_with_keys<'a>(
+    rrset: &[Rr],
+    rrsig: &Rrsig,
+    keys: &'a [Dnskey],
+    now: u32,
+) -> Result<&'a Dnskey, DnssecError> {
+    if !within_window(rrsig, now) {
+        return Err(DnssecError::Expired);
+    }
+    let key = find_key(keys, rrsig.key_tag).ok_or(DnssecError::BadSignature)?;
+    verify_rrsig(rrset, rrsig, key)?;
+    Ok(key)
+}
+
+/// Validate a full DNSSEC chain against the given trust `anchors` (root KSKs) at time `now`
+/// (unix seconds): the record is signed by the leaf zone, each zone's DNSKEY set is self-signed
+/// by its KSK, each KSK is vouched by a DS in its parent (and the DS set is signed by the
+/// parent), and the chain terminates at an anchor. Use [`root_anchors`] for the real anchors.
+pub fn validate_chain(chain: &DnssecChain, anchors: &[Dnskey], now: u32) -> Result<(), DnssecError> {
+    let leaf = chain.zones.first().ok_or(DnssecError::Malformed("no zones"))?;
+
+    // 1. The answer record is signed by the leaf zone's ZSK.
+    verify_with_keys(&chain.record, &chain.record_rrsig, &leaf.dnskeys, now)?;
+
+    // 2. Walk each zone level, anchoring its KSK upward.
+    for (i, z) in chain.zones.iter().enumerate() {
+        // The zone's DNSKEY RRset, as canonical RRs, is self-signed by the zone's KSK.
+        let dnskey_rrset: Vec<Rr> = z
+            .dnskeys
+            .iter()
+            .map(|k| Rr {
+                owner: name_to_wire(&z.name),
+                rtype: TYPE_DNSKEY,
+                class: 1,
+                rdata: k.rdata(),
+            })
+            .collect();
+        let ksk = verify_with_keys(&dnskey_rrset, &z.dnskey_rrsig, &z.dnskeys, now)?;
+
+        let is_root = z.name.is_empty() || z.name == ".";
+        if is_root {
+            // The KSK must be one of our baked-in trust anchors.
+            let trusted = anchors
+                .iter()
+                .any(|a| a.algorithm == ksk.algorithm && a.public_key == ksk.public_key);
+            if !trusted {
+                return Err(DnssecError::NoTrustAnchor);
+            }
+        } else {
+            // The KSK must be vouched by a DS in the parent, and that DS set must be signed.
+            let parent = chain
+                .zones
+                .get(i + 1)
+                .ok_or(DnssecError::Malformed("missing parent zone"))?;
+            let owner = name_to_wire(&z.name);
+            let ds_ok = z.ds.iter().any(|d| {
+                d.key_tag == ksk.key_tag()
+                    && d.algorithm == ksk.algorithm
+                    && ds_digest(&owner, ksk, d.digest_type)
+                        .map(|dg| dg == d.digest)
+                        .unwrap_or(false)
+            });
+            if !ds_ok {
+                return Err(DnssecError::DsMismatch);
+            }
+            let ds_rrsig = z
+                .ds_rrsig
+                .as_ref()
+                .ok_or(DnssecError::Malformed("missing DS RRSIG"))?;
+            let ds_rrset: Vec<Rr> = z
+                .ds
+                .iter()
+                .map(|d| Rr {
+                    owner: owner.clone(),
+                    rtype: TYPE_DS,
+                    class: 1,
+                    rdata: d.rdata(),
+                })
+                .collect();
+            verify_with_keys(&ds_rrset, ds_rrsig, &parent.dnskeys, now)?;
+        }
+    }
+    Ok(())
+}
+
+/// The IANA root trust anchors — the root zone KSKs. Both the current KSK-2017 (key tag 20326)
+/// and the rolled-in KSK-2024 are accepted while the rollover is in progress.
+pub fn root_anchors() -> Vec<Dnskey> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    [
+        // KSK-2017 (key tag 20326)
+        "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU=",
+        // KSK-2024 (key tag 38696)
+        "AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC6rXTsDc449/cidltpkyGwCJNnOAlFNKF2jBosZBU5eeHspaQWOmOElZsjICMQMC3aeHbGiShvZsx4wMYSjH8e7Vrhbu6irwCzVBApESjbUdpWWmEnhathWu1jo+siFUiRAAxm9qyJNg/wOZqqzL/dL/q8PkcRU5oUKEpUge71M3ej2/7CPqpdVwuMoTvoB+ZOT4YeGyxMvHmbrxlFzGOHOijtzN+u1TQNatX2XBuzZNQ1K+s2CXkPIZo7s6JgZyvaBevYtxPvYLw4z9mR7K2vaF18UYH9Z9GNUUeayffKC73PYc=",
+    ]
+    .iter()
+    .filter_map(|b64| STANDARD.decode(b64).ok())
+    .map(|public_key| Dnskey { flags: 257, protocol: 3, algorithm: ALG_RSASHA256, public_key })
+    .collect()
+}
+
+/// Validate a chain against the real IANA root anchors.
+pub fn validate_to_root(chain: &DnssecChain, now: u32) -> Result<(), DnssecError> {
+    validate_chain(chain, &root_anchors(), now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +466,145 @@ mod tests {
             verify_rrsig(&[tampered], &rrsig, &zsk),
             Err(DnssecError::BadSignature),
         );
+    }
+
+    #[test]
+    fn real_ksk_ds_link_matches_dot_sh() {
+        // The hopme.sh KSK (flags 257) must have key tag 5446 and hash to the exact DS digest
+        // published at the .sh parent — that's the link that anchors the zone to its parent.
+        let ksk = Dnskey {
+            flags: 257,
+            protocol: 3,
+            algorithm: 8,
+            public_key: b64(
+                "AwEAAc8K3U595+tS/OwpGZL4J4SSLymmg0BSLN5BWm1vzMtUDmP5eTjK\
+                 KI8NbDl4H0sSIGf9KwU3EWPZ96YzVx4y2Z+BKOCuaPU5VI+kOjxjm8x6\
+                 YUkFwonHibDfwppHg05yZ4wu9YqbmS6HNfJjdrx0aKPN4zpKc/FO1eec\
+                 PrP4+kdasycd9TEPw6T9kQLBWaRSCi0seHaSWC19scYUFZdPXTySF+WJ\
+                 8xJS6lJULo8e++FKNqwJGCjWxo1PGSUqQKTxejiuZEb2E59Rf9mrZBGT\
+                 +I2Kq8/dOzrnf4RVCSzfHJSQWOyp7RG9YkrclwMxarwDD1ToDEciWIBD\
+                 DH3e9+Wllu8=",
+            ),
+        };
+        assert_eq!(ksk.key_tag(), 5446);
+        let digest = ds_digest(&name_to_wire("hopme.sh"), &ksk, DIGEST_SHA256).unwrap();
+        let want =
+            hex("6C6733A258D4FC31571FCEA1A657F188EE295EAB3ADC222EB807B5786048E0F9");
+        assert_eq!(digest, want, "DS digest must match the record published at .sh");
+    }
+
+    // --- synthetic full-chain walk -----------------------------------------------------
+    // Generate our own root + zone keys, sign a record + the DNSKEY/DS sets, and prove the
+    // recursive validator accepts a well-formed chain and rejects a broken one.
+
+    use rsa::traits::PublicKeyParts;
+    use rsa::{Pkcs1v15Sign as Sign, RsaPrivateKey};
+
+    fn gen() -> RsaPrivateKey {
+        RsaPrivateKey::new(&mut rand_core::OsRng, 1024).unwrap()
+    }
+
+    fn dnskey_of(sk: &RsaPrivateKey, flags: u16) -> Dnskey {
+        let pk = sk.to_public_key();
+        let e = pk.e().to_bytes_be();
+        let n = pk.n().to_bytes_be();
+        let mut public_key = Vec::new();
+        if e.len() < 256 {
+            public_key.push(e.len() as u8);
+        } else {
+            public_key.push(0);
+            public_key.extend_from_slice(&(e.len() as u16).to_be_bytes());
+        }
+        public_key.extend_from_slice(&e);
+        public_key.extend_from_slice(&n);
+        Dnskey { flags, protocol: 3, algorithm: 8, public_key }
+    }
+
+    fn sign(sk: &RsaPrivateKey, signer: &Dnskey, zone: &str, rrset: &[Rr], type_covered: u16, labels: u8, now: u32) -> Rrsig {
+        let mut rrsig = Rrsig {
+            type_covered,
+            algorithm: 8,
+            labels,
+            original_ttl: 300,
+            sig_inception: now - 60,
+            sig_expiration: now + 86_400,
+            key_tag: signer.key_tag(),
+            signer_name: name_to_wire(zone),
+            signature: Vec::new(),
+        };
+        let digest = Sha256::digest(&signed_data(&rrsig, rrset));
+        rrsig.signature = sk.sign(Sign::new::<Sha256>(), &digest).unwrap();
+        rrsig
+    }
+
+    fn build_chain() -> (DnssecChain, Vec<Dnskey>, u32) {
+        let now = 1_700_000_000u32;
+        let (root_ksk_sk, root_zsk_sk) = (gen(), gen());
+        let (zone_ksk_sk, zone_zsk_sk) = (gen(), gen());
+        let root_ksk = dnskey_of(&root_ksk_sk, 257);
+        let root_zsk = dnskey_of(&root_zsk_sk, 256);
+        let zone_ksk = dnskey_of(&zone_ksk_sk, 257);
+        let zone_zsk = dnskey_of(&zone_zsk_sk, 256);
+
+        // Leaf record: a TXT at _x.example, signed by the zone ZSK.
+        let rec = Rr { owner: name_to_wire("_x.example"), rtype: 16, class: 1, rdata: txt_rdata("hello") };
+        let record_rrsig = sign(&zone_zsk_sk, &zone_zsk, "example", &[rec.clone()], 16, 2, now);
+
+        // Zone DNSKEY set self-signed by the zone KSK.
+        let zone_keys = vec![zone_ksk.clone(), zone_zsk.clone()];
+        let zone_dnskey_rrset: Vec<Rr> = zone_keys.iter().map(|k| Rr { owner: name_to_wire("example"), rtype: TYPE_DNSKEY, class: 1, rdata: k.rdata() }).collect();
+        let zone_dnskey_rrsig = sign(&zone_ksk_sk, &zone_ksk, "example", &zone_dnskey_rrset, TYPE_DNSKEY, 1, now);
+
+        // DS for the zone (its KSK), published in root, signed by root ZSK.
+        let zone_ds = Ds { key_tag: zone_ksk.key_tag(), algorithm: 8, digest_type: 2, digest: ds_digest(&name_to_wire("example"), &zone_ksk, 2).unwrap() };
+        let ds_rrset = vec![Rr { owner: name_to_wire("example"), rtype: TYPE_DS, class: 1, rdata: zone_ds.rdata() }];
+        let ds_rrsig = sign(&root_zsk_sk, &root_zsk, "", &ds_rrset, TYPE_DS, 1, now);
+
+        // Root DNSKEY set self-signed by the root KSK (the anchor).
+        let root_keys = vec![root_ksk.clone(), root_zsk.clone()];
+        let root_dnskey_rrset: Vec<Rr> = root_keys.iter().map(|k| Rr { owner: name_to_wire(""), rtype: TYPE_DNSKEY, class: 1, rdata: k.rdata() }).collect();
+        let root_dnskey_rrsig = sign(&root_ksk_sk, &root_ksk, "", &root_dnskey_rrset, TYPE_DNSKEY, 0, now);
+
+        let chain = DnssecChain {
+            record: vec![rec],
+            record_rrsig,
+            zones: vec![
+                ZoneProof { name: "example".into(), dnskeys: zone_keys, dnskey_rrsig: zone_dnskey_rrsig, ds: vec![zone_ds], ds_rrsig: Some(ds_rrsig) },
+                ZoneProof { name: "".into(), dnskeys: root_keys, dnskey_rrsig: root_dnskey_rrsig, ds: vec![], ds_rrsig: None },
+            ],
+        };
+        (chain, vec![root_ksk], now)
+    }
+
+    #[test]
+    fn validates_synthetic_chain_to_anchor() {
+        let (chain, anchors, now) = build_chain();
+        validate_chain(&chain, &anchors, now).expect("well-formed chain must validate");
+    }
+
+    #[test]
+    fn rejects_chain_with_wrong_anchor() {
+        let (chain, _anchors, now) = build_chain();
+        let stranger = dnskey_of(&gen(), 257); // a root key we never put in the chain
+        assert_eq!(validate_chain(&chain, &[stranger], now), Err(DnssecError::NoTrustAnchor));
+    }
+
+    #[test]
+    fn rejects_chain_outside_validity_window() {
+        let (chain, anchors, now) = build_chain();
+        // now far past every signature's expiration.
+        assert_eq!(validate_chain(&chain, &anchors, now + 200_000), Err(DnssecError::Expired));
+    }
+
+    #[test]
+    fn root_anchors_have_expected_key_tags() {
+        let tags: Vec<u16> = root_anchors().iter().map(|k| k.key_tag()).collect();
+        assert!(tags.contains(&20326), "KSK-2017 present");
+        assert!(tags.contains(&38696), "KSK-2024 present");
+    }
+
+    /// Decode a hex string to bytes (test helper).
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 }
