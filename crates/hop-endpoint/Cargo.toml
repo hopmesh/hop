@@ -8,6 +8,7 @@ description = "hops:// origin endpoint — a listening Hop node that translates 
 
 [dependencies]
 hop-core.workspace = true
-tungstenite = "0.24"
+# rustls feature so the endpoint can DIAL a relay over wss:// (be routable on the mesh, §30).
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 bs58 = "0.5"
