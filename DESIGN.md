@@ -1565,38 +1565,51 @@ TXT record at `_hopaddress.{FQDN}` holding the base58 Hop **address** (pubkey) o
 `hop-endpoint`. To reach `hops://example.com`, a client resolves `_hopaddress.example.com` →
 pubkey, then speaks `hdp` to that address.
 
-**Resolution is every internet-connected peer's job — not a relay round-trip.** It lives in
-core (`Node::resolve_hns`), so any node that can reach the public internet resolves on its
-own. A relay *may* answer too (it's just a convenient always-on resolver), but nothing
-*requires* one. The split that keeps core network-agnostic:
+**Decentralized, multi-hop, trustless.** There is deliberately **no central HNS resolver** —
+an "HNS endpoint" would itself be a name needing resolution (chicken-and-egg). Instead a query
+walks the mesh hop by hop until it reaches a node that can answer, and the answer is verified
+end-to-end so it doesn't matter *who* answered.
 
-- **Core owns the protocol + the cache.** The HNS cache maps `domain → (address?, expiry)`,
-  honoring the DNS TTL. `resolve_hns(domain)` serves a fresh cache entry immediately;
-  otherwise, for an internet-connected node, it enqueues a real-DNS lookup.
-- **The host owns the actual DNS call.** Core surfaces the domains it needs looked up via
-  `take_dns_lookups()`; the host (which has the network) does the `_hopaddress.<domain>` TXT
-  query however it likes (the cloud relay uses DNS-over-HTTPS) and feeds the result back via
-  `provide_dns_answer(domain, address?, ttl_secs)`. Core caches it and surfaces the result.
-- **Offline nodes ask a peer.** A node with no internet calls `resolve_hns_via(resolver,
-  domain)`, which seals a `Payload::HnsQuery` to a known internet-connected peer; that peer
-  resolves (cache or real DNS) and seals back a `Payload::HnsAnswer` carrying the address and
-  DNS TTL. The asker caches it. This is the optional relay-assisted path.
-- **Records propagate like DNS.** Every node that learns a record caches it under its TTL and
-  can then answer other peers' queries from cache — exactly the recursive-resolver caching
-  model. Entries expire at their TTL (clamped to [1 s, 24 h]); the population of caching
-  resolvers grows as queries flow.
+- **The query is public and floodable**, not sealed to one peer: `HnsQuery { domain, query_id,
+  origin }`. This is safe because a domain→pubkey mapping is public DNS data — there's nothing
+  to hide. Being readable is the whole point: every node it passes through can act on it.
+- **Each node does resolve-or-handoff.** On receiving a query: dedup by `query_id` → if it has
+  a fresh cached record, answer → else if it is internet-connected, do the DNS lookup and
+  answer → else forward the query to its other peers (bounded by hop limit + lifetime, like any
+  bundle). So a query from an offline device propagates `A → B → C …` until it reaches an
+  internet-connected node, with no pre-known resolver.
+- **Answers route back and seed caches.** The `HnsAnswer` heads back toward `origin`, and every
+  node on the return path **caches it** — DNS-recursive-resolver behavior across the mesh.
+  Entries honor the DNS TTL (clamped to [1 s, 24 h]) and are **pruned at expiry**, so a lapsed
+  record leaves the node and the next request re-resolves from scratch.
+
+**DNSSEC is required to publish a `hops://` endpoint — that's what makes multi-hop trustless.**
+A readable, anyone-answers query means a malicious intermediary could otherwise forge
+`example.com → attacker_pubkey`, and the client would seal its request to the attacker (MitM —
+the mirror of the endpoint's own domain-binding guarantee). So:
+
+- The resolving node carries the **full DNSSEC proof** in the answer — the TXT + its `RRSIG`,
+  the zone `DNSKEY`, and the `DS` chain up the tree (fetched via DoH with `do=1`).
+- The **client validates the chain itself**, in core, against the baked-in **root trust
+  anchor**. A forged or unsigned answer fails validation and is rejected — so any node may
+  resolve, but none can lie.
+- Domains without DNSSEC simply **cannot be `hops://` endpoints**. Requiring it is reasonable
+  for a new protocol, and turns "trust the mesh" into "trustless and verifiable."
+
+**Validation lives in `hop-core`, not the hosts.** The host is reduced to a dumb byte-fetcher:
+core says which records to fetch, the host does the DoH/UDP and returns **raw record bytes**,
+and core parses + verifies the chain + caches. (This also kills today's duplication, where the
+iOS app and the relay each parse DoH JSON independently and neither validates.) Parsing, the
+`_hopaddress.{domain}` convention, and the `hops://`/`hps://` grammar all belong in core too.
 
 **Missing records are first-class errors.** `hops://thisdoesnotexist.com` — no `_hopaddress`
-TXT — resolves to a **negative** answer (`address = None`), cached briefly (so we don't
-hammer DNS) and surfaced as a resolution error rather than a hang. The caller gets "no such
-hops endpoint," not a silent timeout.
+TXT (an authenticated denial under DNSSEC) — resolves to a **negative** answer cached briefly,
+surfaced as "no such hops endpoint" rather than a hang.
 
-Trust: the name→key binding inherits DNS's trust model (harden with DNSSEC / a signed
-record). But once resolved, the channel is **end-to-end sealed to the resolved pubkey**, so
-the live session is authenticated regardless of how the binding was learned.
-
-**Wire types:** `Payload::HnsQuery { domain }` and `Payload::HnsAnswer { domain, address?,
-ttl_secs, for_query }`, both ordinary sealed `hdp` bundles.
+**Wire types:** `HnsQuery { domain, query_id, origin }` (public/floodable) and `HnsAnswer
+{ domain, address?, ttl_secs, proof, for_query }`, where `proof` is the DNSSEC chain the client
+verifies. (The earlier point-to-point `resolve_hns_via` — a query sealed to one known resolver
+— remains as a special case, but the floodable form is the general mechanism.)
 
 ## 31. Reliable, ordered, delay-tolerant delivery on `hdp`
 
@@ -1631,3 +1644,76 @@ Everything below is built on plain datagrams; none of it requires a live end-to-
   retransmission **backs off exponentially** (30 s → … → 15 min cap) so a long-lived bundle
   costs a handful of retries, not thousands. A message persists and keeps seeking the
   destination across contacts for its whole lifetime.
+
+## 32. `hps://` — Hop Pub/Sub: services & channels
+
+`hps://` (Hop Pub/Sub) is a protocol **distinct from `hops://`**. `hops://` is request/response
+(a client fetches from one origin); `hps://` is **publish/subscribe** — a writer broadcasts to
+many subscribers it doesn't enumerate. Both ride `hdp` and both resolve hosts via HNS.
+
+### Registration & addressing
+
+**Any node** — phone, endpoint, relay — can **register a service or channel at a path** and
+becomes its host. On registration the node generates the relevant keys and **persists them in
+its store** (so they survive restarts); one node may host many, one per path.
+
+A topic is addressed `hps://{address|host}/{name}` — `{name}` is the path under the host node's
+address (`{host}` resolved via HNS). A request to a path that **isn't registered returns an
+error** — paths are explicit, never implicit.
+
+### Two modes
+
+**Channel — anyone reads, anyone writes** (group chat). Confidentiality is a **symmetric
+content key** shared by members; any member encrypts/decrypts with it. Every post is **signed
+by the writer's own device identity**, so readers always see a *verified* sender even though
+the read/write key is shared.
+
+**Service — only the owner broadcasts, many read.** Confidentiality is again a **symmetric
+content key** handed to subscribers (so they can read); write-restriction is a **service
+signing keypair** — the host signs each broadcast with its private key and subscribers verify
+with its public key. So only the host can produce a valid broadcast *even if the read key
+leaks*. (Confidentiality and authenticity are deliberately separate concerns: a single keypair
+can't enforce both "only subscribers read" and "only the owner writes".)
+
+### Authenticity is always a per-message signature
+
+Independent of the shared content key, **every `hps://` message is signed by its sender** — the
+service's key for a broadcast, the member's own identity for a channel post. The content key is
+*confidentiality only*; the signature is *authenticity*. A leaked content key lets someone
+**read**, but they still can't forge a service broadcast (no service signing key) nor
+impersonate another member (signatures are per-identity).
+
+### Subscribe / join, and access modes
+
+Subscribing is an `hps://{host}/{name}` request; on success the host hands back the keys
+(content key, plus the service's public verify key for a service). **Who gets the keys** is the
+access mode:
+
+- **Open** — keys handed out on subscribe; no member list; membership stays anonymous (the
+  host learns a member's address only when they ACK a message — see reach).
+- **Request-to-join** — the requester asks; the host **approves** before handing off keys.
+- **Invite** — the host **initiates** an invite to a destination; the destination accepts,
+  then receives the keys.
+
+### Publish, delivery, and reach
+
+A published message is encrypted with the content key and **floods the mesh** (epidemic, like
+any `hdp` bundle); non-members carry it but can't read it. Each member that decrypts **ACKs
+back to the host**, and the host tallies **unique acking addresses** as its delivery count /
+sense of reach — **no subscriber registry required** (for open mode).
+
+### Revocation (current limit + future)
+
+There is **no per-member revocation today** — keys are rotate-forward, and anyone who ever held
+a content key can read anything encrypted under it. Planned: **selective rotation** — the host
+marks a topic for rotation, announces it has **moved to a new path/address**, re-keys the
+members it wants to keep, and a removed member is simply never handed the new key (blacklisted
+from the rotation).
+
+### Relationship to the rest of the stack
+
+- `hdp` — the datagram substrate everything rides.
+- `hops://` — request/response to a domain's own endpoint (HNS-resolved, DNSSEC-validated, §30).
+- `hps://` — pub/sub services & channels at paths on any node (this section).
+- HNS resolves a `{host}` to an address for any of them; the `hps://`/`hops://` grammar and the
+  signature/key handling live in core, not the hosts.
