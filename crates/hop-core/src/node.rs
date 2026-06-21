@@ -40,7 +40,17 @@ use crate::store::{MemoryStore, Store};
 enum LinkPacket {
     Handshake(Vec<u8>),
     Data(Vec<u8>),
+    /// One fragment of a record too large for a single Noise message (max 65535 bytes).
+    /// `idx`/`cnt` order reassembly; each fragment's `ct` is independently Noise-encrypted,
+    /// so the receiver decrypts in order and concatenates the plaintext before decoding the
+    /// [`Wire`]. Without this, an oversized record (e.g. a large `hps://` broadcast) would be
+    /// silently dropped at `encrypt` (DESIGN.md §20).
+    DataFrag { idx: u16, cnt: u16, ct: Vec<u8> },
 }
+
+/// Max plaintext bytes per Noise transport message. Noise caps a message at 65535 bytes
+/// including the 16-byte AEAD tag; we leave headroom for the postcard `LinkPacket` framing.
+const MAX_RECORD_PLAINTEXT: usize = 60_000;
 
 /// Claims the peer's hop address during the Noise handshake. No signature needed:
 /// the sealing key is derived from the address (Montgomery), so the peer is bound to
@@ -67,6 +77,10 @@ struct Established {
     peer: PubKeyBytes,
     sent_bundles: HashSet<crate::bundle::BundleId>,
     sent_adverts: HashSet<crate::discover::AdvertId>,
+    /// Reassembly of an in-progress fragmented record (DESIGN.md §20): accumulated decrypted
+    /// plaintext and the next fragment index expected. `frag_cnt == 0` means none in progress.
+    frag_buf: Vec<u8>,
+    frag_next: u16,
 }
 
 // Boxed because a Noise handshake state is much larger than an established session.
@@ -1544,6 +1558,7 @@ impl<S: Store> Node<S> {
         match packet {
             LinkPacket::Handshake(msg) => self.on_handshake_msg(link, &msg),
             LinkPacket::Data(ct) => self.on_record(link, &ct),
+            LinkPacket::DataFrag { idx, cnt, ct } => self.on_record_frag(link, idx, cnt, &ct),
         }
     }
 
@@ -1587,6 +1602,8 @@ impl<S: Store> Node<S> {
                     peer,
                     sent_bundles: HashSet::new(),
                     sent_adverts: HashSet::new(),
+                    frag_buf: Vec::new(),
+                    frag_next: 0,
                 })),
             );
             self.offer_bundles_to_link(link);
@@ -1617,6 +1634,46 @@ impl<S: Store> Node<S> {
             Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
             Ok(Wire::Advert(a)) => self.on_advert(peer, a),
             Err(_) => {}
+        }
+    }
+
+    /// Receive one fragment of an oversized record (DESIGN.md §20). Each fragment is its own
+    /// Noise message, so decrypt in arrival order (the bearer is ordered) and concatenate the
+    /// plaintext; on the final fragment, decode and dispatch the whole [`Wire`]. An
+    /// out-of-order fragment means loss/corruption — drop the partial record and resync.
+    fn on_record_frag(&mut self, link: LinkId, idx: u16, cnt: u16, ct: &[u8]) {
+        let ready = {
+            let Some(LinkState::Up(est)) = self.links.get_mut(&link) else {
+                return;
+            };
+            // Decrypt now: the Noise ratchet must advance in lockstep with arrivals.
+            let Ok(piece) = est.session.decrypt(ct) else {
+                return;
+            };
+            if cnt == 0 || idx >= cnt || idx != est.frag_next {
+                // Stray or reordered fragment: reset. Only a fresh idx 0 starts a new record.
+                est.frag_buf.clear();
+                est.frag_next = 0;
+                if idx != 0 {
+                    return;
+                }
+            }
+            est.frag_buf.extend_from_slice(&piece);
+            est.frag_next += 1;
+            if est.frag_next == cnt {
+                let plaintext = std::mem::take(&mut est.frag_buf);
+                est.frag_next = 0;
+                Some((plaintext, est.peer))
+            } else {
+                None
+            }
+        };
+        if let Some((plaintext, peer)) = ready {
+            match postcard::from_bytes::<Wire>(&plaintext) {
+                Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
+                Ok(Wire::Advert(a)) => self.on_advert(peer, a),
+                Err(_) => {}
+            }
         }
     }
 
@@ -2137,11 +2194,29 @@ impl<S: Store> Node<S> {
         let Ok(plaintext) = postcard::to_allocvec(record) else {
             return;
         };
-        let Ok(ct) = est.session.encrypt(&plaintext) else {
+        // Fits one Noise message: send as a single Data record (the common case).
+        if plaintext.len() <= MAX_RECORD_PLAINTEXT {
+            let Ok(ct) = est.session.encrypt(&plaintext) else {
+                return;
+            };
+            if let Ok(bytes) = postcard::to_allocvec(&LinkPacket::Data(ct)) {
+                self.outgoing.push((link, bytes));
+            }
             return;
-        };
-        if let Ok(bytes) = postcard::to_allocvec(&LinkPacket::Data(ct)) {
-            self.outgoing.push((link, bytes));
+        }
+        // Too large for one Noise message — fragment across several so it isn't silently
+        // dropped. Each piece is independently encrypted; the peer reassembles (§20).
+        let pieces: Vec<&[u8]> = plaintext.chunks(MAX_RECORD_PLAINTEXT).collect();
+        let cnt = pieces.len() as u16;
+        for (i, piece) in pieces.into_iter().enumerate() {
+            let Ok(ct) = est.session.encrypt(piece) else {
+                return; // ratchet would desync; abandon the rest of this record
+            };
+            if let Ok(bytes) =
+                postcard::to_allocvec(&LinkPacket::DataFrag { idx: i as u16, cnt, ct })
+            {
+                self.outgoing.push((link, bytes));
+            }
         }
     }
 }
@@ -2339,6 +2414,36 @@ mod tests {
         // The response is the return-path delete: the request no longer lingers in our
         // store (service calls carry no ACK-vaccine, so without this it would pin forever).
         assert!(!nodes[0].store.contains(&req_id), "request purged once its response arrives");
+    }
+
+    #[test]
+    fn large_message_arrives_through_a_relay() {
+        // The real image scenario: sender and recipient never meet directly — a relay in
+        // the middle carries the carrier-chunk bundles and the recipient reassembles (§20).
+        let mut nodes = [
+            Node::new(Identity::generate()), // 0 sender
+            Node::new(Identity::generate()), // 1 relay
+            Node::new(Identity::generate()), // 2 recipient
+        ];
+        nodes[1].set_kind(NodeKind::Relay);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // sender <-> relay
+        net.connect(&mut nodes, 1, 2, 2, 2); // relay  <-> recipient
+
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect(); // ~300KB
+        let dst = nodes[2].address();
+        nodes[0].send_message(dst, "image/jpeg".into(), body.clone(), true).unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[2].take_inbox();
+        assert_eq!(inbox.len(), 1, "reassembled into exactly one message through the relay");
+        match inbox[0].open(&nodes[2].identity).unwrap() {
+            Payload::PeerMessage { content_type, body: got } => {
+                assert_eq!(content_type, "image/jpeg");
+                assert_eq!(got, body, "bytes reassembled exactly, in order");
+            }
+            _ => panic!("wrong payload"),
+        }
     }
 
     #[test]
@@ -3036,6 +3141,29 @@ mod tests {
         assert_eq!(msgs.len(), 1, "the post floods to the other member");
         assert_eq!(msgs[0].body, b"hi all");
         assert_eq!(msgs[0].sender, nodes[1].address(), "verified as member 1's post");
+    }
+
+    #[test]
+    fn large_broadcast_fragments_across_the_link() {
+        // hps:// broadcasts aren't carrier-chunked (no single dst), so a big channel post
+        // exceeds one Noise message (max 65535B) and must fragment at the link layer, or it
+        // is silently dropped at encrypt (DESIGN.md §20).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel);
+        nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        net.pump(&mut nodes);
+
+        // ~200KB body → the sealed broadcast bundle far exceeds one Noise message.
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        nodes[0].hps_publish("lobby", &big).unwrap();
+        net.pump(&mut nodes);
+
+        let msgs = nodes[1].take_hps_messages();
+        assert_eq!(msgs.len(), 1, "the large broadcast reassembled and decrypted");
+        assert_eq!(msgs[0].body, big, "bytes intact across link fragmentation");
     }
 
     #[test]
