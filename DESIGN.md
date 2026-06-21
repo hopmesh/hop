@@ -1794,3 +1794,108 @@ and residency**:
   mailbox fallback (offline-destination delivery) does **not** dodge this: a per-device mailbox is
   still personal data wherever it lands, so its store location must also key off the device's
   region. Not built; documented here so the cost of residency is known before it's required.
+
+## 34. Device inboxes — recipient-keyed mailboxes with locality migration
+
+> **Supersedes the cross-partition handoff of §28.** §28 wrote an undeliverable bundle into the
+> *destination region's relay partition*, located by a presence index, hoping the right region
+> woke. This section makes the durable delivery rendezvous a **per-recipient inbox** that has a
+> home and **migrates toward where the recipient actually is** — the model Gmail and Spanner use:
+> a mailbox's primary follows sustained access, with damping. All the §28 invariants hold (passive
+> Firestore only; nodes never wake nodes; relays carry only ciphertext).
+
+### The unit: a per-device inbox with a home store
+
+- The authoritative durable layer is an **inbox keyed by recipient address** —
+  `inbox/{device}/bundles/{id}` — **not** a relay-node partition. *Every* `Device(X)`-addressed
+  bundle that can't be delivered live lands in `inbox/{X}`: user messages, **delivery-ACKs**
+  (`AckTo`), service responses, and the `hps://` key handoffs (`HpsKeys`) alike. One mailbox per
+  device for all unicast traffic.
+- An inbox has a **home store**. Placement granularity is the **continental Firestore database**
+  (§32/§33): a multi-region DB (`nam5`, `eur3`) is one logical store, so there is no placement
+  *within* a continent — "the region a device connects to" maps to **that region's continental
+  DB**. Migration is therefore meaningful at the **cross-continent** grain (move `nam5`→`eur3`),
+  which is exactly where latency and residency bite.
+- A tiny **locator** `inbox-home/{device} = { store, region, updatedAt }` says where the inbox
+  lives. A pure read that wakes no one — it **subsumes the §28 presence index** (it now records a
+  *home*, maintained by migration, not just a last-seen region).
+
+### Relays write directly to inboxes
+
+A relay holding an undeliverable `Device(X)` bundle reads `inbox-home/{X}`:
+
+- **Locator exists** → write the sealed bytes into `inbox/{X}/bundles/{id}` in that store. It
+  never opens the bundle (ciphertext verbatim); writes are deduped by bundle id.
+- **No locator (no inbox anywhere yet)** → **sender-side implicit creation**: the sending relay
+  creates `inbox/{X}` in **its own store** and writes the locator pointing there. The inbox is
+  born nearest whoever first needed it and **gravitates to X** once X starts checking in. So a
+  message to a never-seen recipient is never dropped — it waits in the sender's region until the
+  recipient appears and pulls (and eventually until the inbox migrates to them).
+
+### Devices check their inbox on connection
+
+On link-up, the relay X lands on reads `inbox-home/{X}`:
+
+- **Home is this store** → drain `inbox/{X}`, offer to X on its link, ACK-purge on delivery.
+- **Home is another continent** → drain it **cross-store** (works; pays one continental RTT) and
+  **bump X's affinity** for this store — sustained checking-in here is what pulls the inbox over.
+- **No locator** → nothing waiting.
+
+Receiving is still just "connect so the offer happens" (§28 device check-in) — only the *source*
+of the offered bundles changes from a relay partition to the device's own inbox.
+
+### Migration — locality gravity, damped
+
+Each inbox carries a **recency-decayed affinity** per store, fed by where X actually checks in.
+When a non-home store **dominates the home by a margin `M` over a window `W`** (hysteresis, so a
+two-week trip abroad doesn't yank the inbox and the return flight doesn't yank it back), the
+inbox **migrates**:
+
+1. **Copy** `inbox/{X}/bundles/*` to the new store.
+2. **Flip** `inbox-home/{X}` to the new store — the locator is the single source of truth.
+3. **Sweep + tombstone** the old inbox: re-scan it for writes that landed mid-copy, move them,
+   then leave a tombstone/redirect so a stale writer that still had the old location re-files to
+   the new home instead of resurrecting the old inbox.
+
+Migration is a damped, occasional relocation of the primary — never a per-message decision.
+
+### Channels & services (`hps://`, §32)
+
+Two shapes, handled differently:
+
+- **The subscribe handshake is unicast** — `HpsSubscribe`→host and `HpsKeys`→subscriber are
+  `Device`-addressed, so they ride device inboxes with no special casing.
+- **Publishes are broadcasts** — one writer, many readers, *no subscriber registry* by design — so
+  they don't belong to any one inbox. They get a parallel **topic inbox** `topic/{path}/bundles`,
+  placed by **demand** (§21 `RegionRouter`): a relay holding a broadcast for topic `T` writes it
+  into `topic/{T}` only in **stores that have live subscriber demand** for `T` — a store with
+  nobody listening never receives it. A subscriber drains `topic/{T}` on check-in from a
+  **per-subscriber read cursor** (so each member gets each message once without a registry),
+  decrypts with the content key, and verifies the sender (§32). **ACK-based reach** still works:
+  the ACK to the host is `Device`-addressed, so it rides the host's inbox back. Topic inboxes are
+  **TTL-evicted** (no per-member purge, since there's no membership list).
+
+### Invariants & consolidation
+
+- **Nodes never wake nodes.** Every inbox / locator / topic-inbox operation is a passive Firestore
+  read or write; the only thing that wakes a region is a device's own connection.
+- **Relays carry only ciphertext.** Inboxes store sealed bundles; placement and migration never
+  open them.
+- **Relay-node partitions (§27) shrink to in-flight scratch** — what a node is actively carrying
+  across its own restart. The **inbox is the authoritative durable delivery layer**; the §28
+  cross-partition handoff becomes "write to the recipient's inbox."
+
+### GDPR / residency tie-in (§33)
+
+Migration buys **locality** — data gravitates to where the user sustainedly is — and a more
+defensible transfer story (the data follows the user's *own* access). But **locality ≠ residency**:
+sustained-access region is still *topology*, not a *declared jurisdiction*. A hard localization
+mandate overrides migration with a **declared home region** that **pins** the inbox (disables
+migration) to the declared store. Absent a declaration, store-near-use + migration is the right
+default (§33).
+
+### Open / abuse
+
+Anyone can create an inbox for any address (it's a write-only drop box; content is sealed; only X's
+keys can read it). Inbox-spam / storage-exhaustion is bounded by **TTL + per-destination quotas**
+(as §19), future work.
