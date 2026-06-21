@@ -26,6 +26,7 @@ use crate::stream::StreamReassembler;
 use crate::crypto::{self, short_addr, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::dnssec;
+use crate::hps;
 use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
 use crate::link::{BearerEvent, LinkHandshake, LinkId, LinkSession, Role};
 use crate::route::RouteTable;
@@ -394,6 +395,28 @@ pub struct Node<S: Store = MemoryStore> {
     pending_resolves: HashSet<String>,
     /// Last time we re-attempted pending resolutions, to throttle the periodic retry.
     last_resolve_retry_ms: u64,
+    /// `hps://` topics we host, by path → keys (DESIGN.md §32).
+    services: HashMap<String, hps::ServiceConfig>,
+    /// `hps://` topics we've subscribed to, by path → the keys we were handed.
+    subscriptions: HashMap<String, HpsSubscription>,
+    /// Received, decrypted, sender-verified pub/sub messages for the app to drain.
+    hps_inbox: Vec<HpsMessage>,
+}
+
+/// What we keep for a subscribed `hps://` topic: the content key, plus (for a service) the
+/// service public key to verify broadcasts against — `None` means a channel (verify each post
+/// against its sender's own address).
+#[derive(Clone)]
+pub struct HpsSubscription {
+    pub content_key: [u8; 32],
+    pub service_pubkey: Option<[u8; 32]>,
+}
+
+/// A received `hps://` message, after decryption + sender verification.
+pub struct HpsMessage {
+    pub path: String,
+    pub sender: PubKeyBytes,
+    pub body: Vec<u8>,
 }
 
 impl Node<MemoryStore> {
@@ -462,6 +485,9 @@ impl<S: Store> Node<S> {
             hns_results: Vec::new(),
             pending_resolves: HashSet::new(),
             last_resolve_retry_ms: 0,
+            services: HashMap::new(),
+            subscriptions: HashMap::new(),
+            hps_inbox: Vec::new(),
         };
         node.rehydrate();
         node
@@ -891,6 +917,120 @@ impl<S: Store> Node<S> {
         std::mem::take(&mut self.hns_results)
     }
 
+    // ---- hps:// pub/sub: services & channels (DESIGN.md §32) -----------------------------
+
+    /// Register a `hps://` topic at `path` that this node hosts, minting its keys. Returns the
+    /// service public key for a `Service` (`None` for a `Channel`). Re-registering replaces it.
+    pub fn register_service(&mut self, path: &str, kind: hps::ServiceKind) -> Option<[u8; 32]> {
+        let cfg = hps::ServiceConfig::new(kind);
+        let pk = cfg.service_pubkey();
+        self.services.insert(path.to_string(), cfg);
+        pk
+    }
+
+    /// Subscribe to `hps://{host}/{path}`: send a (sealed) subscribe request to `host`, which
+    /// replies with the topic keys (open access). The keys arrive via the bundle handler.
+    pub fn hps_subscribe(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Device(host),
+            &host,
+            &Payload::HpsSubscribe { path: path.to_string() },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.tx.entry(id).or_default();
+        self.forwarded.insert(id, (self.identity.address(), host, self.now_ms));
+        self.deliver(bundle);
+        Ok(id)
+    }
+
+    /// Publish a message to a topic we can write to — a `Service` we host (signed by the
+    /// service key) or a `Channel` we belong to (signed by our own identity). Floods to all
+    /// subscribers via [`Destination::Broadcast`].
+    pub fn hps_publish(&mut self, path: &str, plaintext: &[u8]) -> Result<BundleId> {
+        // Determine the content key + how to sign.
+        let (content_key, sig) = if let Some(cfg) = self.services.get(path) {
+            // We host it. A channel we host is also writable by us with our identity; a
+            // service we host is signed by its service key.
+            let content_key = cfg.content_key;
+            let (nonce, ct) = hps::seal_content(&content_key, plaintext);
+            let sig = match cfg.signing_seed {
+                Some(seed) => hps::sign_publish(&seed, path, &nonce, &ct).to_vec(),
+                None => self
+                    .identity
+                    .sign(&hps::publish_signing_bytes(path, &nonce, &ct))
+                    .to_vec(),
+            };
+            return self.broadcast_publish(path, nonce, ct, sig);
+        } else if let Some(sub) = self.subscriptions.get(path) {
+            if sub.service_pubkey.is_some() {
+                // It's a service we only subscribe to — we can't broadcast to it.
+                return Err(Error::Other("cannot publish to a service you don't host".into()));
+            }
+            (sub.content_key, ())
+        } else {
+            return Err(Error::Other("not a registered or subscribed topic".into()));
+        };
+        let _ = sig;
+        // Channel member path: sign with our own identity.
+        let (nonce, ct) = hps::seal_content(&content_key, plaintext);
+        let signature = self.identity.sign(&hps::publish_signing_bytes(path, &nonce, &ct)).to_vec();
+        self.broadcast_publish(path, nonce, ct, signature)
+    }
+
+    /// Seal an [`Payload::HpsPublish`] to the shared broadcast key and flood it.
+    fn broadcast_publish(
+        &mut self,
+        path: &str,
+        nonce: [u8; 12],
+        ciphertext: Vec<u8>,
+        sig: Vec<u8>,
+    ) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Broadcast,
+            &hps::broadcast_identity().address(),
+            &Payload::HpsPublish { path: path.to_string(), nonce: nonce.to_vec(), ciphertext, sig },
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.submit(bundle);
+        Ok(id)
+    }
+
+    /// Drain received pub/sub messages (decrypted + sender-verified).
+    pub fn take_hps_messages(&mut self) -> Vec<HpsMessage> {
+        std::mem::take(&mut self.hps_inbox)
+    }
+
+    /// Process a broadcast `HpsPublish`: if we subscribe to its path, verify the sender's
+    /// signature and decrypt, then surface it. Silently ignores topics we don't follow or
+    /// messages that fail verification/decryption.
+    fn process_broadcast(&mut self, bundle: &Bundle) {
+        let Ok(Payload::HpsPublish { path, nonce, ciphertext, sig }) =
+            bundle.open(&hps::broadcast_identity())
+        else {
+            return;
+        };
+        let Some(sub) = self.subscriptions.get(&path) else {
+            return; // not subscribed
+        };
+        let (Ok(nonce12), Ok(sig64)) =
+            (<[u8; 12]>::try_from(nonce.as_slice()), <[u8; 64]>::try_from(sig.as_slice()))
+        else {
+            return;
+        };
+        // Service → verify against the service key; channel → against the sender's address.
+        let signer = sub.service_pubkey.unwrap_or(bundle.inner.src);
+        if !hps::verify_publish(&signer, &path, &nonce12, &ciphertext, &sig64) {
+            return;
+        }
+        if let Some(body) = hps::open_content(&sub.content_key, &nonce12, &ciphertext) {
+            self.hps_inbox.push(HpsMessage { path, sender: bundle.inner.src, body });
+        }
+    }
+
     /// A diagnostic snapshot of the live HNS cache: `(domain, address?, remaining_ttl_ms)`
     /// for each fresh entry (DESIGN.md §30). `None` address is a cached negative. The
     /// remaining TTL ticks down as the node's clock advances and the entry is pruned at zero.
@@ -1061,7 +1201,7 @@ impl<S: Store> Node<S> {
         };
         let dst = match bundle.inner.dst {
             Destination::Device(d) | Destination::AckTo(d, _) => d,
-            Destination::InternetEgress => return self.submit(bundle), // no single dst to stream to
+            Destination::InternetEgress | Destination::Broadcast => return self.submit(bundle), // no single dst
         };
         let sid = self.next_stream_id();
         let opts = BundleOpts {
@@ -1167,7 +1307,7 @@ impl<S: Store> Node<S> {
                 own: self.tx.contains_key(&b.id()),
                 to: match b.inner.dst {
                     Destination::Device(a) | Destination::AckTo(a, _) => Some(a),
-                    Destination::InternetEgress => None,
+                    Destination::InternetEgress | Destination::Broadcast => None,
                 },
                 priority: b.inner.priority,
                 hops: b.env.hops,
@@ -1194,7 +1334,7 @@ impl<S: Store> Node<S> {
             // offline cross-region sender would never arrive (no live peering, §28).
             let dst = match b.inner.dst {
                 Destination::Device(d) | Destination::AckTo(d, _) => d,
-                Destination::InternetEgress => continue,
+                Destination::InternetEgress | Destination::Broadcast => continue,
             };
             if connected.contains(&dst) {
                 continue; // deliverable directly on this node — no handoff needed
@@ -1486,6 +1626,14 @@ impl<S: Store> Node<S> {
         }
         let id = bundle.id();
 
+        // A broadcast (hps:// publish, §32) is processed by everyone and relayed by everyone.
+        // Process once (deduped), then fall through to the store+offer flood below.
+        if matches!(bundle.inner.dst, Destination::Broadcast) {
+            if !self.store.seen(&id) {
+                self.process_broadcast(&bundle);
+            }
+        }
+
         if is_for(&bundle, &self.address()) {
             if self.store.seen(&id) {
                 // A duplicate of something we already delivered. If it wanted an ACK, our
@@ -1615,6 +1763,33 @@ impl<S: Store> Node<S> {
                         self.relay_order.retain(|x| *x != for_query);
                         self.immune.insert(for_query, self.now_ms);
                         self.tx.remove(&for_query);
+                    }
+                    // A subscribe request for a topic we host (§32): if registered (open
+                    // access), seal the topic keys back to the asker. Unregistered → ignore.
+                    Ok(Payload::HpsSubscribe { path }) => {
+                        if let Some(cfg) = self.services.get(&path) {
+                            let payload = Payload::HpsKeys {
+                                path: path.clone(),
+                                content_key: cfg.content_key,
+                                service_pubkey: cfg.service_pubkey(),
+                            };
+                            let to = bundle.inner.src;
+                            if let Ok(reply) = Bundle::create(
+                                &self.identity,
+                                Destination::Device(to),
+                                &to,
+                                &payload,
+                                BundleOpts { created_at: self.now_ms, ..Default::default() },
+                            ) {
+                                self.deliver(reply);
+                            }
+                        }
+                    }
+                    // The keys for a topic we subscribed to (§32): remember them so we can
+                    // decrypt + verify its broadcasts.
+                    Ok(Payload::HpsKeys { path, content_key, service_pubkey }) => {
+                        self.subscriptions
+                            .insert(path, HpsSubscription { content_key, service_pubkey });
                     }
                     // A transport carrier chunk: reassemble (§20); once complete, reconstruct
                     // the original bundle and process it as if it had arrived whole.
@@ -1977,7 +2152,7 @@ impl<S: Store> Node<S> {
     fn dest_is_connected(&self, bundle: &Bundle) -> bool {
         let dst = match bundle.inner.dst {
             Destination::Device(a) | Destination::AckTo(a, _) => a,
-            Destination::InternetEgress => return false,
+            Destination::InternetEgress | Destination::Broadcast => return false,
         };
         self.links
             .values()
@@ -1998,6 +2173,7 @@ fn is_for(bundle: &Bundle, addr: &PubKeyBytes) -> bool {
         Device(d) => d == addr,
         AckTo(d, _) => d == addr,
         InternetEgress => false,
+        Broadcast => false,
     }
 }
 
@@ -2799,5 +2975,73 @@ mod tests {
         let hits = nodes[2].directory.browse("market", Some("bicycle"));
         assert_eq!(hits.len(), 1, "advert should reach node 2 via node 1");
         assert_eq!(hits[0].body.publisher, nodes[0].address());
+    }
+
+    #[test]
+    fn hps_service_subscribe_publish_round_trips() {
+        // A node hosts an hps:// service; a subscriber requests its keys (open access) and
+        // then receives the owner's signed broadcasts, verified against the service key. A
+        // subscriber can read but never forge a broadcast (§32).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Node 0 hosts a service at "news"; node 1 subscribes and is handed the keys.
+        let svc_pubkey = nodes[0].register_service("news", crate::hps::ServiceKind::Service);
+        assert!(svc_pubkey.is_some(), "a service mints a signing key");
+        nodes[1].hps_subscribe(nodes[0].address(), "news").unwrap();
+        net.pump(&mut nodes);
+
+        // A subscriber can't publish to a service it doesn't host — only the owner broadcasts.
+        assert!(nodes[1].hps_publish("news", b"forged").is_err());
+
+        // The owner broadcasts; the subscriber decrypts + verifies against the service key.
+        nodes[0].hps_publish("news", b"breaking").unwrap();
+        net.pump(&mut nodes);
+
+        let msgs = nodes[1].take_hps_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].path, "news");
+        assert_eq!(msgs[0].body, b"breaking");
+        assert_eq!(msgs[0].sender, nodes[0].address());
+    }
+
+    #[test]
+    fn hps_channel_members_read_each_others_posts() {
+        // A channel: anyone holding the content key reads and writes, and every post is
+        // verified against its writer's own address. Node 0 hosts; members 1 and 2 join,
+        // then member 1's post reaches member 2, attributed to member 1 (§32).
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // 0 <-> 1
+        net.connect(&mut nodes, 0, 2, 2, 2); // 0 <-> 2
+        net.connect(&mut nodes, 1, 3, 2, 3); // 1 <-> 2
+
+        assert!(
+            nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel).is_none(),
+            "a channel has no service signing key"
+        );
+        nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        nodes[2].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        net.pump(&mut nodes);
+
+        nodes[1].hps_publish("lobby", b"hi all").unwrap();
+        net.pump(&mut nodes);
+
+        let msgs = nodes[2].take_hps_messages();
+        assert_eq!(msgs.len(), 1, "the post floods to the other member");
+        assert_eq!(msgs[0].body, b"hi all");
+        assert_eq!(msgs[0].sender, nodes[1].address(), "verified as member 1's post");
+    }
+
+    #[test]
+    fn hps_publish_to_unregistered_path_errors() {
+        // Publishing to a path we neither host nor subscribe to is an error (§32).
+        let mut node = Node::new(Identity::generate());
+        assert!(node.hps_publish("nope", b"x").is_err());
     }
 }

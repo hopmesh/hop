@@ -18,6 +18,17 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
+use crate::crypto::Identity;
+
+/// A well-known keypair every node holds, used only to seal/open the *envelope* of a broadcast
+/// bundle (DESIGN.md §32). Its secret is public (derived from a constant), so any node can open
+/// a broadcast — confidentiality of the actual message is the content key inside, not this. A
+/// broadcast can't be addressed to one recipient, so we seal to this shared key instead.
+pub fn broadcast_identity() -> Identity {
+    let seed = blake3::hash(b"hop.hps.broadcast.v1");
+    Identity::from_secret_bytes(seed.as_bytes())
+}
+
 /// A 32-byte symmetric content key (read/write membership for a topic).
 pub type ContentKey = [u8; 32];
 
@@ -82,7 +93,12 @@ pub fn open_content(key: &ContentKey, nonce: &[u8; 12], ciphertext: &[u8]) -> Op
 }
 
 /// The bytes a publish signature covers: the topic path, nonce, and ciphertext — so a signature
-/// can't be replayed onto a different topic or ciphertext.
+/// can't be replayed onto a different topic or ciphertext. Public so a channel member can sign
+/// it with their own [`Identity`].
+pub fn publish_signing_bytes(path: &str, nonce: &[u8; 12], ciphertext: &[u8]) -> Vec<u8> {
+    publish_msg(path, nonce, ciphertext)
+}
+
 fn publish_msg(path: &str, nonce: &[u8; 12], ciphertext: &[u8]) -> Vec<u8> {
     let mut m = Vec::with_capacity(path.len() + 12 + ciphertext.len());
     m.extend_from_slice(path.as_bytes());

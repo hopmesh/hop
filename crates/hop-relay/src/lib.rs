@@ -35,6 +35,8 @@ fn mail_key(dst: &Destination) -> MailKey {
     match dst {
         Destination::Device(a) | Destination::AckTo(a, _) => MailKey::Device(*a),
         Destination::InternetEgress => MailKey::Egress,
+        // Broadcasts flood live; they are not parked in a mailbox.
+        Destination::Broadcast => MailKey::Egress,
     }
 }
 

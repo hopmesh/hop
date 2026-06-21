@@ -369,6 +369,7 @@ fn main() {
                     let dst = match b.inner.dst {
                         Destination::Device(d) | Destination::AckTo(d, _) => short_b58(&d),
                         Destination::InternetEgress => "egress".to_string(),
+                        Destination::Broadcast => "broadcast".to_string(),
                     };
                     netlog(format!("ingest: msg {} → dst {}", short_b58(&b.id()), dst));
                     node.ingest(b);
