@@ -176,6 +176,7 @@ fn main() {
     let mut firestore: Option<String> = None;
     let mut region: Option<String> = None;
     let mut advertise: Option<String> = None;
+    let mut mesh_fanout: usize = 0; // 0 = handoff-only (no relay-to-relay dialing); >0 enables it
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -186,6 +187,9 @@ fn main() {
             "--firestore" => firestore = args.next(), // GCP project id → durable per-node store
             "--region" => region = args.next(),       // this node's region (registry, §28)
             "--advertise" => advertise = args.next(), // our connectable wss:// endpoint for peers
+            // Online-only relay-to-relay epidemic fan-out (DESIGN.md §28): dial up to N
+            // *currently-online* peer relays (never wakes a sleeping one). 0 = off.
+            "--mesh-fanout" => mesh_fanout = args.next().and_then(|s| s.parse().ok()).unwrap_or(0),
             "--peer" => {
                 if let Some(p) = args.next() {
                     peers.push(p);
@@ -288,10 +292,18 @@ fn main() {
     if let (Some(project), Some(region), Some(advertise)) =
         (firestore.clone(), region.clone(), advertise.clone())
     {
-        backbone::spawn(project, region, advertise, addr.to_vec(), known_relays.clone());
+        backbone::spawn(
+            project,
+            region,
+            advertise,
+            addr.to_vec(),
+            known_relays.clone(),
+            mesh_fanout,
+            tx.clone(),
+        );
     }
     #[cfg(not(feature = "firestore"))]
-    let _ = (&region, &advertise);
+    let _ = (&region, &advertise, &mesh_fanout);
 
     // Cross-partition handoff (DESIGN.md §28): record device presence, hand undeliverable
     // device bundles into the destination region's mailbox, and reload our own partition
@@ -573,6 +585,75 @@ fn serve_ws(stream: TcpStream, ev_tx: &Sender<Ev>) {
     let _ = ev_tx.send(Ev::Down(link));
 }
 
+/// Dial one **currently-online** peer relay over TLS WebSocket and bridge it to the driver as
+/// an Initiator link — the relay-to-relay epidemic of DESIGN.md §28. Dials **once**: on
+/// disconnect it returns, and the backbone's observe loop re-dials only if the peer is still in
+/// the registry (so a peer that went offline is never re-woken). Mirrors `serve_ws`'s
+/// single-thread read/drain interleave, as a non-blocking client (a TLS read timeout doesn't
+/// reliably surface as WouldBlock; non-blocking does — same fix as the endpoint dialer).
+#[cfg(feature = "firestore")]
+fn dial_peer(url: &str, ev_tx: &Sender<Ev>) {
+    use tungstenite::stream::MaybeTlsStream;
+    let (mut ws, _resp) = match tungstenite::connect(url) {
+        Ok(c) => c,
+        Err(e) => {
+            netlog(format!("peer: {url} unreachable ({e})"));
+            return;
+        }
+    };
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => {
+            let _ = s.set_nonblocking(true);
+        }
+        MaybeTlsStream::Rustls(t) => {
+            let _ = t.get_ref().set_nonblocking(true);
+        }
+        _ => {}
+    }
+    let link = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+    let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
+    if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
+        return;
+    }
+    netlog(format!("peer: dialed {url} (link {link})"));
+    'conn: loop {
+        loop {
+            match out_rx.try_recv() {
+                Ok(bytes) => match ws.write(Message::Binary(bytes)) {
+                    Ok(()) => {}
+                    Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => break 'conn,
+                },
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break 'conn,
+            }
+        }
+        match ws.flush() {
+            Ok(()) => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+        match ws.read() {
+            Ok(Message::Binary(b)) => {
+                if ev_tx.send(Ev::Data(link, b.to_vec())).is_err() {
+                    return;
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = ev_tx.send(Ev::Down(link));
+    netlog(format!("peer: link {link} to {url} closed"));
+}
+
 /// Pick the store backend: durable per-node Firestore (scale-to-zero) when built with
 /// `--features firestore` and given a project, else local SQLite.
 #[cfg(feature = "firestore")]
@@ -693,18 +774,25 @@ mod backbone {
     const OBSERVE_SECS: u64 = 30;
     const TTL_MS: u64 = 90_000; // a peer silent longer than this is treated as offline
 
-    /// Start the heartbeat + registry-observe threads (no peer dialing).
+    /// Start the heartbeat + registry-observe threads, and (if `fanout > 0`) the online-only
+    /// relay-to-relay dialer. `ev_tx` is the driver's event channel; a dialed peer link bridges
+    /// into it exactly like an inbound connection (DESIGN.md §28).
     pub fn spawn(
         project: String,
         region: String,
         advertise: String,
         addr: Vec<u8>,
         known_relays: Arc<Mutex<HashSet<String>>>,
+        fanout: usize,
+        ev_tx: super::Sender<super::Ev>,
     ) {
         let reg = Arc::new(Registry::new(&project, &addr));
         let me = bs58::encode(&addr).into_string();
-        known_relays.lock().unwrap().insert(me);
-        eprintln!("backbone: region={region} advertise={advertise} (handoff-only, no dialing)");
+        known_relays.lock().unwrap().insert(me.clone());
+        eprintln!(
+            "backbone: region={region} advertise={advertise} mesh-fanout={fanout}{}",
+            if fanout == 0 { " (handoff-only, no dialing)" } else { " (online-only epidemic)" }
+        );
 
         // Announce our liveness so tooling/handoff can see which regions are warm.
         {
@@ -717,14 +805,37 @@ mod backbone {
             });
         }
 
-        // Observe the registry (a pure read — wakes no one) to learn peer-relay ids, so
-        // the handoff records device presence only for actual devices (§28).
+        // Observe the registry (a pure read — wakes no one): learn peer-relay ids (so the
+        // handoff records device presence only for actual devices, §28) and, when fanout is
+        // enabled, dial up to `fanout` *currently-online* peers we're not already linked to.
+        // We never dial a peer absent from the registry — a sleeping region is never woken.
+        let dialed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
         std::thread::spawn(move || loop {
             match reg.online(now_ms(), TTL_MS) {
                 Ok(peers) => {
-                    let mut kr = known_relays.lock().unwrap();
-                    for p in peers {
-                        kr.insert(p.node);
+                    {
+                        let mut kr = known_relays.lock().unwrap();
+                        for p in &peers {
+                            kr.insert(p.node.clone());
+                        }
+                    }
+                    if fanout > 0 {
+                        let mut held = dialed.lock().unwrap();
+                        held.retain(|ep| peers.iter().any(|p| &p.endpoint == ep)); // drop gone peers
+                        for p in &peers {
+                            if held.len() >= fanout {
+                                break; // bounded fan-out: a handful of peers, not a full mesh
+                            }
+                            if p.node == me || held.contains(&p.endpoint) {
+                                continue;
+                            }
+                            held.insert(p.endpoint.clone());
+                            let (ep, ev_tx, dialed) = (p.endpoint.clone(), ev_tx.clone(), dialed.clone());
+                            std::thread::spawn(move || {
+                                super::dial_peer(&ep, &ev_tx);
+                                dialed.lock().unwrap().remove(&ep); // link closed — re-dial if still online
+                            });
+                        }
                     }
                 }
                 Err(e) => eprintln!("backbone: registry read failed: {e}"),

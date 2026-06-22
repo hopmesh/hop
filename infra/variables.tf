@@ -60,6 +60,17 @@ variable "max_instances_per_region" {
   default     = 1
 }
 
+variable "mesh_fanout" {
+  description = <<-EOT
+    Online-only relay-to-relay epidemic fan-out (DESIGN.md §28): each relay dials up to this
+    many *currently-online* peer relays (never wakes a sleeping one). 0 = handoff-only (no
+    relay-to-relay dialing) — the safe default. Raise to a small number (e.g. 2-3) to enable
+    the partial-mesh epidemic; avoid large values (a full mesh re-creates the 429 load).
+  EOT
+  type        = number
+  default     = 0
+}
+
 variable "example_region" {
   description = "Region for the example.hopme.sh hops:// demo endpoint (one region is enough)."
   type        = string

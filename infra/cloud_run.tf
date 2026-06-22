@@ -36,13 +36,18 @@ resource "google_cloud_run_v2_service" "relay" {
       # that the node reports from hop.identify (DESIGN.md §28/§29). The presence of
       # --region + --advertise + --firestore activates the registry + pull-on-wake.
       command = ["hop-relayd"]
-      args = [
-        "--ws", "0.0.0.0:8080",
-        "--firestore", var.project_id,
-        "--identity-file", "/etc/hop/identity",
-        "--region", each.value,
-        "--advertise", "wss://${each.value}.${var.domain}/",
-      ]
+      # Base args; --mesh-fanout (online-only relay-to-relay epidemic, §28) is appended only
+      # when var.mesh_fanout > 0, so the fleet stays handoff-only until deliberately enabled.
+      args = concat(
+        [
+          "--ws", "0.0.0.0:8080",
+          "--firestore", var.project_id,
+          "--identity-file", "/etc/hop/identity",
+          "--region", each.value,
+          "--advertise", "wss://${each.value}.${var.domain}/",
+        ],
+        var.mesh_fanout > 0 ? ["--mesh-fanout", tostring(var.mesh_fanout)] : [],
+      )
 
       # Cloud Run injects $PORT; the relay serves its WebSocket bearer there.
       ports {
