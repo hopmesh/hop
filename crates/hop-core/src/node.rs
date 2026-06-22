@@ -2488,6 +2488,45 @@ mod tests {
     }
 
     #[test]
+    fn out_of_order_session_messages_decrypt_at_the_node_layer() {
+        // Over a multi-copy DTN, two SessionMessages can be reassembled/processed out of
+        // order. read_message must recover the earlier one from the ratchet's skipped-key
+        // store — not just at the Session unit level, but through the node accessor (§25).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].publish_prekey().unwrap();
+        nodes[1].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+        // Establish both directions.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"hi".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[1].take_inbox() {
+            nodes[1].read_message(&b).unwrap();
+        }
+        nodes[1].send_message(nodes[0].address(), "t".into(), b"yo".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[0].take_inbox() {
+            nodes[0].read_message(&b).unwrap();
+        }
+
+        // Two messages from 0; deliver, then process them in reverse order.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"first".to_vec(), true).unwrap();
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"second".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        let mut inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 2, "both arrived");
+        inbox.reverse(); // process out of order
+
+        let mut bodies: Vec<Vec<u8>> = Vec::new();
+        for b in &inbox {
+            bodies.push(nodes[1].read_message(b).unwrap().expect("decrypts out of order").body);
+        }
+        assert!(bodies.contains(&b"first".to_vec()), "earlier message recovered from skipped keys");
+        assert!(bodies.contains(&b"second".to_vec()));
+    }
+
+    #[test]
     fn session_survives_a_restart_via_persisted_store() {
         // The beacon-mode / reinstall bug: a backgrounded app is killed mid-conversation,
         // losing its in-memory ratchet while the peer keeps theirs → every later message
