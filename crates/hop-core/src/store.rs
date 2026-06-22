@@ -48,6 +48,25 @@ pub trait Store {
     fn split_copies(&mut self, id: &BundleId) -> u16;
     /// Set the stored bundle's copy budget (e.g. a retransmit reset). No-op if absent.
     fn set_copies(&mut self, id: &BundleId, copies: u16);
+
+    // --- key/value persistence (DESIGN.md §25) --------------------------------------------
+    // A small durable key→bytes surface alongside bundles, for state that must survive a
+    // restart but isn't a bundle: forward-secret ratchet sessions, prekey secrets, etc. The
+    // host supplies the backing store (SQLite on device, Firestore on the cloud relay); the
+    // default no-ops keep ephemeral/relay backends working unchanged.
+
+    /// Persist `value` under `key`, replacing any prior value. Default: no-op (not durable).
+    fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+    /// Fetch a persisted value by exact key. Default: `None`.
+    fn get_kv(&self, _key: &str) -> Option<Vec<u8>> {
+        None
+    }
+    /// Remove a persisted value. Default: no-op.
+    fn remove_kv(&mut self, _key: &str) {}
+    /// All persisted `(key, value)` pairs whose key starts with `prefix`. Default: empty.
+    fn list_kv(&self, _prefix: &str) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
 /// Lets a node pick its store backend at runtime (`Node<Box<dyn Store>>`) — e.g. the
@@ -80,14 +99,29 @@ impl Store for Box<dyn Store> {
     fn set_copies(&mut self, id: &BundleId, copies: u16) {
         (**self).set_copies(id, copies)
     }
+    fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+        (**self).put_kv(key, value)
+    }
+    fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+        (**self).get_kv(key)
+    }
+    fn remove_kv(&mut self, key: &str) {
+        (**self).remove_kv(key)
+    }
+    fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+        (**self).list_kv(prefix)
+    }
 }
 
 /// Simple in-memory store for tests and the simulator.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MemoryStore {
     held: HashMap<BundleId, Bundle>,
     /// id → dedup expiry (receiver clock). The master TTL index; `held` is a subset.
     seen: HashMap<BundleId, u64>,
+    /// Durable key→bytes side store (sessions, prekey secrets). In-memory here, so it
+    /// survives only for the process lifetime — a persistent backend overrides this.
+    kv: HashMap<String, Vec<u8>>,
 }
 
 impl MemoryStore {
@@ -149,6 +183,23 @@ impl Store for MemoryStore {
         if let Some(b) = self.held.get_mut(id) {
             b.env.copies = copies;
         }
+    }
+
+    fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+        self.kv.insert(key.to_string(), value);
+    }
+    fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+        self.kv.get(key).cloned()
+    }
+    fn remove_kv(&mut self, key: &str) {
+        self.kv.remove(key);
+    }
+    fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+        self.kv
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 

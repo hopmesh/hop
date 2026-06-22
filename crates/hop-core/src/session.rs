@@ -54,6 +54,13 @@ pub struct RatchetMessage {
 }
 
 /// One end of a Double Ratchet session with a single peer.
+///
+/// `Serialize`/`Deserialize` so the full ratchet state can be **persisted** and restored
+/// across restarts — otherwise a process restart (or an iOS beacon-mode background-kill)
+/// loses the session while the peer keeps theirs, desyncing the ratchet so every later
+/// message fails to decrypt (DESIGN.md §25). The skipped-key map (a `HashMap` with a tuple
+/// key) serializes as a sequence of entries, so it round-trips through postcard.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     rk: [u8; 32],                // root key
     dh_self_secret: [u8; 32],    // current ratchet secret
@@ -64,7 +71,31 @@ pub struct Session {
     ns: u32,                     // messages sent in current chain
     nr: u32,                     // messages received in current chain
     pn: u32,                     // length of previous sending chain
+    #[serde(with = "skipped_serde")]
     skipped: HashMap<(XPubKeyBytes, u32), [u8; 32]>,
+}
+
+/// postcard can't key a map on a tuple, so persist `skipped` as a flat sequence of
+/// `(dh, n, mk)` entries.
+mod skipped_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        m: &HashMap<(XPubKeyBytes, u32), [u8; 32]>,
+        s: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let v: Vec<(XPubKeyBytes, u32, [u8; 32])> =
+            m.iter().map(|((dh, n), mk)| (*dh, *n, *mk)).collect();
+        v.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> std::result::Result<HashMap<(XPubKeyBytes, u32), [u8; 32]>, D::Error> {
+        let v: Vec<(XPubKeyBytes, u32, [u8; 32])> = Vec::deserialize(d)?;
+        Ok(v.into_iter().map(|(dh, n, mk)| ((dh, n), mk)).collect())
+    }
 }
 
 impl Session {
