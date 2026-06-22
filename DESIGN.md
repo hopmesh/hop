@@ -1329,78 +1329,60 @@ traffic and goes dark when idle. *Only end-user devices bring cloud nodes online
   bundles first**. A node relays what it can, evicts what it must; what survives is what's
   most likely to reach its destination through it.
 
-### Honest open question — non-overlapping online windows
+### Relays are big devices — per-region local spools + online-only epidemic
 
-Two region nodes that are **never online at the same time** can't relay directly: if A
-(us-central1) holds a bundle for B and A scales to zero before B's UK node ever wakes, a
-*live* push never happens. The robust fix is **destination-keyed handoff**: when a node
-learns the destination's home region (presence / `RegionRouter`, §21), it writes the sealed
-bundle into **that region's durable partition**, so the exit node finds it whenever it next
-wakes — no simultaneity required, because Firestore is reachable regardless of which compute
-is currently up. So:
+The cross-region story is just the **DTN epidemic model applied to relays**: a relay is a
+*big, always-reachable-while-its-devices-are-awake* device. It has its **own local durable
+spool** and it **syncs with whatever peer relays are online right now**, exactly as two
+devices that pass each other exchange what they're carrying — neither knows when they'll next
+meet, and because it's delay-tolerant, the timing doesn't have to line up.
 
-- **Live relay** (both region nodes up) is the fast path.
-- **Cross-partition handoff** (write to the destination region's mailbox) is the
-  delay-tolerant backstop for non-overlapping windows.
+- **Per-region local store.** Each region's relay owns a **regional Firestore database in its
+  own region** — its private spool that survives scale-to-zero. No region is second-class:
+  asia/australia/south-america relays read+write *locally*, not across an ocean to a US
+  database. (Regional Firestore is cheaper than multi-region, and at storage+traffic pricing
+  the per-region volume is negligible.) Firestore here is a **local disk**, not a shared
+  cross-region rendezvous — there is no single global DB to be latent or US-centric (§33).
 
-Unknown/stale destination region ⇒ fall back to holding locally and/or fanning to active
-regions (§21 broadcast fallback).
+- **Online-only relay-to-relay epidemic.** When a relay comes online (woken by *its own*
+  devices checking in, the only wake trigger) it **announces presence**, and other
+  **already-online** relays push their bound-its-way bundles to it over a Noise link — the
+  same `offer_bundles` epidemic devices use. A relay only ever connects to peers **currently
+  announcing presence**; it **never dials a sleeping region** (that would cold-start it through
+  the LB). So "a node is woken only by its own clients" still holds — dormant regions stay
+  dark and cost nothing until *their* devices wake them, then the backlog flushes.
 
-### Cross-partition handoff — implementation
+- **Delivery = replication + check-in overlap.** A message reaches device B when *some* relay
+  holding it is online while B's region is awake. Multi-hop epidemic spread across relays makes
+  that likely without anyone holding a connection to everyone; devices checking in periodically
+  (§22) provide the wake windows. Non-overlapping windows resolve over time as the message
+  replicates — no simultaneity required, the whole point of a DTN backbone.
 
-The handoff is the offline-destination mailbox, built on two passive Firestore structures
-(no node ever wakes another):
+This **supersedes the earlier "Firestore cross-partition handoff is the *only* path, relays
+never dial" decision.** That decision was right to kill **dialing *sleeping* relays** — the
+original 429 fire came from pull-on-wake cold-starting regions through the LB and heartbeat-TTL
+churn relighting the fleet. The fix is *online-only* dialing, not *no* dialing. The presence/
+liveness registry stays (a passive read tells an online peer from a sleeping one); the
+device→region presence index (`presence/{device}`) remains useful to **route epidemic spread
+toward** a destination's region rather than flood blindly.
 
-- **Presence index** (`presence/{device}` = `{region, heartbeatAt}`). When a device checks
-  in to its nearest region (§ device check-in), that region records the device's presence.
-  This is the device→region map every node reads to find a destination's home region.
-  Presence is recorded only for **device** peers — a peer relay (identified because its node
-  id appears in the liveness registry) is skipped.
-- **Cross-partition write** (`put_bundle_to`). A relay holding a `Device`-addressed bundle it
-  can't deliver locally looks up the destination's region via presence; if that region differs
-  from its own and is fresh, it derives that region's **node address** from the shared seed +
-  region name (the same derivation every node computes, §27) and writes the sealed bundle into
-  **that region's partition** (`relays/{destNode}/bundles`). It never opens the bundle — it
-  hands the ciphertext across verbatim. A node only writes a given bundle to a given region
-  once (a per-worker dedup set), retrying only on write failure.
+### The one constraint: bounded fan-out
 
-The destination region ingests the handoff two ways:
+"Online relays sync with each other" taken as a **full mesh** is the *other* half of the old
+429: N online regions → N² persistent peer links, each `maxScale=1` instance holding (N−1)
+peer connections *plus* its device connections, saturating the instance and 429'ing real
+check-ins. So the mesh is **partial**:
 
-- **Cold start** — when a client next wakes that region, `FirestoreStore::open` rehydrates the
-  whole partition into the node, and the bundle is offered to the checking-in device.
-- **Warm reload** — an already-running node re-reads its own partition on a slow timer and
-  ingests bundles that landed after it started (deduped by bundle id, then by the store's own
-  `seen` set), so it doesn't have to scale to zero first.
+- Each relay keeps a **small fan-out** — a handful of online peers (gossip / SWIM-style
+  membership), not every peer. Multi-hop epidemic carries messages the rest of the way.
+- **Replication, not reach:** a few hops of spread beat one giant mesh for delivery
+  probability, at a fraction of the connection load.
+- Raising `maxScale` (post quota-increase) gives instances headroom to shed peer-link load,
+  but bounded fan-out is the real lever.
 
-Both user messages (`Device`) and delivery-ACKs (`AckTo`) ride the handoff, so a confirmation
-travels back to an offline cross-region sender the same way.
-
-All blocking Firestore I/O runs on dedicated worker threads; the single-owner driver loop only
-hands the worker a periodic snapshot of `(connected peers, undeliverable bundles)` and applies
-`Ingest` events it sends back.
-
-### The handoff is the *only* cross-region path — nodes never dial nodes
-
-An earlier design had online nodes **dial** each other (pull-on-wake) for a live relay fast
-path. That broke the core invariant in practice: a dial goes through the LB and **cold-starts
-(wakes) the target region**, even when the registry only listed it because its heartbeat hadn't
-yet aged out (TTL 90s > scale-to-zero). With a full mesh, one client anywhere kept dialing peers
-that re-heartbeated and re-dialed — the whole fleet stayed lit, and each single instance
-saturated with long-lived peer WS connections and started returning **429** to real device
-check-ins.
-
-So live peer dialing is **removed**. The backbone now only:
-
-- **heartbeats** its liveness into the registry (so tooling/handoff can see which regions are
-  warm), and
-- **reads** the registry passively (to tell a peer relay from a device when recording presence).
-
-Cross-region delivery is **exclusively** the cross-partition handoff above — a Firestore write
-into the destination region's partition, which wakes no one. The destination drains it when its
-*own* clients next wake it (cold rehydrate or warm reload). This makes "a node is woken only by
-its own clients; nodes never wake nodes" actually hold, and lets idle regions truly scale to
-zero. The trade-off: cross-region delivery is delay-tolerant (it waits for the destination's
-next check-in) rather than real-time — which is the whole point of a DTN backbone.
+Both user messages (`Device`) and delivery-ACKs (`AckTo`) ride the epidemic, so a confirmation
+travels back to an offline cross-region sender the same way. All blocking Firestore I/O (the
+local spool) runs on dedicated worker threads; the driver loop stays single-owner.
 
 ### Backbone addressing — region-specific domains, separate from the relay identity
 
@@ -1786,23 +1768,28 @@ and residency**:
   EU-serving infra on GCP.
 - **Tighten the sensitive set:** shrink presence retention/granularity; keep bundle/ACK TTLs as
   short as delivery allows.
-- **Full EU data residency (architectural fork):** a single global DB **cannot** be in two
-  locations. Residency means splitting into **per-continent databases** (`nam5` + `eur3`) and
-  routing each region's partition — and the presence index — to its continent's DB, with the
-  cross-partition handoff (§28) choosing the destination DB by the destination's continent. This
-  trades away the single-consistent-store simplicity for cross-DB routing. The device-keyed
-  mailbox fallback (offline-destination delivery) does **not** dodge this: a per-device mailbox is
-  still personal data wherever it lands, so its store location must also key off the device's
-  region. Not built; documented here so the cost of residency is known before it's required.
+- **EU data residency (largely free under the per-region model, §28):** the chosen model gives
+  **each region its own local regional store**, so EU relays already keep their spool **in the EU**
+  and asia/etc. keep theirs locally — residency falls out of locality, no single US-centric DB to
+  split. The relay-to-relay epidemic does move ciphertext across regions, but it's **sealed
+  payload** the relay can't read (§32), and a hard mandate can constrain *which* peer regions a
+  given region syncs to. The remaining lever is the **declared home** (§34): residency is a
+  property of the person, so a mandate pins a device's region to its declared store and bounds
+  where its bundles may replicate. (The old "single global `nam5` + per-continent split" framing
+  is superseded by per-region local spools.)
 
 ## 34. Device inboxes — recipient-keyed mailboxes with locality migration
 
-> **Supersedes the cross-partition handoff of §28.** §28 wrote an undeliverable bundle into the
-> *destination region's relay partition*, located by a presence index, hoping the right region
-> woke. This section makes the durable delivery rendezvous a **per-recipient inbox** that has a
-> home and **migrates toward where the recipient actually is** — the model Gmail and Spanner use:
-> a mailbox's primary follows sustained access, with damping. All the §28 invariants hold (passive
-> Firestore only; nodes never wake nodes; relays carry only ciphertext).
+> **Status: largely superseded by §28's per-region local spools + online-only relay-to-relay
+> epidemic.** This section worked out a *recipient-keyed inbox* with a **continental home store**
+> that **migrates** toward sustained access (the Gmail/Spanner model). The chosen model instead
+> gives **each region its own local spool** and lets relays **epidemic-sync** what they carry — so
+> a device's messages live in whatever relays carry them (replicated), not in one pinned "home
+> inbox DB," and there is no cross-continent migration to run. Two ideas here still carry over:
+> (1) indexing a spool's held bundles **by destination** (so a relay knows what to push toward a
+> peer region), and (2) the **residency pin** below — a *declared* home overriding placement for a
+> hard localization mandate. The rest (continental placement, affinity migration) is retained only
+> as the record of an alternative we did not take.
 
 ### The unit: a per-device inbox with a home store
 
