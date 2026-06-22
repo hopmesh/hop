@@ -320,6 +320,11 @@ struct IncomingStream {
 /// in one link record on every bearer (well under the 1 MiB frame cap).
 const STREAM_CHUNK: usize = 48 * 1024;
 
+/// Reserved content-type for a content-less re-establishment ping sent to heal a desynced
+/// ratchet (DESIGN.md §25). The receiver rebuilds the session as a side effect and does not
+/// surface it as a user message.
+const SESSION_ESTABLISH_CT: &str = "hop.session.establish";
+
 /// A running Hop node, generic over its [`Store`] backend (in-memory by default;
 /// `hop-store-sqlite` for persistence).
 pub struct Node<S: Store = MemoryStore> {
@@ -391,6 +396,9 @@ pub struct Node<S: Store = MemoryStore> {
     /// Last time we emitted a delivery-ACK for a given delivered message id — throttles
     /// re-ACKs so duplicate floods can't cause an ACK storm.
     last_ack: HashMap<BundleId, u64>,
+    /// Last time we asked a peer to reset a desynced session — throttles reset requests so a
+    /// burst of undecryptable messages can't cause a reset storm (DESIGN.md §25).
+    last_reset_req: HashMap<PubKeyBytes, u64>,
     /// Whether this node can reach the public internet (and thus public DNS). Any node with
     /// this set resolves HNS itself — no relay round-trip required (DESIGN.md §30). Off by
     /// default; a relay or an internet-connected phone turns it on.
@@ -503,6 +511,7 @@ impl<S: Store> Node<S> {
             stream_seq: 0,
             ack_replicate: HashMap::new(),
             last_ack: HashMap::new(),
+            last_reset_req: HashMap::new(),
             internet: false,
             hns_cache: HashMap::new(),
             dns_lookups: Vec::new(),
@@ -789,29 +798,93 @@ impl<S: Store> Node<S> {
                         PeerSession { session, init_material: None, established_by: Some(ek_pub) },
                     );
                 }
-                let inner = {
+                let decrypted = {
                     let ps = self.sessions.get_mut(&from).expect("just inserted");
                     ps.init_material = None; // we've received from them → session confirmed
-                    ps.session.decrypt(&msg)?
+                    ps.session.decrypt(&msg)
                 };
-                let si: SessionInner = postcard::from_bytes(&inner)?;
-                self.persist_session(&from); // ratchet advanced — save it
-                Ok(Some(ReadMessage { from, content_type: si.content_type, body: si.body }))
+                match decrypted {
+                    Ok(inner) => {
+                        self.persist_session(&from); // ratchet advanced — save it
+                        self.surface_session_inner(from, &inner)
+                    }
+                    Err(e) => {
+                        self.request_session_reset(from); // ask them to re-establish
+                        Err(e)
+                    }
+                }
             }
             Payload::SessionMessage { msg } => {
-                let inner = {
-                    let ps = self
-                        .sessions
-                        .get_mut(&from)
-                        .ok_or(Error::Crypto("no session for peer"))?;
-                    ps.init_material = None;
-                    ps.session.decrypt(&msg)?
+                let decrypted = match self.sessions.get_mut(&from) {
+                    Some(ps) => {
+                        ps.init_material = None;
+                        ps.session.decrypt(&msg)
+                    }
+                    // We lost our session (uninstall / lost p2p data) but they kept theirs:
+                    // ask them to reset so a fresh handshake re-syncs the ratchet.
+                    None => {
+                        self.request_session_reset(from);
+                        return Err(Error::Crypto("no session for peer"));
+                    }
                 };
-                let si: SessionInner = postcard::from_bytes(&inner)?;
-                self.persist_session(&from);
-                Ok(Some(ReadMessage { from, content_type: si.content_type, body: si.body }))
+                match decrypted {
+                    Ok(inner) => {
+                        self.persist_session(&from);
+                        self.surface_session_inner(from, &inner)
+                    }
+                    Err(e) => {
+                        self.request_session_reset(from);
+                        Err(e)
+                    }
+                }
             }
             _ => Ok(None),
+        }
+    }
+
+    /// Decode a decrypted session inner into a user message — unless it's a re-establishment
+    /// ping (a content-less handshake we send to heal a desynced ratchet), which has done its
+    /// job by rebuilding the session and isn't surfaced (DESIGN.md §25).
+    fn surface_session_inner(&self, from: PubKeyBytes, inner: &[u8]) -> Result<Option<ReadMessage>> {
+        let si: SessionInner = postcard::from_bytes(inner)?;
+        if si.content_type == SESSION_ESTABLISH_CT {
+            return Ok(None);
+        }
+        Ok(Some(ReadMessage { from, content_type: si.content_type, body: si.body }))
+    }
+
+    /// Tell `peer` our ratchet with them is broken so it drops its session and re-initiates
+    /// (DESIGN.md §25). A control message (statically sealed, no content). Throttled so a
+    /// burst of undecryptable messages can't cause a reset storm.
+    fn request_session_reset(&mut self, peer: PubKeyBytes) {
+        let due = match self.last_reset_req.get(&peer) {
+            Some(&t) => self.now_ms.saturating_sub(t) >= REACK_MIN_INTERVAL_MS,
+            None => true,
+        };
+        if !due {
+            return;
+        }
+        self.last_reset_req.insert(peer, self.now_ms);
+        if let Ok(b) = Bundle::create(
+            &self.identity,
+            Destination::Device(peer),
+            &peer,
+            &Payload::SessionReset,
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        ) {
+            self.submit(b);
+        }
+    }
+
+    /// Handle an inbound [`Payload::SessionReset`]: drop our (stale) session with `peer` and
+    /// proactively re-establish so the ratchet heals immediately — even before the next user
+    /// message. The next `SessionInit` rebuilds the peer's side too (DESIGN.md §25).
+    fn handle_session_reset(&mut self, peer: PubKeyBytes) {
+        self.sessions.remove(&peer);
+        self.persist_session(&peer); // None → clears the persisted entry
+        // Re-establish now if we know their prekey; otherwise the next content send re-inits.
+        if self.directory.prekey(&peer).is_some() {
+            let _ = self.send_message(peer, SESSION_ESTABLISH_CT.to_string(), Vec::new(), false);
         }
     }
 
@@ -1932,6 +2005,9 @@ impl<S: Store> Node<S> {
                             }
                         }
                     }
+                    // A peer says our ratchet desynced: drop our session and re-establish so
+                    // a fresh handshake re-syncs it (DESIGN.md §25). Not surfaced to the app.
+                    Ok(Payload::SessionReset) => self.handle_session_reset(bundle.inner.src),
                     _ => self.inbox.push(bundle.clone()),
                 }
                 if bundle.inner.flags.request_ack {
@@ -2485,6 +2561,65 @@ mod tests {
         // The response is the return-path delete: the request no longer lingers in our
         // store (service calls carry no ACK-vaccine, so without this it would pin forever).
         assert!(!nodes[0].store.contains(&req_id), "request purged once its response arrives");
+    }
+
+    #[test]
+    fn lost_session_data_recovers_via_reset() {
+        // One side loses its ratchet (uninstall / wiped p2p data: identity survives, store
+        // doesn't) while the peer keeps theirs. The peer's next message can't be decrypted →
+        // a SessionReset asks it to re-establish → a fresh handshake re-syncs the ratchet and
+        // subsequent messages decrypt again (DESIGN.md §25).
+        let id1_secret = Identity::generate().to_secret_bytes();
+        let mut nodes =
+            [Node::new(Identity::generate()), Node::from_identity_secret(&id1_secret)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].publish_prekey().unwrap();
+        nodes[1].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"hi".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[1].take_inbox() {
+            nodes[1].read_message(&b).unwrap();
+        }
+        nodes[1].send_message(nodes[0].address(), "t".into(), b"yo".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[0].take_inbox() {
+            nodes[0].read_message(&b).unwrap();
+        }
+        assert!(nodes[0].has_session(&nodes[1].address()), "n0 has a session");
+
+        // n1 uninstalls: same identity, but a fresh store (no persisted session).
+        nodes[1] = Node::from_identity_secret(&id1_secret);
+        assert!(!nodes[1].has_session(&nodes[0].address()), "n1 lost its session");
+        nodes[0].handle(BearerEvent::Disconnected(1));
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 2, 1, 2);
+        nodes[1].publish_prekey().unwrap(); // re-gossip n1's (deterministic) prekey
+        net.pump(&mut nodes);
+
+        // n0 still thinks it has a session → sends a SessionMessage n1 can't read.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"during desync".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        // Reading the undecryptable message makes n1 ask n0 to reset.
+        for b in nodes[1].take_inbox() {
+            let _ = nodes[1].read_message(&b);
+        }
+        net.pump(&mut nodes); // reset → n0 drops + re-establishes → ping reaches n1
+        for b in nodes[1].take_inbox() {
+            let _ = nodes[1].read_message(&b); // process the re-establishment ping (rebuilds)
+        }
+
+        // The ratchet is healed: a fresh message now decrypts.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"healed".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        let mut got: Vec<Vec<u8>> = Vec::new();
+        for b in nodes[1].take_inbox() {
+            if let Ok(Some(m)) = nodes[1].read_message(&b) {
+                got.push(m.body);
+            }
+        }
+        assert!(got.contains(&b"healed".to_vec()), "ratchet recovered after the reset");
     }
 
     #[test]

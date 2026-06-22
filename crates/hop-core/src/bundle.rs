@@ -199,6 +199,11 @@ pub enum Payload {
         ciphertext: Vec<u8>,
         sig: Vec<u8>,
     },
+    /// "I can't decrypt your forward-secret messages — our ratchet desynced; please drop our
+    /// session and re-establish" (DESIGN.md §25). A control message, statically sealed (it
+    /// carries no content). The sender drops its session and re-initiates a fresh handshake,
+    /// which re-syncs the ratchet so subsequent messages decrypt again.
+    SessionReset,
 }
 
 /// The signed portion of a bundle. The source signature covers this exactly.
