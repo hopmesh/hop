@@ -549,6 +549,30 @@ impl<S: Store> Node<S> {
             }
         }
 
+        // Re-feed persisted carrier chunks so a partial large transfer (an image whose
+        // in-memory reassembly was lost to a background suspend/relaunch) resumes instead of
+        // restarting — the relay only still holds the chunks we hadn't yet received (§20, §22).
+        let mut by_stream: std::collections::HashMap<(PubKeyBytes, StreamId), Vec<(u64, bool, Vec<u8>)>> =
+            std::collections::HashMap::new();
+        for (key, val) in self.store.list_kv("strm/") {
+            if val.is_empty() {
+                continue;
+            }
+            if let Some((from, sid, seq)) = parse_stream_key(&key) {
+                by_stream.entry((from, sid)).or_default().push((seq, val[0] != 0, val[1..].to_vec()));
+            }
+        }
+        for ((from, sid), mut chunks) in by_stream {
+            chunks.sort_by_key(|c| c.0);
+            for (seq, fin, bytes) in chunks {
+                if let Some(inner_bytes) = self.accept_stream_chunk(from, sid, seq, bytes, fin) {
+                    if let Ok(inner) = Bundle::from_bytes(&inner_bytes) {
+                        self.on_bundle(0, inner); // completed while we were away → deliver
+                    }
+                }
+            }
+        }
+
         let me = self.address();
         for id in self.store.have().ids {
             let Some(b) = self.store.get(&id) else { continue };
@@ -1400,6 +1424,15 @@ impl<S: Store> Node<S> {
         fin: bool,
     ) -> Option<Vec<u8>> {
         let now = self.now_ms;
+        // Persist the raw chunk first, so a partial transfer survives a background
+        // suspend/relaunch (beacon mode): we ACK each carrier (the relay then drops its
+        // copy), so without this a half-assembled image whose in-memory state is lost on
+        // wake could never complete. Re-fed on rehydrate (DESIGN.md §20, §22).
+        let mut val = Vec::with_capacity(bytes.len() + 1);
+        val.push(fin as u8);
+        val.extend_from_slice(&bytes);
+        self.store.put_kv(&stream_chunk_key(&from, &stream_id, seq), val);
+
         let entry = self.incoming_streams.entry((from, stream_id)).or_insert_with(|| {
             IncomingStream { reassembler: StreamReassembler::new(), data: Vec::new(), at: now }
         });
@@ -1408,9 +1441,19 @@ impl<S: Store> Node<S> {
             entry.data.extend_from_slice(&chunk);
         }
         if entry.reassembler.is_finished() {
-            self.incoming_streams.remove(&(from, stream_id)).map(|s| s.data)
+            let data = self.incoming_streams.remove(&(from, stream_id)).map(|s| s.data);
+            self.clear_persisted_stream(&from, &stream_id); // whole message assembled
+            data
         } else {
             None
+        }
+    }
+
+    /// Remove all persisted chunks of a completed or abandoned carrier stream (DESIGN.md §20).
+    fn clear_persisted_stream(&mut self, from: &PubKeyBytes, stream_id: &StreamId) {
+        let prefix = stream_prefix(from, stream_id);
+        for (k, _) in self.store.list_kv(&prefix) {
+            self.store.remove_kv(&k);
         }
     }
 
@@ -1594,8 +1637,18 @@ impl<S: Store> Node<S> {
         self.immune.retain(|_, t| now_ms.saturating_sub(*t) < 3_600_000);
         // Forget forwarded-route memory for bundles that can no longer ACK back (§27).
         self.forwarded.retain(|_, (_, _, t)| now_ms.saturating_sub(*t) < 3_600_000);
-        // Drop abandoned half-received carrier streams (sender vanished mid-transfer).
-        self.incoming_streams.retain(|_, s| now_ms.saturating_sub(s.at) < 3_600_000);
+        // Drop abandoned half-received carrier streams (sender vanished mid-transfer), and
+        // clear their persisted chunks so they don't linger in the store.
+        let dropped: Vec<(PubKeyBytes, StreamId)> = self
+            .incoming_streams
+            .iter()
+            .filter(|(_, s)| now_ms.saturating_sub(s.at) >= 3_600_000)
+            .map(|(k, _)| *k)
+            .collect();
+        for (from, sid) in dropped {
+            self.incoming_streams.remove(&(from, sid));
+            self.clear_persisted_stream(&from, &sid);
+        }
         // Forget carrier→original links once the carrier is no longer held (delivered/expired).
         self.carrier_owner.retain(|cid, _| self.store.contains(cid));
         // ACK bookkeeping: forget replication tracking for ACKs no longer held, and age
@@ -2393,6 +2446,35 @@ impl<S: Store> Node<S> {
     }
 }
 
+/// Durable KV key for one persisted carrier chunk (DESIGN.md §20). Zero-padded seq keeps
+/// keys lexically ordered; both addresses base58-encode without a `/`, so the key splits
+/// cleanly back apart.
+fn stream_chunk_key(from: &PubKeyBytes, sid: &StreamId, seq: u64) -> String {
+    format!(
+        "strm/{}/{}/{:020}",
+        bs58::encode(from).into_string(),
+        bs58::encode(sid).into_string(),
+        seq
+    )
+}
+
+/// KV prefix for all of one carrier stream's persisted chunks.
+fn stream_prefix(from: &PubKeyBytes, sid: &StreamId) -> String {
+    format!("strm/{}/{}/", bs58::encode(from).into_string(), bs58::encode(sid).into_string())
+}
+
+/// Parse a persisted-chunk key back into `(from, stream_id, seq)`.
+fn parse_stream_key(key: &str) -> Option<(PubKeyBytes, StreamId, u64)> {
+    let rest = key.strip_prefix("strm/")?;
+    let mut parts = rest.split('/');
+    let from = parts.next()?;
+    let sid = parts.next()?;
+    let seq = parts.next()?;
+    let from = <PubKeyBytes>::try_from(bs58::decode(from).into_vec().ok()?.as_slice()).ok()?;
+    let sid = <StreamId>::try_from(bs58::decode(sid).into_vec().ok()?.as_slice()).ok()?;
+    Some((from, sid, seq.parse().ok()?))
+}
+
 /// Canonicalize a domain for HNS cache keys/lookups: lowercase, no trailing dot, no
 /// surrounding whitespace. (DNS is case-insensitive; the root dot is implicit.)
 fn normalize_domain(domain: &str) -> String {
@@ -2670,6 +2752,37 @@ mod tests {
         }
         assert!(bodies.contains(&b"first".to_vec()), "earlier message recovered from skipped keys");
         assert!(bodies.contains(&b"second".to_vec()));
+    }
+
+    #[test]
+    fn partial_carrier_stream_resumes_after_restart() {
+        // The image-in-background bug: a receiver gets some chunks, ACKs them (relay drops
+        // its copies), then iOS suspends/relaunches the app — wiping in-memory reassembly.
+        // Persisted chunks let it resume on the next wake instead of stalling forever (§20).
+        let secret = Identity::generate().to_secret_bytes();
+        let from = Identity::generate().address();
+        let sid = [7u8; 16];
+        let chunks: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 100]).collect();
+        let full: Vec<u8> = chunks.iter().flatten().copied().collect();
+
+        let mut r = Node::from_identity_secret(&secret);
+        // First three chunks arrive in one wake (not the final one).
+        for (i, c) in chunks.iter().take(3).enumerate() {
+            assert!(r.accept_stream_chunk(from, sid, i as u64, c.clone(), false).is_none());
+        }
+
+        // Beacon-mode kill + relaunch: rebuild from the persisted store. In-memory reassembly
+        // is gone, but rehydrate re-feeds the persisted chunks.
+        let store = r.clone_store();
+        let mut r = Node::with_store(Identity::from_secret_bytes(&secret), store);
+
+        // Remaining chunks arrive on a later wake; the final one completes the message.
+        assert!(r.accept_stream_chunk(from, sid, 3, chunks[3].clone(), false).is_none());
+        let done = r.accept_stream_chunk(from, sid, 4, chunks[4].clone(), true);
+        assert_eq!(done.as_deref(), Some(full.as_slice()), "resumed and completed across restart");
+
+        // Completion clears the persisted chunks.
+        assert!(r.clone_store().list_kv("strm/").is_empty(), "persisted chunks cleared");
     }
 
     #[test]
