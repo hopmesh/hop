@@ -2312,8 +2312,15 @@ impl<S: Store> Node<S> {
                     let mut copy = b.clone();
                     if copy.forwarded() {
                         copy.add_hop(me_short, me_app); // provenance (§27)
-                        if !own {
-                            self.store.remove(&id); // relayed: release custody on delivery
+                        // Release custody only for fire-and-forget bundles. For request_ack
+                        // ones (carrier chunks, messages), keep custody until the delivery
+                        // ACK confirms receipt — handing to the destination is optimistic, and
+                        // a chunk it misses in a brief background window must be re-offerable
+                        // on its next wake, not deleted here (the ACK vaccine removes it for
+                        // real). Without this, a large transfer to a backgrounded device can
+                        // lose chunks the relay already dropped, and dedup blocks re-injection.
+                        if !own && !b.inner.flags.request_ack {
+                            self.store.remove(&id);
                         }
                         Some(copy)
                     } else {
@@ -2878,6 +2885,66 @@ mod tests {
         let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
         assert_eq!(m.content_type, "image/jpeg");
         assert_eq!(m.body, body, "ratchet-decrypted bytes match exactly");
+    }
+
+    #[test]
+    fn relay_keeps_request_ack_bundle_until_acked() {
+        // A relay must keep custody of a request_ack bundle until the delivery ACK confirms
+        // receipt — not release it on the optimistic handoff. Otherwise a chunk the
+        // destination misses in a brief background window is lost and dedup blocks
+        // re-injection, so a large transfer can never complete (DESIGN.md §6, §20).
+        let mut relay = Node::new(Identity::generate());
+        relay.set_kind(NodeKind::Relay);
+        let alice = Identity::generate();
+        let bob = Node::new(Identity::generate());
+
+        let b = Bundle::create(
+            &alice,
+            Destination::Device(bob.address()),
+            &bob.address(),
+            &Payload::PeerMessage { content_type: "t".into(), body: b"hi".to_vec() },
+            BundleOpts {
+                flags: BundleFlags { request_ack: true, ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let id = b.id();
+        relay.ingest(b);
+        assert!(relay.store.contains(&id));
+
+        // Hand-drive the link so we can deliver to bob but DROP his ACK.
+        let mut relay = relay;
+        let mut bob = bob;
+        relay.handle(BearerEvent::Connected(1, Role::Initiator));
+        bob.handle(BearerEvent::Connected(2, Role::Responder));
+        let mut got = false;
+        for _ in 0..12 {
+            for (l, bytes) in relay.drain_outgoing() {
+                if l == 1 {
+                    bob.handle(BearerEvent::Data(2, bytes));
+                }
+            }
+            if !bob.take_inbox().is_empty() {
+                got = true;
+                break; // bob has the message; its pending outgoing is the ACK — withhold it
+            }
+            for (l, bytes) in bob.drain_outgoing() {
+                if l == 2 {
+                    relay.handle(BearerEvent::Data(1, bytes));
+                }
+            }
+        }
+        assert!(got, "bob received the message");
+        assert!(relay.store.contains(&id), "relay keeps custody — ACK not yet seen");
+
+        // Deliver bob's withheld ACK; the vaccine now releases the relay's copy.
+        for (l, bytes) in bob.drain_outgoing() {
+            if l == 2 {
+                relay.handle(BearerEvent::Data(1, bytes));
+            }
+        }
+        assert!(!relay.store.contains(&id), "ACK vaccine releases custody");
     }
 
     #[test]
