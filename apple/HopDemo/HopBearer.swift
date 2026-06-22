@@ -43,6 +43,9 @@ final class HopBearer: NSObject, ObservableObject {
     static let psmCharUUID = CBUUID(string: "F0900001-0000-4000-8000-000000000000")
     static let beaconUUID = UUID(uuidString: "F0900BEA-C000-4000-8000-000000000000")!
     static let refreshTaskId = "net.waldrip.hop.refresh"
+    /// Longer background-processing task (runs idle/charging) to drain a backlog — e.g. a
+    /// large image accumulating across wakes (DESIGN.md §22, §28).
+    static let processTaskId = "net.waldrip.hop.process"
     /// App-level presence service: title = display name (DESIGN.md §23).
     static let presenceService = "presence"
     /// MultipeerConnectivity service type for the Wi-Fi bearer (≤15 chars).
@@ -112,6 +115,28 @@ final class HopBearer: NSObject, ObservableObject {
         let address: Data    // empty = a cached negative (no such endpoint)
         let ttl: UInt32      // remaining lifetime, ticking down to expiry
     }
+    // hps:// pub/sub — services & channels (§32). Topics we host or subscribe to, and the
+    // decrypted, sender-verified messages we've received per path.
+    @Published var hpsTopics: [HpsTopic] = []
+    @Published var hpsInbox: [HpsMsgRow] = []
+
+    /// An hps:// topic we host (`hosting`) or follow (`subscribed`), keyed by host+path.
+    struct HpsTopic: Identifiable {
+        var id: String { "\(HopBearer.base58(host))/\(path)" }
+        let host: Data        // the node that hosts the topic (us, if hosting)
+        let path: String
+        let isChannel: Bool   // channel (anyone writes) vs service (only owner broadcasts)
+        let hosting: Bool     // true = we registered it; false = we subscribed to it
+    }
+    /// One received hps:// message, decrypted + sender-verified (§32).
+    struct HpsMsgRow: Identifiable {
+        let id = UUID()
+        let path: String
+        let sender: Data
+        let text: String
+        let at: UInt64
+    }
+
     /// Resolved display name per 8-byte short address, for resolving trace hops (§27/§29).
     @Published var nameByShort: [Data: String] = [:]
     @Published var serviceLog: [String] = []   // hop.identify + custom service-call activity (§29)
@@ -166,6 +191,7 @@ final class HopBearer: NSObject, ObservableObject {
     private var relayWS: URLSessionWebSocketTask?
     private var relaySession: URLSession?
     private var relayURL: String?              // last relay endpoint (for auto check-in)
+    private var lastRelayDialMs: UInt64 = 0    // throttle background reconnect attempts
     private var relayReconnectScheduled = false
     private let relayLinkId: UInt64 = 20_000    // distinct id range from BLE/Wi-Fi
     // Direct WS links to hops:// endpoints (DESIGN.md §30). The client dials the endpoint at
@@ -302,6 +328,17 @@ final class HopBearer: NSObject, ObservableObject {
         // Refresh presence periodically so it never lapses its TTL (link-up gossip
         // also shares it to new neighbours immediately).
         if tickCount % 20 == 0 { publishPresence() }
+        // Reconnect the relay if it dropped (iOS tears the socket down while suspended), so
+        // this wake — BGAppRefresh, BGProcessing, or a beacon/BLE event — actually pulls
+        // anything queued for us at the relay (DESIGN.md §28). Throttled so the 1s foreground
+        // timer can't hammer the dial; "connecting…" is skipped to avoid overlapping dials.
+        if relayStatus != "connected" && relayStatus != "connecting…" {
+            let now = HopBearer.nowMs()
+            if now &- lastRelayDialMs > 4000 {
+                lastRelayDialMs = now
+                connectRelay(relayURL ?? HopBearer.defaultRelay)
+            }
+        }
         pump()
     }
 
@@ -629,6 +666,58 @@ final class HopBearer: NSObject, ObservableObject {
         }
         drainServices()      // hop.identify replies + custom service calls (§29)
         drainHns()           // HNS lookups + hops:// responses (§30)
+        drainHps()           // pub/sub messages (§32)
+    }
+
+    // MARK: - hps:// pub/sub (DESIGN.md §32)
+
+    /// Host a new topic at `path`: a channel (anyone with the key reads + writes) or a service
+    /// (only we broadcast). Keys are minted + persisted in the node. Returns the service public
+    /// key for a service (empty for a channel).
+    @discardableResult
+    func hpsRegister(path: String, channel: Bool) -> Data {
+        let p = path.trimmingCharacters(in: .whitespaces)
+        guard !p.isEmpty else { return Data() }
+        let pk = node.registerService(path: p, kind: channel ? .channel : .service)
+        if !hpsTopics.contains(where: { $0.host == node.address() && $0.path == p }) {
+            hpsTopics.insert(HpsTopic(host: node.address(), path: p, isChannel: channel, hosting: true), at: 0)
+        }
+        return pk
+    }
+
+    /// Subscribe to `hps://{hostBase58}/{path}` — request the topic's keys from its host. The
+    /// host (if open) replies with the keys; messages then arrive in `hpsInbox`.
+    func hpsSubscribe(hostBase58: String, path: String) {
+        let host = addressFromBase58(text: hostBase58.trimmingCharacters(in: .whitespacesAndNewlines))
+        let p = path.trimmingCharacters(in: .whitespaces)
+        guard host.count == 32, !p.isEmpty else { return }
+        _ = try? node.hpsSubscribe(host: host, path: p)
+        // We don't yet know the kind until keys arrive; default to channel (the host's reply
+        // carries the service pubkey, which governs publish rights on the core side).
+        if !hpsTopics.contains(where: { $0.host == host && $0.path == p }) {
+            hpsTopics.insert(HpsTopic(host: host, path: p, isChannel: true, hosting: false), at: 0)
+        }
+        pump()
+    }
+
+    /// Publish text to a topic we host or (for a channel) belong to. Floods to all subscribers.
+    func hpsPublish(path: String, text: String) {
+        let p = path.trimmingCharacters(in: .whitespaces)
+        guard !p.isEmpty, let body = text.data(using: .utf8) else { return }
+        _ = try? node.hpsPublish(path: p, body: body)
+        // Echo our own post locally — broadcasts don't loop back to the sender.
+        hpsInbox.insert(HpsMsgRow(path: p, sender: node.address(), text: text, at: HopBearer.nowMs()), at: 0)
+        pump()
+    }
+
+    /// Drain received pub/sub messages into the inbox (already decrypted + sender-verified).
+    private func drainHps() {
+        for m in node.takeHpsMessages() {
+            let text = String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>"
+            hpsInbox.insert(HpsMsgRow(path: m.path, sender: m.sender, text: text, at: HopBearer.nowMs()), at: 0)
+            if hpsInbox.count > 200 { hpsInbox.removeLast(hpsInbox.count - 200) }
+            queueIdentify(m.sender)   // learn the sender's display name
+        }
     }
 
     // MARK: - Services & commands (DESIGN.md §29)
