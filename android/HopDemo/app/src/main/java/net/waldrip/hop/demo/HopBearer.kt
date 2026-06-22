@@ -89,6 +89,8 @@ class HopBearer private constructor(private val context: Context) {
     private var relayOut: java.io.OutputStream? = null
     private var relayWriter: java.util.concurrent.ExecutorService? = null
     @Volatile private var relayConnected = false
+    private var relayUrl: String? = null          // last relay endpoint, for auto check-in
+    private var lastRelayDialMs: ULong = 0u       // throttle reconnect attempts
 
     @Volatile var appInForeground = false
     private var started = false
@@ -108,11 +110,25 @@ class HopBearer private constructor(private val context: Context) {
         runCatching { node.publishPrekey() }
         startPeripheral()
         startCentral()
+        // Check in to the backbone (DESIGN.md §28): dial the anycast relay so we pull any
+        // queued mail and stay reachable across the internet. The foreground service keeps
+        // this alive; the tick loop below reconnects it if it ever drops.
+        connectRelay(DEFAULT_RELAY)
         var ticks = 0
         main.postDelayed(object : Runnable {
             override fun run() {
                 node.tick(nowMs())
                 if (++ticks % 20 == 0) publishPresence()
+                // Keep the relay connected: a foreground service runs continuously, so a
+                // reconnect here means real-time background delivery, not just on next launch.
+                // Throttled so a flapping link doesn't hammer the dial (§28).
+                if (!relayConnected && relayStatus.value != "connecting…") {
+                    val now = nowMs()
+                    if (now - lastRelayDialMs > 4000u) {
+                        lastRelayDialMs = now
+                        relayUrl?.let { connectRelay(it) }
+                    }
+                }
                 pump()
                 main.postDelayed(this, 1000)
             }
@@ -181,6 +197,7 @@ class HopBearer private constructor(private val context: Context) {
     /// `ws://`/`wss://` URL (WebSocket, path B). The device dials → Noise initiator.
     fun connectRelay(input: String) {
         val t = input.trim()
+        relayUrl = t   // remembered so the tick loop auto-reconnects on drop (§28)
         if (t.startsWith("ws://") || t.startsWith("wss://")) connectRelayWS(t)
         else connectRelayTcp(t)
     }
@@ -443,6 +460,7 @@ class HopBearer private constructor(private val context: Context) {
         const val CHANNEL_ID = "hop.messages"
         const val PRESENCE_SERVICE = "presence"
         const val PRESENCE_TTL_MS: UInt = 600_000u
+        const val DEFAULT_RELAY = "wss://relay.hopme.sh/"
 
         @Volatile private var inst: HopBearer? = null
 
