@@ -396,6 +396,10 @@ pub struct Node<S: Store = MemoryStore> {
     /// Last time we emitted a delivery-ACK for a given delivered message id — throttles
     /// re-ACKs so duplicate floods can't cause an ACK storm.
     last_ack: HashMap<BundleId, u64>,
+    /// Carrier chunk id → the original message id it carries (DESIGN.md §20). Lets a chunked
+    /// message report real relay progress ("Sent N") and ownership under its *original* id,
+    /// even though the bytes travel as separate carrier bundles.
+    carrier_owner: HashMap<BundleId, BundleId>,
     /// Last time we asked a peer to reset a desynced session — throttles reset requests so a
     /// burst of undecryptable messages can't cause a reset storm (DESIGN.md §25).
     last_reset_req: HashMap<PubKeyBytes, u64>,
@@ -511,6 +515,7 @@ impl<S: Store> Node<S> {
             stream_seq: 0,
             ack_replicate: HashMap::new(),
             last_ack: HashMap::new(),
+            carrier_owner: HashMap::new(),
             last_reset_req: HashMap::new(),
             internet: false,
             hns_cache: HashMap::new(),
@@ -1367,6 +1372,7 @@ impl<S: Store> Node<S> {
             flags: BundleFlags { request_ack: true, ..Default::default() },
             ..Default::default()
         };
+        let orig = bundle.id(); // the message id the UI tracks; carriers map back to it
         let chunks: Vec<&[u8]> = encoded.chunks(STREAM_CHUNK).collect();
         let n = chunks.len();
         for (i, chunk) in chunks.into_iter().enumerate() {
@@ -1377,6 +1383,7 @@ impl<S: Store> Node<S> {
                 &Payload::Carrier { stream_id: sid, seq: i as u64, bytes: chunk.to_vec(), fin: i + 1 == n },
                 opts,
             ) {
+                self.carrier_owner.insert(carrier.id(), orig); // attribute relay/ownership
                 self.submit(carrier); // request_ack → tracked in `pending` for retransmit
             }
         }
@@ -1462,7 +1469,7 @@ impl<S: Store> Node<S> {
             .filter_map(|id| self.store.get(id))
             .map(|b| QueuedMessage {
                 id: b.id(),
-                own: self.tx.contains_key(&b.id()),
+                own: self.tx.contains_key(&b.id()) || self.carrier_owner.contains_key(&b.id()),
                 to: match b.inner.dst {
                     Destination::Device(a) | Destination::AckTo(a, _) => Some(a),
                     Destination::InternetEgress | Destination::Broadcast => None,
@@ -1589,6 +1596,8 @@ impl<S: Store> Node<S> {
         self.forwarded.retain(|_, (_, _, t)| now_ms.saturating_sub(*t) < 3_600_000);
         // Drop abandoned half-received carrier streams (sender vanished mid-transfer).
         self.incoming_streams.retain(|_, s| now_ms.saturating_sub(s.at) < 3_600_000);
+        // Forget carrier→original links once the carrier is no longer held (delivered/expired).
+        self.carrier_owner.retain(|cid, _| self.store.contains(cid));
         // ACK bookkeeping: forget replication tracking for ACKs no longer held, and age
         // out the re-ACK throttle map.
         self.ack_replicate.retain(|id, _| self.store.contains(id));
@@ -2298,7 +2307,9 @@ impl<S: Store> Node<S> {
                 // "Sent N peers" counts relay handoffs only — not direct delivery to
                 // the destination itself (that shows as Delivered once the ACK is back).
                 if !direct {
-                    if let Some(info) = self.tx.get_mut(&id) {
+                    // A carrier chunk counts toward its original message's "Sent N".
+                    let owner = self.carrier_owner.get(&id).copied().unwrap_or(id);
+                    if let Some(info) = self.tx.get_mut(&owner) {
                         info.relayed.insert(peer);
                     }
                 }
@@ -2772,8 +2783,14 @@ mod tests {
 
         let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect(); // ~300KB
         let dst = nodes[2].address();
-        nodes[0].send_message(dst, "image/jpeg".into(), body.clone(), true).unwrap();
+        let orig = nodes[0].send_message(dst, "image/jpeg".into(), body.clone(), true).unwrap();
         net.pump(&mut nodes);
+
+        // The chunked message reports real relay progress + delivery under its original id
+        // (carriers travel as separate bundles but attribute back — not a stuck "Sending").
+        let (relayed, delivered, _) = nodes[0].message_status(&orig).expect("tracked");
+        assert!(relayed >= 1, "shows Sent N (carriers relayed to the relay), not 0");
+        assert!(delivered, "delivery ACK for the reassembled original marks it Delivered");
 
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1, "reassembled into exactly one message through the relay");
