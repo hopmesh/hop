@@ -19,6 +19,7 @@ targets:
       - ContentView.swift
       - HopBearer.swift
       - HopLink.swift
+      - HopWebView.swift
       - ../generated/Sources/hop_ffi.swift
     dependencies:
       - framework: ../generated/HopFFI.xcframework
