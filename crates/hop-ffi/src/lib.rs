@@ -234,6 +234,24 @@ pub enum HnsLookupResult {
     NeedsResolver,
 }
 
+/// The kind of `hps://` topic hosted at a path (DESIGN.md §32).
+#[derive(uniffi::Enum)]
+pub enum HpsKind {
+    /// Anyone with the content key reads AND writes; each post signed by its writer.
+    Channel,
+    /// Only the owner broadcasts (signed by the service key); subscribers read.
+    Service,
+}
+
+/// A received `hps://` message, after decryption + sender verification (DESIGN.md §32).
+#[derive(uniffi::Record)]
+pub struct HpsMessage {
+    pub path: String,
+    /// The verified sender's address (for a channel, the writer; for a service, the host).
+    pub sender: Vec<u8>,
+    pub body: Vec<u8>,
+}
+
 /// A live link to a directly-connected peer: its address + the bearer link id. The
 /// host maps the link id to a transport (e.g. < 10000 = Bluetooth, ≥ 10000 = Wi-Fi).
 #[derive(uniffi::Record)]
@@ -683,6 +701,69 @@ impl HopNode {
                 domain: r.domain,
                 address: r.address.map(|a| a.to_vec()).unwrap_or_default(),
             })
+            .collect()
+    }
+
+    // ---- hps:// pub/sub: services & channels (DESIGN.md §32) ------------------------------
+
+    /// Register (host) an `hps://` topic at `path`, minting + persisting its keys. Returns the
+    /// service's public key for a `Service` (subscribers verify broadcasts against it), or empty
+    /// for a `Channel`. Re-registering replaces the topic's keys.
+    pub fn register_service(&self, path: String, kind: HpsKind) -> Vec<u8> {
+        let kind = match kind {
+            HpsKind::Channel => hop_core::hps::ServiceKind::Channel,
+            HpsKind::Service => hop_core::hps::ServiceKind::Service,
+        };
+        self.inner
+            .lock()
+            .unwrap()
+            .register_service(&path, kind)
+            .map(|pk| pk.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Subscribe to `hps://{host}/{path}`: send a sealed request to `host`, which (for an open
+    /// topic) replies with the topic keys. Messages then arrive via `take_hps_messages`. Returns
+    /// the subscribe request's bundle id.
+    pub fn hps_subscribe(
+        &self,
+        host: Vec<u8>,
+        path: String,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let host = to32(&host)?;
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .hps_subscribe(host, &path)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Publish to a topic we host or (for a channel) belong to. Floods to all subscribers,
+    /// signed by the service key (service) or our own identity (channel). Returns the bundle id.
+    pub fn hps_publish(
+        &self,
+        path: String,
+        body: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .hps_publish(&path, &body)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Drain received `hps://` messages (already decrypted + sender-verified), clearing them.
+    pub fn take_hps_messages(&self) -> Vec<HpsMessage> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take_hps_messages()
+            .into_iter()
+            .map(|m| HpsMessage { path: m.path, sender: m.sender.to_vec(), body: m.body })
             .collect()
     }
 

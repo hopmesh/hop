@@ -112,6 +112,18 @@ struct ContentView: View {
                     }
                 }
 
+                Section("hps:// pub/sub") {
+                    NavigationLink {
+                        HpsView(bearer: bearer)
+                    } label: {
+                        Label("Channels & services", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    if !bearer.hpsInbox.isEmpty {
+                        Text("\(bearer.hpsInbox.count) message\(bearer.hpsInbox.count == 1 ? "" : "s") received")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 if !bearer.relays.isEmpty {
                     Section("Relays (backbone)") {
                         ForEach(bearer.relays) { r in
@@ -483,5 +495,109 @@ struct AddContactView: View {
                 }
             }
         }
+    }
+}
+
+/// hps:// pub/sub (DESIGN.md §32): host a channel/service, subscribe to one by host+path,
+/// publish to topics you can write to, and read incoming sender-verified messages.
+struct HpsView: View {
+    @ObservedObject var bearer: HopBearer
+
+    @State private var newPath = ""
+    @State private var newIsChannel = true
+    @State private var subHost = ""
+    @State private var subPath = ""
+    @State private var pubText = ""
+    @State private var pubPath = ""
+
+    var body: some View {
+        List {
+            Section("Host a topic") {
+                TextField("path (e.g. lobby)", text: $newPath)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never)
+                Picker("Kind", selection: $newIsChannel) {
+                    Text("Channel (anyone writes)").tag(true)
+                    Text("Service (only you broadcast)").tag(false)
+                }
+                .pickerStyle(.segmented)
+                Button("Register") {
+                    bearer.hpsRegister(path: newPath, channel: newIsChannel)
+                    newPath = ""
+                }
+                .disabled(newPath.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            Section("Subscribe") {
+                TextField("host address (base58)", text: $subHost)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never).font(.caption).monospaced()
+                TextField("path", text: $subPath)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never)
+                Button("Subscribe") {
+                    bearer.hpsSubscribe(hostBase58: subHost, path: subPath)
+                    subPath = ""
+                }
+                .disabled(subHost.trimmingCharacters(in: .whitespaces).isEmpty
+                          || subPath.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if !bearer.hpsTopics.isEmpty {
+                Section("Topics") {
+                    ForEach(bearer.hpsTopics) { t in
+                        HStack {
+                            Image(systemName: t.isChannel ? "bubble.left.and.bubble.right" : "megaphone")
+                                .foregroundStyle(t.hosting ? .green : .blue)
+                            VStack(alignment: .leading) {
+                                Text(t.path).font(.callout)
+                                Text(t.hosting ? "hosting · \(HopBearer.shortHex(t.host))"
+                                               : "subscribed · \(HopBearer.shortHex(t.host))")
+                                    .font(.caption2).monospaced().foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            // Writable: a channel (anyone), or a service we host.
+                            if t.isChannel || t.hosting {
+                                Button { pubPath = t.path } label: { Image(systemName: "square.and.pencil") }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("Publish") {
+                if pubPath.isEmpty {
+                    Text("Tap ✎ on a writable topic above").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("→ \(pubPath)").font(.caption).monospaced().foregroundStyle(.secondary)
+                    HStack {
+                        TextField("message", text: $pubText).onSubmit(publish)
+                        Button("Send", action: publish)
+                            .disabled(pubText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+
+            Section("Messages") {
+                if bearer.hpsInbox.isEmpty {
+                    Text("none yet").foregroundStyle(.secondary)
+                }
+                ForEach(bearer.hpsInbox) { m in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(m.path).font(.caption2).monospaced().foregroundStyle(.secondary)
+                            Spacer()
+                            Text(bearer.displayName(m.sender)).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(m.text).font(.callout).textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .navigationTitle("hps:// pub/sub")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func publish() {
+        bearer.hpsPublish(path: pubPath, text: pubText)
+        pubText = ""
     }
 }
