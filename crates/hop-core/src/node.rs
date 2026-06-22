@@ -189,12 +189,17 @@ struct SessionInner {
 }
 
 /// Per-peer forward-secret session state (DESIGN.md §25).
+#[derive(Clone, Serialize, Deserialize)]
 struct PeerSession {
     session: Session,
     /// For an initiator that hasn't heard back yet: the X3DH material to repeat in a
     /// `SessionInit` so any copy can bootstrap the peer. `None` once confirmed (we've
     /// received a message from them) or for a responder.
     init_material: Option<(XPubKeyBytes, XPubKeyBytes)>, // (ek_pub, spk_pub)
+    /// The initiator ephemeral that established this session, remembered so a *new*
+    /// `SessionInit` (a peer that reinstalled / lost its ratchet) is recognized as a fresh
+    /// handshake and **rebuilds** the session instead of failing to decrypt (DESIGN.md §25).
+    established_by: Option<XPubKeyBytes>,
 }
 
 /// A decrypted user message ready for the inbox — uniform across static-sealed and
@@ -449,6 +454,13 @@ impl Node<MemoryStore> {
         };
         Self::with_store(identity, MemoryStore::new())
     }
+
+    /// Test-only: snapshot this node's store (bundles + persisted KV) so a test can simulate
+    /// a process restart / beacon-mode relaunch by rebuilding a node from the same store.
+    #[cfg(test)]
+    fn clone_store(&self) -> MemoryStore {
+        self.store.clone()
+    }
 }
 
 impl<S: Store> Node<S> {
@@ -512,6 +524,17 @@ impl<S: Store> Node<S> {
     /// relayed bundles re-enter the eviction order so the store stays bounded
     /// (DESIGN.md §5, §6). A no-op on an empty (fresh) store.
     fn rehydrate(&mut self) {
+        // Restore forward-secret sessions so a restart / beacon-mode relaunch resumes the
+        // ratchet instead of desyncing the peer (DESIGN.md §25).
+        for (key, bytes) in self.store.list_kv("session/") {
+            let Some(b58) = key.strip_prefix("session/") else { continue };
+            let Ok(addr_vec) = bs58::decode(b58).into_vec() else { continue };
+            let Ok(addr) = <PubKeyBytes>::try_from(addr_vec.as_slice()) else { continue };
+            if let Ok(ps) = postcard::from_bytes::<PeerSession>(&bytes) {
+                self.sessions.insert(addr, ps);
+            }
+        }
+
         let me = self.address();
         for id in self.store.have().ids {
             let Some(b) = self.store.get(&id) else { continue };
@@ -661,10 +684,12 @@ impl<S: Store> Node<S> {
         if let Some(ps) = self.sessions.get_mut(dst) {
             let inner = postcard::to_allocvec(&SessionInner { content_type, body })?;
             let msg = ps.session.encrypt(&inner)?;
-            return Ok(match ps.init_material {
+            let out = match ps.init_material {
                 Some((ek_pub, spk_pub)) => Payload::SessionInit { ek_pub, spk_pub, msg },
                 None => Payload::SessionMessage { msg },
-            });
+            };
+            self.persist_session(dst); // ratchet advanced — save it (survives restart)
+            return Ok(out);
         }
         // No session yet: open one if the peer has published a prekey we've seen.
         if let Some(bundle) = self.directory.prekey(dst) {
@@ -672,12 +697,39 @@ impl<S: Store> Node<S> {
             let (ek_pub, root) = crypto::x3dh_initiate(&self.identity, &bundle)?;
             let mut session = Session::init_initiator(root, bundle.spk_pub);
             let msg = session.encrypt(&inner)?;
-            self.sessions
-                .insert(*dst, PeerSession { session, init_material: Some((ek_pub, bundle.spk_pub)) });
+            self.sessions.insert(
+                *dst,
+                PeerSession {
+                    session,
+                    init_material: Some((ek_pub, bundle.spk_pub)),
+                    established_by: Some(ek_pub),
+                },
+            );
+            self.persist_session(dst);
             return Ok(Payload::SessionInit { ek_pub, spk_pub: bundle.spk_pub, msg });
         }
         // Fallback: static seal (no forward secrecy until we learn their prekey).
         Ok(Payload::PeerMessage { content_type, body })
+    }
+
+    /// Durable KV key for a peer's forward-secret session (DESIGN.md §25).
+    fn session_kv_key(peer: &PubKeyBytes) -> String {
+        format!("session/{}", bs58::encode(peer).into_string())
+    }
+
+    /// Persist (or, if absent, clear) a peer's ratchet session to the store so it survives a
+    /// restart / beacon-mode background-kill. Best-effort: a serialization slip mustn't break
+    /// sending.
+    fn persist_session(&mut self, peer: &PubKeyBytes) {
+        let key = Self::session_kv_key(peer);
+        match self.sessions.get(peer) {
+            Some(ps) => {
+                if let Ok(bytes) = postcard::to_allocvec(ps) {
+                    self.store.put_kv(&key, bytes);
+                }
+            }
+            None => self.store.remove_kv(&key),
+        }
     }
 
     /// Publish (and gossip) this node's signed prekey so peers can open forward-secret
@@ -719,25 +771,44 @@ impl<S: Store> Node<S> {
                 Ok(Some(ReadMessage { from, content_type, body }))
             }
             Payload::SessionInit { ek_pub, spk_pub, msg } => {
-                if !self.sessions.contains_key(&from) {
+                // Build (or rebuild) the responder session when this is a *fresh* handshake:
+                // no session yet, or one established by a different ephemeral — i.e. the peer
+                // reinstalled / lost its ratchet and is re-initiating. Rebuilding lets us
+                // re-sync instead of failing forever against stale state (DESIGN.md §25).
+                let fresh = match self.sessions.get(&from) {
+                    None => true,
+                    Some(ps) => ps.established_by != Some(ek_pub),
+                };
+                if fresh {
                     let secret =
                         *self.spk_secrets.get(&spk_pub).ok_or(Error::Crypto("unknown prekey"))?;
                     let root = crypto::x3dh_respond(&self.identity, &secret, &from, &ek_pub)?;
                     let session = Session::init_responder(root, secret, spk_pub);
-                    self.sessions.insert(from, PeerSession { session, init_material: None });
+                    self.sessions.insert(
+                        from,
+                        PeerSession { session, init_material: None, established_by: Some(ek_pub) },
+                    );
                 }
-                let ps = self.sessions.get_mut(&from).expect("just inserted");
-                ps.init_material = None; // we've received from them → session confirmed
-                let inner = ps.session.decrypt(&msg)?;
+                let inner = {
+                    let ps = self.sessions.get_mut(&from).expect("just inserted");
+                    ps.init_material = None; // we've received from them → session confirmed
+                    ps.session.decrypt(&msg)?
+                };
                 let si: SessionInner = postcard::from_bytes(&inner)?;
+                self.persist_session(&from); // ratchet advanced — save it
                 Ok(Some(ReadMessage { from, content_type: si.content_type, body: si.body }))
             }
             Payload::SessionMessage { msg } => {
-                let ps =
-                    self.sessions.get_mut(&from).ok_or(Error::Crypto("no session for peer"))?;
-                ps.init_material = None;
-                let inner = ps.session.decrypt(&msg)?;
+                let inner = {
+                    let ps = self
+                        .sessions
+                        .get_mut(&from)
+                        .ok_or(Error::Crypto("no session for peer"))?;
+                    ps.init_material = None;
+                    ps.session.decrypt(&msg)?
+                };
                 let si: SessionInner = postcard::from_bytes(&inner)?;
+                self.persist_session(&from);
                 Ok(Some(ReadMessage { from, content_type: si.content_type, body: si.body }))
             }
             _ => Ok(None),
@@ -2414,6 +2485,101 @@ mod tests {
         // The response is the return-path delete: the request no longer lingers in our
         // store (service calls carry no ACK-vaccine, so without this it would pin forever).
         assert!(!nodes[0].store.contains(&req_id), "request purged once its response arrives");
+    }
+
+    #[test]
+    fn session_survives_a_restart_via_persisted_store() {
+        // The beacon-mode / reinstall bug: a backgrounded app is killed mid-conversation,
+        // losing its in-memory ratchet while the peer keeps theirs → every later message
+        // fails to decrypt. With the session persisted to the store, a restart rehydrates it
+        // and decryption resumes (DESIGN.md §25).
+        let id1_secret = Identity::generate().to_secret_bytes();
+        let mut nodes =
+            [Node::new(Identity::generate()), Node::from_identity_secret(&id1_secret)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        nodes[0].publish_prekey().unwrap();
+        nodes[1].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"hi".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[1].take_inbox() {
+            nodes[1].read_message(&b).unwrap();
+        }
+        nodes[1].send_message(nodes[0].address(), "t".into(), b"yo".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[0].take_inbox() {
+            nodes[0].read_message(&b).unwrap();
+        }
+        assert!(nodes[1].has_session(&nodes[0].address()), "n1 has a session before restart");
+
+        // Beacon-mode kill + relaunch of n1: rebuild it from its persisted store.
+        let store = nodes[1].clone_store();
+        nodes[1] = Node::with_store(Identity::from_secret_bytes(&id1_secret), store);
+        assert!(
+            nodes[1].has_session(&nodes[0].address()),
+            "session restored from the persisted store"
+        );
+
+        // The relaunch re-establishes the bearer on a fresh link; n0 drops the stale one.
+        nodes[0].handle(BearerEvent::Disconnected(1));
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 2, 1, 2);
+        nodes[0]
+            .send_message(nodes[1].address(), "image/jpeg".into(), b"after restart".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 1, "message after restart delivered");
+        let m =
+            nodes[1].read_message(&inbox[0]).unwrap().expect("decrypts with the restored ratchet");
+        assert_eq!(m.body, b"after restart");
+    }
+
+    #[test]
+    fn large_message_over_established_session_arrives() {
+        // The on-device scenario: a large image sent over an established forward-secret
+        // session (the 🔒). session_payload ratchet-encrypts the whole body into ONE
+        // SessionMessage, which deliver() then carrier-chunks. Reassembly + ratchet-decrypt
+        // must yield the exact bytes. (Earlier large-message tests had no session → static
+        // seal, so they never exercised the ratchet + carrier interaction.)
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Both publish prekeys and gossip them so either side can open a session.
+        nodes[0].publish_prekey().unwrap();
+        nodes[1].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+
+        // Establish the session both ways, reading each received bundle exactly as the app
+        // does (take_inbox → read_message), so the ratchet actually advances on both sides.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"hi".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[1].take_inbox() {
+            nodes[1].read_message(&b).unwrap();
+        }
+        nodes[1].send_message(nodes[0].address(), "t".into(), b"yo".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[0].take_inbox() {
+            nodes[0].read_message(&b).unwrap();
+        }
+        assert!(nodes[0].has_session(&nodes[1].address()), "session established");
+
+        // Now the large image over the established session.
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        nodes[0]
+            .send_message(nodes[1].address(), "image/jpeg".into(), body.clone(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 1, "large image over a session reassembled");
+        let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.content_type, "image/jpeg");
+        assert_eq!(m.body, body, "ratchet-decrypted bytes match exactly");
     }
 
     #[test]

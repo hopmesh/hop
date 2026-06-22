@@ -35,7 +35,8 @@ impl SqliteStore {
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS bundles (id BLOB PRIMARY KEY, data BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS seen (id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL);",
+             CREATE TABLE IF NOT EXISTS seen (id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
         )?;
         Ok(Self { conn })
     }
@@ -137,6 +138,38 @@ impl Store for SqliteStore {
             let _ = self.write_data(id, &bundle);
         }
         give
+    }
+
+    fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        );
+    }
+
+    fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+        self.conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get::<_, Vec<u8>>(0))
+            .ok()
+    }
+
+    fn remove_kv(&mut self, key: &str) {
+        let _ = self.conn.execute("DELETE FROM kv WHERE key = ?1", params![key]);
+    }
+
+    fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+        // `prefix%` with the LIKE wildcard; prefixes here are fixed ("session/"), no escaping.
+        let pattern = format!("{prefix}%");
+        let Ok(mut stmt) = self.conn.prepare("SELECT key, value FROM kv WHERE key LIKE ?1") else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(params![pattern], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        });
+        match rows {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     fn set_copies(&mut self, id: &BundleId, copies: u16) {
