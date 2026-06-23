@@ -301,13 +301,52 @@ class HopBearer private constructor(private val context: Context) {
         pump()
     }
 
+    // hops:// for the WebView (callback-style, per resource — DESIGN.md §30).
+    private val hopsWebPending = HashMap<String, MutableList<Pair<String, (Int, String, ByteArray) -> Unit>>>()
+    private val hopsWebReqs = HashMap<List<Byte>, (Int, String, ByteArray) -> Unit>()
+
+    /// Fetch one hops:// resource for the WebView, calling back with (status, contentType, body).
+    fun hopsFetch(url: String, cb: (Int, String, ByteArray) -> Unit) {
+        main.post {
+            val (domain, path) = parseHops(url)
+            if (domain.isEmpty()) { cb(400, "text/plain; charset=utf-8", "bad url".toByteArray()); return@post }
+            when (val r = node.resolveHns(domain)) {
+                is HnsLookupResult.Cached ->
+                    if (r.address.isEmpty()) cb(502, "text/plain; charset=utf-8", "no hops endpoint for $domain".toByteArray())
+                    else fireHopsWeb(domain, path, r.address, cb)
+                is HnsLookupResult.Pending -> hopsWebPending.getOrPut(domain) { mutableListOf() }.add(path to cb)
+                is HnsLookupResult.NeedsResolver -> cb(503, "text/plain; charset=utf-8", "offline".toByteArray())
+            }
+            pump()
+        }
+    }
+
+    private fun fireHopsWeb(domain: String, path: String, endpoint: ByteArray, cb: (Int, String, ByteArray) -> Unit) {
+        nameByAddr[endpoint.toList()] = domain
+        val id = runCatching {
+            node.sendHopsRequest(endpoint, domain, "GET", path, ByteArray(0), 8u * 1024u * 1024u)
+        }.getOrNull()
+        if (id == null) { cb(502, "text/plain; charset=utf-8", "send failed".toByteArray()); return }
+        hopsWebReqs[id.toList()] = cb
+        pump()
+    }
+
     private fun drainHns() {
         for (rec in node.takeHnsResults()) {
-            val path = pendingHops.remove(rec.domain) ?: continue
+            // WebView fetches queued on this domain's resolution take priority.
+            hopsWebPending.remove(rec.domain)?.let { queued ->
+                for ((path, cb) in queued) {
+                    if (rec.address.isEmpty()) cb(502, "text/plain; charset=utf-8", "no hops endpoint for ${rec.domain}".toByteArray())
+                    else fireHopsWeb(rec.domain, path, rec.address, cb)
+                }
+            }
+            val path = pendingHops.remove(rec.domain) ?: continue // the text-box fetch
             if (rec.address.isEmpty()) hopsResults[rec.domain] = "error: no hops endpoint for ${rec.domain}"
             else fireHops(rec.domain, path, rec.address)
         }
         for (resp in node.takeHttpResponses()) {
+            val webCb = hopsWebReqs.remove(resp.forRequestId.toList())
+            if (webCb != null) { webCb(resp.status.toInt(), resp.contentType, resp.body); continue }
             val domain = hopsReqs.remove(resp.forRequestId.toList()) ?: continue
             hopsResults[domain] = "${resp.status} · ${String(resp.body)}"
         }
