@@ -821,8 +821,10 @@ class HopBearer private constructor(private val context: Context) {
             }
             nameByAddr[key] = name
         }
+        // Sort by the stable address (not last-seen hops/name) so rows keep their position —
+        // hop counts fluctuate and generic device names tie, which made the list jump around.
         val list = agg.values.map { it.peer.copy(hops = it.minHops) }
-            .sortedWith(compareBy({ it.hops }, { it.name }))
+            .sortedBy { addressBase58(it.address) }
         peers.clear(); peers.addAll(list)
 
         // Which peers we're talking to over a forward-secret session (lock icon).
