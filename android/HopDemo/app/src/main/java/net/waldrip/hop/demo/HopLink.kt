@@ -6,10 +6,14 @@ import java.util.concurrent.LinkedBlockingQueue
 import kotlin.concurrent.thread
 
 /**
- * One L2CAP connection-oriented channel, framed as length-prefixed packets so the
- * node's opaque byte packets survive the stream boundary: a 4-byte big-endian
- * length, then that many bytes. A reader thread surfaces whole frames; a writer
- * thread drains a queue. Mirrors the iOS [HopLink].
+ * One L2CAP connection-oriented channel, framed as length-prefixed packets so the node's opaque
+ * byte packets survive the stream boundary: a 4-byte big-endian length, then that many bytes.
+ *
+ * Reliability — mirrors the iOS [HopLink]: a **keepalive** sends an empty (0-length) frame every
+ * few seconds so the peer sees steady traffic, and a **watchdog** closes the link if nothing has
+ * been received for too long. iOS closes a link that goes silent for ~15s, so without our own
+ * keepalive an idle Android↔iOS link gets torn down by iOS every few seconds (status 19). Close
+ * is idempotent.
  */
 class HopLink(
     val id: ULong,
@@ -19,20 +23,24 @@ class HopLink(
 ) {
     private val outbox = LinkedBlockingQueue<ByteArray>()
     @Volatile private var running = true
+    @Volatile private var lastRead = System.currentTimeMillis()
 
     init {
         thread(name = "hoplink-read-$id") { readLoop() }
         thread(name = "hoplink-write-$id") { writeLoop() }
+        thread(name = "hoplink-keepalive-$id") { keepaliveLoop() }
     }
 
     fun send(bytes: ByteArray) {
-        if (running) outbox.put(bytes)
+        if (running && bytes.isNotEmpty()) outbox.put(bytes)
     }
 
     fun close() {
+        if (!running) return
         running = false
-        outbox.put(ByteArray(0)) // unblock the writer
+        outbox.put(POISON)            // unblock the writer
         runCatching { socket.close() }
+        onClose(id)
     }
 
     private fun readLoop() {
@@ -41,6 +49,8 @@ class HopLink(
             while (running) {
                 val len = input.readInt() // big-endian by contract
                 if (len < 0 || len > MAX_FRAME) throw IllegalStateException("bad frame len $len")
+                lastRead = System.currentTimeMillis()
+                if (len == 0) continue // keepalive — liveness only, nothing to surface
                 val buf = ByteArray(len)
                 input.readFully(buf)
                 onBytes(id, buf)
@@ -48,7 +58,7 @@ class HopLink(
         } catch (_: Throwable) {
             // stream closed or error
         } finally {
-            if (running) { running = false; onClose(id) }
+            close()
         }
     }
 
@@ -57,23 +67,37 @@ class HopLink(
         try {
             while (running) {
                 val payload = outbox.take()
-                if (!running) break
-                if (payload.isEmpty()) continue
-                val header = ByteArray(4)
-                header[0] = (payload.size ushr 24).toByte()
-                header[1] = (payload.size ushr 16).toByte()
-                header[2] = (payload.size ushr 8).toByte()
-                header[3] = payload.size.toByte()
-                output.write(header)
-                output.write(payload)
+                if (payload === POISON || !running) break
+                val n = payload.size // 0 for a keepalive frame
+                output.write(byteArrayOf(
+                    (n ushr 24).toByte(), (n ushr 16).toByte(), (n ushr 8).toByte(), n.toByte(),
+                ))
+                if (n > 0) output.write(payload)
                 output.flush()
             }
         } catch (_: Throwable) {
-            if (running) { running = false; onClose(id) }
+            // stream closed or error
+        } finally {
+            close()
+        }
+    }
+
+    private fun keepaliveLoop() {
+        try {
+            while (running) {
+                Thread.sleep(KEEPALIVE_MS)
+                if (!running) break
+                if (System.currentTimeMillis() - lastRead > LIVENESS_MS) { close(); break } // peer silent
+                outbox.put(ByteArray(0)) // 0-length keepalive frame (distinct instance from POISON)
+            }
+        } catch (_: Throwable) {
         }
     }
 
     companion object {
         private const val MAX_FRAME = 4 * 1024 * 1024
+        private const val KEEPALIVE_MS = 4000L
+        private const val LIVENESS_MS = 15000L
+        private val POISON = ByteArray(0) // close sentinel, distinguished by reference identity
     }
 }
