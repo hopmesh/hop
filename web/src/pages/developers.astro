@@ -1,0 +1,185 @@
+---
+import Base from '../layouts/Base.astro';
+
+// Rendered via set:html so the Rust snippet's braces aren't parsed as JSX.
+const codeHtml = `<span style="color:#6f7c98">// open a node with your 32-byte secret</span>
+<span style="color:#9d8cff">let</span> node = HopNode::open(db_path, secret)?;
+
+<span style="color:#6f7c98">// reach a device by its address (its public key)</span>
+node.send(
+    Destination::Device(peer_address),
+    Payload::message(<span style="color:#38e0b0">"on my way"</span>),
+)?;
+
+<span style="color:#6f7c98">// reach the internet from offline — any gateway fulfills it</span>
+node.send(
+    Destination::InternetEgress,
+    Payload::http_get(<span style="color:#38e0b0">"hops://example.com/status"</span>),
+)?;
+
+<span style="color:#6f7c98">// drain inbox: sealed bundles addressed to you</span>
+<span style="color:#9d8cff">for</span> msg <span style="color:#9d8cff">in</span> node.receive()? {
+    handle(msg.open()?);
+}`;
+---
+<Base
+  title="Hop for developers — embed the mesh"
+  description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with sealed messaging, HTTP-over-mesh (hops://), pub/sub, and DNSSEC-backed naming (HNS). Free and source-available."
+  path="/developers"
+>
+  <!-- hero -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">For developers</div>
+      <h1>Put your app <span class="grad">on the mesh.</span></h1>
+      <p class="lede">
+        Hop is a pure-Rust core you embed in your iOS and Android app. It carries
+        sealed, store-and-forward messages over Bluetooth — and the public internet
+        when it's there — so your app keeps working when the network doesn't. One
+        library, two addressing modes: reach the internet, or reach a device.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Get the source</a>
+        <a class="btn btn-ghost" href="/pricing/">Free tier &amp; backbone</a>
+      </div>
+      <div class="hero-meta">
+        <span class="tag"><b>Rust core</b> · deterministic, fully testable without a radio</span>
+        <span class="tag"><b>UniFFI</b> · native iOS &amp; Android bindings</span>
+        <span class="tag"><b>Pluggable bearer</b> · BLE today, more later</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- two addressing modes -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">One core, two modes</div>
+        <h2>Reach the internet, or reach a device.</h2>
+        <p>Both are the same machinery with a different destination. You don't pick a
+           transport or plan a route — you address a bundle and Hop carries it.</p>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="ic">🛰️</div>
+          <h3>Internet egress</h3>
+          <p>A device with no connection emits a sealed HTTP request. Any gateway node
+             fulfills it and relays the sealed response back to your device's key —
+             eventual, but guaranteed.</p>
+        </div>
+        <div class="card">
+          <div class="ic">📨</div>
+          <h3>Device to device</h3>
+          <p>Send a sealed message to another device's public key. The bundle hops
+             until the destination receives it — confidential the whole way, even
+             across relays you don't trust.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- protocol stack -->
+  <section class="band" id="stack">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">The protocol stack</div>
+        <h2>Three named layers, lowest to highest.</h2>
+        <p>Everything rides on one sealed datagram. The higher layers rebuild the
+           guarantees you expect — reliability, ordering, HTTP, pub/sub — at the
+           endpoints, where they need no live circuit in the middle.</p>
+      </div>
+      <div class="stack-rows">
+        <div class="srow">
+          <div class="lbl">hdp://</div>
+          <div class="body">
+            <h3>Hop Datagram Protocol — the substrate</h3>
+            <p>Hop's UDP: a connectionless, sealed, addressed datagram that's
+               store-and-forwarded across the mesh. Held when there's no onward path,
+               never dropped. All Hop traffic rides on <code>hdp</code>.</p>
+          </div>
+        </div>
+        <div class="srow">
+          <div class="lbl">hops://</div>
+          <div class="body">
+            <h3>HTTP over the mesh — origin-run, no man-in-the-middle</h3>
+            <p>The same request/response semantics as HTTP, carried as sealed
+               datagrams. An operator runs a <code>hop-endpoint</code> for their own
+               domain — it <em>is</em> the origin, never an open proxy — so there's no
+               third party in the middle.</p>
+          </div>
+        </div>
+        <div class="srow">
+          <div class="lbl">hps://</div>
+          <div class="body">
+            <h3>Hop Pub/Sub — services &amp; channels</h3>
+            <p>Topic-based broadcast and discovery over the same fabric, region-aware
+               so a topic never ships to a region with no subscribers.</p>
+          </div>
+        </div>
+        <div class="srow">
+          <div class="lbl">HNS</div>
+          <div class="body">
+            <h3>Hop Name System — delay-tolerant, trustless</h3>
+            <p>Resolve <code>hops://example.com</code> to an address via a DNSSEC-signed
+               TXT record. No central resolver: a query walks the mesh until a node can
+               answer, and the client verifies the DNSSEC chain itself — any node may
+               resolve, none can lie.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- what you get -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">What's in the box</div>
+        <h2>Batteries, minus the identity storage.</h2>
+        <p>The library never owns your keys — you hand it a 32-byte secret and it does
+           the rest. Everything below the radio is pure Rust and unit-testable.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card"><div class="ic">🔒</div><h3>Sealed by default</h3><p>X25519 + ChaCha20-Poly1305 payloads; Ed25519-signed headers; Noise XX links between peers.</p></div>
+        <div class="card"><div class="ic">🔑</div><h3>Key = address</h3><p>One Ed25519 keypair is identity, address, and seal. Import a seed, export a seed — storage is yours.</p></div>
+        <div class="card"><div class="ic">🌊</div><h3>Spray-and-wait routing</h3><p>A small copy budget fans across independent paths in parallel; first arrival wins. No flooding.</p></div>
+        <div class="card"><div class="ic">📦</div><h3>Durable store</h3><p>Persistent forward queue with dedup and custody transfer, bounded by bundle lifetime.</p></div>
+        <div class="card"><div class="ic">📡</div><h3>BLE bearer</h3><p>GATT for control, L2CAP CoC for bulk, with fragmentation and reassembly handled for you.</p></div>
+        <div class="card"><div class="ic">🧭</div><h3>Gossiped discovery</h3><p>Find peers, services, and names the moment you meet anyone who has seen them.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- mental model / snippet -->
+  <section class="band">
+    <div class="wrap">
+      <div class="grid-2" style="align-items:center; gap:40px;">
+        <div>
+          <div class="eyebrow">The mental model</div>
+          <h2>Address a bundle. Let it find a way.</h2>
+          <p class="mt-s">You construct a node from a secret, address a sealed payload
+             to a device key or to the internet, and Hop handles the rest — fragmentation,
+             relaying, retransmit, dedup, and delivery acknowledgement.</p>
+          <p class="mt-s muted">Illustrative shape — see the repository for the real API across
+             <code>hop-core</code> and the FFI bindings.</p>
+        </div>
+        <div class="card code-card" style="padding:0; overflow:hidden;">
+          <pre class="code-block" set:html={codeHtml}></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- cta -->
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Embed it. Ship it. Relay for everyone.</h2>
+      <p>The SDK is free and source-available. Add the hosted backbone when your users
+         need to reach across regions and oceans.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Get the source</a>
+        <a class="btn btn-ghost" href="/pricing/">See pricing</a>
+      </div>
+    </div>
+  </section>
+</Base>

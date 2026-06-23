@@ -1,0 +1,135 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Hop pricing — free SDK, free backbone tier, usage-based scale"
+  description="The Hop SDK is free and source-available. The hosted backbone starts free, then scales with usage. Enterprise adds commercial licensing, private fleets, and support."
+  path="/pricing"
+>
+  <!-- hero -->
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow">Pricing</div>
+      <h1>Free to build. <span class="grad">Pay for the cloud.</span></h1>
+      <p class="lede">
+        The SDK is free and source-available — the device does the work. The hosted
+        backbone starts free too, then scales with what you actually use. No charge for
+        an idle mesh.
+      </p>
+    </div>
+  </section>
+
+  <!-- tiers -->
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap">
+      <div class="tiers">
+        <div class="tier">
+          <div class="name">Free</div>
+          <div class="price">$0</div>
+          <div class="sub">The SDK, plus a real backbone allowance to launch on.</div>
+          <ul>
+            <li>Full <code>hop-core</code> SDK, iOS &amp; Android</li>
+            <li>Device-to-device &amp; internet egress</li>
+            <li>Hosted backbone — free monthly allowance</li>
+            <li>Durable mailbox, capped retention</li>
+            <li>Shared egress, fair-use limits</li>
+            <li>Community support</li>
+          </ul>
+          <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Start free</a>
+        </div>
+
+        <div class="tier feature">
+          <div class="ribbon">Most teams</div>
+          <div class="name">Pro</div>
+          <div class="price">Usage<small> / based</small></div>
+          <div class="sub">Pay for backbone you use, beyond the free allowance.</div>
+          <ul>
+            <li>Everything in Free</li>
+            <li>Metered relay — per message carried</li>
+            <li>Metered mailbox storage &amp; retention</li>
+            <li>Metered internet egress</li>
+            <li>Higher throughput &amp; rate limits</li>
+            <li>Per-tenant usage attribution</li>
+            <li>Email support &amp; uptime SLA</li>
+          </ul>
+          <a class="btn btn-primary" href="/business/#contact">Get started</a>
+        </div>
+
+        <div class="tier">
+          <div class="name">Enterprise</div>
+          <div class="price">Custom</div>
+          <div class="sub">Private fleets, commercial licensing, and support.</div>
+          <ul>
+            <li>Everything in Pro</li>
+            <li>Commercial license beyond FSL terms</li>
+            <li>Private / on-prem relay fleet</li>
+            <li>Dedicated regions &amp; capacity</li>
+            <li>Custom retention &amp; data residency</li>
+            <li>Security review &amp; DPA</li>
+            <li>Priority support &amp; SLAs</li>
+          </ul>
+          <a class="btn btn-ghost" href="/business/#contact">Talk to us</a>
+        </div>
+      </div>
+      <p class="note mt-m center">Pricing structure shown for shape; specific allowances and
+         rates are being finalized. The SDK is free forever under
+         <a class="mono" style="color:var(--accent)" href="https://github.com/jwaldrip/hop/blob/main/LICENSE.md">FSL-1.1-ALv2</a>.</p>
+    </div>
+  </section>
+
+  <!-- what you pay for -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">What you actually pay for</div>
+        <h2>The cloud seam, metered honestly.</h2>
+        <p>The backbone meters the sealed envelope — volume, not content. It never reads
+           your messages; it counts them.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card"><div class="ic">📨</div><h3>Relay carried</h3><p>Bundles the backbone stores and forwards on your behalf, attributed to your key.</p></div>
+        <div class="card"><div class="ic">📦</div><h3>Mailbox storage</h3><p>Durable retention of sealed messages waiting for a recipient to reappear.</p></div>
+        <div class="card"><div class="ic">🌐</div><h3>Internet egress</h3><p>Bytes fulfilled out to the public internet and bridged across regions.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- access keys explainer -->
+  <section class="band">
+    <div class="wrap">
+      <div class="grid-2" style="align-items:center; gap:40px;">
+        <div>
+          <div class="eyebrow">Why a key, even on Free</div>
+          <h2>Keys identify you — they don't gate the door open.</h2>
+          <p class="mt-s">Every connection to the hosted backbone carries a signed access
+             key, including the free tier. The key isn't a paywall — it's how the backbone
+             knows which tenant to meter, which limits to apply, and which traffic to
+             trust.</p>
+          <p class="mt-s">Unkeyed traffic is rejected at the edge — it can't reach a relay
+             and can't even wake one. That protects your fleet from abuse and keeps a
+             scale-to-zero backbone affordable for everyone on it.</p>
+        </div>
+        <div class="card">
+          <div class="ic">🔐</div>
+          <h3>Signed, metered, revocable</h3>
+          <p>A short-lived, signed credential issued per app or tenant, verified
+             statelessly at the entrance. Free or paid, every byte is attributed — and a
+             lost key expires on its own.</p>
+          <p class="mt-s muted">Self-hosting the open SDK? You set your own policy — keys are
+             a property of the hosted backbone, not the protocol.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- cta -->
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Build for free. Pay when you scale.</h2>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Start free</a>
+        <a class="btn btn-ghost" href="/business/#contact">Talk to sales</a>
+      </div>
+    </div>
+  </section>
+</Base>

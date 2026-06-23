@@ -1,0 +1,115 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Hop for business — connectivity without infrastructure"
+  description="Run on Hop's managed delay-tolerant mesh backbone, or stand up a private fleet of your own. Built for events, field operations, maritime, rural, and response — where the network can't be assumed."
+  path="/business"
+>
+  <!-- hero -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">For business</div>
+      <h1>Connectivity that doesn't <span class="grad">depend on connectivity.</span></h1>
+      <p class="lede">
+        When the network is congested, absent, or down, your product still has to work.
+        Hop's mesh carries sealed messages device to device and bridges them across the
+        world the moment any node touches the internet. Run on our managed backbone, or
+        a private fleet of your own.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#contact">Talk to us</a>
+        <a class="btn btn-ghost" href="/pricing/">See pricing</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- where it fits -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Where Hop earns its keep</div>
+        <h2>Built for the places the network isn't.</h2>
+        <p>Anywhere people and devices outnumber the infrastructure connecting them,
+           a Hop mesh turns the crowd itself into the network.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card"><div class="ic">🎪</div><h3>Events &amp; venues</h3><p>Stadiums and festivals where 50,000 phones crush the cell network. Hop relays peer to peer instead of fighting for a tower.</p></div>
+        <div class="card"><div class="ic">🛰️</div><h3>Field operations</h3><p>Crews, sensors, and assets spread past coverage. Data hops back to whichever node has a link, then bridges home.</p></div>
+        <div class="card"><div class="ic">⚓</div><h3>Maritime &amp; transit</h3><p>Ships, fleets, and remote routes with intermittent satellite. Messages queue and deliver on the next window — eventually, reliably.</p></div>
+        <div class="card"><div class="ic">🏔️</div><h3>Rural &amp; remote</h3><p>Communities past the last tower. People become the network for each other, and one online device connects the whole island.</p></div>
+        <div class="card"><div class="ic">🆘</div><h3>Response &amp; resilience</h3><p>When infrastructure fails, a Hop mesh keeps standing — no central server to lose, sealed end to end.</p></div>
+        <div class="card"><div class="ic">🏭</div><h3>Industrial &amp; campus</h3><p>Sites where wiring every corner is impractical. Devices relay through each other across the floor or the yard.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- managed backbone value -->
+  <section class="band">
+    <div class="wrap">
+      <div class="grid-2" style="align-items:center; gap:40px;">
+        <div>
+          <div class="eyebrow">The managed backbone</div>
+          <h2>A global mesh you don't have to operate.</h2>
+          <p class="mt-s">Hop's hosted backbone is a region-aware relay fleet with durable
+             mailboxes in every region. It absorbs the carry-and-forward your phones can't,
+             routes only to regions with live subscribers, and bridges islands across
+             oceans — so one internet leg becomes one very long hop.</p>
+          <ul class="checks">
+            <li>Scale-to-zero — capacity when you need it, nothing when you don't.</li>
+            <li>Region-aware routing — no wasted egress to empty regions.</li>
+            <li>Durable mailboxes — messages survive until the recipient reappears.</li>
+            <li>Sealed throughout — the backbone relays ciphertext it cannot read.</li>
+          </ul>
+        </div>
+        <div class="grid-2" style="gap:14px;">
+          <div class="card lit"><div class="ic">🔐</div><h3>Keyed access</h3><p>Every connection carries a signed access key. Anonymous traffic can't even reach your fleet.</p></div>
+          <div class="card"><div class="ic">📊</div><h3>Metered &amp; attributed</h3><p>Usage is measured per tenant on the sealed envelope — volume, not content.</p></div>
+          <div class="card"><div class="ic">🌐</div><h3>Anycast entrance</h3><p>One name, many regions. Devices land on the nearest node automatically.</p></div>
+          <div class="card"><div class="ic">🧱</div><h3>Private fleets</h3><p>Run the same backbone on your own infrastructure, fully isolated.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- two ways to run -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Two ways to run</div>
+        <h2>Hosted, or your own.</h2>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="ic">☁️</div>
+          <h3>Managed backbone</h3>
+          <p>Use Hop's global fleet with a free tier to start and usage-based pricing as
+             you grow. Keyed access, per-tenant metering, regional reliability — and
+             nothing to operate.</p>
+          <p class="mt-s"><a class="link-go" href="/pricing/">See pricing →</a></p>
+        </div>
+        <div class="card">
+          <div class="ic">🏢</div>
+          <h3>Private fleet &amp; licensing</h3>
+          <p>For products outside the FSL's non-compete terms, or deployments that must
+             stay on your own infrastructure: a commercial license, a private relay
+             fleet, and support for mission-critical operation.</p>
+          <p class="mt-s"><a class="link-go" href="#contact">Talk to us →</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- contact -->
+  <section class="cta-band" id="contact">
+    <div class="wrap">
+      <h2>Tell us where your network ends.</h2>
+      <p>We'll help you figure out whether the managed backbone, a private fleet, or a
+         commercial license fits — and what it would take to ship.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="mailto:hello@hopme.sh">hello@hopme.sh</a>
+        <a class="btn btn-ghost" href="/pricing/">See pricing</a>
+      </div>
+    </div>
+  </section>
+</Base>

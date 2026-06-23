@@ -117,3 +117,26 @@ variable "dns_zone_dns_name" {
   type        = string
   default     = "hopme.sh."
 }
+
+variable "pages_cname_target" {
+  description = <<-EOT
+    CNAME target for www.hopme.sh — the GitHub Pages host for the marketing site
+    (web/), i.e. "<org>.github.io." with a trailing dot. The apex hopme.sh uses
+    A/AAAA records to GitHub's Pages anycast IPs instead (see pages_dns.tf).
+  EOT
+  type        = string
+  default     = "hopmesh.github.io."
+}
+
+variable "pages_challenge_txt" {
+  description = <<-EOT
+    GitHub Pages domain-verification token. GitHub (org Settings → Pages →
+    "Add a domain", or Settings → Verified domains) asks you to publish a TXT
+    record at _github-pages-challenge-hopmesh.hopme.sh with the token it shows;
+    verifying the domain guards it against takeover. Set this (TF_VAR_pages_challenge_txt
+    or a tfvars file) and the record in pages_dns.tf is created; leave empty to skip it.
+    Not a credential — only proves DNS control, so it is safe to keep in version control.
+  EOT
+  type        = string
+  default     = "a6ef60e39735942241ca277889d93d"
+}
