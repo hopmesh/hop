@@ -162,17 +162,26 @@ struct ContentView: View {
                     LabeledContent("Identity", value: bearer.idNote).font(.caption)
                 }
 
-                Section("Cloud relay (backbone)") {
+                Section {
                     HStack {
                         TextField("host:port or wss://relay.hopme.sh/", text: $relayField)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
-                        Button("Connect") {
+                        Button("Pin") {
                             let a = relayField.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !a.isEmpty { bearer.connectRelay(a) }
+                            if !a.isEmpty { bearer.setPinnedRelay(a) }
                         }
                     }
                     LabeledContent("Relay", value: bearer.relayStatus).font(.caption)
-                }
+                    if let pinned = bearer.pinnedRelay {
+                        LabeledContent("Pinned", value: pinned).font(.caption).monospaced()
+                        Button("Unpin (use anycast default)", role: .destructive) {
+                            bearer.setPinnedRelay(nil); relayField = ""
+                        }.font(.caption)
+                    } else {
+                        Text("Anycast (default). A device uses one relay at a time — pin a direct address to test a specific relay.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                } header: { Text("Cloud relay (backbone)") }
 
                 Section("Transports") {
                     ForEach(bearer.transports) { t in
@@ -382,6 +391,7 @@ struct ChatView: View {
             let dur = HopBearer.compactDuration(UInt64(max(0, d.timeIntervalSince(m.sentAt)) * 1000))
             return "Delivered, \(HopBearer.hopsLabel(m.deliveryHops)), \(dur)"
         }
+        if m.failed { return "Not sent" }
         return m.relayed > 0 ? "Sent, \(m.relayed) peer\(m.relayed == 1 ? "" : "s")" : "Sending…"
     }
 

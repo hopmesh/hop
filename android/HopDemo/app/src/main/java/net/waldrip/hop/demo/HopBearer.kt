@@ -58,6 +58,7 @@ class HopBearer private constructor(private val context: Context) {
         val sentAt: Long = System.currentTimeMillis(),               // outgoing tracking
         val deliveredAt: Long? = null, val relayed: UInt = 0u,
         val delivered: Boolean = false, val deliveryHops: UByte = 0u,
+        val failed: Boolean = false,   // gave up (e.g. the queue was cleared before it sent)
     )
 
     // Identity derived from the device (stable, storage-independent — §4); the db path
@@ -68,6 +69,9 @@ class HopBearer private constructor(private val context: Context) {
     )
     val peers = mutableStateListOf<Peer>()
     val messages = mutableStateListOf<Message>()
+    /// Unread incoming messages received while backgrounded — mirrored onto the app icon
+    /// badge (via the notification) and cleared when the app returns to the foreground.
+    val unread = androidx.compose.runtime.mutableIntStateOf(0)
     val secured = mutableStateListOf<List<Byte>>()   // addresses with a forward-secret session
 
     // hops:// (DESIGN.md §30): domain → rendered result; pending resolves + outstanding requests.
@@ -95,6 +99,11 @@ class HopBearer private constructor(private val context: Context) {
     var myName = mutableStateOf("")
     var status = mutableStateOf("starting…")
     var relayStatus = mutableStateOf("not connected")
+    private val prefs get() = context.getSharedPreferences("hop", android.content.Context.MODE_PRIVATE)
+    /// A relay the user pinned by direct address (persisted). A device only ever talks to ONE
+    /// relay — routing is anycast — so pinning overrides the anycast default for testing a
+    /// specific relay, rather than publishing presence to several at once.
+    val pinnedRelay = mutableStateOf<String?>(null)
     private var nextMsgId = 0L
     private var appActive = true
     private val appName: String =
@@ -132,6 +141,7 @@ class HopBearer private constructor(private val context: Context) {
         if (started) return
         started = true
         ensureNotificationChannel()
+        loadMessages()   // restore chat history from the previous run
         myName.value = name
         myAddress.value = addressBase58(node.address())
         // Presence is an app-level service (DESIGN.md §23): publish our name on the
@@ -164,7 +174,8 @@ class HopBearer private constructor(private val context: Context) {
         // Check in to the backbone (DESIGN.md §28): dial the anycast relay so we pull any
         // queued mail and stay reachable across the internet. The foreground service keeps
         // this alive; the tick loop below reconnects it if it ever drops.
-        connectRelay(DEFAULT_RELAY)
+        pinnedRelay.value = prefs.getString("pinnedRelay", null)
+        connectRelay(pinnedRelay.value ?: DEFAULT_RELAY)
         var ticks = 0
         main.postDelayed(object : Runnable {
             override fun run() {
@@ -203,6 +214,10 @@ class HopBearer private constructor(private val context: Context) {
     fun setForeground(fg: Boolean) {
         appActive = fg
         appInForeground = fg
+        if (fg) {   // the user is looking at the app → clear the unread badge + notifications
+            unread.intValue = 0
+            runCatching { NotificationManagerCompat.from(context).cancelAll() }
+        }
         main.post { publishPresence(); pump() }
     }
 
@@ -280,8 +295,12 @@ class HopBearer private constructor(private val context: Context) {
                 imageData = if (isImage) m.body else null, images = images,
                 hops = m.hops, latencyMs = latency, trace = m.trace.map { traceLabel(it) }))
             queueIdentify(m.from)   // learn the sender's display name (§29)
-            if (!appInForeground) notify(who, if (isImage) "📷 Photo" else text)
+            if (!appInForeground) {
+                unread.intValue += 1
+                notify(who, if (isImage) "📷 Photo" else text)
+            }
         }
+        saveMessages()
         drainHps()       // pub/sub messages (§32)
         drainHns()       // HNS lookups + hops:// responses (§30)
         drainServices()  // hop.identify replies + custom service calls (§29)
@@ -334,7 +353,17 @@ class HopBearer private constructor(private val context: Context) {
         }
     }
 
-    fun clearQueue() { runCatching { node.clearQueue() }; refreshQueue() }
+    fun clearQueue() {
+        runCatching { node.clearQueue() }
+        // Anything of ours still in flight is now abandoned — mark those "not sent" instead of
+        // leaving them stuck on "Sending…".
+        for (i in messages.indices) {
+            val m = messages[i]
+            if (!m.incoming && !m.delivered && !m.failed) messages[i] = m.copy(failed = true)
+        }
+        saveMessages()
+        refreshQueue()
+    }
 
     // ---- hps:// pub/sub (DESIGN.md §32) -------------------------------------
 
@@ -500,6 +529,16 @@ class HopBearer private constructor(private val context: Context) {
 
     /// Connect to a `hop-relayd`. Accepts a `host:port` (raw TCP, path A) or a
     /// `ws://`/`wss://` URL (WebSocket, path B). The device dials → Noise initiator.
+    /// Pin this device to a single relay by direct address (persisted), or pass null to clear the
+    /// pin and fall back to the anycast default. Switches the one relay connection over now; the
+    /// old relay's presence simply lapses (we never publish to two at once).
+    fun setPinnedRelay(url: String?) {
+        val pinned = url?.trim()?.takeIf { it.isNotEmpty() }
+        pinnedRelay.value = pinned
+        prefs.edit().apply { if (pinned != null) putString("pinnedRelay", pinned) else remove("pinnedRelay") }.apply()
+        connectRelay(pinned ?: DEFAULT_RELAY)   // connectRelayWS/Tcp tears down the old link first
+    }
+
     fun connectRelay(input: String) {
         val t = input.trim()
         relayUrl = t   // remembered so the tick loop auto-reconnects on drop (§28)
@@ -596,6 +635,71 @@ class HopBearer private constructor(private val context: Context) {
         if (relayConnected) { relayConnected = false; node.disconnected(relayLinkId) }
     }
 
+    // MARK: chat-history persistence (survives app restart) ----------------------
+
+    private val messagesFile get() = java.io.File(context.filesDir, "messages.json")
+    private var saveScheduled = false
+
+    /// Coalesce rapid mutations into one disk write (~1/sec) so a burst of messages — or the
+    /// per-tick pump() — doesn't re-encode the whole history each time.
+    private fun saveMessages() {
+        if (saveScheduled) return
+        saveScheduled = true
+        main.postDelayed({ saveScheduled = false; writeMessages() }, 1000)
+    }
+
+    private fun writeMessages() {
+        val arr = org.json.JSONArray()
+        for (m in messages) {
+            val o = org.json.JSONObject()
+            o.put("peer", m.peer); o.put("text", m.text); o.put("incoming", m.incoming)
+            o.put("contentType", m.contentType)
+            m.imageData?.let { o.put("imageData", android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)) }
+            if (m.images.isNotEmpty()) {
+                val imgs = org.json.JSONArray()
+                m.images.forEach { imgs.put(android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)) }
+                o.put("images", imgs)
+            }
+            o.put("hops", m.hops.toInt())
+            m.latencyMs?.let { o.put("latencyMs", it.toLong()) }
+            if (m.trace.isNotEmpty()) o.put("trace", org.json.JSONArray(m.trace))
+            o.put("sentAt", m.sentAt)
+            m.deliveredAt?.let { o.put("deliveredAt", it) }
+            o.put("relayed", m.relayed.toLong())
+            o.put("delivered", m.delivered); o.put("deliveryHops", m.deliveryHops.toInt())
+            o.put("failed", m.failed)
+            arr.put(o)
+        }
+        runCatching { messagesFile.writeText(arr.toString()) }
+    }
+
+    private fun loadMessages() {
+        val txt = runCatching { messagesFile.readText() }.getOrNull() ?: return
+        val arr = runCatching { org.json.JSONArray(txt) }.getOrNull() ?: return
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val incoming = o.getBoolean("incoming")
+            val delivered = o.optBoolean("delivered", false)
+            val imgs = o.optJSONArray("images")?.let { a ->
+                (0 until a.length()).map { android.util.Base64.decode(a.getString(it), android.util.Base64.NO_WRAP) }
+            } ?: emptyList()
+            val trace = o.optJSONArray("trace")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+            messages.add(Message(
+                localId = nextMsgId++, peer = o.getString("peer"), text = o.optString("text", ""),
+                incoming = incoming, contentType = o.optString("contentType", "text/plain"),
+                imageData = if (o.has("imageData")) android.util.Base64.decode(o.getString("imageData"), android.util.Base64.NO_WRAP) else null,
+                images = imgs, hops = o.optInt("hops", 0).toUByte(),
+                latencyMs = if (o.has("latencyMs")) o.getLong("latencyMs").toULong() else null,
+                trace = trace, sentAt = o.optLong("sentAt", System.currentTimeMillis()),
+                deliveredAt = if (o.has("deliveredAt")) o.getLong("deliveredAt") else null,
+                relayed = o.optLong("relayed", 0).toUInt(), delivered = delivered,
+                deliveryHops = o.optInt("deliveryHops", 0).toUByte(),
+                // An outgoing message still in flight at quit can never ACK now — show "not sent".
+                failed = o.optBoolean("failed", false) || (!incoming && !delivered),
+            ))
+        }
+    }
+
     private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Hop messages", NotificationManager.IMPORTANCE_DEFAULT)
@@ -613,6 +717,8 @@ class HopBearer private constructor(private val context: Context) {
             .setContentTitle(from)
             .setContentText(text)
             .setAutoCancel(true)
+            .setNumber(unread.intValue)   // drives the launcher icon badge count
+            .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
             .build()
         NotificationManagerCompat.from(context).notify(text.hashCode(), n)
     }

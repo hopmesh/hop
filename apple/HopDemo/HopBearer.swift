@@ -84,6 +84,7 @@ final class HopBearer: NSObject, ObservableObject {
         var relayed: UInt32 = 0
         var delivered: Bool = false
         var deliveryHops: UInt8 = 0
+        var failed: Bool = false   // gave up (e.g. the queue was cleared before it sent)
     }
     struct QueueRow: Identifiable {
         let id: Data; let own: Bool; let to: String; let priority: UInt8; let hops: UInt8
@@ -104,6 +105,10 @@ final class HopBearer: NSObject, ObservableObject {
     @Published var routed: Set<Data> = []   // addresses we've learned a live route to (§27)
     @Published var transports: [TransportStatus] = []  // per-bearer status (all run at once)
     @Published var relayStatus = "not connected"        // cloud relay link state
+    /// A relay the user pinned by direct address (persisted). A device only ever talks to ONE
+    /// relay — routing is anycast — so pinning overrides the default anycast target for testing
+    /// a specific relay, rather than publishing presence to several at once.
+    @Published var pinnedRelay: String? = UserDefaults.standard.string(forKey: "hop.pinnedRelay")
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
     @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
     @Published var endpoints: [Peer] = []   // directly-dialed hops:// endpoints (§30; not relays)
@@ -144,12 +149,14 @@ final class HopBearer: NSObject, ObservableObject {
     private var identities: [Data: IdentityInfo] = [:]   // address → identify record
     private var identifyAsked = Set<Data>()              // addresses we've sent hop.identify to
     private var identifyReqs = Set<Data>()               // outstanding identify request bundle ids
-    @Published var messages: [Message] = []
+    @Published var messages: [Message] = [] { didSet { scheduleMessageSave() } }
     /// Latest hops:// result per domain, rendered for the UI ("200 · <body>" or an error).
     @Published var hopsResults: [String: String] = [:]   // domain → rendered text (§30)
     @Published var queue: [QueueRow] = []
-    @Published var unread: [String: Int] = [:]   // peer name → unread incoming count
+    @Published var unread: [String: Int] = [:] { didSet { updateAppBadge() } }   // peer name → unread incoming count
     private var activePeer: String?              // chat currently on screen (not counted)
+    private var loadingMessages = false          // suppress save while restoring history
+    private var messageSaveWork: DispatchWorkItem?  // debounced history write
 
     /// Stable identity across launches. Stored in the **Keychain**, not UserDefaults:
     /// a force-quit kills the process before UserDefaults flushes its buffered write,
@@ -239,6 +246,7 @@ final class HopBearer: NSObject, ObservableObject {
     func start(name: String) {
         guard !started else { return }
         started = true
+        loadMessages()   // restore chat history from the previous run
         myName = name
         node.setName(name: name)   // what hop.identify reports for us (§29)
         // Set the node clock to real time BEFORE publishing any adverts. The node starts at
@@ -264,8 +272,9 @@ final class HopBearer: NSObject, ObservableObject {
         _ = try? node.publishPrekey()
 
         // Check in with our nearest cloud node (anycast) for pending messages, and keep
-        // checked in by auto-reconnecting on drop/foreground (DESIGN.md §28).
-        connectRelay(HopBearer.defaultRelay)
+        // checked in by auto-reconnecting on drop/foreground (DESIGN.md §28). If the user
+        // pinned a specific relay, use that single endpoint instead of the anycast default.
+        connectRelay(pinnedRelay ?? HopBearer.defaultRelay)
 
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
@@ -390,8 +399,13 @@ final class HopBearer: NSObject, ObservableObject {
     }
 
     /// Clear the relay queue (our undelivered messages + bundles held for peers).
+    /// Anything of ours still in flight is now abandoned, so mark those bubbles "not sent"
+    /// instead of leaving them stuck on "Sending…".
     func clearQueue() {
         node.clearQueue()
+        for i in messages.indices where !messages[i].incoming && !messages[i].delivered {
+            messages[i].failed = true
+        }
         pump()
     }
 
@@ -513,6 +527,18 @@ final class HopBearer: NSObject, ObservableObject {
     /// `ws://`/`wss://` URL (WebSocket, path B). The device dials, so it's the Noise
     /// initiator. Once connected, presence floods over this link, so two devices on the
     /// same relay discover and message each other across the internet (DESIGN.md §19, §21).
+    /// Pin this device to a single relay by direct address (persisted), or pass nil to clear the
+    /// pin and fall back to the anycast default. Switches the one relay connection over now; the
+    /// old relay's presence simply lapses (we never publish to two at once).
+    func setPinnedRelay(_ url: String?) {
+        let trimmed = url?.trimmingCharacters(in: .whitespaces)
+        let pinned = (trimmed?.isEmpty == false) ? trimmed : nil
+        pinnedRelay = pinned
+        if let pinned { UserDefaults.standard.set(pinned, forKey: "hop.pinnedRelay") }
+        else { UserDefaults.standard.removeObject(forKey: "hop.pinnedRelay") }
+        connectRelay(pinned ?? HopBearer.defaultRelay)   // connectRelay tears down the old link first
+    }
+
     func connectRelay(_ input: String) {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         relayURL = trimmed   // remembered so we auto-reconnect (check-in) on drop (§28)
@@ -1087,6 +1113,78 @@ final class HopBearer: NSObject, ObservableObject {
     func closeChat() { activePeer = nil }
     /// Total unread across all peers (for the title badge).
     var totalUnread: Int { unread.values.reduce(0, +) }
+
+    /// Mirror total unread onto the app icon badge so it shows even when the app is
+    /// backgrounded/closed. iOS 16+ API; ignore the completion error (best-effort).
+    private func updateAppBadge() {
+        #if canImport(UIKit)
+        let n = totalUnread
+        if #available(iOS 16.0, *) {
+            UNUserNotificationCenter.current().setBadgeCount(n)
+        } else {
+            UIApplication.shared.applicationIconBadgeNumber = n
+        }
+        #endif
+    }
+
+    // MARK: - Message history persistence (survives app restart)
+
+    /// On-disk form of a chat message. Omits `trace` (FFI type, incoming-path debug only) and
+    /// the per-session `id`/`bundleId` — neither is meaningful after a relaunch.
+    private struct StoredMessage: Codable {
+        var peer: String; var text: String; var incoming: Bool
+        var peerAddr: Data?; var contentType: String
+        var imageData: Data?; var images: [Data]
+        var hops: UInt8; var latencyMs: UInt64?
+        var sentAt: Date; var deliveredAt: Date?
+        var relayed: UInt32; var delivered: Bool; var deliveryHops: UInt8; var failed: Bool
+    }
+
+    private static var messagesFileURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("messages.json")
+    }
+
+    /// Coalesce rapid mutations into one disk write (≤1 write/sec) so appending a burst of
+    /// messages doesn't re-encode the whole history each time.
+    private func scheduleMessageSave() {
+        guard !loadingMessages else { return }   // don't echo the load back to disk
+        messageSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveMessages() }
+        messageSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    private func saveMessages() {
+        let stored = messages.map {
+            StoredMessage(peer: $0.peer, text: $0.text, incoming: $0.incoming,
+                          peerAddr: $0.peerAddr, contentType: $0.contentType,
+                          imageData: $0.imageData, images: $0.images,
+                          hops: $0.hops, latencyMs: $0.latencyMs,
+                          sentAt: $0.sentAt, deliveredAt: $0.deliveredAt,
+                          relayed: $0.relayed, delivered: $0.delivered,
+                          deliveryHops: $0.deliveryHops, failed: $0.failed)
+        }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try? data.write(to: HopBearer.messagesFileURL, options: .atomic)
+    }
+
+    private func loadMessages() {
+        guard let data = try? Data(contentsOf: HopBearer.messagesFileURL),
+              let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
+        loadingMessages = true
+        // An outgoing message that was still in flight when we quit can never be ACKed now
+        // (the in-memory delivery tracking is gone) — show it as not sent rather than "Sending…".
+        messages = stored.map { s in
+            Message(peer: s.peer, text: s.text, incoming: s.incoming, peerAddr: s.peerAddr,
+                    contentType: s.contentType, imageData: s.imageData, images: s.images,
+                    hops: s.hops, latencyMs: s.latencyMs, sentAt: s.sentAt,
+                    deliveredAt: s.deliveredAt, relayed: s.relayed, delivered: s.delivered,
+                    deliveryHops: s.deliveryHops,
+                    failed: s.failed || (!s.incoming && !s.delivered))
+        }
+        loadingMessages = false
+    }
 
     private func refresh() {
         let mine = node.address()
