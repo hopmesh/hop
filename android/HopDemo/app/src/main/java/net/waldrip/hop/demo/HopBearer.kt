@@ -25,6 +25,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import uniffi.hop_ffi.HopNode
 import uniffi.hop_ffi.HnsLookupResult
 import uniffi.hop_ffi.HpsKind
@@ -66,6 +67,7 @@ class HopBearer private constructor(private val context: Context) {
     val node: HopNode = HopNode.`open`(
         java.io.File(context.filesDir, "hop.db").absolutePath,
         deviceSeed(context),
+        APP_SECRET,
     )
     val peers = mutableStateListOf<Peer>()
     val messages = mutableStateListOf<Message>()
@@ -83,9 +85,12 @@ class HopBearer private constructor(private val context: Context) {
     val hnsCache = mutableStateListOf<HnsCacheRow>()
     data class HnsCacheRow(val domain: String, val address: ByteArray, val ttlSecs: UInt)
 
-    // hps:// pub/sub (DESIGN.md §32): topics we host/subscribe + received messages.
+    // hps:// pub/sub (DESIGN.md §32): topics we host/subscribe, per-topic threads, unread, invites.
     val hpsTopics = mutableStateListOf<HpsTopic>()
-    val hpsInbox = mutableStateListOf<HpsMsg>()
+    val hpsThreads = mutableStateMapOf<String, SnapshotStateList<HpsMsg>>() // topic id → messages
+    val hpsUnread = mutableStateMapOf<String, Int>()                        // topic id → unread
+    val hpsInvites = mutableStateListOf<uniffi.hop_ffi.HpsInvite>()         // invites received
+    @Volatile var activeTopic: String? = null                              // topic on screen
 
     // Diagnostics (Status tab) — parity with iOS: service-call log + relay queue.
     val serviceLog = mutableStateListOf<String>()
@@ -93,7 +98,13 @@ class HopBearer private constructor(private val context: Context) {
     data class QueueRow(val own: Boolean, val to: String, val priority: UByte, val hops: UByte)
     private val identifyAsked = HashSet<List<Byte>>()   // addresses we've sent hop.identify to
     private val identifyReqs = HashSet<List<Byte>>()    // outstanding identify request ids
-    data class HpsTopic(val host: ByteArray, val path: String, val channel: Boolean, val hosting: Boolean)
+    data class HpsTopic(
+        val host: ByteArray, val path: String, val channel: Boolean, val hosting: Boolean,
+        val access: uniffi.hop_ffi.HpsAccess = uniffi.hop_ffi.HpsAccess.OPEN,
+    ) {
+        val id: String get() = addressBase58(host) + "/" + path
+        val writable: Boolean get() = channel || hosting
+    }
     data class HpsMsg(val id: Long, val path: String, val sender: ByteArray, val text: String)
     var myAddress = mutableStateOf("")
     var myName = mutableStateOf("")
@@ -367,33 +378,97 @@ class HopBearer private constructor(private val context: Context) {
 
     // ---- hps:// pub/sub (DESIGN.md §32) -------------------------------------
 
-    fun hpsRegister(path: String, channel: Boolean) {
+    fun hpsRegister(path: String, channel: Boolean,
+                    access: uniffi.hop_ffi.HpsAccess = uniffi.hop_ffi.HpsAccess.OPEN,
+                    discoverable: Boolean = false) {
         val p = path.trim(); if (p.isEmpty()) return
-        runCatching { node.registerService(p, if (channel) HpsKind.CHANNEL else HpsKind.SERVICE) }
+        runCatching {
+            node.registerService(p, if (channel) HpsKind.CHANNEL else HpsKind.SERVICE, access,
+                if (discoverable) uniffi.hop_ffi.HpsVisibility.DISCOVERABLE else uniffi.hop_ffi.HpsVisibility.PRIVATE)
+        }
         if (hpsTopics.none { it.host.contentEquals(node.address()) && it.path == p })
-            hpsTopics.add(0, HpsTopic(node.address(), p, channel, hosting = true))
+            hpsTopics.add(0, HpsTopic(node.address(), p, channel, hosting = true, access = access))
     }
 
     fun hpsSubscribe(hostB58: String, path: String) {
         val host = runCatching { addressFromBase58(hostB58.trim()) }.getOrNull() ?: return
         val p = path.trim(); if (host.size != 32 || p.isEmpty()) return
-        runCatching { node.hpsSubscribe(host, p) }
-        if (hpsTopics.none { it.host.contentEquals(host) && it.path == p })
-            hpsTopics.add(0, HpsTopic(host, p, channel = true, hosting = false))
+        hpsSubscribeTo(host, p, channel = true)
+    }
+
+    private fun hpsSubscribeTo(host: ByteArray, path: String, channel: Boolean) {
+        runCatching { node.hpsSubscribe(host, path) }
+        if (hpsTopics.none { it.host.contentEquals(host) && it.path == path })
+            hpsTopics.add(0, HpsTopic(host, path, channel = channel, hosting = false))
         pump()
     }
 
-    fun hpsPublish(path: String, text: String) {
-        val p = path.trim(); if (p.isEmpty() || text.isEmpty()) return
-        runCatching { node.hpsPublish(p, text.toByteArray()) }
-        hpsInbox.add(0, HpsMsg(nextMsgId++, p, node.address(), text)) // echo our own post
+    fun hpsJoin(t: uniffi.hop_ffi.HpsTopicInfo) =
+        hpsSubscribeTo(t.host, t.path, t.kind == HpsKind.CHANNEL)
+
+    fun hpsPublish(topic: HpsTopic, text: String) {
+        if (text.isEmpty()) return
+        runCatching { node.hpsPublish(topic.path, text.toByteArray()) }
+        appendThread(topic.id, HpsMsg(nextMsgId++, topic.path, node.address(), text)) // echo
         pump()
+    }
+
+    fun hpsInvite(topic: HpsTopic, to: ByteArray) {
+        if (!topic.hosting || to.size != 32) return
+        runCatching { node.hpsInvite(topic.path, to) }; pump()
+    }
+
+    fun hpsAcceptInvite(inv: uniffi.hop_ffi.HpsInvite) {
+        runCatching { node.hpsAcceptInvite(inv.host, inv.path) }
+        hpsInvites.removeAll { it.path == inv.path && it.host.contentEquals(inv.host) }
+        if (hpsTopics.none { it.host.contentEquals(inv.host) && it.path == inv.path })
+            hpsTopics.add(0, HpsTopic(inv.host, inv.path, inv.kind == HpsKind.CHANNEL, hosting = false))
+        pump()
+    }
+
+    fun hpsDeclineInvite(inv: uniffi.hop_ffi.HpsInvite) {
+        hpsInvites.removeAll { it.path == inv.path && it.host.contentEquals(inv.host) }
+    }
+
+    fun hpsPending(topic: HpsTopic): List<ByteArray> = runCatching { node.hpsPending(topic.path) }.getOrDefault(emptyList())
+    fun hpsApprove(topic: HpsTopic, who: ByteArray) { runCatching { node.hpsApprove(topic.path, who) }; pump() }
+    fun hpsDeny(topic: HpsTopic, who: ByteArray) { runCatching { node.hpsDeny(topic.path, who) } }
+    fun hpsReach(topic: HpsTopic): Int = runCatching { node.hpsReach(topic.path).toInt() }.getOrDefault(0)
+    fun hpsMembers(topic: HpsTopic): List<ByteArray> = runCatching { node.hpsMembers(topic.path) }.getOrDefault(emptyList())
+    fun hpsRekey(topic: HpsTopic, remove: List<ByteArray> = emptyList()) { runCatching { node.hpsRekey(topic.path, "", remove) }; pump() }
+    fun hpsBrowse(): List<uniffi.hop_ffi.HpsTopicInfo> = runCatching { node.browseDiscoverable() }.getOrDefault(emptyList())
+
+    fun hpsLeave(topic: HpsTopic) {
+        runCatching { node.hpsLeave(topic.path) }
+        hpsTopics.removeAll { it.id == topic.id }
+        hpsThreads.remove(topic.id); hpsUnread.remove(topic.id)
+        pump()
+    }
+
+    fun openTopic(id: String) { activeTopic = id; hpsUnread[id] = 0 }
+    fun closeTopic() { activeTopic = null }
+
+    /// Resolved display name for an address (its set name, or a short base58 prefix).
+    fun displayName(addr: ByteArray): String = nameByAddr[addr.toList()] ?: shortHex(addr)
+    /// Known peers as an invite-picker list (sorted by name).
+    val contactList: List<Peer> get() = peers.sortedBy { it.name.lowercase() }
+
+    private fun appendThread(id: String, m: HpsMsg) {
+        val list = hpsThreads.getOrPut(id) { mutableStateListOf() }
+        list.add(m)
+        if (list.size > 500) list.removeAt(0)
     }
 
     private fun drainHps() {
         for (m in node.takeHpsMessages()) {
-            hpsInbox.add(0, HpsMsg(nextMsgId++, m.path, m.sender, String(m.body)))
-            if (hpsInbox.size > 200) hpsInbox.removeAt(hpsInbox.size - 1)
+            val topic = hpsTopics.firstOrNull { it.path == m.path }
+            val id = topic?.id ?: m.path
+            appendThread(id, HpsMsg(nextMsgId++, m.path, m.sender, String(m.body)))
+            if (id != activeTopic) hpsUnread[id] = (hpsUnread[id] ?: 0) + 1
+        }
+        for (inv in node.takeHpsInvites()) {
+            if (hpsInvites.none { it.path == inv.path && it.host.contentEquals(inv.host) })
+                hpsInvites.add(inv)
         }
     }
 
@@ -875,6 +950,9 @@ class HopBearer private constructor(private val context: Context) {
         const val PRESENCE_SERVICE = "presence"
         const val PRESENCE_TTL_MS: UInt = 600_000u
         const val DEFAULT_RELAY = "wss://relay.hopme.sh/"
+        /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
+        /// A different app (different secret) can't see or join these channels (DESIGN.md §32).
+        val APP_SECRET = ByteArray(32) { 0x48 } // "H" ×32 — dev build only (matches iOS)
 
         @Volatile private var inst: HopBearer? = null
 

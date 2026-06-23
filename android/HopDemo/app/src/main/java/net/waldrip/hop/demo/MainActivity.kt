@@ -195,66 +195,225 @@ fun StatusScreen(bearer: HopBearer) {
 /// and read sender-verified messages — Android parity with the iOS HpsView.
 @Composable
 fun ChannelsScreen(bearer: HopBearer) {
-    var newPath by remember { mutableStateOf("") }
-    var isChannel by remember { mutableStateOf(true) }
-    var subHost by remember { mutableStateOf("") }
-    var subPath by remember { mutableStateOf("") }
-    var pubPath by remember { mutableStateOf("") }
-    var pubText by remember { mutableStateOf("") }
+    var openId by remember { mutableStateOf<String?>(null) }
+    var showAdd by remember { mutableStateOf(false) }
+
+    val open = openId
+    val topic = bearer.hpsTopics.firstOrNull { it.id == open }
+    if (open != null && topic != null) {
+        ChannelScreen(bearer, topic) { openId = null }
+        return
+    }
+
+    if (showAdd) {
+        HpsAddPanel(bearer, onDone = { showAdd = false })
+        return
+    }
+
     LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item {
-            Text("hps:// pub/sub", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(8.dp))
-            Text("Host a topic", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(newPath, { newPath = it }, singleLine = true,
-                label = { Text("path (e.g. lobby)") }, modifier = Modifier.fillMaxWidth())
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FilterChip(isChannel, { isChannel = true }, label = { Text("Channel") })
-                Spacer(Modifier.width(8.dp))
-                FilterChip(!isChannel, { isChannel = false }, label = { Text("Service") })
+                Text("Channels", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.weight(1f))
-                Button(onClick = { bearer.hpsRegister(newPath, isChannel); newPath = "" }) { Text("Register") }
+                Button(onClick = { showAdd = true }) { Text("＋ Add") }
             }
-            Spacer(Modifier.height(12.dp))
-            Text("Subscribe", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(subHost, { subHost = it }, singleLine = true,
-                label = { Text("host address (base58)") }, modifier = Modifier.fillMaxWidth())
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(subPath, { subPath = it }, singleLine = true,
-                    label = { Text("path") }, modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = { bearer.hpsSubscribe(subHost, subPath); subPath = "" }) { Text("Sub") }
+            Spacer(Modifier.height(8.dp))
+        }
+        if (bearer.hpsInvites.isNotEmpty()) {
+            item { Text("Invites", style = MaterialTheme.typography.titleMedium) }
+            items(bearer.hpsInvites) { inv ->
+                ListItem(
+                    headlineContent = { Text("✉ " + inv.path) },
+                    supportingContent = { Text("from " + bearer.displayName(inv.host)) },
+                    trailingContent = {
+                        Row {
+                            TextButton(onClick = { bearer.hpsAcceptInvite(inv) }) { Text("Accept") }
+                            TextButton(onClick = { bearer.hpsDeclineInvite(inv) }) { Text("Decline") }
+                        }
+                    },
+                )
             }
-            Spacer(Modifier.height(12.dp))
-            Text("Topics", style = MaterialTheme.typography.titleMedium)
+        }
+        item { Spacer(Modifier.height(8.dp)); Text("Channels & services", style = MaterialTheme.typography.titleMedium) }
+        if (bearer.hpsTopics.isEmpty()) {
+            item { Text("None yet. Tap ＋ Add to host, subscribe, or browse.", style = MaterialTheme.typography.bodySmall) }
         }
         items(bearer.hpsTopics) { t ->
+            val unread = bearer.hpsUnread[t.id] ?: 0
             ListItem(
                 headlineContent = { Text((if (t.channel) "💬 " else "📣 ") + t.path) },
                 supportingContent = { Text((if (t.hosting) "hosting · " else "subscribed · ") + HopBearer.shortHex(t.host)) },
-                trailingContent = {
-                    if (t.channel || t.hosting) TextButton(onClick = { pubPath = t.path }) { Text("✎") }
-                },
+                trailingContent = { if (unread > 0) Text("$unread", color = MaterialTheme.colorScheme.error) },
+                modifier = Modifier.clickable { openId = t.id },
             )
         }
-        item {
-            Spacer(Modifier.height(8.dp))
-            Text("Publish" + if (pubPath.isNotEmpty()) " → $pubPath" else "", style = MaterialTheme.typography.titleMedium)
-            if (pubPath.isEmpty()) Text("Tap ✎ on a writable topic", style = MaterialTheme.typography.bodySmall)
-            else Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(pubText, { pubText = it }, singleLine = true,
-                    label = { Text("message") }, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun ChannelScreen(bearer: HopBearer, topic: HopBearer.HpsTopic, onBack: () -> Unit) {
+    var draft by remember { mutableStateOf("") }
+    var showInfo by remember { mutableStateOf(false) }
+    DisposableEffect(topic.id) {
+        bearer.openTopic(topic.id)
+        onDispose { bearer.closeTopic() }
+    }
+    if (showInfo) { ChannelInfoPanel(bearer, topic, onDone = { showInfo = false }); return }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹ Back") }
+            Text((if (topic.channel) "💬 " else "📣 ") + topic.path, style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { showInfo = true }) { Text("ⓘ") }
+        }
+        val msgs = bearer.hpsThreads[topic.id] ?: emptyList<HopBearer.HpsMsg>()
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            items(msgs) { m ->
+                val mine = m.sender.contentEquals(bearer.node.address())
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+                    Text(bearer.displayName(m.sender), style = MaterialTheme.typography.bodySmall)
+                    Text(m.text)
+                }
+            }
+        }
+        if (topic.writable) {
+            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(draft, { draft = it }, singleLine = true,
+                    label = { Text("Message #${topic.path}") }, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { bearer.hpsPublish(pubPath, pubText); pubText = "" }) { Text("Send") }
+                Button(onClick = { bearer.hpsPublish(topic, draft.trim()); draft = "" },
+                    enabled = draft.isNotBlank()) { Text("Send") }
+            }
+        } else {
+            Text("Read-only (only the owner broadcasts)",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+        }
+    }
+}
+
+@Composable
+fun ChannelInfoPanel(bearer: HopBearer, topic: HopBearer.HpsTopic, onDone: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(topic.path, style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.weight(1f)); TextButton(onClick = onDone) { Text("Done") }
+            }
+            Text((if (topic.channel) "Channel" else "Service") + " · " +
+                 (if (topic.hosting) "hosting" else "subscribed") + " · " + HopBearer.shortHex(topic.host),
+                 style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(12.dp))
+        }
+        if (topic.hosting) {
+            item {
+                Text("Reach: ${bearer.hpsReach(topic)} members", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp)); Text("Invite a contact", style = MaterialTheme.typography.titleMedium)
+            }
+            items(bearer.contactList) { p ->
+                ListItem(headlineContent = { Text(p.name) },
+                    trailingContent = { TextButton(onClick = { bearer.hpsInvite(topic, p.address) }) { Text("Invite") } })
+            }
+            val pending = bearer.hpsPending(topic)
+            if (pending.isNotEmpty()) {
+                item { Spacer(Modifier.height(8.dp)); Text("Join requests", style = MaterialTheme.typography.titleMedium) }
+                items(pending) { who ->
+                    ListItem(headlineContent = { Text(bearer.displayName(who)) },
+                        trailingContent = {
+                            Row {
+                                TextButton(onClick = { bearer.hpsApprove(topic, who) }) { Text("Approve") }
+                                TextButton(onClick = { bearer.hpsDeny(topic, who) }) { Text("Deny") }
+                            }
+                        })
+                }
+            }
+            val members = bearer.hpsMembers(topic)
+            if (members.isNotEmpty()) {
+                item { Spacer(Modifier.height(8.dp)); Text("Members", style = MaterialTheme.typography.titleMedium) }
+                items(members) { who ->
+                    ListItem(headlineContent = { Text(bearer.displayName(who)) },
+                        trailingContent = { TextButton(onClick = { bearer.hpsRekey(topic, listOf(who)) }) { Text("Remove") } })
+                }
+                item { TextButton(onClick = { bearer.hpsRekey(topic) }) { Text("Rotate keys (no removal)") } }
+            }
+        } else {
+            item { TextButton(onClick = { bearer.hpsLeave(topic); onDone() }) { Text("Leave channel") } }
+        }
+    }
+}
+
+@Composable
+fun HpsAddPanel(bearer: HopBearer, onDone: () -> Unit) {
+    var mode by remember { mutableStateOf(0) }
+    var newPath by remember { mutableStateOf("") }
+    var isChannel by remember { mutableStateOf(true) }
+    var access by remember { mutableStateOf(uniffi.hop_ffi.HpsAccess.OPEN) }
+    var discoverable by remember { mutableStateOf(false) }
+    var subHost by remember { mutableStateOf("") }
+    var subPath by remember { mutableStateOf("") }
+    var found by remember { mutableStateOf(listOf<uniffi.hop_ffi.HpsTopicInfo>()) }
+
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Add channel", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.weight(1f)); TextButton(onClick = onDone) { Text("Cancel") }
+            }
+            Row {
+                FilterChip(mode == 0, { mode = 0 }, label = { Text("Host") })
+                Spacer(Modifier.width(6.dp))
+                FilterChip(mode == 1, { mode = 1 }, label = { Text("Subscribe") })
+                Spacer(Modifier.width(6.dp))
+                FilterChip(mode == 2, { mode = 2; found = bearer.hpsBrowse() }, label = { Text("Browse") })
             }
             Spacer(Modifier.height(12.dp))
-            Text("Messages", style = MaterialTheme.typography.titleMedium)
-            if (bearer.hpsInbox.isEmpty()) Text("none yet", style = MaterialTheme.typography.bodySmall)
-        }
-        items(bearer.hpsInbox) { m ->
-            Column(Modifier.padding(vertical = 4.dp)) {
-                Text("${m.path} · ${HopBearer.shortHex(m.sender)}", style = MaterialTheme.typography.bodySmall)
-                Text(m.text)
+            when (mode) {
+                0 -> Column {
+                    OutlinedTextField(newPath, { newPath = it }, singleLine = true,
+                        label = { Text("path (e.g. lobby)") }, modifier = Modifier.fillMaxWidth())
+                    Row {
+                        FilterChip(isChannel, { isChannel = true }, label = { Text("Channel") })
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(!isChannel, { isChannel = false }, label = { Text("Service") })
+                    }
+                    Text("Access", style = MaterialTheme.typography.bodySmall)
+                    Row {
+                        FilterChip(access == uniffi.hop_ffi.HpsAccess.OPEN, { access = uniffi.hop_ffi.HpsAccess.OPEN }, label = { Text("Open") })
+                        Spacer(Modifier.width(6.dp))
+                        FilterChip(access == uniffi.hop_ffi.HpsAccess.REQUEST_TO_JOIN, { access = uniffi.hop_ffi.HpsAccess.REQUEST_TO_JOIN }, label = { Text("Request") })
+                        Spacer(Modifier.width(6.dp))
+                        FilterChip(access == uniffi.hop_ffi.HpsAccess.INVITE, { access = uniffi.hop_ffi.HpsAccess.INVITE }, label = { Text("Invite") })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(discoverable, { discoverable = it }); Text("Discoverable nearby")
+                    }
+                    Button(onClick = { bearer.hpsRegister(newPath, isChannel, access, discoverable); onDone() },
+                        enabled = newPath.isNotBlank()) { Text("Create") }
+                }
+                1 -> Column {
+                    OutlinedTextField(subHost, { subHost = it }, singleLine = true,
+                        label = { Text("host address (base58)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(subPath, { subPath = it }, singleLine = true,
+                        label = { Text("path") }, modifier = Modifier.fillMaxWidth())
+                    Button(onClick = { bearer.hpsSubscribe(subHost, subPath); onDone() },
+                        enabled = subHost.isNotBlank() && subPath.isNotBlank()) { Text("Subscribe") }
+                }
+                else -> Column {
+                    if (found.isEmpty()) Text("None found yet", style = MaterialTheme.typography.bodySmall)
+                    found.forEach { t ->
+                        ListItem(
+                            headlineContent = { Text(t.path) },
+                            supportingContent = { Text((if (t.kind == uniffi.hop_ffi.HpsKind.CHANNEL) "channel" else "service") + " · " + HopBearer.shortHex(t.host)) },
+                            trailingContent = {
+                                TextButton(onClick = { bearer.hpsJoin(t); onDone() }) {
+                                    Text(if (t.access == uniffi.hop_ffi.HpsAccess.OPEN) "Join" else "Request")
+                                }
+                            },
+                        )
+                    }
+                    TextButton(onClick = { found = bearer.hpsBrowse() }) { Text("Refresh") }
+                }
             }
         }
     }
