@@ -204,6 +204,11 @@ class HopBearer private constructor(private val context: Context) {
                 // Re-publish our prekey periodically so a neighbour whose cached copy lapsed
                 // (or who arrived later) can always open a forward-secret session to us (§25).
                 if (ticks % 120 == 0) runCatching { node.publishPrekey() }
+                // Re-arm BLE advertising periodically. Android advertising can silently stop
+                // (OEM doze/screen-off, or a wedged stack) while startAdvertising still reports
+                // success — leaving us undiscoverable. Re-arming self-heals it without a manual
+                // Bluetooth toggle. (Restarting advertising doesn't drop existing connections.)
+                if (ticks % 180 == 0) runCatching { startAdvertise() }
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
