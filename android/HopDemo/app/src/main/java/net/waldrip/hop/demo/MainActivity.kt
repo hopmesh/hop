@@ -115,19 +115,49 @@ fun HopApp(bearer: HopBearer) {
     Scaffold(bottomBar = {
         NavigationBar {
             NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
-                icon = { Text("👥") }, label = { Text("People") })
+                icon = { Text("💬") }, label = { Text("Chats") })
             NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
                 icon = { Text("📡") }, label = { Text("Channels") })
             NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                 icon = { Text("🌐") }, label = { Text("Web") })
+            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                icon = { Text("⚙️") }, label = { Text("Status") })
         }
     }) { pad ->
         Box(Modifier.padding(pad)) {
             when (tab) {
-                0 -> PeopleScreen(bearer) { selected = it }
+                0 -> ChatsScreen(bearer) { selected = it }
                 1 -> ChannelsScreen(bearer)
-                else -> WebScreen(bearer)
+                2 -> WebScreen(bearer)
+                else -> StatusScreen(bearer)
             }
+        }
+    }
+}
+
+/// Tab 4: Status — device info + cloud relay (shared IA with iOS).
+@Composable
+fun StatusScreen(bearer: HopBearer) {
+    var relayField by remember { mutableStateOf("") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
+        item {
+            Text("Status", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(12.dp))
+            Text("This device", style = MaterialTheme.typography.titleMedium)
+            Text("Name: ${bearer.myName.value}")
+            Text("Address: ${bearer.myAddress.value}", style = MaterialTheme.typography.bodySmall)
+            Text(bearer.status.value, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp))
+            Text("Cloud relay (backbone)", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(relayField, { relayField = it }, singleLine = true,
+                    label = { Text("host:port or wss://relay.hopme.sh/") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { val t = relayField.trim(); if (t.isNotEmpty()) bearer.connectRelay(t) }) {
+                    Text("Connect")
+                }
+            }
+            Text("Relay: ${bearer.relayStatus.value}", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -245,29 +275,10 @@ fun WebScreen(bearer: HopBearer) {
 }
 
 @Composable
-fun PeopleScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
+fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Hop", style = MaterialTheme.typography.headlineMedium)
-        Text("You: ${bearer.myName.value}  ·  ${bearer.myAddress.value}",
-            style = MaterialTheme.typography.bodySmall)
-        Text(bearer.status.value, style = MaterialTheme.typography.bodySmall)
-
-        Spacer(Modifier.height(12.dp))
-        var relayField by remember { mutableStateOf("") }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = relayField, onValueChange = { relayField = it },
-                label = { Text("host:port or wss://relay.hopme.sh/") },
-                singleLine = true, modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = { val t = relayField.trim(); if (t.isNotEmpty()) bearer.connectRelay(t) }) {
-                Text("Connect")
-            }
-        }
-        Text("Cloud relay: ${bearer.relayStatus.value}", style = MaterialTheme.typography.bodySmall)
-
-        Spacer(Modifier.height(16.dp))
+        Text("Chats", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(8.dp))
         Text("People nearby (${bearer.peers.size})", style = MaterialTheme.typography.titleMedium)
         if (bearer.peers.isEmpty()) Text("looking for others…")
         LazyColumn {
