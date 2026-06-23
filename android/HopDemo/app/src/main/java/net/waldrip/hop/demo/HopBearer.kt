@@ -28,8 +28,11 @@ import androidx.compose.runtime.mutableStateMapOf
 import uniffi.hop_ffi.HopNode
 import uniffi.hop_ffi.HnsLookupResult
 import uniffi.hop_ffi.HpsKind
+import uniffi.hop_ffi.TraceHopInfo
 import uniffi.hop_ffi.addressBase58
 import uniffi.hop_ffi.addressFromBase58
+import uniffi.hop_ffi.decodeIdentity
+import uniffi.hop_ffi.serviceIdentify
 
 /**
  * Foreground Android BLE bearer for Hop: each device acts as both peripheral
@@ -50,6 +53,7 @@ class HopBearer private constructor(private val context: Context) {
         val contentType: String = "text/plain",
         val imageData: ByteArray? = null,                            // set for image/* messages
         val hops: UByte = 0u, val latencyMs: ULong? = null,           // incoming metadata
+        val trace: List<String> = emptyList(),                        // provenance hop labels (§27)
         val sentAt: Long = System.currentTimeMillis(),               // outgoing tracking
         val deliveredAt: Long? = null, val relayed: UInt = 0u,
         val delivered: Boolean = false, val deliveryHops: UByte = 0u,
@@ -77,6 +81,13 @@ class HopBearer private constructor(private val context: Context) {
     // hps:// pub/sub (DESIGN.md §32): topics we host/subscribe + received messages.
     val hpsTopics = mutableStateListOf<HpsTopic>()
     val hpsInbox = mutableStateListOf<HpsMsg>()
+
+    // Diagnostics (Status tab) — parity with iOS: service-call log + relay queue.
+    val serviceLog = mutableStateListOf<String>()
+    val queue = mutableStateListOf<QueueRow>()
+    data class QueueRow(val own: Boolean, val to: String, val priority: UByte, val hops: UByte)
+    private val identifyAsked = HashSet<List<Byte>>()   // addresses we've sent hop.identify to
+    private val identifyReqs = HashSet<List<Byte>>()    // outstanding identify request ids
     data class HpsTopic(val host: ByteArray, val path: String, val channel: Boolean, val hosting: Boolean)
     data class HpsMsg(val id: Long, val path: String, val sender: ByteArray, val text: String)
     var myAddress = mutableStateOf("")
@@ -233,12 +244,63 @@ class HopBearer private constructor(private val context: Context) {
             messages.add(Message(localId = nextMsgId++, peer = who, text = text,
                 incoming = true, contentType = m.contentType,
                 imageData = if (isImage) m.body else null,
-                hops = m.hops, latencyMs = latency))
+                hops = m.hops, latencyMs = latency, trace = m.trace.map { traceLabel(it) }))
+            queueIdentify(m.from)   // learn the sender's display name (§29)
             if (!appInForeground) notify(who, if (isImage) "📷 Photo" else text)
         }
-        drainHps()   // pub/sub messages (§32)
-        drainHns()   // HNS lookups + hops:// responses (§30)
+        drainHps()       // pub/sub messages (§32)
+        drainHns()       // HNS lookups + hops:// responses (§30)
+        drainServices()  // hop.identify replies + custom service calls (§29)
+        refreshQueue()   // relay-queue diagnostics
     }
+
+    // ---- services & diagnostics (DESIGN.md §29) ----------------------------
+
+    /// hop.identify an address once per session so we learn its display name (its input, or a
+    /// relay's domain). Resolves names in traces and the chat list.
+    private fun queueIdentify(address: ByteArray) {
+        val key = address.toList()
+        if (!identifyAsked.add(key)) return
+        runCatching { node.sendServiceRequest(address, serviceIdentify(), "", ByteArray(0)) }
+            .getOrNull()?.let { identifyReqs.add(it.toList()) }
+    }
+
+    /// Resolve a trace hop to a label: us, a known name, else app-label + short id (§27).
+    private fun traceLabel(h: TraceHopInfo): String {
+        val name = nameByAddr[h.node.toList()]
+        return name ?: "${h.appLabel} ${shortHex(h.node)}"
+    }
+
+    private fun drainServices() {
+        for (resp in node.takeServiceResponses()) {
+            val info = if (identifyReqs.remove(resp.forRequestId.toList()) && resp.status == 0u.toUShort())
+                runCatching { decodeIdentity(resp.body) }.getOrNull() else null
+            if (info != null) {
+                val label = info.name.ifEmpty { shortHex(info.address) }
+                nameByAddr[info.address.toList()] = label
+                serviceLog.add(0, "identify ← $label (${info.kind})")
+                refresh()
+            } else {
+                serviceLog.add(0, "service ← ${resp.status}: ${String(resp.body).take(120)}")
+            }
+        }
+        for (req in node.takeServiceRequests()) {
+            // No custom services in the demo — reply 501 so the caller isn't left hanging.
+            serviceLog.add(0, "service → ${req.service}/${req.method} (501)")
+            runCatching { node.sendServiceResponse(req.from, req.requestId, 501u, ByteArray(0)) }
+        }
+        if (serviceLog.size > 100) while (serviceLog.size > 100) serviceLog.removeAt(serviceLog.size - 1)
+    }
+
+    private fun refreshQueue() {
+        queue.clear()
+        for (q in node.queue()) {
+            val to = if (q.to.isEmpty()) "egress" else shortHex(q.to)
+            queue.add(QueueRow(q.own, to, q.priority, q.hops))
+        }
+    }
+
+    fun clearQueue() { runCatching { node.clearQueue() }; refreshQueue() }
 
     // ---- hps:// pub/sub (DESIGN.md §32) -------------------------------------
 

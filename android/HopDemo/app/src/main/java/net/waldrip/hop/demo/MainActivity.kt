@@ -97,6 +97,7 @@ private fun messageMeta(m: HopBearer.Message): String {
     if (m.incoming) {
         var s = HopBearer.hopsLabel(m.hops)
         m.latencyMs?.let { s += ", ${HopBearer.compactDuration(it)}" }
+        if (m.trace.isNotEmpty()) s += "  ·  via ${m.trace.joinToString(" → ")}"
         return s
     }
     if (m.delivered && m.deliveredAt != null) {
@@ -158,7 +159,23 @@ fun StatusScreen(bearer: HopBearer) {
                 }
             }
             Text("Relay: ${bearer.relayStatus.value}", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Relay queue (${bearer.queue.size})", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                if (bearer.queue.isNotEmpty()) TextButton(onClick = { bearer.clearQueue() }) { Text("Clear") }
+            }
         }
+        items(bearer.queue) { q ->
+            Text((if (q.own) "📌 yours → " else "↔ relay → ") + "${q.to}  ·  p${q.priority} · ${q.hops}h",
+                style = MaterialTheme.typography.bodySmall)
+        }
+        item {
+            Spacer(Modifier.height(16.dp))
+            Text("Service log", style = MaterialTheme.typography.titleMedium)
+            if (bearer.serviceLog.isEmpty()) Text("none", style = MaterialTheme.typography.bodySmall)
+        }
+        items(bearer.serviceLog) { line -> Text(line, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
