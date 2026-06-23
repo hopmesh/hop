@@ -291,6 +291,16 @@ pub struct HpsTopicInfo {
     pub access: HpsAccess,
 }
 
+/// A topic we host or follow — for rebuilding the app's channel list after a restart.
+#[derive(uniffi::Record)]
+pub struct HpsMyTopic {
+    pub host: Vec<u8>,
+    pub path: String,
+    pub kind: HpsKind,
+    pub hosting: bool,
+    pub access: HpsAccess,
+}
+
 fn kind_to_core(k: &HpsKind) -> hop_core::hps::ServiceKind {
     match k {
         HpsKind::Channel => hop_core::hps::ServiceKind::Channel,
@@ -879,6 +889,20 @@ impl HopNode {
     /// Host: the retained-member set (addresses) for a topic.
     pub fn hps_members(&self, path: String) -> Vec<Vec<u8>> {
         self.inner.lock().unwrap().hps_members(&path).into_iter().map(|a| a.to_vec()).collect()
+    }
+
+    /// Topics this node hosts or follows — the app calls this at startup to rebuild its channel
+    /// list, since the node persists topics but the app's in-memory list doesn't.
+    pub fn hps_my_topics(&self) -> Vec<HpsMyTopic> {
+        self.inner.lock().unwrap().hps_my_topics().into_iter()
+            .map(|t| HpsMyTopic {
+                host: t.host.to_vec(),
+                path: t.path,
+                kind: kind_from_core(t.kind),
+                hosting: t.hosting,
+                access: access_from_core(t.access),
+            })
+            .collect()
     }
 
     /// Same-app discoverable topics visible on the mesh (decrypted descriptors + host address).

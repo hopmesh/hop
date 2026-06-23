@@ -265,6 +265,7 @@ final class HopBearer: NSObject, ObservableObject {
         guard !started else { return }
         started = true
         loadMessages()   // restore chat history from the previous run
+        loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
         myName = name
         node.setName(name: name)   // what hop.identify reports for us (§29)
         // Set the node clock to real time BEFORE publishing any adverts. The node starts at
@@ -880,6 +881,15 @@ final class HopBearer: NSObject, ObservableObject {
 
     /// Discover same-app topics on the mesh (decrypted descriptors).
     func hpsBrowse() -> [HpsTopicInfo] { node.browseDiscoverable() }
+
+    /// Rebuild the channel list from the node's persisted topics (hosted + subscribed) at startup.
+    private func loadHpsTopics() {
+        for t in node.hpsMyTopics() {
+            let topic = HpsTopic(host: t.host, path: t.path, isChannel: t.kind == .channel,
+                                 hosting: t.hosting, access: t.access)
+            if !hpsTopics.contains(where: { $0.id == topic.id }) { hpsTopics.append(topic) }
+        }
+    }
 
     /// Mark a topic's thread as read (called when its screen is open).
     func openTopic(_ id: String) { activeTopic = id; hpsUnread[id] = 0 }
