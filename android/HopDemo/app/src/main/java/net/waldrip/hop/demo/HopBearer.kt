@@ -1041,8 +1041,11 @@ class HopBearer private constructor(private val context: Context) {
     private fun startCentral() {
         val scanner = adapter.bluetoothLeScanner ?: return
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
+        // BALANCED, not LOW_LATENCY: a 100%-duty continuous scan saturates the radio and starves
+        // our peripheral role, so iOS can't reliably *connect to us* (the reliable direction —
+        // Pixel→iOS connects fail 133 anyway). Balanced frees airtime to accept inbound links.
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
         scanner.startScan(listOf(filter), settings, scanCallback)
         android.util.Log.i("HOPLOG", "BLE central: scanning for Hop peers")
     }
