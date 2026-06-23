@@ -169,8 +169,16 @@ final class HopBearer: NSObject, ObservableObject {
             .appendingPathComponent("hop.db").path
         // Identity is derived from the device, so the address is stable every launch
         // with no storage to fail. The db path persists *messages*.
-        return HopNode.open(dbPath: dbPath, secret: IdentityStore.deviceSeed())
+        // The app secret isolates this app's hps:// channels/services from other apps
+        // (DESIGN.md §32): only apps built with the same secret can discover/join them.
+        return HopNode.open(dbPath: dbPath, secret: IdentityStore.deviceSeed(),
+                            appSecret: HopBearer.appSecret)
     }()
+
+    /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
+    /// A different app (different secret) can't see or join these channels. To test cross-app
+    /// isolation, change this on one device.
+    static let appSecret = Data(repeating: 0x48, count: 32) // "H" ×32 — dev build only
     private var peripheralMgr: CBPeripheralManager!
     private var centralMgr: CBCentralManager!
     private let location = CLLocationManager()
