@@ -5,7 +5,9 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
@@ -65,6 +69,22 @@ private fun platformLabel(p: String): String = when (p) {
 }
 
 /// One-line metadata under a chat bubble (mirrors the iOS app).
+/// Decode + downscale an image to a modest JPEG so the mesh transfer stays reasonable —
+/// the carrier path chunks it (§20), but smaller means fewer chunks and faster across wakes.
+private fun jpegDownscale(raw: ByteArray, maxDim: Int = 1280, quality: Int = 80): ByteArray {
+    val src = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: return raw
+    val longest = maxOf(src.width, src.height).toFloat()
+    val scale = longest / maxDim
+    val bmp = if (scale > 1f) {
+        android.graphics.Bitmap.createScaledBitmap(
+            src, (src.width / scale).toInt(), (src.height / scale).toInt(), true
+        )
+    } else src
+    val out = java.io.ByteArrayOutputStream()
+    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
+    return out.toByteArray()
+}
+
 private fun messageMeta(m: HopBearer.Message): String {
     if (m.incoming) {
         var s = HopBearer.hopsLabel(m.hops)
@@ -139,6 +159,16 @@ fun PeopleScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
 fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     val thread = bearer.messages.filter { it.peer == peer.name }
+    val context = LocalContext.current
+    // Pick an image, downscale to JPEG, and send it (carrier-chunked by core, §20).
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (raw != null) bearer.sendImage(jpegDownscale(raw), peer)
+            }
+        }
+    }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Back") }
@@ -148,7 +178,19 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
         LazyColumn(Modifier.weight(1f)) {
             items(thread) { m ->
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    Text((if (m.incoming) "‹ " else "› ") + m.text)
+                    val img = m.imageData
+                    if (img != null) {
+                        val bmp = remember(m.localId) {
+                            android.graphics.BitmapFactory.decodeByteArray(img, 0, img.size)
+                        }
+                        Text(if (m.incoming) "‹ 📷" else "› 📷")
+                        if (bmp != null) {
+                            Image(bmp.asImageBitmap(), contentDescription = "photo",
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp))
+                        }
+                    } else {
+                        Text((if (m.incoming) "‹ " else "› ") + m.text)
+                    }
                     Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -156,6 +198,7 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = draft, onValueChange = { draft = it },
                 modifier = Modifier.weight(1f), placeholder = { Text("Message ${peer.name}") })
+            TextButton(onClick = { picker.launch("image/*") }) { Text("📷") }
             Button(onClick = {
                 val t = draft.trim()
                 if (t.isNotEmpty()) { bearer.send(t, peer); draft = "" }

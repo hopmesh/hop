@@ -43,6 +43,8 @@ class HopBearer private constructor(private val context: Context) {
     data class Message(
         val localId: Long, val peer: String, val text: String, val incoming: Boolean,
         val bundleId: ByteArray? = null,
+        val contentType: String = "text/plain",
+        val imageData: ByteArray? = null,                            // set for image/* messages
         val hops: UByte = 0u, val latencyMs: ULong? = null,           // incoming metadata
         val sentAt: Long = System.currentTimeMillis(),               // outgoing tracking
         val deliveredAt: Long? = null, val relayed: UInt = 0u,
@@ -160,6 +162,17 @@ class HopBearer private constructor(private val context: Context) {
         pump()
     }
 
+    /// Send an image — large bodies are transparently carrier-chunked + reassembled by core
+    /// (DESIGN.md §20), same path as a text message but a binary content type.
+    fun sendImage(data: ByteArray, to: Peer) {
+        val id = runCatching {
+            node.sendMessage(to.address, "image/jpeg", data, true)
+        }.getOrNull()
+        messages.add(Message(localId = nextMsgId++, peer = to.name, text = "", incoming = false,
+            bundleId = id, contentType = "image/jpeg", imageData = data))
+        pump()
+    }
+
     // ---- node <-> radio plumbing (all on the main thread) -------------------
 
     private fun addLink(socket: BluetoothSocket, initiator: Boolean) = main.post {
@@ -182,12 +195,15 @@ class HopBearer private constructor(private val context: Context) {
         refresh()
         for (m in node.takeInbox()) {
             val who = nameByAddr[m.from.toList()] ?: shortHex(m.from)
-            val text = String(m.body)
+            val isImage = m.contentType.startsWith("image/")
+            val text = if (isImage) "" else String(m.body)
             val now = nowMs()
             val latency = if (now >= m.createdAt) now - m.createdAt else 0uL
             messages.add(Message(localId = nextMsgId++, peer = who, text = text,
-                incoming = true, hops = m.hops, latencyMs = latency))
-            if (!appInForeground) notify(who, text)
+                incoming = true, contentType = m.contentType,
+                imageData = if (isImage) m.body else null,
+                hops = m.hops, latencyMs = latency))
+            if (!appInForeground) notify(who, if (isImage) "📷 Photo" else text)
         }
     }
 
@@ -208,6 +224,7 @@ class HopBearer private constructor(private val context: Context) {
         val client = OkHttpClient.Builder().build()
         relayWS = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) { main.post {
+                android.util.Log.i("HOPLOG", "relay connected: $url")
                 relayStatus.value = "connected"; relayConnected = true
                 node.connected(relayLinkId, true); pump()
             } }
@@ -215,9 +232,11 @@ class HopBearer private constructor(private val context: Context) {
                 node.received(relayLinkId, bytes.toByteArray()); pump()   // one frame = one packet
             } }
             override fun onClosing(ws: WebSocket, code: Int, reason: String) { main.post {
+                android.util.Log.i("HOPLOG", "relay closing: $code $reason")
                 relayStatus.value = "disconnected"; relayDown()
             } }
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) { main.post {
+                android.util.Log.w("HOPLOG", "relay failed: ${t.message}", t)
                 relayStatus.value = "failed: ${t.message}"; relayDown()
             } }
         })
