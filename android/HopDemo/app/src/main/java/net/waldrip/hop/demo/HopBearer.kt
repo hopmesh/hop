@@ -175,7 +175,13 @@ class HopBearer private constructor(private val context: Context) {
         // periodically in the tick loop too, so a lapsed/late neighbour can always re-open one.
         runCatching { node.publishPrekey() }
         startPeripheral()
-        startCentral()
+        // Central intentionally OFF for now (WIP, see cross-platform-ble memory). A continuous
+        // scan + failing 30s outbound connectGatt attempts saturated the radio and starved our
+        // peripheral role — iOS couldn't even discover us (LightBlue saw nothing). Pure-peripheral
+        // made 4 iPhones connect immediately (iOS is dual-role and connects TO us, the reliable
+        // direction). TODO: re-enable a *gentle*, time-shared central (periodic short scans, no
+        // aggressive iOS outbound retries) so Android<->Android direct works without re-starving.
+        // startCentral()
         // Declare internet reachability so the node resolves HNS itself by servicing
         // takeDnsLookups() (DESIGN.md §30). Track the default network so it stays accurate.
         val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
