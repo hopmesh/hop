@@ -828,6 +828,13 @@ impl HopNode {
         Ok(id.to_vec())
     }
 
+    /// Decline a received invite — drops it from durable storage so it won't reappear on restart.
+    pub fn hps_decline_invite(&self, host: Vec<u8>, path: String) -> std::result::Result<(), FfiError> {
+        let host = to32(&host)?;
+        self.inner.lock().unwrap().hps_decline_invite(host, &path);
+        Ok(())
+    }
+
     /// Drain invites we've received (DESIGN.md §32 Invite mode), clearing them.
     pub fn take_hps_invites(&self) -> Vec<HpsInvite> {
         self.inner.lock().unwrap().take_hps_invites().into_iter()
