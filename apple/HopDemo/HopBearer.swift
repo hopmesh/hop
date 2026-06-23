@@ -1624,6 +1624,18 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
+    /// The peer's GATT changed — almost always an Android peripheral that restarted and minted a
+    /// NEW L2CAP PSM (`listenUsingInsecureL2capChannel` can't pin it). Without handling this we'd
+    /// keep opening L2CAP with the stale cached PSM ("No such L2CAP connection"), so cross-platform
+    /// BLE never re-links after the peer restarts. Drop the cached PSM and re-discover to read the
+    /// fresh one.
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        l2capPsm[peripheral.identifier] = nil
+        l2capAttempts[peripheral.identifier] = nil
+        opened.remove(peripheral.identifier)
+        peripheral.discoverServices([HopBearer.serviceUUID])
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if error != nil { return recover(peripheral) }
         for ch in service.characteristics ?? [] where ch.uuid == HopBearer.psmCharUUID {
