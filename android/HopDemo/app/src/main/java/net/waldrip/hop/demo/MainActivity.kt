@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -321,14 +322,15 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
 @Composable
 fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
     var draft by remember { mutableStateOf("") }
+    val attached = remember { mutableStateListOf<ByteArray>() } // staged images for one multipart send
     val thread = bearer.messages.filter { it.peer == peer.name }
     val context = LocalContext.current
-    // Pick an image, downscale to JPEG, and send it (carrier-chunked by core, §20).
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
+    // Pick one OR MORE images, downscale to JPEG, and stage them; Send fires one multipart (§20).
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        for (uri in uris) {
             runCatching {
                 val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (raw != null) bearer.sendImage(jpegDownscale(raw), peer)
+                if (raw != null) attached.add(jpegDownscale(raw))
             }
         }
     }
@@ -341,20 +343,38 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
         LazyColumn(Modifier.weight(1f)) {
             items(thread) { m ->
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    val img = m.imageData
-                    if (img != null) {
-                        val bmp = remember(m.localId) {
+                    val imgs = m.imageData?.let { listOf(it) } ?: m.images
+                    for ((idx, img) in imgs.withIndex()) {
+                        val bmp = remember(m.localId, idx) {
                             android.graphics.BitmapFactory.decodeByteArray(img, 0, img.size)
                         }
-                        Text(if (m.incoming) "‹ 📷" else "› 📷")
                         if (bmp != null) {
                             Image(bmp.asImageBitmap(), contentDescription = "photo",
                                 modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp))
+                            Spacer(Modifier.height(4.dp))
                         }
-                    } else {
-                        Text((if (m.incoming) "‹ " else "› ") + m.text)
                     }
+                    if (m.text.isNotEmpty()) Text((if (m.incoming) "‹ " else "› ") + m.text)
                     Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        // Staged-image tray.
+        if (attached.isNotEmpty()) {
+            LazyRow(Modifier.padding(vertical = 4.dp)) {
+                items(attached.size) { i ->
+                    val bmp = remember(attached[i]) {
+                        android.graphics.BitmapFactory.decodeByteArray(attached[i], 0, attached[i].size)
+                    }
+                    if (bmp != null) {
+                        Box(Modifier.padding(end = 6.dp)) {
+                            Image(bmp.asImageBitmap(), contentDescription = "staged",
+                                modifier = Modifier.size(48.dp))
+                            TextButton(onClick = { attached.removeAt(i) },
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.align(Alignment.TopEnd)) { Text("✕") }
+                        }
+                    }
                 }
             }
         }
@@ -364,7 +384,11 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
             TextButton(onClick = { picker.launch("image/*") }) { Text("📷") }
             Button(onClick = {
                 val t = draft.trim()
-                if (t.isNotEmpty()) { bearer.send(t, peer); draft = "" }
+                if (attached.isNotEmpty()) {
+                    bearer.sendMultipart(t, attached.toList(), peer); attached.clear(); draft = ""
+                } else if (t.isNotEmpty()) {
+                    bearer.send(t, peer); draft = ""
+                }
             }) { Text("Send") }
         }
     }

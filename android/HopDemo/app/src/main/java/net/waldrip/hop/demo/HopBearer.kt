@@ -51,7 +51,8 @@ class HopBearer private constructor(private val context: Context) {
         val localId: Long, val peer: String, val text: String, val incoming: Boolean,
         val bundleId: ByteArray? = null,
         val contentType: String = "text/plain",
-        val imageData: ByteArray? = null,                            // set for image/* messages
+        val imageData: ByteArray? = null,                            // set for a single image/* message
+        val images: List<ByteArray> = emptyList(),                   // one+ images of a multipart message
         val hops: UByte = 0u, val latencyMs: ULong? = null,           // incoming metadata
         val trace: List<String> = emptyList(),                        // provenance hop labels (§27)
         val sentAt: Long = System.currentTimeMillis(),               // outgoing tracking
@@ -215,6 +216,23 @@ class HopBearer private constructor(private val context: Context) {
         pump()
     }
 
+    /// Send text and/or one-or-more images as ONE message (multipart/mixed) — a single sealed
+    /// payload (DESIGN.md §20/§32). Wire format shared with iOS:
+    /// `[u32 partCount][ per part: u16 ctLen, ct, u32 bodyLen, body ]`.
+    fun sendMultipart(text: String, images: List<ByteArray>, to: Peer) {
+        val t = text.trim()
+        val parts = ArrayList<Pair<String, ByteArray>>()
+        if (t.isNotEmpty()) parts.add("text/plain" to t.toByteArray())
+        for (img in images) parts.add("image/jpeg" to img)
+        if (parts.isEmpty()) return
+        val id = runCatching {
+            node.sendMessage(to.address, "multipart/mixed", encodeMultipart(parts), true)
+        }.getOrNull()
+        messages.add(Message(localId = nextMsgId++, peer = to.name, text = t, incoming = false,
+            bundleId = id, contentType = "multipart/mixed", images = images))
+        pump()
+    }
+
     // ---- node <-> radio plumbing (all on the main thread) -------------------
 
     private fun addLink(socket: BluetoothSocket, initiator: Boolean) = main.post {
@@ -238,12 +256,19 @@ class HopBearer private constructor(private val context: Context) {
         for (m in node.takeInbox()) {
             val who = nameByAddr[m.from.toList()] ?: shortHex(m.from)
             val isImage = m.contentType.startsWith("image/")
-            val text = if (isImage) "" else String(m.body)
+            val isMultipart = m.contentType == "multipart/mixed"
+            var text = if (isImage) "" else String(m.body)
+            var images: List<ByteArray> = emptyList()
+            if (isMultipart) {
+                val parts = decodeMultipart(m.body)
+                text = parts.firstOrNull { it.first.startsWith("text/") }?.let { String(it.second) } ?: ""
+                images = parts.filter { it.first.startsWith("image/") }.map { it.second }
+            }
             val now = nowMs()
             val latency = if (now >= m.createdAt) now - m.createdAt else 0uL
             messages.add(Message(localId = nextMsgId++, peer = who, text = text,
                 incoming = true, contentType = m.contentType,
-                imageData = if (isImage) m.body else null,
+                imageData = if (isImage) m.body else null, images = images,
                 hops = m.hops, latencyMs = latency, trace = m.trace.map { traceLabel(it) }))
             queueIdentify(m.from)   // learn the sender's display name (§29)
             if (!appInForeground) notify(who, if (isImage) "📷 Photo" else text)
@@ -745,6 +770,40 @@ class HopBearer private constructor(private val context: Context) {
             }
 
         fun nowMs(): ULong = System.currentTimeMillis().toULong()
+
+        /// Encode `(contentType, bytes)` parts into the multipart wire format (shared with iOS).
+        fun encodeMultipart(parts: List<Pair<String, ByteArray>>): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            fun u32(v: Int) { out.write(v ushr 24); out.write(v ushr 16); out.write(v ushr 8); out.write(v) }
+            fun u16(v: Int) { out.write(v ushr 8); out.write(v) }
+            u32(parts.size)
+            for ((ct, body) in parts) {
+                val ctd = ct.toByteArray()
+                u16(ctd.size); out.write(ctd)
+                u32(body.size); out.write(body)
+            }
+            return out.toByteArray()
+        }
+
+        /// Decode the multipart wire format into `(contentType, bytes)` parts.
+        fun decodeMultipart(data: ByteArray): List<Pair<String, ByteArray>> {
+            val parts = mutableListOf<Pair<String, ByteArray>>()
+            var i = 0
+            fun u(n: Int): Int? {
+                if (i + n > data.size) return null
+                var v = 0; repeat(n) { v = (v shl 8) or (data[i].toInt() and 0xff); i++ }; return v
+            }
+            val count = u(4) ?: return parts
+            repeat(count) {
+                val cl = u(2) ?: return parts
+                if (i + cl > data.size) return parts
+                val ct = String(data, i, cl); i += cl
+                val bl = u(4) ?: return parts
+                if (i + bl > data.size) return parts
+                parts.add(ct to data.copyOfRange(i, i + bl)); i += bl
+            }
+            return parts
+        }
 
         /// Compact base58 prefix for display (full base58 via `addressBase58`).
         fun shortHex(d: ByteArray): String = addressBase58(d).take(8)

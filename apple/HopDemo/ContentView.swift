@@ -358,7 +358,8 @@ struct ChatView: View {
     @ObservedObject var bearer: HopBearer
     let peer: HopBearer.Peer
     @State private var draft = ""
-    @State private var photoItem: PhotosPickerItem? = nil
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var attached: [Data] = []   // staged images (JPEG) for one multipart send
 
     private var thread: [HopBearer.Message] {
         // Key by address (stable across renames); fall back to name for older messages.
@@ -389,57 +390,83 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(thread) { m in
-                        VStack(alignment: m.incoming ? .leading : .trailing, spacing: 2) {
-                            HStack {
-                                if !m.incoming { Spacer() }
-                                if let data = m.imageData, let img = UIImage(data: data) {
+                        // Images: a single-image message, or each image of a multipart one.
+                        let imgs: [Data] = m.imageData.map { [$0] } ?? m.images
+                        VStack(alignment: m.incoming ? .leading : .trailing, spacing: 4) {
+                            ForEach(Array(imgs.enumerated()), id: \.offset) { _, data in
+                                if let img = UIImage(data: data) {
                                     Image(uiImage: img)
                                         .resizable().scaledToFit()
                                         .frame(maxWidth: 220, maxHeight: 220)
                                         .clipShape(RoundedRectangle(cornerRadius: 12))
-                                } else {
-                                    Text(m.text)
-                                        .padding(8)
-                                        .background(m.incoming ? Color.gray.opacity(0.2) : Color.accentColor.opacity(0.25))
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
                                 }
-                                if m.incoming { Spacer() }
+                            }
+                            if !m.text.isEmpty {
+                                Text(m.text)
+                                    .padding(8)
+                                    .background(m.incoming ? Color.gray.opacity(0.2) : Color.accentColor.opacity(0.25))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
                             Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: m.incoming ? .leading : .trailing)
                             // Provenance: who/what carried each hop, resolved to display
                             // names where known (DESIGN.md §27/§29).
                             if m.incoming, !m.trace.isEmpty {
                                 Text("path: " + m.trace.map { bearer.traceLabel($0) }.joined(separator: " → "))
                                     .font(.caption2).foregroundStyle(.tertiary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: m.incoming ? .leading : .trailing)
                     }
                 }
                 .padding()
             }
+            // Staged-image tray (when one or more are attached for a multipart send).
+            if !attached.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(attached.enumerated()), id: \.offset) { idx, data in
+                            if let img = UIImage(data: data) {
+                                Image(uiImage: img).resizable().scaledToFill()
+                                    .frame(width: 48, height: 48)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    .overlay(alignment: .topTrailing) {
+                                        Button { attached.remove(at: idx) } label: {
+                                            Image(systemName: "xmark.circle.fill").font(.caption2)
+                                        }
+                                    }
+                            }
+                        }
+                    }.padding(.horizontal)
+                }
+            }
             HStack {
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Image(systemName: "photo").imageScale(.large)
+                PhotosPicker(selection: $photoItems, maxSelectionCount: 8, matching: .images) {
+                    Image(systemName: "photo.on.rectangle").imageScale(.large)
                 }
                 TextField("Message \(peer.name)", text: $draft).textFieldStyle(.roundedBorder)
                 Button("Send") {
                     let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !t.isEmpty else { return }
-                    bearer.send(t, to: peer)
-                    draft = ""
+                    if !attached.isEmpty {
+                        bearer.sendMultipart(text: t, images: attached, to: peer)
+                        attached = []; draft = ""
+                    } else if !t.isEmpty {
+                        bearer.send(t, to: peer); draft = ""
+                    }
                 }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attached.isEmpty)
             }
             .padding()
-            .onChange(of: photoItem) { item in
-                guard let item else { return }
+            .onChange(of: photoItems) { items in
+                guard !items.isEmpty else { return }
                 Task {
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let jpeg = UIImage(data: data)?.jpegData(compressionQuality: 0.7) {
-                        bearer.sendImage(jpeg, to: peer)
+                    var loaded: [Data] = []
+                    for item in items {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let jpeg = UIImage(data: data)?.jpegData(compressionQuality: 0.7) {
+                            loaded.append(jpeg)
+                        }
                     }
-                    photoItem = nil
+                    await MainActor.run { attached.append(contentsOf: loaded); photoItems = [] }
                 }
             }
         }
