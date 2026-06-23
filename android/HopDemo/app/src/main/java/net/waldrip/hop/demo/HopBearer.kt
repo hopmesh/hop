@@ -153,6 +153,7 @@ class HopBearer private constructor(private val context: Context) {
         started = true
         ensureNotificationChannel()
         loadMessages()   // restore chat history from the previous run
+        loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
         myName.value = name
         myAddress.value = addressBase58(node.address())
         // Presence is an app-level service (DESIGN.md §23): publish our name on the
@@ -437,6 +438,14 @@ class HopBearer private constructor(private val context: Context) {
     fun hpsMembers(topic: HpsTopic): List<ByteArray> = runCatching { node.hpsMembers(topic.path) }.getOrDefault(emptyList())
     fun hpsRekey(topic: HpsTopic, remove: List<ByteArray> = emptyList()) { runCatching { node.hpsRekey(topic.path, "", remove) }; pump() }
     fun hpsBrowse(): List<uniffi.hop_ffi.HpsTopicInfo> = runCatching { node.browseDiscoverable() }.getOrDefault(emptyList())
+
+    /// Rebuild the channel list from the node's persisted topics (hosted + subscribed) at startup.
+    private fun loadHpsTopics() {
+        runCatching { node.hpsMyTopics() }.getOrDefault(emptyList()).forEach { t ->
+            val topic = HpsTopic(t.host, t.path, t.kind == HpsKind.CHANNEL, t.hosting, t.access)
+            if (hpsTopics.none { it.id == topic.id }) hpsTopics.add(topic)
+        }
+    }
 
     fun hpsLeave(topic: HpsTopic) {
         runCatching { node.hpsLeave(topic.path) }

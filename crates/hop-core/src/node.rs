@@ -508,6 +508,17 @@ pub struct HpsInviteItem {
     pub kind: hps::ServiceKind,
 }
 
+/// A topic we host or follow — used to rebuild the app's channel list after a restart (the
+/// node persists topics; the app's in-memory list does not).
+#[derive(Clone)]
+pub struct HpsTopicState {
+    pub host: PubKeyBytes,
+    pub path: String,
+    pub kind: hps::ServiceKind,
+    pub hosting: bool,
+    pub access: hps::AccessMode,
+}
+
 impl Node<MemoryStore> {
     /// Create a node with an in-memory store.
     pub fn new(identity: Identity) -> Self {
@@ -1665,6 +1676,32 @@ impl<S: Store> Node<S> {
         ) {
             self.publish(tomb);
         }
+    }
+
+    /// The topics this node hosts or follows, so the app can rebuild its channel list after a
+    /// restart (topics persist in the store; the app's in-memory list doesn't, DESIGN.md §32).
+    pub fn hps_my_topics(&self) -> Vec<HpsTopicState> {
+        let me = self.identity.address();
+        let mut out = Vec::new();
+        for (path, cfg) in &self.services {
+            out.push(HpsTopicState {
+                host: me,
+                path: path.clone(),
+                kind: cfg.kind,
+                hosting: true,
+                access: cfg.access,
+            });
+        }
+        for (path, sub) in &self.subscriptions {
+            out.push(HpsTopicState {
+                host: sub.host,
+                path: path.clone(),
+                kind: if sub.service_pubkey.is_some() { hps::ServiceKind::Service } else { hps::ServiceKind::Channel },
+                hosting: false,
+                access: hps::AccessMode::Open,
+            });
+        }
+        out
     }
 
     /// Same-app discoverable topics we can see (decrypted descriptors + host address).
