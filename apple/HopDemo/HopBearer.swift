@@ -1307,7 +1307,10 @@ final class HopBearer: NSObject, ObservableObject {
                         active: peer.active, platform: peer.platform, app: peer.app)
             byAddr[addr] = peer
         }
-        reachable = byAddr.values.sorted { ($0.hops, $0.name) < ($1.hops, $1.name) }
+        // Sort by the stable address, not last-seen hops/name — otherwise rows jump around as
+        // hop counts fluctuate and generic names ("iPhone"/"iPad") tie. Address is fixed, so a
+        // peer keeps its position.
+        reachable = byAddr.values.sorted { $0.address.lexicographicallyPrecedes($1.address) }
 
         // Accumulate everyone we've ever seen this session into the contact book;
         // those not currently reachable form the "seen" list.
@@ -1315,7 +1318,7 @@ final class HopBearer: NSObject, ObservableObject {
         let here = Set(byAddr.keys)
         seen = contacts.filter { !here.contains($0.key) }
             .map { Peer(address: $0.key, name: $0.value.name, hops: 0) }
-            .sorted { $0.name < $1.name }
+            .sorted { $0.address.lexicographicallyPrecedes($1.address) }
 
         // Which contacts we're talking to over a forward-secret session (lock icon).
         secured = Set(contacts.keys.filter { node.isSecured(address: $0) })

@@ -20,7 +20,12 @@ class HopService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(ONGOING_ID, ongoingNotification())
-        HopBearer.shared(this).start(Build.MODEL ?: "Android")
+        // Prefer the user-assigned device name (e.g. "Jason's Pixel") — gettable on Android via
+        // Settings.Global.DEVICE_NAME — over the generic marketing model (Build.MODEL).
+        val userName = runCatching {
+            android.provider.Settings.Global.getString(contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+        }.getOrNull()
+        HopBearer.shared(this).start(userName?.takeIf { it.isNotBlank() } ?: Build.MODEL ?: "Android")
         return START_STICKY
     }
 
