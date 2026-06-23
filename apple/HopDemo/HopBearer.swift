@@ -1386,13 +1386,17 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if error != nil { return recover(peripheral) }
         guard let v = characteristic.value, v.count >= 2 else { return }
+        // CoreBluetooth raises an NSAssertion (→ SIGABRT) if openL2CAPChannel is
+        // called on a peripheral that isn't connected. The peripheral can drop
+        // between readValue and this callback, so verify state before opening.
+        guard peripheral.state == .connected else { return recover(peripheral) }
         guard !opened.contains(peripheral.identifier) else { return }
         opened.insert(peripheral.identifier)
         let psm = CBL2CAPPSM(UInt16(v[0]) << 8 | UInt16(v[1]))
         l2capPsm[peripheral.identifier] = psm
         l2capAttempts[peripheral.identifier] = 0
         status = "opening L2CAP (psm \(psm))…"
-        peripheral.openL2CAPChannel(psm)
+        openL2CAP(peripheral, psm)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
@@ -1408,7 +1412,10 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
                 status = "L2CAP retry \(n) (psm \(psm))…"
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self, let p = self.retained[id] else { return }
-                    p.openL2CAPChannel(psm)
+                    // Peripheral may have dropped during the retry delay; openL2CAPChannel
+                    // asserts (→ crash) if it isn't connected.
+                    guard p.state == .connected else { self.recover(p); return }
+                    self.openL2CAP(p, psm)
                 }
             } else {
                 l2capAttempts[id] = nil
@@ -1419,6 +1426,20 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
         backoff[peripheral.identifier] = nil // link is up — reset the retry clock
         l2capAttempts[peripheral.identifier] = nil
         addLink(channel!, initiator: true)
+    }
+
+    /// Open an L2CAP channel without crashing. CoreBluetooth raises an
+    /// uncatchable (from Swift) NSException via NSAssert when the peripheral is in
+    /// a transient bad state at the moment of the call — the `.connected` guard
+    /// closes the common window but not every race. Route any thrown exception to
+    /// `recover()` so a bad handshake retries instead of aborting the process.
+    private func openL2CAP(_ peripheral: CBPeripheral, _ psm: CBL2CAPPSM) {
+        do {
+            try HopObjCExceptionCatcher.run { peripheral.openL2CAPChannel(psm) }
+        } catch {
+            NSLog("HOPLOG openL2CAPChannel threw: \(error.localizedDescription) — recovering")
+            recover(peripheral)
+        }
     }
 
     /// Reset a stuck peripheral and let the backoff path re-establish (not in a tight

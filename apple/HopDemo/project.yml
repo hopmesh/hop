@@ -20,6 +20,8 @@ targets:
       - HopBearer.swift
       - HopLink.swift
       - HopWebView.swift
+      - HopObjCExceptionCatcher.h
+      - HopObjCExceptionCatcher.m
       - ../generated/Sources/hop_ffi.swift
     dependencies:
       - framework: ../generated/HopFFI.xcframework
@@ -48,3 +50,4 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: 8H7HVPHS87
         CODE_SIGN_STYLE: Automatic
+        SWIFT_OBJC_BRIDGING_HEADER: HopDemo-Bridging-Header.h
