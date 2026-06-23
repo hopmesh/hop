@@ -545,7 +545,13 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                         }
                     }
                     if (m.text.isNotEmpty()) Text((if (m.incoming) "‹ " else "› ") + m.text)
-                    Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
+                    if (m.failed && !m.incoming) {
+                        Text("⟳ Not sent · tap to retry", color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.clickable { bearer.retry(m, peer) })
+                    } else {
+                        Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }

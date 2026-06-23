@@ -425,7 +425,16 @@ struct ChatView: View {
                                     .background(m.incoming ? Color.gray.opacity(0.2) : Color.accentColor.opacity(0.25))
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
-                            Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
+                            if m.failed && !m.incoming {
+                                Button { bearer.retry(m) } label: {
+                                    Label("Not sent · tap to retry", systemImage: "arrow.clockwise")
+                                        .font(.caption2)
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.red)
+                            } else {
+                                Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
+                            }
                             // Provenance: who/what carried each hop, resolved to display
                             // names where known (DESIGN.md §27/§29).
                             if m.incoming, !m.trace.isEmpty {

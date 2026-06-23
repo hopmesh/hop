@@ -277,6 +277,33 @@ class HopBearer private constructor(private val context: Context) {
         pump()
     }
 
+    /// Re-send a failed ("Not sent") message in place. Recovery for a message that gave up
+    /// (queue cleared, or still unsent at a restart). `to` supplies the address (Message stores
+    /// only the peer name).
+    fun retry(m: Message, to: Peer) {
+        if (m.incoming) return
+        val ctBody: Pair<String, ByteArray> = when {
+            m.contentType.startsWith("image/") -> {
+                val d = m.imageData ?: return
+                "image/jpeg" to d
+            }
+            m.contentType == "multipart/mixed" -> {
+                val parts = ArrayList<Pair<String, ByteArray>>()
+                if (m.text.isNotEmpty()) parts.add("text/plain" to m.text.toByteArray())
+                val imgs = if (m.imageData != null) listOf(m.imageData) else m.images
+                for (img in imgs) parts.add("image/jpeg" to img)
+                if (parts.isEmpty()) return
+                "multipart/mixed" to encodeMultipart(parts)
+            }
+            else -> "text/plain" to m.text.toByteArray()
+        }
+        val id = runCatching { node.sendMessage(to.address, ctBody.first, ctBody.second, true) }.getOrNull()
+        val i = messages.indexOfFirst { it.localId == m.localId }
+        if (i >= 0) messages[i] = m.copy(failed = false, delivered = false, bundleId = id,
+            sentAt = System.currentTimeMillis())
+        pump()
+    }
+
     // ---- node <-> radio plumbing (all on the main thread) -------------------
 
     private fun addLink(socket: BluetoothSocket, initiator: Boolean) = main.post {
