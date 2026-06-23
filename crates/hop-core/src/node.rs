@@ -1529,31 +1529,56 @@ impl<S: Store> Node<S> {
         else {
             return;
         };
-        // Find the subscription whose tag matches (we keep the real path locally).
-        let Some((path, sub)) =
-            self.subscriptions.iter().find(|(_, s)| s.topic_tag == topic_tag).map(|(p, s)| (p.clone(), s.clone()))
-        else {
-            return; // not subscribed (or another app's broadcast)
-        };
-        if epoch < sub.epoch {
-            return; // stale generation (we've been re-keyed past it)
-        }
         let (Ok(nonce12), Ok(sig64)) =
             (<[u8; 12]>::try_from(nonce.as_slice()), <[u8; 64]>::try_from(sig.as_slice()))
         else {
             return;
         };
-        let signer = sub.service_pubkey.unwrap_or(bundle.inner.src);
+        // Match the tag to a topic we follow (subscription) OR a channel we host. The host must
+        // receive members' posts too — a channel is group chat, and the host keeps it in
+        // `services`, not `subscriptions`. A *service* we host never receives others' posts
+        // (only the owner writes).
+        let sub = self
+            .subscriptions
+            .iter()
+            .find(|(_, s)| s.topic_tag == topic_tag)
+            .map(|(p, s)| (p.clone(), s.clone()));
+        let (path, content_key, service_pubkey, my_epoch, host) = if let Some((p, s)) = sub {
+            (p, s.content_key, s.service_pubkey, s.epoch, Some(s.host))
+        } else if let Some((p, cfg)) = self
+            .services
+            .iter()
+            .find(|(p, c)| c.kind == hps::ServiceKind::Channel && self.app.topic_tag(p) == topic_tag)
+            .map(|(p, c)| (p.clone(), c.clone()))
+        {
+            (p, cfg.content_key, None, cfg.epoch, None) // None host = we are the host
+        } else {
+            return; // not a topic we follow or host (or another app's broadcast)
+        };
+        if epoch < my_epoch {
+            return; // stale generation (we've been re-keyed past it)
+        }
+        // Service → verify against the service key; channel → against the sender's address.
+        let signer = service_pubkey.unwrap_or(bundle.inner.src);
         if !hps::verify_publish(&signer, &path, &nonce12, &ciphertext, &sig64) {
             return;
         }
-        let Some(body) = hps::open_content(&sub.content_key, &nonce12, &ciphertext) else {
+        let Some(body) = hps::open_content(&content_key, &nonce12, &ciphertext) else {
             return;
         };
         self.hps_inbox.push(HpsMessage { path: path.clone(), sender: bundle.inner.src, body });
-        // Reach-ack the host once per (topic, epoch) so it can tally unique members (§32).
-        if self.hps_acked.insert((topic_tag, epoch)) {
-            let _ = self.send_to_host(sub.host, Payload::HpsReachAck { topic_tag, epoch });
+        match host {
+            Some(h) => {
+                // We're a member: reach-ack the host once per (topic, epoch) so it tallies us.
+                if self.hps_acked.insert((topic_tag, epoch)) {
+                    let _ = self.send_to_host(h, Payload::HpsReachAck { topic_tag, epoch });
+                }
+            }
+            None => {
+                // We're the host: a member posting is direct evidence of membership.
+                self.record_member(&path, bundle.inner.src);
+                self.hps_reach.entry(path).or_default().insert(bundle.inner.src);
+            }
         }
     }
 
@@ -4314,6 +4339,28 @@ mod tests {
             MemoryStore::new(),
             crate::app::AppKeys::from_secret([secret; 32]),
         )
+    }
+
+    #[test]
+    fn hps_channel_host_receives_member_posts() {
+        // A channel is group chat: the HOST must also receive members' posts, even though it
+        // keeps the topic in `services` (not `subscriptions`). Regression for "host can send but
+        // doesn't get messages from other members."
+        let mut nodes = [app_node(4), app_node(4)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::Open, crate::hps::Visibility::Private);
+        nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        net.pump(&mut nodes);
+
+        // Member 1 posts; the host (node 0) must receive it.
+        nodes[1].hps_publish("lobby", b"hi host").unwrap();
+        net.pump(&mut nodes);
+        let host_msgs = nodes[0].take_hps_messages();
+        assert_eq!(host_msgs.len(), 1, "host receives the member's post");
+        assert_eq!(host_msgs[0].body, b"hi host");
+        assert_eq!(host_msgs[0].sender, nodes[1].address());
     }
 
     #[test]
