@@ -24,6 +24,128 @@ struct ContentView: View {
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { $0.hops >= 2 } }
 
     var body: some View {
+        TabView {
+            chatsTab.tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
+            channelsTab.tabItem { Label("Channels", systemImage: "dot.radiowaves.left.and.right") }
+            webTab.tabItem { Label("Web", systemImage: "globe") }
+            statusTab.tabItem { Label("Status", systemImage: "gearshape") }
+        }
+        .onAppear {
+            guard !started else { return }
+            started = true
+            let name = HopBearer.savedName(default: deviceName)
+            nameField = name
+            bearer.start(name: name)
+        }
+    }
+
+    // MARK: - Tab 1: Chats — people you can reach → chat thread (shared IA)
+    @ViewBuilder private var chatsTab: some View {
+        NavigationStack {
+            List {
+                Section("Nearby (direct)") {
+                    if direct.isEmpty { Text("none").foregroundStyle(.secondary) }
+                    ForEach(direct) { peer in peerRow(peer) }
+                }
+                Section("In the mesh (relayed)") {
+                    if mesh.isEmpty { Text("none").foregroundStyle(.secondary) }
+                    ForEach(mesh) { peer in peerRow(peer) }
+                }
+                if !bearer.seen.isEmpty {
+                    Section("Conversations & seen (offline)") {
+                        ForEach(bearer.seen) { peer in
+                            NavigationLink(value: peer) {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(peer.name)
+                                        Text(HopBearer.shortHex(peer.address))
+                                            .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if let n = bearer.unread[peer.name], n > 0 {
+                                        Text("\(n)").font(.caption2).bold().foregroundStyle(.white)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(Color.red).clipShape(Capsule())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(bearer.totalUnread > 0 ? "Chats (\(bearer.totalUnread))" : "Chats")
+            .navigationDestination(for: HopBearer.Peer.self) { peer in
+                ChatView(bearer: bearer, peer: peer)
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showAddContact = true } label: {
+                        Image(systemName: "person.badge.plus")
+                    }
+                    .accessibilityLabel("Add contact")
+                }
+            }
+            .sheet(isPresented: $showAddContact) { AddContactView(bearer: bearer) }
+        }
+    }
+
+    // MARK: - Tab 2: Channels — hps:// pub/sub
+    @ViewBuilder private var channelsTab: some View {
+        NavigationStack {
+            HpsView(bearer: bearer).navigationTitle("Channels")
+        }
+    }
+
+    // MARK: - Tab 3: Web — hops:// fetch + browser, HNS cache
+    @ViewBuilder private var webTab: some View {
+        NavigationStack {
+            List {
+                Section("hops://") {
+                    HStack {
+                        TextField("example.hopme.sh", text: $hopsField)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                            .onSubmit { fetchHops() }
+                        Button("Fetch") { fetchHops() }
+                            .disabled(hopsField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    NavigationLink {
+                        HopBrowserView(bearer: bearer, start: hopsField.isEmpty ? "example.hopme.sh" : hopsField)
+                    } label: {
+                        Label("Open in hops:// browser", systemImage: "globe")
+                    }
+                    ForEach(bearer.hopsResults.sorted(by: { $0.key < $1.key }), id: \.key) { domain, text in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(domain).font(.caption).monospaced().foregroundStyle(.secondary)
+                            Text(text).font(.caption).textSelection(.enabled)
+                        }
+                    }
+                }
+                if !bearer.hnsCache.isEmpty {
+                    Section("HNS cache") {
+                        ForEach(bearer.hnsCache) { rec in
+                            HStack {
+                                Image(systemName: rec.address.isEmpty ? "xmark.circle" : "magnifyingglass")
+                                    .foregroundStyle(rec.address.isEmpty ? .red : .green)
+                                VStack(alignment: .leading) {
+                                    Text(rec.domain).font(.callout)
+                                    Text(rec.address.isEmpty ? "no record (negative)" : HopBearer.shortHex(rec.address))
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("TTL \(rec.ttl)s")
+                                    .font(.caption2).monospaced()
+                                    .foregroundStyle(rec.ttl < 30 ? .orange : .secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Web")
+        }
+    }
+
+    // MARK: - Tab 4: Status — device, relay, transports, backbone, queue
+    @ViewBuilder private var statusTab: some View {
         NavigationStack {
             List {
                 Section("This device") {
@@ -38,6 +160,18 @@ struct ContentView: View {
                     LabeledContent("Address", value: bearer.myAddress).monospaced()
                     LabeledContent("Status", value: bearer.status).font(.caption)
                     LabeledContent("Identity", value: bearer.idNote).font(.caption)
+                }
+
+                Section("Cloud relay (backbone)") {
+                    HStack {
+                        TextField("host:port or wss://relay.hopme.sh/", text: $relayField)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        Button("Connect") {
+                            let a = relayField.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !a.isEmpty { bearer.connectRelay(a) }
+                        }
+                    }
+                    LabeledContent("Relay", value: bearer.relayStatus).font(.caption)
                 }
 
                 Section("Transports") {
@@ -72,55 +206,6 @@ struct ContentView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                    }
-                }
-
-                Section("Cloud relay (backbone)") {
-                    HStack {
-                        TextField("host:port or wss://relay.hopme.sh/", text: $relayField)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
-                        Button("Connect") {
-                            let a = relayField.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !a.isEmpty { bearer.connectRelay(a) }
-                        }
-                    }
-                    LabeledContent("Relay", value: bearer.relayStatus).font(.caption)
-                }
-
-                // Fetch a site served over the mesh by its origin (DESIGN.md §30). The domain
-                // resolves via HNS to a hops endpoint; the GET is sealed end-to-end (no third
-                // party terminating TLS, unlike the old https gateway).
-                Section("hops://") {
-                    HStack {
-                        TextField("example.hopme.sh", text: $hopsField)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
-                            .onSubmit { fetchHops() }
-                        Button("Fetch") { fetchHops() }
-                            .disabled(hopsField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                    // A full browser, every request served over the mesh (DESIGN.md §30).
-                    NavigationLink {
-                        HopBrowserView(bearer: bearer, start: hopsField.isEmpty ? "example.hopme.sh" : hopsField)
-                    } label: {
-                        Label("Open in hops:// browser", systemImage: "globe")
-                    }
-                    ForEach(bearer.hopsResults.sorted(by: { $0.key < $1.key }), id: \.key) { domain, text in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(domain).font(.caption).monospaced().foregroundStyle(.secondary)
-                            Text(text).font(.caption).textSelection(.enabled)
-                        }
-                    }
-                }
-
-                Section("hps:// pub/sub") {
-                    NavigationLink {
-                        HpsView(bearer: bearer)
-                    } label: {
-                        Label("Channels & services", systemImage: "dot.radiowaves.left.and.right")
-                    }
-                    if !bearer.hpsInbox.isEmpty {
-                        Text("\(bearer.hpsInbox.count) message\(bearer.hpsInbox.count == 1 ? "" : "s") received")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -159,61 +244,6 @@ struct ContentView: View {
                     }
                 }
 
-                // HNS cache (debug): each resolved domain, its endpoint address, and the
-                // remaining DNS-derived TTL ticking down to expiry, after which it's pruned
-                // and the next request re-resolves via DNS (DESIGN.md §30).
-                if !bearer.hnsCache.isEmpty {
-                    Section("HNS cache (debug)") {
-                        ForEach(bearer.hnsCache) { rec in
-                            HStack {
-                                Image(systemName: rec.address.isEmpty ? "xmark.circle" : "magnifyingglass")
-                                    .foregroundStyle(rec.address.isEmpty ? .red : .green)
-                                VStack(alignment: .leading) {
-                                    Text(rec.domain).font(.callout)
-                                    Text(rec.address.isEmpty ? "no record (negative)" : HopBearer.shortHex(rec.address))
-                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text("TTL \(rec.ttl)s")
-                                    .font(.caption2).monospaced()
-                                    .foregroundStyle(rec.ttl < 30 ? .orange : .secondary)
-                            }
-                        }
-                    }
-                }
-
-                Section("Nearby (direct)") {
-                    if direct.isEmpty { Text("none").foregroundStyle(.secondary) }
-                    ForEach(direct) { peer in peerRow(peer) }
-                }
-
-                Section("In the mesh (relayed)") {
-                    if mesh.isEmpty { Text("none").foregroundStyle(.secondary) }
-                    ForEach(mesh) { peer in peerRow(peer) }
-                }
-
-                if !bearer.seen.isEmpty {
-                    Section("Conversations & seen (offline)") {
-                        ForEach(bearer.seen) { peer in
-                            NavigationLink(value: peer) {
-                                HStack {
-                                    VStack(alignment: .leading) {
-                                        Text(peer.name)
-                                        Text(HopBearer.shortHex(peer.address))
-                                            .font(.caption2).monospaced().foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if let n = bearer.unread[peer.name], n > 0 {
-                                        Text("\(n)").font(.caption2).bold().foregroundStyle(.white)
-                                            .padding(.horizontal, 6).padding(.vertical, 2)
-                                            .background(Color.red).clipShape(Capsule())
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Section {
                     if bearer.queue.isEmpty { Text("empty").foregroundStyle(.secondary) }
                     ForEach(bearer.queue) { row in
@@ -238,28 +268,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle(bearer.totalUnread > 0 ? "Hop (\(bearer.totalUnread))" : "Hop")
-            .navigationDestination(for: HopBearer.Peer.self) { peer in
-                ChatView(bearer: bearer, peer: peer)
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showAddContact = true } label: {
-                        Image(systemName: "person.badge.plus")
-                    }
-                    .accessibilityLabel("Add contact")
-                }
-            }
-            .sheet(isPresented: $showAddContact) {
-                AddContactView(bearer: bearer)
-            }
-        }
-        .onAppear {
-            guard !started else { return }
-            started = true
-            let name = HopBearer.savedName(default: deviceName)
-            nameField = name
-            bearer.start(name: name)
+            .navigationTitle("Status")
         }
     }
 
