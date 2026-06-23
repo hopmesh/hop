@@ -7,6 +7,7 @@
 //!
 //! See `DESIGN.md` at the repo root for the full protocol specification.
 
+pub mod app;
 pub mod bundle;
 pub mod crypto;
 pub mod discover;
@@ -95,4 +96,5 @@ pub mod prelude {
     pub use crate::util::{compress, decompress};
     pub use crate::bundle::TraceHop;
     pub use crate::{app_id, relay_app_id, short_app, AppId, ShortApp, FABRIC_APP, RELAY_APP_NAME};
+    pub use crate::app::{AppKeys, AppSecret, JOIN_EPOCH_MS};
 }

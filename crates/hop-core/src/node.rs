@@ -31,7 +31,8 @@ use crate::discover::{Advert, AdvertId, AdvertKind, Directory};
 use crate::link::{BearerEvent, LinkHandshake, LinkId, LinkSession, Role};
 use crate::route::RouteTable;
 use crate::routing::{BundleMeta, ForwardDecision, Router, SprayAndWait};
-use crate::{short_app, AppId, FABRIC_APP};
+use crate::{short_app, AppId};
+use crate::app::AppKeys;
 use crate::session::Session;
 use crate::store::{MemoryStore, Store};
 
@@ -380,10 +381,12 @@ pub struct Node<S: Store = MemoryStore> {
     /// returning delivery-ACK for one of these means we're on its path → learn the
     /// route. Bounded; pruned by age in [`Node::tick`].
     forwarded: HashMap<BundleId, (PubKeyBytes, PubKeyBytes, u64)>,
-    /// This node's app identity, stamped into each trace hop so a route shows which
-    /// app carried it (DESIGN.md §27). Defaults to the shared fabric; set by the
-    /// embedding app (or [`crate::relay_app_id`] for a relay).
-    app: AppId,
+    /// This node's app key material (DESIGN.md §17, §32): the public [`AppId`] stamped into
+    /// trace hops + hps adverts/handshakes, plus the secret-derived discovery/MAC keys that
+    /// isolate this app's `hps://` channels from other apps. Defaults to the open shared fabric;
+    /// set by the embedding app via [`Node::set_app_keys`] (or [`Node::set_app`] for a relay
+    /// label).
+    app: AppKeys,
     /// This node's display name, returned by the built-in `hop.identify` service
     /// (DESIGN.md §29). `None` by default (a device) → callers show the short address;
     /// a relay sets it to its region domain.
@@ -525,7 +528,7 @@ impl<S: Store> Node<S> {
             http_responses: Vec::new(),
             routes: RouteTable::new(DEFAULT_MAX_ROUTES),
             forwarded: HashMap::new(),
-            app: FABRIC_APP,
+            app: AppKeys::fabric(),
             name: None,
             kind: NodeKind::Device,
             service_requests: Vec::new(),
@@ -656,7 +659,17 @@ impl<S: Store> Node<S> {
     /// (the default) so they never advertise which app they run. (The FFI deliberately
     /// exposes no setter for this.)
     pub fn set_app(&mut self, app: AppId) {
-        self.app = app;
+        self.app = AppKeys::label_only(app);
+        self.directory.set_app(app);
+    }
+
+    /// Set this node's full app key material from its 32-byte secret (DESIGN.md §17, §32). The
+    /// embedding app calls this so its `hps://` channels/services are isolated from other apps:
+    /// only same-secret peers can discover, join, or be invited to them. The secret is never
+    /// persisted by core — pass it every launch (like the identity seed).
+    pub fn set_app_keys(&mut self, keys: AppKeys) {
+        self.directory.set_app(keys.id);
+        self.app = keys;
     }
 
     /// Decayed learned reachability toward `dst` (0.0 if no route is known). Higher
@@ -2366,7 +2379,7 @@ impl<S: Store> Node<S> {
     /// Offer stored bundles to one link, applying binary spray-and-wait.
     fn offer_bundles_to_link(&mut self, link: LinkId) {
         let me_short = short_addr(&self.identity.address());
-        let me_app = short_app(&self.app);
+        let me_app = short_app(&self.app.id);
         let now = self.now_ms;
         // Snapshot ids, ordered by utility so the most-likely-to-deliver bundles go
         // first during a short contact (DESIGN.md §27).
@@ -3559,7 +3572,7 @@ mod tests {
         assert!(trace.iter().any(|h| h.node == s1), "relay's hop recorded");
         assert_eq!(trace.len(), 2, "exactly the two forwarders, in order");
         // App defaults to the shared fabric here (no set_app), stamped on each hop.
-        assert!(trace.iter().all(|h| h.app == short_app(&FABRIC_APP)), "carrier app stamped");
+        assert!(trace.iter().all(|h| h.app == short_app(&crate::FABRIC_APP)), "carrier app stamped");
     }
 
     #[test]
