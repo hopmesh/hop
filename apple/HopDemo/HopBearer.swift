@@ -121,10 +121,13 @@ final class HopBearer: NSObject, ObservableObject {
         let address: Data    // empty = a cached negative (no such endpoint)
         let ttl: UInt32      // remaining lifetime, ticking down to expiry
     }
-    // hps:// pub/sub — services & channels (§32). Topics we host or subscribe to, and the
-    // decrypted, sender-verified messages we've received per path.
+    // hps:// pub/sub — services & channels (§32). Topics we host or subscribe to, the messages
+    // per topic (one thread each), per-topic unread, and invites we've received.
     @Published var hpsTopics: [HpsTopic] = []
-    @Published var hpsInbox: [HpsMsgRow] = []
+    @Published var hpsThreads: [String: [HpsMsgRow]] = [:]   // topic id → its messages
+    @Published var hpsUnread: [String: Int] = [:]            // topic id → unread count
+    @Published var hpsInvites: [HpsInvite] = []              // invites received (FFI record)
+    var activeTopic: String?                                 // topic on screen (not counted)
 
     /// An hps:// topic we host (`hosting`) or follow (`subscribed`), keyed by host+path.
     struct HpsTopic: Identifiable {
@@ -133,6 +136,9 @@ final class HopBearer: NSObject, ObservableObject {
         let path: String
         let isChannel: Bool   // channel (anyone writes) vs service (only owner broadcasts)
         let hosting: Bool     // true = we registered it; false = we subscribed to it
+        var access: HpsAccess = .open   // key-handoff policy (for topics we host)
+        /// Whether we can post: a channel (anyone), or a service we host.
+        var writable: Bool { isChannel || hosting }
     }
     /// One received hps:// message, decrypted + sender-verified (§32).
     struct HpsMsgRow: Identifiable {
@@ -222,6 +228,10 @@ final class HopBearer: NSObject, ObservableObject {
     private var didSetupPeripheral = false            // peripheral published this power cycle
     private var nameByAddr: [Data: String] = [:]
     private var contacts: [Data: Peer] = [:]   // app-side contact book (address → peer)
+    /// Our own raw 32-byte address (for marking our own hps posts).
+    var myAddressData: Data { node.address() }
+    /// Contacts as a sorted list (for the invite picker).
+    var contactList: [Peer] { contacts.values.sorted { $0.name.lowercased() < $1.name.lowercased() } }
     private var userNamed = Set<Data>()        // contacts the user named (identify won't override)
     // hops:// fetches awaiting an HNS resolution: domain → the path to request once the
     // record resolves (DESIGN.md §30).
@@ -784,48 +794,118 @@ final class HopBearer: NSObject, ObservableObject {
     /// (only we broadcast). Keys are minted + persisted in the node. Returns the service public
     /// key for a service (empty for a channel).
     @discardableResult
-    func hpsRegister(path: String, channel: Bool) -> Data {
+    func hpsRegister(path: String, channel: Bool, access: HpsAccess = .open,
+                     discoverable: Bool = false) -> Data {
         let p = path.trimmingCharacters(in: .whitespaces)
         guard !p.isEmpty else { return Data() }
-        let pk = node.registerService(path: p, kind: channel ? .channel : .service)
+        let pk = node.registerService(path: p, kind: channel ? .channel : .service,
+                                      access: access, visibility: discoverable ? .discoverable : .private)
         if !hpsTopics.contains(where: { $0.host == node.address() && $0.path == p }) {
-            hpsTopics.insert(HpsTopic(host: node.address(), path: p, isChannel: channel, hosting: true), at: 0)
+            hpsTopics.insert(HpsTopic(host: node.address(), path: p, isChannel: channel,
+                                      hosting: true, access: access), at: 0)
         }
         return pk
     }
 
-    /// Subscribe to `hps://{hostBase58}/{path}` — request the topic's keys from its host. The
-    /// host (if open) replies with the keys; messages then arrive in `hpsInbox`.
+    /// Subscribe to `hps://{hostBase58}/{path}` — request the topic's keys from its host.
     func hpsSubscribe(hostBase58: String, path: String) {
         let host = addressFromBase58(text: hostBase58.trimmingCharacters(in: .whitespacesAndNewlines))
         let p = path.trimmingCharacters(in: .whitespaces)
         guard host.count == 32, !p.isEmpty else { return }
-        _ = try? node.hpsSubscribe(host: host, path: p)
-        // We don't yet know the kind until keys arrive; default to channel (the host's reply
-        // carries the service pubkey, which governs publish rights on the core side).
-        if !hpsTopics.contains(where: { $0.host == host && $0.path == p }) {
-            hpsTopics.insert(HpsTopic(host: host, path: p, isChannel: true, hosting: false), at: 0)
+        hpsSubscribe(host: host, path: p, isChannel: true)
+    }
+
+    private func hpsSubscribe(host: Data, path: String, isChannel: Bool) {
+        _ = try? node.hpsSubscribe(host: host, path: path)
+        if !hpsTopics.contains(where: { $0.host == host && $0.path == path }) {
+            hpsTopics.insert(HpsTopic(host: host, path: path, isChannel: isChannel, hosting: false), at: 0)
         }
         pump()
     }
 
+    /// Join a discoverable topic from a browse result.
+    func hpsJoin(_ t: HpsTopicInfo) {
+        hpsSubscribe(host: t.host, path: t.path, isChannel: t.kind == .channel)
+    }
+
     /// Publish text to a topic we host or (for a channel) belong to. Floods to all subscribers.
-    func hpsPublish(path: String, text: String) {
-        let p = path.trimmingCharacters(in: .whitespaces)
-        guard !p.isEmpty, let body = text.data(using: .utf8) else { return }
-        _ = try? node.hpsPublish(path: p, body: body)
+    func hpsPublish(topic: HpsTopic, text: String) {
+        guard !text.isEmpty, let body = text.data(using: .utf8) else { return }
+        _ = try? node.hpsPublish(path: topic.path, body: body)
         // Echo our own post locally — broadcasts don't loop back to the sender.
-        hpsInbox.insert(HpsMsgRow(path: p, sender: node.address(), text: text, at: HopBearer.nowMs()), at: 0)
+        appendThread(topic.id, HpsMsgRow(path: topic.path, sender: node.address(), text: text, at: HopBearer.nowMs()))
         pump()
     }
 
-    /// Drain received pub/sub messages into the inbox (already decrypted + sender-verified).
+    /// Host → contact: invite an address to a topic we host (Invite mode).
+    func hpsInvite(topic: HpsTopic, to address: Data) {
+        guard topic.hosting, address.count == 32 else { return }
+        _ = try? node.hpsInvite(path: topic.path, dest: address)
+        pump()
+    }
+
+    /// Accept an invite we received — joins the topic once the host seals us the keys.
+    func hpsAcceptInvite(_ inv: HpsInvite) {
+        _ = try? node.hpsAcceptInvite(host: inv.host, path: inv.path)
+        hpsInvites.removeAll { $0.path == inv.path && $0.host == inv.host }
+        if !hpsTopics.contains(where: { $0.host == inv.host && $0.path == inv.path }) {
+            hpsTopics.insert(HpsTopic(host: inv.host, path: inv.path,
+                                      isChannel: inv.kind == .channel, hosting: false), at: 0)
+        }
+        pump()
+    }
+
+    func hpsDeclineInvite(_ inv: HpsInvite) {
+        hpsInvites.removeAll { $0.path == inv.path && $0.host == inv.host }
+    }
+
+    /// Host: pending join requests (RequestToJoin) for a topic.
+    func hpsPending(_ topic: HpsTopic) -> [Data] { node.hpsPending(path: topic.path) }
+    func hpsApprove(_ topic: HpsTopic, _ who: Data) { _ = try? node.hpsApprove(path: topic.path, requester: who); pump() }
+    func hpsDeny(_ topic: HpsTopic, _ who: Data) { try? node.hpsDeny(path: topic.path, requester: who) }
+    /// Host: reach (unique acking members) + the retained-member set.
+    func hpsReach(_ topic: HpsTopic) -> Int { Int(node.hpsReach(path: topic.path)) }
+    func hpsMembers(_ topic: HpsTopic) -> [Data] { node.hpsMembers(path: topic.path) }
+    /// Host: rotate keys, optionally removing members (revocation).
+    func hpsRekey(_ topic: HpsTopic, remove: [Data] = []) { _ = try? node.hpsRekey(path: topic.path, newPath: "", remove: remove); pump() }
+
+    /// Leave / unsubscribe a topic we follow.
+    func hpsLeave(_ topic: HpsTopic) {
+        _ = try? node.hpsLeave(path: topic.path)
+        hpsTopics.removeAll { $0.id == topic.id }
+        hpsThreads[topic.id] = nil
+        hpsUnread[topic.id] = nil
+        pump()
+    }
+
+    /// Discover same-app topics on the mesh (decrypted descriptors).
+    func hpsBrowse() -> [HpsTopicInfo] { node.browseDiscoverable() }
+
+    /// Mark a topic's thread as read (called when its screen is open).
+    func openTopic(_ id: String) { activeTopic = id; hpsUnread[id] = 0 }
+    func closeTopic() { activeTopic = nil }
+
+    private func appendThread(_ id: String, _ row: HpsMsgRow) {
+        hpsThreads[id, default: []].append(row)
+        if hpsThreads[id]!.count > 500 { hpsThreads[id]!.removeFirst(hpsThreads[id]!.count - 500) }
+    }
+
+    /// Drain received pub/sub messages into per-topic threads, and surface new invites.
     private func drainHps() {
         for m in node.takeHpsMessages() {
             let text = String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>"
-            hpsInbox.insert(HpsMsgRow(path: m.path, sender: m.sender, text: text, at: HopBearer.nowMs()), at: 0)
-            if hpsInbox.count > 200 { hpsInbox.removeLast(hpsInbox.count - 200) }
-            queueIdentify(m.sender)   // learn the sender's display name
+            // Match the message to a topic we follow (by path; host is whoever we subscribed to).
+            let topic = hpsTopics.first { $0.path == m.path }
+            let id = topic?.id ?? m.path
+            appendThread(id, HpsMsgRow(path: m.path, sender: m.sender, text: text, at: HopBearer.nowMs()))
+            if id != activeTopic { hpsUnread[id, default: 0] += 1 }
+            queueIdentify(m.sender)
+        }
+        for inv in node.takeHpsInvites() {
+            if !hpsInvites.contains(where: { $0.path == inv.path && $0.host == inv.host }) {
+                hpsInvites.append(inv)
+                queueIdentify(inv.host)
+            }
         }
     }
 
