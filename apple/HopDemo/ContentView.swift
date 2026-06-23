@@ -26,10 +26,7 @@ struct ContentView: View {
     /// path, and the hop signal is robust to local links momentarily churning in/out of
     /// `peerLinks` (otherwise direct peers flicker to "mesh" between link blips).
     private func isDirect(_ p: HopBearer.Peer) -> Bool {
-        if let t = bearer.linkTransports[p.address], t.contains("BT") || t.contains("Wi-Fi") {
-            return true
-        }
-        return p.hops <= 1
+        bearer.directSeen.contains(p.address)
     }
     private var direct: [HopBearer.Peer] { bearer.reachable.filter { isDirect($0) } }
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { !isDirect($0) } }
