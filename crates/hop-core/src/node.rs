@@ -202,6 +202,16 @@ struct PeerSession {
     established_by: Option<XPubKeyBytes>,
 }
 
+/// Device-to-device content held until we can ratchet it (DESIGN.md §25): we never static-seal
+/// user content, so if the peer's prekey isn't known yet the message waits here.
+struct PendingContent {
+    display_id: BundleId, // the handle returned to the UI (stable across the deferral)
+    dst: PubKeyBytes,
+    content_type: String,
+    body: Vec<u8>,
+    request_ack: bool,
+}
+
 /// A decrypted user message ready for the inbox — uniform across static-sealed and
 /// forward-secret session messages.
 pub struct ReadMessage {
@@ -400,6 +410,15 @@ pub struct Node<S: Store = MemoryStore> {
     /// message report real relay progress ("Sent N") and ownership under its *original* id,
     /// even though the bytes travel as separate carrier bundles.
     carrier_owner: HashMap<BundleId, BundleId>,
+    /// Content awaiting a forward-secret session (DESIGN.md §25): device-to-device content is
+    /// **never** static-sealed — if we don't yet hold the peer's prekey it's queued here and
+    /// sent the moment one arrives, so every content message is ratcheted (always a 🔒).
+    pending_content: Vec<PendingContent>,
+    /// Real bundle id → the UI-facing id it should report under, for content that was deferred
+    /// (and whose eventual ratcheted bundle has a different id than the handle we returned).
+    tx_alias: HashMap<BundleId, BundleId>,
+    /// Monotonic counter making each deferred-content handle id unique.
+    pending_seq: u64,
     /// Last time we asked a peer to reset a desynced session — throttles reset requests so a
     /// burst of undecryptable messages can't cause a reset storm (DESIGN.md §25).
     last_reset_req: HashMap<PubKeyBytes, u64>,
@@ -516,6 +535,9 @@ impl<S: Store> Node<S> {
             ack_replicate: HashMap::new(),
             last_ack: HashMap::new(),
             carrier_owner: HashMap::new(),
+            pending_content: Vec::new(),
+            tx_alias: HashMap::new(),
+            pending_seq: 0,
             last_reset_req: HashMap::new(),
             internet: false,
             hns_cache: HashMap::new(),
@@ -689,7 +711,40 @@ impl<S: Store> Node<S> {
         body: Vec<u8>,
         request_ack: bool,
     ) -> Result<BundleId> {
-        let payload = self.session_payload(&dst, content_type, body)?;
+        // Require ratcheting device-to-device (DESIGN.md §25): if we can build a forward-secret
+        // payload now, send it; otherwise we have no prekey yet — DON'T static-seal, queue the
+        // content and return a stable handle. It flushes the moment a prekey arrives.
+        match self.session_payload(&dst, content_type.clone(), body.clone())? {
+            Some(payload) => self.dispatch_content(dst, payload, request_ack, None),
+            None => {
+                self.pending_seq += 1;
+                let h = blake3::hash(
+                    &[&dst[..], content_type.as_bytes(), &body, &self.pending_seq.to_be_bytes()].concat(),
+                );
+                let display_id: BundleId = *h.as_bytes();
+                self.tx.entry(display_id).or_default(); // shows as Sending… until ratcheted
+                self.pending_content.push(PendingContent {
+                    display_id,
+                    dst,
+                    content_type,
+                    body,
+                    request_ack,
+                });
+                Ok(display_id)
+            }
+        }
+    }
+
+    /// Build + submit a ratcheted content bundle. `display_id` is `Some` when this content was
+    /// deferred (the real bundle id differs from the handle the UI already holds) — we alias the
+    /// real id to it so delivery status lands on the right message.
+    fn dispatch_content(
+        &mut self,
+        dst: PubKeyBytes,
+        payload: Payload,
+        request_ack: bool,
+        display_id: Option<BundleId>,
+    ) -> Result<BundleId> {
         let bundle = Bundle::create(
             &self.identity,
             Destination::Device(dst),
@@ -701,22 +756,52 @@ impl<S: Store> Node<S> {
                 ..Default::default()
             },
         )?;
-        let id = bundle.id();
-        self.tx.entry(id).or_default(); // track delivery status for the UI
+        let real = bundle.id();
+        let display = display_id.unwrap_or(real);
+        if display != real {
+            self.tx_alias.insert(real, display);
+        }
+        self.tx.entry(display).or_default(); // track delivery status for the UI
         // Remember our own send so the returning delivery-ACK teaches us the route (§27).
-        self.forwarded.insert(id, (self.identity.address(), dst, self.now_ms));
+        self.forwarded.insert(real, (self.identity.address(), dst, self.now_ms));
         self.deliver(bundle);
-        Ok(id)
+        Ok(display)
     }
 
-    /// Choose the payload for a peer message: an established session, a freshly
-    /// opened one (from the peer's published prekey), or a static-seal fallback.
+    /// Try to flush queued content now that we may know more peers' prekeys (called when a
+    /// prekey advert is accepted, and on tick). Anything still without a prekey stays queued.
+    fn flush_pending_content(&mut self) {
+        if self.pending_content.is_empty() {
+            return;
+        }
+        let mut still = Vec::new();
+        for pc in std::mem::take(&mut self.pending_content) {
+            match self.session_payload(&pc.dst, pc.content_type.clone(), pc.body.clone()) {
+                Ok(Some(payload)) => {
+                    let _ = self.dispatch_content(pc.dst, payload, pc.request_ack, Some(pc.display_id));
+                }
+                _ => still.push(pc), // still no prekey → keep waiting (it gossips, §25)
+            }
+        }
+        self.pending_content = still;
+    }
+
+    /// Resolve a bundle id to the UI-facing id its status should land on: a carrier chunk maps
+    /// to its original message, and a deferred message's real id maps to its handle (§20, §25).
+    fn display_id(&self, id: &BundleId) -> BundleId {
+        let owned = self.carrier_owner.get(id).copied().unwrap_or(*id);
+        self.tx_alias.get(&owned).copied().unwrap_or(owned)
+    }
+
+    /// Choose a forward-secret payload for a peer message: an established session, or a freshly
+    /// opened one from the peer's published prekey. `None` when neither is available yet (no
+    /// prekey) — the caller defers rather than static-sealing (DESIGN.md §25).
     fn session_payload(
         &mut self,
         dst: &PubKeyBytes,
         content_type: String,
         body: Vec<u8>,
-    ) -> Result<Payload> {
+    ) -> Result<Option<Payload>> {
         // Established session: ratchet-encrypt. Re-send as SessionInit until the peer
         // has replied (init_material present) so any copy can bootstrap them.
         if let Some(ps) = self.sessions.get_mut(dst) {
@@ -727,7 +812,7 @@ impl<S: Store> Node<S> {
                 None => Payload::SessionMessage { msg },
             };
             self.persist_session(dst); // ratchet advanced — save it (survives restart)
-            return Ok(out);
+            return Ok(Some(out));
         }
         // No session yet: open one if the peer has published a prekey we've seen.
         if let Some(bundle) = self.directory.prekey(dst) {
@@ -744,10 +829,10 @@ impl<S: Store> Node<S> {
                 },
             );
             self.persist_session(dst);
-            return Ok(Payload::SessionInit { ek_pub, spk_pub: bundle.spk_pub, msg });
+            return Ok(Some(Payload::SessionInit { ek_pub, spk_pub: bundle.spk_pub, msg }));
         }
-        // Fallback: static seal (no forward secrecy until we learn their prekey).
-        Ok(Payload::PeerMessage { content_type, body })
+        // No prekey yet → defer (never static-seal content).
+        Ok(None)
     }
 
     /// Durable KV key for a peer's forward-secret session (DESIGN.md §25).
@@ -1651,6 +1736,10 @@ impl<S: Store> Node<S> {
         }
         // Forget carrier→original links once the carrier is no longer held (delivered/expired).
         self.carrier_owner.retain(|cid, _| self.store.contains(cid));
+        // Forget deferred-content aliases once their real bundle is gone (delivered/expired).
+        self.tx_alias.retain(|real, _| self.store.contains(real) || self.pending.contains_key(real));
+        // Retry any content still waiting on a prekey (it gossips, §25).
+        self.flush_pending_content();
         // ACK bookkeeping: forget replication tracking for ACKs no longer held, and age
         // out the re-ACK throttle map.
         self.ack_replicate.retain(|id, _| self.store.contains(id));
@@ -1921,7 +2010,9 @@ impl<S: Store> Node<S> {
                 {
                     self.pending.remove(&for_bundle_id);
                     self.store.remove(&for_bundle_id);
-                    if let Some(info) = self.tx.get_mut(&for_bundle_id) {
+                    // Mark the UI-facing message delivered (resolve carrier/deferral aliases).
+                    let display = self.display_id(&for_bundle_id);
+                    if let Some(info) = self.tx.get_mut(&display) {
                         info.delivered = true;
                         info.delivered_hops = delivery_hops;
                     }
@@ -2233,8 +2324,13 @@ impl<S: Store> Node<S> {
         let _ = peer; // reserved for finer-grained relay scoring (DESIGN.md §18)
         // Service adverts flood the directory (subscribed → full retention, else the
         // bounded relay cache). Re-gossip only when newly accepted.
+        let is_prekey = matches!(advert.body.kind, AdvertKind::PreKey { .. });
         if self.directory.ingest(advert, self.now_ms).unwrap_or(false) {
             self.offer_adverts_to_all();
+            // A newly-learned prekey may unblock content we were holding to ratchet (§25).
+            if is_prekey {
+                self.flush_pending_content();
+            }
         }
     }
 
@@ -2367,8 +2463,9 @@ impl<S: Store> Node<S> {
                 // "Sent N peers" counts relay handoffs only — not direct delivery to
                 // the destination itself (that shows as Delivered once the ACK is back).
                 if !direct {
-                    // A carrier chunk counts toward its original message's "Sent N".
-                    let owner = self.carrier_owner.get(&id).copied().unwrap_or(id);
+                    // Attribute to the UI-facing message (carrier chunk → original; deferred
+                    // content → its handle) so "Sent N" lands on the right row.
+                    let owner = self.display_id(&id);
                     if let Some(info) = self.tx.get_mut(&owner) {
                         info.relayed.insert(peer);
                     }
@@ -2555,6 +2652,15 @@ mod tests {
             BundleOpts::default(),
         )
         .unwrap()
+    }
+
+    /// Publish + gossip prekeys so `send_message` can open forward-secret sessions — content is
+    /// never static-sealed now, so a test that sends via `send_message` must do this first (§25).
+    fn exchange_prekeys(net: &mut Wire2, nodes: &mut [Node]) {
+        for n in nodes.iter_mut() {
+            n.publish_prekey().unwrap();
+        }
+        net.pump(nodes);
     }
 
     #[test]
@@ -2960,6 +3066,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1); // sender <-> relay
         net.connect(&mut nodes, 1, 2, 2, 2); // relay  <-> recipient
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect(); // ~300KB
         let dst = nodes[2].address();
@@ -2974,13 +3081,9 @@ mod tests {
 
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1, "reassembled into exactly one message through the relay");
-        match inbox[0].open(&nodes[2].identity).unwrap() {
-            Payload::PeerMessage { content_type, body: got } => {
-                assert_eq!(content_type, "image/jpeg");
-                assert_eq!(got, body, "bytes reassembled exactly, in order");
-            }
-            _ => panic!("wrong payload"),
-        }
+        let m = nodes[2].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.content_type, "image/jpeg");
+        assert_eq!(m.body, body, "bytes reassembled exactly, in order");
     }
 
     #[test]
@@ -2991,6 +3094,7 @@ mod tests {
         let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect(); // ~200KB → multi-chunk
         nodes[0]
@@ -3000,13 +3104,9 @@ mod tests {
 
         let inbox = nodes[1].take_inbox();
         assert_eq!(inbox.len(), 1, "reassembled into exactly one message");
-        match inbox[0].open(&nodes[1].identity).unwrap() {
-            Payload::PeerMessage { content_type, body: got } => {
-                assert_eq!(content_type, "image/jpeg");
-                assert_eq!(got, body, "bytes reassembled exactly, in order");
-            }
-            _ => panic!("wrong payload"),
-        }
+        let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.content_type, "image/jpeg");
+        assert_eq!(m.body, body, "bytes reassembled exactly, in order");
     }
 
     #[test]
@@ -3136,6 +3236,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
         let id = nodes[0]
             .send_to(&nodes[1].address(), "t".into(), b"hi".to_vec(), true)
             .unwrap()
@@ -3217,12 +3318,14 @@ mod tests {
     }
 
     #[test]
-    fn send_to_connected_peer_uses_handshake_key() {
-        // No keys exchanged out of band — the sender messages a peer it just met,
-        // sealing with the key learned during the Noise handshake.
+    fn send_to_connected_peer_is_forward_secret() {
+        // Messaging a connected peer is always forward-secret (DESIGN.md §25): once prekeys
+        // are exchanged, send_to opens a ratchet session and the message decrypts via
+        // read_message — content is never static-sealed.
         let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
 
         let peers = nodes[0].peers();
         assert_eq!(peers, vec![nodes[1].address()]);
@@ -3235,10 +3338,9 @@ mod tests {
 
         let inbox = nodes[1].take_inbox();
         assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[1].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"hello peer"),
-            _ => panic!("wrong payload"),
-        }
+        let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.body, b"hello peer");
+        assert!(nodes[1].has_session(&nodes[0].address()), "forward-secret session established");
 
         // Sending to an unconnected address yields None, not an error.
         assert!(nodes[0]
@@ -3252,6 +3354,7 @@ mod tests {
         let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         let id = nodes[0]
             .send_to(&nodes[1].address(), "text/plain".into(), b"yo".to_vec(), true)
@@ -3281,6 +3384,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 2); // 0 <-> 1 (destination)
         net.connect(&mut nodes, 0, 3, 2, 4); // 0 <-> 2 (relay)
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         let id = nodes[0]
             .send_message(nodes[1].address(), "text/plain".into(), b"hi".to_vec(), true)
@@ -3297,6 +3401,43 @@ mod tests {
         assert_eq!(relayed, 0, "no relay handoffs — delivered directly");
         assert!(delivered);
         assert_eq!(hops, 1);
+    }
+
+    #[test]
+    fn content_never_static_seals_defers_until_prekey() {
+        // The lock bug, fixed: device-to-device content is never static-sealed (DESIGN.md §25).
+        // Sending before we know the peer's prekey queues the content (no insecure send); once
+        // the prekey gossips in, it flushes forward-secret and a session forms (the 🔒).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // No prekeys yet → the send is deferred: a handle comes back, but nothing is delivered
+        // and no static-sealed PeerMessage goes on the wire.
+        let id = nodes[0]
+            .send_message(nodes[1].address(), "t".into(), b"secret".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_inbox().is_empty(), "no static-sealed content while deferred");
+        assert!(!nodes[1].has_session(&nodes[0].address()), "no session yet");
+
+        // Prekeys gossip in → the queued content flushes forward-secret and decrypts.
+        nodes[1].publish_prekey().unwrap();
+        nodes[0].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 1, "deferred content sends once a session can form");
+        assert!(
+            matches!(nodes[1].open(&inbox[0]).unwrap(), Payload::SessionInit { .. }),
+            "ratcheted, never a static PeerMessage"
+        );
+        let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.body, b"secret");
+        assert!(nodes[1].has_session(&nodes[0].address()), "🔒 session established");
+        // Delivery status follows the original handle through the deferral.
+        let (_, delivered, _) = nodes[0].message_status(&id).unwrap();
+        assert!(delivered, "the ACK lands on the original handle");
     }
 
     #[test]
@@ -3379,6 +3520,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 10, 1, 11);
         net.connect(&mut nodes, 1, 12, 2, 13);
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         let id = nodes[0]
             .send_message(nodes[2].address(), "text/plain".into(), b"relay me".to_vec(), true)
@@ -3433,6 +3575,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 10, 1, 11);
         net.connect(&mut nodes, 1, 12, 2, 13);
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
         let a0 = nodes[0].address();
         let a2 = nodes[2].address();
 
@@ -3560,6 +3703,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 10, 1, 11);
         net.connect(&mut nodes, 1, 12, 2, 13);
+        exchange_prekeys(&mut net, &mut nodes); // content is ratcheted — need prekeys (§25)
 
         nodes[0]
             .publish_service("presence".into(), "Alice".into(), String::new(), vec![], 600_000)
@@ -3580,10 +3724,8 @@ mod tests {
 
         let inbox = nodes[0].take_inbox();
         assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[0].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"hi Alice"),
-            _ => panic!("wrong payload"),
-        }
+        let m = nodes[0].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.body, b"hi Alice");
     }
 
     #[test]
