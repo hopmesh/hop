@@ -1121,7 +1121,7 @@ mod tests {
         let b = HopNode::with_secret(sec.clone());
         assert_eq!(b.address(), addr, "restored identity keeps the same address");
         // And the persistent constructor must do the same.
-        let c = HopNode::open(":memory:".into(), sec);
+        let c = HopNode::open(":memory:".into(), sec, Vec::new());
         assert_eq!(c.address(), addr, "persistent restore keeps the same address");
     }
 
@@ -1130,12 +1130,18 @@ mod tests {
         let a = HopNode::new();
         let b = HopNode::new();
 
+        // Publish prekeys (as a real device does at startup) so a forward-secret session can
+        // form — content is never static-sealed; it defers until a prekey is known (DESIGN.md §25).
+        a.publish_prekey().unwrap();
+        b.publish_prekey().unwrap();
+
         a.connected(1, true);
         b.connected(1, false);
         pump(&a, &b);
 
         a.send_message(b.address(), "text/plain".into(), b"hi over ffi".to_vec(), false)
             .unwrap();
+        pump(&a, &b);
         pump(&a, &b);
 
         let inbox = b.take_inbox();

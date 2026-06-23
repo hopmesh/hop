@@ -52,6 +52,9 @@ fn message_round_trips_over_a_real_websocket() {
             .ok();
 
         let mut node = Node::with_store(server_id, MemoryStore::new());
+        // Publish our prekey so it gossips to the client on link-up — content is forward-secret
+        // and defers until the recipient's prekey is known (DESIGN.md §25).
+        node.publish_prekey().unwrap();
         node.handle(BearerEvent::Connected(1, Role::Responder));
 
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -76,7 +79,9 @@ fn message_round_trips_over_a_real_websocket() {
         .ok();
 
     let mut node = Node::with_store(client_id, MemoryStore::new());
+    node.publish_prekey().unwrap();
     node.handle(BearerEvent::Connected(1, Role::Initiator));
+    // Content defers until the server's prekey gossips in over the link, then flushes (§25).
     node.send_message(server_addr, "t".into(), b"hello over websocket".to_vec(), false)
         .expect("send");
 
