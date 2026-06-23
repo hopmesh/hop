@@ -26,3 +26,6 @@ android/HopDemo/.gradle/
 android/HopDemo/build/
 android/HopDemo/app/build/
 android/HopDemo/local.properties
+
+# Local marketing-site preview renders
+web/.preview/

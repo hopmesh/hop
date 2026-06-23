@@ -1314,8 +1314,10 @@ traffic and goes dark when idle. *Only end-user devices bring cloud nodes online
   partition and resumes. The durable store is what makes ephemeral compute safe.
 
 - **The mesh forms dynamically as regions light up — but nodes never wake each other.** A
-  cloud node comes online *only* when a client in its region connects (client traffic is what
-  wakes Cloud Run; that is the **only** wake trigger). When a node wakes, it announces itself
+  cloud node comes online *only* when an **authenticated** client in its region connects
+  (client traffic is what wakes Cloud Run; that is the **only** wake trigger — and §35 tightens
+  it to *keyed* client traffic, so an unauthenticated connection is rejected at the edge and
+  cannot wake a region). When a node wakes, it announces itself
   to the liveness registry and **reaches out to the peers already marked online** — pulling in
   the bundles bound its way, and those online peers, seeing the new arrival, push its traffic
   to it. No node ever dials a sleeping region to wake it. Example: device B's connection
@@ -1940,3 +1942,127 @@ conflating them is a mistake:
 Anyone can create an inbox for any address (it's a write-only drop box; content is sealed; only X's
 keys can read it). Inbox-spam / storage-exhaustion is bounded by **TTL + per-destination quotas**
 (as §19), future work.
+
+## 35. Backbone access control & metering — keyed relay, free tier, and wake protection
+
+> **Status: design.** Adds the missing seam that makes the **hosted** backbone (§21/§28) both
+> *monetizable* and *abuse-resistant*. This is a property of the **hosted service**, not the
+> protocol: the open SDK and any self-hosted relay fleet set their own admission policy. The
+> protocol's only obligation is to **carry a credential at link establishment** (below); whether a
+> relay *requires* one is operator policy.
+
+### The problem this closes
+
+§28's backbone is **scale-to-zero and woken by client connections** — which, unguarded, is two
+liabilities at once:
+
+1. **No tenant identity ⇒ nothing to meter.** Relays carry *sealed* bundles (§33) and deliberately
+   can't read content or maintain a person↔address registry (§23). Without a separate billing
+   identity there is no honest unit to charge for — the very thing the business model (free SDK,
+   paid backbone) depends on.
+2. **Open wake ⇒ cost-amplification / DoS.** If *any* TCP/WebSocket connection wakes a region
+   (Cloud Run cold-start + Firestore spin-up), an unauthenticated flood lights up the whole fleet
+   and bills the operator for traffic that was never legitimate. "Clients are the only wake trigger"
+   must become "**keyed** clients are the only wake trigger."
+
+Both are fixed by one primitive: a **signed access credential presented before any relay work**,
+verified cheaply enough to gate the wake itself.
+
+### The credential — a Relay Access Token (RAT)
+
+A **RAT** is a short-lived, signed bearer ticket that authorizes use of the *hosted* backbone. It
+is **distinct from the node's Hop address** (§23): the address is per-device identity (Noise link
+auth, store key); the RAT is the **tenant/billing identity** — which app or account is responsible
+for this traffic.
+
+```
+RAT {
+  v:        u8           // version
+  tenant:   TenantId     // who is billed / metered (an app or org, not a person)
+  tier:     Tier         // free | pro | enterprise — selects quota class
+  scopes:   Scopes       // relay, mailbox, egress, hps, regions allowed
+  quota:    QuotaClass   // rate / storage / egress ceilings for this tier
+  bind:     Option<Addr> // optional: pin to one Hop address (anti-sharing, macaroon-style)
+  iat, exp: u64          // issued-at, short expiry (minutes–hours)
+  sig:      Signature    // Ed25519 over all preceding fields, by the account-service key
+}
+```
+
+- **Issued by an account service** (Hop's, or an enterprise's own for a private fleet). A device
+  mints/refreshes a RAT *while it has connectivity* and **caches it** for offline use within its
+  TTL — consistent with delay-tolerance: you don't need to be online at *use* time, only to have
+  obtained a still-valid ticket.
+- **Verified statelessly.** Relays (and the edge gate below) carry the account-service **public
+  key** baked in and check `sig` + `exp` + `scopes` locally — **no database lookup, no network
+  call** on the hot path. This is what lets the check be cheap enough to run *before* a wake.
+- **`free` is a real tier, not an absence of a key.** The free tier is a valid RAT with the `free`
+  quota class. **Anonymous (no RAT) is rejected**; "free" still carries a ticket. The key is an
+  *identity + meter*, never a paywall — which is exactly why a generous free tier and strict
+  admission coexist without contradiction.
+
+### Where it rides — admission at link setup
+
+Every link to a hosted relay is a Noise XX session (§4). The RAT travels **in the Noise handshake
+payload** (XX allows application payloads in its messages), so it is validated **as part of
+establishing the link, before a single bundle is offered**:
+
+- Missing / malformed / expired / wrong-scope RAT ⇒ the **handshake is refused**; the connection
+  never becomes a usable link and no bundle work occurs.
+- `bind` present ⇒ the relay checks the Noise-authenticated static key equals `bind`, so a leaked
+  RAT can't be replayed from an arbitrary device (anti-sharing). Unbound RATs are allowed for
+  multi-device tiers; quota then catches sharing economically.
+
+### Wake protection — the two-stage gate
+
+A scale-to-zero relay can't validate a RAT *before it exists*, so admission can't live **only** in
+the relay — the cold-start is the cost we're trying to avoid. Split it:
+
+- **Stage 1 — edge authenticator (always warm, cheap).** A small, **min-instances ≥ 1** gate sits
+  in front of the fleet (at/with the global load balancer). It does **only** stateless RAT
+  verification (signature, expiry, scope) + an emergency deny-list check, then proxies *only valid*
+  connections to the region node. It holds no Firestore, no per-region state, no bundle logic — so
+  it's a fraction of a relay's cost to keep warm, and it is the **one** always-on component.
+  **Unauthenticated connections are rejected here and never reach — never wake — a relay.**
+- **Stage 2 — relay enforcement (on the now-woken node).** Past the gate, the region node
+  re-validates the RAT on the Noise handshake (defense in depth) and enforces **fine-grained
+  quota**: per-tenant rate limits, mailbox storage caps, egress ceilings, and **per-tenant
+  metering** (below). Over-quota free traffic is **throttled or shed with backpressure**, not
+  hard-dropped where delay-tolerance lets it wait.
+
+This preserves every §28 invariant and tightens one: **nodes still never wake nodes** (cross-region
+movement is the passive cross-partition handoff, a Firestore write); the **only** wake path is a
+client connection — and now that path must present a valid RAT to get past Stage 1. The liveness
+registry, presence index, and region routing are unchanged.
+
+### Metering — measure the envelope, never the content
+
+The relay attributes usage to `RAT.tenant` on the **sealed envelope**, consistent with §33: it
+counts **volume, not content**. The billable units (§pricing):
+
+- **Relay carried** — bundles stored-and-forwarded on the tenant's behalf (count + bytes).
+- **Mailbox storage** — sealed bytes × retention held in inboxes (§34) for the tenant's recipients.
+- **Internet egress** — bytes fulfilled out to the public internet / bridged across regions (§9/§19).
+
+Usage rolls up per `tenant` for billing; the relay never opens a payload to meter it. (`hps://`
+topic fan-out is metered to the **publishing** tenant, since broadcasts have no per-subscriber
+billing identity.)
+
+### Revocation & key rotation
+
+- **Short TTL is the primary control.** A leaked RAT self-expires in minutes–hours; the device
+  silently refreshes from the account service while online. No long-lived secret sits on the wire.
+- **Emergency deny-list at the edge.** For revocation *before* expiry (compromise, abuse), the
+  Stage-1 gate consults a small denied-`tenant`/denied-`jti` set — the one piece of shared state it
+  reads, and it wakes no relay.
+- **Account-service key rotation.** The signing key is versioned (`RAT.v` + a key id); relays and
+  the edge gate carry the current + previous public keys so rotation doesn't invalidate in-flight
+  tickets.
+
+### Why this doesn't compromise the open model
+
+The protocol gains exactly one capability — *carry a credential in the link handshake* — and one
+operator knob — *require it or not*. The **open SDK self-hosting its own relays needs no Hop RAT**
+(it sets its own policy, or none). The RAT requirement is the **hosted backbone's** admission and
+metering policy, layered on top. That is precisely the seam the business model wants: the protocol
+stays open and free to run yourself, while the **hosted** fabric is keyed, metered, free-tier-first,
+and protected from waking on traffic nobody is accountable for.
