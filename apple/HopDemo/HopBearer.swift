@@ -110,6 +110,7 @@ final class HopBearer: NSObject, ObservableObject {
     /// a specific relay, rather than publishing presence to several at once.
     @Published var pinnedRelay: String? = UserDefaults.standard.string(forKey: "hop.pinnedRelay")
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
+    @Published var directSeen: Set<Data> = []  // peers seen directly this session, still reachable (§22)
     @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
     @Published var endpoints: [Peer] = []   // directly-dialed hops:// endpoints (§30; not relays)
     @Published var hnsCache: [HnsCacheRow] = []   // live HNS cache w/ ticking TTLs (§30, debug)
@@ -1384,6 +1385,19 @@ final class HopBearer: NSObject, ObservableObject {
             lt[pl.address, default: []].insert(t)
         }
         linkTransports = lt
+
+        // "Recently seen directly" stickiness (DESIGN.md §22 beacon mode): a peer is direct if it
+        // has a live BT/Wi-Fi link OR a ≤1-hop advert; once seen direct, keep it direct while it
+        // stays reachable — so a peer that backgrounds (Wi-Fi suspended, bg presence now arriving
+        // via the relay at 2 hops) doesn't flip to "mesh". Cleared when it leaves `reachable`.
+        let hereAddrs = Set(byAddr.keys)
+        for p in reachable {
+            let t = lt[p.address]
+            if t?.contains("BT") == true || t?.contains("Wi-Fi") == true || p.hops <= 1 {
+                directSeen.insert(p.address)
+            }
+        }
+        directSeen.formIntersection(hereAddrs)
 
         // Connected cloud relays (the relay-link range 20_000–29_999), named by their region
         // domain via hop.identify (§29). Endpoints (≥30_000) are NOT relays — they're dialed

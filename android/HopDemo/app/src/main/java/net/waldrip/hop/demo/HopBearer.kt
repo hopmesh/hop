@@ -73,6 +73,9 @@ class HopBearer private constructor(private val context: Context) {
     /// Directly-linked peer address → the transport carrying it ("BT" / "Relay"); mesh peers
     /// (reached multi-hop) have no entry. Mirrors iOS's link-type indicators.
     val linkTransports = mutableStateMapOf<List<Byte>, String>()
+    /// Peers seen directly this session (live BT/Wi-Fi link or <=1-hop advert) and still
+    /// reachable — keeps a backgrounded-but-nearby peer in "direct" instead of flipping to mesh.
+    val directSeen = mutableStateListOf<List<Byte>>()
     val messages = mutableStateListOf<Message>()
     /// Unread incoming messages received while backgrounded — mirrored onto the app icon
     /// badge (via the notification) and cleared when the app returns to the foreground.
@@ -900,6 +903,17 @@ class HopBearer private constructor(private val context: Context) {
             android.util.Log.i("HOPLOG", "peerLinks=${pls.size}: " +
                 pls.joinToString { "${HopBearer.shortHex(it.address)}@${it.link}" })
         }
+
+        // "Recently seen directly" stickiness (§22): once a peer has a live BT/Wi-Fi link or a
+        // <=1-hop advert, keep it "direct" while still reachable, so a backgrounded-but-nearby
+        // peer doesn't flip to mesh. Pruned to currently-reachable addresses.
+        val hereAddrs = list.map { it.address.toList() }.toHashSet()
+        for (p in list) {
+            val key = p.address.toList()
+            val t = linkTransports[key]
+            if (t == "BT" || t == "Wi-Fi" || p.hops <= 1u) { if (!directSeen.contains(key)) directSeen.add(key) }
+        }
+        directSeen.retainAll { hereAddrs.contains(it) }
 
         // Which peers we're talking to over a forward-secret session (lock icon).
         secured.clear()
