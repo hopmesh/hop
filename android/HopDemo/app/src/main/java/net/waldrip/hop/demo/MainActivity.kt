@@ -105,6 +105,7 @@ private fun messageMeta(m: HopBearer.Message): String {
         val dur = HopBearer.compactDuration((m.deliveredAt - m.sentAt).coerceAtLeast(0).toULong())
         return "Delivered, ${HopBearer.hopsLabel(m.deliveryHops)}, $dur"
     }
+    if (m.failed) return "Not sent"
     return if (m.relayed > 0u) "Sent, ${m.relayed} peer${if (m.relayed == 1u) "" else "s"}" else "Sending…"
 }
 
@@ -155,11 +156,21 @@ fun StatusScreen(bearer: HopBearer) {
                 OutlinedTextField(relayField, { relayField = it }, singleLine = true,
                     label = { Text("host:port or wss://relay.hopme.sh/") }, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { val t = relayField.trim(); if (t.isNotEmpty()) bearer.connectRelay(t) }) {
-                    Text("Connect")
+                Button(onClick = { val t = relayField.trim(); if (t.isNotEmpty()) bearer.setPinnedRelay(t) }) {
+                    Text("Pin")
                 }
             }
             Text("Relay: ${bearer.relayStatus.value}", style = MaterialTheme.typography.bodySmall)
+            val pinned = bearer.pinnedRelay.value
+            if (pinned != null) {
+                Text("Pinned: $pinned", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { bearer.setPinnedRelay(null); relayField = "" }) {
+                    Text("Unpin (use anycast default)")
+                }
+            } else {
+                Text("Anycast (default). A device uses one relay at a time — pin a direct address to test a specific relay.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Relay queue (${bearer.queue.size})", style = MaterialTheme.typography.titleMedium)
