@@ -25,9 +25,9 @@ struct ContentView: View {
     /// Both are needed: the link signal catches a peer whose advert came via a longer relay
     /// path, and the hop signal is robust to local links momentarily churning in/out of
     /// `peerLinks` (otherwise direct peers flicker to "mesh" between link blips).
-    private func isDirect(_ p: HopBearer.Peer) -> Bool {
-        bearer.directSeen.contains(p.address)
-    }
+    /// Direct = a 1-hop neighbour. A live BT/Wi-Fi link is forced to 1 hop in refresh(), so this
+    /// single rule covers both live links and direct adverts — and a 2-hop peer is never "direct".
+    private func isDirect(_ p: HopBearer.Peer) -> Bool { p.hops <= 1 }
     private var direct: [HopBearer.Peer] { bearer.reachable.filter { isDirect($0) } }
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { !isDirect($0) } }
 

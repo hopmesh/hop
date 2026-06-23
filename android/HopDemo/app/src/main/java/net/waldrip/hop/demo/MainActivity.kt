@@ -468,7 +468,9 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
     // P2P), OR a ≤1-hop (direct-neighbour) advert. The link signal catches a peer whose advert
     // arrived via a longer relay path; the hop signal is robust to links churning in/out of
     // peerLinks (otherwise direct peers flicker to "mesh" between blips).
-    fun isDirect(p: HopBearer.Peer): Boolean = bearer.directSeen.contains(p.address.toList())
+    // Direct = a 1-hop neighbour. A live BT/Wi-Fi link is forced to 1 hop in refresh(), so this
+    // single rule covers both live links and direct adverts — a 2-hop peer is never "direct".
+    fun isDirect(p: HopBearer.Peer): Boolean = p.hops <= 1u
     val direct = bearer.peers.filter { isDirect(it) }
     val mesh = bearer.peers.filter { !isDirect(it) }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
