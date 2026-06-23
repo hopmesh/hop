@@ -471,6 +471,36 @@ final class HopBearer: NSObject, ObservableObject {
         pump()
     }
 
+    /// Re-send a failed ("Not sent") message in place — rebuilds the same payload from its
+    /// content type and dispatches fresh, so the node defers/ratchets + tracks delivery again.
+    /// Recovery for a message that gave up (queue cleared, or still unsent at a restart).
+    func retry(_ m: Message) {
+        guard !m.incoming, let addr = m.peerAddr else { return }
+        let body: Data
+        let ct: String
+        switch m.contentType {
+        case let c where c.hasPrefix("image/"):
+            guard let d = m.imageData else { return }
+            body = d; ct = "image/jpeg"
+        case "multipart/mixed":
+            var parts: [(String, Data)] = []
+            if !m.text.isEmpty { parts.append(("text/plain", Data(m.text.utf8))) }
+            for img in (m.imageData.map { [$0] } ?? m.images) { parts.append(("image/jpeg", img)) }
+            guard !parts.isEmpty else { return }
+            body = HopBearer.encodeMultipart(parts); ct = "multipart/mixed"
+        default:
+            body = Data(m.text.utf8); ct = "text/plain; charset=utf-8"
+        }
+        let id = try? node.sendMessage(dst: addr, contentType: ct, body: body, requestAck: true)
+        if let i = messages.firstIndex(where: { $0.id == m.id }) {
+            messages[i].failed = false
+            messages[i].delivered = false
+            messages[i].bundleId = id
+            messages[i].sentAt = Date()
+        }
+        pump()
+    }
+
     /// Encode `(contentType, bytes)` parts into the shared multipart wire format.
     static func encodeMultipart(_ parts: [(String, Data)]) -> Data {
         var out = Data()
