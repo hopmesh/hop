@@ -71,7 +71,8 @@ final class HopBearer: NSObject, ObservableObject {
         let peer: String; let text: String; let incoming: Bool
         var peerAddr: Data? = nil   // the other party's address — stable across renames
         var contentType: String = "text/plain"
-        var imageData: Data? = nil  // raw bytes for an image message (content_type image/*)
+        var imageData: Data? = nil  // raw bytes for a single-image message (content_type image/*)
+        var images: [Data] = []     // one or more images (a multipart/mixed message)
         var bundleId: Data? = nil
         // Incoming metadata (shown under the bubble).
         var hops: UInt8 = 0
@@ -406,6 +407,62 @@ final class HopBearer: NSObject, ObservableObject {
         pump()
     }
 
+    /// Send text and/or one-or-more images as ONE message (`multipart/mixed`) — a single sealed
+    /// payload, carrier-chunked + reassembled like any message (DESIGN.md §20). The wire format
+    /// is shared with Android: `[u32 partCount][ per part: u16 ctLen, ct, u32 bodyLen, body ]`.
+    func sendMultipart(text: String, images: [Data], to peer: Peer) {
+        var parts: [(String, Data)] = []
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { parts.append(("text/plain", Data(trimmed.utf8))) }
+        for img in images { parts.append(("image/jpeg", img)) }
+        guard !parts.isEmpty else { return }
+        let body = HopBearer.encodeMultipart(parts)
+        let id = try? node.sendMessage(dst: peer.address,
+                                       contentType: "multipart/mixed", body: body, requestAck: true)
+        messages.append(Message(peer: peer.name, text: trimmed, incoming: false,
+                                peerAddr: peer.address, contentType: "multipart/mixed",
+                                images: images, bundleId: id))
+        pump()
+    }
+
+    /// Encode `(contentType, bytes)` parts into the shared multipart wire format.
+    static func encodeMultipart(_ parts: [(String, Data)]) -> Data {
+        var out = Data()
+        var count = UInt32(parts.count).bigEndian
+        withUnsafeBytes(of: &count) { out.append(contentsOf: $0) }
+        for (ct, body) in parts {
+            let ctd = Data(ct.utf8)
+            var cl = UInt16(ctd.count).bigEndian
+            withUnsafeBytes(of: &cl) { out.append(contentsOf: $0) }
+            out.append(ctd)
+            var bl = UInt32(body.count).bigEndian
+            withUnsafeBytes(of: &bl) { out.append(contentsOf: $0) }
+            out.append(body)
+        }
+        return out
+    }
+
+    /// Decode the shared multipart wire format into `(contentType, bytes)` parts.
+    static func decodeMultipart(_ data: Data) -> [(String, Data)] {
+        let b = [UInt8](data)
+        var i = 0
+        func u(_ n: Int) -> Int? {
+            guard i + n <= b.count else { return nil }
+            var v = 0
+            for _ in 0..<n { v = (v << 8) | Int(b[i]); i += 1 }
+            return v
+        }
+        var parts: [(String, Data)] = []
+        guard let count = u(4) else { return [] }
+        for _ in 0..<count {
+            guard let cl = u(2), i + cl <= b.count else { break }
+            let ct = String(decoding: b[i..<i + cl], as: UTF8.self); i += cl
+            guard let bl = u(4), i + bl <= b.count else { break }
+            parts.append((ct, Data(b[i..<i + bl]))); i += bl
+        }
+        return parts
+    }
+
     // MARK: - Wi-Fi (MultipeerConnectivity) bearer
 
     /// Stand up the Wi-Fi bearer: advertise + browse for nearby Hop peers and shuttle
@@ -647,12 +704,20 @@ final class HopBearer: NSObject, ObservableObject {
         for m in node.takeInbox() {
             let who = nameByAddr[m.from] ?? HopBearer.shortHex(m.from)
             let isImage = m.contentType.hasPrefix("image/")
-            let text = isImage ? "" : (String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>")
+            let isMultipart = m.contentType == "multipart/mixed"
+            var text = isImage ? "" : (String(data: m.body, encoding: .utf8) ?? "<\(m.body.count) bytes>")
+            var images: [Data] = []
+            if isMultipart {
+                let parts = HopBearer.decodeMultipart(m.body)
+                text = parts.first(where: { $0.0.hasPrefix("text/") })
+                    .flatMap { String(data: $0.1, encoding: .utf8) } ?? ""
+                images = parts.filter { $0.0.hasPrefix("image/") }.map { $0.1 }
+            }
             let now = HopBearer.nowMs()
             let latency = now >= m.createdAt ? now - m.createdAt : 0  // clamp clock skew
             messages.append(Message(peer: who, text: text, incoming: true,
                                     peerAddr: m.from, contentType: m.contentType,
-                                    imageData: isImage ? m.body : nil,
+                                    imageData: isImage ? m.body : nil, images: images,
                                     hops: m.hops, latencyMs: latency, trace: m.trace))
             // A sender that isn't in our nearby/contacts must still be reachable in the UI,
             // or the message vanishes. Make them a contact (so a row + chat exist) and run
