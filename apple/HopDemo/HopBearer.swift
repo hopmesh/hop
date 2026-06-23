@@ -241,6 +241,13 @@ final class HopBearer: NSObject, ObservableObject {
         started = true
         myName = name
         node.setName(name: name)   // what hop.identify reports for us (§29)
+        // Set the node clock to real time BEFORE publishing any adverts. The node starts at
+        // now_ms=0, and the first tick (1s away on the timer) runs directory.expire() — so a
+        // prekey/presence advert stamped created_at=0 here would be judged expired (1970 + TTL)
+        // and dropped instantly. Presence re-publishes every 20 ticks and recovers, but the
+        // prekey is published once: without this, peers never learn our prekey, no forward-secret
+        // session ever forms, and every message defers forever ("Sending…"). (DESIGN.md §25)
+        node.tick(nowMs: HopBearer.nowMs())
         myAddress = HopBearer.base58(node.address())
         idNote = "\(IdentityStore.note) → \(myAddress.prefix(8))"
         // Note: we deliberately do NOT stamp our app id into trace hops — that would
@@ -329,6 +336,9 @@ final class HopBearer: NSObject, ObservableObject {
         // Refresh presence periodically so it never lapses its TTL (link-up gossip
         // also shares it to new neighbours immediately).
         if tickCount % 20 == 0 { publishPresence() }
+        // Re-publish our prekey periodically so a neighbour whose cached copy lapsed (or who
+        // arrived after ours did) can always open a forward-secret session to us (§25).
+        if tickCount % 120 == 0 { _ = try? node.publishPrekey() }
         // Reconnect the relay if it dropped (iOS tears the socket down while suspended), so
         // this wake — BGAppRefresh, BGProcessing, or a beacon/BLE event — actually pulls
         // anything queued for us at the relay (DESIGN.md §28). Throttled so the 1s foreground
