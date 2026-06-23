@@ -464,8 +464,15 @@ fun WebScreen(bearer: HopBearer) {
 
 @Composable
 fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
-    val direct = bearer.peers.filter { it.hops <= 1u }
-    val mesh = bearer.peers.filter { it.hops >= 2u }
+    // "Direct" = we hold a local radio link (BLE / Wi-Fi P2P), the authoritative signal — not
+    // advert hop count (a direct peer's presence can arrive via a longer relay path). Reaching
+    // someone only through the cloud relay is "in the mesh".
+    fun isDirect(p: HopBearer.Peer): Boolean {
+        val t = bearer.linkTransports[p.address.toList()]
+        return t == "BT" || t == "Wi-Fi"
+    }
+    val direct = bearer.peers.filter { isDirect(it) }
+    val mesh = bearer.peers.filter { !isDirect(it) }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Chats", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))

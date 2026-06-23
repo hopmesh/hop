@@ -155,8 +155,9 @@ class HopBearer private constructor(private val context: Context) {
         if (started) return
         started = true
         ensureNotificationChannel()
-        loadMessages()   // restore chat history from the previous run
-        loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
+        loadMessages()      // restore chat history from the previous run
+        loadHpsChannels()   // restore channel (hps) message threads
+        loadHpsTopics()     // restore hosted/subscribed channels (the node persists them)
         myName.value = name
         myAddress.value = addressBase58(node.address())
         // Presence is an app-level service (DESIGN.md §23): publish our name on the
@@ -436,6 +437,7 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     fun hpsDeclineInvite(inv: uniffi.hop_ffi.HpsInvite) {
+        runCatching { node.hpsDeclineInvite(inv.host, inv.path) } // durable: won't reappear
         hpsInvites.removeAll { it.path == inv.path && it.host.contentEquals(inv.host) }
     }
 
@@ -474,6 +476,46 @@ class HopBearer private constructor(private val context: Context) {
         val list = hpsThreads.getOrPut(id) { mutableStateListOf() }
         list.add(m)
         if (list.size > 500) list.removeAt(0)
+        saveChannels()
+    }
+
+    // ---- channel-thread persistence (survives restart) ----------------------
+    private val channelsFile get() = java.io.File(context.filesDir, "channels.json")
+    private var channelSaveScheduled = false
+    private fun saveChannels() {
+        if (channelSaveScheduled) return
+        channelSaveScheduled = true
+        main.postDelayed({ channelSaveScheduled = false; writeChannels() }, 1000)
+    }
+    private fun writeChannels() {
+        val root = org.json.JSONObject()
+        for ((id, msgs) in hpsThreads) {
+            val arr = org.json.JSONArray()
+            for (m in msgs) {
+                arr.put(org.json.JSONObject().apply {
+                    put("path", m.path)
+                    put("sender", android.util.Base64.encodeToString(m.sender, android.util.Base64.NO_WRAP))
+                    put("text", m.text)
+                })
+            }
+            root.put(id, arr)
+        }
+        runCatching { channelsFile.writeText(root.toString()) }
+    }
+    private fun loadHpsChannels() {
+        val txt = runCatching { channelsFile.readText() }.getOrNull() ?: return
+        val root = runCatching { org.json.JSONObject(txt) }.getOrNull() ?: return
+        for (id in root.keys()) {
+            val arr = root.optJSONArray(id) ?: continue
+            val list = mutableStateListOf<HpsMsg>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(HpsMsg(nextMsgId++, o.optString("path", ""),
+                    android.util.Base64.decode(o.optString("sender", ""), android.util.Base64.NO_WRAP),
+                    o.optString("text", "")))
+            }
+            hpsThreads[id] = list
+        }
     }
 
     private fun drainHps() {
@@ -881,6 +923,9 @@ class HopBearer private constructor(private val context: Context) {
                 val socket = runCatching { ss.accept() }.getOrNull() ?: break
                 android.util.Log.i("HOPLOG", "BLE peripheral: accepted L2CAP from ${socket.remoteDevice?.address}")
                 addLink(socket, initiator = false)
+                // Legacy connectable advertising STOPS once a central connects, so only one peer
+                // could ever link. Re-arm it so every other iOS/Android device can still find us.
+                main.post { startAdvertise() }
             }
         }
 
@@ -897,7 +942,17 @@ class HopBearer private constructor(private val context: Context) {
         server.addService(service)
         gattServer = server
 
-        adapter.bluetoothLeAdvertiser?.startAdvertising(
+        startAdvertise()
+        status.value = "advertising (psm $psm)"
+    }
+
+    /// (Re)start connectable advertising. Called at startup and re-armed after each accepted
+    /// connection, because legacy advertising stops on connect (so without this only one peer
+    /// could ever link to us).
+    private fun startAdvertise() {
+        val adv = adapter.bluetoothLeAdvertiser ?: return
+        runCatching { adv.stopAdvertising(advertiseCallback) } // no-op if not advertising
+        adv.startAdvertising(
             AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setConnectable(true)
@@ -905,7 +960,6 @@ class HopBearer private constructor(private val context: Context) {
             AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
             advertiseCallback,
         )
-        status.value = "advertising (psm $psm)"
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {

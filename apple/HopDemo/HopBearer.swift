@@ -124,7 +124,7 @@ final class HopBearer: NSObject, ObservableObject {
     // hps:// pub/sub — services & channels (§32). Topics we host or subscribe to, the messages
     // per topic (one thread each), per-topic unread, and invites we've received.
     @Published var hpsTopics: [HpsTopic] = []
-    @Published var hpsThreads: [String: [HpsMsgRow]] = [:]   // topic id → its messages
+    @Published var hpsThreads: [String: [HpsMsgRow]] = [:] { didSet { scheduleChannelSave() } }   // topic id → its messages
     @Published var hpsUnread: [String: Int] = [:]            // topic id → unread count
     @Published var hpsInvites: [HpsInvite] = []              // invites received (FFI record)
     var activeTopic: String?                                 // topic on screen (not counted)
@@ -141,8 +141,8 @@ final class HopBearer: NSObject, ObservableObject {
         var writable: Bool { isChannel || hosting }
     }
     /// One received hps:// message, decrypted + sender-verified (§32).
-    struct HpsMsgRow: Identifiable {
-        let id = UUID()
+    struct HpsMsgRow: Identifiable, Codable {
+        var id = UUID()
         let path: String
         let sender: Data
         let text: String
@@ -163,6 +163,7 @@ final class HopBearer: NSObject, ObservableObject {
     private var activePeer: String?              // chat currently on screen (not counted)
     private var loadingMessages = false          // suppress save while restoring history
     private var messageSaveWork: DispatchWorkItem?  // debounced history write
+    private var channelSaveWork: DispatchWorkItem?  // debounced channel-thread write
 
     /// Stable identity across launches. Stored in the **Keychain**, not UserDefaults:
     /// a force-quit kills the process before UserDefaults flushes its buffered write,
@@ -265,6 +266,7 @@ final class HopBearer: NSObject, ObservableObject {
         guard !started else { return }
         started = true
         loadMessages()   // restore chat history from the previous run
+        loadChannels()   // restore channel (hps) message threads
         loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
         myName = name
         node.setName(name: name)   // what hop.identify reports for us (§29)
@@ -857,6 +859,7 @@ final class HopBearer: NSObject, ObservableObject {
     }
 
     func hpsDeclineInvite(_ inv: HpsInvite) {
+        try? node.hpsDeclineInvite(host: inv.host, path: inv.path)  // durable: won't reappear
         hpsInvites.removeAll { $0.path == inv.path && $0.host == inv.host }
     }
 
@@ -1265,6 +1268,28 @@ final class HopBearer: NSObject, ObservableObject {
         }
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: HopBearer.messagesFileURL, options: .atomic)
+    }
+
+    private static var channelsFileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("channels.json")
+    }
+    private func scheduleChannelSave() {
+        guard !loadingMessages else { return }
+        channelSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let data = try? JSONEncoder().encode(self.hpsThreads) else { return }
+            try? data.write(to: HopBearer.channelsFileURL, options: .atomic)
+        }
+        channelSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+    private func loadChannels() {
+        guard let data = try? Data(contentsOf: HopBearer.channelsFileURL),
+              let stored = try? JSONDecoder().decode([String: [HpsMsgRow]].self, from: data) else { return }
+        loadingMessages = true
+        hpsThreads = stored
+        loadingMessages = false
     }
 
     private func loadMessages() {

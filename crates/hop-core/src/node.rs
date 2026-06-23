@@ -209,6 +209,7 @@ struct PeerSession {
 
 /// Device-to-device content held until we can ratchet it (DESIGN.md §25): we never static-seal
 /// user content, so if the peer's prekey isn't known yet the message waits here.
+#[derive(Clone, Serialize, Deserialize)]
 struct PendingContent {
     display_id: BundleId, // the handle returned to the UI (stable across the deferral)
     dst: PubKeyBytes,
@@ -656,6 +657,27 @@ impl<S: Store> Node<S> {
                 self.hps_members.insert(path, m.into_iter().collect());
             }
         }
+        // Restore received/outstanding invites (§32).
+        if let Some(b) = self.store.get_kv("hps/invites_in") {
+            if let Ok(v) = postcard::from_bytes::<Vec<(String, PubKeyBytes, bool)>>(&b) {
+                self.hps_invites_in = v.into_iter().map(|(path, host, ch)| HpsInviteItem {
+                    path, host,
+                    kind: if ch { hps::ServiceKind::Channel } else { hps::ServiceKind::Service },
+                }).collect();
+            }
+        }
+        if let Some(b) = self.store.get_kv("hps/invites_out") {
+            if let Ok(v) = postcard::from_bytes::<Vec<(String, PubKeyBytes)>>(&b) {
+                for k in v { self.hps_invites_out.insert(k, 0); }
+            }
+        }
+        // Restore the deferred-content queue (sent messages awaiting a prekey, §25).
+        if let Some(b) = self.store.get_kv("pending_content") {
+            if let Ok(v) = postcard::from_bytes::<Vec<PendingContent>>(&b) {
+                for pc in &v { self.tx.entry(pc.display_id).or_default(); } // still "Sending…"
+                self.pending_content = v;
+            }
+        }
 
         // Restore forward-secret sessions so a restart / beacon-mode relaunch resumes the
         // ratchet instead of desyncing the peer (DESIGN.md §25).
@@ -837,6 +859,7 @@ impl<S: Store> Node<S> {
                     body,
                     request_ack,
                 });
+                self.persist_pending_content(); // a sent-but-deferred message must survive restart
                 Ok(display_id)
             }
         }
@@ -891,6 +914,7 @@ impl<S: Store> Node<S> {
             }
         }
         self.pending_content = still;
+        self.persist_pending_content(); // some flushed → update the durable copy
     }
 
     /// Resolve a bundle id to the UI-facing id its status should land on: a carrier chunk maps
@@ -1353,12 +1377,14 @@ impl<S: Store> Node<S> {
         let kind = cfg.kind;
         let proof = self.hps_proof(path, &self.identity.address());
         self.hps_invites_out.insert((path.to_string(), dest), self.now_ms);
+        self.persist_invites();
         self.send_to_host(dest, Payload::HpsInvite { path: path.to_string(), kind, proof })
     }
 
     /// Member → host: accept an invite we received, which prompts the host to seal us the keys.
     pub fn hps_accept_invite(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
         self.hps_invites_in.retain(|i| !(i.path == path && i.host == host));
+        self.persist_invites();
         let proof = self.hps_proof(path, &self.identity.address());
         self.send_to_host(host, Payload::HpsInviteAccept { path: path.to_string(), proof })
     }
@@ -1407,7 +1433,15 @@ impl<S: Store> Node<S> {
 
     /// Member: invites we've received and not yet accepted (DESIGN.md §32 Invite mode).
     pub fn take_hps_invites(&mut self) -> Vec<HpsInviteItem> {
+        // Drain the in-memory display queue but DON'T touch the durable copy — an unaccepted
+        // invite must survive a restart (persistence updates only on arrival / accept / decline).
         std::mem::take(&mut self.hps_invites_in)
+    }
+
+    /// Decline an invite (member side) — drop it from the durable set so it doesn't reappear.
+    pub fn hps_decline_invite(&mut self, host: PubKeyBytes, path: &str) {
+        self.hps_invites_in.retain(|i| !(i.path == path && i.host == host));
+        self.persist_invites();
     }
 
     /// Host: selective forward rotation (revocation, DESIGN.md §32). Mint a fresh key (and,
@@ -1755,6 +1789,30 @@ impl<S: Store> Node<S> {
             self.hps_members.get(path).map(|s| s.iter().copied().collect()).unwrap_or_default();
         if let Ok(bytes) = postcard::to_allocvec(&m) {
             self.store.put_kv(&Self::hps_members_key(path), bytes);
+        }
+    }
+
+    /// Persist the deferred-content queue (messages the user sent that are waiting on a prekey)
+    /// so a restart before the prekey arrives doesn't silently drop them (DESIGN.md §25).
+    fn persist_pending_content(&mut self) {
+        if let Ok(bytes) = postcard::to_allocvec(&self.pending_content) {
+            self.store.put_kv("pending_content", bytes);
+        }
+    }
+
+    /// Persist received + outstanding `hps://` invites so they survive a restart (§32).
+    fn persist_invites(&mut self) {
+        let inc: Vec<(String, PubKeyBytes, bool)> = self
+            .hps_invites_in
+            .iter()
+            .map(|i| (i.path.clone(), i.host, i.kind == hps::ServiceKind::Channel))
+            .collect();
+        if let Ok(b) = postcard::to_allocvec(&inc) {
+            self.store.put_kv("hps/invites_in", b);
+        }
+        let out: Vec<(String, PubKeyBytes)> = self.hps_invites_out.keys().cloned().collect();
+        if let Ok(b) = postcard::to_allocvec(&out) {
+            self.store.put_kv("hps/invites_out", b);
         }
     }
 
@@ -2169,6 +2227,24 @@ impl<S: Store> Node<S> {
     pub fn tick(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
         self.directory.expire(now_ms);
+        // Re-advertise hosted Discoverable topics we don't currently have a live advert for —
+        // e.g. after a restart, where the topic persists but the in-memory directory/advert do
+        // not. Runs with the real clock set (above), so created_at is valid; once published the
+        // path is in hps_adverts and this skips it. This is what makes a hosted channel
+        // discoverable again after the host relaunches (DESIGN.md §32).
+        if self.app.disc_key.is_some() {
+            let stale: Vec<String> = self
+                .services
+                .iter()
+                .filter(|(p, c)| c.visibility == hps::Visibility::Discoverable && !self.hps_adverts.contains_key(*p))
+                .map(|(p, _)| p.clone())
+                .collect();
+            for path in stale {
+                if let Some(cfg) = self.services.get(&path).cloned() {
+                    self.publish_topic_advert(&path, &cfg);
+                }
+            }
+        }
         self.store.prune(now_ms);
         // Drop relay-queue entries whose bundles have been delivered or expired.
         self.relay_order.retain(|id| self.store.contains(id));
@@ -2602,6 +2678,7 @@ impl<S: Store> Node<S> {
                             let host = bundle.inner.src;
                             if !self.hps_invites_in.iter().any(|i| i.path == path && i.host == host) {
                                 self.hps_invites_in.push(HpsInviteItem { path, host, kind });
+                                self.persist_invites();
                             }
                         }
                     }
@@ -2611,6 +2688,7 @@ impl<S: Store> Node<S> {
                         if self.hps_authorized(&bundle, &path, &proof)
                             && self.hps_invites_out.remove(&(path.clone(), who)).is_some()
                         {
+                            self.persist_invites();
                             self.record_member(&path, who);
                             let _ = self.send_keys(&path, who);
                         }
