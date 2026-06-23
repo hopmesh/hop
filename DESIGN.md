@@ -1677,6 +1677,31 @@ access mode:
 - **Invite** — the host **initiates** an invite to a destination; the destination accepts,
   then receives the keys.
 
+**Implemented:** all three modes, plus per-topic **visibility** (Private vs Discoverable),
+reach tallying, and selective-rotation revocation. Open hands keys on a join request;
+RequestToJoin queues for host approval; Invite is host→destination→accept (consent-based).
+
+### App-secret isolation (DESIGN.md §17)
+
+A topic must not be discoverable or joinable across **different apps**. The 16-byte `AppId`
+is only a public *fingerprint* (`blake3(app_secret)`) — it travels in headers and proves
+nothing, so it's used for demux/filtering, never authorization. Real isolation comes from
+key material derived from a host-supplied 32-byte **app secret**:
+
+- **Discovery** adverts (`AdvertKind::HpsTopic`) carry the topic descriptor **encrypted** under
+  a per-app key (`disc_key`), so a foreign app can relay but never *enumerate* topics.
+- **Join / invite / accept** handshakes carry a keyed-MAC **proof** (`mac_key`) the host verifies
+  before any key handoff — a different-secret app can't join even knowing the address+path.
+- `ingest` still **relays** foreign-app adverts (the fabric is shared) but never surfaces them.
+- Two developers who share the app secret interoperate; otherwise their topics are mutually
+  invisible and unjoinable.
+
+**The one intentional public surface:** a broadcast's *envelope* is sealed to a well-known key
+(`broadcast_identity`) so any node can carry it, so the wire form exposes an opaque per-topic
+`topic_tag` (keyed hash of the path) and the epoch — never the path or content. The content key
+and per-message signature keep the body confidential and authentic; the topic identity stays
+app-private via the tag.
+
 ### Publish, delivery, and reach
 
 A published message is encrypted with the content key and **floods the mesh** (epidemic, like
@@ -1686,11 +1711,12 @@ sense of reach — **no subscriber registry required** (for open mode).
 
 ### Revocation (current limit + future)
 
-There is **no per-member revocation today** — keys are rotate-forward, and anyone who ever held
-a content key can read anything encrypted under it. Planned: **selective rotation** — the host
-marks a topic for rotation, announces it has **moved to a new path/address**, re-keys the
-members it wants to keep, and a removed member is simply never handed the new key (blacklisted
-from the rotation).
+**Implemented as selective forward rotation:** the host mints a fresh content key (and, for a
+service, a fresh signing key), bumps the topic **epoch**, re-keys every retained member except
+those being removed (via a sealed `HpsRekey`), tombstones the old discovery advert, and
+re-advertises. A removed member is simply never handed the new key, and broadcasts at the new
+epoch supersede older ones. The remaining limit is that rotation is **forward-only** — a removed
+member keeps whatever it could already read (keys aren't retroactively secret).
 
 ### Relationship to the rest of the stack
 
