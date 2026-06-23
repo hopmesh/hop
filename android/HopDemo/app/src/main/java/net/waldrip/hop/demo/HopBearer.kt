@@ -896,11 +896,11 @@ class HopBearer private constructor(private val context: Context) {
             device: BluetoothDevice, requestId: Int, offset: Int,
             characteristic: BluetoothGattCharacteristic,
         ) {
+            // PSM as 2 bytes big-endian — must match iOS, whose CBL2CAPPSM is a UInt16. (A
+            // 4-byte form here makes iOS read PSM 0 and Android read out of bounds → no
+            // cross-platform BLE link.)
             val value = if (characteristic.uuid == PSM_CHAR_UUID) {
-                byteArrayOf(
-                    (psm ushr 24).toByte(), (psm ushr 16).toByte(),
-                    (psm ushr 8).toByte(), psm.toByte(),
-                )
+                byteArrayOf((psm ushr 8).toByte(), psm.toByte())
             } else ByteArray(0)
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
         }
@@ -941,9 +941,9 @@ class HopBearer private constructor(private val context: Context) {
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, statusCode: Int,
         ) {
             val v = characteristic.value ?: return
-            if (v.size < 4) return
-            val psm = (v[0].toInt() and 0xff shl 24) or (v[1].toInt() and 0xff shl 16) or
-                (v[2].toInt() and 0xff shl 8) or (v[3].toInt() and 0xff)
+            if (v.size < 2) return
+            // 2 bytes big-endian (matches iOS's UInt16 PSM).
+            val psm = (v[0].toInt() and 0xff shl 8) or (v[1].toInt() and 0xff)
             val device = gatt.device
             thread(name = "hop-l2cap-connect") {
                 val socket = runCatching {
