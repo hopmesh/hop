@@ -1580,7 +1580,12 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             p.delegate = self
             central.cancelPeripheralConnection(p) // → didDisconnect → scheduleReconnect (fresh link)
         }
-        central.scanForPeripherals(withServices: [HopBearer.serviceUUID])
+        // allowDuplicates: keep re-reporting peers so we get repeated connect chances. Without
+        // it iOS reports each peripheral once per scan session, so a peer that wasn't connectable
+        // at that instant (e.g. an Android peer mid-restart) is never re-discovered until a new
+        // scan session — which is why the Pixel could be missed entirely.
+        central.scanForPeripherals(withServices: [HopBearer.serviceUUID],
+                                   options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
