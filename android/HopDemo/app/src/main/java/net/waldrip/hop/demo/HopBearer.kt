@@ -70,6 +70,9 @@ class HopBearer private constructor(private val context: Context) {
         APP_SECRET,
     )
     val peers = mutableStateListOf<Peer>()
+    /// Directly-linked peer address → the transport carrying it ("BT" / "Relay"); mesh peers
+    /// (reached multi-hop) have no entry. Mirrors iOS's link-type indicators.
+    val linkTransports = mutableStateMapOf<List<Byte>, String>()
     val messages = mutableStateListOf<Message>()
     /// Unread incoming messages received while backgrounded — mirrored onto the app icon
     /// badge (via the notification) and cleared when the app returns to the foreground.
@@ -840,6 +843,13 @@ class HopBearer private constructor(private val context: Context) {
         val list = agg.values.map { it.peer.copy(hops = it.minHops) }
             .sortedBy { addressBase58(it.address) }
         peers.clear(); peers.addAll(list)
+
+        // Map each directly-linked peer to its transport (BT vs the cloud relay). Android has no
+        // Wi-Fi direct transport (MultipeerConnectivity is iOS-only), so a direct link is BLE.
+        linkTransports.clear()
+        runCatching { node.peerLinks() }.getOrDefault(emptyList()).forEach { pl ->
+            linkTransports[pl.address.toList()] = if (pl.link == relayLinkId) "Relay" else "BT"
+        }
 
         // Which peers we're talking to over a forward-secret session (lock icon).
         secured.clear()
