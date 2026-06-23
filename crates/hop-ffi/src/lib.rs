@@ -243,6 +243,26 @@ pub enum HpsKind {
     Service,
 }
 
+/// Who may obtain a topic's keys (DESIGN.md §32).
+#[derive(uniffi::Enum)]
+pub enum HpsAccess {
+    /// Keys handed to anyone who asks (anonymous membership).
+    Open,
+    /// Requester asks; the host approves before keys are handed off.
+    RequestToJoin,
+    /// Host invites a destination; the destination accepts, then receives keys.
+    Invite,
+}
+
+/// Whether a topic announces itself for discovery (DESIGN.md §32).
+#[derive(uniffi::Enum)]
+pub enum HpsVisibility {
+    /// Reachable only by known address+path or an invite.
+    Private,
+    /// Host broadcasts an (app-encrypted) discovery advert so same-app peers can browse it.
+    Discoverable,
+}
+
 /// A received `hps://` message, after decryption + sender verification (DESIGN.md §32).
 #[derive(uniffi::Record)]
 pub struct HpsMessage {
@@ -250,6 +270,58 @@ pub struct HpsMessage {
     /// The verified sender's address (for a channel, the writer; for a service, the host).
     pub sender: Vec<u8>,
     pub body: Vec<u8>,
+}
+
+/// An invite we (member) received and may accept (DESIGN.md §32 Invite mode).
+#[derive(uniffi::Record)]
+pub struct HpsInvite {
+    pub path: String,
+    pub host: Vec<u8>,
+    pub kind: HpsKind,
+}
+
+/// A discoverable topic surfaced by `browse_discoverable` (same-app only).
+#[derive(uniffi::Record)]
+pub struct HpsTopicInfo {
+    pub host: Vec<u8>,
+    pub path: String,
+    pub kind: HpsKind,
+    pub title: String,
+    pub summary: String,
+    pub access: HpsAccess,
+}
+
+fn kind_to_core(k: &HpsKind) -> hop_core::hps::ServiceKind {
+    match k {
+        HpsKind::Channel => hop_core::hps::ServiceKind::Channel,
+        HpsKind::Service => hop_core::hps::ServiceKind::Service,
+    }
+}
+fn kind_from_core(k: hop_core::hps::ServiceKind) -> HpsKind {
+    match k {
+        hop_core::hps::ServiceKind::Channel => HpsKind::Channel,
+        hop_core::hps::ServiceKind::Service => HpsKind::Service,
+    }
+}
+fn access_to_core(a: &HpsAccess) -> hop_core::hps::AccessMode {
+    match a {
+        HpsAccess::Open => hop_core::hps::AccessMode::Open,
+        HpsAccess::RequestToJoin => hop_core::hps::AccessMode::RequestToJoin,
+        HpsAccess::Invite => hop_core::hps::AccessMode::Invite,
+    }
+}
+fn access_from_core(a: hop_core::hps::AccessMode) -> HpsAccess {
+    match a {
+        hop_core::hps::AccessMode::Open => HpsAccess::Open,
+        hop_core::hps::AccessMode::RequestToJoin => HpsAccess::RequestToJoin,
+        hop_core::hps::AccessMode::Invite => HpsAccess::Invite,
+    }
+}
+fn vis_to_core(v: &HpsVisibility) -> hop_core::hps::Visibility {
+    match v {
+        HpsVisibility::Private => hop_core::hps::Visibility::Private,
+        HpsVisibility::Discoverable => hop_core::hps::Visibility::Discoverable,
+    }
 }
 
 /// A live link to a directly-connected peer: its address + the bearer link id. The
@@ -325,16 +397,21 @@ impl HopNode {
     }
 
     /// Open a node with **persistent** storage at `db_path` (messages survive
-    /// restarts; bounded — older relayed messages are evicted to make room) and a
-    /// saved identity secret. Falls back to in-memory if the path can't be opened.
+    /// restarts; bounded — older relayed messages are evicted to make room), a
+    /// saved identity secret, and a 32-byte **app secret** that isolates this app's
+    /// `hps://` channels/services from other apps (DESIGN.md §32). Pass empty/short
+    /// app-secret bytes to stay on the open shared fabric. Falls back to in-memory
+    /// if the path can't be opened.
     #[uniffi::constructor]
-    pub fn open(db_path: String, secret: Vec<u8>) -> Arc<Self> {
+    pub fn open(db_path: String, secret: Vec<u8>, app_secret: Vec<u8>) -> Arc<Self> {
         let store = SqliteStore::open(&db_path)
             .or_else(|_| SqliteStore::open_in_memory())
             .expect("sqlite store");
-        Arc::new(Self {
-            inner: Mutex::new(Node::with_store(identity_from(&secret), store)),
-        })
+        let mut node = Node::with_store(identity_from(&secret), store);
+        if let Ok(s) = <[u8; 32]>::try_from(app_secret.as_slice()) {
+            node.set_app_keys(hop_core::app::AppKeys::from_secret(s));
+        }
+        Arc::new(Self { inner: Mutex::new(node) })
     }
 
     // Note: there is intentionally no `set_app` here. End-user devices must NOT stamp
@@ -706,20 +783,116 @@ impl HopNode {
 
     // ---- hps:// pub/sub: services & channels (DESIGN.md §32) ------------------------------
 
-    /// Register (host) an `hps://` topic at `path`, minting + persisting its keys. Returns the
-    /// service's public key for a `Service` (subscribers verify broadcasts against it), or empty
-    /// for a `Channel`. Re-registering replaces the topic's keys.
-    pub fn register_service(&self, path: String, kind: HpsKind) -> Vec<u8> {
-        let kind = match kind {
-            HpsKind::Channel => hop_core::hps::ServiceKind::Channel,
-            HpsKind::Service => hop_core::hps::ServiceKind::Service,
-        };
+    /// Register (host) an `hps://` topic at `path`, minting + persisting its keys. `access`
+    /// governs key handoff and `visibility` whether it's advertised for discovery (DESIGN.md
+    /// §32). Returns the service's public key for a `Service`, or empty for a `Channel`.
+    pub fn register_service(
+        &self,
+        path: String,
+        kind: HpsKind,
+        access: HpsAccess,
+        visibility: HpsVisibility,
+    ) -> Vec<u8> {
         self.inner
             .lock()
             .unwrap()
-            .register_service(&path, kind)
+            .register_service(&path, kind_to_core(&kind), access_to_core(&access), vis_to_core(&visibility))
             .map(|pk| pk.to_vec())
             .unwrap_or_default()
+    }
+
+    /// Host → destination: invite an address to a topic we host (Invite mode). Returns the
+    /// invite bundle id.
+    pub fn hps_invite(&self, path: String, dest: Vec<u8>) -> std::result::Result<Vec<u8>, FfiError> {
+        let dest = to32(&dest)?;
+        let id = self.inner.lock().unwrap().hps_invite(&path, dest)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Member → host: accept an invite we received; the host then seals us the keys.
+    pub fn hps_accept_invite(&self, host: Vec<u8>, path: String) -> std::result::Result<Vec<u8>, FfiError> {
+        let host = to32(&host)?;
+        let id = self.inner.lock().unwrap().hps_accept_invite(host, &path)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Drain invites we've received (DESIGN.md §32 Invite mode), clearing them.
+    pub fn take_hps_invites(&self) -> Vec<HpsInvite> {
+        self.inner.lock().unwrap().take_hps_invites().into_iter()
+            .map(|i| HpsInvite { path: i.path, host: i.host.to_vec(), kind: kind_from_core(i.kind) })
+            .collect()
+    }
+
+    /// Member → host: leave a topic (stop being re-keyed). Returns the leave bundle id, if any.
+    pub fn hps_leave(&self, path: String) -> std::result::Result<Vec<u8>, FfiError> {
+        let id = self.inner.lock().unwrap().hps_leave(&path)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.map(|b| b.to_vec()).unwrap_or_default())
+    }
+
+    /// Host: pending join requests for a RequestToJoin topic (each is a requester address).
+    pub fn hps_pending(&self, path: String) -> Vec<Vec<u8>> {
+        self.inner.lock().unwrap().hps_pending(&path).into_iter().map(|a| a.to_vec()).collect()
+    }
+
+    /// Host: approve a pending requester, sealing them the keys. Returns the keys bundle id.
+    pub fn hps_approve(&self, path: String, requester: Vec<u8>) -> std::result::Result<Vec<u8>, FfiError> {
+        let requester = to32(&requester)?;
+        let id = self.inner.lock().unwrap().hps_approve(&path, requester)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Host: deny/drop a pending requester (no keys).
+    pub fn hps_deny(&self, path: String, requester: Vec<u8>) -> std::result::Result<(), FfiError> {
+        let requester = to32(&requester)?;
+        self.inner.lock().unwrap().hps_deny(&path, requester);
+        Ok(())
+    }
+
+    /// Host: selective forward rotation (revocation). Re-keys retained members except `remove`;
+    /// removed members keep the dead key. `new_path` empty = keep the same path. Returns the
+    /// rekey bundle ids.
+    pub fn hps_rekey(
+        &self,
+        path: String,
+        new_path: String,
+        remove: Vec<Vec<u8>>,
+    ) -> std::result::Result<Vec<Vec<u8>>, FfiError> {
+        let mut removed = Vec::with_capacity(remove.len());
+        for r in &remove {
+            removed.push(to32(r)?);
+        }
+        let np = if new_path.trim().is_empty() { None } else { Some(new_path.as_str()) };
+        let ids = self.inner.lock().unwrap().hps_rekey(&path, np, &removed)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(ids.into_iter().map(|b| b.to_vec()).collect())
+    }
+
+    /// Host: unique acking addresses for a topic (its reach / delivery sense, DESIGN.md §32).
+    pub fn hps_reach(&self, path: String) -> u32 {
+        self.inner.lock().unwrap().hps_reach(&path) as u32
+    }
+
+    /// Host: the retained-member set (addresses) for a topic.
+    pub fn hps_members(&self, path: String) -> Vec<Vec<u8>> {
+        self.inner.lock().unwrap().hps_members(&path).into_iter().map(|a| a.to_vec()).collect()
+    }
+
+    /// Same-app discoverable topics visible on the mesh (decrypted descriptors + host address).
+    pub fn browse_discoverable(&self) -> Vec<HpsTopicInfo> {
+        self.inner.lock().unwrap().browse_discoverable(None).into_iter()
+            .map(|(host, m)| HpsTopicInfo {
+                host: host.to_vec(),
+                path: m.path,
+                kind: kind_from_core(m.kind),
+                title: m.title,
+                summary: m.summary,
+                access: access_from_core(m.access),
+            })
+            .collect()
     }
 
     /// Subscribe to `hps://{host}/{path}`: send a sealed request to `host`, which (for an open
