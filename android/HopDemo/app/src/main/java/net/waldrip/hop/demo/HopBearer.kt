@@ -24,8 +24,12 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import androidx.compose.runtime.mutableStateMapOf
 import uniffi.hop_ffi.HopNode
+import uniffi.hop_ffi.HnsLookupResult
+import uniffi.hop_ffi.HpsKind
 import uniffi.hop_ffi.addressBase58
+import uniffi.hop_ffi.addressFromBase58
 
 /**
  * Foreground Android BLE bearer for Hop: each device acts as both peripheral
@@ -60,6 +64,21 @@ class HopBearer private constructor(private val context: Context) {
     val peers = mutableStateListOf<Peer>()
     val messages = mutableStateListOf<Message>()
     val secured = mutableStateListOf<List<Byte>>()   // addresses with a forward-secret session
+
+    // hops:// (DESIGN.md §30): domain → rendered result; pending resolves + outstanding requests.
+    val hopsResults = mutableStateMapOf<String, String>()
+    private val pendingHops = HashMap<String, String>()              // domain → path awaiting resolve
+    private val hopsReqs = HashMap<List<Byte>, String>()             // request id → domain
+    private val dohClient = OkHttpClient()
+    // HNS cache debug view: domain → (address, ttl).
+    val hnsCache = mutableStateListOf<HnsCacheRow>()
+    data class HnsCacheRow(val domain: String, val address: ByteArray, val ttlSecs: UInt)
+
+    // hps:// pub/sub (DESIGN.md §32): topics we host/subscribe + received messages.
+    val hpsTopics = mutableStateListOf<HpsTopic>()
+    val hpsInbox = mutableStateListOf<HpsMsg>()
+    data class HpsTopic(val host: ByteArray, val path: String, val channel: Boolean, val hosting: Boolean)
+    data class HpsMsg(val id: Long, val path: String, val sender: ByteArray, val text: String)
     var myAddress = mutableStateOf("")
     var myName = mutableStateOf("")
     var status = mutableStateOf("starting…")
@@ -112,6 +131,18 @@ class HopBearer private constructor(private val context: Context) {
         runCatching { node.publishPrekey() }
         startPeripheral()
         startCentral()
+        // Declare internet reachability so the node resolves HNS itself by servicing
+        // takeDnsLookups() (DESIGN.md §30). Track the default network so it stays accurate.
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+        runCatching {
+            val net = cm?.activeNetwork
+            val caps = net?.let { cm.getNetworkCapabilities(it) }
+            node.setInternet(caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true)
+            cm?.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) { main.post { node.setInternet(true); pump() } }
+                override fun onLost(network: android.net.Network) { main.post { node.setInternet(false) } }
+            })
+        }
         // Check in to the backbone (DESIGN.md §28): dial the anycast relay so we pull any
         // queued mail and stay reachable across the internet. The foreground service keeps
         // this alive; the tick loop below reconnects it if it ever drops.
@@ -205,6 +236,129 @@ class HopBearer private constructor(private val context: Context) {
                 hops = m.hops, latencyMs = latency))
             if (!appInForeground) notify(who, if (isImage) "📷 Photo" else text)
         }
+        drainHps()   // pub/sub messages (§32)
+        drainHns()   // HNS lookups + hops:// responses (§30)
+    }
+
+    // ---- hps:// pub/sub (DESIGN.md §32) -------------------------------------
+
+    fun hpsRegister(path: String, channel: Boolean) {
+        val p = path.trim(); if (p.isEmpty()) return
+        runCatching { node.registerService(p, if (channel) HpsKind.CHANNEL else HpsKind.SERVICE) }
+        if (hpsTopics.none { it.host.contentEquals(node.address()) && it.path == p })
+            hpsTopics.add(0, HpsTopic(node.address(), p, channel, hosting = true))
+    }
+
+    fun hpsSubscribe(hostB58: String, path: String) {
+        val host = runCatching { addressFromBase58(hostB58.trim()) }.getOrNull() ?: return
+        val p = path.trim(); if (host.size != 32 || p.isEmpty()) return
+        runCatching { node.hpsSubscribe(host, p) }
+        if (hpsTopics.none { it.host.contentEquals(host) && it.path == p })
+            hpsTopics.add(0, HpsTopic(host, p, channel = true, hosting = false))
+        pump()
+    }
+
+    fun hpsPublish(path: String, text: String) {
+        val p = path.trim(); if (p.isEmpty() || text.isEmpty()) return
+        runCatching { node.hpsPublish(p, text.toByteArray()) }
+        hpsInbox.add(0, HpsMsg(nextMsgId++, p, node.address(), text)) // echo our own post
+        pump()
+    }
+
+    private fun drainHps() {
+        for (m in node.takeHpsMessages()) {
+            hpsInbox.add(0, HpsMsg(nextMsgId++, m.path, m.sender, String(m.body)))
+            if (hpsInbox.size > 200) hpsInbox.removeAt(hpsInbox.size - 1)
+        }
+    }
+
+    // ---- HNS & hops:// (DESIGN.md §30) -------------------------------------
+
+    /// Open `hops://<domain>/<path>` (bare `<domain>` ok): resolve via HNS, then GET over the mesh.
+    fun openHops(input: String) {
+        val (domain, path) = parseHops(input)
+        if (domain.isEmpty()) { hopsResults["?"] = "error: not a hops:// url"; return }
+        hopsResults[domain] = "resolving…"
+        when (val r = node.resolveHns(domain)) {
+            is HnsLookupResult.Cached ->
+                if (r.address.isEmpty()) hopsResults[domain] = "error: no hops endpoint for $domain"
+                else fireHops(domain, path, r.address)
+            is HnsLookupResult.Pending -> pendingHops[domain] = path
+            is HnsLookupResult.NeedsResolver ->
+                hopsResults[domain] = "error: offline — no internet or peers to resolve $domain"
+        }
+        pump()
+    }
+
+    private fun fireHops(domain: String, path: String, endpoint: ByteArray) {
+        nameByAddr[endpoint.toList()] = domain // label the endpoint by its domain (endpoints list/traces)
+        val id = runCatching {
+            node.sendHopsRequest(endpoint, domain, "GET", path, ByteArray(0), 8u * 1024u * 1024u)
+        }.getOrNull()
+        if (id == null) { hopsResults[domain] = "error: could not send request to $domain"; return }
+        hopsReqs[id.toList()] = domain
+        hopsResults[domain] = "fetching…"
+        pump()
+    }
+
+    private fun drainHns() {
+        for (rec in node.takeHnsResults()) {
+            val path = pendingHops.remove(rec.domain) ?: continue
+            if (rec.address.isEmpty()) hopsResults[rec.domain] = "error: no hops endpoint for ${rec.domain}"
+            else fireHops(rec.domain, path, rec.address)
+        }
+        for (resp in node.takeHttpResponses()) {
+            val domain = hopsReqs.remove(resp.forRequestId.toList()) ?: continue
+            hopsResults[domain] = "${resp.status} · ${String(resp.body)}"
+        }
+        // Host DNS hook (§30): fetch each requested domain's full DNSSEC chain over DoH and hand
+        // core the raw bodies — core validates to the root anchors and decides the address.
+        for (domain in node.takeDnsLookups()) fetchDnssecChain(domain)
+        // Refresh the cache debug view.
+        hnsCache.clear()
+        for (e in node.hnsCache()) hnsCache.add(HnsCacheRow(e.domain, e.address, e.ttlSecs))
+    }
+
+    /// Fetch a domain's DNSSEC chain over DNS-over-HTTPS (TXT _hopaddress + DNSKEY/DS per zone to
+    /// root, all do=1), then feed the raw JSON bodies to core (§30). Concurrent GETs.
+    private fun fetchDnssecChain(domain: String) {
+        val queries = ArrayList<Pair<String, Int>>()
+        queries.add("_hopaddress.$domain" to 16) // TXT
+        var zone = domain
+        while (true) {
+            queries.add(zone to 48) // DNSKEY
+            if (zone == ".") break
+            queries.add(zone to 43) // DS
+            zone = if (zone.contains(".")) zone.substringAfter(".") else "."
+        }
+        val bodies = java.util.Collections.synchronizedList(ArrayList<String>())
+        val remaining = java.util.concurrent.atomic.AtomicInteger(queries.size)
+        for ((name, qtype) in queries) {
+            val req = Request.Builder().url("https://dns.google/resolve?name=$name&type=$qtype&do=1").build()
+            dohClient.newCall(req).enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) { done() }
+                override fun onResponse(call: okhttp3.Call, response: Response) {
+                    response.use { it.body?.string()?.let { b -> bodies.add(b) } }
+                    done()
+                }
+                private fun done() {
+                    if (remaining.decrementAndGet() == 0) main.post {
+                        runCatching { node.provideDnsProof(domain, ArrayList(bodies)) }
+                        pump()
+                    }
+                }
+            })
+        }
+    }
+
+    /// Parse a hops:// URL (or bare domain) into (domain, path). The endpoint validates host,
+    /// so we pass the bare domain and just the path.
+    private fun parseHops(input: String): Pair<String, String> {
+        var s = input.trim().removePrefix("hops://").removePrefix("https://").removePrefix("http://")
+        val slash = s.indexOf('/')
+        val domain = (if (slash >= 0) s.substring(0, slash) else s).lowercase()
+        val path = if (slash >= 0) s.substring(slash) else "/"
+        return domain to path
     }
 
     // ---- cloud relay bearer (→ hop-relayd) ----------------------------------
