@@ -1,8 +1,39 @@
 import SwiftUI
 import PhotosUI
+import ImageIO
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #endif
+
+/// Image helpers — keep image work OFF the render path and small on the wire.
+enum HopImages {
+    /// Decode-once cache keyed by the image bytes. SwiftUI re-evaluates view bodies constantly;
+    /// calling `UIImage(data:)` inline re-decodes every image on every render, which pegged the
+    /// CPU (cpu_resource_fatal) once there were photos in history. Decode once, reuse.
+    private static let cache = NSCache<NSData, UIImage>()
+    static func image(_ data: Data) -> UIImage? {
+        let key = data as NSData
+        if let c = cache.object(forKey: key) { return c }
+        guard let img = UIImage(data: data) else { return nil }
+        cache.setObject(img, forKey: key)
+        return img
+    }
+
+    /// Downscale + recompress a picked photo to a small JPEG using an ImageIO thumbnail — decodes
+    /// a reduced-size image directly (low memory/CPU) instead of loading a full 12MP+ image, which
+    /// hung the picker and bloated history. Mirrors Android's jpegDownscale.
+    static func downscaledJPEG(_ data: Data, maxPixel: CGFloat = 1280, quality: CGFloat = 0.6) -> Data? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg).jpegData(compressionQuality: quality)
+    }
+}
 
 struct ContentView: View {
     @StateObject private var bearer = HopBearer.shared
@@ -412,7 +443,7 @@ struct ChatView: View {
                         let imgs: [Data] = m.imageData.map { [$0] } ?? m.images
                         VStack(alignment: m.incoming ? .leading : .trailing, spacing: 4) {
                             ForEach(Array(imgs.enumerated()), id: \.offset) { _, data in
-                                if let img = UIImage(data: data) {
+                                if let img = HopImages.image(data) {
                                     Image(uiImage: img)
                                         .resizable().scaledToFit()
                                         .frame(maxWidth: 220, maxHeight: 220)
@@ -452,7 +483,7 @@ struct ChatView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(Array(attached.enumerated()), id: \.offset) { idx, data in
-                            if let img = UIImage(data: data) {
+                            if let img = HopImages.image(data) {
                                 Image(uiImage: img).resizable().scaledToFill()
                                     .frame(width: 48, height: 48)
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -489,7 +520,7 @@ struct ChatView: View {
                     var loaded: [Data] = []
                     for item in items {
                         if let data = try? await item.loadTransferable(type: Data.self),
-                           let jpeg = UIImage(data: data)?.jpegData(compressionQuality: 0.7) {
+                           let jpeg = HopImages.downscaledJPEG(data) {
                             loaded.append(jpeg)
                         }
                     }
