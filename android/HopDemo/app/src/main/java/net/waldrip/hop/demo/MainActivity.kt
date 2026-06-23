@@ -464,29 +464,44 @@ fun WebScreen(bearer: HopBearer) {
 
 @Composable
 fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
+    val direct = bearer.peers.filter { it.hops <= 1u }
+    val mesh = bearer.peers.filter { it.hops >= 2u }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Chats", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
-        Text("People nearby (${bearer.peers.size})", style = MaterialTheme.typography.titleMedium)
         if (bearer.peers.isEmpty()) Text("looking for others…")
         LazyColumn {
-            items(bearer.peers) { p ->
-                val locked = bearer.secured.contains(p.address.toList())
-                val subline = listOf(HopBearer.shortHex(p.address), platformLabel(p.platform), p.app)
-                    .filter { it.isNotEmpty() }.joinToString(" · ")
-                ListItem(
-                    leadingContent = {
-                        Box(Modifier.size(8.dp).clip(CircleShape)
-                            .background(if (p.active) Color(0xFF34C759) else Color.Gray))
-                    },
-                    headlineContent = { Text(p.name + if (locked) "  🔒" else "") },
-                    supportingContent = { Text(subline) },
-                    trailingContent = { Text(HopBearer.hopsLabel(p.hops), style = MaterialTheme.typography.bodySmall) },
-                    modifier = Modifier.clickable { onPick(p) },
-                )
-            }
+            item { Text("Nearby (direct)", style = MaterialTheme.typography.titleMedium) }
+            if (direct.isEmpty()) item { Text("none", style = MaterialTheme.typography.bodySmall) }
+            items(direct) { p -> PeerRow(bearer, p, onPick) }
+            item { Spacer(Modifier.height(12.dp)); Text("In the mesh (relayed)", style = MaterialTheme.typography.titleMedium) }
+            if (mesh.isEmpty()) item { Text("none", style = MaterialTheme.typography.bodySmall) }
+            items(mesh) { p -> PeerRow(bearer, p, onPick) }
         }
     }
+}
+
+@Composable
+private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Peer) -> Unit) {
+    val locked = bearer.secured.contains(p.address.toList())
+    val transport = bearer.linkTransports[p.address.toList()]   // "BT"/"Relay" if directly linked
+    val subline = listOf(HopBearer.shortHex(p.address), platformLabel(p.platform), p.app)
+        .filter { it.isNotEmpty() }.joinToString(" · ")
+    ListItem(
+        leadingContent = {
+            Box(Modifier.size(8.dp).clip(CircleShape)
+                .background(if (p.active) Color(0xFF34C759) else Color.Gray))
+        },
+        headlineContent = { Text(p.name + if (locked) "  🔒" else "") },
+        supportingContent = { Text(subline) },
+        trailingContent = {
+            Text(
+                (transport?.let { "$it · " } ?: "") + HopBearer.hopsLabel(p.hops),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        },
+        modifier = Modifier.clickable { onPick(p) },
+    )
 }
 
 @Composable
