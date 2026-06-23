@@ -180,21 +180,50 @@ pub enum Payload {
         fin: bool,
     },
     // --- hps:// pub/sub (DESIGN.md §32). Appended at the end to keep earlier discriminants. ---
-    /// Subscribe to a topic at `path` on the recipient node (sealed to the host). The host
-    /// replies with [`Payload::HpsKeys`] if the path is registered and access is allowed.
-    HpsSubscribe { path: String },
+    /// Ask to join a topic at `path` on the recipient node (sealed to the host). `proof`
+    /// demonstrates the requester holds the host's app secret (DESIGN.md §32 app isolation). The
+    /// host replies with [`Payload::HpsKeys`] for an Open topic, or queues the request for a
+    /// RequestToJoin topic; ignored for Invite topics.
+    HpsJoinRequest { path: String, proof: [u8; 32] },
     /// The keys for a subscribed topic, sealed back to the subscriber. `service_pubkey` is
     /// `Some` for a service (verify broadcasts against it) and `None` for a channel (verify
-    /// each post against its sender's address).
+    /// each post against its sender's address). `epoch` is the rekey generation.
     HpsKeys {
         path: String,
         content_key: [u8; 32],
         service_pubkey: Option<[u8; 32]>,
+        epoch: u32,
     },
+    /// Host → destination: an invite to a topic (DESIGN.md §32 Invite mode). The destination
+    /// accepts with [`Payload::HpsInviteAccept`] to receive the keys. `proof` carries the host's
+    /// app-secret proof so the invitee knows it's a same-app invite.
+    HpsInvite { path: String, kind: crate::hps::ServiceKind, proof: [u8; 32] },
+    /// Destination → host: accept a pending invite; the host then seals [`Payload::HpsKeys`].
+    HpsInviteAccept { path: String, proof: [u8; 32] },
+    /// Member → host: leave a topic, so the host drops them from the retained set / reach tally.
+    HpsLeave { path: String, proof: [u8; 32] },
+    /// Host → retained member: rotate to a new key generation (revocation, DESIGN.md §32).
+    /// `new_path` equals `old_path` unless the topic was moved. Removed members never receive
+    /// this and keep the dead key.
+    HpsRekey {
+        old_path: String,
+        new_path: String,
+        epoch: u32,
+        content_key: [u8; 32],
+        service_pubkey: Option<[u8; 32]>,
+        proof: [u8; 32],
+    },
+    /// Member → host: confirms decrypting a broadcast, so the host can tally unique acking
+    /// addresses as reach and build the retained-member set (DESIGN.md §32). `topic_tag` is the
+    /// opaque per-topic tag; `epoch` is the generation the member is on.
+    HpsReachAck { topic_tag: [u8; 16], epoch: u32 },
     /// A published message, flooded ([`Destination::Broadcast`]) to all subscribers. The body
     /// is content-key encrypted; `sig` is the sender's signature over `path‖nonce‖ciphertext`.
+    /// `topic_tag` is the opaque per-topic tag (a foreign app that opens the public broadcast
+    /// envelope can't tell which topic it is); `epoch` is the key generation.
     HpsPublish {
-        path: String,
+        topic_tag: [u8; 16],
+        epoch: u32,
         nonce: Vec<u8>,
         ciphertext: Vec<u8>,
         sig: Vec<u8>,
