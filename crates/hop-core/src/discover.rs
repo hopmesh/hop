@@ -38,6 +38,8 @@ use crate::{AppId, FABRIC_APP};
 const TOPIC_CONTROL: &str = "_control";
 /// Reserved topic for prekey bundles (forward-secret sessions, DESIGN.md §25).
 const TOPIC_KEYS: &str = "_keys";
+/// Reserved topic for `hps://` discoverable channel/service announcements (DESIGN.md §32).
+const TOPIC_HPS: &str = "_hps";
 
 /// Default bound on the best-effort relay cache (number of adverts).
 pub const DEFAULT_RELAY_CACHE_CAP: usize = 256;
@@ -66,6 +68,11 @@ pub enum AdvertKind {
     PreKey { spk_pub: XPubKeyBytes, spk_sig: Vec<u8> },
     /// Revokes a previously published advert (a sold item, a closed post).
     Tombstone { revokes: AdvertId },
+    /// A discoverable `hps://` channel/service announcement (DESIGN.md §32). The descriptor
+    /// (path, kind, title, access mode, …) is **encrypted** under the publisher app's discovery
+    /// key, so only same-app nodes can read it — a foreign app can carry/relay it but can't
+    /// enumerate the topic. Never carries the content key.
+    HpsTopic { nonce: [u8; 12], ct: Vec<u8> },
 }
 
 /// The signed body of an advert. The publisher signature covers this exactly.
@@ -163,6 +170,7 @@ impl Advert {
             AdvertKind::Service { service, .. } => service,
             AdvertKind::PreKey { .. } => TOPIC_KEYS,
             AdvertKind::Tombstone { .. } => TOPIC_CONTROL,
+            AdvertKind::HpsTopic { .. } => TOPIC_HPS,
         }
     }
 }
@@ -232,6 +240,10 @@ pub struct Directory {
     seen: HashSet<AdvertId>,
     /// Revoked ids — a tombstone may arrive before the advert it revokes.
     revoked: HashSet<AdvertId>,
+    /// This node's app fingerprint (DESIGN.md §17). Adverts in this app or the open
+    /// [`FABRIC_APP`] get full retention / are browsable; other apps' adverts are still relayed
+    /// (the fabric is shared) but never surfaced locally.
+    app: AppId,
 }
 
 impl Default for Directory {
@@ -254,7 +266,13 @@ impl Directory {
             prekeys: HashMap::new(),
             seen: HashSet::new(),
             revoked: HashSet::new(),
+            app: FABRIC_APP,
         }
+    }
+
+    /// Set this node's app fingerprint so full-retention / browse are scoped to it (§17).
+    pub fn set_app(&mut self, app: AppId) {
+        self.app = app;
     }
 
     /// Subscribe to a service topic — its adverts now get full retention.
@@ -276,7 +294,8 @@ impl Directory {
     }
 
     fn is_subscribed(&self, topic: &str) -> bool {
-        topic == TOPIC_CONTROL || topic == TOPIC_KEYS || self.subscriptions.contains(topic)
+        topic == TOPIC_CONTROL || topic == TOPIC_KEYS || topic == TOPIC_HPS
+            || self.subscriptions.contains(topic)
     }
 
     /// Accept a gossiped advert. Verifies signature, dedups, applies tombstones,
@@ -319,10 +338,15 @@ impl Directory {
             }
         }
 
-        if self.is_subscribed(advert.topic()) {
+        // App scoping (DESIGN.md §17): full retention only for our own app or the open fabric
+        // (peer discovery / prekeys flood fabric-wide). Other apps' adverts are still carried in
+        // the relay cache — the fabric is shared and must keep forwarding — just never surfaced
+        // locally. This is what stops one app from discovering another app's hps topics.
+        let our_app = advert.body.app == self.app || advert.body.app == FABRIC_APP;
+        if our_app && self.is_subscribed(advert.topic()) {
             self.subscribed.insert(advert.id, advert);
         } else {
-            self.relay.put(&advert)?; // best-effort carry for strangers
+            self.relay.put(&advert)?; // best-effort carry for strangers / other apps
         }
         Ok(true)
     }
@@ -368,12 +392,22 @@ impl Directory {
     /// Searches both stores so you find listings even before subscribing.
     pub fn browse(&self, service: &str, tag: Option<&str>) -> Vec<Advert> {
         self.all()
+            .filter(|a| a.body.app == self.app || a.body.app == FABRIC_APP) // §17 app scoping
             .filter(|a| match &a.body.kind {
                 AdvertKind::Service { service: s, tags, .. } => {
                     s == service && tag.is_none_or(|t| tags.iter().any(|x| x == t))
                 }
                 _ => false,
             })
+            .collect()
+    }
+
+    /// Same-app `hps://` discovery adverts (encrypted bodies; the node decrypts under its
+    /// app key). Other apps' topics never appear here (DESIGN.md §17, §32).
+    pub fn hps_topics(&self) -> Vec<Advert> {
+        self.all()
+            .filter(|a| a.body.app == self.app)
+            .filter(|a| matches!(a.body.kind, AdvertKind::HpsTopic { .. }))
             .collect()
     }
 
@@ -454,6 +488,32 @@ mod tests {
 
         let mut dir2 = Directory::new();
         assert!(!dir2.ingest(adv, 5_000).unwrap()); // already expired on arrival
+    }
+
+    #[test]
+    fn foreign_app_adverts_relayed_but_not_browsable() {
+        let publisher = Identity::generate();
+        let app_x = crate::app_id("app.x");
+        let app_y = crate::app_id("app.y");
+
+        let mut dir = Directory::new();
+        dir.set_app(app_x);
+        dir.subscribe("market");
+
+        // Same-app listing → browsable.
+        let mine = Advert::publish_in(app_x, &publisher,
+            AdvertKind::Service { service: "market".into(), title: "mine".into(), summary: "".into(), tags: vec![] },
+            0, 10_000, 1).unwrap();
+        assert!(dir.ingest(mine, 0).unwrap());
+        assert_eq!(dir.browse("market", None).len(), 1);
+
+        // Foreign-app listing → still accepted for gossip/relay, but NOT surfaced to our app.
+        let theirs = Advert::publish_in(app_y, &publisher,
+            AdvertKind::Service { service: "market".into(), title: "theirs".into(), summary: "".into(), tags: vec![] },
+            0, 10_000, 2).unwrap();
+        assert!(dir.ingest(theirs, 0).unwrap(), "foreign advert still relayed");
+        assert_eq!(dir.browse("market", None).len(), 1, "foreign advert not browsable");
+        assert_eq!(dir.browse("market", None)[0].body.app, app_x);
     }
 
     #[test]
