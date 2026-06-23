@@ -985,6 +985,9 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            android.util.Log.i("HOPLOG", "BLE peripheral GATT: ${device.address} status=$status newState=$newState")
+        }
         override fun onCharacteristicReadRequest(
             device: BluetoothDevice, requestId: Int, offset: Int,
             characteristic: BluetoothGattCharacteristic,
