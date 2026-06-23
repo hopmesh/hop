@@ -146,6 +146,10 @@ pub const DEFAULT_MAX_FORWARDED: usize = 4_096;
 /// can always open a session (DESIGN.md §25).
 pub const PREKEY_TTL_MS: u32 = 604_800_000;
 
+/// TTL for an `hps://` discoverable-topic advert (7 days). Re-publish before it lapses so
+/// same-app peers keep seeing the topic (DESIGN.md §32).
+pub const HPS_TOPIC_TTL_MS: u32 = 604_800_000;
+
 /// Floor on a cached HNS record's lifetime (DESIGN.md §30): even a 0-TTL DNS answer is held
 /// briefly so a burst of lookups for the same domain coalesces.
 pub const MIN_HNS_TTL_MS: u64 = 1_000;
@@ -454,15 +458,35 @@ pub struct Node<S: Store = MemoryStore> {
     subscriptions: HashMap<String, HpsSubscription>,
     /// Received, decrypted, sender-verified pub/sub messages for the app to drain.
     hps_inbox: Vec<HpsMessage>,
+    /// Pending join requests for RequestToJoin topics we host: path → requester addresses.
+    hps_pending: HashMap<String, Vec<PubKeyBytes>>,
+    /// Invites we (host) have sent and await acceptance: (path, dest) → sent_at.
+    hps_invites_out: HashMap<(String, PubKeyBytes), u64>,
+    /// Invites we (member) have received and not yet accepted.
+    hps_invites_in: Vec<HpsInviteItem>,
+    /// Reach tally for topics we host: path → unique acking addresses (current epoch).
+    hps_reach: HashMap<String, std::collections::HashSet<PubKeyBytes>>,
+    /// Retained-member set for rekey: path → member addresses (joins/approvals/invites/acks).
+    hps_members: HashMap<String, std::collections::HashSet<PubKeyBytes>>,
+    /// Live discovery advert id per hosted Discoverable path (for tombstoning on rekey).
+    hps_adverts: HashMap<String, crate::discover::AdvertId>,
+    /// (topic_tag, epoch) we've already reach-acked, so a flood of broadcasts doesn't ack-storm.
+    hps_acked: std::collections::HashSet<([u8; 16], u32)>,
 }
 
 /// What we keep for a subscribed `hps://` topic: the content key, plus (for a service) the
 /// service public key to verify broadcasts against — `None` means a channel (verify each post
 /// against its sender's own address).
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HpsSubscription {
     pub content_key: [u8; 32],
     pub service_pubkey: Option<[u8; 32]>,
+    /// The topic's host node — needed to re-resolve for reach acks, leave, and rekey.
+    pub host: PubKeyBytes,
+    /// Rekey generation we currently hold; a higher-epoch HpsRekey supersedes it.
+    pub epoch: u32,
+    /// Opaque per-topic tag (matches `HpsPublish.topic_tag`); precomputed for fast routing.
+    pub topic_tag: [u8; 16],
 }
 
 /// A received `hps://` message, after decryption + sender verification.
@@ -470,6 +494,14 @@ pub struct HpsMessage {
     pub path: String,
     pub sender: PubKeyBytes,
     pub body: Vec<u8>,
+}
+
+/// An invite we (member) have received and may accept (DESIGN.md §32 Invite mode).
+#[derive(Clone)]
+pub struct HpsInviteItem {
+    pub path: String,
+    pub host: PubKeyBytes,
+    pub kind: hps::ServiceKind,
 }
 
 impl Node<MemoryStore> {
@@ -553,8 +585,23 @@ impl<S: Store> Node<S> {
             services: HashMap::new(),
             subscriptions: HashMap::new(),
             hps_inbox: Vec::new(),
+            hps_pending: HashMap::new(),
+            hps_invites_out: HashMap::new(),
+            hps_invites_in: Vec::new(),
+            hps_reach: HashMap::new(),
+            hps_members: HashMap::new(),
+            hps_adverts: HashMap::new(),
+            hps_acked: std::collections::HashSet::new(),
         };
         node.rehydrate();
+        node
+    }
+
+    /// Create a node with an explicit store and app key material (DESIGN.md §17, §32). The app
+    /// secret isolates this app's `hps://` channels from other apps; see [`AppKeys`].
+    pub fn with_store_app(identity: Identity, store: S, app: AppKeys) -> Self {
+        let mut node = Self::with_store(identity, store);
+        node.set_app_keys(app);
         node
     }
 
@@ -563,6 +610,37 @@ impl<S: Store> Node<S> {
     /// relayed bundles re-enter the eviction order so the store stays bounded
     /// (DESIGN.md §5, §6). A no-op on an empty (fresh) store.
     fn rehydrate(&mut self) {
+        // Restore hosted hps topics (their keys + access/visibility) so they survive a restart
+        // (DESIGN.md §32). Re-advertise discoverable ones.
+        for (key, bytes) in self.store.list_kv("hps/svc/") {
+            let Some(path) = key.strip_prefix("hps/svc/").map(str::to_string) else { continue };
+            if let Ok(cfg) = postcard::from_bytes::<hps::ServiceConfig>(&bytes) {
+                self.services.insert(path, cfg);
+            }
+        }
+        // Restore subscriptions so we keep decrypting topics we follow.
+        for (key, bytes) in self.store.list_kv("hps/sub/") {
+            let Some(path) = key.strip_prefix("hps/sub/").map(str::to_string) else { continue };
+            if let Ok(sub) = postcard::from_bytes::<HpsSubscription>(&bytes) {
+                self.directory.subscribe(path.clone());
+                self.subscriptions.insert(path, sub);
+            }
+        }
+        // Restore pending join requests + the retained-member set for topics we host, so an
+        // approval (and a later rekey) still works after a restart (DESIGN.md §32).
+        for (key, bytes) in self.store.list_kv("hps/pending/") {
+            let Some(path) = key.strip_prefix("hps/pending/").map(str::to_string) else { continue };
+            if let Ok(q) = postcard::from_bytes::<Vec<PubKeyBytes>>(&bytes) {
+                if !q.is_empty() { self.hps_pending.insert(path, q); }
+            }
+        }
+        for (key, bytes) in self.store.list_kv("hps/members/") {
+            let Some(path) = key.strip_prefix("hps/members/").map(str::to_string) else { continue };
+            if let Ok(m) = postcard::from_bytes::<Vec<PubKeyBytes>>(&bytes) {
+                self.hps_members.insert(path, m.into_iter().collect());
+            }
+        }
+
         // Restore forward-secret sessions so a restart / beacon-mode relaunch resumes the
         // ratchet instead of desyncing the peer (DESIGN.md §25).
         for (key, bytes) in self.store.list_kv("session/") {
@@ -1204,80 +1282,228 @@ impl<S: Store> Node<S> {
 
     // ---- hps:// pub/sub: services & channels (DESIGN.md §32) -----------------------------
 
-    /// Register a `hps://` topic at `path` that this node hosts, minting its keys. Returns the
-    /// service public key for a `Service` (`None` for a `Channel`). Re-registering replaces it.
-    pub fn register_service(&mut self, path: &str, kind: hps::ServiceKind) -> Option<[u8; 32]> {
-        let cfg = hps::ServiceConfig::new(kind);
+    /// Register a `hps://` topic at `path` that this node hosts, minting its keys. `access`
+    /// governs key handoff (Open/RequestToJoin/Invite) and `visibility` whether it's advertised
+    /// for discovery (DESIGN.md §32). Returns the service public key for a `Service` (`None` for
+    /// a `Channel`). Re-registering replaces it.
+    pub fn register_service(
+        &mut self,
+        path: &str,
+        kind: hps::ServiceKind,
+        access: hps::AccessMode,
+        visibility: hps::Visibility,
+    ) -> Option<[u8; 32]> {
+        let cfg = hps::ServiceConfig::new_with(kind, access, visibility);
         let pk = cfg.service_pubkey();
+        if visibility == hps::Visibility::Discoverable {
+            self.publish_topic_advert(path, &cfg);
+        }
+        self.persist_service(path, &cfg);
         self.services.insert(path.to_string(), cfg);
         pk
     }
 
-    /// Subscribe to `hps://{host}/{path}`: send a (sealed) subscribe request to `host`, which
-    /// replies with the topic keys (open access). The keys arrive via the bundle handler.
+    /// Current join-proof time bucket (DESIGN.md §32 app isolation).
+    fn join_bucket(&self) -> u64 {
+        self.now_ms / crate::app::JOIN_EPOCH_MS
+    }
+
+    /// Proof that we hold the app secret, bound to `path` + `who` for the current bucket.
+    fn hps_proof(&self, path: &str, who: &PubKeyBytes) -> [u8; 32] {
+        self.app.join_proof(path, who, self.join_bucket())
+    }
+
+    /// Verify an inbound hps proof from `sender`, and that the bundle is on our app.
+    fn hps_authorized(&self, bundle: &Bundle, path: &str, proof: &[u8; 32]) -> bool {
+        bundle.inner.app == self.app.id
+            && self.app.verify_join_proof(proof, path, &bundle.inner.src, self.join_bucket())
+    }
+
+    /// Subscribe to `hps://{host}/{path}`: send a sealed, proof-carrying join request to `host`.
+    /// For an Open topic the keys come straight back; RequestToJoin queues for host approval;
+    /// Invite topics can't be self-joined (wait for an invite).
     pub fn hps_subscribe(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
-        let bundle = Bundle::create(
-            &self.identity,
-            Destination::Device(host),
-            &host,
-            &Payload::HpsSubscribe { path: path.to_string() },
-            BundleOpts { created_at: self.now_ms, ..Default::default() },
-        )?;
-        let id = bundle.id();
-        self.tx.entry(id).or_default();
-        self.forwarded.insert(id, (self.identity.address(), host, self.now_ms));
-        self.deliver(bundle);
-        Ok(id)
+        let proof = self.hps_proof(path, &self.identity.address());
+        self.send_to_host(host, Payload::HpsJoinRequest { path: path.to_string(), proof })
+    }
+
+    /// Host → destination: invite an address to a topic we host (Invite mode). The destination
+    /// accepts to receive keys.
+    pub fn hps_invite(&mut self, path: &str, dest: PubKeyBytes) -> Result<BundleId> {
+        let cfg = self
+            .services
+            .get(path)
+            .ok_or_else(|| Error::Other("not a topic we host".into()))?;
+        let kind = cfg.kind;
+        let proof = self.hps_proof(path, &self.identity.address());
+        self.hps_invites_out.insert((path.to_string(), dest), self.now_ms);
+        self.send_to_host(dest, Payload::HpsInvite { path: path.to_string(), kind, proof })
+    }
+
+    /// Member → host: accept an invite we received, which prompts the host to seal us the keys.
+    pub fn hps_accept_invite(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
+        self.hps_invites_in.retain(|i| !(i.path == path && i.host == host));
+        let proof = self.hps_proof(path, &self.identity.address());
+        self.send_to_host(host, Payload::HpsInviteAccept { path: path.to_string(), proof })
+    }
+
+    /// Member → host: leave a topic (drop from the retained set so we're not re-keyed).
+    pub fn hps_leave(&mut self, path: &str) -> Result<Option<BundleId>> {
+        let Some(sub) = self.subscriptions.remove(path) else { return Ok(None) };
+        self.directory.unsubscribe(path);
+        self.store.remove_kv(&Self::hps_sub_key(path));
+        let proof = self.hps_proof(path, &self.identity.address());
+        Ok(Some(self.send_to_host(sub.host, Payload::HpsLeave { path: path.to_string(), proof })?))
+    }
+
+    /// Host: pending join requests for a RequestToJoin topic.
+    pub fn hps_pending(&self, path: &str) -> Vec<PubKeyBytes> {
+        self.hps_pending.get(path).cloned().unwrap_or_default()
+    }
+
+    /// Host: approve a pending requester, sealing them the topic keys.
+    pub fn hps_approve(&mut self, path: &str, requester: PubKeyBytes) -> Result<BundleId> {
+        if let Some(q) = self.hps_pending.get_mut(path) {
+            q.retain(|a| *a != requester);
+        }
+        self.persist_pending(path);
+        self.record_member(path, requester);
+        self.send_keys(path, requester)
+    }
+
+    /// Host: deny/drop a pending requester (no keys).
+    pub fn hps_deny(&mut self, path: &str, requester: PubKeyBytes) {
+        if let Some(q) = self.hps_pending.get_mut(path) {
+            q.retain(|a| *a != requester);
+        }
+        self.persist_pending(path);
+    }
+
+    /// Host: unique acking addresses for a topic (its reach / sense of delivery, DESIGN.md §32).
+    pub fn hps_reach(&self, path: &str) -> usize {
+        self.hps_reach.get(path).map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Host: the retained-member set (joined/approved/accepted/acked), used for rekey.
+    pub fn hps_members(&self, path: &str) -> Vec<PubKeyBytes> {
+        self.hps_members.get(path).map(|s| s.iter().copied().collect()).unwrap_or_default()
+    }
+
+    /// Member: invites we've received and not yet accepted (DESIGN.md §32 Invite mode).
+    pub fn take_hps_invites(&mut self) -> Vec<HpsInviteItem> {
+        std::mem::take(&mut self.hps_invites_in)
+    }
+
+    /// Host: selective forward rotation (revocation, DESIGN.md §32). Mint a fresh key (and,
+    /// optionally, move the topic to `new_path`), re-key every retained member except those in
+    /// `remove`, tombstone the old discovery advert, and re-advertise. Removed members keep the
+    /// dead key (forward-only). Returns the rekey bundle ids.
+    pub fn hps_rekey(
+        &mut self,
+        path: &str,
+        new_path: Option<&str>,
+        remove: &[PubKeyBytes],
+    ) -> Result<Vec<BundleId>> {
+        let mut cfg = self.services.get(path).cloned().ok_or_else(|| Error::Other("not a topic we host".into()))?;
+        cfg.rotate();
+        let new_path = new_path.unwrap_or(path).to_string();
+        let svc_pk = cfg.service_pubkey();
+        let epoch = cfg.epoch;
+
+        // Retained = current members + reach acks, minus the removed set.
+        let removed: std::collections::HashSet<PubKeyBytes> = remove.iter().copied().collect();
+        let mut retained: std::collections::HashSet<PubKeyBytes> =
+            self.hps_members.get(path).cloned().unwrap_or_default();
+        if let Some(r) = self.hps_reach.get(path) {
+            retained.extend(r.iter().copied());
+        }
+        retained.retain(|a| !removed.contains(a) && *a != self.identity.address());
+
+        // Tombstone old discovery advert and clear reach for the fresh epoch.
+        if let Some(old_id) = self.hps_adverts.remove(path) {
+            self.tombstone_advert(old_id);
+        }
+        self.hps_reach.remove(path);
+
+        // Move state to the new path.
+        self.services.remove(path);
+        self.store.remove_kv(&Self::hps_svc_key(path));
+        self.hps_members.insert(new_path.clone(), retained.clone());
+        if path != new_path {
+            self.hps_members.remove(path);
+            self.hps_pending.remove(path);
+        }
+        if cfg.visibility == hps::Visibility::Discoverable {
+            self.publish_topic_advert(&new_path, &cfg);
+        }
+        self.persist_service(&new_path, &cfg);
+        let content_key = cfg.content_key;
+        self.services.insert(new_path.clone(), cfg);
+
+        // Re-key each retained member.
+        let mut ids = Vec::new();
+        let me = self.identity.address();
+        for m in retained {
+            let proof = self.hps_proof(path, &me);
+            let payload = Payload::HpsRekey {
+                old_path: path.to_string(),
+                new_path: new_path.clone(),
+                epoch,
+                content_key,
+                service_pubkey: svc_pk,
+                proof,
+            };
+            if let Ok(id) = self.send_to_host(m, payload) {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
     }
 
     /// Publish a message to a topic we can write to — a `Service` we host (signed by the
     /// service key) or a `Channel` we belong to (signed by our own identity). Floods to all
     /// subscribers via [`Destination::Broadcast`].
     pub fn hps_publish(&mut self, path: &str, plaintext: &[u8]) -> Result<BundleId> {
-        // Determine the content key + how to sign.
-        let (content_key, sig) = if let Some(cfg) = self.services.get(path) {
-            // We host it. A channel we host is also writable by us with our identity; a
-            // service we host is signed by its service key.
+        let (content_key, epoch) = if let Some(cfg) = self.services.get(path) {
             let content_key = cfg.content_key;
+            let epoch = cfg.epoch;
             let (nonce, ct) = hps::seal_content(&content_key, plaintext);
             let sig = match cfg.signing_seed {
                 Some(seed) => hps::sign_publish(&seed, path, &nonce, &ct).to_vec(),
-                None => self
-                    .identity
-                    .sign(&hps::publish_signing_bytes(path, &nonce, &ct))
-                    .to_vec(),
+                None => self.identity.sign(&hps::publish_signing_bytes(path, &nonce, &ct)).to_vec(),
             };
-            return self.broadcast_publish(path, nonce, ct, sig);
+            return self.broadcast_publish(path, epoch, nonce, ct, sig);
         } else if let Some(sub) = self.subscriptions.get(path) {
             if sub.service_pubkey.is_some() {
-                // It's a service we only subscribe to — we can't broadcast to it.
                 return Err(Error::Other("cannot publish to a service you don't host".into()));
             }
-            (sub.content_key, ())
+            (sub.content_key, sub.epoch)
         } else {
             return Err(Error::Other("not a registered or subscribed topic".into()));
         };
-        let _ = sig;
         // Channel member path: sign with our own identity.
         let (nonce, ct) = hps::seal_content(&content_key, plaintext);
         let signature = self.identity.sign(&hps::publish_signing_bytes(path, &nonce, &ct)).to_vec();
-        self.broadcast_publish(path, nonce, ct, signature)
+        self.broadcast_publish(path, epoch, nonce, ct, signature)
     }
 
-    /// Seal an [`Payload::HpsPublish`] to the shared broadcast key and flood it.
+    /// Seal an [`Payload::HpsPublish`] to the shared broadcast key and flood it. The wire form
+    /// carries the opaque `topic_tag` (not the path) so a foreign app can't tell which topic.
     fn broadcast_publish(
         &mut self,
         path: &str,
+        epoch: u32,
         nonce: [u8; 12],
         ciphertext: Vec<u8>,
         sig: Vec<u8>,
     ) -> Result<BundleId> {
+        let topic_tag = self.app.topic_tag(path);
         let bundle = Bundle::create(
             &self.identity,
             Destination::Broadcast,
             &hps::broadcast_identity().address(),
-            &Payload::HpsPublish { path: path.to_string(), nonce: nonce.to_vec(), ciphertext, sig },
-            BundleOpts { created_at: self.now_ms, ..Default::default() },
+            &Payload::HpsPublish { topic_tag, epoch, nonce: nonce.to_vec(), ciphertext, sig },
+            BundleOpts { app: self.app.id, created_at: self.now_ms, ..Default::default() },
         )?;
         let id = bundle.id();
         self.submit(bundle);
@@ -1289,30 +1515,179 @@ impl<S: Store> Node<S> {
         std::mem::take(&mut self.hps_inbox)
     }
 
-    /// Process a broadcast `HpsPublish`: if we subscribe to its path, verify the sender's
-    /// signature and decrypt, then surface it. Silently ignores topics we don't follow or
-    /// messages that fail verification/decryption.
+    /// Process a broadcast `HpsPublish`: match its `topic_tag` to a subscription, verify the
+    /// sender's signature against the known path, decrypt, surface it, and reach-ack the host.
+    /// Drops stale-epoch messages (post-rekey) and anything we can't verify/decrypt.
     fn process_broadcast(&mut self, bundle: &Bundle) {
-        let Ok(Payload::HpsPublish { path, nonce, ciphertext, sig }) =
+        let Ok(Payload::HpsPublish { topic_tag, epoch, nonce, ciphertext, sig }) =
             bundle.open(&hps::broadcast_identity())
         else {
             return;
         };
-        let Some(sub) = self.subscriptions.get(&path) else {
-            return; // not subscribed
+        // Find the subscription whose tag matches (we keep the real path locally).
+        let Some((path, sub)) =
+            self.subscriptions.iter().find(|(_, s)| s.topic_tag == topic_tag).map(|(p, s)| (p.clone(), s.clone()))
+        else {
+            return; // not subscribed (or another app's broadcast)
         };
+        if epoch < sub.epoch {
+            return; // stale generation (we've been re-keyed past it)
+        }
         let (Ok(nonce12), Ok(sig64)) =
             (<[u8; 12]>::try_from(nonce.as_slice()), <[u8; 64]>::try_from(sig.as_slice()))
         else {
             return;
         };
-        // Service → verify against the service key; channel → against the sender's address.
         let signer = sub.service_pubkey.unwrap_or(bundle.inner.src);
         if !hps::verify_publish(&signer, &path, &nonce12, &ciphertext, &sig64) {
             return;
         }
-        if let Some(body) = hps::open_content(&sub.content_key, &nonce12, &ciphertext) {
-            self.hps_inbox.push(HpsMessage { path, sender: bundle.inner.src, body });
+        let Some(body) = hps::open_content(&sub.content_key, &nonce12, &ciphertext) else {
+            return;
+        };
+        self.hps_inbox.push(HpsMessage { path: path.clone(), sender: bundle.inner.src, body });
+        // Reach-ack the host once per (topic, epoch) so it can tally unique members (§32).
+        if self.hps_acked.insert((topic_tag, epoch)) {
+            let _ = self.send_to_host(sub.host, Payload::HpsReachAck { topic_tag, epoch });
+        }
+    }
+
+    // --- hps internal helpers --------------------------------------------------------------
+
+    /// Seal a directed hps control payload to `to` (sealed + app-stamped) and deliver it.
+    fn send_to_host(&mut self, to: PubKeyBytes, payload: Payload) -> Result<BundleId> {
+        let bundle = Bundle::create(
+            &self.identity,
+            Destination::Device(to),
+            &to,
+            &payload,
+            BundleOpts { app: self.app.id, created_at: self.now_ms, ..Default::default() },
+        )?;
+        let id = bundle.id();
+        self.tx.entry(id).or_default();
+        self.forwarded.insert(id, (self.identity.address(), to, self.now_ms));
+        self.deliver(bundle);
+        Ok(id)
+    }
+
+    /// Host: seal the current keys for `path` to a member.
+    fn send_keys(&mut self, path: &str, to: PubKeyBytes) -> Result<BundleId> {
+        let cfg = self.services.get(path).ok_or_else(|| Error::Other("no such topic".into()))?;
+        let payload = Payload::HpsKeys {
+            path: path.to_string(),
+            content_key: cfg.content_key,
+            service_pubkey: cfg.service_pubkey(),
+            epoch: cfg.epoch,
+        };
+        self.send_to_host(to, payload)
+    }
+
+    /// Host: remember a member for reach/rekey.
+    fn record_member(&mut self, path: &str, who: PubKeyBytes) {
+        let added = self.hps_members.entry(path.to_string()).or_default().insert(who);
+        if added {
+            self.persist_members(path);
+        }
+    }
+
+    /// Store a subscription we've been handed (Open keys, invite/approve keys, or a rekey).
+    fn install_subscription(&mut self, path: &str, host: PubKeyBytes, content_key: [u8; 32], service_pubkey: Option<[u8; 32]>, epoch: u32) {
+        let sub = HpsSubscription {
+            content_key,
+            service_pubkey,
+            host,
+            epoch,
+            topic_tag: self.app.topic_tag(path),
+        };
+        self.directory.subscribe(path.to_string());
+        self.persist_subscription(path, &sub);
+        self.subscriptions.insert(path.to_string(), sub);
+    }
+
+    /// Build + gossip a Discoverable topic's advert (descriptor encrypted under the app key).
+    fn publish_topic_advert(&mut self, path: &str, cfg: &hps::ServiceConfig) {
+        let Some(disc_key) = self.app.disc_key else { return }; // fabric: no discovery isolation
+        let (nonce, ct) = hps::seal_meta(&disc_key, &cfg.meta(path));
+        self.advert_seq += 1;
+        if let Ok(advert) = crate::discover::Advert::publish_in(
+            self.app.id,
+            &self.identity,
+            crate::discover::AdvertKind::HpsTopic { nonce, ct },
+            self.now_ms,
+            HPS_TOPIC_TTL_MS,
+            self.advert_seq,
+        ) {
+            self.hps_adverts.insert(path.to_string(), advert.id);
+            self.publish(advert);
+        }
+    }
+
+    /// Tombstone a previously published advert id (revocation / rekey).
+    fn tombstone_advert(&mut self, revokes: crate::discover::AdvertId) {
+        self.advert_seq += 1;
+        if let Ok(tomb) = crate::discover::Advert::publish_in(
+            self.app.id,
+            &self.identity,
+            crate::discover::AdvertKind::Tombstone { revokes },
+            self.now_ms,
+            HPS_TOPIC_TTL_MS,
+            self.advert_seq,
+        ) {
+            self.publish(tomb);
+        }
+    }
+
+    /// Same-app discoverable topics we can see (decrypted descriptors + host address).
+    pub fn browse_discoverable(&self, tag: Option<&str>) -> Vec<(PubKeyBytes, hps::TopicMeta)> {
+        let Some(disc_key) = self.app.disc_key else { return Vec::new() };
+        let mut out = Vec::new();
+        for advert in self.directory.hps_topics() {
+            if let crate::discover::AdvertKind::HpsTopic { nonce, ct } = &advert.body.kind {
+                if let Some(meta) = hps::open_meta(&disc_key, nonce, ct) {
+                    if tag.is_none_or(|t| meta.tags.iter().any(|x| x == t)) {
+                        out.push((advert.body.publisher, meta));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn hps_svc_key(path: &str) -> String {
+        format!("hps/svc/{path}")
+    }
+    fn hps_sub_key(path: &str) -> String {
+        format!("hps/sub/{path}")
+    }
+
+    fn hps_pending_key(path: &str) -> String {
+        format!("hps/pending/{path}")
+    }
+    fn hps_members_key(path: &str) -> String {
+        format!("hps/members/{path}")
+    }
+
+    fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) {
+        if let Ok(bytes) = postcard::to_allocvec(cfg) {
+            self.store.put_kv(&Self::hps_svc_key(path), bytes);
+        }
+    }
+    fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) {
+        if let Ok(bytes) = postcard::to_allocvec(sub) {
+            self.store.put_kv(&Self::hps_sub_key(path), bytes);
+        }
+    }
+    fn persist_pending(&mut self, path: &str) {
+        let q: Vec<PubKeyBytes> = self.hps_pending.get(path).cloned().unwrap_or_default();
+        if let Ok(bytes) = postcard::to_allocvec(&q) {
+            self.store.put_kv(&Self::hps_pending_key(path), bytes);
+        }
+    }
+    fn persist_members(&mut self, path: &str) {
+        let m: Vec<PubKeyBytes> =
+            self.hps_members.get(path).map(|s| s.iter().copied().collect()).unwrap_or_default();
+        if let Ok(bytes) = postcard::to_allocvec(&m) {
+            self.store.put_kv(&Self::hps_members_key(path), bytes);
         }
     }
 
@@ -2131,32 +2506,91 @@ impl<S: Store> Node<S> {
                         self.immune.insert(for_query, self.now_ms);
                         self.tx.remove(&for_query);
                     }
-                    // A subscribe request for a topic we host (§32): if registered (open
-                    // access), seal the topic keys back to the asker. Unregistered → ignore.
-                    Ok(Payload::HpsSubscribe { path }) => {
-                        if let Some(cfg) = self.services.get(&path) {
-                            let payload = Payload::HpsKeys {
-                                path: path.clone(),
-                                content_key: cfg.content_key,
-                                service_pubkey: cfg.service_pubkey(),
-                            };
-                            let to = bundle.inner.src;
-                            if let Ok(reply) = Bundle::create(
-                                &self.identity,
-                                Destination::Device(to),
-                                &to,
-                                &payload,
-                                BundleOpts { created_at: self.now_ms, ..Default::default() },
-                            ) {
-                                self.deliver(reply);
+                    // A join request for a topic we host (§32). Verify app+proof, then branch on
+                    // access: Open → seal keys now; RequestToJoin → queue for approval; Invite →
+                    // ignore (members can't self-join, they must be invited).
+                    Ok(Payload::HpsJoinRequest { path, proof }) => {
+                        if self.hps_authorized(&bundle, &path, &proof) {
+                            let who = bundle.inner.src;
+                            match self.services.get(&path).map(|c| c.access) {
+                                Some(hps::AccessMode::Open) => {
+                                    self.record_member(&path, who);
+                                    let _ = self.send_keys(&path, who);
+                                }
+                                Some(hps::AccessMode::RequestToJoin) => {
+                                    let q = self.hps_pending.entry(path.clone()).or_default();
+                                    if !q.contains(&who) {
+                                        q.push(who);
+                                        self.persist_pending(&path);
+                                    }
+                                }
+                                _ => {} // Invite-only or unregistered → ignore
+                            }
+                        }
+                    }
+                    // Host → us: an invite. Verify it's a same-app invite, then surface it for
+                    // the user to accept.
+                    Ok(Payload::HpsInvite { path, kind, proof }) => {
+                        if self.hps_authorized(&bundle, &path, &proof) {
+                            let host = bundle.inner.src;
+                            if !self.hps_invites_in.iter().any(|i| i.path == path && i.host == host) {
+                                self.hps_invites_in.push(HpsInviteItem { path, host, kind });
+                            }
+                        }
+                    }
+                    // Destination → host: an invite was accepted; seal them the keys.
+                    Ok(Payload::HpsInviteAccept { path, proof }) => {
+                        let who = bundle.inner.src;
+                        if self.hps_authorized(&bundle, &path, &proof)
+                            && self.hps_invites_out.remove(&(path.clone(), who)).is_some()
+                        {
+                            self.record_member(&path, who);
+                            let _ = self.send_keys(&path, who);
+                        }
+                    }
+                    // Member → host: leaving; drop them from retained set + reach tally.
+                    Ok(Payload::HpsLeave { path, proof }) => {
+                        if self.hps_authorized(&bundle, &path, &proof) {
+                            let who = bundle.inner.src;
+                            if let Some(m) = self.hps_members.get_mut(&path) { m.remove(&who); }
+                            if let Some(r) = self.hps_reach.get_mut(&path) { r.remove(&who); }
+                        }
+                    }
+                    // Member → host: reach ack — tally unique acking addresses (§32).
+                    Ok(Payload::HpsReachAck { topic_tag, epoch: _ }) => {
+                        // Map the opaque tag back to a path we host.
+                        let who = bundle.inner.src;
+                        let path = self
+                            .services
+                            .keys()
+                            .find(|p| self.app.topic_tag(p) == topic_tag)
+                            .cloned();
+                        if let Some(path) = path {
+                            self.hps_reach.entry(path.clone()).or_default().insert(who);
+                            self.record_member(&path, who);
+                        }
+                    }
+                    // Host → us: rotate to a new key generation (revocation, §32).
+                    Ok(Payload::HpsRekey { old_path, new_path, epoch, content_key, service_pubkey, proof }) => {
+                        if self.hps_authorized(&bundle, &old_path, &proof) {
+                            if let Some(old) = self.subscriptions.get(&old_path) {
+                                if epoch > old.epoch {
+                                    let host = old.host;
+                                    if old_path != new_path {
+                                        self.subscriptions.remove(&old_path);
+                                        self.directory.unsubscribe(&old_path);
+                                        self.store.remove_kv(&Self::hps_sub_key(&old_path));
+                                    }
+                                    self.install_subscription(&new_path, host, content_key, service_pubkey, epoch);
+                                }
                             }
                         }
                     }
                     // The keys for a topic we subscribed to (§32): remember them so we can
                     // decrypt + verify its broadcasts.
-                    Ok(Payload::HpsKeys { path, content_key, service_pubkey }) => {
-                        self.subscriptions
-                            .insert(path, HpsSubscription { content_key, service_pubkey });
+                    Ok(Payload::HpsKeys { path, content_key, service_pubkey, epoch }) => {
+                        let host = bundle.inner.src;
+                        self.install_subscription(&path, host, content_key, service_pubkey, epoch);
                     }
                     // A transport carrier chunk: reassemble (§20); once complete, reconstruct
                     // the original bundle and process it as if it had arrived whole.
@@ -3784,7 +4218,8 @@ mod tests {
         net.connect(&mut nodes, 0, 1, 1, 1);
 
         // Node 0 hosts a service at "news"; node 1 subscribes and is handed the keys.
-        let svc_pubkey = nodes[0].register_service("news", crate::hps::ServiceKind::Service);
+        let svc_pubkey = nodes[0].register_service("news", crate::hps::ServiceKind::Service,
+            crate::hps::AccessMode::Open, crate::hps::Visibility::Private);
         assert!(svc_pubkey.is_some(), "a service mints a signing key");
         nodes[1].hps_subscribe(nodes[0].address(), "news").unwrap();
         net.pump(&mut nodes);
@@ -3819,7 +4254,8 @@ mod tests {
         net.connect(&mut nodes, 1, 3, 2, 3); // 1 <-> 2
 
         assert!(
-            nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel).is_none(),
+            nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open, crate::hps::Visibility::Private).is_none(),
             "a channel has no service signing key"
         );
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
@@ -3844,7 +4280,8 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
-        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel);
+        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::Open, crate::hps::Visibility::Private);
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
 
@@ -3863,5 +4300,122 @@ mod tests {
         // Publishing to a path we neither host nor subscribe to is an error (§32).
         let mut node = Node::new(Identity::generate());
         assert!(node.hps_publish("nope", b"x").is_err());
+    }
+
+    /// Helper: a node on a real app secret (so hps isolation is active, not the open fabric).
+    fn app_node(secret: u8) -> Node<MemoryStore> {
+        Node::with_store_app(
+            Identity::generate(),
+            MemoryStore::new(),
+            crate::app::AppKeys::from_secret([secret; 32]),
+        )
+    }
+
+    #[test]
+    fn hps_request_to_join_needs_approval() {
+        // RequestToJoin: a subscribe request is queued, not auto-keyed. The requester can't read
+        // until the host approves (§32).
+        let mut nodes = [app_node(5), app_node(5)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::RequestToJoin, crate::hps::Visibility::Private);
+        let requester = nodes[1].address();
+        nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].hps_pending("lobby"), vec![requester], "queued, not keyed");
+
+        nodes[0].hps_publish("lobby", b"members only").unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_hps_messages().is_empty(), "no keys yet → can't read");
+
+        nodes[0].hps_approve("lobby", requester).unwrap();
+        net.pump(&mut nodes);
+        nodes[0].hps_publish("lobby", b"welcome").unwrap();
+        net.pump(&mut nodes);
+        let msgs = nodes[1].take_hps_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, b"welcome");
+    }
+
+    #[test]
+    fn hps_invite_then_accept() {
+        // Invite: a topic can't be self-joined; only a host-initiated invite, once accepted,
+        // yields keys (§32, consent-based).
+        let mut nodes = [app_node(6), app_node(6)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].register_service("vip", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::Invite, crate::hps::Visibility::Private);
+        let dest = nodes[1].address();
+
+        // Self-join is ignored for an Invite topic.
+        nodes[1].hps_subscribe(nodes[0].address(), "vip").unwrap();
+        net.pump(&mut nodes);
+        nodes[0].hps_publish("vip", b"x").unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_hps_messages().is_empty(), "can't self-join an invite topic");
+
+        // Host invites; destination sees it and accepts.
+        nodes[0].hps_invite("vip", dest).unwrap();
+        net.pump(&mut nodes);
+        let invites = nodes[1].take_hps_invites();
+        assert_eq!(invites.len(), 1);
+        assert_eq!(invites[0].path, "vip");
+        nodes[1].hps_accept_invite(nodes[0].address(), "vip").unwrap();
+        net.pump(&mut nodes);
+
+        nodes[0].hps_publish("vip", b"hi vip").unwrap();
+        net.pump(&mut nodes);
+        let msgs = nodes[1].take_hps_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, b"hi vip");
+    }
+
+    #[test]
+    fn hps_app_secret_isolates_join() {
+        // A node with a DIFFERENT app secret can't join an Open topic — the host rejects the
+        // foreign app id + proof, so no keys are handed off (§32 app isolation).
+        let mut nodes = [app_node(1), app_node(2)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].register_service("lobby", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::Open, crate::hps::Visibility::Private);
+        nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
+        net.pump(&mut nodes);
+        nodes[0].hps_publish("lobby", b"members only").unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_hps_messages().is_empty(), "foreign-app node can't join");
+        assert!(nodes[0].hps_members("lobby").is_empty(), "host recorded no foreign member");
+    }
+
+    #[test]
+    fn hps_rekey_revokes_removed_member() {
+        // Selective forward rotation: after rekey-with-remove, the removed member can no longer
+        // read new posts while the retained member can (§32 revocation).
+        let mut nodes = [app_node(7), app_node(7), app_node(7)];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        net.connect(&mut nodes, 0, 2, 2, 2);
+        net.connect(&mut nodes, 1, 3, 2, 3);
+        nodes[0].register_service("room", crate::hps::ServiceKind::Channel,
+            crate::hps::AccessMode::Open, crate::hps::Visibility::Private);
+        let m2 = nodes[2].address();
+        nodes[1].hps_subscribe(nodes[0].address(), "room").unwrap();
+        nodes[2].hps_subscribe(nodes[0].address(), "room").unwrap();
+        net.pump(&mut nodes);
+
+        nodes[0].hps_publish("room", b"v1").unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[1].take_hps_messages().len(), 1, "m1 reads v1");
+        assert_eq!(nodes[2].take_hps_messages().len(), 1, "m2 reads v1");
+
+        // Rotate, removing member 2.
+        nodes[0].hps_rekey("room", None, &[m2]).unwrap();
+        net.pump(&mut nodes);
+        nodes[0].hps_publish("room", b"v2").unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[1].take_hps_messages().len(), 1, "retained m1 reads v2");
+        assert!(nodes[2].take_hps_messages().is_empty(), "removed m2 can't read v2");
     }
 }

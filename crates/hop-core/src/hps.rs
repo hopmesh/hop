@@ -41,6 +41,41 @@ pub enum ServiceKind {
     Service,
 }
 
+/// Who may obtain a topic's keys (DESIGN.md §32). Confidentiality/authenticity are unchanged;
+/// this governs **key handoff** only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccessMode {
+    /// Keys handed out to anyone who asks (anonymous membership).
+    Open,
+    /// Requester asks; the host approves before keys are handed off.
+    RequestToJoin,
+    /// The host initiates an invite to a destination; the destination accepts, then gets keys.
+    Invite,
+}
+
+/// Whether a topic announces itself for discovery (DESIGN.md §32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Visibility {
+    /// Reachable only by known `address+path` or an invite — never advertised.
+    Private,
+    /// Host broadcasts an (app-encrypted) discovery advert so same-app peers can browse it.
+    Discoverable,
+}
+
+/// The decrypted descriptor inside a discoverable topic's advert (DESIGN.md §32). Encrypted
+/// under the publisher app's discovery key — never carries the content key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopicMeta {
+    pub path: String,
+    pub kind: ServiceKind,
+    pub title: String,
+    pub summary: String,
+    pub tags: Vec<String>,
+    pub access: AccessMode,
+    /// A `Service`'s verify key, so a browser can pre-verify broadcasts; `None` for a channel.
+    pub service_pubkey: Option<[u8; 32]>,
+}
+
 /// The persisted configuration for a topic registered at a path. Holds the secret material, so
 /// it lives only in the host node's store — never sent on the wire as-is.
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,11 +86,26 @@ pub struct ServiceConfig {
     /// ed25519 seed of the service signing key — `Some` for a `Service` (only the owner can
     /// broadcast), `None` for a `Channel` (members sign with their own identities).
     pub signing_seed: Option<[u8; 32]>,
+    /// Who may obtain the keys (DESIGN.md §32).
+    pub access: AccessMode,
+    /// Whether the topic is advertised for discovery.
+    pub visibility: Visibility,
+    /// Rekey generation; bumped by selective rotation (revocation). Starts at 0.
+    pub epoch: u32,
+    /// Optional metadata shown in discovery (title/summary/tags).
+    pub title: String,
+    pub summary: String,
+    pub tags: Vec<String>,
 }
 
 impl ServiceConfig {
-    /// Generate fresh keys for a new topic.
+    /// Generate fresh keys for a new topic with default access (Open) and visibility (Private).
     pub fn new(kind: ServiceKind) -> Self {
+        Self::new_with(kind, AccessMode::Open, Visibility::Private)
+    }
+
+    /// Generate fresh keys for a new topic with explicit access + visibility.
+    pub fn new_with(kind: ServiceKind, access: AccessMode, visibility: Visibility) -> Self {
         let mut content_key = [0u8; 32];
         OsRng.fill_bytes(&mut content_key);
         let signing_seed = match kind {
@@ -66,7 +116,45 @@ impl ServiceConfig {
             }
             ServiceKind::Channel => None,
         };
-        Self { kind, content_key, signing_seed }
+        Self {
+            kind,
+            content_key,
+            signing_seed,
+            access,
+            visibility,
+            epoch: 0,
+            title: String::new(),
+            summary: String::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    /// Mint a fresh content key (and, for a Service, a fresh signing key) and bump the epoch —
+    /// the core of selective-rotation revocation (DESIGN.md §32). Retained members are re-keyed;
+    /// removed ones simply never receive the new key.
+    pub fn rotate(&mut self) {
+        let mut ck = [0u8; 32];
+        OsRng.fill_bytes(&mut ck);
+        self.content_key = ck;
+        if self.kind == ServiceKind::Service {
+            let mut s = [0u8; 32];
+            OsRng.fill_bytes(&mut s);
+            self.signing_seed = Some(s);
+        }
+        self.epoch = self.epoch.saturating_add(1);
+    }
+
+    /// Build the discovery descriptor for this topic at `path`.
+    pub fn meta(&self, path: &str) -> TopicMeta {
+        TopicMeta {
+            path: path.to_string(),
+            kind: self.kind,
+            title: self.title.clone(),
+            summary: self.summary.clone(),
+            tags: self.tags.clone(),
+            access: self.access,
+            service_pubkey: self.service_pubkey(),
+        }
     }
 
     /// The public key subscribers use to verify a *service's* broadcasts (`None` for a channel).
@@ -129,6 +217,19 @@ pub fn verify_publish(
     };
     vk.verify(&publish_msg(path, nonce, ciphertext), &Signature::from_bytes(sig))
         .is_ok()
+}
+
+/// Encrypt a discovery descriptor under the app discovery key, returning `(nonce, ct)` for an
+/// `AdvertKind::HpsTopic`. Only same-app nodes (same `disc_key`) can read it.
+pub fn seal_meta(disc_key: &[u8; 32], meta: &TopicMeta) -> ([u8; 12], Vec<u8>) {
+    let plain = postcard::to_allocvec(meta).expect("serialize TopicMeta");
+    seal_content(disc_key, &plain)
+}
+
+/// Decrypt a discovery descriptor; `None` if the key is wrong (foreign app) or tampered.
+pub fn open_meta(disc_key: &[u8; 32], nonce: &[u8; 12], ct: &[u8]) -> Option<TopicMeta> {
+    let plain = open_content(disc_key, nonce, ct)?;
+    postcard::from_bytes(&plain).ok()
 }
 
 #[cfg(test)]
