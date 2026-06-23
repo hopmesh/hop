@@ -102,10 +102,133 @@ private fun messageMeta(m: HopBearer.Message): String {
 fun HopApp(bearer: HopBearer) {
     var selected by remember { mutableStateOf<HopBearer.Peer?>(null) }
     val peer = selected
-    if (peer == null) {
-        PeopleScreen(bearer) { selected = it }
-    } else {
-        ChatScreen(bearer, peer) { selected = null }
+    if (peer != null) { ChatScreen(bearer, peer) { selected = null }; return }
+    var tab by remember { mutableStateOf(0) }
+    Scaffold(bottomBar = {
+        NavigationBar {
+            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
+                icon = { Text("👥") }, label = { Text("People") })
+            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
+                icon = { Text("📡") }, label = { Text("Channels") })
+            NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                icon = { Text("🌐") }, label = { Text("Web") })
+        }
+    }) { pad ->
+        Box(Modifier.padding(pad)) {
+            when (tab) {
+                0 -> PeopleScreen(bearer) { selected = it }
+                1 -> ChannelsScreen(bearer)
+                else -> WebScreen(bearer)
+            }
+        }
+    }
+}
+
+/// hps:// pub/sub (DESIGN.md §32): host a channel/service, subscribe by host+path, publish,
+/// and read sender-verified messages — Android parity with the iOS HpsView.
+@Composable
+fun ChannelsScreen(bearer: HopBearer) {
+    var newPath by remember { mutableStateOf("") }
+    var isChannel by remember { mutableStateOf(true) }
+    var subHost by remember { mutableStateOf("") }
+    var subPath by remember { mutableStateOf("") }
+    var pubPath by remember { mutableStateOf("") }
+    var pubText by remember { mutableStateOf("") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
+        item {
+            Text("hps:// pub/sub", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("Host a topic", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(newPath, { newPath = it }, singleLine = true,
+                label = { Text("path (e.g. lobby)") }, modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilterChip(isChannel, { isChannel = true }, label = { Text("Channel") })
+                Spacer(Modifier.width(8.dp))
+                FilterChip(!isChannel, { isChannel = false }, label = { Text("Service") })
+                Spacer(Modifier.weight(1f))
+                Button(onClick = { bearer.hpsRegister(newPath, isChannel); newPath = "" }) { Text("Register") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("Subscribe", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(subHost, { subHost = it }, singleLine = true,
+                label = { Text("host address (base58)") }, modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(subPath, { subPath = it }, singleLine = true,
+                    label = { Text("path") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { bearer.hpsSubscribe(subHost, subPath); subPath = "" }) { Text("Sub") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("Topics", style = MaterialTheme.typography.titleMedium)
+        }
+        items(bearer.hpsTopics) { t ->
+            ListItem(
+                headlineContent = { Text((if (t.channel) "💬 " else "📣 ") + t.path) },
+                supportingContent = { Text((if (t.hosting) "hosting · " else "subscribed · ") + HopBearer.shortHex(t.host)) },
+                trailingContent = {
+                    if (t.channel || t.hosting) TextButton(onClick = { pubPath = t.path }) { Text("✎") }
+                },
+            )
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text("Publish" + if (pubPath.isNotEmpty()) " → $pubPath" else "", style = MaterialTheme.typography.titleMedium)
+            if (pubPath.isEmpty()) Text("Tap ✎ on a writable topic", style = MaterialTheme.typography.bodySmall)
+            else Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(pubText, { pubText = it }, singleLine = true,
+                    label = { Text("message") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { bearer.hpsPublish(pubPath, pubText); pubText = "" }) { Text("Send") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("Messages", style = MaterialTheme.typography.titleMedium)
+            if (bearer.hpsInbox.isEmpty()) Text("none yet", style = MaterialTheme.typography.bodySmall)
+        }
+        items(bearer.hpsInbox) { m ->
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text("${m.path} · ${HopBearer.shortHex(m.sender)}", style = MaterialTheme.typography.bodySmall)
+                Text(m.text)
+            }
+        }
+    }
+}
+
+/// hops:// (DESIGN.md §30): resolve a domain via HNS and fetch over the mesh; show the result
+/// and the live HNS cache. Android parity with the iOS hops:// section.
+@Composable
+fun WebScreen(bearer: HopBearer) {
+    var field by remember { mutableStateOf("example.hopme.sh") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
+        item {
+            Text("hops://", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(field, { field = it }, singleLine = true,
+                    label = { Text("domain or hops:// url") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { if (field.isNotBlank()) bearer.openHops(field) }) { Text("Fetch") }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        items(bearer.hopsResults.entries.toList()) { (domain, text) ->
+            Column(Modifier.padding(vertical = 6.dp)) {
+                Text(domain, style = MaterialTheme.typography.bodySmall)
+                Text(text)
+            }
+        }
+        item {
+            Spacer(Modifier.height(16.dp))
+            Text("HNS cache (${bearer.hnsCache.size})", style = MaterialTheme.typography.titleMedium)
+        }
+        items(bearer.hnsCache) { e ->
+            ListItem(
+                headlineContent = { Text(e.domain) },
+                supportingContent = {
+                    Text(if (e.address.isEmpty()) "no record (negative)" else HopBearer.shortHex(e.address))
+                },
+                trailingContent = { Text("TTL ${e.ttlSecs}s", style = MaterialTheme.typography.bodySmall) },
+            )
+        }
     }
 }
 
