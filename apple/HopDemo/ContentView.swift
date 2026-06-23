@@ -89,10 +89,10 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Tab 2: Channels — hps:// pub/sub
+    // MARK: - Tab 2: Channels — hps:// pub/sub (stack nav: list → channel thread)
     @ViewBuilder private var channelsTab: some View {
         NavigationStack {
-            HpsView(bearer: bearer).navigationTitle("Channels")
+            ChannelsListView(bearer: bearer)
         }
     }
 
@@ -546,104 +546,296 @@ struct AddContactView: View {
 
 /// hps:// pub/sub (DESIGN.md §32): host a channel/service, subscribe to one by host+path,
 /// publish to topics you can write to, and read incoming sender-verified messages.
-struct HpsView: View {
-    @ObservedObject var bearer: HopBearer
+// MARK: - Channels list (hps:// topics) → per-channel thread
 
-    @State private var newPath = ""
-    @State private var newIsChannel = true
-    @State private var subHost = ""
-    @State private var subPath = ""
-    @State private var pubText = ""
-    @State private var pubPath = ""
+struct ChannelsListView: View {
+    @ObservedObject var bearer: HopBearer
+    @State private var showAdd = false
 
     var body: some View {
         List {
-            Section("Host a topic") {
-                TextField("path (e.g. lobby)", text: $newPath)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                Picker("Kind", selection: $newIsChannel) {
-                    Text("Channel (anyone writes)").tag(true)
-                    Text("Service (only you broadcast)").tag(false)
+            if !bearer.hpsInvites.isEmpty {
+                Section("Invites") {
+                    ForEach(bearer.hpsInvites, id: \.path) { inv in
+                        HStack {
+                            Image(systemName: "envelope").foregroundStyle(.orange)
+                            VStack(alignment: .leading) {
+                                Text(inv.path).font(.callout)
+                                Text("from \(bearer.displayName(inv.host))")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Accept") { bearer.hpsAcceptInvite(inv) }.buttonStyle(.borderless)
+                            Button(role: .destructive) { bearer.hpsDeclineInvite(inv) } label: { Text("Decline") }
+                                .buttonStyle(.borderless)
+                        }
+                    }
                 }
-                .pickerStyle(.segmented)
-                Button("Register") {
-                    bearer.hpsRegister(path: newPath, channel: newIsChannel)
-                    newPath = ""
-                }
-                .disabled(newPath.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            Section("Subscribe") {
-                TextField("host address (base58)", text: $subHost)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never).font(.caption).monospaced()
-                TextField("path", text: $subPath)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                Button("Subscribe") {
-                    bearer.hpsSubscribe(hostBase58: subHost, path: subPath)
-                    subPath = ""
+            Section(bearer.hpsTopics.isEmpty ? "" : "Channels & services") {
+                if bearer.hpsTopics.isEmpty {
+                    Text("No channels yet. Tap + to host, subscribe, or browse.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .disabled(subHost.trimmingCharacters(in: .whitespaces).isEmpty
-                          || subPath.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-
-            if !bearer.hpsTopics.isEmpty {
-                Section("Topics") {
-                    ForEach(bearer.hpsTopics) { t in
+                ForEach(bearer.hpsTopics) { t in
+                    NavigationLink(value: t.id) {
                         HStack {
                             Image(systemName: t.isChannel ? "bubble.left.and.bubble.right" : "megaphone")
                                 .foregroundStyle(t.hosting ? .green : .blue)
                             VStack(alignment: .leading) {
                                 Text(t.path).font(.callout)
-                                Text(t.hosting ? "hosting · \(HopBearer.shortHex(t.host))"
-                                               : "subscribed · \(HopBearer.shortHex(t.host))")
+                                Text((t.hosting ? "hosting" : "subscribed") + " · " + HopBearer.shortHex(t.host))
                                     .font(.caption2).monospaced().foregroundStyle(.secondary)
                             }
                             Spacer()
-                            // Writable: a channel (anyone), or a service we host.
-                            if t.isChannel || t.hosting {
-                                Button { pubPath = t.path } label: { Image(systemName: "square.and.pencil") }
-                                    .buttonStyle(.borderless)
+                            if let n = bearer.hpsUnread[t.id], n > 0 {
+                                Text("\(n)").font(.caption2).bold().foregroundStyle(.white)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.red).clipShape(Capsule())
                             }
                         }
-                    }
-                }
-            }
-
-            Section("Publish") {
-                if pubPath.isEmpty {
-                    Text("Tap ✎ on a writable topic above").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("→ \(pubPath)").font(.caption).monospaced().foregroundStyle(.secondary)
-                    HStack {
-                        TextField("message", text: $pubText).onSubmit(publish)
-                        Button("Send", action: publish)
-                            .disabled(pubText.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-            }
-
-            Section("Messages") {
-                if bearer.hpsInbox.isEmpty {
-                    Text("none yet").foregroundStyle(.secondary)
-                }
-                ForEach(bearer.hpsInbox) { m in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(m.path).font(.caption2).monospaced().foregroundStyle(.secondary)
-                            Spacer()
-                            Text(bearer.displayName(m.sender)).font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Text(m.text).font(.callout).textSelection(.enabled)
                     }
                 }
             }
         }
-        .navigationTitle("hps:// pub/sub")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Channels")
+        .navigationDestination(for: String.self) { id in
+            ChannelView(bearer: bearer, topicId: id)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showAdd = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add channel")
+            }
+        }
+        .sheet(isPresented: $showAdd) { HpsAddView(bearer: bearer) }
     }
+}
 
-    private func publish() {
-        bearer.hpsPublish(path: pubPath, text: pubText)
-        pubText = ""
+// MARK: - One channel/service thread
+
+struct ChannelView: View {
+    @ObservedObject var bearer: HopBearer
+    let topicId: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+    @State private var showInfo = false
+
+    private var topic: HopBearer.HpsTopic? { bearer.hpsTopics.first { $0.id == topicId } }
+
+    var body: some View {
+        Group {
+            if let t = topic {
+                VStack(spacing: 0) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(bearer.hpsThreads[topicId] ?? []) { m in
+                                let mine = m.sender == bearer.myAddressData
+                                VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
+                                    Text(bearer.displayName(m.sender))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                    Text(m.text)
+                                        .padding(8)
+                                        .background(mine ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                }
+                                .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+                            }
+                        }.padding()
+                    }
+                    if t.writable {
+                        HStack {
+                            TextField("Message #\(t.path)", text: $draft)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Send") {
+                                bearer.hpsPublish(topic: t, text: draft.trimmingCharacters(in: .whitespaces))
+                                draft = ""
+                            }.disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }.padding(8)
+                    } else {
+                        Text("Read-only (only the owner broadcasts)")
+                            .font(.caption).foregroundStyle(.secondary).padding(8)
+                    }
+                }
+                .navigationTitle(t.path)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showInfo = true } label: { Image(systemName: "info.circle") }
+                    }
+                }
+                .sheet(isPresented: $showInfo) { ChannelInfoView(bearer: bearer, topic: t) }
+                .onAppear { bearer.openTopic(topicId) }
+                .onDisappear { bearer.closeTopic() }
+            } else {
+                Color.clear.onAppear { dismiss() }   // topic left/removed
+            }
+        }
+    }
+}
+
+// MARK: - Channel info / management (invite, requests, members, leave, rekey)
+
+struct ChannelInfoView: View {
+    @ObservedObject var bearer: HopBearer
+    let topic: HopBearer.HpsTopic
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Topic") {
+                    LabeledContent("Path", value: topic.path)
+                    LabeledContent("Kind", value: topic.isChannel ? "Channel" : "Service")
+                    LabeledContent("Role", value: topic.hosting ? "Hosting" : "Subscribed")
+                    LabeledContent("Host", value: HopBearer.shortHex(topic.host)).monospaced()
+                }
+
+                if topic.hosting {
+                    Section("Reach") {
+                        LabeledContent("Members", value: "\(bearer.hpsReach(topic))")
+                    }
+                    // Invite a contact (host-initiated; consent-based).
+                    Section("Invite a contact") {
+                        let contacts = bearer.contactList
+                        if contacts.isEmpty { Text("No contacts yet").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(contacts) { p in
+                            Button {
+                                bearer.hpsInvite(topic: topic, to: p.address)
+                            } label: {
+                                Label(p.name, systemImage: "person.badge.plus")
+                            }
+                        }
+                    }
+                    // Pending join requests (RequestToJoin).
+                    let pending = bearer.hpsPending(topic)
+                    if !pending.isEmpty {
+                        Section("Join requests") {
+                            ForEach(pending, id: \.self) { who in
+                                HStack {
+                                    Text(bearer.displayName(who))
+                                    Spacer()
+                                    Button("Approve") { bearer.hpsApprove(topic, who) }.buttonStyle(.borderless)
+                                    Button(role: .destructive) { bearer.hpsDeny(topic, who) } label: { Text("Deny") }
+                                        .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
+                    // Members + remove-and-rekey (revocation).
+                    let members = bearer.hpsMembers(topic)
+                    if !members.isEmpty {
+                        Section("Members (swipe to remove + rekey)") {
+                            ForEach(members, id: \.self) { who in
+                                Text(bearer.displayName(who))
+                                    .swipeActions {
+                                        Button(role: .destructive) {
+                                            bearer.hpsRekey(topic, remove: [who])
+                                        } label: { Label("Remove", systemImage: "person.slash") }
+                                    }
+                            }
+                        }
+                        Section {
+                            Button("Rotate keys (no removal)") { bearer.hpsRekey(topic) }
+                        }
+                    }
+                } else {
+                    Section {
+                        Button(role: .destructive) {
+                            bearer.hpsLeave(topic); dismiss()
+                        } label: { Text("Leave channel") }
+                    }
+                }
+            }
+            .navigationTitle(topic.path)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+}
+
+// MARK: - Host / Subscribe / Browse sheet
+
+struct HpsAddView: View {
+    @ObservedObject var bearer: HopBearer
+    @Environment(\.dismiss) private var dismiss
+    @State private var mode = 0
+    // Host
+    @State private var newPath = ""
+    @State private var isChannel = true
+    @State private var access: HpsAccess = .open
+    @State private var discoverable = false
+    // Subscribe
+    @State private var subHost = ""
+    @State private var subPath = ""
+    // Browse
+    @State private var found: [HpsTopicInfo] = []
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("", selection: $mode) {
+                    Text("Host").tag(0); Text("Subscribe").tag(1); Text("Browse").tag(2)
+                }.pickerStyle(.segmented)
+
+                if mode == 0 {
+                    Section("Host a topic") {
+                        TextField("path (e.g. lobby)", text: $newPath)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        Picker("Kind", selection: $isChannel) {
+                            Text("Channel (anyone writes)").tag(true)
+                            Text("Service (only you broadcast)").tag(false)
+                        }
+                        Picker("Access", selection: $access) {
+                            Text("Open").tag(HpsAccess.open)
+                            Text("Request to join").tag(HpsAccess.requestToJoin)
+                            Text("Invite only").tag(HpsAccess.invite)
+                        }
+                        Toggle("Discoverable nearby", isOn: $discoverable)
+                        Button("Create") {
+                            bearer.hpsRegister(path: newPath, channel: isChannel,
+                                               access: access, discoverable: discoverable)
+                            dismiss()
+                        }.disabled(newPath.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                } else if mode == 1 {
+                    Section("Subscribe by address") {
+                        TextField("host address (base58)", text: $subHost)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never).font(.caption).monospaced()
+                        TextField("path", text: $subPath)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        Button("Subscribe") {
+                            bearer.hpsSubscribe(hostBase58: subHost, path: subPath)
+                            dismiss()
+                        }.disabled(subHost.trimmingCharacters(in: .whitespaces).isEmpty
+                                   || subPath.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                } else {
+                    Section("Discoverable nearby") {
+                        if found.isEmpty { Text("None found yet").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(found, id: \.path) { t in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(t.path).font(.callout)
+                                    Text("\(t.kind == .channel ? "channel" : "service") · \(HopBearer.shortHex(t.host))")
+                                        .font(.caption2).monospaced().foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(t.access == .open ? "Join" : "Request") {
+                                    bearer.hpsJoin(t); dismiss()
+                                }.buttonStyle(.borderless)
+                            }
+                        }
+                        Button("Refresh") { found = bearer.hpsBrowse() }
+                    }
+                }
+            }
+            .navigationTitle("Add channel")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { if mode == 2 { found = bearer.hpsBrowse() } }
+            .onChange(of: mode) { _ in if mode == 2 { found = bearer.hpsBrowse() } }
+        }
     }
 }
