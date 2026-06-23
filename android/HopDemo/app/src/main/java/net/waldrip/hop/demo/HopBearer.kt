@@ -273,9 +273,14 @@ class HopBearer private constructor(private val context: Context) {
 
     private fun addLink(socket: BluetoothSocket, initiator: Boolean) = main.post {
         val id = nextLinkId++
+        val remoteAddr = runCatching { socket.remoteDevice?.address }.getOrNull()
         val link = HopLink(id, socket,
             onBytes = { lid, data -> main.post { node.received(lid, data); pump() } },
-            onClose = { lid -> main.post { links.remove(lid); node.disconnected(lid); refresh() } })
+            onClose = { lid -> main.post {
+                links.remove(lid)
+                remoteAddr?.let { connecting.remove(it) }  // link dropped → allow a reconnect
+                node.disconnected(lid); refresh()
+            } })
         links[id] = link
         node.connected(id, initiator)
         status.value = "linked (${if (initiator) "central" else "peripheral"})"
@@ -928,7 +933,16 @@ class HopBearer private constructor(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, statusCode: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+            if (newState == BluetoothProfile.STATE_CONNECTED && statusCode == BluetoothGatt.GATT_SUCCESS) {
+                gatt.discoverServices()
+            } else {
+                // Failed or dropped. MUST close to free the GATT client — Android caps these,
+                // and leaked failed connects make every later connect time out. Drop from the
+                // in-flight set so a later scan can retry. (A live link keeps its GATT open, so
+                // no disconnect fires for it.)
+                runCatching { gatt.close() }
+                connecting.remove(gatt.device.address)
+            }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, statusCode: Int) {
@@ -948,8 +962,13 @@ class HopBearer private constructor(private val context: Context) {
             thread(name = "hop-l2cap-connect") {
                 val socket = runCatching {
                     device.createInsecureL2capChannel(psm).apply { connect() }
-                }.getOrNull() ?: return@thread
-                addLink(socket, initiator = true)
+                }.getOrNull()
+                if (socket == null) {
+                    runCatching { gatt.close() }      // free the GATT client
+                    connecting.remove(device.address) // allow a retry on the next scan
+                    return@thread
+                }
+                addLink(socket, initiator = true)     // GATT stays open to hold the link
             }
         }
     }
