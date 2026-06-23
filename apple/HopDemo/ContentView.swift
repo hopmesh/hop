@@ -20,12 +20,16 @@ struct ContentView: View {
         #endif
     }
 
-    /// A peer is "direct" if we hold a local radio link to it (BLE or Wi-Fi P2P) — the
-    /// authoritative signal, not advert hop count (a direct peer's presence can still arrive via
-    /// a longer relay path). Reaching someone only via the cloud relay is "in the mesh".
+    /// A peer is "direct" if we reach it without the cloud relay — either a live local radio
+    /// link (BLE / Wi-Fi P2P), OR its presence arrived at ≤1 hop (a direct-neighbour advert).
+    /// Both are needed: the link signal catches a peer whose advert came via a longer relay
+    /// path, and the hop signal is robust to local links momentarily churning in/out of
+    /// `peerLinks` (otherwise direct peers flicker to "mesh" between link blips).
     private func isDirect(_ p: HopBearer.Peer) -> Bool {
-        guard let t = bearer.linkTransports[p.address] else { return false }
-        return t.contains("BT") || t.contains("Wi-Fi")
+        if let t = bearer.linkTransports[p.address], t.contains("BT") || t.contains("Wi-Fi") {
+            return true
+        }
+        return p.hops <= 1
     }
     private var direct: [HopBearer.Peer] { bearer.reachable.filter { isDirect($0) } }
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { !isDirect($0) } }
