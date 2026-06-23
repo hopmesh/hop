@@ -27,7 +27,7 @@ targets:
     info:
       path: HopDemo-Info.plist
       properties:
-        CFBundleDisplayName: Hop
+        CFBundleDisplayName: Hop Debug
         # Keep BLE alive in the background and wake on BLE events (DESIGN.md §22).
         UIBackgroundModes: [bluetooth-central, bluetooth-peripheral, fetch, processing]
         BGTaskSchedulerPermittedIdentifiers: [net.waldrip.hop.refresh, net.waldrip.hop.process]
