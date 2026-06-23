@@ -875,9 +875,11 @@ class HopBearer private constructor(private val context: Context) {
         val ss = adapter.listenUsingInsecureL2capChannel()
         serverSocket = ss
         psm = ss.psm
+        android.util.Log.i("HOPLOG", "BLE peripheral: listening L2CAP psm=$psm")
         thread(name = "hop-accept") {
             while (true) {
                 val socket = runCatching { ss.accept() }.getOrNull() ?: break
+                android.util.Log.i("HOPLOG", "BLE peripheral: accepted L2CAP from ${socket.remoteDevice?.address}")
                 addLink(socket, initiator = false)
             }
         }
@@ -915,13 +917,21 @@ class HopBearer private constructor(private val context: Context) {
             // 4-byte form here makes iOS read PSM 0 and Android read out of bounds → no
             // cross-platform BLE link.)
             val value = if (characteristic.uuid == PSM_CHAR_UUID) {
+                android.util.Log.i("HOPLOG", "BLE peripheral: ${device.address} read our PSM=$psm")
                 byteArrayOf((psm ushr 8).toByte(), psm.toByte())
             } else ByteArray(0)
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
         }
     }
 
-    private val advertiseCallback = object : AdvertiseCallback() {}
+    private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+            android.util.Log.i("HOPLOG", "BLE advertising started")
+        }
+        override fun onStartFailure(errorCode: Int) {
+            android.util.Log.w("HOPLOG", "BLE advertising FAILED: code=$errorCode")
+        }
+    }
 
     // ---- central: scan + open L2CAP -----------------------------------------
 
@@ -931,13 +941,18 @@ class HopBearer private constructor(private val context: Context) {
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner.startScan(listOf(filter), settings, scanCallback)
+        android.util.Log.i("HOPLOG", "BLE central: scanning for Hop peers")
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
             if (!connecting.add(device.address)) return
+            android.util.Log.i("HOPLOG", "BLE central: found ${device.address}, connecting…")
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }
+        override fun onScanFailed(errorCode: Int) {
+            android.util.Log.w("HOPLOG", "BLE scan FAILED: code=$errorCode")
         }
     }
 
