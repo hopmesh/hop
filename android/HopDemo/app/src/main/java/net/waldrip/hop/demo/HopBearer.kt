@@ -129,6 +129,7 @@ class HopBearer private constructor(private val context: Context) {
     }
     private val links = HashMap<ULong, HopLink>()
     private var nextLinkId: ULong = 1u
+    private var lastPeerLinkCount = -1
     private var psm: Int = -1
     private var serverSocket: BluetoothServerSocket? = null
     private var gattServer: BluetoothGattServer? = null
@@ -287,6 +288,7 @@ class HopBearer private constructor(private val context: Context) {
             } })
         links[id] = link
         node.connected(id, initiator)
+        android.util.Log.i("HOPLOG", "hop link UP id=$id initiator=$initiator remote=$remoteAddr")
         status.value = "linked (${if (initiator) "central" else "peripheral"})"
         pump()
     }
@@ -889,8 +891,14 @@ class HopBearer private constructor(private val context: Context) {
         // Map each directly-linked peer to its transport (BT vs the cloud relay). Android has no
         // Wi-Fi direct transport (MultipeerConnectivity is iOS-only), so a direct link is BLE.
         linkTransports.clear()
-        runCatching { node.peerLinks() }.getOrDefault(emptyList()).forEach { pl ->
+        val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
+        pls.forEach { pl ->
             linkTransports[pl.address.toList()] = if (pl.link == relayLinkId) "Relay" else "BT"
+        }
+        if (pls.isNotEmpty() && pls.size != lastPeerLinkCount) {
+            lastPeerLinkCount = pls.size
+            android.util.Log.i("HOPLOG", "peerLinks=${pls.size}: " +
+                pls.joinToString { "${HopBearer.shortHex(it.address)}@${it.link}" })
         }
 
         // Which peers we're talking to over a forward-secret session (lock icon).
@@ -1003,7 +1011,9 @@ class HopBearer private constructor(private val context: Context) {
             val device = result.device
             if (!connecting.add(device.address)) return
             android.util.Log.i("HOPLOG", "BLE central: found ${device.address}, connecting…")
-            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            // connectGatt MUST run on the main thread — calling it from this binder callback
+            // thread is a common cause of the status-133 connect failure on many devices.
+            main.post { device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE) }
         }
         override fun onScanFailed(errorCode: Int) {
             android.util.Log.w("HOPLOG", "BLE scan FAILED: code=$errorCode")
@@ -1019,6 +1029,7 @@ class HopBearer private constructor(private val context: Context) {
                 // and leaked failed connects make every later connect time out. Drop from the
                 // in-flight set so a later scan can retry. (A live link keeps its GATT open, so
                 // no disconnect fires for it.)
+                android.util.Log.i("HOPLOG", "BLE central: ${gatt.device.address} disconnected status=$statusCode state=$newState")
                 runCatching { gatt.close() }
                 connecting.remove(gatt.device.address)
             }
