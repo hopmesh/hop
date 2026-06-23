@@ -23,6 +23,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import java.io.ByteArrayInputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
     private lateinit var bearer: HopBearer
@@ -198,6 +206,9 @@ fun ChannelsScreen(bearer: HopBearer) {
 @Composable
 fun WebScreen(bearer: HopBearer) {
     var field by remember { mutableStateOf("example.hopme.sh") }
+    var browseUrl by remember { mutableStateOf<String?>(null) }
+    val url = browseUrl
+    if (url != null) { HopBrowser(bearer, url) { browseUrl = null }; return }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item {
             Text("hops://", style = MaterialTheme.typography.headlineSmall)
@@ -208,6 +219,7 @@ fun WebScreen(bearer: HopBearer) {
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = { if (field.isNotBlank()) bearer.openHops(field) }) { Text("Fetch") }
             }
+            TextButton(onClick = { if (field.isNotBlank()) browseUrl = field }) { Text("🌐 Open in browser") }
             Spacer(Modifier.height(12.dp))
         }
         items(bearer.hopsResults.entries.toList()) { (domain, text) ->
@@ -328,4 +340,55 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
             }) { Text("Send") }
         }
     }
+}
+
+/// A hops:// browser: a WebView whose requests are intercepted and served over the mesh
+/// (DESIGN.md §30). shouldInterceptRequest runs off the UI thread, so it blocks on a latch
+/// while the bearer resolves + fetches the resource over Hop, then returns it to the WebView.
+@Composable
+fun HopBrowser(bearer: HopBearer, start: String, onBack: () -> Unit) {
+    var bar by remember { mutableStateOf(normalizeHops(start)) }
+    var webRef by remember { mutableStateOf<WebView?>(null) }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹") }
+            OutlinedTextField(bar, { bar = it }, singleLine = true, modifier = Modifier.weight(1f))
+            TextButton(onClick = { webRef?.loadUrl(normalizeHops(bar)) }) { Text("Go") }
+        }
+        AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
+            WebView(ctx).apply {
+                webRef = this
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                        if (request.url.scheme != "hops") return null
+                        val latch = CountDownLatch(1)
+                        var status = 504; var ctype = "text/plain; charset=utf-8"; var body = ByteArray(0)
+                        bearer.hopsFetch(request.url.toString()) { s, c, b ->
+                            status = s; ctype = c; body = b; latch.countDown()
+                        }
+                        if (!latch.await(30, TimeUnit.SECONDS)) {
+                            body = "timed out".toByteArray(); status = 504
+                        }
+                        val mime = ctype.substringBefore(';').trim().ifEmpty { "text/plain" }
+                        val enc = ctype.substringAfter("charset=", "utf-8").trim()
+                        return WebResourceResponse(mime, enc, status, statusText(status), emptyMap(),
+                            ByteArrayInputStream(body))
+                    }
+                }
+                loadUrl(normalizeHops(start))
+            }
+        })
+    }
+}
+
+private fun normalizeHops(s: String): String {
+    val t = s.trim()
+    return if (t.startsWith("hops://")) t else "hops://" + t.removePrefix("https://").removePrefix("http://")
+}
+
+private fun statusText(code: Int): String = when (code) {
+    200 -> "OK"; 404 -> "Not Found"; 502 -> "Bad Gateway"; 503 -> "Unavailable"; 504 -> "Timeout"
+    else -> "Status"
 }
