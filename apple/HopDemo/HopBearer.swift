@@ -57,7 +57,7 @@ final class HopBearer: NSObject, ObservableObject {
     static let presenceTtlMs: UInt32 = 600_000
 
     struct Peer: Identifiable, Hashable {
-        let address: Data; let name: String; let hops: UInt8
+        let address: Data; let name: String; var hops: UInt8
         var active: Bool = true       // peer's app foreground (vs backgrounded)
         var platform: String = ""     // "ios" / "android"
         var app: String = ""          // the app embedding Hop on that device
@@ -110,7 +110,6 @@ final class HopBearer: NSObject, ObservableObject {
     /// a specific relay, rather than publishing presence to several at once.
     @Published var pinnedRelay: String? = UserDefaults.standard.string(forKey: "hop.pinnedRelay")
     @Published var linkTransports: [Data: Set<String>] = [:]  // direct peer → transport(s) carrying it
-    @Published var directSeen: Set<Data> = []  // peers seen directly this session, still reachable (§22)
     @Published var relays: [Peer] = []   // connected cloud relays (named by their domain via hop.identify)
     @Published var endpoints: [Peer] = []   // directly-dialed hops:// endpoints (§30; not relays)
     @Published var hnsCache: [HnsCacheRow] = []   // live HNS cache w/ ticking TTLs (§30, debug)
@@ -1416,18 +1415,15 @@ final class HopBearer: NSObject, ObservableObject {
         }
         linkTransports = lt
 
-        // "Recently seen directly" stickiness (DESIGN.md §22 beacon mode): a peer is direct if it
-        // has a live BT/Wi-Fi link OR a ≤1-hop advert; once seen direct, keep it direct while it
-        // stays reachable — so a peer that backgrounds (Wi-Fi suspended, bg presence now arriving
-        // via the relay at 2 hops) doesn't flip to "mesh". Cleared when it leaves `reachable`.
-        let hereAddrs = Set(byAddr.keys)
-        for p in reachable {
-            let t = lt[p.address]
-            if t?.contains("BT") == true || t?.contains("Wi-Fi") == true || p.hops <= 1 {
-                directSeen.insert(p.address)
-            }
+        // A live local radio link (BLE / Wi-Fi P2P) IS a 1-hop path, so force the hop count to 1
+        // for those peers — even if a stale presence advert arrived via the relay at 2 hops. This
+        // keeps "direct" honest: a peer is direct iff hops <= 1, so a live-linked peer shows
+        // "1 hop · BT" (never "2 hops"), and a peer with no live link at 2 hops stays in the mesh.
+        reachable = reachable.map { p in
+            var p = p
+            if let t = lt[p.address], t.contains("BT") || t.contains("Wi-Fi") { p.hops = 1 }
+            return p
         }
-        directSeen.formIntersection(hereAddrs)
 
         // Connected cloud relays (the relay-link range 20_000–29_999), named by their region
         // domain via hop.identify (§29). Endpoints (≥30_000) are NOT relays — they're dialed

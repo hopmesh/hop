@@ -73,9 +73,6 @@ class HopBearer private constructor(private val context: Context) {
     /// Directly-linked peer address → the transport carrying it ("BT" / "Relay"); mesh peers
     /// (reached multi-hop) have no entry. Mirrors iOS's link-type indicators.
     val linkTransports = mutableStateMapOf<List<Byte>, String>()
-    /// Peers seen directly this session (live BT/Wi-Fi link or <=1-hop advert) and still
-    /// reachable — keeps a backgrounded-but-nearby peer in "direct" instead of flipping to mesh.
-    val directSeen = mutableStateListOf<List<Byte>>()
     val messages = mutableStateListOf<Message>()
     /// Unread incoming messages received while backgrounded — mirrored onto the app icon
     /// badge (via the notification) and cleared when the app returns to the foreground.
@@ -917,12 +914,6 @@ class HopBearer private constructor(private val context: Context) {
             }
             nameByAddr[key] = name
         }
-        // Sort by the stable address (not last-seen hops/name) so rows keep their position —
-        // hop counts fluctuate and generic device names tie, which made the list jump around.
-        val list = agg.values.map { it.peer.copy(hops = it.minHops) }
-            .sortedBy { addressBase58(it.address) }
-        peers.clear(); peers.addAll(list)
-
         // Map each directly-linked peer to its transport (BT vs the cloud relay). Android has no
         // Wi-Fi direct transport (MultipeerConnectivity is iOS-only), so a direct link is BLE.
         linkTransports.clear()
@@ -936,16 +927,17 @@ class HopBearer private constructor(private val context: Context) {
                 pls.joinToString { "${HopBearer.shortHex(it.address)}@${it.link}" })
         }
 
-        // "Recently seen directly" stickiness (§22): once a peer has a live BT/Wi-Fi link or a
-        // <=1-hop advert, keep it "direct" while still reachable, so a backgrounded-but-nearby
-        // peer doesn't flip to mesh. Pruned to currently-reachable addresses.
-        val hereAddrs = list.map { it.address.toList() }.toHashSet()
-        for (p in list) {
-            val key = p.address.toList()
+        // A live local radio link (BLE) IS a 1-hop path, so force hops=1 for those peers even if a
+        // stale advert arrived via the relay at 2 hops. Keeps "direct" honest: direct iff hops<=1,
+        // so a live-linked peer shows "1 hop · BT" (never "2 hops") and a no-link 2-hop peer is mesh.
+        // Sort by the stable address so rows keep their position.
+        val list = agg.values.map {
+            val key = it.peer.address.toList()
             val t = linkTransports[key]
-            if (t == "BT" || t == "Wi-Fi" || p.hops <= 1u) { if (!directSeen.contains(key)) directSeen.add(key) }
-        }
-        directSeen.retainAll { hereAddrs.contains(it) }
+            val hops = if (t == "BT" || t == "Wi-Fi") 1u.toUByte() else it.minHops
+            it.peer.copy(hops = hops)
+        }.sortedBy { addressBase58(it.address) }
+        peers.clear(); peers.addAll(list)
 
         // Which peers we're talking to over a forward-secret session (lock icon).
         secured.clear()
