@@ -137,9 +137,15 @@ class HopBearer private constructor(private val context: Context) {
         // Presence is an app-level service (DESIGN.md §23): publish our name on the
         // "presence" topic and subscribe so discovered records are retained.
         runCatching { node.subscribe(PRESENCE_SERVICE) }
+        // Set the node clock to real time BEFORE publishing any adverts. The node starts at
+        // now_ms=0 and the first tick runs directory.expire(), so a prekey/presence advert
+        // stamped created_at=0 here is judged expired (1970 + TTL) and dropped instantly.
+        // Presence re-publishes and recovers; the prekey is published once, so without this no
+        // peer ever learns our prekey and every message defers forever ("Sending…"). (§25)
+        runCatching { node.tick(nowMs()) }
         publishPresence()
-        // Publish our prekey once so peers can open forward-secret sessions (§25);
-        // link-up gossip re-offers it, so no periodic re-publish is needed.
+        // Publish our prekey so peers can open forward-secret sessions (§25). Re-published
+        // periodically in the tick loop too, so a lapsed/late neighbour can always re-open one.
         runCatching { node.publishPrekey() }
         startPeripheral()
         startCentral()
@@ -164,6 +170,9 @@ class HopBearer private constructor(private val context: Context) {
             override fun run() {
                 node.tick(nowMs())
                 if (++ticks % 20 == 0) publishPresence()
+                // Re-publish our prekey periodically so a neighbour whose cached copy lapsed
+                // (or who arrived later) can always open a forward-secret session to us (§25).
+                if (ticks % 120 == 0) runCatching { node.publishPrekey() }
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
