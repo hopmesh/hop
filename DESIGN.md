@@ -2221,3 +2221,90 @@ and the reconciler always reports **gross** usage rather than pre-subtracting, k
 - **Infra-as-code:** meters, base price, and metered prices live in `infra/billing` (Stripe Terraform
   provider); the meter **`event_name`s are the contract** between the relay reconciler and Stripe.
 
+## 38. Anti-entropy & sets — the reconciliation primitive that makes sync build *on* Hop
+
+Everything so far moves **messages** — a bundle is addressed, sent, delivered, acked. That's the
+right primitive for messaging and egress. It is the *wrong* primitive for a **replicated store** (a
+CRDT collection, an event log, a shared dataset — the layer a "Ditto-class" product is). Sync doesn't
+ask "deliver this to Bob"; it asks **"what do you have that I don't?"** and transfers only the
+difference. Brute-forcing that over message-passing (re-send everything, dedup on receipt) is
+quadratic and wasteful. So Hop grows one more primitive above `hdp`: **anti-entropy over a set**.
+
+This is the concrete hook that turns "a sync engine *could* be built on Hop" into "a sync engine is
+*efficient* on Hop." It keeps the waist thin: **Hop provides convergence of a set of opaque,
+content-addressed, sealed items — not merge semantics.** Conflict resolution / CRDT logic stays in the
+L7 app (Automerge, Yjs, custom). Hop gets the bytes to where they're missing, efficiently and
+delay-tolerantly; the app decides what they *mean*.
+
+### The model: a namespace is a set of content-addressed items
+
+- A **namespace** (`hsync://<group-or-address>/<collection>`) is an unordered **set** of items.
+- Each **item** is content-addressed: `item_id = BLAKE3(sealed_bytes)`. Content-addressing gives
+  dedup, idempotency, and integrity for free, and reuses the bundle dedup machinery (§4/§7).
+- Items are **sealed to a group key** (the `hps` content-key model, §24/§32), so reconciliation
+  works on **ciphertext**: a relay or the backbone sees item *ids and sizes*, never plaintext —
+  consistent with the envelope-only metering and data-protection rules (§33/§35/§37).
+- "Converged" between two replicas means **equal sets of `item_id`s**. The app layers a CRDT/log on
+  top so that set-union *is* a correct merge (add-only sets, op logs, and most CRDTs have this shape);
+  tombstones are just more items.
+
+### The exchange: range-based set reconciliation, carried as bundles
+
+Reconciling two large sets by shipping full digests is itself expensive. Hop uses **range-based set
+reconciliation** (the Meadowcap/“RBSR” family): recursively compare **fingerprints of ranges** of the
+sorted item-id space, descending only into ranges that differ, so cost is ~`O(d · log n)` in the size
+of the *difference* `d`, not the set `n`.
+
+- `SyncFingerprint { namespace, range, fp }` — a hash of all item-ids in `[lo, hi)`. Equal fp ⇒ that
+  range is already converged; skip it.
+- Differing range ⇒ split and recurse, or (once small) `SyncIdList { namespace, range, ids[] }` to
+  name the exact items.
+- `SyncWant { namespace, ids[] }` → the holder replies with the missing items as ordinary **`hdp`
+  carrier bundles** (§31) — large items chunk and reassemble exactly as any payload does.
+
+Crucially these are **all just bundles**: floodable/forwardable, store-and-forward, sealed. So
+reconciliation is **delay-tolerant** — two replicas that are never online together still converge,
+each round trip crossing the partition whenever a path (or the backbone) appears. No live session,
+nothing in the middle holding state (§30).
+
+### Two gears
+
+- **Anti-entropy (catch-up):** the range-based exchange above — bring two divergent replicas into
+  equality in `O(log)` round trips. Used on first sync, after a long offline gap, or periodically.
+- **Live subscribe (steady state):** once converged, new items propagate as they're created via an
+  **`hps` subscription** to the namespace (§32) — a per-subscriber cursor streams fresh `item_id`s,
+  fetched on demand. Steady-state sync is just pub/sub; anti-entropy is the gap-filler. (Mirror of
+  §31's "carrier transport for catch-up, streams for live.")
+
+### The backbone is the always-available replica
+
+Two devices that are never simultaneously online converge through the cloud backbone, which holds a
+**replica of the namespace** in its region partition — the §28/§34 mailbox idea lifted from a unicast
+*inbox* to a shared *set*: a device reconciles against the backbone whenever it checks in, and the
+backbone reconciles region-to-region by the same cross-partition handoff. This is the direct analog of
+Ditto's "Big Peer," but it stores **sealed, content-addressed items it cannot read**, and it's
+demand-summoned/scale-to-zero like every other region node. Region routing (§21) applies: a namespace
+only replicates to regions with live subscribers.
+
+### What Hop deliberately does *not* do
+
+- **No merge semantics.** Set-union convergence only; the L7 app supplies the CRDT/log so union is a
+  valid merge. Keeping merge out of the waist is what keeps the waist thin and general.
+- **No schema/query engine.** Items are opaque sealed blobs with ids. Indexing/query is the app's job
+  (or a library above Hop).
+- **No ordering guarantee beyond causal hints the app encodes** into items. `hdp` stays unordered; the
+  set is unordered; ordered logs are an app construction.
+
+### Why this closes the platform thesis (§30, positioning)
+
+A replicated store is the single biggest L7 use case that message-passing alone serves badly. With
+`hsync` over `hdp`, "build a Ditto-class store on Hop" becomes *efficient*, not just *possible* — the
+app brings conflict resolution, Hop brings **convergence transport**: content-addressed, sealed,
+delay-tolerant, backbone-assisted set reconciliation. Reconciled items are metered as **data carried**
+exactly like any chunk (§37), so the platform and the business model stay one and the same.
+
+**Status: design.** Build after the `hdp`/`hps` core and the backbone replica are solid; the
+range-based set-reconciliation exchange and the namespace replica are the two new pieces. Wire types:
+`SyncFingerprint`, `SyncIdList`, `SyncWant`, plus `hps`-carried item notifications — all `hdp`
+bundles, all sealed, all forwardable.
+
