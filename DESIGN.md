@@ -1122,9 +1122,11 @@ So the `HttpRequest`/`HttpResponse` payloads stay — repurposed for this origin
 
 ## 26. Transports & portability — the bearer is the only thing that changes
 
-> **Status: vision + architecture.** The transport-agnostic seam exists today; the
-> per-transport bearers and embedded ports are the roadmap. Tagline: *Hop — the
-> network that finds a way.*
+> **Status: partly shipped.** The transport-agnostic seam exists today, and five
+> bearers ride it on the phones — BLE (cross-platform), the cloud relay (TCP/WS),
+> iOS MultipeerConnectivity, the **LAN bearer (mDNS + TCP)**, and Android **Wi-Fi
+> Direct**. Embedded/web ports remain roadmap. Tagline: *Hop — the network that
+> finds a way.*
 
 **The transport mechanism doesn't matter, by design.** `hop-core` knows nothing
 about BLE. It is driven entirely through a tiny byte-frame contract — the same one
@@ -1143,8 +1145,10 @@ a transport is writing a bearer, not touching the protocol.
 
 | Transport | Role | Notes |
 |---|---|---|
-| **BLE GATT + L2CAP** | full peer/relay | current focus; short range; iOS background-limited |
-| **Wi-Fi (iOS MultipeerConnectivity / AWDL, Android Wi-Fi Direct / local net)** | full peer/relay | medium range, much higher bandwidth; great where available; transport doesn't change the node |
+| **BLE GATT + L2CAP** | full peer/relay | **implemented** (iOS + Android, incl. cross-platform); short range; iOS background-limited |
+| **LAN (mDNS/Bonjour + TCP)** | full peer/relay | **implemented** — the cross-platform high-bandwidth path: same Wi-Fi → discover via mDNS (`_hoplan._tcp`, instance name = base58 address), link over plain TCP with the shared 4-byte length framing. Works iOS↔iOS, **iOS↔Android**, Android↔Android. Lower base58 dials, higher accepts (one link per pair) |
+| **Wi-Fi MultipeerConnectivity / AWDL** | full peer/relay (iOS only) | **implemented** on iOS; Apple-only radio, so it never bridges to Android — that's what the LAN/BLE bearers are for |
+| **Wi-Fi Direct (Wi-Fi P2P)** | full peer/relay (Android only) | **implemented** on Android — Android↔Android when there's *no shared network*: DNS-SD-over-P2P discovery (same `_hoplan._tcp` + base58), group formation, then TCP over the p2p interface reusing `LanLink`. Skipped when the peer is already linked via LAN |
 | **TCP / WebSocket** | peer↔gateway, backbone | phone↔gateway hop (a phone can't BLE-reach a cloud box, §25); cloud↔cloud backbone (§21) |
 | **Web (browser)** | leaf / gateway client | WebRTC data channels (peer↔peer via signaling), WebSocket (→ gateway); WebBluetooth is central-only with no advertising/background. Browsers can't advertise or run in the background, so the web is a **leaf**, not a relay |
 | **ESP32 (BLE + Wi-Fi)** | **always-on anchor / bridge** | the reliability unlock — see below |

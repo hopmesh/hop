@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import Network
 
 /// One L2CAP connection-oriented channel, framed as length-prefixed packets so the
 /// node's opaque byte packets survive the stream boundary: a 4-byte big-endian
@@ -37,6 +38,9 @@ final class HopLink: NSObject, StreamDelegate {
         self.onBytes = onBytes
         self.onClose = onClose
         super.init()
+        // Streams + keepalive on the main runloop (proven path). Main-thread load is kept low
+        // elsewhere (LAN I/O is off-main, the UI refresh is coalesced, Wi-Fi Direct is gated off
+        // on Wi-Fi) so the BLE keepalive isn't starved.
         for s in [input, output] {
             s.delegate = self
             s.schedule(in: .main, forMode: .common)
@@ -104,6 +108,99 @@ final class HopLink: NSObject, StreamDelegate {
                 onBytes(id, Data(inBuffer[4..<total]))
             }
             inBuffer.removeFirst(total)
+        }
+    }
+}
+
+/// One LAN (local-network TCP) link over an `NWConnection`, with the SAME 4-byte big-endian
+/// length-prefix framing as [HopLink]. This is the cross-platform high-bandwidth path: when two
+/// devices share Wi-Fi, they discover via mDNS/Bonjour and talk over plain TCP — works iOS↔iOS,
+/// iOS↔Android, and Android↔Android (unlike MultipeerConnectivity/AWDL, which is Apple-only).
+final class LanLink {
+    let id: UInt64
+    private let conn: NWConnection
+    private let onReady: (UInt64) -> Void
+    private let onBytes: (UInt64, Data) -> Void
+    private let onClose: (UInt64) -> Void
+    private let lock = NSLock()
+    private var closed = false
+    private var keepalive: DispatchSourceTimer?
+
+    /// All LAN I/O runs OFF the main thread. Critically, this keeps Wi-Fi traffic from starving the
+    /// BLE link's keepalive/stream servicing (which run on the main runloop) — a starved BLE link
+    /// goes quiet, iOS's connection-supervision timeout fires, and the link drops (REMOTE_USER_
+    /// TERMINATED) then churns. Independent transports must not compete for the main thread, so Hop
+    /// can hold BLE + Wi-Fi paths to the same peer at once.
+    private static let ioQueue = DispatchQueue(label: "hop.lan.io", qos: .userInitiated)
+
+    init(id: UInt64, conn: NWConnection,
+         onReady: @escaping (UInt64) -> Void,
+         onBytes: @escaping (UInt64, Data) -> Void,
+         onClose: @escaping (UInt64) -> Void) {
+        self.id = id
+        self.conn = conn
+        self.onReady = onReady
+        self.onBytes = onBytes
+        self.onClose = onClose
+        conn.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.onReady(self.id)   // TCP up — now a Noise handshake can begin (on ioQueue)
+                self.startKeepalive()
+                self.readHeader()
+            case .failed, .cancelled: self.close()
+            default: break
+            }
+        }
+        conn.start(queue: Self.ioQueue)
+    }
+
+    private func startKeepalive() {
+        let t = DispatchSource.makeTimerSource(queue: Self.ioQueue)
+        t.schedule(deadline: .now() + 4, repeating: 4)
+        t.setEventHandler { [weak self] in self?.send(Data()) }  // empty frame keeps the TCP link warm
+        t.resume()
+        keepalive = t
+    }
+
+    func send(_ bytes: Data) {
+        var len = UInt32(bytes.count).bigEndian
+        var frame = Data()
+        withUnsafeBytes(of: &len) { frame.append(contentsOf: $0) }
+        frame.append(bytes)
+        conn.send(content: frame, completion: .contentProcessed { _ in })  // NWConnection.send is thread-safe
+    }
+
+    func close() {
+        lock.lock()
+        if closed { lock.unlock(); return }
+        closed = true
+        lock.unlock()
+        keepalive?.cancel()
+        conn.cancel()
+        onClose(id)
+    }
+
+    private func readHeader() {
+        conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, done, err in
+            guard let self else { return }
+            if let err = err as NSError?, err.code != 0 { return self.close() }
+            guard let data, data.count == 4 else { if done { self.close() }; return }
+            let len = UInt32(data[data.startIndex]) << 24 | UInt32(data[data.startIndex + 1]) << 16
+                    | UInt32(data[data.startIndex + 2]) << 8 | UInt32(data[data.startIndex + 3])
+            if len == 0 { return self.readHeader() } // keepalive frame
+            self.readBody(Int(len))
+        }
+    }
+
+    private func readBody(_ len: Int) {
+        conn.receive(minimumIncompleteLength: len, maximumLength: len) { [weak self] data, _, done, err in
+            guard let self else { return }
+            if let err = err as NSError?, err.code != 0 { return self.close() }
+            if let data, data.count == len { self.onBytes(self.id, data) }
+            if done { return self.close() }
+            self.readHeader()
         }
     }
 }

@@ -224,6 +224,18 @@ final class HopBearer: NSObject, ObservableObject {
     private var endpointWS: [UInt64: URLSessionWebSocketTask] = [:]
     private var endpointLinkByDomain: [String: UInt64] = [:]
     private var nextEndpointLinkId: UInt64 = 30_000
+    // LAN bearer (mDNS/Bonjour + TCP) — the cross-platform high-bandwidth Wi-Fi path. We both
+    // advertise a `_hoplan._tcp` service (instance name = our base58 address) AND browse for peers'
+    // services; to avoid forming two links per pair, only the device with the lexicographically
+    // lower base58 address dials — the higher one accepts. Works iOS↔iOS, iOS↔Android, Android↔
+    // Android (plain TCP, unlike Apple-only MultipeerConnectivity/AWDL). Distinct link-id range.
+    private var lanListener: NWListener?
+    private var lanBrowser: NWBrowser?
+    private var lanLinks: [UInt64: LanLink] = [:]
+    private var lanLinkInitiator: [UInt64: Bool] = [:]   // pending node.connected role per link
+    private var lanDialed: [String: UInt64] = [:]        // peer base58 → our outbound link id (dedup)
+    private var lanNextLinkId: UInt64 = 40_000
+    private static let lanServiceType = "_hoplan._tcp"
     private var l2capPsm: [UUID: CBL2CAPPSM] = [:]    // last PSM read per peripheral
     private var l2capAttempts: [UUID: Int] = [:]      // L2CAP open retry counter
     private var didSetupPeripheral = false            // peripheral published this power cycle
@@ -305,7 +317,7 @@ final class HopBearer: NSObject, ObservableObject {
         // word until we return — peers show that as our state).
         let nc = NotificationCenter.default
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.appActive = true; self?.publishPresence(); self?.restartWiFi()
+            self?.appActive = true; self?.publishPresence(); self?.restartWiFi(); self?.restartLan()
             self?.scheduleRelayReconnect()   // re-check-in on foreground (§28)
             self?.pump()
         }
@@ -320,6 +332,7 @@ final class HopBearer: NSObject, ObservableObject {
             options: [CBCentralManagerOptionRestoreIdentifierKey: "hop.central"])
 
         startWiFi()
+        startLan()
 
         // Reflect the real Wi-Fi radio in the indicator (MC's session stays non-nil even
         // when Wi-Fi is switched off, which kept it showing green).
@@ -572,6 +585,94 @@ final class HopBearer: NSObject, ObservableObject {
         NSLog("HOPLOG wifi restart")
     }
 
+    // MARK: - LAN bearer (mDNS/Bonjour + TCP)
+
+    /// Stand up the LAN transport: a Bonjour-advertised TCP listener named with our base58
+    /// address, plus a browser that dials peers we should initiate to (lower base58 dials).
+    /// Plain TCP + length framing, so it bridges to Android's NSD/ServerSocket on the same Wi-Fi.
+    private func startLan() {
+        // We keep LAN off AWDL/peer-to-peer (Apple-only); plain Wi-Fi/Ethernet keeps it cross-platform.
+        let params = NWParameters.tcp
+        params.includePeerToPeer = false
+        do {
+            let listener = try NWListener(using: params)
+            listener.service = NWListener.Service(name: myAddress, type: HopBearer.lanServiceType)
+            listener.stateUpdateHandler = { state in
+                if case .failed(let e) = state { NSLog("HOPLOG lan listener failed: \(e)") }
+            }
+            listener.newConnectionHandler = { [weak self] conn in
+                self?.addLanLink(conn, initiator: false, name: nil)   // we accept → Noise responder
+            }
+            listener.start(queue: .main)
+            lanListener = listener
+        } catch {
+            NSLog("HOPLOG lan listener error: \(error)")
+        }
+
+        let browser = NWBrowser(for: .bonjour(type: HopBearer.lanServiceType, domain: nil), using: params)
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self else { return }
+            for r in results {
+                guard case let .service(name, _, _, _) = r.endpoint else { continue }
+                guard name != self.myAddress else { continue }                // not ourselves
+                guard self.myAddress < name else { continue }                 // tiebreak: lower dials
+                guard self.lanDialed[name] == nil else { continue }           // already dialing/linked
+                let conn = NWConnection(to: r.endpoint, using: params)
+                let id = self.addLanLink(conn, initiator: true, name: name)   // we dial → Noise initiator
+                self.lanDialed[name] = id
+                NSLog("HOPLOG lan dial \(name.prefix(8)) id=\(id)")
+            }
+        }
+        browser.stateUpdateHandler = { state in
+            if case .failed(let e) = state { NSLog("HOPLOG lan browser failed: \(e)") }
+        }
+        browser.start(queue: .main)
+        lanBrowser = browser
+        NSLog("HOPLOG lan start: \(myAddress.prefix(8))")
+    }
+
+    /// Re-stand-up the LAN listener/browser after a background suspension (Network.framework
+    /// pauses them while we're suspended). Existing live links are left intact.
+    private func restartLan() {
+        lanListener?.cancel(); lanListener = nil
+        lanBrowser?.cancel(); lanBrowser = nil
+        lanDialed.removeAll()   // browser will re-report peers; live links stay in lanLinks
+        startLan()
+    }
+
+    /// Wrap an NWConnection in a LanLink and register it. `node.connected` fires on `.ready`
+    /// (TCP up); the dial side is the Noise initiator. Returns the assigned link id.
+    @discardableResult
+    private func addLanLink(_ conn: NWConnection, initiator: Bool, name: String?) -> UInt64 {
+        let id = lanNextLinkId; lanNextLinkId += 1
+        lanLinkInitiator[id] = initiator
+        // LanLink runs its I/O on a background queue (so Wi-Fi never starves BLE on the main thread),
+        // so every callback hops back to main before touching the node or @Published state.
+        let link = LanLink(id: id, conn: conn,
+            onReady: { [weak self] lid in
+                DispatchQueue.main.async {
+                    guard let self, let init0 = self.lanLinkInitiator.removeValue(forKey: lid) else { return }
+                    NSLog("HOPLOG lan link up id=\(lid) initiator=\(init0)")
+                    self.node.connected(link: lid, initiator: init0)
+                    self.pump()
+                }
+            },
+            onBytes: { [weak self] lid, data in
+                DispatchQueue.main.async { self?.node.received(link: lid, bytes: data); self?.pump() }
+            },
+            onClose: { [weak self] lid in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.lanLinks[lid] = nil
+                    self.lanLinkInitiator[lid] = nil
+                    if let n = name { self.lanDialed[n] = nil }
+                    self.node.disconnected(link: lid); self.scheduleRefresh()
+                }
+            })
+        lanLinks[id] = link
+        return id
+    }
+
     // MARK: - Cloud relay bearer (→ hop-relayd)
 
     /// Connect to a `hop-relayd`. Accepts either a `host:port` (raw TCP, path A) or a
@@ -763,11 +864,10 @@ final class HopBearer: NSObject, ObservableObject {
         NSLog("HOPLOG addLink id=\(id) initiator=\(initiator)")
         let link = HopLink(id: id, channel: channel,
                            onBytes: { [weak self] lid, data in
-                               NSLog("HOPLOG recv \(data.count)B on link \(lid)")
                                self?.node.received(link: lid, bytes: data); self?.pump()
                            },
                            onClose: { [weak self] lid in
-                               self?.links[lid] = nil; self?.node.disconnected(link: lid); self?.refresh()
+                               self?.links[lid] = nil; self?.node.disconnected(link: lid); self?.scheduleRefresh()
                            })
         links[id] = link
         node.connected(link: id, initiator: initiator)
@@ -783,11 +883,13 @@ final class HopBearer: NSObject, ObservableObject {
                 try? mcSession?.send(pkt.bytes, toPeers: [peer], with: .reliable) // Wi-Fi link
             } else if pkt.link == relayLinkId {
                 relaySend(pkt.bytes)                       // cloud relay (TCP) link
+            } else if let lan = lanLinks[pkt.link] {
+                lan.send(pkt.bytes)                         // LAN (Wi-Fi TCP) link
             } else if let ws = endpointWS[pkt.link] {
                 ws.send(.data(pkt.bytes)) { _ in }         // direct hops:// endpoint link (§30)
             }
         }
-        refresh()
+        scheduleRefresh()
         for m in node.takeInbox() {
             let who = nameByAddr[m.from] ?? HopBearer.shortHex(m.from)
             let isImage = m.contentType.hasPrefix("image/")
@@ -1014,7 +1116,7 @@ final class HopBearer: NSObject, ObservableObject {
                                           active: c.active, platform: c.platform, app: c.app)
                 }
                 serviceLog.insert("identify ← \(label) (\(info.kind))", at: 0)
-                refresh()
+                scheduleRefresh()
             } else {
                 let text = String(data: resp.body, encoding: .utf8) ?? "<\(resp.body.count) bytes>"
                 serviceLog.insert("service ← \(resp.status): \(text.prefix(120))", at: 0)
@@ -1339,6 +1441,23 @@ final class HopBearer: NSObject, ObservableObject {
         loadingMessages = false
     }
 
+    private var refreshScheduled = false
+
+    /// Coalesced UI refresh. `refresh()` does synchronous SQLite work (browse, queue, per-message
+    /// status) and is far too expensive to run on every `pump()` — which fires on every received
+    /// packet across BLE/Wi-Fi/LAN/relay. Running it per-packet saturates the main thread (watchdog
+    /// 0x8BADF00D + cpu_resource kills, sluggish UI). Coalesce to ~4 Hz; the hot path still drains
+    /// outgoing and the inbox immediately, only the heavy snapshot is throttled.
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+
     private func refresh() {
         let mine = node.address()
         // Discover peers by browsing the app-level "presence" service. A device may
@@ -1398,19 +1517,29 @@ final class HopBearer: NSObject, ObservableObject {
         let bleActive = peripheralMgr?.state == .poweredOn || centralMgr?.state == .poweredOn
         // MC keeps its session object even when Wi-Fi is off; trust the real radio (or
         // the presence of live MC links) instead.
-        let wifiActive = !wifiBlocked && (wifiUp || !mcPeerByLink.isEmpty)
+        // Two distinct Wi-Fi transports: peer-to-peer (MultipeerConnectivity/AWDL, no router) and
+        // local-network (the mDNS+TCP LAN bearer, shared Wi-Fi). They get different tags/icons.
+        let p2pActive = !wifiBlocked && (wifiUp || !mcPeerByLink.isEmpty)
+        let lanActive = wifiUp || !lanLinks.isEmpty
         let relayActive = (relayConn != nil || relayWS != nil) && relayStatus == "connected"
         let pls = node.peerLinks()
         transports = [
             TransportStatus(id: "Bluetooth", active: bleActive, links: links.count),
-            TransportStatus(id: "Wi-Fi", active: wifiActive, links: mcPeerByLink.count),
+            TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: mcPeerByLink.count),
+            TransportStatus(id: "Local Net", active: lanActive, links: lanLinks.count),
             TransportStatus(id: "Relay", active: relayActive, links: relayActive ? 1 : 0),
         ]
 
         // Map each direct neighbour to the transport(s) carrying it (the route).
         var lt = [Data: Set<String>]()
         for pl in pls {
-            let t = pl.link < 10_000 ? "BT" : (pl.link < 20_000 ? "Wi-Fi" : "Relay")
+            let t: String
+            switch pl.link {
+            case ..<10_000:  t = "BT"
+            case ..<20_000:  t = "P2P"       // MultipeerConnectivity / AWDL — peer-to-peer Wi-Fi, no router
+            case ..<40_000:  t = "Relay"     // relay (20k) + hops:// endpoints (30k) aren't local
+            default:          t = "LAN"        // 40k+ = LAN TCP over a shared network (mDNS)
+            }
             lt[pl.address, default: []].insert(t)
         }
         linkTransports = lt
@@ -1421,7 +1550,7 @@ final class HopBearer: NSObject, ObservableObject {
         // "1 hop · BT" (never "2 hops"), and a peer with no live link at 2 hops stays in the mesh.
         reachable = reachable.map { p in
             var p = p
-            if let t = lt[p.address], t.contains("BT") || t.contains("Wi-Fi") { p.hops = 1 }
+            if let t = lt[p.address], t.contains("BT") || t.contains("P2P") || t.contains("LAN") { p.hops = 1 }
             return p
         }
 
@@ -1828,7 +1957,7 @@ extension HopBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNea
                     self.mcLinkByPeer[peerID] = nil
                     self.mcPeerByLink[id] = nil
                     self.node.disconnected(link: id)
-                    self.refresh()
+                    self.scheduleRefresh()
                 }
             case .connecting: break
             @unknown default: break
