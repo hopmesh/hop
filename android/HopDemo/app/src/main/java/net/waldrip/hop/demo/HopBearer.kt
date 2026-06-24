@@ -175,13 +175,11 @@ class HopBearer private constructor(private val context: Context) {
         // periodically in the tick loop too, so a lapsed/late neighbour can always re-open one.
         runCatching { node.publishPrekey() }
         startPeripheral()
-        // Central intentionally OFF for now (WIP, see cross-platform-ble memory). A continuous
-        // scan + failing 30s outbound connectGatt attempts saturated the radio and starved our
-        // peripheral role — iOS couldn't even discover us (LightBlue saw nothing). Pure-peripheral
-        // made 4 iPhones connect immediately (iOS is dual-role and connects TO us, the reliable
-        // direction). TODO: re-enable a *gentle*, time-shared central (periodic short scans, no
-        // aggressive iOS outbound retries) so Android<->Android direct works without re-starving.
-        // startCentral()
+        // Dual-role: always a peripheral (others connect TO us to push — the receive mailbox),
+        // plus a GENTLE, bursty central so we can push too (and reach Android peers). The central
+        // scans in short windows with long idle gaps so the radio stays mostly in peripheral mode
+        // — a continuous scan saturated the radio and starved discovery (iOS couldn't connect).
+        startCentral()
         // Declare internet reachability so the node resolves HNS itself by servicing
         // takeDnsLookups() (DESIGN.md §30). Track the default network so it stays accurate.
         val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
@@ -1004,12 +1002,20 @@ class HopBearer private constructor(private val context: Context) {
     private fun startAdvertise() {
         val adv = adapter.bluetoothLeAdvertiser ?: return
         runCatching { adv.stopAdvertising(advertiseCallback) } // no-op if not advertising
+        // Carry the L2CAP PSM in the advertisement (manufacturer data, 2 bytes big-endian). iOS
+        // reads it fresh from the scan and opens L2CAP DIRECTLY — skipping GATT service discovery,
+        // which iOS caches by our BLE address and serves stale after an app restart (the "connects
+        // but never reads PSM" stall). 18B (128-bit UUID) + 6B (mfg) + 3B (flags) = 27B, fits in 31.
+        val data = AdvertiseData.Builder()
+            .addServiceUuid(ParcelUuid(SERVICE_UUID))
+            .addManufacturerData(HOP_MFG_ID, byteArrayOf((psm ushr 8).toByte(), psm.toByte()))
+            .build()
         adv.startAdvertising(
             AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setConnectable(true)
                 .build(),
-            AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
+            data,
             advertiseCallback,
         )
     }
@@ -1044,16 +1050,27 @@ class HopBearer private constructor(private val context: Context) {
 
     // ---- central: scan + open L2CAP -----------------------------------------
 
+    @Volatile private var scanning = false
+
+    /// Bursty central: scan for SCAN_WINDOW, then idle SCAN_IDLE. The radio is in scan mode only
+    /// ~25% of the time, so our peripheral role is reachable the rest — a continuous scan starved
+    /// it (iOS couldn't connect to us). Bursts still discover peers so we can push to them.
     private fun startCentral() {
-        val scanner = adapter.bluetoothLeScanner ?: return
+        scanBurst()
+    }
+
+    private fun scanBurst() {
+        if (!started) return
+        val scanner = adapter.bluetoothLeScanner ?: run {
+            main.postDelayed({ scanBurst() }, SCAN_IDLE_MS); return
+        }
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
-        // BALANCED, not LOW_LATENCY: a 100%-duty continuous scan saturates the radio and starves
-        // our peripheral role, so iOS can't reliably *connect to us* (the reliable direction —
-        // Pixel→iOS connects fail 133 anyway). Balanced frees airtime to accept inbound links.
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
-        android.util.Log.i("HOPLOG", "BLE central: scanning for Hop peers")
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build()
+        runCatching { scanner.startScan(listOf(filter), settings, scanCallback); scanning = true }
+        main.postDelayed({
+            if (scanning) { runCatching { scanner.stopScan(scanCallback) }; scanning = false }
+            main.postDelayed({ scanBurst() }, SCAN_IDLE_MS) // idle: radio free for the peripheral
+        }, SCAN_WINDOW_MS)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -1120,6 +1137,9 @@ class HopBearer private constructor(private val context: Context) {
         const val PRESENCE_SERVICE = "presence"
         const val PRESENCE_TTL_MS: UInt = 600_000u
         const val DEFAULT_RELAY = "wss://relay.hopme.sh/"
+        const val SCAN_WINDOW_MS = 5_000L   // central scans in short bursts…
+        const val SCAN_IDLE_MS = 15_000L    // …then idles so the radio stays mostly in peripheral mode
+        const val HOP_MFG_ID = 0xFFFF       // BLE manufacturer ID (reserved/test) carrying our L2CAP PSM
         /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
         /// A different app (different secret) can't see or join these channels (DESIGN.md §32).
         val APP_SECRET = ByteArray(32) { 0x48 } // "H" ×32 — dev build only (matches iOS)

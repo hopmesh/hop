@@ -1625,6 +1625,18 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        // Read the peer's L2CAP PSM straight from the advert (manufacturer data: [2B company id]
+        // [2B PSM big-endian]). It's fresh on every scan, so we never depend on iOS's cached GATT
+        // — which serves a stale PSM after the peer (Android) restarts, the "connects but never
+        // reads PSM" stall. Android peers carry this; iOS peers don't (iOS can't advertise mfg
+        // data), so those fall back to the GATT read below.
+        if let mfg = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+            let b = [UInt8](mfg)
+            if b.count >= 4 {
+                let psm = CBL2CAPPSM(UInt16(b[2]) << 8 | UInt16(b[3]))
+                if psm != 0 { l2capPsm[peripheral.identifier] = psm }
+            }
+        }
         guard !connecting.contains(peripheral.identifier) else { return }
         connecting.insert(peripheral.identifier)
         retained[peripheral.identifier] = peripheral
@@ -1634,8 +1646,17 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        status = "connected (GATT), reading PSM…"
-        peripheral.discoverServices([HopBearer.serviceUUID])
+        // Fast path: PSM already known from the advert → open L2CAP directly, skipping GATT
+        // discovery (and its cache). Fall back to reading the PSM characteristic otherwise.
+        if let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) {
+            opened.insert(peripheral.identifier)
+            l2capAttempts[peripheral.identifier] = 0
+            status = "opening L2CAP (psm \(psm))…"
+            openL2CAP(peripheral, psm)
+        } else {
+            status = "connected (GATT), reading PSM…"
+            peripheral.discoverServices([HopBearer.serviceUUID])
+        }
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
