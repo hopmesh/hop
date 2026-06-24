@@ -235,10 +235,23 @@ code {
   .srow { grid-template-columns: 100px 1fr; }
 }
 @media (max-width: 620px) {
-  .site-nav { gap: 16px; }
-  .site-nav .nav-link { display: none; }
-  .flow { gap: 6px; }
-  .flow .arr { min-width: 16px; }
+  .wrap { padding: 0 18px; }
+
+  /* Keep section nav usable on mobile; drop the GitHub button (it's in the
+     hero CTAs and footer) so the three links + toggle fit one row. */
+  .site-nav { gap: 13px; }
+  .site-nav .nav-link { display: inline; font-size: 13.5px; }
+  .site-nav > .btn { display: none; }
+  .brand { font-size: 18px; }
+
+  /* The hop graph goes vertical on mobile — a horizontal 5-node chain can't
+     fit, and wrapping breaks the connectors. Stack nodes, arrows point down,
+     connector aligned under the glyph centers (glyph is 52px wide → 26px in). */
+  .flow { flex-direction: column; align-items: flex-start; gap: 0; padding: 24px 18px; }
+  .flow .hop { flex-direction: row; gap: 14px; min-width: 0; width: 100%; max-width: 280px; justify-content: flex-start; text-align: left; }
+  .flow .hop small { font-size: 13px; }
+  .flow .arr { flex: none; width: 2px; height: 22px; min-width: 0; margin: 6px 0 6px 25px;
+    background: repeating-linear-gradient(180deg, var(--line) 0 6px, transparent 6px 12px); }
 }
 
 /* ---------- extras for component pages ---------- */
@@ -303,3 +316,35 @@ code {
   background: #0b1018;
 }
 :root[data-theme="light"] .code-card { border-color: var(--line); }
+
+/* ---------- FAQ + prose pages ---------- */
+.faq { display: grid; gap: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.faq-item { padding: 24px 26px; border-top: 1px solid var(--line-soft); background: var(--panel); }
+.faq-item:first-child { border-top: 0; }
+.faq-item h3 { font-size: 17px; margin-bottom: 8px; }
+.faq-item p { font-size: 14.5px; }
+.faq-item p + p { margin-top: 10px; }
+
+.prose { max-width: 72ch; }
+.prose h2 { font-size: 22px; margin: 36px 0 12px; }
+.prose h2:first-child { margin-top: 0; }
+.prose p { margin-top: 12px; }
+.prose ul { margin: 12px 0 0 0; padding-left: 0; list-style: none; display: grid; gap: 10px; }
+.prose li { font-size: 15px; color: var(--ink-dim); padding-left: 24px; position: relative; }
+.prose li::before { content: "→"; position: absolute; left: 0; color: var(--accent-2); }
+.prose .updated { font-size: 13px; color: var(--ink-mut); margin-top: 0; }
+
+/* code steps (quickstart) */
+.steps { display: grid; gap: 18px; counter-reset: step; }
+.step { display: grid; grid-template-columns: 40px 1fr; gap: 16px; align-items: start; }
+.step .n { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+  font: 700 15px/1 var(--mono); color: var(--accent-ink);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.step h3 { font-size: 16px; margin-bottom: 6px; }
+.step p { font-size: 14.5px; }
+.code-block.sm { font-size: 12.5px; padding: 16px 18px; border-radius: var(--radius-sm); margin-top: 12px; }
+
+/* let code blocks scroll internally instead of stretching their grid cell */
+.step { min-width: 0; }
+.step > div { min-width: 0; }
+.code-block { max-width: 100%; }
