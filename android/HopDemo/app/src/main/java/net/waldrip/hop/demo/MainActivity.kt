@@ -50,15 +50,20 @@ class MainActivity : ComponentActivity() {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 perms += Manifest.permission.POST_NOTIFICATIONS
+                perms += Manifest.permission.NEARBY_WIFI_DEVICES   // Wi-Fi Direct discovery (13+)
+            } else {
+                // Wi-Fi Direct service discovery needs fine location through Android 12L.
+                perms += Manifest.permission.ACCESS_FINE_LOCATION
             }
-            return perms.toTypedArray()
+            return perms.distinct().toTypedArray()
         }
 
     private val requestPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            // BLE perms are required; the notification perm is best-effort.
-            val bleOk = result.filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }
-                .values.all { it }
+            // BLE perms are required; notification + Wi-Fi-nearby perms are best-effort.
+            val optional = setOf(Manifest.permission.POST_NOTIFICATIONS,
+                Manifest.permission.NEARBY_WIFI_DEVICES)
+            val bleOk = result.filterKeys { it !in optional }.values.all { it }
             if (bleOk) HopService.start(this) // service starts the shared bearer
         }
 
@@ -75,6 +80,16 @@ class MainActivity : ComponentActivity() {
 
 private fun platformLabel(p: String): String = when (p) {
     "ios" -> "iOS"; "android" -> "Android"; else -> p
+}
+
+/// A glyph + label per direct transport, mirroring the iOS SF Symbols. "LAN" is a shared-network
+/// Wi-Fi link (mDNS); "P2P" is peer-to-peer Wi-Fi (Wi-Fi Direct / AWDL) with no router.
+private fun transportSymbol(tag: String): String = when (tag) {
+    "BT" -> "🔷 BT"
+    "LAN" -> "🌐 LAN"
+    "P2P" -> "📡 P2P"
+    "Relay" -> "☁️ Relay"
+    else -> tag
 }
 
 /// One-line metadata under a chat bubble (mirrors the iOS app).
@@ -491,7 +506,7 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
 @Composable
 private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Peer) -> Unit) {
     val locked = bearer.secured.contains(p.address.toList())
-    val transport = bearer.linkTransports[p.address.toList()]   // "BT"/"Relay" if directly linked
+    val transport = bearer.linkTransports[p.address.toList()]?.let { transportSymbol(it) }
     val subline = listOf(HopBearer.shortHex(p.address), platformLabel(p.platform), p.app)
         .filter { it.isNotEmpty() }.joinToString(" · ")
     ListItem(

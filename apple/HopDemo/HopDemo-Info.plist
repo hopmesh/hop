@@ -31,6 +31,7 @@
 	<array>
 		<string>_hop-mesh._tcp</string>
 		<string>_hop-mesh._udp</string>
+		<string>_hoplan._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hop meshes with nearby devices over Wi-Fi to relay messages without the internet.</string>

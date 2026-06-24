@@ -38,7 +38,7 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to wake and relay messages even when the app is in the background."
         # MultipeerConnectivity Wi-Fi bearer (DESIGN.md §26) — required or it fails silently on iOS 14+.
         NSLocalNetworkUsageDescription: "Hop meshes with nearby devices over Wi-Fi to relay messages without the internet."
-        NSBonjourServices: [_hop-mesh._tcp, _hop-mesh._udp]
+        NSBonjourServices: [_hop-mesh._tcp, _hop-mesh._udp, _hoplan._tcp]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

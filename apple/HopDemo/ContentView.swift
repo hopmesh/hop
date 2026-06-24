@@ -381,18 +381,27 @@ struct ContentView: View {
         }
     }
 
-    /// SF Symbol for a transport tag ("BT" / "Wi-Fi" / "Relay").
+    /// SF Symbol for a transport tag. "LAN" (local network, shared Wi-Fi) and "P2P" (peer-to-peer
+    /// Wi-Fi — MultipeerConnectivity/AWDL or Android Wi-Fi Direct) get distinct symbols.
     private func transportIcon(_ tag: String) -> String {
         switch tag {
         case "BT": return "dot.radiowaves.left.and.right"
-        case "Wi-Fi": return "wifi"
+        case "LAN": return "wifi"               // local network over a shared Wi-Fi/router
+        case "P2P": return "personalhotspot"    // peer-to-peer WLAN (AWDL / Wi-Fi Direct), no router
         case "Relay": return "cloud.fill"
         default: return "link"
         }
     }
 
     /// Map a TransportStatus id to the tag used in `linkTransports`.
-    private func transportTag(_ id: String) -> String { id == "Bluetooth" ? "BT" : id }
+    private func transportTag(_ id: String) -> String {
+        switch id {
+        case "Bluetooth": return "BT"
+        case "Peer-to-Peer": return "P2P"
+        case "Local Net": return "LAN"
+        default: return id
+        }
+    }
 
     /// Addresses currently linked over a given transport (by its status id).
     private func peersOn(_ id: String) -> [Data] {

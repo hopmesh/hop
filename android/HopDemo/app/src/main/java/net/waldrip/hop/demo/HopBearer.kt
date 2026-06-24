@@ -149,6 +149,21 @@ class HopBearer private constructor(private val context: Context) {
     private var relayUrl: String? = null          // last relay endpoint, for auto check-in
     private var lastRelayDialMs: ULong = 0u       // throttle reconnect attempts
 
+    // LAN bearer (mDNS/NSD + TCP) and Wi-Fi Direct bearer — the cross-platform high-bandwidth Wi-Fi
+    // paths. Both reuse LanLink and a single TCP server bound on a fixed port: NSD links devices on a
+    // shared Wi-Fi network; Wi-Fi Direct links Android↔Android peer-to-peer with no router. Distinct
+    // link-id range (40_000+) so refresh() tags them "Wi-Fi" and treats them as direct (1 hop).
+    private val lanLinks = HashMap<ULong, LanLink>()
+    private var lanNextLinkId: ULong = 40_000u          // LAN (mDNS, shared network) link ids
+    private var wifiDirectNextLinkId: ULong = 50_000u   // Wi-Fi Direct (P2P, no network) link ids
+    private val lanDialed = HashMap<String, ULong>()    // peer base58 → our outbound link id (dedup)
+    private var lanServer: java.net.ServerSocket? = null
+    private var nsdManager: android.net.nsd.NsdManager? = null
+    private var nsdRegListener: android.net.nsd.NsdManager.RegistrationListener? = null
+    private var nsdDiscListener: android.net.nsd.NsdManager.DiscoveryListener? = null
+    @Volatile private var resolvingNsd = false          // NsdManager.resolveService is one-at-a-time
+    private var wifiDirect: WifiDirectBearer? = null
+
     @Volatile var appInForeground = false
     private var started = false
 
@@ -180,6 +195,10 @@ class HopBearer private constructor(private val context: Context) {
         // scans in short windows with long idle gaps so the radio stays mostly in peripheral mode
         // — a continuous scan saturated the radio and starved discovery (iOS couldn't connect).
         startCentral()
+        // Cross-platform Wi-Fi paths: NSD/TCP on a shared network, Wi-Fi Direct peer-to-peer when
+        // there's no router. Both feed the node like any other transport.
+        startLan()
+        startWifiDirect()
         // Declare internet reachability so the node resolves HNS itself by servicing
         // takeDnsLookups() (DESIGN.md §30). Track the default network so it stays accurate.
         val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
@@ -205,11 +224,10 @@ class HopBearer private constructor(private val context: Context) {
                 // Re-publish our prekey periodically so a neighbour whose cached copy lapsed
                 // (or who arrived later) can always open a forward-secret session to us (§25).
                 if (ticks % 120 == 0) runCatching { node.publishPrekey() }
-                // Re-arm BLE advertising periodically. Android advertising can silently stop
-                // (OEM doze/screen-off, or a wedged stack) while startAdvertising still reports
-                // success — leaving us undiscoverable. Re-arming self-heals it without a manual
-                // Bluetooth toggle. (Restarting advertising doesn't drop existing connections.)
-                if (ticks % 180 == 0) runCatching { startAdvertise() }
+                // Self-heal advertising: startAdvertise() is idempotent (no-op while the set is live),
+                // so this only restarts it if it actually stopped (advSet cleared in onAdvertisingSetStopped
+                // — e.g. OEM doze or a wedged stack). No reset of a healthy advert, so the name stays put.
+                if (ticks % 30 == 0) runCatching { startAdvertise() }
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
@@ -320,7 +338,7 @@ class HopBearer private constructor(private val context: Context) {
             onClose = { lid -> main.post {
                 links.remove(lid)
                 remoteAddr?.let { connecting.remove(it) }  // link dropped → allow a reconnect
-                node.disconnected(lid); refresh()
+                node.disconnected(lid); scheduleRefresh()
             } })
         links[id] = link
         node.connected(id, initiator)
@@ -329,13 +347,146 @@ class HopBearer private constructor(private val context: Context) {
         pump()
     }
 
+    // ---- LAN bearer (mDNS/NSD + TCP) + Wi-Fi Direct -------------------------
+
+    /// Stand up the LAN transport: one TCP server (shared by NSD and Wi-Fi Direct), an NSD service
+    /// advertising our base58 address on the fixed port, and NSD discovery that dials peers we should
+    /// initiate to (lower base58 dials). Plain TCP + length framing → bridges to iOS's Network.framework.
+    private fun startLan() {
+        // One TCP server accepts inbound links for BOTH NSD peers and Wi-Fi Direct clients (it binds
+        // 0.0.0.0, so the Wi-Fi Direct group-owner interface is covered too).
+        runCatching {
+            val srv = java.net.ServerSocket()
+            srv.reuseAddress = true
+            srv.bind(java.net.InetSocketAddress(LAN_PORT))
+            lanServer = srv
+            thread(name = "lan-accept") {
+                while (true) {
+                    val sock = runCatching { srv.accept() }.getOrNull() ?: break
+                    addLanLink(sock, initiator = false, name = null)   // we accept → Noise responder
+                }
+            }
+        }.onFailure { android.util.Log.w("HOPLOG", "lan server bind failed: $it") }
+
+        val nsd = context.getSystemService(android.net.nsd.NsdManager::class.java) ?: return
+        nsdManager = nsd
+        val info = android.net.nsd.NsdServiceInfo().apply {
+            serviceName = myAddress.value     // instance name = our base58 address
+            serviceType = LAN_SERVICE
+            port = LAN_PORT
+        }
+        val reg = object : android.net.nsd.NsdManager.RegistrationListener {
+            override fun onServiceRegistered(s: android.net.nsd.NsdServiceInfo) {}
+            override fun onRegistrationFailed(s: android.net.nsd.NsdServiceInfo, e: Int) {
+                android.util.Log.w("HOPLOG", "nsd register failed: $e")
+            }
+            override fun onServiceUnregistered(s: android.net.nsd.NsdServiceInfo) {}
+            override fun onUnregistrationFailed(s: android.net.nsd.NsdServiceInfo, e: Int) {}
+        }
+        nsdRegListener = reg
+        runCatching { nsd.registerService(info, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, reg) }
+
+        val disc = object : android.net.nsd.NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(t: String) {}
+            override fun onDiscoveryStopped(t: String) {}
+            override fun onStartDiscoveryFailed(t: String, e: Int) { android.util.Log.w("HOPLOG", "nsd discover failed: $e") }
+            override fun onStopDiscoveryFailed(t: String, e: Int) {}
+            override fun onServiceFound(s: android.net.nsd.NsdServiceInfo) {
+                val name = s.serviceName ?: return
+                main.post {
+                    if (name == myAddress.value) return@post              // not ourselves
+                    if (myAddress.value >= name) return@post              // tiebreak: lower base58 dials
+                    if (lanDialed.containsKey(name)) return@post          // already dialing/linked
+                    resolveAndDial(s, name)
+                }
+            }
+            override fun onServiceLost(s: android.net.nsd.NsdServiceInfo) {}
+        }
+        nsdDiscListener = disc
+        runCatching { nsd.discoverServices(LAN_SERVICE, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, disc) }
+        android.util.Log.i("HOPLOG", "lan start: ${myAddress.value.take(8)}")
+    }
+
+    /// Stand up the Wi-Fi Direct bearer (Android↔Android with no shared network). Client sockets it
+    /// dials are wrapped as LanLinks (initiator); the group owner accepts on the shared TCP server.
+    private fun startWifiDirect() {
+        wifiDirect = WifiDirectBearer(context, main, { myAddress.value }, LAN_PORT,
+            alreadyLinked = { isDirectlyLinked(it) },
+            // Only run Wi-Fi Direct when NOT on a Wi-Fi network — on Wi-Fi, NSD/LAN links Android↔
+            // Android and P2P scanning would just contend the 2.4 GHz radio with BLE (DESIGN.md §26).
+            shouldRun = { !isOnWifiNetwork() }) { sock ->
+            addLanLink(sock, initiator = true, name = null)   // we dialed the group owner → initiator
+        }.also { runCatching { it.start() }.onFailure { e -> android.util.Log.w("HOPLOG", "wifi-direct start failed: $e") } }
+    }
+
+    /// Whether we already have a live non-relay link (BLE or LAN) to this base58 peer — used to
+    /// skip a redundant Wi-Fi Direct group when the peer is reachable on a shared Wi-Fi via NSD.
+    private fun isDirectlyLinked(base58: String): Boolean =
+        runCatching { node.peerLinks() }.getOrDefault(emptyList())
+            .any { it.link != relayLinkId && addressBase58(it.address) == base58 }
+
+    /// True when this device is connected to a Wi-Fi network (any network with WIFI transport).
+    /// Used to gate Wi-Fi Direct: it's only worth its radio cost when there's no shared network.
+    private fun isOnWifiNetwork(): Boolean = runCatching {
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        cm.allNetworks.any { n ->
+            cm.getNetworkCapabilities(n)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }.getOrDefault(false)
+
+    /// Resolve an NSD service to host:port and dial it on a background thread. `resolveService` is
+    /// one-at-a-time on older APIs, so we serialize with a flag and retry on the next discovery tick.
+    private fun resolveAndDial(svc: android.net.nsd.NsdServiceInfo, name: String) {
+        val nsd = nsdManager ?: return
+        if (resolvingNsd) return
+        resolvingNsd = true
+        lanDialed[name] = 0u   // reserve so we don't double-dial while resolving
+        nsd.resolveService(svc, object : android.net.nsd.NsdManager.ResolveListener {
+            override fun onResolveFailed(s: android.net.nsd.NsdServiceInfo, e: Int) {
+                main.post { resolvingNsd = false; lanDialed.remove(name) }
+            }
+            override fun onServiceResolved(s: android.net.nsd.NsdServiceInfo) {
+                main.post { resolvingNsd = false }
+                thread(name = "lan-dial") {
+                    val sock = runCatching {
+                        java.net.Socket().apply { connect(java.net.InetSocketAddress(s.host, s.port), 5000) }
+                    }.getOrNull()
+                    if (sock == null) { main.post { lanDialed.remove(name) }; return@thread }
+                    addLanLink(sock, initiator = true, name = name)   // we dialed → Noise initiator
+                    android.util.Log.i("HOPLOG", "lan dial ${name.take(8)}")
+                }
+            }
+        })
+    }
+
+    private fun addLanLink(socket: java.net.Socket, initiator: Boolean, name: String?) = main.post {
+        // Wi-Fi Direct always puts the group owner at 192.168.49.1 (the p2p interface subnet), so a
+        // peer address in 192.168.49.0/24 means this is a P2P link, not a shared-network LAN link.
+        val p2p = socket.inetAddress?.hostAddress?.startsWith("192.168.49.") == true
+        val id = if (p2p) wifiDirectNextLinkId++ else lanNextLinkId++
+        val link = LanLink(id, socket,
+            onBytes = { lid, data -> main.post { node.received(lid, data); pump() } },
+            onClose = { lid -> main.post {
+                lanLinks.remove(lid)
+                name?.let { lanDialed.remove(it) }
+                node.disconnected(lid); scheduleRefresh()
+            } })
+        lanLinks[id] = link
+        name?.let { lanDialed[it] = id }
+        node.connected(id, initiator)
+        android.util.Log.i("HOPLOG", "${if (p2p) "p2p" else "lan"} link UP id=$id initiator=$initiator")
+        status.value = "linked (${if (p2p) "wifi-direct" else "lan"} ${if (initiator) "client" else "host"})"
+        pump()
+    }
+
     private fun pump() {
         for (pkt in node.drainOutgoing()) {
             val link = links[pkt.link]
             if (link != null) link.send(pkt.bytes)
             else if (pkt.link == relayLinkId) relaySend(pkt.bytes)
+            else lanLinks[pkt.link]?.send(pkt.bytes)   // LAN / Wi-Fi Direct TCP link
         }
-        refresh()
+        scheduleRefresh()
         for (m in node.takeInbox()) {
             val who = nameByAddr[m.from.toList()] ?: shortHex(m.from)
             val isImage = m.contentType.startsWith("image/")
@@ -391,7 +542,7 @@ class HopBearer private constructor(private val context: Context) {
                 val label = info.name.ifEmpty { shortHex(info.address) }
                 nameByAddr[info.address.toList()] = label
                 serviceLog.add(0, "identify ← $label (${info.kind})")
-                refresh()
+                scheduleRefresh()
             } else {
                 serviceLog.add(0, "service ← ${resp.status}: ${String(resp.body).take(120)}")
             }
@@ -895,6 +1046,18 @@ class HopBearer private constructor(private val context: Context) {
         NotificationManagerCompat.from(context).notify(text.hashCode(), n)
     }
 
+    @Volatile private var refreshScheduled = false
+
+    /// Coalesced UI refresh. `refresh()` does synchronous SQLite work (browse, queue, per-message
+    /// status) and is far too costly to run on every `pump()` — which fires on every received packet
+    /// across BLE/Wi-Fi/LAN/relay. Per-packet refresh saturates the main thread (sluggish UI, ANRs).
+    /// Coalesce to ~4 Hz; pump still drains outgoing + the inbox immediately, only this is throttled.
+    private fun scheduleRefresh() {
+        if (refreshScheduled) return
+        refreshScheduled = true
+        main.postDelayed({ refreshScheduled = false; refresh() }, 250)
+    }
+
     private fun refresh() {
         val mine = node.address().toList()
         // Collapse the many retained presence adverts per publisher: nearest hops for
@@ -918,12 +1081,17 @@ class HopBearer private constructor(private val context: Context) {
             }
             nameByAddr[key] = name
         }
-        // Map each directly-linked peer to its transport (BT vs the cloud relay). Android has no
-        // Wi-Fi direct transport (MultipeerConnectivity is iOS-only), so a direct link is BLE.
+        // Map each directly-linked peer to its transport: relay (20_000), Wi-Fi Direct/P2P (50_000+),
+        // LAN over a shared network (40_000+), everything else a BLE link.
         linkTransports.clear()
         val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
         pls.forEach { pl ->
-            linkTransports[pl.address.toList()] = if (pl.link == relayLinkId) "Relay" else "BT"
+            linkTransports[pl.address.toList()] = when {
+                pl.link == relayLinkId -> "Relay"
+                pl.link >= 50_000u -> "P2P"
+                pl.link >= 40_000u -> "LAN"
+                else -> "BT"
+            }
         }
         if (pls.isNotEmpty() && pls.size != lastPeerLinkCount) {
             lastPeerLinkCount = pls.size
@@ -938,7 +1106,7 @@ class HopBearer private constructor(private val context: Context) {
         val list = agg.values.map {
             val key = it.peer.address.toList()
             val t = linkTransports[key]
-            val hops = if (t == "BT" || t == "Wi-Fi") 1u.toUByte() else it.minHops
+            val hops = if (t == "BT" || t == "LAN" || t == "P2P") 1u.toUByte() else it.minHops
             it.peer.copy(hops = hops)
         }.sortedBy { addressBase58(it.address) }
         peers.clear(); peers.addAll(list)
@@ -973,9 +1141,9 @@ class HopBearer private constructor(private val context: Context) {
                 val socket = runCatching { ss.accept() }.getOrNull() ?: break
                 android.util.Log.i("HOPLOG", "BLE peripheral: accepted L2CAP from ${socket.remoteDevice?.address}")
                 addLink(socket, initiator = false)
-                // Legacy connectable advertising STOPS once a central connects, so only one peer
-                // could ever link. Re-arm it so every other iOS/Android device can still find us.
-                main.post { startAdvertise() }
+                // No re-arm here: the connectable AdvertisingSet keeps advertising across connections,
+                // so other centrals can still find + connect. Re-arming would reset the scan response
+                // (dropping the name) and disrupt live connections (the old churn).
             }
         }
 
@@ -1000,8 +1168,8 @@ class HopBearer private constructor(private val context: Context) {
     /// connection, because legacy advertising stops on connect (so without this only one peer
     /// could ever link to us).
     private fun startAdvertise() {
+        if (advSet != null) return   // already advertising — a connectable set persists across connections
         val adv = adapter.bluetoothLeAdvertiser ?: return
-        runCatching { adv.stopAdvertising(advertiseCallback) } // no-op if not advertising
         // Carry the L2CAP PSM in the advertisement (manufacturer data, 2 bytes big-endian). iOS
         // reads it fresh from the scan and opens L2CAP DIRECTLY — skipping GATT service discovery,
         // which iOS caches by our BLE address and serves stale after an app restart (the "connects
@@ -1010,14 +1178,24 @@ class HopBearer private constructor(private val context: Context) {
             .addServiceUuid(ParcelUuid(SERVICE_UUID))
             .addManufacturerData(HOP_MFG_ID, byteArrayOf((psm ushr 8).toByte(), psm.toByte()))
             .build()
-        adv.startAdvertising(
-            AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                .setConnectable(true)
-                .build(),
-            data,
-            advertiseCallback,
-        )
+        // The device name rides the SCAN RESPONSE (the 31-byte advert is full: UUID + PSM + flags).
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)   // system GAP name (e.g. "Pixel 7")
+            .build()
+        // Use the modern Advertising Set API in LEGACY mode: it emits the SAME ADV_IND packets iOS
+        // already scans/connects to, but (1) reliably includes the device name in the scan response —
+        // the legacy startAdvertising path silently drops it on many devices — and (2) a connectable
+        // set keeps advertising across connections, so multiple centrals can connect without the
+        // stop-on-connect/re-arm race that timed out LightBlue (CONNECTION_ACCEPT_TIMEOUT).
+        val params = android.bluetooth.le.AdvertisingSetParameters.Builder()
+            .setLegacyMode(true)
+            .setConnectable(true)
+            .setScannable(true)
+            .setInterval(android.bluetooth.le.AdvertisingSetParameters.INTERVAL_LOW)
+            .setTxPowerLevel(android.bluetooth.le.AdvertisingSetParameters.TX_POWER_MEDIUM)
+            .build()
+        runCatching { adv.startAdvertisingSet(params, data, scanResponse, null, null, advSetCallback) }
+            .onFailure { android.util.Log.w("HOPLOG", "startAdvertisingSet threw: $it") }
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
@@ -1039,12 +1217,19 @@ class HopBearer private constructor(private val context: Context) {
         }
     }
 
-    private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            android.util.Log.i("HOPLOG", "BLE advertising started")
+    private var advSet: android.bluetooth.le.AdvertisingSet? = null
+    private val advSetCallback = object : android.bluetooth.le.AdvertisingSetCallback() {
+        override fun onAdvertisingSetStarted(set: android.bluetooth.le.AdvertisingSet?, txPower: Int, status: Int) {
+            if (status == android.bluetooth.le.AdvertisingSetCallback.ADVERTISE_SUCCESS) {
+                advSet = set
+                android.util.Log.i("HOPLOG", "BLE advertising started (set, txPower=$txPower)")
+            } else {
+                android.util.Log.w("HOPLOG", "BLE advertising-set start FAILED: status=$status")
+            }
         }
-        override fun onStartFailure(errorCode: Int) {
-            android.util.Log.w("HOPLOG", "BLE advertising FAILED: code=$errorCode")
+        override fun onAdvertisingSetStopped(set: android.bluetooth.le.AdvertisingSet?) {
+            advSet = null   // allow the periodic self-heal in the tick loop to re-arm
+            android.util.Log.i("HOPLOG", "BLE advertising set stopped")
         }
     }
 
@@ -1140,6 +1325,8 @@ class HopBearer private constructor(private val context: Context) {
         const val SCAN_WINDOW_MS = 5_000L   // central scans in short bursts…
         const val SCAN_IDLE_MS = 15_000L    // …then idles so the radio stays mostly in peripheral mode
         const val HOP_MFG_ID = 0xFFFF       // BLE manufacturer ID (reserved/test) carrying our L2CAP PSM
+        const val LAN_SERVICE = "_hoplan._tcp"   // Bonjour/NSD type, matches iOS HopBearer.lanServiceType
+        const val LAN_PORT = 47474          // fixed TCP port: NSD advertises it; Wi-Fi Direct GO listens here
         /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
         /// A different app (different secret) can't see or join these channels (DESIGN.md §32).
         val APP_SECRET = ByteArray(32) { 0x48 } // "H" ×32 — dev build only (matches iOS)

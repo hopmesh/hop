@@ -1,23 +1,22 @@
 package net.waldrip.hop.demo
 
-import android.bluetooth.BluetoothSocket
 import java.io.DataInputStream
+import java.net.Socket
 import java.util.concurrent.LinkedBlockingQueue
 import kotlin.concurrent.thread
 
 /**
- * One L2CAP connection-oriented channel, framed as length-prefixed packets so the node's opaque
- * byte packets survive the stream boundary: a 4-byte big-endian length, then that many bytes.
+ * One LAN/Wi-Fi TCP link over a plain [Socket], with the SAME 4-byte big-endian length-prefix
+ * framing as [HopLink] (the BLE L2CAP link). This is the cross-platform high-bandwidth path:
+ * two devices on the same Wi-Fi (or a Wi-Fi Direct group) discover each other and talk over TCP —
+ * iOS↔Android and Android↔Android (unlike MultipeerConnectivity/AWDL, which is Apple-only).
  *
- * Reliability — mirrors the iOS [HopLink]: a **keepalive** sends an empty (0-length) frame every
- * few seconds so the peer sees steady traffic, and a **watchdog** closes the link if nothing has
- * been received for too long. iOS closes a link that goes silent for ~15s, so without our own
- * keepalive an idle Android↔iOS link gets torn down by iOS every few seconds (status 19). Close
- * is idempotent.
+ * Reliability mirrors [HopLink]: a keepalive sends an empty (0-length) frame every few seconds, and
+ * a watchdog closes the link if nothing has been received for too long. Close is idempotent.
  */
-class HopLink(
+class LanLink(
     val id: ULong,
-    private val socket: BluetoothSocket,
+    private val socket: Socket,
     private val onBytes: (ULong, ByteArray) -> Unit,
     private val onClose: (ULong) -> Unit,
 ) {
@@ -26,9 +25,10 @@ class HopLink(
     @Volatile private var lastRead = System.currentTimeMillis()
 
     init {
-        thread(name = "hoplink-read-$id") { readLoop() }
-        thread(name = "hoplink-write-$id") { writeLoop() }
-        thread(name = "hoplink-keepalive-$id") { keepaliveLoop() }
+        runCatching { socket.tcpNoDelay = true }
+        thread(name = "lanlink-read-$id") { readLoop() }
+        thread(name = "lanlink-write-$id") { writeLoop() }
+        thread(name = "lanlink-keepalive-$id") { keepaliveLoop() }
     }
 
     fun send(bytes: ByteArray) {
@@ -45,7 +45,7 @@ class HopLink(
 
     private fun readLoop() {
         try {
-            val input = DataInputStream(socket.inputStream)   // throws if socket already closed
+            val input = DataInputStream(socket.getInputStream())   // throws if socket already closed
             while (running) {
                 val len = input.readInt() // big-endian by contract
                 if (len < 0 || len > MAX_FRAME) throw IllegalStateException("bad frame len $len")
@@ -64,7 +64,7 @@ class HopLink(
 
     private fun writeLoop() {
         try {
-            val output = socket.outputStream   // throws if socket already closed → caught, not fatal
+            val output = socket.getOutputStream()   // throws if socket already closed → caught, not fatal
             while (running) {
                 val payload = outbox.take()
                 if (payload === POISON || !running) break
