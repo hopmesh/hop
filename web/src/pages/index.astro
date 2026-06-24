@@ -118,8 +118,63 @@ import Base from '../layouts/Base.astro';
     </div>
   </section>
 
-  <!-- how it's monetized -->
+  <!-- the narrow waist / build on Hop -->
   <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Build on Hop</div>
+        <h2>One layer. Every offline app.</h2>
+        <p>Most offline products rebuild the same transport — discovery, mesh,
+           store-and-forward — and weld it to a single app. Hop is that layer, done once:
+           a sealed, store-and-forward datagram every app can build on. The narrow waist
+           for intermittent networks — many bearers below, many apps above.</p>
+      </div>
+      <div class="layerstack">
+        <div class="lrow">
+          <span class="lvl">Apps</span>
+          <div class="chips">
+            <span class="lchip">Messaging</span>
+            <span class="lchip">Data sync</span>
+            <span class="lchip">File transfer</span>
+            <span class="lchip">Offline web</span>
+            <span class="lchip">Telemetry</span>
+          </div>
+        </div>
+        <div class="lrow">
+          <span class="lvl">Semantics</span>
+          <div class="chips">
+            <span class="lchip code">hops://</span>
+            <span class="lchip code">hps://</span>
+            <span class="lchip code">streams</span>
+            <span class="lchip code">HNS</span>
+          </div>
+        </div>
+        <div class="lrow waist">
+          <span class="lvl">Waist</span>
+          <div class="chips">
+            <span class="lchip code">hdp://</span>
+            <span class="lchip">sealed, store-and-forward datagrams</span>
+          </div>
+          <span class="waisttag">the waist</span>
+        </div>
+        <div class="lrow bearer">
+          <span class="lvl">Bearer</span>
+          <div class="chips">
+            <span class="lchip">Bluetooth LE</span>
+            <span class="lchip">L2CAP</span>
+            <span class="lchip">TCP / WebSocket</span>
+            <span class="lchip">LoRa, Wi-Fi Aware…</span>
+          </div>
+        </div>
+      </div>
+      <p class="note mt-m">A vertically-integrated offline app is the whole column. Hop is
+         the waist — so a sync engine, a messenger, or a telemetry pipeline builds on it
+         instead of rebuilding radios and store-and-forward.</p>
+    </div>
+  </section>
+
+  <!-- how it's monetized -->
+  <section class="band band-soft">
     <div class="wrap">
       <div class="section-head">
         <div class="eyebrow">The model</div>
@@ -158,7 +213,7 @@ import Base from '../layouts/Base.astro';
   </section>
 
   <!-- audience doors -->
-  <section class="band band-soft">
+  <section class="band">
     <div class="wrap">
       <div class="doors">
         <a class="door" href="/developers/">

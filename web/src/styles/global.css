@@ -348,3 +348,19 @@ code {
 .step { min-width: 0; }
 .step > div { min-width: 0; }
 .code-block { max-width: 100%; }
+
+/* ---------- layer stack (the narrow waist) ---------- */
+.layerstack { display: grid; gap: 10px; }
+.lrow { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 18px 22px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); }
+.lrow .lvl { font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-mut); min-width: 70px; }
+.lrow .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.lchip { font: 500 13px/1 var(--sans); color: var(--ink-dim);
+  border: 1px solid var(--line); background: var(--bg-soft); padding: 7px 12px; border-radius: 8px; }
+.lchip.code { font-family: var(--mono); color: var(--ink); }
+.lrow.bearer { background: var(--bg-soft); }
+.lrow.waist { border-color: var(--accent); background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: inset 0 0 0 1px #4da3ff22, 0 12px 36px #4da3ff14; }
+.lrow.waist .lvl { color: var(--accent); }
+.lrow .waisttag { margin-left: auto; font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+@media (max-width: 620px) { .lrow .waisttag { margin-left: 0; } }
