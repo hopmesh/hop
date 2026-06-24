@@ -2039,9 +2039,16 @@ registry, presence index, and region routing are unchanged.
 The relay attributes usage to `RAT.tenant` on the **sealed envelope**, consistent with §33: it
 counts **volume, not content**. The billable units (§pricing):
 
-- **Relay carried** — bundles stored-and-forwarded on the tenant's behalf (count + bytes).
+- **Relay carried** — bundles/chunks stored-and-forwarded on the tenant's behalf (count + bytes).
 - **Mailbox storage** — sealed bytes × retention held in inboxes (§34) for the tenant's recipients.
 - **Internet egress** — bytes fulfilled out to the public internet / bridged across regions (§9/§19).
+
+**The metering atom is the bundle/chunk, not the logical message.** A large message is split by the
+carrier transport into many sealed `Payload::Carrier` chunks (§31), each its own stored-and-forwarded
+datagram — so a 5 MB image is metered as the dozens of chunks it actually is, and billing scales with
+**data carried** rather than message count. (Link frames, §5, are per-hop and ephemeral — never
+metered.) This is why "relay carried" is best billed by **GB/chunk-count**, the only unit fair across
+a chat line and a media payload.
 
 Usage rolls up per `tenant` for billing; the relay never opens a payload to meter it. (`hps://`
 topic fan-out is metered to the **publishing** tenant, since broadcasts have no per-subscriber
@@ -2066,3 +2073,151 @@ operator knob — *require it or not*. The **open SDK self-hosting its own relay
 metering policy, layered on top. That is precisely the seam the business model wants: the protocol
 stays open and free to run yourself, while the **hosted** fabric is keyed, metered, free-tier-first,
 and protected from waking on traffic nobody is accountable for.
+
+## 36. Private & federated backbones — islands, and the bridges between them
+
+A **private backbone** is a separate relay fleet (a customer's own GCP project or on-prem) with its
+own identities, its own per-region durable partitions (§27), and its own RAT issuer (§35). It exists
+for isolation, control, and data residency (§33). The question this section answers: *when someone
+runs a private backbone, what still flows through it, and what does the broader Hop network lose?*
+
+The answer hinges on Hop relaying at **two layers that behave oppositely**, and conflating them is the
+mistake:
+
+- **Device/BLE layer — always shared, always cross-app.** Two Hop devices in radio range relay each
+  other's sealed bundles regardless of app or backbone. A relay forwards ciphertext addressed to a
+  *key*; it doesn't know which app produced it (app-namespacing is a payload/topic concern, §16/§24).
+  So a private-backbone customer's users **still relay for, and benefit from, every nearby Hop
+  device.** This is where the network-effect moat actually lives, and **no backbone choice removes
+  it** — you cannot opt your users out of being good BLE citizens without forking the protocol.
+- **Cloud backbone layer — scoped to whoever attaches.** A device connects to exactly one backbone
+  entrance (the anycast name it's configured with, §21). A bundle only transits the backbone its
+  origin/custodian is attached to. So a private backbone is, by default, an **island at the cloud
+  layer**: it carries only its own app's cloud traffic, and other apps neither traverse it nor carry
+  its bundles. That isolation is usually the whole point.
+
+**So: a private backbone does not carry other apps' cloud traffic by default — and that's a feature,
+not a regression.** The customer keeps the ambient device mesh; they give up cloud-layer mixing, which
+is exactly what they're paying to give up.
+
+### Federation — safe because relays only ever see ciphertext
+
+Isolation need not be all-or-nothing. Because every bundle is **end-to-end sealed and signed**
+(§4/§5) and relays carry ciphertext they cannot read, two backbones can **peer** without trusting each
+other with content. A **bridge relay** is simply a node that is a member of both fabrics — it holds a
+RAT for each — and moves cross-boundary bundles via the same online-only epidemic / cross-partition
+handoff used inside one backbone (§28). It learns only envelopes (addresses, sizes), never plaintext —
+the same exposure any on-path relay already has.
+
+This makes private deployment a **dial**, not a binary:
+
+- **Isolated (default).** No cross-traffic. Maximum control and residency; the customer's fabric is
+  air-gapped from the public one at the cloud layer.
+- **Federated.** The private fabric peers with the public one (or with a partner's). The customer's
+  own infra carries their baseline traffic and keeps their data in their region, but their users stay
+  **reachable across the global fabric** — a bundle addressed from a public-backbone device to one of
+  theirs crosses the bridge, sealed the whole way.
+
+**Routing across the bridge** reuses §21 presence: the bridge advertises reachability for the
+addresses/regions it can reach on the far side, so the epidemic only pushes a bundle across the
+boundary when there's a destination (or live topic demand) over there — no blind flooding between
+fabrics. Federation can be scoped (e.g. only certain topics or address ranges cross) so a customer
+exposes exactly as much surface as they want.
+
+### Business shape (ties to §35 and pricing)
+
+- Private backbones are **not MAD-metered** like the hosted service — the customer runs the infra and
+  pays their own GCP bill. We charge a **platform/license fee + support**, with **federation as an
+  add-on** (per-bridge or per-region), since a bridge consumes hosted-fabric resources and inter-fabric
+  egress.
+- The core network effect is unharmed: every private customer's *devices* still thicken the shared
+  BLE mesh, and federation keeps their *cloud* traffic in the fabric when they want it. Going private
+  is a deployment option, not an exit from the network.
+
+## 37. Metering & billing — capture, aggregate, and charge
+
+§35 named the billable units; this section makes them *collectable and chargeable*. The job: capture
+every unit of billable usage at the relay, persist it durably and **idempotently** (relays scale to
+zero and bundles are re-tried/replicated — naïve counters would double-count or lose counts), then
+report it to **Stripe** so an invoice actually goes out. The chain is **capture → ledger → reconcile →
+Stripe meters → invoice**, and every link is idempotent so the worst case is a retry, never a double
+charge or a silent loss.
+
+### What we meter (four dimensions)
+
+All keyed by `RAT.tenant` (§35), measured on the **sealed envelope** — counts and bytes, never content
+(§33).
+
+| Dimension | Unit | Stripe meter aggregation | Captured when |
+|---|---|---|---|
+| **Active devices (MAD)** | distinct devices / period | `count` of first-seen events | a device's first authenticated link in the billing period |
+| **Data carried** | chunks (and/or bytes) | `sum` | each chunk/bundle the relay stores-and-forwards (§31 — a large message is many chunks) |
+| **Internet egress** | bytes | `sum` | bytes fulfilled to the public internet / bridged across regions |
+| **Mailbox storage** | byte-hours → GB-month | `sum` of byte-hours | sampled per retention interval on held inbox bytes |
+
+**MAD without storing identity.** Active devices is a *distinct count*, but Stripe meters only
+`sum`/`count` events — they can't dedup. So we dedup at the edge: the **first** time a device address
+authenticates for a tenant in a billing period, the relay emits exactly **one** `mad` meter event;
+subsequent links that period emit none. The per-period "seen" set is a tenant-scoped, period-scoped
+probabilistic set (HyperLogLog / bloom) keyed by address — **pseudonymous, period-bounded, never linked
+to identity** (§23/§33). Aggregation `count` then sums first-seen events to the period's MAD.
+
+### Capture → durable usage ledger (idempotent)
+
+Relays are ephemeral (scale-to-zero, §28), so in-memory counters can't be the source of truth. Each
+relay writes **usage deltas** into a durable per-tenant ledger in its region partition:
+`usage/{tenant}/{period}/{shard}` — monotonic counters plus an **idempotency set** so the same unit is
+never counted twice:
+
+- **Data carried / egress** — deduped by the chunk's bundle id (+ frag index): a re-sprayed or
+  re-forwarded copy of a chunk already counted is ignored. Custody/epidemic replication (§31) means a
+  chunk may pass several relays; it is billed **once**, at the relay that first commits it for the
+  tenant (the same "first commit wins" the dedup window already enforces).
+- **MAD** — deduped by `(tenant, period, address)` via the HLL/bloom set above.
+- **Mailbox** — a sampler walks held inbox bytes per interval and adds byte-hours; idempotent by
+  `(tenant, period, sample-tick)` so a re-run of a tick can't double-add.
+
+Writes are small and sharded to avoid hot-doc contention; the ledger is the **authoritative** record,
+independent of whether reporting has happened yet.
+
+### Reconcile → Stripe meter events
+
+A periodic **billing reconciler** (a scheduled job, *not* on the bundle hot path) reads each tenant's
+ledger forward from a stored **watermark** and emits **Stripe meter events** — one per dimension —
+with the payload Stripe's meter expects (`{ stripe_customer_id, value }`, mapped via the meter's
+`customer_mapping`). It then advances the watermark. Two properties make this safe:
+
+- **At-least-once + idempotent.** Each meter event carries an idempotency key derived from
+  `(tenant, period, dimension, ledger-offset)`. If reporting succeeds but the watermark write fails,
+  the next run re-sends the same events — Stripe dedups them, so no double charge. If reporting fails,
+  the watermark doesn't advance and the ledger still holds the truth — so nothing is lost.
+- **Decoupled from delivery.** Metering never blocks or gates a bundle; a billing outage degrades to
+  *delayed* invoicing, never dropped traffic or dropped usage.
+
+Stripe aggregates meter events per its meter definition and bills the subscription at period close.
+
+### Tenant ↔ Stripe, base price + metered prices
+
+The **account service** (the RAT issuer, §35) owns the tenant↔Stripe mapping: each tenant is a Stripe
+**customer** with one **subscription** whose items are the prices defined in Terraform (`infra/billing`):
+
+- A **base price** — a flat recurring platform fee (`usage_type=licensed`); `$0` for the free tier,
+  a committed minimum for paid plans.
+- **Four metered prices**, each bound to one `stripe_meter` (`usage_type=metered`, `meter=…`), priced
+  per the cost model (§pricing / `docs/pricing-cost-model.md`).
+
+**Included allowances** (free-tier and per-MAD) are modeled as **tiered metered prices** — first *N*
+units at `$0`, overage above — so the invoice is transparent (the customer sees included vs. billed)
+and the reconciler always reports **gross** usage rather than pre-subtracting, keeping the relay dumb.
+
+### Why this captures and charges everything
+
+- **Nothing escapes capture:** admission requires a RAT (§35), so every billable unit is attributable
+  to a tenant the moment it touches the backbone; unkeyed traffic can't even wake a relay, so there is
+  no unattributed usage to leak.
+- **Nothing is double-charged or lost:** idempotent ledger + idempotent meter events make the whole
+  pipeline at-least-once end to end.
+- **Nothing leaks content:** every dimension is a count or a byte total on the sealed envelope.
+- **Infra-as-code:** meters, base price, and metered prices live in `infra/billing` (Stripe Terraform
+  provider); the meter **`event_name`s are the contract** between the relay reconciler and Stripe.
+

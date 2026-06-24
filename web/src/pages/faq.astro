@@ -1,0 +1,88 @@
+---
+import Base from '../layouts/Base.astro';
+
+const faqs = [
+  {
+    q: "Is Hop real-time?",
+    a: "No — and that's the point. Hop is delay-tolerant: messages are eventually delivered, with a lifetime measured in hours to days, not milliseconds. It's built for the moments a live connection doesn't exist. When a path happens to be live, delivery is quick; when it isn't, the message waits and keeps seeking a way.",
+  },
+  {
+    q: "Can the relays read my messages?",
+    a: "No. Every payload is sealed end-to-end (X25519 + ChaCha20-Poly1305) to the destination's key. Relays carry ciphertext they cannot read — they only see the routing envelope. Only the recipient can open it.",
+  },
+  {
+    q: "Does it need the internet?",
+    a: "Not for device-to-device. Two phones reach each other over Bluetooth with no tower, Wi-Fi, or server. The internet is only used — when available — to bridge distant Bluetooth islands or to fulfill requests to the public web.",
+  },
+  {
+    q: "How big can a message be?",
+    a: "Any size. Small messages travel as a single sealed bundle; larger ones are automatically split into ordered, individually-sealed chunks and reassembled on the far side. Even images and video stream through.",
+  },
+  {
+    q: "What if the recipient is offline?",
+    a: "The message persists. On the cloud backbone it waits in a durable mailbox until the recipient reappears; on the device mesh, carriers hold and re-offer it. Nothing is dropped just because the other side isn't around yet.",
+  },
+  {
+    q: "Is delivery guaranteed?",
+    a: "Hop is at-least-once with idempotency — redundant copies that an acknowledgement later cancels. Exactly-once is impossible over a lossy, partitioned network, so messages carry stable ids and recipients dedup. In practice: it gets there, and it isn't delivered twice.",
+  },
+  {
+    q: "Do I have to use the cloud backbone?",
+    a: "No. The SDK works fully peer-to-peer over Bluetooth on its own. The hosted backbone is optional — it absorbs carry-and-forward and bridges messages across the world when any node touches the internet. You can also run your own private backbone.",
+  },
+  {
+    q: "What about battery?",
+    a: "Hop is designed for background operation — periodic beaconing to stay discoverable, OS wake mechanisms on Bluetooth events, and best-effort background refresh, with cadence the OS tunes from usage. It leans on always-on nodes (a plugged-in device, a relay) as rendezvous rather than keeping radios hot.",
+  },
+  {
+    q: "How private is it?",
+    a: "Payloads are confidential by default — sealed end-to-end, and identities are public keys, not phone numbers or accounts. In v1 we encrypt content but do not fully hide who-talks-to-whom from on-path relays (metadata privacy at the Briar level is future work). Billing meters counts and bytes on the envelope, never content.",
+  },
+  {
+    q: "What platforms does it run on?",
+    a: "A pure-Rust core (deterministic, fully testable without a radio) with native iOS and Android bindings via UniFFI. The bearer is pluggable — Bluetooth LE today, with room for Wi-Fi Aware, MultipeerConnectivity, and others.",
+  },
+  {
+    q: "Is it open source? How do you make money?",
+    a: "The SDK is source-available under FSL-1.1-ALv2 (and converts to Apache 2.0 after two years). The library is free — the device does the work. We monetize the hosted cloud backbone (usage-based) and commercial licensing, never the protocol itself.",
+  },
+];
+---
+<Base
+  title="Hop FAQ — how delay-tolerant mesh works"
+  description="Answers on latency, privacy, message size, offline delivery, battery, platforms, and how Hop is licensed."
+  path=""
+>
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow">FAQ</div>
+      <h1>Questions, <span class="grad">answered.</span></h1>
+      <p class="lede">The things people ask first about a network that delivers eventually,
+         seals everything, and needs no infrastructure.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap">
+      <div class="faq">
+        {faqs.map((f) => (
+          <div class="faq-item">
+            <h3>{f.q}</h3>
+            <p>{f.a}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Still curious?</h2>
+      <p>Read the design in depth, or start building.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart</a>
+        <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Read the source</a>
+      </div>
+    </div>
+  </section>
+</Base>

@@ -29,10 +29,10 @@ import Base from '../layouts/Base.astro';
           <div class="sub">The SDK, plus a real backbone allowance to launch on.</div>
           <ul>
             <li>Full <code>hop-core</code> SDK, iOS &amp; Android</li>
-            <li>Device-to-device &amp; internet egress</li>
-            <li>Hosted backbone — free monthly allowance</li>
+            <li>Up to 1,000 monthly active devices</li>
+            <li>Messages of any size — device-to-device &amp; egress</li>
+            <li>Included data carried, mailbox &amp; egress</li>
             <li>Durable mailbox, capped retention</li>
-            <li>Shared egress, fair-use limits</li>
             <li>Community support</li>
           </ul>
           <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Start free</a>
@@ -41,13 +41,13 @@ import Base from '../layouts/Base.astro';
         <div class="tier feature">
           <div class="ribbon">Most teams</div>
           <div class="name">Pro</div>
-          <div class="price">Usage<small> / based</small></div>
-          <div class="sub">Pay for backbone you use, beyond the free allowance.</div>
+          <div class="price">$25<small> / 1k devices / mo</small></div>
+          <div class="sub">Priced on active devices; metered only on what scales.</div>
           <ul>
             <li>Everything in Free</li>
-            <li>Metered relay — per message carried</li>
-            <li>Metered mailbox storage &amp; retention</li>
-            <li>Metered internet egress</li>
+            <li>Per active device, beyond the first 1,000</li>
+            <li>Generous data carried (chunks) included per device</li>
+            <li>Overage on data carried, egress &amp; mailbox storage</li>
             <li>Higher throughput &amp; rate limits</li>
             <li>Per-tenant usage attribution</li>
             <li>Email support &amp; uptime SLA</li>
@@ -82,14 +82,18 @@ import Base from '../layouts/Base.astro';
     <div class="wrap">
       <div class="section-head">
         <div class="eyebrow">What you actually pay for</div>
-        <h2>The cloud seam, metered honestly.</h2>
-        <p>The backbone meters the sealed envelope — volume, not content. It never reads
-           your messages; it counts them.</p>
+        <h2>Priced on reach. Metered on what scales.</h2>
+        <p>You pay for active devices — your app's actual reach. Messages of any size come
+           included and generous. Large ones split into <strong>chunks</strong> and
+           reassemble for the recipient, so usage tracks the data actually carried — a photo
+           simply counts as more chunks than a chat line, never a flat per-message surprise.
+           We meter overage only on what genuinely scales with cost, always on the sealed
+           envelope — volume, never content.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic">📨</div><h3>Relay carried</h3><p>Bundles the backbone stores and forwards on your behalf, attributed to your key.</p></div>
-        <div class="card"><div class="ic">📦</div><h3>Mailbox storage</h3><p>Durable retention of sealed messages waiting for a recipient to reappear.</p></div>
-        <div class="card"><div class="ic">🌐</div><h3>Internet egress</h3><p>Bytes fulfilled out to the public internet and bridged across regions.</p></div>
+        <div class="card lit"><div class="ic">📱</div><h3>Active devices</h3><p>The headline metric — your monthly reach. Predictable, with a generous data allowance included per device.</p></div>
+        <div class="card"><div class="ic">🧩</div><h3>Data carried</h3><p>The sum of all chunks the backbone stores and forwards for you — so a 5&nbsp;MB image is billed as the many chunks it is, not as one cheap "message."</p></div>
+        <div class="card"><div class="ic">🌐</div><h3>Egress &amp; storage</h3><p>Internet egress and durable mailbox retention — both byte-based, metered only past your allowance.</p></div>
       </div>
     </div>
   </section>

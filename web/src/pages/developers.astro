@@ -39,8 +39,8 @@ node.send(
         library, two addressing modes: reach the internet, or reach a device.
       </p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Get the source</a>
-        <a class="btn btn-ghost" href="/pricing/">Free tier &amp; backbone</a>
+        <a class="btn btn-primary" href="/quickstart/">Quickstart</a>
+        <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Get the source</a>
       </div>
       <div class="hero-meta">
         <span class="tag"><b>Rust core</b> · deterministic, fully testable without a radio</span>
@@ -127,6 +127,29 @@ node.send(
           </div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- any size -->
+  <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Messages of any size</div>
+        <h2>A sentence or a 5&nbsp;MB image — the same call.</h2>
+        <p>Hop isn't limited to tiny messages. A payload that fits travels as one sealed
+           bundle; anything larger is transparently split into ordered, individually-sealed
+           <strong>chunks</strong> and reassembled into the original on the far side — id,
+           order, acks, and dedup all preserved. The size cap is a sliding window, not a
+           ceiling, so even video streams through.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card"><div class="ic">✉️</div><h3>One bundle</h3><p>A small message is a single sealed datagram — stored, forwarded, delivered as one unit.</p></div>
+        <div class="card"><div class="ic">🧩</div><h3>Carrier chunks</h3><p>A large payload (a file, an image, an HTTP response) auto-splits into ordered sealed chunks and reassembles into the original bundle.</p></div>
+        <div class="card"><div class="ic">🎞️</div><h3>Live streams</h3><p>Open-ended data (SSE, media) rides progressive stream chunks — in order, deduped, and resumable after a gap.</p></div>
+      </div>
+      <p class="note mt-m">Below all of this, each bundle is fragmented into link frames sized
+         to whatever bearer it crosses (BLE MTU, L2CAP CoC) and reassembled at the next hop —
+         so the wire never limits how big a message can be.</p>
     </div>
   </section>
 
