@@ -1,0 +1,50 @@
+---
+import Base from '../../layouts/Base.astro';
+import { layers, DESIGN } from '../../data/protocol.js';
+
+export function getStaticPaths() {
+  return layers.map((l, i) => ({
+    params: { id: l.id },
+    props: { l, prev: layers[(i - 1 + layers.length) % layers.length], next: layers[(i + 1) % layers.length] },
+  }));
+}
+const { l, prev, next } = Astro.props;
+const plain = l.name.replace(/&amp;/g, '&');
+---
+<Base
+  title={`${plain} — Hop protocol`}
+  description={`${plain}: ${l.tagline}. Part of the Hop ${l.group.toLowerCase()} layer.`}
+  path="/docs"
+>
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow"><a href="/docs/" style="color:var(--accent)">Docs</a> · {l.group}</div>
+      <h1 class:list={[{ mono: l.mono }]} style="max-width:20ch;" set:html={l.name}></h1>
+      <p class="lede" style="margin-top:14px;" set:html={l.tagline}></p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:8px;">
+    <div class="wrap">
+      <div class="prose">
+        <p set:html={l.body}></p>
+        <p style="margin-top:18px;"><a class="link-go" href={DESIGN}>Read the design ({l.ref}) →</a></p>
+      </div>
+
+      <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:40px;border-top:1px solid var(--line-soft);padding-top:22px;">
+        <a class="link-go" href={`/docs/${prev.id}/`}>← <span set:html={prev.name}></span></a>
+        <a class="link-go" href={`/docs/${next.id}/`}><span set:html={next.name}></span> →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Ready to build on it?</h2>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-ghost" href="/docs/">All layers</a>
+      </div>
+    </div>
+  </section>
+</Base>

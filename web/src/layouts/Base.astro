@@ -6,7 +6,7 @@ import Footer from '../components/Footer.astro';
 // Base page shell. Props: title, description (meta), and path (for active nav).
 const {
   title = 'Hop — the network that finds a way',
-  description = 'Hop is a delay-tolerant mesh network for intermittently-connected devices. Sealed messages relay device to device over Bluetooth until they reach the internet — or the person you’re trying to reach.',
+  description = 'Hop is a delay-tolerant mesh network for intermittently-connected devices. End-to-end encrypted messages relay device to device over Bluetooth until they reach the internet — or the person you’re trying to reach.',
   path = '',
   ogImage = '/og.png',
 } = Astro.props;
@@ -15,31 +15,16 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
 const ogImageUrl = new URL(ogImage, Astro.site);
 ---
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="dark" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#07090f" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-    {/* Set the theme before first paint to avoid a flash of the wrong theme. */}
-    <script is:inline>
-      (function () {
-        try {
-          var t = localStorage.getItem('hop-theme');
-          if (t !== 'light' && t !== 'dark') {
-            t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-          }
-          document.documentElement.setAttribute('data-theme', t);
-        } catch (e) {
-          document.documentElement.setAttribute('data-theme', 'dark');
-        }
-      })();
-    </script>
+    <meta name="theme-color" content="#07090b" />
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
@@ -65,15 +50,5 @@ const ogImageUrl = new URL(ogImage, Astro.site);
     <Header path={path} />
     <slot />
     <Footer />
-    <script is:inline>
-      document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var root = document.documentElement;
-          var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-          root.setAttribute('data-theme', next);
-          try { localStorage.setItem('hop-theme', next); } catch (e) {}
-        });
-      });
-    </script>
   </body>
 </html>

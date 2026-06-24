@@ -3,13 +3,13 @@ import Base from '../layouts/Base.astro';
 ---
 <Base
   title="Privacy — Hop"
-  description="How Hop handles data: sealed end-to-end content the network can't read, pseudonymous key-based identities, and billing metered on volume, never content."
+  description="How Hop handles data: end-to-end encrypted content the network can't read, pseudonymous key-based identities, and billing metered on volume, never content."
   path=""
 >
   <section class="hero" style="padding-bottom:16px;">
     <div class="wrap">
       <div class="eyebrow">Privacy</div>
-      <h1>Sealed by <span class="grad">default.</span></h1>
+      <h1>Encrypted by <span class="grad">default.</span></h1>
       <p class="lede">Hop is built so the network carries your messages without being able to
          read them. This is how that works in practice — and what we do and don't hold.</p>
     </div>
@@ -20,7 +20,7 @@ import Base from '../layouts/Base.astro';
       <p class="updated">Product privacy overview · last updated 2026-06-24. A formal policy
          accompanies general availability; this describes how the system is designed to handle data.</p>
 
-      <h2>Content is end-to-end sealed</h2>
+      <h2>Content is end-to-end encrypted</h2>
       <p>Every message payload is encrypted to the destination's key (X25519 + ChaCha20-Poly1305)
          before it leaves your device. Relays — including our hosted backbone — carry ciphertext
          they cannot read. Only the recipient can open it. We never see, store, or process the

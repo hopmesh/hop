@@ -3,7 +3,7 @@ import Base from '../layouts/Base.astro';
 
 const cargo = `# Cargo.toml — embed the core
 [dependencies]
-hop-core = { git = "https://github.com/jwaldrip/hop" }`;
+hop-core = { git = "https://github.com/hopmesh/hop" }`;
 
 const rust = `<span style="color:#6f7c98">// open a node from your 32-byte secret (you own key storage)</span>
 <span style="color:#9d8cff">let</span> node = HopNode::open(db_path, secret)?;
@@ -81,7 +81,7 @@ node.send(Destination::InternetEgress, Payload::http_get(<span style="color:#38e
     <div class="wrap">
       <h2>Build it. Ship it. Relay for everyone.</h2>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Get the source</a>
+        <a class="btn btn-primary" href="https://github.com/hopmesh/hop">Get the source</a>
         <a class="btn btn-ghost" href="/developers/">Protocol &amp; SDK</a>
       </div>
     </div>

@@ -1,186 +1,94 @@
 ---
 import Base from '../layouts/Base.astro';
+import ScenarioPlayer from '../components/ScenarioPlayer.astro';
 ---
 <Base
   title="Hop — the network that finds a way"
-  description="Hop is a delay-tolerant mesh network for intermittently-connected devices. Sealed messages relay device to device over Bluetooth until they reach the internet — or the person you’re trying to reach. Free SDK, paid cloud backbone."
+  description="Hop is a delay-tolerant mesh: end-to-end encrypted datagrams that hop device to device — over Bluetooth, LoRa, the internet — until they reach the person or service you meant. Held, never dropped. One transport every offline app builds on."
   path="/"
 >
-  <!-- hero -->
-  <section class="hero">
-    <div class="wrap">
-      <div class="eyebrow">Delay-tolerant mesh networking</div>
-      <h1>The network that <span class="grad">finds a way.</span></h1>
-      <p class="lede">
-        Hop relays sealed messages from device to device over Bluetooth until they
-        reach the internet — or the person you're trying to reach. No tower, no
-        Wi-Fi, no infrastructure required. One shared mesh, embedded in every app.
+  <!-- hero: the scenario player is the pitch -->
+  <section class="hero" style="padding-bottom:28px;">
+    <div class="wrap" style="text-align:center;">
+      <div class="eyebrow" style="margin-bottom:14px;">Delay-tolerant mesh transport</div>
+      <h1 style="max-width:none;margin:0 auto;">The network that finds a way.</h1>
+      <p class="lede" style="margin:20px auto 0;">
+        Encrypted datagrams hop device to device — over Bluetooth, LoRa, the internet — until they
+        reach the person or service you meant. No tower required. Held, never dropped.
       </p>
-      <div class="hero-cta">
-        <a class="btn btn-primary" href="/developers/">Build with Hop</a>
-        <a class="btn btn-ghost" href="/business/">For business</a>
-      </div>
-      <div class="hero-meta">
-        <span class="tag"><b>Offline-first</b> — works with zero connectivity</span>
-        <span class="tag"><b>Sealed end-to-end</b> — relays can't read it</span>
-        <span class="tag"><b>Rust core</b> — iOS &amp; Android</span>
+      <div class="hero-cta" style="justify-content:center;">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-ghost" href="/docs/">Read the protocol</a>
       </div>
     </div>
   </section>
 
-  <!-- the two problems -->
-  <section class="band band-soft">
+  <section style="padding-bottom:clamp(40px,6vw,72px);">
     <div class="wrap">
-      <div class="section-head">
-        <div class="eyebrow">Why Hop exists</div>
-        <h2>Connectivity fails. Messages shouldn't.</h2>
-        <p class="lede">
-          Most networks assume an unbroken path from sender to receiver, right now.
-          Hop assumes the opposite — and still gets through, eventually, every time.
-        </p>
-      </div>
-      <div class="grid-3">
-        <div class="card">
-          <div class="ic">📵</div>
-          <h3>You're offline. The answer isn't.</h3>
-          <p>A device with no internet emits a sealed request. It hops across nearby
-             devices until one with a connection fulfills it and relays the response
-             back the same way.</p>
-        </div>
-        <div class="card">
-          <div class="ic">🧑‍🤝‍🧑</div>
-          <h3>No infrastructure — just people.</h3>
-          <p>Two people, no cell network at all. A message hops device to device
-             across everyone in between until it reaches its destination — sealed the
-             whole way.</p>
-        </div>
-        <div class="card">
-          <div class="ic">🌍</div>
-          <h3>Distance is no object.</h3>
-          <p>The moment any carrier touches the internet, Hop parks the sealed message
-             in a shared store and a device near the far island picks it up. One
-             internet leg becomes one very long hop.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- how it flows -->
-  <section class="band">
-    <div class="wrap">
-      <div class="section-head">
-        <div class="eyebrow">How it works</div>
-        <h2>Store-and-forward, hop by hop.</h2>
-        <p>Every message is a self-contained, signed, sealed <strong>bundle</strong>.
-           Relays carry ciphertext they cannot read; only the destination can open it.
-           Binary spray-and-wait spreads a small copy budget across independent paths —
-           the first to arrive delivers.</p>
-      </div>
-      <div class="flow">
-        <div class="hop"><span class="glyph">📱</span><small>You · offline</small></div>
-        <div class="arr"></div>
-        <div class="hop"><span class="glyph">📱</span><small>Relay</small></div>
-        <div class="arr"></div>
-        <div class="hop"><span class="glyph">📱</span><small>Relay</small></div>
-        <div class="arr"></div>
-        <div class="hop gw"><span class="glyph">🛰️</span><small>Gateway</small></div>
-        <div class="arr"></div>
-        <div class="hop dst"><span class="glyph">🌐</span><small>Internet / peer</small></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- the shared fabric -->
-  <section class="band band-soft">
-    <div class="wrap">
-      <div class="grid-2" style="align-items:center; gap:40px;">
-        <div>
-          <div class="eyebrow">One shared fabric</div>
-          <h2>Embed once. Relay for everyone.</h2>
-          <p class="mt-s">Hop is a Rust library you embed — not an app you adopt. Every
-             Hop-enabled app relays for every other, so no app is ever alone on the
-             network. The more apps that ship it, the denser the mesh becomes for all
-             of them.</p>
-          <p class="mt-s">And when any carrier touches the internet, the optional cloud
-             backbone turns the whole world into one extra hop — region-aware, sealed,
-             and scale-to-zero so it costs nothing when idle.</p>
-          <div class="hero-cta">
-            <a class="btn btn-ghost" href="/developers/">See the protocol</a>
-          </div>
-        </div>
-        <div class="grid-2" style="gap:14px;">
-          <div class="card lit"><div class="ic">🔒</div><h3>Sealed end-to-end</h3><p>X25519 + ChaCha20-Poly1305. Relays forward, never read.</p></div>
-          <div class="card"><div class="ic">🛰️</div><h3>Internet when available</h3><p>Online nodes park messages for far-away nodes to fetch.</p></div>
-          <div class="card"><div class="ic">🧭</div><h3>Discover by gossip</h3><p>Find people and services the moment you meet anyone who's seen them.</p></div>
-          <div class="card"><div class="ic">🔑</div><h3>The address is the key</h3><p>One Ed25519 key is your identity, your address, and your seal.</p></div>
-        </div>
-      </div>
+      <ScenarioPlayer />
     </div>
   </section>
 
   <!-- the narrow waist / build on Hop -->
-  <section class="band">
+  <section class="band band-soft">
     <div class="wrap">
       <div class="section-head">
-        <div class="eyebrow">Build on Hop</div>
+        <div class="eyebrow">Why one protocol covers all of it</div>
         <h2>One layer. Every offline app.</h2>
-        <p>Most offline products rebuild the same transport — discovery, mesh,
-           store-and-forward — and weld it to a single app. Hop is that layer, done once:
-           a sealed, store-and-forward datagram every app can build on. The narrow waist
-           for intermittent networks — many bearers below, many apps above.</p>
+        <p>Disaster, off-grid sensors, a region cut off, a phone with no plan — same problem: no
+           reliable path, right now. Most offline products rebuild that transport and weld it to a
+           single app. Hop is that layer, done once — a sealed, store-and-forward datagram. The
+           narrow waist for intermittent networks: many bearers below, many apps above.</p>
       </div>
       <div class="layerstack">
         <div class="lrow">
           <span class="lvl">Apps</span>
           <div class="chips">
-            <span class="lchip">Messaging</span>
-            <span class="lchip">Data sync</span>
-            <span class="lchip">File transfer</span>
-            <span class="lchip">Offline web</span>
-            <span class="lchip">Telemetry</span>
+            <a class="lchip" href="/use-cases/messaging/">Messaging</a>
+            <a class="lchip" href="/use-cases/sync/">Data sync</a>
+            <a class="lchip" href="/use-cases/files/">File transfer</a>
+            <a class="lchip" href="/use-cases/web/">Offline web</a>
+            <a class="lchip" href="/use-cases/telemetry/">Telemetry</a>
           </div>
         </div>
         <div class="lrow">
           <span class="lvl">Semantics</span>
           <div class="chips">
-            <span class="lchip code">hops://</span>
-            <span class="lchip code">hps://</span>
-            <span class="lchip code">streams</span>
-            <span class="lchip code">HNS</span>
+            <a class="lchip code" href="/docs/hops/">hops://</a>
+            <a class="lchip code" href="/docs/hps/">hps://</a>
+            <a class="lchip code" href="/docs/streams/">streams</a>
+            <a class="lchip code" href="/docs/hns/">HNS</a>
           </div>
         </div>
         <div class="lrow waist">
           <span class="lvl">Waist</span>
           <div class="chips">
-            <span class="lchip code">hdp://</span>
-            <span class="lchip">sealed, store-and-forward datagrams</span>
+            <a class="lchip code" href="/docs/hdp/">hdp://</a>
+            <a class="lchip" href="/docs/hdp/">end-to-end encrypted, store-and-forward datagrams</a>
           </div>
           <span class="waisttag">the waist</span>
         </div>
         <div class="lrow bearer">
           <span class="lvl">Bearer</span>
           <div class="chips">
-            <span class="lchip">Bluetooth LE</span>
-            <span class="lchip">L2CAP</span>
-            <span class="lchip">TCP / WebSocket</span>
-            <span class="lchip">LoRa, Wi-Fi Aware…</span>
+            <a class="lchip" href="/docs/ble/">Bluetooth LE</a>
+            <a class="lchip" href="/docs/l2cap/">L2CAP</a>
+            <a class="lchip" href="/docs/tcp/">TCP / WebSocket</a>
+            <a class="lchip" href="/docs/bearers/">LoRa, Wi-Fi Aware…</a>
           </div>
         </div>
       </div>
-      <p class="note mt-m">A vertically-integrated offline app is the whole column. Hop is
-         the waist — so a sync engine, a messenger, or a telemetry pipeline builds on it
-         instead of rebuilding radios and store-and-forward.</p>
     </div>
   </section>
 
   <!-- how it's monetized -->
-  <section class="band band-soft">
+  <section class="band">
     <div class="wrap">
       <div class="section-head">
         <div class="eyebrow">The model</div>
         <h2>The library is free. The cloud is the product.</h2>
-        <p class="lede">The device does the work, so the SDK is open and free. The cloud
-           backbone costs money to run — so that's what you pay for, only when you use it.</p>
+        <p class="lede">The device does the work, so the SDK is open and free. The cloud backbone
+           costs money to run — so that's what you pay for, only when you use it.</p>
       </div>
       <div class="layers">
         <div class="layer">
@@ -208,28 +116,27 @@ import Base from '../layouts/Base.astro';
           <div class="who">Solutions</div>
         </div>
       </div>
-      <p class="note mt-m">Source-available under <a class="mono" style="color:var(--accent)" href="https://github.com/jwaldrip/hop/blob/main/LICENSE.md">FSL-1.1-ALv2</a> — converts to Apache 2.0 after two years.</p>
     </div>
   </section>
 
   <!-- audience doors -->
-  <section class="band">
+  <section class="band band-soft">
     <div class="wrap">
       <div class="doors">
         <a class="door" href="/developers/">
           <div class="kicker">For developers</div>
           <h3>Put your app on the mesh.</h3>
-          <p>A pure-Rust core with iOS &amp; Android bindings, an HTTP-over-mesh layer
-             (<code>hops://</code>), pub/sub, and DNSSEC-backed naming. Embed it and
-             your app keeps working when the network doesn't.</p>
+          <p>A pure-Rust core with iOS &amp; Android bindings, HTTP-over-mesh (<code>hops://</code>),
+             pub/sub, and DNSSEC-backed naming. Embed it and your app keeps working when the
+             network doesn't.</p>
           <div class="go">Explore the SDK →</div>
         </a>
         <a class="door" href="/business/">
           <div class="kicker">For business</div>
           <h3>Connectivity that doesn't depend on connectivity.</h3>
-          <p>Events, field operations, maritime, rural, response. Run on the managed
-             backbone with regional reliability, or stand up a private fleet of your
-             own. Licensing and support included.</p>
+          <p>Events, field operations, maritime, rural, response, public safety &amp; defense. Run on
+             the managed backbone, or stand up a private fleet of your own — licensing and support
+             included.</p>
           <div class="go">See solutions →</div>
         </a>
       </div>
@@ -239,10 +146,10 @@ import Base from '../layouts/Base.astro';
   <!-- cta -->
   <section class="cta-band">
     <div class="wrap">
-      <h2>Start where the network ends.</h2>
+      <h2>Build for where the network goes dark.</h2>
       <p>Embed the free SDK today. Add the cloud backbone when you need to reach across the world.</p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/developers/">Build with Hop</a>
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
         <a class="btn btn-ghost" href="/pricing/">See pricing</a>
       </div>
     </div>

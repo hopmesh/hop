@@ -1,0 +1,88 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Public safety & defense — comms when infrastructure is denied"
+  description="Hop carries encrypted comms across denied, degraded, intermittent and limited (DDIL) environments — device to device, over multiple paths, with no infrastructure to lose. Private fleets, on-prem, no internet required."
+  path="/public-safety-defense"
+>
+  <!-- hero -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Public safety &amp; defense</div>
+      <h1>Comms when the infrastructure is <span style="color:var(--accent)">denied.</span></h1>
+      <p class="lede">
+        Towers fall, links jam, networks get cut. Hop carries end-to-end encrypted traffic device to
+        device across <strong>DDIL</strong> conditions — denied, degraded, intermittent, limited —
+        over multiple independent paths, with no central infrastructure to lose. Run it on a private
+        fleet, on-prem, or with no internet at all.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#contact">Talk to us</a>
+        <a class="btn btn-ghost" href="/use-cases/">See the scenarios</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- where it fits -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Where it fits</div>
+        <h2>For the moment the network goes dark.</h2>
+        <p>When coordination can't wait for connectivity that may never come, the people and devices
+           on scene become the network for each other.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card"><div class="ic">🆘</div><h3>Incident response</h3><p>A collapsed tower or a flooded region. Responders and survivors coordinate on-site, phone to phone, even with no uplink anywhere.</p></div>
+        <div class="card"><div class="ic">🧭</div><h3>Search &amp; rescue</h3><p>Teams strung across terrain with no coverage. Position and status hop up the line to the lead, over whichever path clears first.</p></div>
+        <div class="card"><div class="ic">🔥</div><h3>Wildland fire</h3><p>Crews past the last repeater. Traffic relays back to whatever node has a link, then bridges home the moment one appears.</p></div>
+        <div class="card"><div class="ic">🚙</div><h3>Tactical edge</h3><p>A convoy or dismounted element on the move with no backhaul. A shared picture rides vehicle to vehicle as units drop in and out of range.</p></div>
+        <div class="card"><div class="ic">🛡️</div><h3>Border &amp; critical infrastructure</h3><p>Long perimeters and remote sites where wiring every sensor is impractical. Devices relay through each other to the operations center.</p></div>
+        <div class="card"><div class="ic">🎯</div><h3>Training &amp; exercises</h3><p>Ranges and field exercises that need resilient comms without standing up infrastructure for every event.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- why hop -->
+  <section class="band">
+    <div class="wrap">
+      <div class="grid-2" style="align-items:center; gap:40px;">
+        <div>
+          <div class="eyebrow">Why Hop holds up</div>
+          <h2>No infrastructure to deny.</h2>
+          <p class="mt-s">There's no tower to drop, no server to take down, no single path to jam. A
+             Hop mesh is the participants themselves — and a message is held, hopped, and forwarded
+             over every route at once until one gets through.</p>
+          <ul class="checks">
+            <li>Sealed end to end — every relay carries ciphertext it cannot read.</li>
+            <li>Multipath by default — copies race independent routes; a dead link just loses one.</li>
+            <li>No backhaul required — destinations can be people on the same mesh, not a cloud.</li>
+            <li>Bearer-agnostic — Bluetooth LE today; LoRa, Wi-Fi Aware, and IP fit the same core.</li>
+            <li>Identity is a key — no directory, no SIM, no account to compromise.</li>
+          </ul>
+        </div>
+        <div class="grid-2" style="gap:14px;">
+          <div class="card lit"><div class="ic">🧱</div><h3>Private fleets</h3><p>Stand up your own relay backbone on your own infrastructure — fully isolated, nothing phones home.</p></div>
+          <div class="card"><div class="ic">✈️</div><h3>Disconnected ops</h3><p>Runs with no internet at all. The backbone is optional, not assumed.</p></div>
+          <div class="card"><div class="ic">🔑</div><h3>Keyed access</h3><p>Signed access keys gate the fleet. Anonymous traffic never reaches it.</p></div>
+          <div class="card"><div class="ic">📦</div><h3>Embeds in your app</h3><p>A Rust core your own application carries — not another device to issue and manage.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- contact -->
+  <section class="cta-band" id="contact">
+    <div class="wrap">
+      <h2>Tell us where your network ends.</h2>
+      <p>We'll scope whether a private fleet, an embedded SDK, or a fully disconnected deployment
+         fits — and what it takes to field it. Procurement, compliance, and export questions handled
+         case by case.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="mailto:hello@hopme.sh">hello@hopme.sh</a>
+        <a class="btn btn-ghost" href="/business/">Business overview</a>
+      </div>
+    </div>
+  </section>
+</Base>
