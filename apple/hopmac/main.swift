@@ -164,8 +164,13 @@ final class HopMac: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         c.connect(p)
     }
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
-        if let psm = psmByPeer[p.identifier], !opened.contains(p.identifier) {
-            opened.insert(p.identifier); log("connected — opening L2CAP psm=\(psm)"); p.openL2CAPChannel(psm)
+        // Always go via GATT first (discover service + read PSM char) before opening L2CAP. On macOS
+        // the advert fast-path (openL2CAP immediately after connect) fails to Android servers with
+        // "Unknown error"; establishing GATT activity first appears to be required. Set HOPMAC_FAST=1
+        // to use the advert PSM directly.
+        if ProcessInfo.processInfo.environment["HOPMAC_FAST"] != nil,
+           let psm = psmByPeer[p.identifier], !opened.contains(p.identifier) {
+            opened.insert(p.identifier); log("connected — opening L2CAP psm=\(psm) (fast-path)"); p.openL2CAPChannel(psm)
         } else { log("connected — reading PSM via GATT"); p.discoverServices([HOP_SVC]) }
     }
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
@@ -174,9 +179,12 @@ final class HopMac: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         opened.remove(p.identifier); log("disconnected \(p.identifier): \(error?.localizedDescription ?? "clean")"); reconnect(p)
     }
+    var backoff = [UUID: Double]()
     func reconnect(_ p: CBPeripheral) {
         connecting.remove(p.identifier)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        let delay = min((backoff[p.identifier] ?? 2) * 1.5, 20)   // gentle backoff so we don't hammer a peer
+        backoff[p.identifier] = delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, let pp = self.retained[p.identifier] else { return }
             self.connecting.insert(pp.identifier); self.central.connect(pp)
         }
