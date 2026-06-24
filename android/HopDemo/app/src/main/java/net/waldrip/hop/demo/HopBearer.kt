@@ -228,6 +228,7 @@ class HopBearer private constructor(private val context: Context) {
                 // so this only restarts it if it actually stopped (advSet cleared in onAdvertisingSetStopped
                 // — e.g. OEM doze or a wedged stack). No reset of a healthy advert, so the name stays put.
                 if (ticks % 30 == 0) runCatching { startAdvertise() }
+                if (ticks % 30 == 0) runCatching { startBeacon() }   // self-heal the iBeacon too
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
@@ -1161,6 +1162,7 @@ class HopBearer private constructor(private val context: Context) {
         gattServer = server
 
         startAdvertise()
+        startBeacon()   // second set: iBeacon to wake backgrounded/killed iPhones (DESIGN.md §22)
         status.value = "advertising (psm $psm)"
     }
 
@@ -1198,6 +1200,39 @@ class HopBearer private constructor(private val context: Context) {
             .onFailure { android.util.Log.w("HOPLOG", "startAdvertisingSet threw: $it") }
     }
 
+    /// Broadcast an iBeacon matching the region the iOS app monitors (UUID HOP_BEACON_UUID). iOS
+    /// region monitoring fires on ENTRY even when the Hop app is backgrounded or KILLED, relaunching
+    /// it — so this is how an Android device WAKES a nearby iPhone for cross-platform delivery (the
+    /// iPhone can't be woken by a BLE connect: its backgrounded service UUID is in the Apple-only
+    /// overflow area Android can't see). Runs as a SEPARATE non-connectable advertising set (the
+    /// 25-byte iBeacon payload fills its own advert; it can't share the Hop service advert).
+    private fun startBeacon() {
+        if (beaconSet != null) return
+        val adv = adapter.bluetoothLeAdvertiser ?: return
+        // iBeacon manufacturer payload: 0x0215, 16-byte proximity UUID, 2-byte major, 2-byte minor,
+        // 1-byte measured power. Company ID 0x004C (Apple) is what iOS recognizes as an iBeacon.
+        val uuidBytes = ByteArray(16)
+        val u = HOP_BEACON_UUID
+        for (i in 0 until 8)  uuidBytes[i]     = (u.mostSignificantBits  ushr (56 - i * 8)).toByte()
+        for (i in 0 until 8)  uuidBytes[i + 8] = (u.leastSignificantBits ushr (56 - i * 8)).toByte()
+        val payload = byteArrayOf(0x02, 0x15) + uuidBytes +
+            byteArrayOf(0x00, 0x00,   // major
+                        0x00, 0x00,   // minor
+                        0xC5.toByte()) // measured power (~-59 dBm)
+        val data = AdvertiseData.Builder()
+            .addManufacturerData(APPLE_MFG_ID, payload)   // 0x004C
+            .build()
+        val params = android.bluetooth.le.AdvertisingSetParameters.Builder()
+            .setLegacyMode(true)
+            .setConnectable(false)   // a beacon is a pure broadcast — iOS monitors the UUID, doesn't connect
+            .setScannable(false)
+            .setInterval(android.bluetooth.le.AdvertisingSetParameters.INTERVAL_MEDIUM)
+            .setTxPowerLevel(android.bluetooth.le.AdvertisingSetParameters.TX_POWER_HIGH)  // range = wake distance
+            .build()
+        runCatching { adv.startAdvertisingSet(params, data, null, null, null, beaconSetCallback) }
+            .onFailure { android.util.Log.w("HOPLOG", "iBeacon startAdvertisingSet threw: $it") }
+    }
+
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             android.util.Log.i("HOPLOG", "BLE peripheral GATT: ${device.address} status=$status newState=$newState")
@@ -1231,6 +1266,19 @@ class HopBearer private constructor(private val context: Context) {
             advSet = null   // allow the periodic self-heal in the tick loop to re-arm
             android.util.Log.i("HOPLOG", "BLE advertising set stopped")
         }
+    }
+
+    private var beaconSet: android.bluetooth.le.AdvertisingSet? = null
+    private val beaconSetCallback = object : android.bluetooth.le.AdvertisingSetCallback() {
+        override fun onAdvertisingSetStarted(set: android.bluetooth.le.AdvertisingSet?, txPower: Int, status: Int) {
+            if (status == android.bluetooth.le.AdvertisingSetCallback.ADVERTISE_SUCCESS) {
+                beaconSet = set
+                android.util.Log.i("HOPLOG", "iBeacon advertising started (wakes backgrounded iPhones)")
+            } else {
+                android.util.Log.w("HOPLOG", "iBeacon advertising start FAILED: status=$status (multi-advert unsupported?)")
+            }
+        }
+        override fun onAdvertisingSetStopped(set: android.bluetooth.le.AdvertisingSet?) { beaconSet = null }
     }
 
     // ---- central: scan + open L2CAP -----------------------------------------
@@ -1325,6 +1373,10 @@ class HopBearer private constructor(private val context: Context) {
         const val SCAN_WINDOW_MS = 5_000L   // central scans in short bursts…
         const val SCAN_IDLE_MS = 15_000L    // …then idles so the radio stays mostly in peripheral mode
         const val HOP_MFG_ID = 0xFFFF       // BLE manufacturer ID (reserved/test) carrying our L2CAP PSM
+        const val APPLE_MFG_ID = 0x004C     // Apple company ID — required for the iBeacon iOS recognizes
+        // iBeacon proximity UUID the iOS app monitors (HopBearer.beaconUUID). Advertising it from
+        // Android wakes a backgrounded/killed iPhone via iOS region monitoring (DESIGN.md §22).
+        val HOP_BEACON_UUID: UUID = UUID.fromString("F0900BEA-C000-4000-8000-000000000000")
         const val LAN_SERVICE = "_hoplan._tcp"   // Bonjour/NSD type, matches iOS HopBearer.lanServiceType
         const val LAN_PORT = 47474          // fixed TCP port: NSD advertises it; Wi-Fi Direct GO listens here
         /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
