@@ -1,0 +1,61 @@
+---
+import Base from '../../layouts/Base.astro';
+import { cases } from '../../data/use-cases.js';
+
+export function getStaticPaths() {
+  return cases.map((c, i) => ({
+    params: { id: c.id },
+    props: { c, prev: cases[(i - 1 + cases.length) % cases.length], next: cases[(i + 1) % cases.length] },
+  }));
+}
+const { c, prev, next } = Astro.props;
+---
+<Base
+  title={`${c.title.replace(/&amp;/g, '&')} on Hop`}
+  description={c.description}
+  path="/use-cases"
+>
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow"><a href="/use-cases/" style="color:var(--accent)">Use cases</a></div>
+      <div class="card" style="display:inline-flex;padding:0;margin-bottom:18px;">
+        <div class="ic" style="margin:0;" set:html={c.icon}></div>
+      </div>
+      <h1 style="max-width:18ch;" set:html={c.title}></h1>
+      <p class="lede" style="margin-top:14px;" set:html={c.tagline}></p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:8px;">
+    <div class="wrap">
+      <div class="prose">
+        {c.body.map((para) => <p set:html={para}></p>)}
+      </div>
+      <div class="layerstack" style="margin-top:28px;">
+        <div class="lrow">
+          <span class="lvl">Built on</span>
+          <div class="chips">
+            {c.uses.map(([label, href]) => (
+              <a class="lchip code" href={href} set:html={label}></a>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:40px;border-top:1px solid var(--line-soft);padding-top:22px;">
+        <a class="link-go" href={`/use-cases/${prev.id}/`}>← <span set:html={prev.title}></span></a>
+        <a class="link-go" href={`/use-cases/${next.id}/`}><span set:html={next.title}></span> →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Build it on the fabric.</h2>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-ghost" href="/use-cases/">All use cases</a>
+      </div>
+    </div>
+  </section>
+</Base>

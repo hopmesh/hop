@@ -8,7 +8,7 @@ const faqs = [
   },
   {
     q: "Can the relays read my messages?",
-    a: "No. Every payload is sealed end-to-end (X25519 + ChaCha20-Poly1305) to the destination's key. Relays carry ciphertext they cannot read — they only see the routing envelope. Only the recipient can open it.",
+    a: "No. Every payload is end-to-end encrypted (X25519 + ChaCha20-Poly1305) — sealed to the destination's key. Relays carry ciphertext they cannot read; they only see the routing envelope. Only the recipient can open it.",
   },
   {
     q: "Does it need the internet?",
@@ -36,7 +36,7 @@ const faqs = [
   },
   {
     q: "How private is it?",
-    a: "Payloads are confidential by default — sealed end-to-end, and identities are public keys, not phone numbers or accounts. In v1 we encrypt content but do not fully hide who-talks-to-whom from on-path relays (metadata privacy at the Briar level is future work). Billing meters counts and bytes on the envelope, never content.",
+    a: "Payloads are confidential by default — end-to-end encrypted, and identities are public keys, not phone numbers or accounts. In v1 we encrypt content but do not fully hide who-talks-to-whom from on-path relays (metadata privacy at the Briar level is future work). Billing meters counts and bytes on the envelope, never content.",
   },
   {
     q: "What platforms does it run on?",
@@ -81,7 +81,7 @@ const faqs = [
       <p>Read the design in depth, or start building.</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="/quickstart/">Quickstart</a>
-        <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Read the source</a>
+        <a class="btn btn-ghost" href="/docs/">Read the protocol</a>
       </div>
     </div>
   </section>

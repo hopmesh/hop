@@ -1,0 +1,49 @@
+---
+import Base from '../../layouts/Base.astro';
+import { layers, groups, DESIGN } from '../../data/protocol.js';
+---
+<Base
+  title="Docs — the Hop protocol by layer"
+  description="The Hop stack by layer: hdp (the datagram waist), hops, hps, streams, HNS, and the Bluetooth LE / L2CAP / TCP bearers."
+  path="/docs"
+>
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow">Docs</div>
+      <h1>The protocol, <span style="color:var(--accent)">by layer.</span></h1>
+      <p class="lede">A map of the stack — the datagram waist, the semantics above it, and the bearers
+         below. The full design lives in
+         <a class="mono" style="color:var(--accent)" href={DESIGN}>DESIGN.md</a>.</p>
+    </div>
+  </section>
+
+  {groups.map((g) => (
+    <section class="band" style="padding-top:20px;padding-bottom:20px;">
+      <div class="wrap">
+        <div class="eyebrow">{g}</div>
+        <div class="stack-rows" style="margin-top:16px;">
+          {layers.filter((l) => l.group === g).map((l) => (
+            <a class="srow" href={`/docs/${l.id}/`} style="text-decoration:none;">
+              <div class="lbl" class:list={[{ mono: l.mono }]} set:html={l.name}></div>
+              <div class="body">
+                <h3 set:html={l.tagline}></h3>
+                <p set:html={l.body}></p>
+                <p style="margin-top:10px;"><span class="link-go">Read the layer ({l.ref}) →</span></p>
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+  ))}
+
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Ready to build on it?</h2>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-ghost" href="/use-cases/">Use cases</a>
+      </div>
+    </div>
+  </section>
+</Base>

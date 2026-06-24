@@ -1,0 +1,45 @@
+---
+import Base from '../../layouts/Base.astro';
+import { cases } from '../../data/use-cases.js';
+---
+<Base
+  title="Use cases — what you build on Hop"
+  description="Messaging, offline-first data sync, file & media transfer, offline web, and telemetry — all on one end-to-end encrypted, store-and-forward mesh transport."
+  path="/use-cases"
+>
+  <section class="hero" style="padding-bottom:24px;">
+    <div class="wrap">
+      <div class="eyebrow">Use cases</div>
+      <h1>What you build <span style="color:var(--accent)">on Hop.</span></h1>
+      <p class="lede">One sealed, store-and-forward fabric, many things to build on it — because the
+         hard part (the transport) is done once, for every app.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap">
+      <div class="grid-2">
+        {cases.map((c) => (
+          <a class="card" href={`/use-cases/${c.id}/`} style="display:block;">
+            <div class="ic" set:html={c.icon}></div>
+            <h3 set:html={c.title}></h3>
+            <p class="muted" style="margin-top:2px;" set:html={c.tagline}></p>
+            <p style="margin-top:10px;" set:html={c.description}></p>
+            <div class="go" style="margin-top:14px;color:var(--accent);font-weight:600;font-size:14px;">Read the case →</div>
+          </a>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="wrap">
+      <h2>Build it on the fabric.</h2>
+      <p>The transport is done. Bring your app.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-ghost" href="/docs/">Read the protocol</a>
+      </div>
+    </div>
+  </section>
+</Base>

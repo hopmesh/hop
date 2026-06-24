@@ -24,7 +24,7 @@ node.send(
 ---
 <Base
   title="Hop for developers — embed the mesh"
-  description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with sealed messaging, HTTP-over-mesh (hops://), pub/sub, and DNSSEC-backed naming (HNS). Free and source-available."
+  description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with end-to-end encrypted messaging, HTTP-over-mesh (hops://), pub/sub, and DNSSEC-backed naming (HNS). Free and source-available."
   path="/developers"
 >
   <!-- hero -->
@@ -34,13 +34,13 @@ node.send(
       <h1>Put your app <span class="grad">on the mesh.</span></h1>
       <p class="lede">
         Hop is a pure-Rust core you embed in your iOS and Android app. It carries
-        sealed, store-and-forward messages over Bluetooth — and the public internet
+        end-to-end encrypted, store-and-forward messages over Bluetooth — and the public internet
         when it's there — so your app keeps working when the network doesn't. One
         library, two addressing modes: reach the internet, or reach a device.
       </p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="/quickstart/">Quickstart</a>
-        <a class="btn btn-ghost" href="https://github.com/jwaldrip/hop">Get the source</a>
+        <a class="btn btn-ghost" href="https://github.com/hopmesh/hop">Get the source</a>
       </div>
       <div class="hero-meta">
         <span class="tag"><b>Rust core</b> · deterministic, fully testable without a radio</span>
@@ -93,7 +93,7 @@ node.send(
           <div class="lbl">hdp://</div>
           <div class="body">
             <h3>Hop Datagram Protocol — the substrate</h3>
-            <p>Hop's UDP: a connectionless, sealed, addressed datagram that's
+            <p>Hop's UDP: a connectionless, end-to-end encrypted, addressed datagram that's
                store-and-forwarded across the mesh. Held when there's no onward path,
                never dropped. All Hop traffic rides on <code>hdp</code>.</p>
           </div>
@@ -163,7 +163,7 @@ node.send(
            the rest. Everything below the radio is pure Rust and unit-testable.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic">🔒</div><h3>Sealed by default</h3><p>X25519 + ChaCha20-Poly1305 payloads; Ed25519-signed headers; Noise XX links between peers.</p></div>
+        <div class="card"><div class="ic">🔒</div><h3>Encrypted by default</h3><p>X25519 + ChaCha20-Poly1305 sealed payloads; Ed25519-signed headers; Noise XX links between peers.</p></div>
         <div class="card"><div class="ic">🔑</div><h3>Key = address</h3><p>One Ed25519 keypair is identity, address, and seal. Import a seed, export a seed — storage is yours.</p></div>
         <div class="card"><div class="ic">🌊</div><h3>Spray-and-wait routing</h3><p>A small copy budget fans across independent paths in parallel; first arrival wins. No flooding.</p></div>
         <div class="card"><div class="ic">📦</div><h3>Durable store</h3><p>Persistent forward queue with dedup and custody transfer, bounded by bundle lifetime.</p></div>
@@ -200,7 +200,7 @@ node.send(
       <p>The SDK is free and source-available. Add the hosted backbone when your users
          need to reach across regions and oceans.</p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="https://github.com/jwaldrip/hop">Get the source</a>
+        <a class="btn btn-primary" href="https://github.com/hopmesh/hop">Get the source</a>
         <a class="btn btn-ghost" href="/pricing/">See pricing</a>
       </div>
     </div>

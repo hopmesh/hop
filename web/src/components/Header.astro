@@ -7,13 +7,11 @@ const is = (p) => (path === p ? 'nav-link active' : 'nav-link');
   <div class="wrap">
     <a class="brand" href="/"><span class="mark">⇢</span><span>hop</span></a>
     <nav class="site-nav">
+      <a class={is('/use-cases')} href="/use-cases/">Use cases</a>
       <a class={is('/developers')} href="/developers/">Developers</a>
       <a class={is('/business')} href="/business/">Business</a>
       <a class={is('/pricing')} href="/pricing/">Pricing</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/jwaldrip/hop">GitHub</a>
-      <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" data-theme-toggle>
-        <span class="t-dark" aria-hidden="true">🌙</span><span class="t-light" aria-hidden="true">☀️</span>
-      </button>
+      <a class="btn btn-primary btn-sm" href="/quickstart/">Quickstart</a>
     </nav>
   </div>
 </header>
