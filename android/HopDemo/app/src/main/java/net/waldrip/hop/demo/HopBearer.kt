@@ -116,6 +116,9 @@ class HopBearer private constructor(private val context: Context) {
     data class HpsMsg(val id: Long, val path: String, val sender: ByteArray, val text: String)
     var myAddress = mutableStateOf("")
     var myName = mutableStateOf("")
+    /// Privacy: when on, we stop broadcasting our presence advert (name + address). We stay fully
+    /// relay-capable and reachable by anyone who already has our address (scanned QR / manual add).
+    val privateMode = mutableStateOf(false)
     var status = mutableStateOf("starting…")
     var relayStatus = mutableStateOf("not connected")
     private val prefs get() = context.getSharedPreferences("hop", android.content.Context.MODE_PRIVATE)
@@ -228,6 +231,7 @@ class HopBearer private constructor(private val context: Context) {
         // queued mail and stay reachable across the internet. The foreground service keeps
         // this alive; the tick loop below reconnects it if it ever drops.
         pinnedRelay.value = prefs.getString("pinnedRelay", null)
+        privateMode.value = prefs.getBoolean("privateMode", false)
         connectRelay(pinnedRelay.value ?: DEFAULT_RELAY)
         var ticks = 0
         main.postDelayed(object : Runnable {
@@ -261,10 +265,23 @@ class HopBearer private constructor(private val context: Context) {
     /// Re-publish our presence advert so it stays within TTL and renames propagate.
     /// `summary` carries app-level metadata: "state|platform|app".
     private fun publishPresence() {
+        if (privateMode.value) return   // private: don't broadcast our name/address
         val meta = "${if (appActive) "fg" else "bg"}|android|$appName"
         runCatching {
             node.publishService(PRESENCE_SERVICE, myName.value, meta, emptyList(), PRESENCE_TTL_MS)
         }
+    }
+
+    /// Toggle private mode (persisted). On → supersede our live presence with a near-instantly-
+    /// expiring one so peers drop our name now. Off → start broadcasting again.
+    fun setPrivateMode(on: Boolean) {
+        privateMode.value = on
+        prefs.edit().putBoolean("privateMode", on).apply()
+        if (on) {
+            val meta = "${if (appActive) "fg" else "bg"}|android|$appName"
+            runCatching { node.publishService(PRESENCE_SERVICE, myName.value, meta, emptyList(), 1000u) }
+            pump()
+        } else publishPresence()
     }
 
     /// The host activity calls this on resume/pause; we re-publish presence so peers
@@ -991,6 +1008,18 @@ class HopBearer private constructor(private val context: Context) {
     private val messagesFile get() = java.io.File(context.filesDir, "messages.json")
     private val contactsFile get() = java.io.File(context.filesDir, "contacts.json")
     private var lastContactSaveMs = 0L
+
+    /// Add a contact by base58 address (manual entry or scanned QR). Returns false if invalid.
+    /// An empty name resolves via hop.identify; a provided name is kept as the local alias.
+    fun addContact(name: String, base58: String): Boolean {
+        val addr = runCatching { addressFromBase58(base58.trim()) }.getOrNull() ?: return false
+        if (addr.size != 32 || addr.contentEquals(node.address())) return false
+        val alias = name.trim()
+        rememberContact(Peer(addr, alias.ifEmpty { shortHex(addr) }, 0u, active = false))
+        if (alias.isEmpty()) runCatching { queueIdentify(addr) }
+        pump()
+        return true
+    }
 
     /// Add a peer to the address book and persist now (e.g. on send) so the conversation is reachable.
     fun rememberContact(p: Peer) {

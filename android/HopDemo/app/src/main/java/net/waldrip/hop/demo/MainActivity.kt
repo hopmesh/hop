@@ -25,6 +25,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -93,6 +97,15 @@ private fun transportSymbol(tag: String): String = when (tag) {
     "P2P" -> "📡 P2P"
     "Relay" -> "☁️ Relay"
     else -> tag
+}
+
+/// Encode text (our "<base58>|<name>") to a QR bitmap via zxing core.
+private fun makeQrBitmap(text: String, size: Int = 600): android.graphics.Bitmap {
+    val bits = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
+    val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.RGB_565)
+    for (x in 0 until size) for (y in 0 until size)
+        bmp.setPixel(x, y, if (bits[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+    return bmp
 }
 
 /// One-line metadata under a chat bubble (mirrors the iOS app).
@@ -195,6 +208,55 @@ fun StatusScreen(bearer: HopBearer) {
             Text("Name: ${bearer.myName.value}")
             Text("Address: ${bearer.myAddress.value}", style = MaterialTheme.typography.bodySmall)
             Text(bearer.status.value, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp))
+
+            // Privacy + QR identity exchange
+            Text("Privacy", style = MaterialTheme.typography.titleMedium)
+            var showQr by remember { mutableStateOf(false) }
+            val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+                val payload = result.contents ?: return@rememberLauncherForActivityResult
+                val body = payload.removePrefix("hop:")
+                val parts = body.split("|", limit = 2)
+                parts.getOrNull(0)?.let { bearer.addContact(parts.getOrNull(1) ?: "", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = bearer.privateMode.value, onCheckedChange = { bearer.setPrivateMode(it) })
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (bearer.privateMode.value) "Private — not broadcasting your name. Reachable via your QR; still relays for all."
+                    else "Discoverable — broadcasting your name to nearby devices.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row {
+                Button(onClick = { showQr = true }) { Text("My QR") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = {
+                    scanLauncher.launch(ScanOptions().setOrientationLocked(false)
+                        .setBeepEnabled(false).setPrompt("Scan a Hop QR"))
+                }) { Text("Scan to add") }
+            }
+            if (showQr) {
+                AlertDialog(
+                    onDismissRequest = { showQr = false },
+                    confirmButton = { TextButton(onClick = { showQr = false }) { Text("Done") } },
+                    title = { Text("My Hop code") },
+                    text = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            val bmp = remember(bearer.myAddress.value, bearer.myName.value) {
+                                runCatching { makeQrBitmap("${bearer.myAddress.value}|${bearer.myName.value}") }.getOrNull()
+                            }
+                            bmp?.let { Image(it.asImageBitmap(), "qr", Modifier.size(240.dp)) }
+                            Spacer(Modifier.height(8.dp))
+                            Text(bearer.myName.value)
+                            Text(bearer.myAddress.value, style = MaterialTheme.typography.bodySmall)
+                            Text("Have someone scan to add you — works in private mode.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    },
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Text("Cloud relay (backbone)", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {

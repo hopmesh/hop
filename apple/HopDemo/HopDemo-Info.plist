@@ -27,6 +27,8 @@
 	<string>1</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Hop relays messages over Bluetooth so you can chat with people nearby without the internet.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan a Hop QR code to add someone as a contact.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_hop-mesh._tcp</string>
