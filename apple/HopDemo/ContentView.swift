@@ -411,6 +411,27 @@ struct ContentView: View {
     }
 }
 
+/// In-flight status for a message not yet handed to any peer: a pulsing dot + a live "Awaiting
+/// peers · Ns" timer. Conveys "working on it, holding for a peer to appear" instead of a static,
+/// alarming "Sending…". Flips to the peer hand-off count (in `meta`) once relayed > 0.
+struct SendingIndicator: View {
+    let sentAt: Date
+    @State private var pulse = false
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(.orange).frame(width: 6, height: 6)
+                .scaleEffect(pulse ? 1.0 : 0.55)
+                .opacity(pulse ? 1.0 : 0.35)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                Text("Awaiting peers · \(max(0, Int(ctx.date.timeIntervalSince(sentAt))))s")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { pulse = true }
+    }
+}
+
 struct ChatView: View {
     @ObservedObject var bearer: HopBearer
     let peer: HopBearer.Peer
@@ -440,7 +461,8 @@ struct ChatView: View {
             return "Delivered, \(HopBearer.hopsLabel(m.deliveryHops)), \(dur)"
         }
         if m.failed { return "Not sent" }
-        return m.relayed > 0 ? "Sent, \(m.relayed) peer\(m.relayed == 1 ? "" : "s")" : "Sending…"
+        // relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
+        return "Sent · \(m.relayed) peer\(m.relayed == 1 ? "" : "s")"
     }
 
     var body: some View {
@@ -472,6 +494,10 @@ struct ChatView: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(.red)
+                            } else if !m.incoming && !m.delivered && m.relayed == 0 {
+                                // In flight, not yet handed to any peer: reassure with a live pulse + timer
+                                // rather than a static "Sending…" that reads like it's stuck.
+                                SendingIndicator(sentAt: m.sentAt)
                             } else {
                                 Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
                             }
