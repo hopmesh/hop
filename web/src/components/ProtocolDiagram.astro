@@ -59,27 +59,59 @@ function edgeSVG(e) {
   return s;
 }
 const path = (route) => 'M' + route.map((id) => `${N[id].x},${N[id].y}`).join(' L');
+const vb = viz.vb || `0 0 ${VB.w} ${VB.h}`;
 
-let svg = `<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
-viz.edges.forEach((e) => (svg += edgeSVG(e)));
-svg += `<path class="pd-trail" d="${path(viz.routes[0])}"/>`;
-Object.values(N).forEach((n) => (svg += nodeSVG(n)));
-viz.routes.forEach((rt) => {
-  const p = path(rt);
-  svg += `<circle class="pd-pkt" r="5"><animateMotion dur="3.4s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.9;1" calcMode="linear" path="${p}"/>`
-       + `<animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.9;1" dur="3.4s" repeatCount="indefinite"/></circle>`;
-});
-if (viz.return) {
-  const rp = 'M' + [...viz.routes[0]].reverse().map((id) => `${N[id].x},${N[id].y}`).join(' L');
-  svg += `<circle class="pd-pkt resp" r="4.2"><animateMotion dur="3.4s" begin="1.7s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.9;1" calcMode="linear" path="${rp}"/>`
-       + `<animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.9;1" dur="3.4s" begin="1.7s" repeatCount="indefinite"/></circle>`;
+// sealed traffic travels as a padlock; the message is garbled in transit and
+// only opens at the destination.
+const LOCKDEFS = `<defs>`
+  + `<g id="pdlk"><rect x="-6" y="-1.5" width="12" height="9" rx="1.8" fill="#2bf0a0"/><path d="M-3.4,-1.5 V-4.2 a3.4,3.4 0 0 1 6.8,0 V-1.5" fill="none" stroke="#2bf0a0" stroke-width="1.6"/><circle cx="0" cy="2.7" r="1.1" fill="#04130c"/></g>`
+  + `<g id="pdlko"><rect x="-6" y="-1.5" width="12" height="9" rx="1.8" fill="#2bf0a0"/><path d="M-3.4,-1.5 V-4.2 a3.4,3.4 0 0 1 6.8,0" fill="none" stroke="#2bf0a0" stroke-width="1.6"/><circle cx="0" cy="2.7" r="1.1" fill="#04130c"/></g>`
+  + `</defs>`;
+const lockPkt = (p, dur, begin, alt) =>
+  `<use class="pd-lock${alt ? ' alt' : ''}" href="#pdlk"><animateMotion dur="${dur}s" begin="${begin}s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.9;1" calcMode="linear" path="${p}"/>`
+  + `<animate attributeName="opacity" values="0;0;${alt ? 0.6 : 1};${alt ? 0.6 : 1};0;0" keyTimes="0;0.08;0.12;0.9;0.94;1" dur="${dur}s" begin="${begin}s" repeatCount="indefinite"/></use>`;
+function msgChip(x, y, seal) {
+  const kt = '0;0.4;0.5;1';
+  const plain = seal ? '1;1;0;0' : '0;0;1;1';
+  const ciph = seal ? '0;0;1;1' : '1;1;0;0';
+  const open = seal ? '1;1;0;0' : '0;0;1;1';
+  const closed = seal ? '0;0;1;1' : '1;1;0;0';
+  const a = (vals) => `<animate attributeName="opacity" values="${vals}" keyTimes="${kt}" dur="4s" repeatCount="indefinite"/>`;
+  return `<g transform="translate(${x},${y})">`
+    + `<rect class="pd-msg" x="-54" y="-13" width="108" height="26" rx="6"/>`
+    + `<use href="#pdlko" transform="translate(-40,0.5)">${a(open)}</use>`
+    + `<use href="#pdlk" transform="translate(-40,0.5)">${a(closed)}</use>`
+    + `<text class="pd-msg-p" x="10" y="3.6" text-anchor="middle">hello${a(plain)}</text>`
+    + `<text class="pd-msg-c" x="10" y="3.6" text-anchor="middle">▚6@ǂ#9${a(ciph)}</text>`
+    + `</g>`;
 }
-(viz.notes || []).forEach((nt) => {
-  const w = nt.t.length * 6.6 + 16;
-  svg += `<g transform="translate(${nt.x},${nt.y - 26})"><rect class="pd-note ${nt.tone}" x="${-w / 2}" y="-11" width="${w}" height="20" rx="5"/>`
-       + `<text class="pd-note-t ${nt.tone}" x="0" y="3.5" text-anchor="middle">${nt.t}</text></g>`;
-});
-svg += `</svg>`;
+
+let svg;
+if (viz.svg) {
+  // hand-authored diagram for layers the generic engine can't express
+  svg = `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${LOCKDEFS}${viz.svg}</svg>`;
+} else {
+  svg = `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${LOCKDEFS}`;
+  viz.edges.forEach((e) => (svg += edgeSVG(e)));
+  svg += `<path class="pd-trail" d="${path(viz.routes[0])}"/>`;
+  Object.values(N).forEach((n) => (svg += nodeSVG(n)));
+  viz.routes.forEach((rt, ri) => { svg += lockPkt(path(rt), (3.4 * (1 + ri * 0.14)).toFixed(2), (ri * 0.5).toFixed(2), ri > 0); });
+  if (viz.return) {
+    const rp = 'M' + [...viz.routes[0]].reverse().map((id) => `${N[id].x},${N[id].y}`).join(' L');
+    svg += lockPkt(rp, 3.4, 1.7, false);
+  }
+  (viz.notes || []).forEach((nt) => {
+    const w = nt.t.length * 6.6 + 16;
+    svg += `<g transform="translate(${nt.x},${nt.y - 26})"><rect class="pd-note ${nt.tone}" x="${-w / 2}" y="-11" width="${w}" height="20" rx="5"/>`
+         + `<text class="pd-note-t ${nt.tone}" x="0" y="3.5" text-anchor="middle">${nt.t}</text></g>`;
+  });
+  if (viz.seal === true) {
+    const r0 = viz.routes[0], s = N[r0[0]], d = N[r0[r0.length - 1]];
+    const oy = (n) => n.y + (n.type === 'cloud' || n.type === 'endpoint' ? 52 : 46);
+    svg += msgChip(s.x, oy(s), true) + msgChip(d.x, oy(d), false);
+  }
+  svg += `</svg>`;
+}
 ---
 <figure class="pdiagram">
   <div class="pd-stage" set:html={svg}></div>
@@ -87,40 +119,102 @@ svg += `</svg>`;
 </figure>
 
 <style is:global>
+  /* Panel palette — semantic tokens so the diagram flips cleanly light/dark.
+     Accent hues (green/amber/blue/red) and surfaces are all tokenized; the
+     light values live in the [data-theme="light"] block at the bottom. */
   .pdiagram{ --green:#2bf0a0; --amber:#ffb43a; --blue:#74b6ff; --red:#e0564f;
-    --pd-ink:#92a09b; --pd-faint:#5d6a66; margin:0; }
-  .pdiagram .pd-stage{ border:1px solid #283139; border-radius:14px; background:linear-gradient(0deg,#0a0d0c,#0b1110);
-    background-image:linear-gradient(#0c2b2810 1px,transparent 1px),linear-gradient(90deg,#0c2b2810 1px,transparent 1px);
+    --pd-ink:#92a09b; --pd-faint:#5d6a66;
+    --pd-bd:#283139;
+    --pd-stage1:#0a0d0c; --pd-stage2:#0b1110; --pd-grid:#0c2b2810;
+    --pd-surf:#0b1210; --pd-surf2:#0d1411;
+    --pd-edge:#243029; --pd-stroke:#3a4d44;
+    --pd-afill:#0a1c14; --pd-abd:#1c4a34;
+    --pd-on:#cfe8df; --pd-plain:#9be8c8;
+    --pd-held-f:#1c1606; --pd-held-b:#54430f;
+    --pd-transit-f:#0d1722; --pd-transit-b:#243a52;
+    --pd-soft:#3a5d50; --pd-dash:#2d4a3d; --pd-dead:#5b2b2b; --pd-fw:#4a7a68;
+    margin:0; }
+  .pdiagram .pd-stage{ border:1px solid var(--pd-bd); border-radius:14px; background:linear-gradient(0deg,var(--pd-stage1),var(--pd-stage2));
+    background-image:linear-gradient(var(--pd-grid) 1px,transparent 1px),linear-gradient(90deg,var(--pd-grid) 1px,transparent 1px);
     background-size:32px 32px; overflow:hidden; }
   .pdiagram .pd-stage svg{ display:block; width:100%; height:auto; }
   .pdiagram .pd-cap{ margin-top:14px; color:var(--pd-ink); font-size:14.5px; max-width:64ch; }
 
-  .pdiagram .pd-edge{ stroke:#243029; stroke-width:1.8; fill:none; }
-  .pdiagram .pd-edge.dead{ stroke:#5b2b2b; stroke-dasharray:5 5; }
-  .pdiagram .pd-edge.avail{ stroke:#2d4a3d; stroke-dasharray:4 5; }
-  .pdiagram .pd-pipe-bg{ stroke:#0a1c14; stroke-width:22; stroke-linecap:round; }
-  .pdiagram .pd-pipe{ stroke:#1c4a34; stroke-width:22; stroke-linecap:round; opacity:.5; }
-  .pdiagram .pd-node{ fill:#0b1210; stroke:#3a4d44; stroke-width:1.8; }
+  .pdiagram .pd-edge{ stroke:var(--pd-edge); stroke-width:1.8; fill:none; }
+  .pdiagram .pd-edge.dead{ stroke:var(--pd-dead); stroke-dasharray:5 5; }
+  .pdiagram .pd-edge.avail{ stroke:var(--pd-dash); stroke-dasharray:4 5; }
+  .pdiagram .pd-pipe-bg{ stroke:var(--pd-afill); stroke-width:22; stroke-linecap:round; }
+  .pdiagram .pd-pipe{ stroke:var(--pd-abd); stroke-width:22; stroke-linecap:round; opacity:.5; }
+  .pdiagram .pd-node{ fill:var(--pd-surf); stroke:var(--pd-stroke); stroke-width:1.8; }
   .pdiagram .pd-node.live{ stroke:var(--green); }
   .pdiagram .pd-core{ fill:var(--green); }
   .pdiagram .pd-ring{ fill:none; stroke:var(--green); stroke-dasharray:3 4; opacity:.8; }
   .pdiagram .pd-pulse{ fill:none; stroke:var(--green); }
-  .pdiagram .pd-cloud{ fill:#0d1411; stroke:var(--green); stroke-width:1.6; }
-  .pdiagram .pd-cloud.dim{ stroke:#3a4d44; }
-  .pdiagram .pd-glyph{ fill:#cfe8df; font:600 12px var(--mono); }
+  .pdiagram .pd-cloud{ fill:var(--pd-surf2); stroke:var(--green); stroke-width:1.6; }
+  .pdiagram .pd-cloud.dim{ stroke:var(--pd-stroke); }
+  .pdiagram .pd-glyph{ fill:var(--pd-on); font:600 12px var(--mono); }
   .pdiagram .pd-glyph.dim{ fill:var(--pd-faint); }
-  .pdiagram .pd-ep{ fill:#0d1411; stroke:var(--green); stroke-width:1.8; }
-  .pdiagram .pd-epl{ stroke:#3a5d50; stroke-width:2; stroke-linecap:round; }
-  .pdiagram .pd-chunk{ fill:#0b1a14; stroke:var(--green); stroke-width:1.6; }
+  .pdiagram .pd-ep{ fill:var(--pd-surf2); stroke:var(--green); stroke-width:1.8; }
+  .pdiagram .pd-epl{ stroke:var(--pd-soft); stroke-width:2; stroke-linecap:round; }
+  .pdiagram .pd-chunk{ fill:var(--pd-afill); stroke:var(--green); stroke-width:1.6; }
   .pdiagram .pd-lbl{ fill:var(--pd-faint); font:600 11.5px var(--mono); }
   .pdiagram .pd-x{ stroke:var(--red); stroke-width:2; }
   .pdiagram .pd-trail{ fill:none; stroke:var(--green); stroke-width:2.5; opacity:.16; stroke-linecap:round; stroke-linejoin:round; }
   .pdiagram .pd-pkt{ fill:var(--green); filter:drop-shadow(0 0 6px var(--green)); }
   .pdiagram .pd-pkt.resp{ fill:var(--blue); filter:none; }
-  .pdiagram .pd-note{ fill:#0a1c14; stroke:#1c4a34; stroke-width:1; }
-  .pdiagram .pd-note.held{ fill:#1c1606; stroke:#54430f; }
-  .pdiagram .pd-note.transit{ fill:#0d1722; stroke:#243a52; }
+  .pdiagram .pd-note{ fill:var(--pd-afill); stroke:var(--pd-abd); stroke-width:1; }
+  .pdiagram .pd-note.held{ fill:var(--pd-held-f); stroke:var(--pd-held-b); }
+  .pdiagram .pd-note.transit{ fill:var(--pd-transit-f); stroke:var(--pd-transit-b); }
   .pdiagram .pd-note-t{ fill:var(--green); font:600 11px var(--mono); }
   .pdiagram .pd-note-t.held{ fill:var(--amber); }
   .pdiagram .pd-note-t.transit{ fill:var(--blue); }
+  /* primitives for hand-authored diagrams */
+  .pdiagram .pd-zone{ fill:var(--pd-surf); stroke:var(--pd-dash); stroke-width:1; }
+  .pdiagram .pd-zone-l{ fill:var(--pd-ink); font:600 11px var(--mono); letter-spacing:.04em; }
+  .pdiagram .pd-zone-l.dim{ fill:var(--pd-faint); }
+  .pdiagram .pd-fw{ stroke:var(--pd-fw); stroke-width:3; stroke-dasharray:2 6; stroke-linecap:round; }
+  .pdiagram .pd-edge.http{ stroke:var(--blue); stroke-width:1.9; }
+  .pdiagram .pd-edge.ret{ stroke:var(--blue); stroke-width:1.6; stroke-dasharray:4 4; opacity:.85; }
+  .pdiagram .pd-origin{ fill:var(--pd-surf2); stroke:var(--green); stroke-width:1.8; }
+  .pdiagram .pd-seg{ fill:var(--pd-ink); font:600 10.5px var(--mono); }
+  .pdiagram .pd-seg.http{ fill:var(--blue); }
+  .pdiagram .pd-resolve{ fill:none; stroke:var(--pd-dash); stroke-width:1.6; stroke-dasharray:4 5; }
+  .pdiagram .pd-step{ fill:var(--green); font:700 12px var(--mono); }
+  .pdiagram .pd-pkt.http{ fill:var(--blue); filter:none; }
+  .pdiagram .pd-chunkpkt{ fill:var(--green); }
+  .pdiagram .pd-pkt-n{ fill:#04130c; font:700 9px var(--mono); }
+  .pdiagram .pd-result{ fill:var(--pd-afill); stroke:var(--pd-abd); stroke-width:1; }
+  .pdiagram .pd-result-t{ fill:var(--pd-plain); font:600 12.5px var(--mono); }
+  /* future-protocols (bearers) */
+  .pdiagram .pd-fbox{ fill:var(--pd-surf); stroke:var(--pd-dash); stroke-width:1.4; stroke-dasharray:5 5; }
+  .pdiagram .pd-fbox-l{ fill:var(--pd-ink); font:600 10.5px var(--mono); letter-spacing:.14em; }
+  .pdiagram .pd-fchip{ fill:var(--pd-surf); stroke:var(--pd-stroke); stroke-width:1.2; stroke-dasharray:3 3; }
+  .pdiagram .pd-fchip-t{ fill:var(--pd-ink); font:600 11px var(--mono); }
+  .pdiagram .pd-fchip-t.dim{ fill:var(--pd-faint); }
+  .pdiagram .pd-fchip-s{ fill:var(--pd-faint); font:600 9.5px var(--mono); }
+  .pdiagram .pd-ct{ fill:var(--pd-on); font:700 14px var(--mono); }
+  .pdiagram .pd-slot{ fill:var(--pd-afill); stroke:var(--green); stroke-width:1.6; }
+  .pdiagram .pd-slot-t{ fill:var(--pd-on); font:600 12px var(--mono); }
+  .pdiagram .pd-slot-s{ fill:var(--green); font:600 10px var(--mono); }
+  /* locks + sealed-message chips */
+  .pdiagram .pd-lock{ filter:drop-shadow(0 0 4px var(--green)); }
+  .pdiagram .pd-lock.alt{ filter:none; }
+  .pdiagram .pd-msg{ fill:var(--pd-afill); stroke:var(--pd-abd); stroke-width:1; }
+  .pdiagram .pd-msg-p{ fill:var(--pd-plain); font:600 12px var(--mono); }
+  .pdiagram .pd-msg-c{ fill:var(--pd-faint); font:600 12px var(--mono); letter-spacing:1px; }
+
+  /* light theme — flip the panel tokens; accents deepen for contrast on white */
+  :root[data-theme="light"] .pdiagram{
+    --green:#10a877; --amber:#c2851b; --blue:#2f7fe0; --red:#cf4a43;
+    --pd-ink:#44536e; --pd-faint:#6f7c93;
+    --pd-bd:#dce4ee;
+    --pd-stage1:#f7fafe; --pd-stage2:#eef3fb; --pd-grid:#1f74d80f;
+    --pd-surf:#ffffff; --pd-surf2:#f2faf6;
+    --pd-edge:#bcd0c6; --pd-stroke:#8cbfab;
+    --pd-afill:#e7f8f0; --pd-abd:#a9ddc7;
+    --pd-on:#0e3b2b; --pd-plain:#0c7a52;
+    --pd-held-f:#fff4d8; --pd-held-b:#e0b35a;
+    --pd-transit-f:#e7f1fc; --pd-transit-b:#a9c8ec;
+    --pd-soft:#74bfa5; --pd-dash:#9fcdbb; --pd-dead:#e0a39c; --pd-fw:#4fa183;
+  }
 </style>

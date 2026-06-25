@@ -1,5 +1,6 @@
 ---
 import Base from '../../layouts/Base.astro';
+import ScenarioPlayer from '../../components/ScenarioPlayer.astro';
 import { cases } from '../../data/use-cases.js';
 
 export function getStaticPaths() {
@@ -9,12 +10,28 @@ export function getStaticPaths() {
   }));
 }
 const { c, prev, next } = Astro.props;
+const plain = c.title.replace(/&amp;/g, '&');
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
 ---
 <Base
-  title={`${c.title.replace(/&amp;/g, '&')} on Hop`}
+  title={`${plain} on Hop`}
   description={c.description}
   path="/use-cases"
 >
+  <script type="application/ld+json" is:inline set:html={JSON.stringify({
+    '@context': 'https://schema.org',
+    '@graph': [
+      { '@type': 'BreadcrumbList', itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: 'https://hopme.sh/' },
+        { '@type': 'ListItem', position: 2, name: 'Use cases', item: 'https://hopme.sh/use-cases/' },
+        { '@type': 'ListItem', position: 3, name: plain, item: canonical },
+      ]},
+      { '@type': 'Article', headline: `${plain} on Hop`, description: c.description,
+        url: canonical, image: new URL(c.hero, Astro.site).href,
+        isPartOf: { '@id': 'https://hopme.sh/#website' }, publisher: { '@id': 'https://hopme.sh/#org' } },
+    ],
+  })} />
+
   <section class="hero" style="padding-bottom:24px;">
     <div class="wrap">
       <div class="eyebrow"><a href="/use-cases/" style="color:var(--accent)">Use cases</a></div>
@@ -25,6 +42,13 @@ const { c, prev, next } = Astro.props;
       <p class="lede" style="margin-top:14px;" set:html={c.tagline}></p>
     </div>
   </section>
+
+  {c.hero && (
+    <section style="padding:0;">
+      <img src={c.hero} alt={c.title.replace(/&amp;/g, '&')} width="1408" height="792" loading="eager"
+        style="width:100%;max-height:440px;object-fit:cover;display:block;border-top:1px solid var(--line);border-bottom:1px solid var(--line);" />
+    </section>
+  )}
 
   <section class="band" style="padding-top:8px;">
     <div class="wrap">
@@ -42,6 +66,15 @@ const { c, prev, next } = Astro.props;
         </div>
       </div>
 
+      {c.scenarios && c.scenarios.length > 0 && (
+        <div style="margin-top:40px;">
+          <div class="eyebrow" style="margin-bottom:6px;">See it move</div>
+          <h2 style="font-size:clamp(22px,3vw,30px);margin-bottom:4px;">How it routes — live.</h2>
+          <p style="max-width:60ch;">The same animations from the homepage, for {c.title.replace(/&amp;/g, '&')}. Tab through the situations and watch a sealed message find a way across the mesh.</p>
+          <div style="margin-top:18px;"><ScenarioPlayer ids={c.scenarios} /></div>
+        </div>
+      )}
+
       <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:40px;border-top:1px solid var(--line-soft);padding-top:22px;">
         <a class="link-go" href={`/use-cases/${prev.id}/`}>← <span set:html={prev.title}></span></a>
         <a class="link-go" href={`/use-cases/${next.id}/`}><span set:html={next.title}></span> →</a>
@@ -53,7 +86,7 @@ const { c, prev, next } = Astro.props;
     <div class="wrap">
       <h2>Build it on the fabric.</h2>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-primary" href="/docs/quickstart/">Quickstart →</a>
         <a class="btn btn-ghost" href="/use-cases/">All use cases</a>
       </div>
     </div>

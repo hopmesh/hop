@@ -1,0 +1,43 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { drivers } from '../../data/drivers.js';
+---
+<DocsLayout
+  title="Docs — build on Hop"
+  description="Hop documentation. How the layers fit, a quickstart, and the per-platform drivers (iOS, Android, macOS, ESP32, Linux) that embed hop-core and drive the radios."
+>
+  <div class="eyebrow">Docs</div>
+  <h1>Overview</h1>
+  <p class="lede">How the pieces fit and how to embed them. Start with the
+     <a href="/docs/quickstart/">Quickstart</a>, then pick the driver for your platform.</p>
+
+  <h2>How Hop is layered</h2>
+  <p><code>hop-core</code> is a pure Rust core: it seals, addresses, holds, and routes datagrams — but it
+     has no bearer system of its own. It only moves bytes. A <strong>driver</strong> is the per-platform
+     host that embeds the core and implements the bearer trait (<code>send_frame</code> /
+     <code>recv_frame</code> / <code>peer_events</code>): it owns discovery, connections, background
+     operation, and power for one platform.</p>
+  <p>Above the core sit the semantics (<a href="/protocol/hops/">hops://</a>, <a href="/protocol/hps/">hps://</a>,
+     <a href="/protocol/streams/">streams</a>, <a href="/protocol/hns/">HNS</a>); below it, the bearers
+     (BLE, Wi-Fi/LAN, the internet relay). See the <a href="/protocol/">protocol stack</a> for the full picture.</p>
+
+  <h2>Drivers</h2>
+  <p>The hosts that run the core and drive the radios.</p>
+  <div class="grid-2" style="margin-top:16px;">
+    {drivers.map((h) => (
+      <a class="card" href={`/docs/drivers/${h.id}/`}>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div class="ic" style="margin:0;" set:html={h.icon}></div>
+          <h3 style="margin:0;">{h.name}</h3>
+          <span class:list={["status", { dev: h.status !== 'Available' }]}>{h.status}</span>
+        </div>
+        <p style="margin-top:10px;">{h.tagline}</p>
+      </a>
+    ))}
+  </div>
+
+  <h2>Start building</h2>
+  <p><a href="/docs/quickstart/">Quickstart →</a></p>
+  <p>Hop is in early access. <a href="/early-access/">Request access</a> and tell us what you're building.
+     Building on a platform that isn't here yet? <a href="mailto:hello@hopme.sh">Tell us</a>.</p>
+</DocsLayout>

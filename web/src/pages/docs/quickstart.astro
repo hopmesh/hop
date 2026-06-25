@@ -1,0 +1,78 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+
+const cargo = `# Cargo.toml — embed the core
+[dependencies]
+hop-core = "0.1"   # early access — request access`;
+
+const rust = `<span style="color:#6f7c98">// open a node from your 32-byte secret (you own key storage)</span>
+<span style="color:#9d8cff">let</span> node = HopNode::open(secret)?;
+
+<span style="color:#6f7c98">// reach a device by its address (its public key)</span>
+node.send(
+    Destination::Device(peer_address),
+    Payload::message(<span style="color:#38e0b0">"on my way"</span>),
+)?;
+
+<span style="color:#6f7c98">// reach the internet from offline — any gateway fulfills it</span>
+node.send(Destination::InternetEgress, Payload::http_get(<span style="color:#38e0b0">"hops://example.com/status"</span>))?;
+
+<span style="color:#6f7c98">// drain inbox: sealed bundles addressed to you</span>
+<span style="color:#9d8cff">for</span> msg <span style="color:#9d8cff">in</span> node.receive()? { handle(msg.open()?); }`;
+---
+<DocsLayout
+  title="Quickstart — embed Hop"
+  description="Embed hop-core in your app: add the dependency, open a node from a secret, send to a device or the internet, drain your inbox. iOS & Android via UniFFI."
+>
+  <div class="eyebrow">Getting started</div>
+  <h1>Quickstart</h1>
+  <p class="lede">Hop is a Rust core you embed. Add the dependency, hand it a secret, and address
+     bundles — it handles relaying, retransmit, dedup, and delivery. This is the shape; the full
+     API and the iOS/Android bindings come with the SDK.</p>
+
+  <div class="steps" style="margin-top:28px;">
+    <div class="step">
+      <div class="n">1</div>
+      <div>
+        <h3>Add the core</h3>
+        <p>Embed <code>hop-core</code> in your Rust app, or pull the UniFFI bindings into an iOS or Android target.</p>
+        <pre class="code-block sm" set:html={cargo}></pre>
+      </div>
+    </div>
+    <div class="step">
+      <div class="n">2</div>
+      <div>
+        <h3>Open a node from a secret</h3>
+        <p>The library never owns identity — you hand it a 32-byte Ed25519 seed and keep it wherever you choose (Keychain, Keystore, iCloud). The secret <em>is</em> the address.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="n">3</div>
+      <div>
+        <h3>Send — to a device, or the internet</h3>
+        <p>Address a sealed payload to another device's key, or to <code>InternetEgress</code>. You don't pick a route; Hop carries it.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="n">4</div>
+      <div>
+        <h3>Receive</h3>
+        <p>Drain your inbox of sealed bundles addressed to you, and open them. Delivery acks and dedup are handled for you.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card code-card" style="padding:0; overflow:hidden; margin-top:26px;">
+    <pre class="code-block" set:html={rust}></pre>
+  </div>
+  <p class="note mt-m">Illustrative — the full API across <code>hop-core</code> and the FFI bindings comes with early access.</p>
+
+  <h2>Pick your platform</h2>
+  <p>The core only moves bytes; a per-platform <a href="/docs/">driver</a> runs the radios. Start with
+     <a href="/docs/drivers/ios/">iOS</a>, <a href="/docs/drivers/android/">Android</a>,
+     <a href="/docs/drivers/macos/">macOS</a>, <a href="/docs/drivers/esp32/">ESP32</a>, or
+     <a href="/docs/drivers/linux/">Linux / server</a>.</p>
+
+  <h2>Get access</h2>
+  <p>Hop is in early access. <a href="/early-access/">Request access</a> and tell us what you're building.</p>
+</DocsLayout>

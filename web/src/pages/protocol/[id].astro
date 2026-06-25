@@ -1,7 +1,7 @@
 ---
 import Base from '../../layouts/Base.astro';
 import ProtocolDiagram from '../../components/ProtocolDiagram.astro';
-import { layers, DESIGN } from '../../data/protocol.js';
+import { layers } from '../../data/protocol.js';
 
 export function getStaticPaths() {
   return layers.map((l, i) => ({
@@ -11,12 +11,27 @@ export function getStaticPaths() {
 }
 const { l, prev, next } = Astro.props;
 const plain = l.name.replace(/&amp;/g, '&');
+const tagline = l.tagline.replace(/<[^>]*>/g, '');
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
 ---
 <Base
   title={`${plain} — Hop protocol`}
   description={`${plain}: ${l.tagline}. Part of the Hop ${l.group.toLowerCase()} layer.`}
   path="/protocol"
 >
+  <script type="application/ld+json" is:inline set:html={JSON.stringify({
+    '@context': 'https://schema.org',
+    '@graph': [
+      { '@type': 'BreadcrumbList', itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: 'https://hopme.sh/' },
+        { '@type': 'ListItem', position: 2, name: 'Protocol', item: 'https://hopme.sh/protocol/' },
+        { '@type': 'ListItem', position: 3, name: plain, item: canonical },
+      ]},
+      { '@type': 'TechArticle', headline: `${plain} — Hop protocol`, description: `${plain}: ${tagline}.`,
+        url: canonical, isPartOf: { '@id': 'https://hopme.sh/#website' }, publisher: { '@id': 'https://hopme.sh/#org' } },
+    ],
+  })} />
+
   <section class="hero" style="padding-bottom:24px;">
     <div class="wrap">
       <div class="eyebrow"><a href="/protocol/" style="color:var(--accent)">Protocol</a> · {l.group}</div>
@@ -27,17 +42,31 @@ const plain = l.name.replace(/&amp;/g, '&');
 
   <section class="band" style="padding-top:8px;">
     <div class="wrap">
-      {l.viz && (
-        <div style="margin-bottom:30px;">
-          <ProtocolDiagram viz={l.viz} />
+      {l.viz && <ProtocolDiagram viz={l.viz} />}
+
+      <div class="grid-2" style="margin-top:44px; align-items:start; gap:44px;">
+        <div>
+          <div class="kicker">How it works</div>
+          <ul class="checks" style="margin-top:16px;">
+            {l.how.map((p) => <li set:html={p}></li>)}
+          </ul>
         </div>
-      )}
-      <div class="prose">
-        <p set:html={l.body}></p>
-        <p style="margin-top:18px;"><a class="link-go" href={DESIGN}>Implementation details — DESIGN.md ({l.ref}) →</a></p>
+        <div>
+          <div class="kicker">Why it matters</div>
+          <div class="card" style="margin-top:16px;">
+            <div class="kicker" style="color:var(--accent);">For developers</div>
+            <p style="margin-top:8px; font-size:14.5px;" set:html={l.dev}></p>
+          </div>
+          <div class="card" style="margin-top:14px;">
+            <div class="kicker" style="color:var(--accent);">For business</div>
+            <p style="margin-top:8px; font-size:14.5px;" set:html={l.biz}></p>
+          </div>
+        </div>
       </div>
 
-      <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:40px;border-top:1px solid var(--line-soft);padding-top:22px;">
+      <p class="note" style="margin-top:36px;">Deeper implementation detail is coming in the Hop whitepaper.</p>
+
+      <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:28px;border-top:1px solid var(--line-soft);padding-top:22px;">
         <a class="link-go" href={`/protocol/${prev.id}/`}>← <span set:html={prev.name}></span></a>
         <a class="link-go" href={`/protocol/${next.id}/`}><span set:html={next.name}></span> →</a>
       </div>
@@ -48,7 +77,7 @@ const plain = l.name.replace(/&amp;/g, '&');
     <div class="wrap">
       <h2>Ready to build on it?</h2>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-primary" href="/docs/quickstart/">Quickstart →</a>
         <a class="btn btn-ghost" href="/protocol/">All layers</a>
       </div>
     </div>

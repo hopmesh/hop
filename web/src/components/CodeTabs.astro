@@ -1,0 +1,61 @@
+---
+// Multi-language code sample with a tab toggle — same call, three platforms.
+const C = '#6f7c98', K = '#9d8cff', S = '#38e0b0';
+const rust = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+<span style="color:${K}">let</span> node = HopNode::open(secret)?;
+
+<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+node.send(peer, Payload::message(<span style="color:${S}">"on my way"</span>))?;
+
+<span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>
+<span style="color:${K}">for</span> msg <span style="color:${K}">in</span> node.receive()? { handle(msg.open()?); }`;
+const swift = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+<span style="color:${K}">let</span> node = <span style="color:${K}">try</span> HopNode(secret: secret)
+
+<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+<span style="color:${K}">try</span> node.send(to: peer, payload: .message(<span style="color:${S}">"on my way"</span>))
+
+<span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>
+<span style="color:${K}">for</span> msg <span style="color:${K}">in</span> <span style="color:${K}">try</span> node.receive() { handle(<span style="color:${K}">try</span> msg.open()) }`;
+const kotlin = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+<span style="color:${K}">val</span> node = HopNode.open(secret)
+
+<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+node.send(peer, Payload.message(<span style="color:${S}">"on my way"</span>))
+
+<span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>
+<span style="color:${K}">for</span> (msg <span style="color:${K}">in</span> node.receive()) handle(msg.open())`;
+const panes = [['rust', 'Rust core', rust], ['swift', 'Swift · iOS', swift], ['kotlin', 'Kotlin · Android', kotlin]];
+---
+<div class="codetabs">
+  <div class="ct-tabs" role="tablist">
+    {panes.map(([l, label], i) => (
+      <button class:list={["ct-tab", { active: i === 0 }]} data-l={l} type="button">{label}</button>
+    ))}
+  </div>
+  {panes.map(([l, , code], i) => (
+    <pre class:list={["code-block", "ct-pane", { active: i === 0 }]} data-l={l} set:html={code}></pre>
+  ))}
+</div>
+
+<style>
+  .codetabs { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #0b1018; box-shadow: 0 18px 50px #00000045; }
+  .ct-tabs { display: flex; gap: 4px; padding: 8px 8px 0; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+  .ct-tab { font: 600 12.5px/1 var(--mono); color: var(--ink-mut); background: none; border: 0; padding: 9px 13px; border-radius: 8px 8px 0 0; cursor: pointer; transition: color .12s ease, background .12s ease; }
+  .ct-tab:hover { color: var(--ink-dim); }
+  .ct-tab.active { color: #e8eef5; background: #0b1018; }   /* active tab is always dark (matches the code pane) — keep text light in both themes */
+  .ct-pane { display: none; margin: 0; }
+  .ct-pane.active { display: block; }
+</style>
+
+<script is:inline>
+  document.querySelectorAll('.codetabs').forEach(function (box) {
+    var tabs = box.querySelectorAll('.ct-tab'), panes = box.querySelectorAll('.ct-pane');
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (x) { x.classList.toggle('active', x === t); });
+        panes.forEach(function (p) { p.classList.toggle('active', p.dataset.l === t.dataset.l); });
+      });
+    });
+  });
+</script>

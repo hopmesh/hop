@@ -1,0 +1,68 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import { apiLangs, apiFlows } from '../../../data/api-reference.js';
+---
+<DocsLayout
+  title="Interface reference — Hop docs"
+  description="One interface, every language. The same Hop flows in Rust, Swift, Kotlin, and Java — nearly identical, because the driver does the platform work behind the scenes."
+>
+  <div class="eyebrow">Reference</div>
+  <h1>Interface reference</h1>
+  <p class="lede">One interface, every language. The driver handles discovery, connections,
+     background, and power behind the scenes — so the code you write is nearly the same whichever
+     language you're in. Pick yours; every example below switches with you.</p>
+  <p class="note">Generated from the UniFFI interface (one Rust definition → all bindings), so these
+     track the real API. Java rides the JVM binding; Objective-C bridges from the Swift binding;
+     Python lands as its binding does.</p>
+
+  <div class="apiref" data-apilang="rust">
+    <div class="apilangs" role="tablist" aria-label="Language">
+      {apiLangs.map((l) => (
+        <button class="apilang" type="button" data-lang={l.id}>{l.label}</button>
+      ))}
+    </div>
+
+    {apiFlows.map((flow) => (
+      <section class="api-flow">
+        <h2>{flow.title}</h2>
+        <p>{flow.desc}</p>
+        <div class="api-code card code-card" style="padding:0;overflow:hidden;">
+          {apiLangs.map((l) => (
+            <pre class="code-block sm" data-lang={l.id} set:html={flow.samples[l.id]}></pre>
+          ))}
+        </div>
+      </section>
+    ))}
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>This is the shared, flow-level interface — the part that's the same everywhere. The full
+     per-language reference (rustdoc, Swift DocC, Kotlin/Java Dokka) is generated per release from the
+     same interface and linked here as it lands. Building on a platform that isn't here yet?
+     <a href="mailto:hello@hopme.sh">Tell us</a>.</p>
+
+  <script is:inline>
+    (function () {
+      var root = document.querySelector('.apiref');
+      if (!root) return;
+      var saved;
+      try { saved = localStorage.getItem('hop-lang'); } catch (e) {}
+      if (saved && root.querySelector('.apilang[data-lang="' + saved + '"]')) {
+        root.setAttribute('data-apilang', saved);
+      }
+      var btns = root.querySelectorAll('.apilang');
+      function sync() {
+        var cur = root.getAttribute('data-apilang');
+        btns.forEach(function (b) { b.classList.toggle('active', b.dataset.lang === cur); });
+      }
+      btns.forEach(function (b) {
+        b.addEventListener('click', function () {
+          root.setAttribute('data-apilang', b.dataset.lang);
+          try { localStorage.setItem('hop-lang', b.dataset.lang); } catch (e) {}
+          sync();
+        });
+      });
+      sync();
+    })();
+  </script>
+</DocsLayout>
