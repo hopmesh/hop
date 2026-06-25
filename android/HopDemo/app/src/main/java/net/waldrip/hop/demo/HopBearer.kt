@@ -70,6 +70,11 @@ class HopBearer private constructor(private val context: Context) {
         APP_SECRET,
     )
     val peers = mutableStateListOf<Peer>()
+    /// Persistent address book: everyone we've seen, messaged, or been messaged by, keyed by address.
+    /// `seen` is the subset NOT currently reachable — so past conversations stay reachable even when
+    /// the peer is offline / out of range / after a restart (mirrors iOS).
+    private val contacts = HashMap<List<Byte>, Peer>()
+    val seen = mutableStateListOf<Peer>()
     /// Directly-linked peer address → the transport carrying it ("BT" / "Relay"); mesh peers
     /// (reached multi-hop) have no entry. Mirrors iOS's link-type indicators.
     val linkTransports = mutableStateMapOf<List<Byte>, String>()
@@ -172,6 +177,7 @@ class HopBearer private constructor(private val context: Context) {
         started = true
         ensureNotificationChannel()
         loadMessages()      // restore chat history from the previous run
+        loadContacts()      // restore the address book so past conversations are reachable when offline
         loadHpsChannels()   // restore channel (hps) message threads
         loadHpsTopics()     // restore hosted/subscribed channels (the node persists them)
         myName.value = name
@@ -267,6 +273,7 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     fun send(text: String, to: Peer) {
+        rememberContact(to)   // messaging someone adds them to your address book
         val id = runCatching {
             node.sendMessage(to.address, "text/plain", text.toByteArray(), true)
         }.getOrNull()
@@ -277,6 +284,7 @@ class HopBearer private constructor(private val context: Context) {
     /// Send an image — large bodies are transparently carrier-chunked + reassembled by core
     /// (DESIGN.md §20), same path as a text message but a binary content type.
     fun sendImage(data: ByteArray, to: Peer) {
+        rememberContact(to)
         val id = runCatching {
             node.sendMessage(to.address, "image/jpeg", data, true)
         }.getOrNull()
@@ -294,6 +302,7 @@ class HopBearer private constructor(private val context: Context) {
         if (t.isNotEmpty()) parts.add("text/plain" to t.toByteArray())
         for (img in images) parts.add("image/jpeg" to img)
         if (parts.isEmpty()) return
+        rememberContact(to)
         val id = runCatching {
             node.sendMessage(to.address, "multipart/mixed", encodeMultipart(parts), true)
         }.getOrNull()
@@ -506,6 +515,12 @@ class HopBearer private constructor(private val context: Context) {
                 imageData = if (isImage) m.body else null, images = images,
                 hops = m.hops, latencyMs = latency, trace = m.trace.map { traceLabel(it) }))
             queueIdentify(m.from)   // learn the sender's display name (§29)
+            // Someone who messages us joins the address book, so their conversation is reachable.
+            val k = m.from.toList()
+            if (!contacts.containsKey(k)) {
+                contacts[k] = Peer(m.from, who, 0u, active = false)
+                saveContacts(force = true)
+            }
             if (!appInForeground) {
                 unread.intValue += 1
                 notify(who, if (isImage) "📷 Photo" else text)
@@ -962,6 +977,42 @@ class HopBearer private constructor(private val context: Context) {
     // MARK: chat-history persistence (survives app restart) ----------------------
 
     private val messagesFile get() = java.io.File(context.filesDir, "messages.json")
+    private val contactsFile get() = java.io.File(context.filesDir, "contacts.json")
+    private var lastContactSaveMs = 0L
+
+    /// Add a peer to the address book and persist now (e.g. on send) so the conversation is reachable.
+    fun rememberContact(p: Peer) {
+        contacts[p.address.toList()] = p
+        nameByAddr[p.address.toList()] = p.name
+        saveContacts(force = true)
+    }
+    private fun saveContacts(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastContactSaveMs < 4000) return   // throttle (refresh runs often)
+        lastContactSaveMs = now
+        val arr = org.json.JSONArray()
+        for (p in contacts.values) {
+            arr.put(org.json.JSONObject()
+                .put("addr", addressBase58(p.address)).put("name", p.name)
+                .put("platform", p.platform).put("app", p.app))
+        }
+        runCatching { contactsFile.writeText(arr.toString()) }
+    }
+    private fun loadContacts() {
+        val txt = runCatching { contactsFile.readText() }.getOrNull() ?: return
+        val arr = runCatching { org.json.JSONArray(txt) }.getOrNull() ?: return
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val addr = runCatching { addressFromBase58(o.getString("addr")) }.getOrNull() ?: continue
+            if (addr.size != 32) continue
+            val key = addr.toList()
+            if (contacts.containsKey(key)) continue
+            val name = o.optString("name", shortHex(addr))
+            contacts[key] = Peer(addr, name, 0u, active = false,
+                platform = o.optString("platform", ""), app = o.optString("app", ""))
+            nameByAddr[key] = name
+        }
+    }
     private var saveScheduled = false
 
     /// Coalesce rapid mutations into one disk write (~1/sec) so a burst of messages — or the
@@ -1117,6 +1168,17 @@ class HopBearer private constructor(private val context: Context) {
             it.peer.copy(hops = hops)
         }.sortedBy { addressBase58(it.address) }
         peers.clear(); peers.addAll(list)
+
+        // Address book: fold every live peer into the (persisted) contact book; the contacts NOT
+        // currently reachable form the offline "seen" list, so past conversations stay reachable
+        // even when the peer is offline / out of range / after a restart.
+        for (p in list) contacts[p.address.toList()] = p
+        val here = list.map { it.address.toList() }.toHashSet()
+        val off = contacts.filterKeys { it !in here }.values
+            .map { it.copy(hops = 0u, active = false) }
+            .sortedBy { it.name.lowercase() }
+        seen.clear(); seen.addAll(off)
+        saveContacts()
 
         // Which peers we're talking to over a forward-secret session (lock icon).
         secured.clear()
