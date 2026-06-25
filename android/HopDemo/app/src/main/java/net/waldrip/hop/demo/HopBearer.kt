@@ -1465,9 +1465,26 @@ class HopBearer private constructor(private val context: Context) {
             .onFailure { android.util.Log.w("HOPLOG", "iBeacon startAdvertisingSet threw: $it") }
     }
 
+    // Devices currently connected to OUR GATT server (i.e. they're a central to us). We must NOT
+    // also dial them as a central: two devices share one BLE ACL, and our central tearing its leg
+    // down (failed dial / timeout) terminates the shared link — killing their inbound connection
+    // mid-handshake (the dual-role conflict that caused "peer left" before the GATT-data fallback).
+    private val gattServerClients = HashSet<String>()
+
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             android.util.Log.i("HOPLOG", "BLE peripheral GATT: ${device.address} status=$status newState=$newState")
+            main.post {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    gattServerClients.add(device.address)
+                    // If we were mid-dial to this same device, cancel our central leg — their inbound
+                    // connection carries the link now (they write, we indicate back). One pipe per pair.
+                    dialing.remove(device.address)?.let { runCatching { it.close() } }
+                    connecting.remove(device.address)
+                } else {
+                    gattServerClients.remove(device.address)
+                }
+            }
         }
         override fun onCharacteristicReadRequest(
             device: BluetoothDevice, requestId: Int, offset: Int,
@@ -1493,6 +1510,7 @@ class HopBearer private constructor(private val context: Context) {
             device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
         ) {
+            android.util.Log.i("HOPLOG", "peripheral onDescriptorWrite ${device.address} desc=${descriptor.uuid} char=${descriptor.characteristic?.uuid}")  // DIAG
             if (descriptor.uuid == CCCD_UUID && descriptor.characteristic.uuid == DATA_CHAR_UUID) {
                 main.post { peripheralGattLinkFor(device) }
             }
@@ -1506,6 +1524,7 @@ class HopBearer private constructor(private val context: Context) {
             device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
         ) {
+            android.util.Log.i("HOPLOG", "peripheral onCharWrite ${device.address} char=${characteristic.uuid} ${value.size}B")  // DIAG
             if (characteristic.uuid == DATA_CHAR_UUID) {
                 main.post { peripheralGattLinkFor(device).onChunkReceived(value) }
             }
@@ -1635,6 +1654,12 @@ class HopBearer private constructor(private val context: Context) {
     private fun tryDial(device: BluetoothDevice) {
         val addr = device.address
         if (connecting.contains(addr) || dialing.containsKey(addr)) return  // already linked / dialing it
+        // Already connected to us right now (they're a central to our GATT server)? Don't dial them
+        // back — one pipe per pair. Two devices share one BLE ACL, so a second connection that later
+        // tears down kills the shared link (the "peer left" dual-role conflict). Their inbound
+        // connection carries the link: they write our DATA char, we indicate back. (Transparent to
+        // address rotation — a rotated address is just a different, not-yet-connected peer.)
+        if (gattServerClients.contains(addr)) return
         if (dialing.size >= MAX_DIALS_IN_FLIGHT) return                     // one or two outbound at a time
         if (System.currentTimeMillis() < (dialBackoffUntil[addr] ?: 0L)) return  // backing off this peer
         connecting.add(addr)

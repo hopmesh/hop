@@ -257,6 +257,8 @@ final class HopBearer: NSObject, ObservableObject {
     private var gattLinkCentral: [UInt64: CBCentral] = [:]       // peripheral side: link → subscribed central
     private var gattLinkPeripheral: [UInt64: CBPeripheral] = [:] // central side: link → remote peripheral
     private var gattDataCharFor: [UUID: CBCharacteristic] = [:]  // central side: peripheral id → its DATA char
+    private var gattFallbackPending: Set<UUID> = []             // L2CAP failed before DATA was discovered
+    private var psmFromAdvert: Set<UUID> = []                   // PSM came from mfg data ⇒ peer is ANDROID
     private var centralGattLink: [UUID: UInt64] = [:]            // peripheral side: central id → link
     private var peripheralBackpressure: [UInt64: Data] = [:]     // peripheral side: chunk awaiting isReady
     private var nextGattLinkId: UInt64 = 60_000
@@ -1946,7 +1948,9 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             let b = [UInt8](mfg)
             if b.count >= 4 {
                 let psm = CBL2CAPPSM(UInt16(b[2]) << 8 | UInt16(b[3]))
-                if psm != 0 { l2capPsm[peripheral.identifier] = psm }
+                // Only Android can advertise manufacturer data, so a PSM here means an ANDROID peer —
+                // and Apple→Android L2CAP never opens. Mark it so we skip L2CAP and go GATT-data direct.
+                if psm != 0 { l2capPsm[peripheral.identifier] = psm; psmFromAdvert.insert(peripheral.identifier) }
             }
         }
         guard !connecting.contains(peripheral.identifier) else { return }
@@ -1958,13 +1962,16 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // ALWAYS discover services: we need the DATA characteristic for the GATT-data fallback (the
-        // path that actually works to Android), even when the advert already gave us a PSM. Without
-        // this the advert fast-path skipped discovery, so the fallback could never find DATA.
+        // ALWAYS discover services: we need the DATA characteristic for the GATT-data path.
         peripheral.discoverServices([HopBearer.serviceUUID])
-        // Fast path: PSM known from the advert → also kick off L2CAP now (skips waiting on the GATT
-        // read). The `opened` guard stops the GATT-read path from double-opening.
-        if let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) {
+        if psmFromAdvert.contains(peripheral.identifier) {
+            // ANDROID peer. Apple→Android L2CAP can't open, AND *attempting* it tears the whole
+            // peripheral connection down (~1s "peer left"), killing the link before GATT-data can
+            // start. So never try L2CAP here — go straight to GATT-data once DATA is discovered.
+            status = "connected (GATT), Android → GATT-data…"
+            gattFallbackPending.insert(peripheral.identifier)
+        } else if let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) {
+            // iOS peer (no advertised PSM ⇒ this came from a GATT read): L2CAP works iOS↔iOS.
             opened.insert(peripheral.identifier)
             l2capAttempts[peripheral.identifier] = 0
             status = "opening L2CAP (psm \(psm))…"
@@ -1981,6 +1988,8 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         opened.remove(peripheral.identifier)
         gattDataCharFor[peripheral.identifier] = nil
+        gattFallbackPending.remove(peripheral.identifier)
+        // keep psmFromAdvert — it's a stable property of the peer (Android advertises a PSM)
         // Tear down any GATT-data link that rode this connection.
         if let id = gattLinkPeripheral.first(where: { $0.value.identifier == peripheral.identifier })?.key {
             closeGattLink(id)
@@ -2011,7 +2020,13 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if error != nil { return recover(peripheral) }
         for ch in service.characteristics ?? [] {
-            if ch.uuid == HopBearer.dataCharUUID { gattDataCharFor[peripheral.identifier] = ch }
+            if ch.uuid == HopBearer.dataCharUUID {
+                gattDataCharFor[peripheral.identifier] = ch
+                // L2CAP already failed and was waiting on this → start the GATT-data fallback now.
+                if gattFallbackPending.remove(peripheral.identifier) != nil {
+                    _ = startCentralGattData(peripheral)
+                }
+            }
             if ch.uuid == HopBearer.psmCharUUID { peripheral.readValue(for: ch) }
         }
     }
@@ -2045,35 +2060,20 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             let e = (error as NSError?)
             NSLog("HOPLOG open L2CAP failed: domain=\(e?.domain ?? "nil") code=\(e?.code ?? -1) — \(e?.localizedDescription ?? "?")")
             let id = peripheral.identifier
-            let n = (l2capAttempts[id] ?? 0) + 1
-            l2capAttempts[id] = n
-            // TWO quick same-connection retries cover the transient XR-radio first-open glitch.
-            // Beyond that the GATT connection itself is wedged — re-opening on the same handle just
-            // keeps failing (CBErrorDomain "Unknown error") and leaves a half-open the Android peer
-            // accepted but we abandoned. So tear the whole connection down and reconnect FRESH:
-            // a clean GATT link + a freshly re-read PSM is what actually clears the wedge. The
-            // scheduleReconnect backoff (1→20s) keeps this from hammering a flaky radio.
-            if n <= 2, peripheral.state == .connected, let psm = l2capPsm[id] {
-                status = "L2CAP retry \(n) (psm \(psm))…"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                    guard let self, let p = self.retained[id], p.state == .connected else {
-                        if let p = self?.retained[id] { self?.recover(p) }
-                        return
-                    }
-                    self.openL2CAP(p, psm)
-                }
+            l2capAttempts[id] = nil
+            // Apple→Android L2CAP NEVER opens (CBErrorDomain "Unknown error"), and CoreBluetooth
+            // tears the whole peripheral connection down ~1s after the failure — faster than any
+            // retry. So DON'T retry L2CAP; immediately fall back to GATT-data over the SAME GATT
+            // connection (a synchronous setNotifyValue beats the impending disconnect). iOS↔iOS
+            // L2CAP succeeds and never reaches here, so this only affects the failing (Android) case.
+            guard peripheral.state == .connected else { recover(peripheral); return }
+            if startCentralGattData(peripheral) {
+                NSLog("HOPLOG L2CAP failed → GATT-data fallback (immediate)")
             } else {
-                l2capAttempts[id] = nil
-                // L2CAP won't open (Apple→Android always fails this way). Fall back to GATT-data over
-                // the SAME GATT connection — don't tear it down. Only if that can't start do we
-                // reconnect fresh and retry L2CAP (covers a genuinely wedged iOS↔iOS connection).
-                if peripheral.state == .connected, startCentralGattData(peripheral) {
-                    NSLog("HOPLOG L2CAP failed after \(n) tries → GATT-data fallback")
-                } else {
-                    NSLog("HOPLOG L2CAP wedged after \(n) tries → full reconnect (fresh PSM)")
-                    l2capPsm[id] = nil       // force a fresh PSM re-read via GATT on the new connection
-                    recover(peripheral)       // cancel → didDisconnect → scheduleReconnect → rediscover → reopen
-                }
+                // DATA characteristic not discovered yet (the failure raced discovery). Mark it
+                // pending; didDiscoverCharacteristicsFor starts the fallback the moment DATA appears.
+                NSLog("HOPLOG L2CAP failed → awaiting DATA discovery for GATT-data fallback")
+                gattFallbackPending.insert(id)
             }
             return
         }
