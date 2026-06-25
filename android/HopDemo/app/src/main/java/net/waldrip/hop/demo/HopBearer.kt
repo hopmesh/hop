@@ -1300,6 +1300,13 @@ class HopBearer private constructor(private val context: Context) {
         if (!started) return
         android.util.Log.i("HOPLOG", "BLE: adapter ON → re-initializing peripheral + central")
         teardownBlePeripheral()
+        // Release any lingering advertising-set associations from the previous adapter session, then
+        // swap in fresh callback instances so startAdvertise()/startBeacon() can register cleanly
+        // (the framework rejects re-using a still-associated callback after a cycle).
+        runCatching { adapter.bluetoothLeAdvertiser?.stopAdvertisingSet(advSetCallback) }
+        runCatching { adapter.bluetoothLeAdvertiser?.stopAdvertisingSet(beaconSetCallback) }
+        advSetCallback = makeAdvSetCallback()
+        beaconSetCallback = makeBeaconSetCallback()
         // BLE dial state is per-adapter; every BLE socket died with the adapter, so clear it to
         // allow fresh dials. (LAN/relay links live in `links` under their own ids and are untouched.)
         connecting.clear()
@@ -1431,7 +1438,11 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     private var advSet: android.bluetooth.le.AdvertisingSet? = null
-    private val advSetCallback = object : android.bluetooth.le.AdvertisingSetCallback() {
+    // Recreated fresh on each (re)start: Android rejects re-registering a callback INSTANCE that's
+    // still associated with a prior advertising set ("callback instance already associated with
+    // advertising"), which broke re-arming after a BT adapter cycle. A new instance sidesteps that.
+    private var advSetCallback = makeAdvSetCallback()
+    private fun makeAdvSetCallback() = object : android.bluetooth.le.AdvertisingSetCallback() {
         override fun onAdvertisingSetStarted(set: android.bluetooth.le.AdvertisingSet?, txPower: Int, status: Int) {
             if (status == android.bluetooth.le.AdvertisingSetCallback.ADVERTISE_SUCCESS) {
                 advSet = set
@@ -1447,7 +1458,8 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     private var beaconSet: android.bluetooth.le.AdvertisingSet? = null
-    private val beaconSetCallback = object : android.bluetooth.le.AdvertisingSetCallback() {
+    private var beaconSetCallback = makeBeaconSetCallback()
+    private fun makeBeaconSetCallback() = object : android.bluetooth.le.AdvertisingSetCallback() {
         override fun onAdvertisingSetStarted(set: android.bluetooth.le.AdvertisingSet?, txPower: Int, status: Int) {
             if (status == android.bluetooth.le.AdvertisingSetCallback.ADVERTISE_SUCCESS) {
                 beaconSet = set
