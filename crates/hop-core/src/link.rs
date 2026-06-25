@@ -1,58 +1,49 @@
-//! Link layer: anonymous, encrypted sessions between adjacent nodes (Noise NN),
-//! fragmentation/reassembly over a bounded-MTU bearer, and the [`Bearer`]
-//! abstraction the native BLE shims implement. See DESIGN.md §4, §5, §11.
-//!
-//! The link handshake is **anonymous**: NN carries no static keys, so a neighbour
-//! learns nothing about who you are just by connecting — it only gets a confidential,
-//! tamper-evident channel against passive sniffers. Identity is *opt-in*: a side that
-//! wants to be known sends a self-signed [identity record](crate::node) over the
-//! established channel, signed over the channel-binding hash so it can't be replayed
-//! onto a different link by a man-in-the-middle. End-to-end content stays
-//! forward-secret (Double Ratchet) regardless — the link layer never sees plaintext.
+//! Link layer: mutually-authenticated, encrypted sessions between adjacent nodes
+//! (Noise XX), fragmentation/reassembly over a bounded-MTU bearer, and the
+//! [`Bearer`] abstraction the native BLE shims implement. See DESIGN.md §4, §5, §11.
 
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::BundleId;
+use crate::crypto::{Identity, XPubKeyBytes};
 use crate::error::{Error, Result};
-// NN uses no static keys, so no `Identity` is needed to build a link handshake.
 
-/// Noise handshake pattern for link sessions: **anonymous** (NN — no static keys),
-/// X25519 ephemeral DH, ChaCha20-Poly1305 AEAD, BLAKE2s hashing. Establishes a
-/// confidential channel without revealing either party's address. Authentication, when
-/// wanted, is layered on top via a signed identity record bound to [`handshake_hash`].
-pub const NOISE_PARAMS: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
+/// Noise handshake pattern for link sessions: mutual static-key authentication
+/// (XX), X25519 DH, ChaCha20-Poly1305 AEAD, BLAKE2s hashing. Both peers learn and
+/// authenticate each other's X25519 static key ([`Identity::x_public`]).
+pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 fn noise_err(_e: snow::Error) -> Error {
     Error::Crypto("noise link error")
 }
 
-/// One side of an in-progress Noise NN handshake. Drive it by alternately calling
+/// One side of an in-progress Noise XX handshake. Drive it by alternately calling
 /// [`write`](LinkHandshake::write) / [`read`](LinkHandshake::read) with the peer
 /// until [`is_finished`](LinkHandshake::is_finished), then [`into_session`].
 ///
-/// NN is two messages: initiator `-> e`; responder `<- e, ee`. After it completes,
-/// each side holds a fresh symmetric session over an anonymous channel — neither
-/// learned the other's identity. Capture [`handshake_hash`](LinkHandshake::handshake_hash)
-/// before [`into_session`] to bind any later identity proof to this exact channel.
+/// XX is three messages: initiator `-> e`; responder `<- e, ee, s, es`; initiator
+/// `-> s, se`. After it completes, each side has authenticated the other's static
+/// key and holds a fresh symmetric session.
 pub struct LinkHandshake {
     inner: snow::HandshakeState,
 }
 
 impl LinkHandshake {
     /// Begin a handshake as the initiator (the side that dials).
-    pub fn initiator() -> Result<Self> {
-        Self::build(true)
+    pub fn initiator(identity: &Identity) -> Result<Self> {
+        Self::build(identity, true)
     }
 
     /// Begin a handshake as the responder (the side that accepts).
-    pub fn responder() -> Result<Self> {
-        Self::build(false)
+    pub fn responder(identity: &Identity) -> Result<Self> {
+        Self::build(identity, false)
     }
 
-    fn build(initiator: bool) -> Result<Self> {
+    fn build(identity: &Identity, initiator: bool) -> Result<Self> {
         let params: snow::params::NoiseParams =
             NOISE_PARAMS.parse().map_err(|_| Error::Crypto("noise params"))?;
-        let builder = snow::Builder::new(params);
+        let secret = identity.link_secret();
+        let builder = snow::Builder::new(params).local_private_key(&secret);
         let inner = if initiator {
             builder.build_initiator()
         } else {
@@ -85,17 +76,10 @@ impl LinkHandshake {
         self.inner.is_handshake_finished()
     }
 
-    /// The Noise handshake hash — a transcript-binding value identical on both ends of
-    /// this channel and unique to it. Used as the channel binding an opt-in identity
-    /// proof signs over, so a man-in-the-middle (who runs a *different* handshake with
-    /// each side) can't relay one side's identity record onto the other's link. Call
-    /// before [`into_session`] consumes the handshake.
-    pub fn handshake_hash(&self) -> [u8; 32] {
-        let mut h = [0u8; 32];
-        let src = self.inner.get_handshake_hash();
-        let n = src.len().min(32);
-        h[..n].copy_from_slice(&src[..n]);
-        h
+    /// The peer's authenticated X25519 static key, once the handshake has revealed
+    /// it. Map this to a node identity (see [`Identity::x_public`]).
+    pub fn remote_static(&self) -> Option<XPubKeyBytes> {
+        self.inner.get_remote_static().and_then(|s| s.try_into().ok())
     }
 
     /// Promote a finished handshake into an encrypted transport [`LinkSession`].
@@ -127,6 +111,11 @@ impl LinkSession {
         let n = self.inner.read_message(ciphertext, &mut buf).map_err(noise_err)?;
         buf.truncate(n);
         Ok(buf)
+    }
+
+    /// The peer's authenticated X25519 static key.
+    pub fn remote_static(&self) -> Option<XPubKeyBytes> {
+        self.inner.get_remote_static().and_then(|s| s.try_into().ok())
     }
 }
 
@@ -261,21 +250,27 @@ mod tests {
     }
 
     #[test]
-    fn noise_nn_handshake_is_anonymous_and_encrypts() {
-        let mut hi = LinkHandshake::initiator().unwrap();
-        let mut hr = LinkHandshake::responder().unwrap();
+    fn noise_xx_handshake_authenticates_and_encrypts() {
+        let alice = Identity::generate();
+        let bob = Identity::generate();
 
-        // NN message flow: no static keys, so no identity leaks during the handshake.
+        let mut hi = LinkHandshake::initiator(&alice).unwrap();
+        let mut hr = LinkHandshake::responder(&bob).unwrap();
+
+        // XX message flow.
         let m1 = hi.write(&[]).unwrap(); // -> e
         hr.read(&m1).unwrap();
-        let m2 = hr.write(&[]).unwrap(); // <- e, ee
+        let m2 = hr.write(&[]).unwrap(); // <- e, ee, s, es
         hi.read(&m2).unwrap();
+        let m3 = hi.write(&[]).unwrap(); // -> s, se
+        hr.read(&m3).unwrap();
 
         assert!(hi.is_finished() && hr.is_finished());
 
-        // Both ends derive the same channel-binding hash (used to bind opt-in identity).
-        assert_eq!(hi.handshake_hash(), hr.handshake_hash());
-        assert_ne!(hi.handshake_hash(), [0u8; 32]);
+        // Each side authenticated the other's X25519 static key = its address-bound
+        // sealing key.
+        assert_eq!(hi.remote_static().unwrap(), crate::crypto::address_to_x(&bob.address()).unwrap());
+        assert_eq!(hr.remote_static().unwrap(), crate::crypto::address_to_x(&alice.address()).unwrap());
 
         let mut si = hi.into_session().unwrap();
         let mut sr = hr.into_session().unwrap();
@@ -290,25 +285,14 @@ mod tests {
     }
 
     #[test]
-    fn independent_handshakes_bind_to_different_channels() {
-        // Two separate NN handshakes yield different binding hashes — the property a
-        // MITM relaying an identity record between two distinct links would violate.
-        let mk = || {
-            let mut hi = LinkHandshake::initiator().unwrap();
-            let mut hr = LinkHandshake::responder().unwrap();
-            hr.read(&hi.write(&[]).unwrap()).unwrap();
-            hi.read(&hr.write(&[]).unwrap()).unwrap();
-            hi.handshake_hash()
-        };
-        assert_ne!(mk(), mk());
-    }
-
-    #[test]
     fn tampered_link_ciphertext_is_rejected() {
-        let mut hi = LinkHandshake::initiator().unwrap();
-        let mut hr = LinkHandshake::responder().unwrap();
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let mut hi = LinkHandshake::initiator(&alice).unwrap();
+        let mut hr = LinkHandshake::responder(&bob).unwrap();
         hr.read(&hi.write(&[]).unwrap()).unwrap();
         hi.read(&hr.write(&[]).unwrap()).unwrap();
+        hr.read(&hi.write(&[]).unwrap()).unwrap();
         let mut si = hi.into_session().unwrap();
         let mut sr = hr.into_session().unwrap();
 

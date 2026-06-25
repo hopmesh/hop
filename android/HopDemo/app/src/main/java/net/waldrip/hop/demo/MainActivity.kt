@@ -669,7 +669,7 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                         // relayed==0 with peers around isn't "awaiting peers" — it's awaiting the
                         // forward-secret session with THIS recipient (require-ratchet). Only with no
                         // reachable peers is it genuinely awaiting peers.
-                        SendingIndicator(m.sentAt, peersReachable = bearer.peers.isNotEmpty() || bearer.linkCount.intValue > 0)
+                        SendingIndicator(m.sentAt, peersReachable = bearer.peers.isNotEmpty())
                     } else {
                         Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
                     }
