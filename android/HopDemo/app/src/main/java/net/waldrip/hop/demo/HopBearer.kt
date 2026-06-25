@@ -996,7 +996,8 @@ class HopBearer private constructor(private val context: Context) {
                 .put("addr", addressBase58(p.address)).put("name", p.name)
                 .put("platform", p.platform).put("app", p.app))
         }
-        runCatching { contactsFile.writeText(arr.toString()) }
+        val json = arr.toString()
+        thread(name = "save-contacts") { runCatching { contactsFile.writeText(json) } }  // off the main thread
     }
     private fun loadContacts() {
         val txt = runCatching { contactsFile.readText() }.getOrNull() ?: return

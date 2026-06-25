@@ -140,10 +140,10 @@ private fun SendingIndicator(sentAt: Long) {
             delay(1000)
         }
     }
-    val pulse = rememberInfiniteTransition(label = "pulse")
-    val alpha by pulse.animateFloat(
-        initialValue = 1f, targetValue = 0.3f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "alpha")
+    // Pulse driven by the 1-second tick (alternating alpha, smoothly faded) — NOT a continuous
+    // 60fps infiniteTransition. The latter kept Compose from ever going idle, which blocked the
+    // soft keyboard from opening in the chat composer. This settles between ticks.
+    val alpha by animateFloatAsState(if (elapsed % 2 == 0L) 1f else 0.35f, label = "pulse")
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFFF9500).copy(alpha = alpha)))
         Spacer(Modifier.width(5.dp))
