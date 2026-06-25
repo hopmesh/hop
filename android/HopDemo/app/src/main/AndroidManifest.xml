@@ -32,6 +32,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Cloud relay bearer (TCP/WebSocket to hop-relayd over the internet). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Scan a contact's QR code (zxing-android-embedded). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:label="Hop Debug"

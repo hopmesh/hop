@@ -97,6 +97,15 @@ final class HopBearer: NSObject, ObservableObject {
 
     @Published var myAddress = ""
     @Published var myName = ""
+    /// Privacy: when on, we stop broadcasting our presence advert (name + address), so we don't
+    /// show up by name in others' nearby lists. We stay fully relay-capable and reachable by anyone
+    /// who already has our address (e.g. via a scanned QR / manual add). Persisted.
+    @Published var privateMode: Bool = UserDefaults.standard.bool(forKey: "hop.privateMode") {
+        didSet {
+            UserDefaults.standard.set(privateMode, forKey: "hop.privateMode")
+            if privateMode { retractPresence() } else { publishPresence() }
+        }
+    }
     @Published var idNote = ""   // identity persistence outcome (diagnostic)
     @Published var status = "starting…" { didSet { NSLog("HOPLOG status: \(status)") } }
     @Published var reachable: [Peer] = []   // discovered now (direct + mesh)
@@ -367,11 +376,21 @@ final class HopBearer: NSObject, ObservableObject {
     /// rename propagates. The advert's publisher field is our address — that's all a
     /// peer needs to seal a message back to us (DESIGN.md §4, §23).
     private func publishPresence() {
+        guard !privateMode else { return }   // private: don't broadcast our name/address
         // summary carries app-level metadata: "state|platform|app".
         let meta = "\(appActive ? "fg" : "bg")|ios|\(HopBearer.appName)"
         _ = try? node.publishService(service: HopBearer.presenceService,
                                      title: myName, summary: meta, tags: [],
                                      ttlMs: HopBearer.presenceTtlMs)
+    }
+
+    /// Supersede our live presence with a near-instantly-expiring one so peers drop our name now
+    /// (rather than waiting out the old advert's TTL) when we switch to private.
+    private func retractPresence() {
+        let meta = "\(appActive ? "fg" : "bg")|ios|\(HopBearer.appName)"
+        _ = try? node.publishService(service: HopBearer.presenceService,
+                                     title: myName, summary: meta, tags: [], ttlMs: 1000)
+        pump()
     }
 
     func backgroundTick() {

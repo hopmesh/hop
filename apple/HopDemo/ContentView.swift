@@ -42,6 +42,8 @@ struct ContentView: View {
     @State private var relayField = ""
     @State private var hopsField = ""
     @State private var showAddContact = false
+    @State private var showScan = false
+    @State private var showMyQR = false
 
     private var deviceName: String {
         #if canImport(UIKit)
@@ -117,14 +119,18 @@ struct ContentView: View {
                 ChatView(bearer: bearer, peer: peer)
             }
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showAddContact = true } label: {
-                        Image(systemName: "person.badge.plus")
-                    }
-                    .accessibilityLabel("Add contact")
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button { showMyQR = true } label: { Image(systemName: "qrcode") }
+                        .accessibilityLabel("My QR code")
+                    Button { showScan = true } label: { Image(systemName: "qrcode.viewfinder") }
+                        .accessibilityLabel("Scan a contact")
+                    Button { showAddContact = true } label: { Image(systemName: "person.badge.plus") }
+                        .accessibilityLabel("Add contact")
                 }
             }
             .sheet(isPresented: $showAddContact) { AddContactView(bearer: bearer) }
+            .sheet(isPresented: $showMyQR) { QRRevealView(address: bearer.myAddress, name: bearer.myName) }
+            .sheet(isPresented: $showScan) { QRScanSheet(bearer: bearer) }
         }
     }
 
@@ -199,7 +205,22 @@ struct ContentView: View {
                     LabeledContent("Address", value: bearer.myAddress).monospaced()
                     LabeledContent("Status", value: bearer.status).font(.caption)
                     LabeledContent("Identity", value: bearer.idNote).font(.caption)
+                    HStack {
+                        Button { showMyQR = true } label: { Label("My QR", systemImage: "qrcode") }
+                        Spacer()
+                        Button { showScan = true } label: { Label("Scan", systemImage: "qrcode.viewfinder") }
+                    }.buttonStyle(.bordered).font(.caption)
                 }
+
+                Section {
+                    Toggle(isOn: $bearer.privateMode) {
+                        Text("Private mode")
+                        Text(bearer.privateMode
+                             ? "Not broadcasting your name. Reachable only by people who have your address (scan your QR). Still relays for everyone."
+                             : "Discoverable: broadcasting your name to nearby devices.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: { Text("Privacy") }
 
                 Section {
                     HStack {

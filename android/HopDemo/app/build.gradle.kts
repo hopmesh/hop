@@ -45,4 +45,8 @@ dependencies {
     // Cloud relay bearer: WebSocket (path B, wss:// → Cloud Run) + the okio ByteString
     // it speaks. Raw-TCP relay (path A) uses plain java.net.Socket.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // QR identity exchange: zxing core encodes our address to a QR; zxing-android-embedded is a
+    // drop-in camera scanner to add a contact from someone else's QR.
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
