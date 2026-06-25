@@ -132,7 +132,7 @@ private fun messageMeta(m: HopBearer.Message): String {
 /// peers · Ns" timer, so it reads as "working, holding for a peer" instead of a static, alarming
 /// "Sending…". Flips to the peer hand-off count (messageMeta) once relayed > 0.
 @Composable
-private fun SendingIndicator(sentAt: Long) {
+private fun SendingIndicator(sentAt: Long, peersReachable: Boolean) {
     var elapsed by remember(sentAt) { mutableStateOf(0L) }
     LaunchedEffect(sentAt) {
         while (true) {
@@ -144,10 +144,12 @@ private fun SendingIndicator(sentAt: Long) {
     // 60fps infiniteTransition. The latter kept Compose from ever going idle, which blocked the
     // soft keyboard from opening in the chat composer. This settles between ticks.
     val alpha by animateFloatAsState(if (elapsed % 2 == 0L) 1f else 0.35f, label = "pulse")
+    // With peers around, the holdup is the recipient's forward-secret session, not peer availability.
+    val label = if (peersReachable) "Securing" else "Awaiting peers"
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFFF9500).copy(alpha = alpha)))
         Spacer(Modifier.width(5.dp))
-        Text("Awaiting peers · ${elapsed}s", style = MaterialTheme.typography.bodySmall,
+        Text("$label · ${elapsed}s", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -602,7 +604,10 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.clickable { bearer.retry(m, peer) })
                     } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
-                        SendingIndicator(m.sentAt)   // pulsing + live timer instead of a static "Sending…"
+                        // relayed==0 with peers around isn't "awaiting peers" — it's awaiting the
+                        // forward-secret session with THIS recipient (require-ratchet). Only with no
+                        // reachable peers is it genuinely awaiting peers.
+                        SendingIndicator(m.sentAt, peersReachable = bearer.peers.isNotEmpty())
                     } else {
                         Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
                     }

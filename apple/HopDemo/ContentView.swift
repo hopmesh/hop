@@ -416,15 +416,18 @@ struct ContentView: View {
 /// alarming "Sending…". Flips to the peer hand-off count (in `meta`) once relayed > 0.
 struct SendingIndicator: View {
     let sentAt: Date
+    var peersReachable: Bool = false
     @State private var pulse = false
     var body: some View {
+        // With peers around, the holdup is the recipient's forward-secret session, not peer availability.
+        let label = peersReachable ? "Securing" : "Awaiting peers"
         HStack(spacing: 5) {
             Circle().fill(.orange).frame(width: 6, height: 6)
                 .scaleEffect(pulse ? 1.0 : 0.55)
                 .opacity(pulse ? 1.0 : 0.35)
                 .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text("Awaiting peers · \(max(0, Int(ctx.date.timeIntervalSince(sentAt))))s")
+                Text("\(label) · \(max(0, Int(ctx.date.timeIntervalSince(sentAt))))s")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -495,9 +498,10 @@ struct ChatView: View {
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(.red)
                             } else if !m.incoming && !m.delivered && m.relayed == 0 {
-                                // In flight, not yet handed to any peer: reassure with a live pulse + timer
-                                // rather than a static "Sending…" that reads like it's stuck.
-                                SendingIndicator(sentAt: m.sentAt)
+                                // In flight, not yet handed to any peer. With peers around, the holdup is
+                                // the recipient's forward-secret session, not peer availability — only with
+                                // no reachable peers is it genuinely "Awaiting peers".
+                                SendingIndicator(sentAt: m.sentAt, peersReachable: !bearer.reachable.isEmpty)
                             } else {
                                 Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
                             }
