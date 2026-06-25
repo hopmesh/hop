@@ -278,6 +278,7 @@ final class HopBearer: NSObject, ObservableObject {
         guard !started else { return }
         started = true
         loadMessages()   // restore chat history from the previous run
+        loadContacts()   // restore the address book so past conversations are reachable when offline
         loadChannels()   // restore channel (hps) message threads
         loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
         myName = name
@@ -428,6 +429,7 @@ final class HopBearer: NSObject, ObservableObject {
         } else {
             userNamed.insert(addr) // keep my alias
         }
+        saveContacts(force: true)
         pump()
         return true
     }
@@ -444,6 +446,7 @@ final class HopBearer: NSObject, ObservableObject {
     }
 
     func send(_ text: String, to peer: Peer) {
+        rememberContact(peer)   // messaging someone adds them to your address book
         let id = try? node.sendMessage(dst: peer.address,
                                        contentType: "text/plain; charset=utf-8", body: Data(text.utf8),
                                        requestAck: true)
@@ -456,6 +459,7 @@ final class HopBearer: NSObject, ObservableObject {
     /// the body — the core auto-streams it in chunks if it's too big for one bundle, and
     /// the far side reassembles it back into one message (DESIGN.md §20).
     func sendImage(_ data: Data, to peer: Peer) {
+        rememberContact(peer)
         let id = try? node.sendMessage(dst: peer.address,
                                        contentType: "image/jpeg", body: data,
                                        requestAck: true)
@@ -1447,6 +1451,44 @@ final class HopBearer: NSObject, ObservableObject {
         loadingMessages = false
     }
 
+    // MARK: - Address book persistence (past conversations survive restart + going out of range)
+
+    private struct StoredContact: Codable { var address: Data; var name: String; var platform: String; var app: String }
+    private static var contactsFileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("contacts.json")
+    }
+    private var lastContactSaveAt = Date.distantPast
+    /// Persist the address book, throttled (refresh runs often). Anyone we've seen, messaged, or
+    /// been messaged by is kept, so their conversation is reachable even when offline / out of range.
+    /// Add a peer to the address book and persist immediately (e.g. on send / manual add) so the
+    /// conversation is reachable even if we quit before the next throttled save.
+    func rememberContact(_ peer: Peer) {
+        if contacts[peer.address] == nil { contacts[peer.address] = peer }
+        nameByAddr[peer.address] = peer.name
+        saveContacts(force: true)
+    }
+    private func saveContacts(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastContactSaveAt) > 4 else { return }
+        lastContactSaveAt = Date()
+        let snapshot = contacts.values.map {
+            StoredContact(address: $0.address, name: $0.name, platform: $0.platform, app: $0.app)
+        }
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: HopBearer.contactsFileURL, options: .atomic)
+        }
+    }
+    private func loadContacts() {
+        guard let data = try? Data(contentsOf: HopBearer.contactsFileURL),
+              let stored = try? JSONDecoder().decode([StoredContact].self, from: data) else { return }
+        for c in stored where contacts[c.address] == nil {
+            contacts[c.address] = Peer(address: c.address, name: c.name, hops: 0,
+                                       active: false, platform: c.platform, app: c.app)
+            nameByAddr[c.address] = c.name
+        }
+    }
+
     private var refreshScheduled = false
 
     /// Coalesced UI refresh. `refresh()` does synchronous SQLite work (browse, queue, per-message
@@ -1502,13 +1544,15 @@ final class HopBearer: NSObject, ObservableObject {
         // peer keeps its position.
         reachable = byAddr.values.sorted { $0.address.lexicographicallyPrecedes($1.address) }
 
-        // Accumulate everyone we've ever seen this session into the contact book;
-        // those not currently reachable form the "seen" list.
+        // Accumulate everyone we've ever seen into the (persisted) contact book; those not
+        // currently reachable form the "seen" list — reachable across restarts + out-of-range.
         for (addr, peer) in byAddr { contacts[addr] = peer }
         let here = Set(byAddr.keys)
         seen = contacts.filter { !here.contains($0.key) }
-            .map { Peer(address: $0.key, name: $0.value.name, hops: 0) }
+            .map { Peer(address: $0.key, name: $0.value.name, hops: 0,
+                        active: false, platform: $0.value.platform, app: $0.value.app) }
             .sorted { $0.address.lexicographicallyPrecedes($1.address) }
+        saveContacts()   // throttled — persist the address book
 
         // Which contacts we're talking to over a forward-secret session (lock icon).
         secured = Set(contacts.keys.filter { node.isSecured(address: $0) })

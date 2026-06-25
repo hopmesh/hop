@@ -516,10 +516,11 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
     fun isDirect(p: HopBearer.Peer): Boolean = p.hops <= 1u
     val direct = bearer.peers.filter { isDirect(it) }
     val mesh = bearer.peers.filter { !isDirect(it) }
+    val offline = bearer.seen   // address book entries not currently reachable
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Chats", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
-        if (bearer.peers.isEmpty()) Text("looking for others…")
+        if (bearer.peers.isEmpty() && offline.isEmpty()) Text("looking for others…")
         LazyColumn {
             item { Text("Nearby (direct)", style = MaterialTheme.typography.titleMedium) }
             if (direct.isEmpty()) item { Text("none", style = MaterialTheme.typography.bodySmall) }
@@ -527,6 +528,10 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
             item { Spacer(Modifier.height(12.dp)); Text("In the mesh (relayed)", style = MaterialTheme.typography.titleMedium) }
             if (mesh.isEmpty()) item { Text("none", style = MaterialTheme.typography.bodySmall) }
             items(mesh) { p -> PeerRow(bearer, p, onPick) }
+            if (offline.isNotEmpty()) {
+                item { Spacer(Modifier.height(12.dp)); Text("Conversations & seen (offline)", style = MaterialTheme.typography.titleMedium) }
+                items(offline) { p -> PeerRow(bearer, p, onPick) }
+            }
         }
     }
 }
