@@ -110,6 +110,11 @@ pub const DEFAULT_RETX_INTERVAL_MS: u64 = 30_000;
 /// for the rest of the bundle's lifetime.
 pub const MAX_RETX_INTERVAL_MS: u64 = 900_000;
 
+/// How often to re-gossip adverts (prekeys/presence) over already-up links, so a forward-secret
+/// session can form without a reconnect (the "move out of range and back to send" bug). Cheap —
+/// receivers dedup unchanged adverts.
+pub const REGOSSIP_INTERVAL_MS: u64 = 12_000;
+
 /// How many distinct peers a delivery-ACK is replicated to before it stops spreading
 /// (DESIGN.md §7). Until then it rides along to every new contact — the ACK both confirms
 /// delivery and vaccinates the mesh, so it's worth replicating, but bounded.
@@ -349,6 +354,9 @@ pub struct Node<S: Store = MemoryStore> {
     router: SprayAndWait,
     pub directory: Directory,
     now_ms: u64,
+    /// Last time we re-gossiped adverts to all live links (so prekeys/presence propagate over
+    /// STABLE links, not just at link-up — see the re-gossip in `tick`).
+    last_regossip_ms: u64,
     links: HashMap<LinkId, LinkState>,
     outgoing: Vec<(LinkId, Vec<u8>)>,
     inbox: Vec<Bundle>,
@@ -558,6 +566,7 @@ impl<S: Store> Node<S> {
             router: SprayAndWait::new(),
             directory: Directory::new(),
             now_ms: 0,
+            last_regossip_ms: 0,
             links: HashMap::new(),
             outgoing: Vec::new(),
             inbox: Vec::new(),
@@ -2269,6 +2278,22 @@ impl<S: Store> Node<S> {
         self.carrier_owner.retain(|cid, _| self.store.contains(cid));
         // Forget deferred-content aliases once their real bundle is gone (delivered/expired).
         self.tx_alias.retain(|real, _| self.store.contains(real) || self.pending.contains_key(real));
+        // Periodically RE-gossip adverts to every live link. Adverts (presence, and crucially
+        // prekeys, §25) are otherwise offered only once per link — at link-up — so a node that
+        // didn't have a peer's prekey at connect time could never open a forward-secret session to
+        // it until a RECONNECT forced a fresh gossip. That's the "you have to move out of range and
+        // back to send a message" bug — and it's transport-agnostic (BLE, Wi-Fi, relay alike). This
+        // re-offers over stable links so the prekey arrives without churning the connection; the
+        // receiver dedups unchanged adverts, so it's cheap. (DESIGN.md §16/§25.)
+        if now_ms.saturating_sub(self.last_regossip_ms) >= REGOSSIP_INTERVAL_MS {
+            self.last_regossip_ms = now_ms;
+            for state in self.links.values_mut() {
+                if let LinkState::Up(est) = state {
+                    est.sent_adverts.clear();
+                }
+            }
+            self.offer_adverts_to_all();
+        }
         // Retry any content still waiting on a prekey (it gossips, §25).
         self.flush_pending_content();
         // ACK bookkeeping: forget replication tracking for ACKs no longer held, and age
