@@ -1,0 +1,46 @@
+---
+// Docs shell — persistent left sidebar + content column (Stripe/Firebase style).
+// Pages render their article body into the default slot.
+import Base from './Base.astro';
+import { docsNav } from '../data/docs-nav.js';
+const { title, description } = Astro.props;
+const norm = (h) => (h.replace(/\/+$/, '') || '/');
+const cur = norm(Astro.url.pathname);
+---
+<Base title={title} description={description} path="/docs">
+  <div class="docs-shell">
+    <button class="docs-menu-btn" type="button" aria-expanded="false" aria-controls="docs-side">
+      <i class="fa-duotone fa-solid fa-bars"></i> Documentation
+    </button>
+    <aside class="docs-side" id="docs-side">
+      <nav>
+        {docsNav.map((g) => (
+          <div class="docs-grp">
+            <div class="docs-grp-t">{g.title}</div>
+            <ul>
+              {g.items.map((it) => (
+                <li><a href={it.href} class:list={["docs-link", { active: cur === norm(it.href) }]}>{it.label}</a></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+    </aside>
+    <main class="docs-main">
+      <article class="docs-article">
+        <slot />
+      </article>
+    </main>
+  </div>
+
+  <script is:inline>
+    (function () {
+      var b = document.querySelector('.docs-menu-btn'), s = document.getElementById('docs-side');
+      if (!b || !s) return;
+      b.addEventListener('click', function () {
+        var open = s.classList.toggle('open');
+        b.setAttribute('aria-expanded', open);
+      });
+    })();
+  </script>
+</Base>

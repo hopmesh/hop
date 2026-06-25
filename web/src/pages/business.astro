@@ -24,6 +24,11 @@ import Base from '../layouts/Base.astro';
     </div>
   </section>
 
+  <section style="padding:0;">
+    <img src="/scene-events.jpg" alt="A dense night crowd lit by a sea of phone screens" width="1408" height="792" loading="eager"
+      style="width:100%;max-height:420px;object-fit:cover;display:block;border-top:1px solid var(--line);border-bottom:1px solid var(--line);" />
+  </section>
+
   <!-- where it fits -->
   <section class="band band-soft">
     <div class="wrap">
@@ -34,12 +39,12 @@ import Base from '../layouts/Base.astro';
            a Hop mesh turns the crowd itself into the network.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic">🎪</div><h3>Events &amp; venues</h3><p>Stadiums and festivals where 50,000 phones crush the cell network. Hop relays peer to peer instead of fighting for a tower.</p></div>
-        <div class="card"><div class="ic">🛰️</div><h3>Field operations</h3><p>Crews, sensors, and assets spread past coverage. Data hops back to whichever node has a link, then bridges home.</p></div>
-        <div class="card"><div class="ic">⚓</div><h3>Maritime &amp; transit</h3><p>Ships, fleets, and remote routes with intermittent satellite. Messages queue and deliver on the next window — eventually, reliably.</p></div>
-        <div class="card"><div class="ic">🏔️</div><h3>Rural &amp; remote</h3><p>Communities past the last tower. People become the network for each other, and one online device connects the whole island.</p></div>
-        <div class="card"><div class="ic">🆘</div><h3>Response &amp; resilience</h3><p>When infrastructure fails, a Hop mesh keeps standing — no central server to lose, sealed end to end.</p></div>
-        <div class="card"><div class="ic">🏭</div><h3>Industrial &amp; campus</h3><p>Sites where wiring every corner is impractical. Devices relay through each other across the floor or the yard.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-people-group"></i></div><h3>Events &amp; venues</h3><p>Stadiums and festivals where 50,000 phones crush the cell network. Hop relays peer to peer instead of fighting for a tower.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div><h3>Field operations</h3><p>Crews, sensors, and assets spread past coverage. Data hops back to whichever node has a link, then bridges home.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-anchor"></i></div><h3>Maritime &amp; transit</h3><p>Ships, fleets, and remote routes with intermittent satellite. Messages queue and deliver on the next window — eventually, reliably.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-mountain-sun"></i></div><h3>Rural &amp; remote</h3><p>Communities past the last tower. People become the network for each other, and one online device connects the whole island.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-tower-broadcast"></i></div><h3>Response &amp; resilience</h3><p>When infrastructure fails, a Hop mesh keeps standing — no central server to lose, sealed end to end.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-industry"></i></div><h3>Industrial &amp; campus</h3><p>Sites where wiring every corner is impractical. Devices relay through each other across the floor or the yard.</p></div>
       </div>
       <a class="door" href="/public-safety-defense/" style="margin-top:18px;">
         <div class="kicker">Public safety &amp; defense</div>
@@ -70,10 +75,10 @@ import Base from '../layouts/Base.astro';
           </ul>
         </div>
         <div class="grid-2" style="gap:14px;">
-          <div class="card lit"><div class="ic">🔐</div><h3>Keyed access</h3><p>Every connection carries a signed access key. Anonymous traffic can't even reach your fleet.</p></div>
-          <div class="card"><div class="ic">📊</div><h3>Metered &amp; attributed</h3><p>Usage is measured per tenant on the sealed envelope — volume, not content.</p></div>
-          <div class="card"><div class="ic">🌐</div><h3>Anycast entrance</h3><p>One name, many regions. Devices land on the nearest node automatically.</p></div>
-          <div class="card"><div class="ic">🧱</div><h3>Private fleets</h3><p>Run the same backbone on your own infrastructure, fully isolated.</p></div>
+          <div class="card lit"><div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div><h3>Keyed access</h3><p>Every connection carries a signed access key. Anonymous traffic can't even reach your fleet.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-chart-simple"></i></div><h3>Metered &amp; attributed</h3><p>Usage is measured per tenant on the sealed envelope — volume, not content.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-globe"></i></div><h3>Anycast entrance</h3><p>One name, many regions. Devices land on the nearest node automatically.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-server"></i></div><h3>Private fleets</h3><p>Run the same backbone on your own infrastructure, fully isolated.</p></div>
         </div>
       </div>
     </div>
@@ -88,7 +93,7 @@ import Base from '../layouts/Base.astro';
       </div>
       <div class="grid-2">
         <div class="card">
-          <div class="ic">☁️</div>
+          <div class="ic"><i class="fa-duotone fa-solid fa-cloud"></i></div>
           <h3>Managed backbone</h3>
           <p>Use Hop's global fleet with a free tier to start and usage-based pricing as
              you grow. Keyed access, per-tenant metering, regional reliability — and
@@ -96,7 +101,7 @@ import Base from '../layouts/Base.astro';
           <p class="mt-s"><a class="link-go" href="/pricing/">See pricing →</a></p>
         </div>
         <div class="card">
-          <div class="ic">🏢</div>
+          <div class="ic"><i class="fa-duotone fa-solid fa-building"></i></div>
           <h3>Private fleet &amp; licensing</h3>
           <p>For products outside the FSL's non-compete terms, or deployments that must
              stay on your own infrastructure: a commercial license, a private relay

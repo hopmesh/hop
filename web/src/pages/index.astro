@@ -1,10 +1,11 @@
 ---
 import Base from '../layouts/Base.astro';
 import ScenarioPlayer from '../components/ScenarioPlayer.astro';
+import CodeTabs from '../components/CodeTabs.astro';
 ---
 <Base
   title="Hop — the network that finds a way"
-  description="Hop is a delay-tolerant mesh: end-to-end encrypted datagrams that hop device to device — over Bluetooth and the internet — until they reach the person or service you meant. Held, never dropped. One transport every offline app builds on."
+  description="Hop is a delay-tolerant mesh: end-to-end encrypted datagrams that hop device to device — over BLE, Wi-Fi, and the internet — until they reach the person or service you meant. Held, never dropped. One transport every offline app builds on."
   path="/"
 >
   <!-- hero: the scenario player is the pitch -->
@@ -13,11 +14,11 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
       <div class="eyebrow" style="margin-bottom:14px;">Delay-tolerant mesh transport</div>
       <h1 style="max-width:none;margin:0 auto;">The network that finds a way.</h1>
       <p class="lede" style="margin:20px auto 0;">
-        Encrypted datagrams hop device to device — over Bluetooth and the internet — until they
+        Encrypted datagrams hop device to device — over BLE, Wi-Fi, and the internet — until they
         reach the person or service you meant. No tower required. Held, never dropped.
       </p>
       <div class="hero-cta" style="justify-content:center;">
-        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-primary" href="/docs/quickstart/">Quickstart →</a>
         <a class="btn btn-ghost" href="/protocol/">Read the protocol</a>
       </div>
     </div>
@@ -26,6 +27,19 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
   <section style="padding-bottom:clamp(40px,6vw,72px);">
     <div class="wrap">
       <ScenarioPlayer />
+    </div>
+  </section>
+
+  <!-- full-bleed value band -->
+  <section class="fullband">
+    <img src="/band-hero.jpg" alt="A dark valley at night, a distant town glowing, scattered figures carrying faint signal across the expanse" width="1920" height="823" loading="lazy" />
+    <div class="fullband-ov">
+      <div class="wrap">
+        <div class="eyebrow">Delay-tolerant by design</div>
+        <h2>When the path disappears, the message keeps moving.</h2>
+        <p>Held on the devices around you, re-offered at every encounter, delivered the moment a
+           way opens. No tower. No server required.</p>
+      </div>
     </div>
   </section>
 
@@ -38,7 +52,8 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
         <p>Disaster, off-grid sensors, a region cut off, a phone with no plan — same problem: no
            reliable path, right now. Most offline products rebuild that transport and weld it to a
            single app. Hop is that layer, done once — a sealed, store-and-forward datagram. The
-           narrow waist for intermittent networks: many bearers below, many apps above.</p>
+           narrow waist for intermittent networks: many apps above, many bearers below. The core
+           only moves bytes — a thin per-platform driver runs the radios.</p>
       </div>
       <div class="layerstack">
         <div class="lrow">
@@ -49,6 +64,7 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
             <a class="lchip" href="/use-cases/files/">File transfer</a>
             <a class="lchip" href="/use-cases/web/">Offline web</a>
             <a class="lchip" href="/use-cases/telemetry/">Telemetry</a>
+            <a class="lchip" href="/use-cases/broadcast/">Alerts</a>
           </div>
         </div>
         <div class="lrow">
@@ -64,19 +80,87 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
           <span class="lvl">Waist</span>
           <div class="chips">
             <a class="lchip code" href="/protocol/hdp/">hdp://</a>
-            <a class="lchip" href="/protocol/hdp/">end-to-end encrypted, store-and-forward datagrams</a>
+            <span class="lchip">end-to-end encrypted, store-and-forward datagrams</span>
           </div>
           <span class="waisttag">the waist</span>
         </div>
         <div class="lrow bearer">
           <span class="lvl">Bearer</span>
           <div class="chips">
-            <a class="lchip" href="/protocol/ble/">Bluetooth LE</a>
-            <a class="lchip" href="/protocol/l2cap/">L2CAP</a>
-            <a class="lchip" href="/protocol/tcp/">TCP / WebSocket</a>
-            <a class="lchip" href="/protocol/bearers/">Wi-Fi Aware, Multipeer…</a>
+            <a class="lchip" href="/protocol/ble/">BLE</a>
+            <a class="lchip" href="/protocol/l2cap/">Direct channel</a>
+            <a class="lchip" href="/protocol/tcp/">Internet relay</a>
+            <a class="lchip" href="/protocol/bearers/">Wi-Fi · any transport…</a>
           </div>
         </div>
+        <div class="lrow driver">
+          <span class="lvl">Driver</span>
+          <div class="chips">
+            <a class="lchip" href="/docs/drivers/ios/">iOS</a>
+            <a class="lchip" href="/docs/drivers/android/">Android</a>
+            <a class="lchip" href="/docs/drivers/macos/">macOS</a>
+            <a class="lchip" href="/docs/drivers/esp32/">ESP32</a>
+            <a class="lchip" href="/docs/drivers/linux/">Linux · server</a>
+            <a class="lchip" href="/docs/">your platform…</a>
+          </div>
+          <span class="waisttag">drives the radios</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- where Hop runs (imagery) -->
+  <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="eyebrow">Where Hop runs</div>
+        <h2>Where the network can't be assumed.</h2>
+        <p>The same fabric, wherever coordination outruns connectivity.</p>
+      </div>
+      <div class="scenes">
+        <a class="scene" href="/business/">
+          <img src="/scene-events.jpg" alt="A dense night-festival crowd, a sea of glowing phones" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Events &amp; venues</div><h3>When 50,000 phones crush the tower.</h3><p>Relay peer to peer instead of fighting for a cell.</p></div>
+        </a>
+        <a class="scene" href="/public-safety-defense/">
+          <img src="/scene-response.jpg" alt="Search-and-rescue responders coordinating on a tablet, dark city skyline" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Response &amp; defense</div><h3>Coordination when the grid goes down.</h3><p>No tower, no server — the people on scene are the network.</p></div>
+        </a>
+        <a class="scene" href="/business/">
+          <img src="/scene-expedition.jpg" alt="Hikers on a high mountain ridgeline, far from coverage" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Expedition &amp; remote</div><h3>Past the last bar of signal.</h3><p>Messages hop person to person until they reach the group.</p></div>
+        </a>
+        <a class="scene" href="/lora/">
+          <img src="/scene-maritime.jpg" alt="A marina and dark sea at dusk with a distant shoreline" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Maritime &amp; rural</div><h3>Distance a phone can't cross.</h3><p>A long-range 900 MHz bridge stretches the mesh across the gap.</p></div>
+        </a>
+        <a class="scene" href="/business/">
+          <img src="/scene-agriculture.jpg" alt="A vast farm, crop rows to the horizon, a worker far across the field" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Agriculture &amp; land</div><h3>Operations spread across kilometres.</h3><p>Sensors, vehicles, and crews stay in sync past Wi-Fi's edge.</p></div>
+        </a>
+        <a class="scene" href="/business/">
+          <img src="/scene-industrial.jpg" alt="A container yard or mine site at dusk with scattered work-lights" width="1280" height="853" loading="lazy" />
+          <div class="ov"><div class="k">Industrial &amp; sites</div><h3>Yards, mines, sites with no coverage.</h3><p>Crews and equipment relay through each other across the site.</p></div>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- drop it into your app (code toggle) -->
+  <section class="band band-soft">
+    <div class="wrap">
+      <div class="grid-2" style="align-items:center; gap:44px;">
+        <div>
+          <div class="eyebrow">Drop it into your app</div>
+          <h2>One core. iOS, Android, Rust.</h2>
+          <p class="lede">A pure-Rust core with native bindings via UniFFI. Open a node from a key,
+             address a sealed payload, drain your inbox — the mesh handles relaying, custody, and delivery.</p>
+          <div class="hero-cta">
+            <a class="btn btn-primary" href="/docs/quickstart/">Quickstart →</a>
+            <a class="btn btn-ghost" href="/developers/">For developers</a>
+          </div>
+        </div>
+        <div><CodeTabs /></div>
       </div>
     </div>
   </section>
@@ -119,37 +203,13 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
     </div>
   </section>
 
-  <!-- audience doors -->
-  <section class="band band-soft">
-    <div class="wrap">
-      <div class="doors">
-        <a class="door" href="/developers/">
-          <div class="kicker">For developers</div>
-          <h3>Put your app on the mesh.</h3>
-          <p>A pure-Rust core with iOS &amp; Android bindings, HTTP-over-mesh (<code>hops://</code>),
-             pub/sub, and DNSSEC-backed naming. Embed it and your app keeps working when the
-             network doesn't.</p>
-          <div class="go">Explore the SDK →</div>
-        </a>
-        <a class="door" href="/business/">
-          <div class="kicker">For business</div>
-          <h3>Connectivity that doesn't depend on connectivity.</h3>
-          <p>Events, field operations, maritime, rural, response, public safety &amp; defense. Run on
-             the managed backbone, or stand up a private fleet of your own — licensing and support
-             included.</p>
-          <div class="go">See solutions →</div>
-        </a>
-      </div>
-    </div>
-  </section>
-
   <!-- cta -->
   <section class="cta-band">
     <div class="wrap">
       <h2>Build for where the network goes dark.</h2>
       <p>Embed the free SDK today. Add the cloud backbone when you need to reach across the world.</p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
+        <a class="btn btn-primary" href="/docs/quickstart/">Quickstart →</a>
         <a class="btn btn-ghost" href="/pricing/">See pricing</a>
       </div>
     </div>

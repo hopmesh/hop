@@ -7,6 +7,10 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
   site: 'https://hopme.sh',
   integrations: [sitemap()],
+  // Quickstart moved into the docs site; keep the old URL working.
+  redirects: {
+    '/quickstart': '/docs/quickstart/',
+  },
   build: {
     // Pretty URLs: src/pages/developers.astro -> /developers/ . Most static
     // hosts and CDNs resolve the directory index; switch to 'file' for plain

@@ -24,6 +24,11 @@ import Base from '../layouts/Base.astro';
     </div>
   </section>
 
+  <section style="padding:0;">
+    <img src="/scene-response.jpg" alt="Responders coordinating on a tablet against a dark, powerless skyline" width="1408" height="792" loading="eager"
+      style="width:100%;max-height:420px;object-fit:cover;display:block;border-top:1px solid var(--line);border-bottom:1px solid var(--line);" />
+  </section>
+
   <!-- where it fits -->
   <section class="band band-soft">
     <div class="wrap">
@@ -34,12 +39,12 @@ import Base from '../layouts/Base.astro';
            on scene become the network for each other.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic">🆘</div><h3>Incident response</h3><p>A collapsed tower or a flooded region. Responders and survivors coordinate on-site, phone to phone, even with no uplink anywhere.</p></div>
-        <div class="card"><div class="ic">🧭</div><h3>Search &amp; rescue</h3><p>Teams strung across terrain with no coverage. Position and status hop up the line to the lead, over whichever path clears first.</p></div>
-        <div class="card"><div class="ic">🔥</div><h3>Wildland fire</h3><p>Crews past the last repeater. Traffic relays back to whatever node has a link, then bridges home the moment one appears.</p></div>
-        <div class="card"><div class="ic">🚙</div><h3>Tactical edge</h3><p>A convoy or dismounted element on the move with no backhaul. A shared picture rides vehicle to vehicle as units drop in and out of range.</p></div>
-        <div class="card"><div class="ic">🛡️</div><h3>Border &amp; critical infrastructure</h3><p>Long perimeters and remote sites where wiring every sensor is impractical. Devices relay through each other to the operations center.</p></div>
-        <div class="card"><div class="ic">🎯</div><h3>Training &amp; exercises</h3><p>Ranges and field exercises that need resilient comms without standing up infrastructure for every event.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-tower-broadcast"></i></div><h3>Incident response</h3><p>A collapsed tower or a flooded region. Responders and survivors coordinate on-site, phone to phone, even with no uplink anywhere.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-compass"></i></div><h3>Search &amp; rescue</h3><p>Teams strung across terrain with no coverage. Position and status hop up the line to the lead, over whichever path clears first.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-fire"></i></div><h3>Wildland fire</h3><p>Crews past the last repeater. Traffic relays back to whatever node has a link, then bridges home the moment one appears.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-truck"></i></div><h3>Tactical edge</h3><p>A convoy or dismounted element on the move with no backhaul. A shared picture rides vehicle to vehicle as units drop in and out of range.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-shield-halved"></i></div><h3>Border &amp; critical infrastructure</h3><p>Long perimeters and remote sites where wiring every sensor is impractical. Devices relay through each other to the operations center.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-bullseye"></i></div><h3>Training &amp; exercises</h3><p>Ranges and field exercises that need resilient comms without standing up infrastructure for every event.</p></div>
       </div>
     </div>
   </section>
@@ -58,15 +63,15 @@ import Base from '../layouts/Base.astro';
             <li>Sealed end to end — every relay carries ciphertext it cannot read.</li>
             <li>Multipath by default — copies race independent routes; a dead link just loses one.</li>
             <li>No backhaul required — destinations can be people on the same mesh, not a cloud.</li>
-            <li>Bearer-agnostic — Bluetooth LE today; Wi-Fi Aware and IP fit the same core.</li>
+            <li>Bearer-agnostic — BLE and Wi-Fi today; long-range sub-GHz radio and IP fit the same core.</li>
             <li>Identity is a key — no directory, no SIM, no account to compromise.</li>
           </ul>
         </div>
         <div class="grid-2" style="gap:14px;">
-          <div class="card lit"><div class="ic">🧱</div><h3>Private fleets</h3><p>Stand up your own relay backbone on your own infrastructure — fully isolated, nothing phones home.</p></div>
-          <div class="card"><div class="ic">✈️</div><h3>Disconnected ops</h3><p>Runs with no internet at all. The backbone is optional, not assumed.</p></div>
-          <div class="card"><div class="ic">🔑</div><h3>Keyed access</h3><p>Signed access keys gate the fleet. Anonymous traffic never reaches it.</p></div>
-          <div class="card"><div class="ic">📦</div><h3>Embeds in your app</h3><p>A Rust core your own application carries — not another device to issue and manage.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-server"></i></div><h3>Private fleets</h3><p>Stand up your own relay backbone on your own infrastructure — fully isolated, nothing phones home.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-plane"></i></div><h3>Disconnected ops</h3><p>Runs with no internet at all. The backbone is optional, not assumed.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div><h3>Keyed access</h3><p>Signed access keys gate the fleet. Anonymous traffic never reaches it.</p></div>
+          <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-box"></i></div><h3>Embeds in your app</h3><p>A Rust core your own application carries — not another device to issue and manage.</p></div>
         </div>
       </div>
     </div>

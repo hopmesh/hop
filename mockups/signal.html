@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" data-dir="signal">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hop — Signal (Direction A)</title>
+<style>
+  :root{
+    --bg:#080a09; --bg-soft:#0e1110; --panel:#111514; --line:#1d2422;
+    --ink:#eef2f0; --ink-dim:#9aa6a2; --ink-faint:#6b7672;
+    --sig:#2bf0a0; --sig-deep:#10c585;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;
+    -webkit-font-smoothing:antialiased;font-size:16px;
+    background-image:radial-gradient(900px 500px at 78% -8%, #0f3d2c40, transparent 60%);}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+
+  /* header */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:blur(10px);
+    background:#080a09cc;border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:26px;height:62px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:680;letter-spacing:-.01em;font-size:18px}
+  .brand .mk{color:var(--sig);font-size:20px}
+  .nav .sp{flag:1;flex:1}
+  .nav a.n{color:var(--ink-dim);font-size:14.5px;font-weight:500}
+  .nav a.n:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;font-weight:600;
+    font-size:14.5px;padding:9px 16px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-sig{background:var(--sig);color:#04130c}
+  .btn-sig:hover{background:#54f5b4}
+  .btn-ghost{border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:#33403c;background:#ffffff08}
+
+  /* hero */
+  .hero{padding:72px 0 30px;display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:center}
+  h1{font-size:clamp(40px,6vw,68px);line-height:1.02;letter-spacing:-.03em;font-weight:720}
+  .hero p.lede{margin-top:22px;color:var(--ink-dim);font-size:clamp(17px,1.9vw,20px);max-width:46ch}
+  .hero-cta{display:flex;gap:12px;margin-top:30px}
+  .tag{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12.5px;
+    color:var(--sig);border:1px solid #18402f;background:#0c241b;border-radius:999px;padding:5px 12px}
+  .tag .dot{width:7px;height:7px;border-radius:50%;background:var(--sig);box-shadow:0 0 10px var(--sig)}
+
+  /* mesh viz */
+  .viz{position:relative;aspect-ratio:1/.86;border:1px solid var(--line);border-radius:var(--radius);
+    background:radial-gradient(120% 100% at 70% 20%,#0d1715,#0a0d0c);overflow:hidden}
+  .viz svg{position:absolute;inset:0;width:100%;height:100%}
+  .viz .cap{position:absolute;left:14px;bottom:12px;font-family:var(--mono);font-size:11.5px;color:var(--ink-faint)}
+  .viz .cap b{color:var(--sig);font-weight:600}
+  .edge{stroke:#2b3a35;stroke-width:1.6;fill:none}
+  .edge.dead{stroke:#5b2b2b;stroke-dasharray:5 5}
+  .node{fill:#0b1210;stroke:#3a4d47;stroke-width:1.6}
+  .node.live{stroke:var(--sig)}
+  .node-core{fill:var(--sig)}
+  .pulse{fill:none;stroke:var(--sig);opacity:.6}
+  .pkt{fill:var(--sig);filter:drop-shadow(0 0 6px var(--sig))}
+  .xmark{stroke:#e0564f;stroke-width:2}
+  .lbl{fill:var(--ink-faint);font:600 11px var(--mono)}
+
+  /* generic section */
+  section.band{padding:64px 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--sig-deep)}
+  h2{font-size:clamp(26px,3.4vw,38px);letter-spacing:-.025em;line-height:1.08;margin-top:12px;font-weight:680}
+  .sub{color:var(--ink-dim);margin-top:14px;max-width:62ch}
+
+  /* steps */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:34px}
+  .step{border:1px solid var(--line);border-radius:var(--radius);padding:22px;background:var(--panel)}
+  .step .num{font-family:var(--mono);font-size:12.5px;color:var(--sig);border:1px solid #1c3a2d;
+    width:30px;height:30px;display:grid;place-items:center;border-radius:8px}
+  .step h3{margin-top:16px;font-size:17px;letter-spacing:-.01em}
+  .step p{margin-top:7px;color:var(--ink-dim);font-size:14.5px}
+
+  /* waist / layers */
+  .stack{margin-top:30px;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .lrow{display:grid;grid-template-columns:120px 1fr;border-top:1px solid var(--line);align-items:center}
+  .lrow:first-child{border-top:0}
+  .lrow .lv{padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);
+    text-transform:uppercase;letter-spacing:.1em;border-right:1px solid var(--line);background:#0c100f}
+  .lrow.waist .lv{color:var(--sig)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
+  .chip{font-size:13px;color:var(--ink-dim);border:1px solid var(--line);border-radius:999px;padding:6px 12px;background:#0c100f}
+  .chip:hover{border-color:#33403c;color:var(--ink)}
+  .chip.code{font-family:var(--mono);color:var(--ink)}
+  .lrow.waist .chip{border-color:#1c3a2d;color:var(--sig);background:#0b1a14}
+
+  /* use cases */
+  .uc{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-top:30px;background:var(--line);
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .uc a{background:var(--panel);padding:24px;transition:.15s;display:block}
+  .uc a:hover{background:#141a18}
+  .uc h3{font-size:18px;letter-spacing:-.01em;display:flex;align-items:center;justify-content:space-between}
+  .uc h3 .arr{color:var(--sig);opacity:0;transform:translateX(-4px);transition:.15s}
+  .uc a:hover .arr{opacity:1;transform:none}
+  .uc p{color:var(--ink-dim);font-size:14px;margin-top:7px}
+
+  /* cta */
+  .cta{padding:84px 0;text-align:center;border-top:1px solid var(--line)}
+  .cta h2{max-width:18ch;margin:0 auto}
+  .cta .hero-cta{justify-content:center;margin-top:26px}
+  footer{border-top:1px solid var(--line);padding:30px 0;color:var(--ink-faint);font-size:13.5px}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+  @media(max-width:860px){
+    .hero{grid-template-columns:1fr;gap:30px}
+    .steps,.uc{grid-template-columns:1fr}
+    .nav .hidem{display:none}
+  }
+  .ribbon{position:fixed;left:0;bottom:0;z-index:50;font:600 11px/1 var(--mono);
+    background:var(--sig);color:#04130c;padding:7px 12px;border-top-right-radius:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#"><span class="mk">⇢</span> hop</a>
+    <a class="n hidem" href="#how">How it works</a>
+    <a class="n hidem" href="#build">Build on Hop</a>
+    <a class="n hidem" href="#cases">Use cases</a>
+    <span class="sp" style="flex:1"></span>
+    <a class="n hidem" href="#">Developers</a>
+    <a class="n hidem" href="#">Business</a>
+    <a class="btn btn-ghost" href="#">Pricing</a>
+    <a class="btn btn-sig" href="#">Quickstart</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <span class="tag"><span class="dot"></span> delay-tolerant mesh transport</span>
+      <h1>The network that<br>finds a&nbsp;way.</h1>
+      <p class="lede">Encrypted datagrams hop device to device — over Bluetooth, LoRa, the
+        internet — until they reach the person or service you meant. No tower required.
+        Held, never dropped.</p>
+      <div class="hero-cta">
+        <a class="btn btn-sig" href="#">Quickstart →</a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+    </div>
+    <div class="viz">
+      <svg viewBox="0 0 440 380" aria-label="A packet routing around a broken link and arriving">
+        <!-- edges -->
+        <line class="edge" x1="70" y1="300" x2="170" y2="250"/>
+        <line class="edge dead" x1="170" y1="250" x2="300" y2="250"/>
+        <line class="edge" x1="170" y1="250" x2="220" y2="120"/>
+        <line class="edge" x1="220" y1="120" x2="350" y2="150"/>
+        <line class="edge" x1="350" y1="150" x2="370" y2="285"/>
+        <line class="edge" x1="370" y1="285" x2="300" y2="250"/>
+        <!-- broken link x -->
+        <g transform="translate(235,250)">
+          <line class="xmark" x1="-7" y1="-7" x2="7" y2="7"/>
+          <line class="xmark" x1="7" y1="-7" x2="-7" y2="7"/>
+        </g>
+        <!-- nodes -->
+        <g>
+          <circle class="node" cx="70" cy="300" r="13"/>
+          <circle class="node-core" cx="70" cy="300" r="4"/>
+          <text class="lbl" x="50" y="332">you</text>
+          <circle class="node" cx="170" cy="250" r="11"/>
+          <circle class="node" cx="220" cy="120" r="11"/>
+          <circle class="node" cx="350" cy="150" r="11"/>
+          <circle class="node" cx="370" cy="285" r="11"/>
+          <circle class="node live" cx="300" cy="250" r="14"/>
+          <circle class="node-core" cx="300" cy="250" r="4"/>
+          <circle class="pulse" cx="300" cy="250" r="14">
+            <animate attributeName="r" values="14;30" dur="2.2s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.55;0" dur="2.2s" repeatCount="indefinite"/>
+          </circle>
+          <text class="lbl" x="288" y="284">recipient</text>
+        </g>
+        <!-- packet travels the detour: you→170→220→350→370→300 -->
+        <circle class="pkt" r="5">
+          <animateMotion dur="4.2s" repeatCount="indefinite" keyPoints="0;0;1;1"
+            keyTimes="0;0.08;0.86;1" calcMode="linear"
+            path="M70,300 L170,250 L220,120 L350,150 L370,285 L300,250"/>
+          <animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.86;1" dur="4.2s" repeatCount="indefinite"/>
+        </circle>
+        <circle class="pkt" r="3.4" opacity="0.5">
+          <animateMotion dur="4.2s" begin="1.1s" repeatCount="indefinite"
+            path="M70,300 L170,250 L220,120 L350,150 L370,285 L300,250"/>
+        </circle>
+      </svg>
+      <div class="cap">Direct link <b style="color:#e0564f">down</b> — packet reroutes &amp; <b>arrives</b></div>
+    </div>
+  </section>
+</div>
+
+<section class="band" id="how">
+  <div class="wrap">
+    <span class="eyebrow">How it works</span>
+    <h2>Store, carry, forward.</h2>
+    <p class="sub">A message doesn't need a path to exist the moment you send it. Hop holds it,
+      moves it as devices meet, and delivers it when a route appears — minutes or hops later.</p>
+    <div class="steps">
+      <div class="step"><div class="num">1</div><h3>Seal</h3>
+        <p>Encrypted end to end and addressed to a key — opaque to every relay it crosses.</p></div>
+      <div class="step"><div class="num">2</div><h3>Hop</h3>
+        <p>Carried device to device over whatever bearer is near: Bluetooth, LoRa, Wi-Fi, the internet.</p></div>
+      <div class="step"><div class="num">3</div><h3>Arrive</h3>
+        <p>Held at a relay if the recipient is offline. Delivered the moment they're reachable. Never dropped.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="build">
+  <div class="wrap">
+    <span class="eyebrow">Build on Hop</span>
+    <h2>One layer. Every offline app.</h2>
+    <p class="sub">Most offline products rebuild the same transport and weld it to one app. Hop is that
+      layer, done once — the narrow waist for intermittent networks. Many bearers below, many apps above.</p>
+    <div class="stack">
+      <div class="lrow"><div class="lv">Apps</div>
+        <div class="chips">
+          <a class="chip" href="#">Messaging</a><a class="chip" href="#">Data sync</a>
+          <a class="chip" href="#">File transfer</a><a class="chip" href="#">Offline web</a>
+          <a class="chip" href="#">Telemetry</a>
+        </div></div>
+      <div class="lrow"><div class="lv">Semantics</div>
+        <div class="chips">
+          <a class="chip code" href="#">hops://</a><a class="chip code" href="#">hps://</a>
+          <a class="chip code" href="#">streams</a><a class="chip code" href="#">HNS</a>
+        </div></div>
+      <div class="lrow waist"><div class="lv">Waist</div>
+        <div class="chips">
+          <a class="chip code" href="#">hdp://</a>
+          <a class="chip" href="#">sealed, store-and-forward datagrams</a>
+        </div></div>
+      <div class="lrow"><div class="lv">Bearer</div>
+        <div class="chips">
+          <a class="chip" href="#">Bluetooth LE</a><a class="chip" href="#">L2CAP</a>
+          <a class="chip" href="#">TCP / WebSocket</a><a class="chip" href="#">LoRa, Wi-Fi Aware…</a>
+        </div></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="cases">
+  <div class="wrap">
+    <span class="eyebrow">Use cases</span>
+    <h2>What you build on it.</h2>
+    <div class="uc">
+      <a href="#"><h3>Messaging <span class="arr">→</span></h3><p>People to people, no infrastructure. Encrypted, store-and-forward, tower-optional.</p></a>
+      <a href="#"><h3>Data sync <span class="arr">→</span></h3><p>Offline-first collections that converge. Ship only the difference.</p></a>
+      <a href="#"><h3>File &amp; media <span class="arr">→</span></h3><p>Any size, chunked and reassembled, hop by hop.</p></a>
+      <a href="#"><h3>Offline web <span class="arr">→</span></h3><p>Reach a service from no connection. Sealed request, sealed response.</p></a>
+      <a href="#"><h3>Telemetry &amp; IoT <span class="arr">→</span></h3><p>Data from past the edge, bridged home when a carrier touches the net.</p></a>
+      <a href="#"><h3>Response &amp; field <span class="arr">→</span></h3><p>Events, crews, remote communities. Built for when the network isn't there.</p></a>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <h2>The transport is done. Bring your app.</h2>
+    <div class="hero-cta">
+      <a class="btn btn-sig" href="#">Quickstart →</a>
+      <a class="btn btn-ghost" href="#">Read the protocol</a>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <span>⇢ hop — the network that finds a way</span>
+  <span>Developers · Business · Pricing · Docs</span>
+</div></footer>
+
+<div class="ribbon">DIRECTION A · SIGNAL</div>
+</body>
+</html>

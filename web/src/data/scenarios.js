@@ -1,0 +1,148 @@
+// Single source of truth for the interactive scenario animations.
+// Both the homepage ScenarioPlayer (all scenarios) and the use-case pages
+// (a relevant subset, via the `ids` prop) render from this list.
+//
+// Two kinds:
+//   - mesh  (default): a static graph; sealed copies animate along fixed
+//                      routes (binary spray-and-wait — many paths at once).
+//   - carry          : delay-tolerant store-carry-forward. A carrier NODE
+//                      physically moves; links attach/detach as it enters and
+//                      leaves range; the message is picked up, ferried, handed
+//                      off carrier-to-carrier, and dropped at the destination.
+
+export const scenarios = [
+  { id:'p2p', tab:'P2P messaging', fa:'fa-duotone fa-solid fa-comment-dots',
+    scene:'NEIGHBORHOOD · PURE PEER-TO-PEER', dur:4.8,
+    title:'A neighborhood that talks to itself.',
+    body:'No tower, no plan — a block, a village, a campus runs its own mesh. Messages thread between whoever’s nearby. Send one person or the whole area; copies fan out across every path at once and the first to arrive delivers.',
+    flow:['<span class="a">you</span>','neighbors','neighbors','your contact'],
+    stat:'whole-area comms · many paths · no infrastructure',
+    nodes:{you:{type:'you',x:78,y:228,label:'you',hi:1},p1:{type:'relay',x:190,y:138,label:'neighbor'},p2:{type:'relay',x:200,y:330,label:'neighbor'},p3:{type:'relay',x:330,y:215,label:'neighbor'},p4:{type:'relay',x:345,y:362,label:'neighbor'},p5:{type:'relay',x:462,y:140,label:'neighbor'},p6:{type:'relay',x:470,y:312,label:'neighbor'},dest:{type:'dest',x:585,y:225,label:'your contact'}},
+    edges:[['you','p1'],['you','p2'],['p1','p3'],['p2','p3'],['p2','p4'],['p1','p5'],['p3','p5'],['p3','p6'],['p4','p6'],['p5','dest'],['p6','dest']],
+    routes:[['you','p1','p5','dest'],['you','p2','p3','p6','dest'],['you','p2','p4','p6','dest']],
+    badges:[{cls:'transit',x:330,y:215,t:'fanning out'},{cls:'deliv',x:585,y:225,t:'first copy wins'}]},
+
+  { id:'disaster', tab:'Disaster', fa:'fa-duotone fa-solid fa-tower-cell',
+    scene:'EARTHQUAKE · TOWER DOWN', dur:4.4,
+    title:'The tower is gone. The phones aren\'t.',
+    body:'A quake knocks out the cell site. Phones in the blast radius can’t reach anyone — except each other. Copies of the message take every responder path at once until one reaches the handset with a satellite uplink, and the command post.',
+    flow:['<span class="a">trapped phone</span>','responders (BLE)','satellite uplink','command post'],
+    stat:'delivered · redundant paths · no infrastructure',
+    nodes:{you:{type:'you',x:80,y:345,label:'trapped',hi:1},tower:{type:'tower-down',x:150,y:195,label:'cell tower'},r1:{type:'relay',x:225,y:305,label:'responder'},r2:{type:'relay',x:340,y:250,label:'responder'},r3:{type:'relay',x:335,y:375,label:'responder'},up:{type:'uplink',x:490,y:170,label:'sat uplink'},cmd:{type:'cloud',x:588,y:325,label:'',glyph:'command'}},
+    edges:[['you','tower','dead'],['you','r1'],['r1','tower','dead'],['r1','r2'],['r1','r3'],['r2','r3'],['r2','up'],['r3','up'],['up','cmd']],
+    routes:[['you','r1','r2','up','cmd'],['you','r1','r3','up','cmd']],
+    badges:[{cls:'held',x:80,y:345,t:'no signal'},{cls:'transit',x:340,y:250,t:'in transit'},{cls:'deliv',x:588,y:325,t:'delivered'}]},
+
+  { id:'iot', tab:'Remote IoT', fa:'fa-duotone fa-solid fa-satellite-dish',
+    scene:'SENSORS PAST COVERAGE', dur:4.0,
+    title:'Sensors where there’s no cell at all.',
+    body:'Monitoring kit on the pipeline sits far past coverage. Each reading hops across the sensor mesh to whichever gateway it can reach, which bridges home the moment a maintenance truck — or any passing uplink — comes into range.',
+    flow:['<span class="a">field sensor</span>','sensor mesh','gateway','passing uplink','cloud'],
+    stat:'redundant gateways · bridged on contact',
+    nodes:{s1:{type:'sensor',x:80,y:140,label:'sensor'},s2:{type:'sensor',x:95,y:255,label:'sensor'},s3:{type:'sensor',x:150,y:362,label:'sensor',hi:1},g1:{type:'relay',x:290,y:185,label:'gateway'},g2:{type:'relay',x:300,y:335,label:'gateway'},up:{type:'uplink',x:470,y:185,label:'truck uplink'},cloud:{type:'cloud',x:588,y:255,label:'',glyph:'cloud'}},
+    edges:[['s1','g1'],['s2','g1'],['s2','g2'],['s3','g1'],['s3','g2'],['g1','g2'],['g1','up'],['g2','up'],['up','cloud']],
+    routes:[['s3','g1','up','cloud'],['s3','g2','up','cloud']],
+    badges:[{cls:'transit',x:300,y:335,t:'buffered'},{cls:'deliv',x:588,y:255,t:'delivered'}]},
+
+  { id:'offgrid', tab:'Off-grid towns', fa:'fa-duotone fa-solid fa-route', kind:'carry',
+    scene:'RURAL · DATA RIDES THE ROAD',
+    title:'Between towns, there’s only the road.',
+    body:'No link runs between the villages — just the daily traffic. A clinic record from Town A rides whichever vehicle moves first — the bus through Town B, the truck through the village — and syncs the instant it reaches a town that’s online.',
+    flow:['<span class="a">Town A · clinic</span>','bus / truck carries it','Town C (online)','cloud'],
+    stat:'two roads · carried by traffic · eventual',
+    range:96, road:true,
+    nodes:{a:{type:'you',x:80,y:288,label:'Town A · clinic',hi:1},b:{type:'relay',x:300,y:168,label:'Town B'},v:{type:'relay',x:318,y:392,label:'village'},c:{type:'dest',x:560,y:280,label:'Town C · online'}},
+    carriers:[
+      {label:'bus',   path:[[150,288],[300,168],[540,278],[300,168],[150,288]], period:8.5, phase:0},
+      {label:'truck', path:[[152,300],[318,392],[540,286],[318,392],[152,300]], period:9.5, phase:0.42},
+    ],
+    src:'a', dst:'c',
+    badges:[{cls:'held',x:80,y:288,t:'waiting for traffic'},{cls:'deliv',x:560,y:280,t:'synced'}]},
+
+  { id:'traveler', tab:'Traveler', fa:'fa-duotone fa-solid fa-person-walking', kind:'carry',
+    scene:'TWO TOWNS · A PASSING TRAVELER',
+    title:'A message hitchhikes on a passerby.',
+    body:'Two towns, neither connected. So a message waits — and rides. A traveler walking between them carries it silently, like a passive mailman. When travelers cross paths, it hops from one to the next, drops to wait when a carrier turns back, and is picked up by the next one heading the right way — until it reaches the far town. It travels the paths people already travel.',
+    flow:['<span class="a">town A</span>','a traveler carries it','handed to the next','town B'],
+    stat:'carried by passersby · paths people already travel · eventual',
+    range:112,
+    nodes:{A:{type:'you',x:92,y:262,label:'town A',hi:1},B:{type:'dest',x:566,y:262,label:'town B'}},
+    carriers:[
+      {label:'traveler', path:[[154,262],[342,262],[154,262]], period:6, phase:0},
+      {label:'traveler', path:[[342,262],[526,262],[342,262]], period:6, phase:0.5},
+    ],
+    src:'A', dst:'B',
+    badges:[{cls:'held',x:92,y:262,t:'waiting'},{cls:'deliv',x:566,y:262,t:'arrived'}]},
+
+  { id:'nodata', tab:'No data plan', fa:'fa-duotone fa-solid fa-mobile-screen-button',
+    scene:'NO SIM · BORROW A PATH', dur:3.6,
+    title:'No plan? Borrow a path, not a phone.',
+    body:'A handset with no SIM or no data still sends. The sealed message hops peer to peer to whichever nearby phone has a connection — each carries it blind — and on to a hop-endpoint that terminates the request, fulfills it on the internet, and relays the sealed response back. Only the endpoint can read the egress traffic; the phones in the middle never can.',
+    flow:['<span class="a">your phone · no data</span>','nearby phones (relay, blind)','hop-endpoint · decrypts &amp; forwards','internet'],
+    stat:'egress via hop-endpoint · relays never see your traffic',
+    nodes:{you:{type:'you',x:85,y:320,label:'no SIM',hi:1},f1:{type:'relay',x:245,y:248,label:'nearby phone'},f2:{type:'relay',x:265,y:385,label:'nearby phone'},gw:{type:'uplink',x:440,y:200,label:'hop-endpoint'},cloud:{type:'cloud',x:590,y:255,label:'',glyph:'internet'}},
+    edges:[['you','f1'],['you','f2'],['f1','f2'],['f1','gw'],['f2','gw'],['gw','cloud']],
+    routes:[['you','f1','gw','cloud'],['you','f2','gw','cloud']],
+    badges:[{cls:'transit',x:245,y:248,t:'carries it blind'},{cls:'deliv',x:590,y:255,t:'fulfilled'}]},
+
+  { id:'blackout', tab:'Blackout', fa:'fa-duotone fa-solid fa-link-slash',
+    scene:'REGIONAL INTERNET CUT', dur:4.8,
+    title:'The internet gets cut. Talk anyway.',
+    body:'When connectivity drops for a whole region, local messages keep flowing across the mesh on every available path — and anything bound for the outside waits for, and finds, a link still standing at the edge.',
+    flow:['<span class="a">you</span>','local mesh (stays up)','edge link','outside world'],
+    stat:'local stays up · many paths · routes out at the edge',
+    nodes:{down:{type:'cloud-down',x:330,y:108,label:'',glyph:'region net'},you:{type:'you',x:95,y:330,label:'you',hi:1},r1:{type:'relay',x:205,y:295,label:'neighbor'},r2:{type:'relay',x:300,y:362,label:'neighbor'},r3:{type:'relay',x:345,y:250,label:'neighbor'},edge:{type:'uplink',x:495,y:250,label:'edge link'},out:{type:'cloud',x:590,y:150,label:'',glyph:'outside'}},
+    edges:[['you','r1'],['r1','r2'],['r1','r3'],['r2','r3'],['r3','down','dead'],['r2','edge'],['r3','edge'],['edge','out']],
+    routes:[['you','r1','r3','edge','out'],['you','r1','r2','edge','out']],
+    badges:[{cls:'transit',x:205,y:295,t:'local mesh'},{cls:'held',x:345,y:250,t:'no net here'},{cls:'deliv',x:590,y:150,t:'out'}]},
+
+  { id:'expedition', tab:'Expedition', fa:'fa-duotone fa-solid fa-person-hiking',
+    scene:'BACKCOUNTRY · PEER-TO-PEER, NO UPLINK', dur:4.8,
+    title:'No bars for miles. Tell the group anyway.',
+    body:'A trekking party strung along the ridge has no signal, and nowhere to get one. “Stopping to filter water — 20 min behind” fans out phone to phone up the line, over the high traverse and the low trail at once, until it reaches the lead. No tower, no internet — just the people in between.',
+    flow:['<span class="a">you · mid-pack</span>','hikers ahead','hikers ahead','the lead'],
+    stat:'reached the lead · parallel paths · zero infrastructure',
+    nodes:{you:{type:'you',x:80,y:335,label:'you',hi:1},h1:{type:'relay',x:185,y:288,label:'hiker'},h2:{type:'relay',x:300,y:340,label:'hiker'},h2b:{type:'relay',x:288,y:205,label:'hiker'},h3:{type:'relay',x:430,y:248,label:'hiker'},lead:{type:'dest',x:565,y:150,label:'the lead'}},
+    edges:[['you','h1'],['h1','h2'],['h1','h2b'],['h2','h3'],['h2b','h3'],['h2b','lead'],['h3','lead']],
+    routes:[['you','h1','h2b','h3','lead'],['you','h1','h2','h3','lead']],
+    badges:[{cls:'transit',x:288,y:205,t:'relaying'},{cls:'deliv',x:565,y:150,t:'reached the lead'}]},
+
+  { id:'ski', tab:'Ski resort', fa:'fa-duotone fa-solid fa-person-skiing',
+    scene:'MOUNTAIN · PEER-TO-PEER', dur:4.8,
+    title:'Find your crew across the mountain.',
+    body:'Coverage on the back bowls is a rumor. “Last run — meet at the mid-lodge” spreads across other skiers on the lift line and the slopes, taking more than one way down, until it lands with your group. Nobody pings a tower; the message rides the crowd.',
+    flow:['<span class="a">you · summit</span>','skiers on the slope','lift line','your crew'],
+    stat:'crew found · multiple paths · no cell',
+    nodes:{you:{type:'you',x:118,y:120,label:'you · summit',hi:1},s1:{type:'relay',x:235,y:212,label:'skier'},s2:{type:'relay',x:330,y:305,label:'lift line'},s2b:{type:'relay',x:360,y:178,label:'skier'},s3:{type:'relay',x:455,y:248,label:'skier'},crew:{type:'dest',x:565,y:330,label:'your crew'}},
+    edges:[['you','s1'],['s1','s2'],['s1','s2b'],['s2','s3'],['s2b','s3'],['s2','crew'],['s3','crew']],
+    routes:[['you','s1','s2','s3','crew'],['you','s1','s2b','s3','crew']],
+    badges:[{cls:'transit',x:330,y:305,t:'passing along'},{cls:'deliv',x:565,y:330,t:'crew found'}]},
+
+  { id:'convoy', tab:'Convoy', fa:'fa-duotone fa-solid fa-truck', kind:'carry',
+    scene:'MOVING TEAM · NO BACKHAUL',
+    title:'Keep the picture on the move.',
+    body:'A team on the move with no backhaul — a convoy strung along a track, a crew spread across terrain. Position and status ride vehicle to vehicle: as the gaps open and close, the message hops forward to whichever unit is ahead and in range, so the lead keeps the full picture even as units drop in and out of contact.',
+    flow:['<span class="a">your unit</span>','vehicle ahead','vehicle ahead','the lead'],
+    stat:'shared picture on the move · no backhaul · hops forward',
+    range:104,
+    nodes:{you:{type:'you',x:72,y:332,label:'your unit',hi:1},lead:{type:'dest',x:576,y:170,label:'the lead'}},
+    carriers:[
+      {label:'vehicle', path:[[152,318],[336,266],[516,198],[336,266],[152,318]], period:7.0, phase:0},
+      {label:'vehicle', path:[[162,348],[342,300],[498,228],[342,300],[162,348]], period:8.4, phase:0.46},
+    ],
+    src:'you', dst:'lead',
+    badges:[{cls:'transit',x:336,y:266,t:'relaying forward'},{cls:'deliv',x:576,y:170,t:'reached the lead'}]},
+
+  { id:'collapse', tab:'Disaster · no uplink', fa:'fa-duotone fa-solid fa-walkie-talkie',
+    scene:'COLLAPSE · NO UPLINK AT ALL', dur:4.4,
+    title:'No tower, no satellite. Talk anyway.',
+    body:'Total blackout — no cell, no satellite, no internet anywhere. Inside the cordon, survivors and responders still coordinate: “two trapped, west stairwell” meshes phone to phone, across every responder in range, to the on-site incident lead. When nothing reaches out, the network turns inward.',
+    flow:['<span class="a">survivor</span>','responders (BLE)','responders','incident lead · on-site'],
+    stat:'coordinated on-site · redundant paths · no uplink',
+    nodes:{you:{type:'you',x:90,y:335,label:'survivor',hi:1},tower:{type:'tower-down',x:175,y:185,label:'cell tower'},r1:{type:'relay',x:255,y:300,label:'responder'},r2:{type:'relay',x:365,y:248,label:'responder'},r2b:{type:'relay',x:385,y:368,label:'responder'},lead:{type:'dest',x:545,y:300,label:'incident lead'}},
+    edges:[['you','tower','dead'],['you','r1'],['r1','tower','dead'],['r1','r2'],['r1','r2b'],['r2','r2b'],['r2','lead'],['r2b','lead']],
+    routes:[['you','r1','r2','lead'],['you','r1','r2b','lead']],
+    badges:[{cls:'held',x:90,y:335,t:'no signal'},{cls:'transit',x:365,y:248,t:'in transit'},{cls:'deliv',x:545,y:300,t:'on-site lead'}]},
+];
+
+export const scenariosById = Object.fromEntries(scenarios.map((s) => [s.id, s]));

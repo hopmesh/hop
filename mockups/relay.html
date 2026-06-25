@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en" data-dir="relay">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hop — Relay (Direction C)</title>
+<style>
+  :root{
+    --bg:#0b0c10; --bg-2:#101218; --board:#0f1116; --board-2:#15181f; --line:#21242d; --line-2:#2c3038;
+    --ink:#f0ece0; --ink-dim:#9a9caa; --ink-faint:#62656f;
+    --amber:#ffb43a; --green:#3fd089; --transit:#7fa8d8;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(800px 460px at 84% -6%, #ffb43a14, transparent 62%)}
+  .wrap{max-width:1100px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+
+  header{position:sticky;top:0;z-index:20;background:#0b0c10cc;backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:24px;height:60px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:680;letter-spacing:-.01em;font-size:18px}
+  .brand .mk{color:var(--amber)}
+  .nav a.n{color:var(--ink-dim);font-size:14.5px;font-weight:500}
+  .nav a.n:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:8px;font-weight:600;font-size:14.5px;
+    padding:9px 16px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-amber{background:var(--amber);color:#1c1303}
+  .btn-amber:hover{background:#ffc560}
+  .btn-ghost{border-color:var(--line-2);color:var(--ink)}
+  .btn-ghost:hover{border-color:#3a3f49;background:#ffffff08}
+
+  /* hero */
+  .hero{padding:64px 0 26px}
+  .kick{font-family:var(--mono);font-size:12.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);display:flex;align-items:center;gap:9px}
+  .kick .dot{width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 9px var(--amber);animation:blink 1.8s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  h1{font-size:clamp(40px,6.4vw,72px);line-height:1.0;letter-spacing:-.03em;font-weight:740;margin-top:16px;max-width:15ch}
+  .hero p.lede{margin-top:20px;color:var(--ink-dim);font-size:clamp(17px,1.9vw,20px);max-width:50ch}
+  .hero-cta{display:flex;gap:12px;margin-top:28px}
+
+  /* departures board */
+  .board{margin-top:38px;border:1px solid var(--line-2);border-radius:14px;overflow:hidden;background:var(--board);
+    box-shadow:0 26px 70px #00000060}
+  .board .bh{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;background:var(--board-2);
+    border-bottom:1px solid var(--line-2);font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--ink-faint);text-transform:uppercase}
+  .board .bh .live{color:var(--amber);display:flex;align-items:center;gap:7px}
+  .board .bh .live .d{width:6px;height:6px;border-radius:50%;background:var(--amber);animation:blink 1.8s infinite}
+  .brow{display:grid;grid-template-columns:1.4fr 1fr .6fr 1.1fr;gap:14px;padding:14px 18px;align-items:center;
+    border-top:1px solid var(--line);font-family:var(--mono);font-size:14px}
+  .brow.head{color:var(--ink-faint);font-size:11px;letter-spacing:.12em;text-transform:uppercase;border-top:0;padding-top:13px;padding-bottom:9px}
+  .brow .to{color:var(--ink)}
+  .brow .via{color:var(--ink-dim)}
+  .brow .hops{color:var(--ink-dim)}
+  .pill{justify-self:start;font-size:11.5px;letter-spacing:.06em;padding:4px 10px;border-radius:5px;border:1px solid}
+  .pill.held{color:var(--amber);border-color:#54430f;background:#1c1606}
+  .pill.transit{color:var(--transit);border-color:#243a52;background:#0d1722}
+  .pill.deliv{color:var(--green);border-color:#1c4a34;background:#0a1c14}
+  /* the flipping status */
+  .flip{position:relative;display:inline-grid}
+  .flip span{grid-area:1/1}
+  .flip .a{animation:fa 4.4s infinite}
+  .flip .b{animation:fb 4.4s infinite}
+  @keyframes fa{0%,40%{opacity:1}48%,100%{opacity:0}}
+  @keyframes fb{0%,40%{opacity:0}48%,100%{opacity:1}}
+
+  /* sections */
+  section.band{padding:62px 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber)}
+  h2{font-size:clamp(26px,3.4vw,38px);letter-spacing:-.025em;line-height:1.08;margin-top:12px;font-weight:700}
+  .sub{color:var(--ink-dim);margin-top:14px;max-width:62ch}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
+  .step{border:1px solid var(--line);border-radius:12px;padding:22px;background:var(--board)}
+  .step .n{font-family:var(--mono);font-size:12px;color:var(--amber);letter-spacing:.08em}
+  .step h3{margin-top:12px;font-size:17px;letter-spacing:-.01em}
+  .step p{margin-top:7px;color:var(--ink-dim);font-size:14.5px}
+
+  .stack{margin-top:30px;border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+  .lrow{display:grid;grid-template-columns:120px 1fr;border-top:1px solid var(--line);align-items:center}
+  .lrow:first-child{border-top:0}
+  .lrow .lv{padding:15px 18px;font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.1em;border-right:1px solid var(--line);background:var(--bg-2)}
+  .lrow.waist .lv{color:var(--amber)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;padding:13px 18px}
+  .chip{font-size:13px;color:var(--ink-dim);border:1px solid var(--line-2);border-radius:999px;padding:6px 12px;background:var(--bg-2)}
+  .chip:hover{border-color:#3a3f49;color:var(--ink)}
+  .chip.code{font-family:var(--mono);color:var(--ink)}
+  .lrow.waist .chip{border-color:#54430f;color:var(--amber);background:#1c1606}
+
+  .idx{margin-top:30px;border-top:1px solid var(--line-2)}
+  .idx a{display:grid;grid-template-columns:48px 1fr auto;align-items:baseline;gap:14px;padding:16px 4px;border-bottom:1px solid var(--line);transition:.12s;font-family:var(--mono)}
+  .idx a:hover{background:var(--board);padding-left:12px}
+  .idx .no{font-size:12.5px;color:var(--amber)}
+  .idx .ti{font-size:18px;font-family:var(--sans);font-weight:600;letter-spacing:-.01em}
+  .idx .de{color:var(--ink-faint);font-size:13px;justify-self:end}
+
+  .cta{padding:82px 0;border-top:1px solid var(--line);text-align:center}
+  .cta h2{max-width:20ch;margin:0 auto}
+  .cta .hero-cta{justify-content:center;margin-top:24px}
+  footer{border-top:1px solid var(--line);padding:28px 0;font-family:var(--mono);font-size:12.5px;color:var(--ink-faint)}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+
+  @media(max-width:860px){
+    .steps{grid-template-columns:1fr}
+    .brow{grid-template-columns:1.3fr .7fr 1fr;font-size:12.5px}
+    .brow .hops{display:none}
+    .idx a{grid-template-columns:36px 1fr}.idx .de{display:none}
+    .nav .hidem{display:none}
+  }
+  .ribbon{position:fixed;left:0;bottom:0;z-index:50;font:600 11px/1 var(--mono);background:var(--amber);color:#1c1303;padding:7px 12px;border-top-right-radius:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#"><span class="mk">⇢</span> hop</a>
+    <a class="n hidem" href="#how">How it works</a>
+    <a class="n hidem" href="#build">Build on Hop</a>
+    <a class="n hidem" href="#cases">Use cases</a>
+    <span style="flex:1"></span>
+    <a class="n hidem" href="#">Developers</a>
+    <a class="n hidem" href="#">Business</a>
+    <a class="btn btn-ghost" href="#">Pricing</a>
+    <a class="btn btn-amber" href="#">Quickstart</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kick"><span class="dot"></span> delay-tolerant mesh transport</span>
+    <h1>Every message is in transit.</h1>
+    <p class="lede">Hop carries sealed datagrams device to device — held at relays when there's no
+      path, delivered the moment one opens. Departures never cancel. They wait for weather.</p>
+    <div class="hero-cta">
+      <a class="btn btn-amber" href="#">Quickstart →</a>
+      <a class="btn btn-ghost" href="#how">How it works</a>
+    </div>
+
+    <div class="board">
+      <div class="bh"><span>HOP · LIVE DELIVERY BOARD</span><span class="live"><span class="d"></span> tracking</span></div>
+      <div class="brow head"><span>TO</span><span>VIA</span><span>HOPS</span><span>STATUS</span></div>
+      <div class="brow"><span class="to">k:7f3a…møller</span><span class="via">ridge-relay-2</span><span class="hops">4</span>
+        <span class="flip"><span class="pill transit a">● IN TRANSIT</span><span class="pill deliv b">✓ DELIVERED</span></span></div>
+      <div class="brow"><span class="to">k:91c0…haans</span><span class="via">backbone-eu</span><span class="hops">2</span>
+        <span class="pill deliv">✓ DELIVERED</span></div>
+      <div class="brow"><span class="to">k:24be…okafor</span><span class="via">— offline —</span><span class="hops">·</span>
+        <span class="pill held">◷ HELD</span></div>
+      <div class="brow"><span class="to">k:08dd…sanchez</span><span class="via">camp-3 · lora</span><span class="hops">6</span>
+        <span class="pill transit">● IN TRANSIT</span></div>
+    </div>
+  </section>
+</div>
+
+<section class="band" id="how">
+  <div class="wrap">
+    <span class="eyebrow">How it works</span>
+    <h2>Store, carry, forward.</h2>
+    <p class="sub">A message doesn't need a live path the instant you send it. Hop holds it, moves it
+      as devices meet, and delivers when a route appears.</p>
+    <div class="steps">
+      <div class="step"><div class="n">→ SEAL</div><h3>Sealed &amp; addressed</h3><p>Encrypted to a key. Every relay carries it blind — confidential even across untrusted infrastructure.</p></div>
+      <div class="step"><div class="n">→ HOP</div><h3>Carried by any bearer</h3><p>Bluetooth, LoRa, Wi-Fi, the internet. The bearer changes; the datagram above it doesn't.</p></div>
+      <div class="step"><div class="n">→ HOLD</div><h3>Held, never dropped</h3><p>No path? A relay keeps it; the backbone holds for offline recipients. Eventual, but guaranteed.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="build">
+  <div class="wrap">
+    <span class="eyebrow">The narrow waist</span>
+    <h2>One layer. Every offline app.</h2>
+    <p class="sub">Most offline products rebuild the same transport and weld it to a single app. Hop is
+      that layer, done once — a sealed, store-and-forward datagram. Many bearers below, many apps above.</p>
+    <div class="stack">
+      <div class="lrow"><div class="lv">Apps</div><div class="chips">
+        <a class="chip" href="#">Messaging</a><a class="chip" href="#">Data sync</a><a class="chip" href="#">File transfer</a><a class="chip" href="#">Offline web</a><a class="chip" href="#">Telemetry</a></div></div>
+      <div class="lrow"><div class="lv">Semantics</div><div class="chips">
+        <a class="chip code" href="#">hops://</a><a class="chip code" href="#">hps://</a><a class="chip code" href="#">streams</a><a class="chip code" href="#">HNS</a></div></div>
+      <div class="lrow waist"><div class="lv">Waist</div><div class="chips">
+        <a class="chip code" href="#">hdp://</a><a class="chip" href="#">sealed, store-and-forward datagrams</a></div></div>
+      <div class="lrow"><div class="lv">Bearer</div><div class="chips">
+        <a class="chip" href="#">Bluetooth LE</a><a class="chip" href="#">L2CAP</a><a class="chip" href="#">TCP / WebSocket</a><a class="chip" href="#">LoRa, Wi-Fi Aware…</a></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="cases">
+  <div class="wrap">
+    <span class="eyebrow">Use cases</span>
+    <h2>What you build on it.</h2>
+    <div class="idx">
+      <a href="#"><span class="no">01</span><span class="ti">Messaging</span><span class="de">people to people, no infrastructure</span></a>
+      <a href="#"><span class="no">02</span><span class="ti">Data sync</span><span class="de">offline-first collections that converge</span></a>
+      <a href="#"><span class="no">03</span><span class="ti">File &amp; media transfer</span><span class="de">any size, chunked and reassembled</span></a>
+      <a href="#"><span class="no">04</span><span class="ti">Offline web</span><span class="de">reach a service from no connection</span></a>
+      <a href="#"><span class="no">05</span><span class="ti">Telemetry &amp; IoT</span><span class="de">data from past the edge</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <h2>The transport is done. Bring your app.</h2>
+    <div class="hero-cta">
+      <a class="btn btn-amber" href="#">Quickstart →</a>
+      <a class="btn btn-ghost" href="#">Read the protocol</a>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <span>⇢ hop · the network that finds a way</span>
+  <span>developers / business / pricing / docs</span>
+</div></footer>
+
+<div class="ribbon">DIRECTION C · RELAY</div>
+</body>
+</html>

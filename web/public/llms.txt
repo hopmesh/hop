@@ -1,0 +1,53 @@
+# Hop
+
+> Hop is a delay-tolerant mesh network: end-to-end encrypted, store-and-forward datagrams that hop device to device — over BLE, Wi-Fi, and the internet — until they reach the person or service you meant. Held, never dropped. It is the single transport layer that offline-capable apps build on, so each app doesn't have to rebuild intermittent-network plumbing.
+
+Hop ships as a pure-Rust SDK (`hop-core`) with native iOS and Android bindings via UniFFI, plus an optional hosted cloud backbone. The SDK is free and runs fully peer-to-peer on its own; the managed backbone is usage-based and bridges messages across the world whenever any node touches the internet. You can also run a private backbone.
+
+Key design points:
+- Delay-tolerant, not real-time: a message is held on nearby devices and re-offered at every encounter, delivered the moment a path opens (lifetime measured in hours to days). When a path is live, delivery is quick.
+- Multipath: copies are sprayed across independent routes at once (binary spray-and-wait); the first to arrive delivers and an acknowledgement cancels the rest. At-least-once with idempotency/dedup.
+- The network finds many ways. BLE is the primary local bearer because it is passive — devices discover and relay through each other with no pairing, no taps, no setup (a deliberate trade-off: lower throughput for always-on, invisible meshing). Wi-Fi/LAN carries high-bandwidth local transfers; an internet relay bridges globally; the bearer is a pluggable trait, so the same sealed bundles ride whatever is available.
+- Confidential by default: every payload is end-to-end encrypted (X25519 + ChaCha20-Poly1305), sealed to the destination's key. Relays carry ciphertext they cannot read. Identities are public keys — no phone numbers, no accounts.
+
+## Protocol (the stack, by layer)
+- [hdp:// — the datagram waist](https://hopme.sh/protocol/hdp/): sealed, addressed, store-and-forward datagrams; the narrow waist all traffic rides.
+- [hops:// — internet egress & services](https://hopme.sh/protocol/hops/): HTTP semantics carried as sealed datagrams; reach the internet (or a specific service) from offline.
+- [hps:// — topic pub/sub](https://hopme.sh/protocol/hps/): one-to-many fanout; members decrypt, non-members carry blind, reach is acknowledged.
+- [streams — chunked transfer](https://hopme.sh/protocol/streams/): large payloads split into ordered, individually-sealed chunks, reassembled across multiple peers/paths even when received out of order.
+- [HNS — name resolution](https://hopme.sh/protocol/hns/): names resolve to Hop addresses (public keys, not IPs), with TTL caching so resolution usually never reaches public DNS.
+- [BLE — the primary local bearer](https://hopme.sh/protocol/ble/): passive, no pairing; GATT for control + an L2CAP fast lane for bulk.
+- [Bearers — any transport](https://hopme.sh/protocol/bearers/): BLE and Wi-Fi/LAN today; the internet relay, long-range sub-GHz radio, and satellite fit the same trait.
+
+## Use cases (what you build)
+- [Messaging](https://hopme.sh/use-cases/messaging/) — people to people, no infrastructure.
+- [Data sync](https://hopme.sh/use-cases/sync/) — offline-first collections that converge (set reconciliation / anti-entropy).
+- [File & media transfer](https://hopme.sh/use-cases/files/) — any size, chunked and reassembled.
+- [Offline web](https://hopme.sh/use-cases/web/) — reach a service from no connection via sealed HTTP egress.
+- [Telemetry & IoT](https://hopme.sh/use-cases/telemetry/) — data from past the edge, bridged on contact.
+- [Alerts & broadcast](https://hopme.sh/use-cases/broadcast/) — one-to-many push to an area or topic, even with no tower.
+
+## Where it runs (verticals)
+- [Business](https://hopme.sh/business/) — events & venues, field operations, maritime, rural, response, industrial.
+- [Public safety & defense](https://hopme.sh/public-safety-defense/) — comms across denied, degraded, intermittent, limited (DDIL) environments; private fleets, on-prem, no internet required.
+- [Hop Bridge](https://hopme.sh/lora/) — a small ESP32 device bridging BLE to a long-range 900 MHz radio; multi-firmware (LoRa is one waveform of several on the same chipset).
+
+## Drivers (docs — the per-platform hosts)
+hop-core has no bearer system of its own; it only moves bytes. A driver is the per-platform host that embeds the core and runs the radios (it implements the bearer trait). Docs hub: https://hopme.sh/docs/
+- [iOS](https://hopme.sh/docs/drivers/ios/) — Swift host over CoreBluetooth (BLE GATT + L2CAP, LAN).
+- [Android](https://hopme.sh/docs/drivers/android/) — Kotlin host (BLE + Wi-Fi/LAN) with a foreground service.
+- [macOS](https://hopme.sh/docs/drivers/macos/) — a desktop node and rendezvous.
+- [ESP32](https://hopme.sh/docs/drivers/esp32/) — embedded host for the Hop Bridge (BLE ↔ 900 MHz, multi-firmware).
+- [Linux / server](https://hopme.sh/docs/drivers/linux/) — the relay & backbone host (TCP/WebSocket, internet egress).
+
+## For developers
+- [Developers](https://hopme.sh/developers/) — embed the core; reach a device by key, or the internet.
+- [Quickstart](https://hopme.sh/docs/quickstart/) — add the dependency, open a node from a secret, send, receive.
+- [Pricing](https://hopme.sh/pricing/) — free SDK; usage-based managed backbone.
+- [FAQ](https://hopme.sh/faq/) — latency, privacy, message size, offline delivery, battery, platforms, licensing.
+
+## Facts
+- Licensing: the SDK is source-available under FSL-1.1-ALv2 and converts to Apache-2.0 after two years. The protocol itself is never monetized; revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.
+- Platforms: pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.
+- Billing meters counts and bytes on the sealed envelope, never content.
+- Contact: hello@hopme.sh

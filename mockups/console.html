@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en" data-dir="console">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hop — Console (A×C, variant D)</title>
+<style>
+  :root{
+    --bg:#07090b; --bg-soft:#0c0f12; --panel:#0e1215; --panel-2:#12171b; --line:#1b2227; --line-2:#283139;
+    --ink:#eaf0ee; --ink-dim:#92a09b; --ink-faint:#5d6a66;
+    --green:#2bf0a0; --green-deep:#12c585; --amber:#ffb43a; --blue:#74b6ff;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(820px 480px at 80% -8%, #0f3d2c44, transparent 60%)}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+
+  header{position:sticky;top:0;z-index:20;background:#07090bcc;backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:24px;height:60px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:680;letter-spacing:-.01em;font-size:18px}
+  .brand .mk{color:var(--green)}
+  .nav a.n{color:var(--ink-dim);font-size:14.5px;font-weight:500}
+  .nav a.n:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;font-weight:600;font-size:14.5px;padding:9px 16px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-green{background:var(--green);color:#04130c}.btn-green:hover{background:#54f5b4}
+  .btn-ghost{border-color:var(--line-2);color:var(--ink)}.btn-ghost:hover{border-color:#3a4248;background:#ffffff08}
+
+  /* hero */
+  .hero{padding:56px 0 16px;text-align:center}
+  .kick{font-family:var(--mono);font-size:12.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--green);
+    display:inline-flex;align-items:center;gap:9px}
+  .kick .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 9px var(--green);animation:blink 1.8s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  h1{font-size:clamp(40px,6.2vw,68px);line-height:1.02;letter-spacing:-.03em;font-weight:730;margin-top:16px}
+  .hero p.lede{margin:20px auto 0;color:var(--ink-dim);font-size:clamp(17px,1.9vw,20px);max-width:54ch}
+  .hero-cta{display:flex;gap:12px;margin-top:28px;justify-content:center}
+
+  /* the console */
+  .console{margin-top:42px;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;background:var(--panel);
+    box-shadow:0 30px 80px #00000060}
+  .chead{display:flex;align-items:center;gap:14px;padding:11px 18px;background:var(--panel-2);border-bottom:1px solid var(--line);
+    font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.08em}
+  .chead .ttl{color:var(--ink-dim)}
+  .chead .live{margin-left:auto;color:var(--green);display:flex;align-items:center;gap:7px}
+  .chead .live .d{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.8s infinite}
+  .cbody{display:grid;grid-template-columns:1.25fr 1fr}
+  .mesh{position:relative;border-right:1px solid var(--line);min-height:340px}
+  .mesh .pane{position:absolute;left:14px;top:12px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.1em}
+  .mesh svg{position:absolute;inset:0;width:100%;height:100%}
+  .edge{stroke:#243029;stroke-width:1.6;fill:none}
+  .edge.dead{stroke:#5b2b2b;stroke-dasharray:5 5}
+  .node{fill:#0b1210;stroke:#37493f;stroke-width:1.6}
+  .node.live{stroke:var(--green)}.node-core{fill:var(--green)}
+  .pulse{fill:none;stroke:var(--green)}
+  .pkt{fill:var(--green);filter:drop-shadow(0 0 6px var(--green))}
+  .xmark{stroke:#e0564f;stroke-width:2}
+  .lbl{fill:var(--ink-faint);font:600 10.5px var(--mono)}
+
+  .board{padding:6px 0}
+  .bpane{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.1em;padding:14px 18px 8px}
+  .brow{display:grid;grid-template-columns:1.5fr .5fr 1.05fr;gap:10px;align-items:center;padding:12px 18px;
+    border-top:1px solid var(--line);font-family:var(--mono);font-size:13px}
+  .brow.head{color:var(--ink-faint);font-size:10.5px;letter-spacing:.1em;border-top:0;padding-bottom:6px}
+  .brow .to{color:var(--ink)}.brow .hops{color:var(--ink-dim)}
+  .pill{justify-self:start;font-size:11px;letter-spacing:.05em;padding:4px 9px;border-radius:5px;border:1px solid;white-space:nowrap}
+  .pill.held{color:var(--amber);border-color:#54430f;background:#1c1606}
+  .pill.transit{color:var(--blue);border-color:#243a52;background:#0d1722}
+  .pill.deliv{color:var(--green);border-color:#1c4a34;background:#0a1c14}
+  .flip{position:relative;display:inline-grid}.flip span{grid-area:1/1}
+  .flip .a{animation:fa 4.2s infinite}.flip .b{animation:fb 4.2s infinite}
+  @keyframes fa{0%,42%{opacity:1}50%,100%{opacity:0}}
+  @keyframes fb{0%,42%{opacity:0}50%,100%{opacity:1}}
+
+  /* sections */
+  section.band{padding:62px 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--green-deep)}
+  h2{font-size:clamp(26px,3.4vw,38px);letter-spacing:-.025em;line-height:1.08;margin-top:12px;font-weight:700}
+  .sub{color:var(--ink-dim);margin-top:14px;max-width:62ch}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
+  .step{border:1px solid var(--line);border-radius:12px;padding:22px;background:var(--panel)}
+  .step .n{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.08em}
+  .step h3{margin-top:12px;font-size:17px;letter-spacing:-.01em}.step p{margin-top:7px;color:var(--ink-dim);font-size:14.5px}
+
+  .stack{margin-top:30px;border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+  .lrow{display:grid;grid-template-columns:120px 1fr;border-top:1px solid var(--line);align-items:center}
+  .lrow:first-child{border-top:0}
+  .lrow .lv{padding:15px 18px;font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.1em;border-right:1px solid var(--line);background:var(--bg-soft)}
+  .lrow.waist .lv{color:var(--green)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;padding:13px 18px}
+  .chip{font-size:13px;color:var(--ink-dim);border:1px solid var(--line-2);border-radius:999px;padding:6px 12px;background:var(--bg-soft)}
+  .chip:hover{border-color:#3a4248;color:var(--ink)}.chip.code{font-family:var(--mono);color:var(--ink)}
+  .lrow.waist .chip{border-color:#1c4a34;color:var(--green);background:#0a1c14}
+
+  .idx{margin-top:30px;border-top:1px solid var(--line-2)}
+  .idx a{display:grid;grid-template-columns:48px 1fr auto;align-items:baseline;gap:14px;padding:16px 4px;border-bottom:1px solid var(--line);transition:.12s}
+  .idx a:hover{background:var(--panel);padding-left:12px}
+  .idx .no{font-family:var(--mono);font-size:12.5px;color:var(--green)}
+  .idx .ti{font-size:18px;font-weight:600;letter-spacing:-.01em}
+  .idx .de{color:var(--ink-faint);font-size:13.5px;justify-self:end}
+
+  .cta{padding:82px 0;border-top:1px solid var(--line);text-align:center}
+  .cta h2{max-width:20ch;margin:0 auto}.cta .hero-cta{margin-top:24px}
+  footer{border-top:1px solid var(--line);padding:28px 0;font-family:var(--mono);font-size:12.5px;color:var(--ink-faint)}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+
+  @media(max-width:880px){.cbody{grid-template-columns:1fr}.mesh{border-right:0;border-bottom:1px solid var(--line)}
+    .steps{grid-template-columns:1fr}.idx a{grid-template-columns:36px 1fr}.idx .de{display:none}.nav .hidem{display:none}}
+  .ribbon{position:fixed;left:0;bottom:0;z-index:50;font:600 11px/1 var(--mono);background:var(--green);color:#04130c;padding:7px 12px;border-top-right-radius:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#"><span class="mk">⇢</span> hop</a>
+    <a class="n hidem" href="#how">How it works</a>
+    <a class="n hidem" href="#build">Build on Hop</a>
+    <a class="n hidem" href="#cases">Use cases</a>
+    <span style="flex:1"></span>
+    <a class="n hidem" href="#">Developers</a>
+    <a class="n hidem" href="#">Business</a>
+    <a class="btn btn-ghost" href="#">Pricing</a>
+    <a class="btn btn-green" href="#">Quickstart</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kick"><span class="dot"></span> delay-tolerant mesh transport</span>
+    <h1>Watch a message find its way.</h1>
+    <p class="lede">Encrypted datagrams hop device to device until they arrive — rerouting around dead
+      links, held at relays when a recipient is offline, delivered the moment a path opens. Never dropped.</p>
+    <div class="hero-cta">
+      <a class="btn btn-green" href="#">Quickstart →</a>
+      <a class="btn btn-ghost" href="#how">How it works</a>
+    </div>
+
+    <div class="console">
+      <div class="chead"><span class="mk" style="color:var(--green)">⇢</span><span class="ttl">hop · live ops</span>
+        <span class="live"><span class="d"></span> tracking</span></div>
+      <div class="cbody">
+        <div class="mesh">
+          <span class="pane">MESH</span>
+          <svg viewBox="0 0 460 360" aria-label="Live mesh: a packet reroutes around a broken link and arrives">
+            <line class="edge" x1="80" y1="290" x2="180" y2="240"/>
+            <line class="edge dead" x1="180" y1="240" x2="310" y2="240"/>
+            <line class="edge" x1="180" y1="240" x2="230" y2="110"/>
+            <line class="edge" x1="230" y1="110" x2="360" y2="140"/>
+            <line class="edge" x1="360" y1="140" x2="380" y2="275"/>
+            <line class="edge" x1="380" y1="275" x2="310" y2="240"/>
+            <g transform="translate(245,240)"><line class="xmark" x1="-7" y1="-7" x2="7" y2="7"/><line class="xmark" x1="7" y1="-7" x2="-7" y2="7"/></g>
+            <circle class="node" cx="80" cy="290" r="13"/><circle class="node-core" cx="80" cy="290" r="4"/>
+            <text class="lbl" x="60" y="320">you</text>
+            <circle class="node" cx="180" cy="240" r="11"/>
+            <circle class="node" cx="230" cy="110" r="11"/>
+            <circle class="node" cx="360" cy="140" r="11"/>
+            <circle class="node" cx="380" cy="275" r="11"/>
+            <circle class="node live" cx="310" cy="240" r="14"/><circle class="node-core" cx="310" cy="240" r="4"/>
+            <circle class="pulse" cx="310" cy="240" r="14"><animate attributeName="r" values="14;30" dur="2.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.55;0" dur="2.2s" repeatCount="indefinite"/></circle>
+            <text class="lbl" x="298" y="274">dest</text>
+            <circle class="pkt" r="5"><animateMotion dur="4.2s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.86;1" calcMode="linear" path="M80,290 L180,240 L230,110 L360,140 L380,275 L310,240"/><animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.86;1" dur="4.2s" repeatCount="indefinite"/></circle>
+          </svg>
+        </div>
+        <div class="board">
+          <div class="bpane">DELIVERIES</div>
+          <div class="brow head"><span>TO</span><span>HOPS</span><span>STATUS</span></div>
+          <div class="brow"><span class="to">k:7f3a…møller</span><span class="hops">4</span>
+            <span class="flip"><span class="pill transit a">● IN TRANSIT</span><span class="pill deliv b">✓ DELIVERED</span></span></div>
+          <div class="brow"><span class="to">k:91c0…haans</span><span class="hops">2</span><span class="pill deliv">✓ DELIVERED</span></div>
+          <div class="brow"><span class="to">k:24be…okafor</span><span class="hops">·</span><span class="pill held">◷ HELD · offline</span></div>
+          <div class="brow"><span class="to">k:08dd…sanchez</span><span class="hops">6</span><span class="pill transit">● IN TRANSIT</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="band" id="how">
+  <div class="wrap">
+    <span class="eyebrow">How it works</span>
+    <h2>Store, carry, forward.</h2>
+    <p class="sub">A message doesn't need a live path the instant you send it. Hop holds it, moves it
+      as devices meet, and delivers when a route appears — minutes or hops later.</p>
+    <div class="steps">
+      <div class="step"><div class="n">→ SEAL</div><h3>Sealed &amp; addressed</h3><p>Encrypted to a key. Every relay carries it blind — confidential even across untrusted infrastructure.</p></div>
+      <div class="step"><div class="n">→ HOP</div><h3>Carried by any bearer</h3><p>Bluetooth, LoRa, Wi-Fi, the internet. The bearer changes; the datagram above it doesn't.</p></div>
+      <div class="step"><div class="n">→ HOLD</div><h3>Held, never dropped</h3><p>No path? A relay keeps it; the backbone holds for offline recipients. Eventual, but guaranteed.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="build">
+  <div class="wrap">
+    <span class="eyebrow">The narrow waist</span>
+    <h2>One layer. Every offline app.</h2>
+    <p class="sub">Most offline products rebuild the same transport and weld it to a single app. Hop is
+      that layer, done once — a sealed, store-and-forward datagram. Many bearers below, many apps above.</p>
+    <div class="stack">
+      <div class="lrow"><div class="lv">Apps</div><div class="chips">
+        <a class="chip" href="#">Messaging</a><a class="chip" href="#">Data sync</a><a class="chip" href="#">File transfer</a><a class="chip" href="#">Offline web</a><a class="chip" href="#">Telemetry</a></div></div>
+      <div class="lrow"><div class="lv">Semantics</div><div class="chips">
+        <a class="chip code" href="#">hops://</a><a class="chip code" href="#">hps://</a><a class="chip code" href="#">streams</a><a class="chip code" href="#">HNS</a></div></div>
+      <div class="lrow waist"><div class="lv">Waist</div><div class="chips">
+        <a class="chip code" href="#">hdp://</a><a class="chip" href="#">sealed, store-and-forward datagrams</a></div></div>
+      <div class="lrow"><div class="lv">Bearer</div><div class="chips">
+        <a class="chip" href="#">Bluetooth LE</a><a class="chip" href="#">L2CAP</a><a class="chip" href="#">TCP / WebSocket</a><a class="chip" href="#">LoRa, Wi-Fi Aware…</a></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="cases">
+  <div class="wrap">
+    <span class="eyebrow">Use cases</span>
+    <h2>What you build on it.</h2>
+    <div class="idx">
+      <a href="#"><span class="no">01</span><span class="ti">Messaging</span><span class="de">people to people, no infrastructure</span></a>
+      <a href="#"><span class="no">02</span><span class="ti">Data sync</span><span class="de">offline-first collections that converge</span></a>
+      <a href="#"><span class="no">03</span><span class="ti">File &amp; media transfer</span><span class="de">any size, chunked and reassembled</span></a>
+      <a href="#"><span class="no">04</span><span class="ti">Offline web</span><span class="de">reach a service from no connection</span></a>
+      <a href="#"><span class="no">05</span><span class="ti">Telemetry &amp; IoT</span><span class="de">data from past the edge</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <h2>The transport is done. Bring your app.</h2>
+    <div class="hero-cta"><a class="btn btn-green" href="#">Quickstart →</a><a class="btn btn-ghost" href="#">Read the protocol</a></div>
+  </div>
+</section>
+
+<footer><div class="wrap"><span>⇢ hop · the network that finds a way</span><span>developers / business / pricing / docs</span></div></footer>
+<div class="ribbon">A×C · CONSOLE</div>
+</body>
+</html>

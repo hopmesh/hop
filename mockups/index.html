@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hop — design directions</title>
+<style>
+  :root{--mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#07090b;color:#e7eaf0;font-family:var(--sans);min-height:100vh;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 40px;gap:8px}
+  h1{font-size:30px;letter-spacing:-.02em}
+  p.s{color:#8a93a3;margin-bottom:26px;font-size:15px;text-align:center;max-width:60ch}
+  .grid{display:grid;grid-template-columns:repeat(2,330px);gap:18px}
+  a.card{display:block;border:1px solid #1f2630;border-radius:16px;padding:24px;transition:.16s;background:#0e1216}
+  a.card:hover{transform:translateY(-3px);border-color:#2bf0a060}
+  .tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:#2bf0a0}
+  .card h2{font-size:23px;margin-top:8px;letter-spacing:-.01em}
+  .card .meta{font-family:var(--mono);font-size:11.5px;color:#6b7484;margin-top:3px}
+  .card p{color:#8a93a3;font-size:14px;margin-top:12px;line-height:1.55}
+  .sw{display:flex;gap:6px;margin-top:18px}
+  .sw span{width:26px;height:26px;border-radius:6px;border:1px solid #0006}
+  .ref{display:flex;gap:18px;margin-top:30px;font-family:var(--mono);font-size:12.5px}
+  .ref a{color:#6b7484;border-bottom:1px dashed #2a323b;padding-bottom:2px}
+  .ref a:hover{color:#aeb6c2}
+  .ref .lab{color:#4a525c}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+  <h1>Hop — A × C combined</h1>
+  <p class="s">Two ways to fuse <b style="color:#cdd3da">Signal</b> (the live mesh graph) with <b style="color:#cdd3da">Relay</b> (the delivery-status board). Unified palette: signal-green primary, amber reserved for <i>held</i>. Open both, tell me which to build on — or what to adjust.</p>
+  <div class="grid">
+    <a class="card" href="console.html">
+      <div class="tag">A × C · VARIANT D</div><h2>Console</h2>
+      <div class="meta">dark · ops dashboard (graph + board)</div>
+      <p>A live ops panel: the animated mesh on the left, the delivery board on the right — TO / HOPS / STATUS, one row flipping IN TRANSIT → DELIVERED, an offline recipient sitting at HELD. You see the network <i>and</i> what's crossing it.</p>
+      <div class="sw"><span style="background:#07090b"></span><span style="background:#2bf0a0"></span><span style="background:#74b6ff"></span><span style="background:#ffb43a"></span></div>
+    </a>
+    <a class="card" href="tracer.html">
+      <div class="tag">A × C · VARIANT E</div><h2>Tracer</h2>
+      <div class="meta">dark · graph-led + status pills + ticker</div>
+      <p>Graph-forward: one big animated mesh with status pills pinned to the nodes (HELD / IN TRANSIT / DELIVERED), and a live delivery ticker scrolling beneath it. More immersive, less dashboard — the topology is the hero.</p>
+      <div class="sw"><span style="background:#07090b"></span><span style="background:#2bf0a0"></span><span style="background:#74b6ff"></span><span style="background:#ffb43a"></span></div>
+    </a>
+  </div>
+  <a href="scenarios.html" style="margin-top:22px;display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13.5px;color:#2bf0a0;border:1px solid #1c4a34;background:#0a1c14;border-radius:10px;padding:12px 18px">▶ Scenario player — the map &amp; data flow across 5 real situations</a>
+  <div class="ref">
+    <span class="lab">sources:</span>
+    <a href="signal.html">A · Signal</a>
+    <a href="relay.html">C · Relay</a>
+    <a href="atlas.html">B · Atlas</a>
+  </div>
+</body>
+</html>

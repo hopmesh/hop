@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hop — live mesh swarm</title>
+<style>
+  :root{
+    --bg:#07090b; --panel:#0e1215; --panel-2:#12171b; --line:#1b2227; --line-2:#283139;
+    --ink:#eaf0ee; --ink-dim:#92a09b; --ink-faint:#5d6a66;
+    --green:#2bf0a0; --blue:#74b6ff; --amber:#ffb43a; --red:#e0564f;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px}
+  h1{font-size:clamp(26px,3.4vw,34px);letter-spacing:-.02em}
+  .sub{color:var(--ink-dim);margin-top:8px;max-width:70ch;font-size:15px}
+  .kick{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--green)}
+
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:20px 0 14px}
+  .toggle{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);
+    border:1px solid var(--line-2);background:var(--panel-2);border-radius:999px;padding:8px 14px;cursor:pointer;user-select:none;transition:.14s}
+  .toggle .sw{width:9px;height:9px;border-radius:50%;background:#3a4248;transition:.14s}
+  .toggle[aria-pressed="true"]{color:var(--ink)}
+  .toggle.ble[aria-pressed="true"]{border-color:var(--green)} .toggle.ble[aria-pressed="true"] .sw{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .toggle.wifi[aria-pressed="true"]{border-color:var(--blue)} .toggle.wifi[aria-pressed="true"] .sw{background:var(--blue);box-shadow:0 0 8px var(--blue)}
+  .toggle.net[aria-pressed="true"]{border-color:var(--amber)} .toggle.net[aria-pressed="true"] .sw{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .btn{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);border:1px solid var(--line-2);background:none;border-radius:8px;padding:8px 13px;cursor:pointer}
+  .btn:hover{color:var(--ink);border-color:#3a4248}
+  .spacer{flex:1}
+  .count{font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+
+  .stage-wrap{position:relative;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;background:var(--panel);box-shadow:0 30px 80px #00000050}
+  canvas{display:block;width:100%;height:560px;cursor:crosshair}
+  .legend{position:absolute;left:14px;bottom:12px;display:flex;gap:16px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);pointer-events:none}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .legend i{width:14px;height:2px;display:inline-block;border-radius:2px}
+  .hint{position:absolute;left:14px;top:12px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);pointer-events:none}
+
+  .inspect{position:absolute;right:14px;top:14px;width:248px;background:#0c1014ee;border:1px solid var(--line-2);
+    border-radius:12px;padding:14px;font-size:13px;backdrop-filter:blur(8px);opacity:0;transform:translateY(-6px);
+    transition:.16s;pointer-events:none}
+  .inspect.on{opacity:1;transform:none}
+  .inspect .id{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .inspect .row{display:flex;justify-content:space-between;gap:10px;margin-top:9px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .inspect .row b{font-weight:600}
+  .inspect .v-green{color:var(--green)} .inspect .v-blue{color:var(--blue)} .inspect .v-amber{color:var(--amber)} .inspect .v-off{color:var(--ink-faint)}
+  .inspect .reach{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .inspect .reach b{color:var(--green);font-size:15px}
+  .ribbon{position:fixed;left:0;bottom:0;font:600 11px/1 var(--mono);background:var(--green);color:#04130c;padding:7px 12px;border-top-right-radius:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kick">Live mesh · phase 1 simulation</div>
+  <h1>A swarm that finds a way.</h1>
+  <p class="sub">Every dot is a device wandering through Wi-Fi zones and around buildings. Links form
+     and break as they move — <span style="color:var(--green)">Bluetooth</span> in range,
+     <span style="color:var(--blue)">Wi-Fi</span> on a shared network, the
+     <span style="color:var(--amber)">internet relay</span> bridging the rest. Click any device to see
+     what it can reach right now; toggle the relays to watch the mesh stand on its own.</p>
+
+  <div class="controls">
+    <button class="toggle ble" id="t-ble" aria-pressed="true"><span class="sw"></span> Bluetooth</button>
+    <button class="toggle wifi" id="t-wifi" aria-pressed="true"><span class="sw"></span> Wi-Fi / LAN</button>
+    <button class="toggle net" id="t-net" aria-pressed="true"><span class="sw"></span> Internet relays</button>
+    <button class="btn" id="regen">↻ new swarm</button>
+    <span class="spacer"></span>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="stage-wrap">
+    <canvas id="c"></canvas>
+    <div class="hint">click a device · drag nothing · it's alive</div>
+    <div class="legend">
+      <span><i style="background:var(--green)"></i> Bluetooth</span>
+      <span><i style="background:var(--blue)"></i> Wi-Fi / LAN</span>
+      <span><i style="background:var(--amber)"></i> internet relay</span>
+    </div>
+    <div class="inspect" id="inspect"></div>
+  </div>
+</div>
+<div class="ribbon">SWARM · PHASE 1</div>
+
+<script>
+(function(){
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W=0, H=0, DPR=Math.min(window.devicePixelRatio||1, 2);
+  const opt = { ble:true, wifi:true, net:true };
+  const BLE_R = 92;            // bluetooth range (px)
+  let devices=[], zones=[], buildings=[], relays=[], selected=null;
+
+  // ---- world setup (coords in 0..1, scaled to canvas) ----
+  function buildWorld(){
+    zones = [
+      { x:.05, y:.10, w:.26, h:.34, label:'Café Wi-Fi', online:true },
+      { x:.68, y:.07, w:.27, h:.30, label:'Office LAN',  online:true },
+      { x:.40, y:.62, w:.30, h:.32, label:'Home Wi-Fi',  online:false },
+    ];
+    buildings = [
+      { x:.40, y:.10, w:.16, h:.20 },
+      { x:.10, y:.62, w:.16, h:.22 },
+      { x:.78, y:.55, w:.15, h:.26 },
+    ];
+    relays = [ {x:.28,y:.50}, {x:.74,y:.46} ];
+    const N = 50;
+    devices = [];
+    for(let i=0;i<N;i++){
+      const d={
+        id:i, x:Math.random(), y:Math.random(), tx:0, ty:0,
+        state:'dwell', dwell:0.3+Math.random()*2.5,        // start idle, staggered
+        speed:0.020+Math.random()*0.022,                   // slow, human walking pace
+        zoneTarget:false,
+        ble: Math.random()<0.92,                           // a few have BLE off
+        r: 4.5+Math.random()*1.4,
+      };
+      d.tx=d.x; d.ty=d.y; devices.push(d);
+    }
+  }
+
+  // People move with intent: pick somewhere to go (often a café/office/home),
+  // walk there, then linger before moving on.
+  function pickTarget(d){
+    if(Math.random()<0.6 && zones.length){
+      const z=zones[(Math.random()*zones.length)|0];
+      d.tx=z.x+0.06+Math.random()*Math.max(0.04,z.w-0.12);
+      d.ty=z.y+0.06+Math.random()*Math.max(0.04,z.h-0.12);
+      d.zoneTarget=true;
+    } else {
+      d.tx=0.04+Math.random()*0.92; d.ty=0.05+Math.random()*0.9; d.zoneTarget=false;
+    }
+  }
+
+  function resize(){
+    const r = cv.getBoundingClientRect();
+    W=r.width; H=r.height;
+    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+
+  const px=(d)=>({x:d.x*W, y:d.y*H});
+  const rectAbs=(z)=>({x:z.x*W, y:z.y*H, w:z.w*W, h:z.h*H});
+  function inRect(p, z){ const a=rectAbs(z); return p.x>=a.x&&p.x<=a.x+a.w&&p.y>=a.y&&p.y<=a.y+a.h; }
+  function zoneOf(d){ const p=px(d); for(let i=0;i<zones.length;i++) if(inRect(p,zones[i])) return i; return -1; }
+  function hasNet(d){ const z=zoneOf(d); return z>=0 && zones[z].online; }
+
+  // segment (a,b) intersects axis-aligned rect? (Cohen–Sutherland-ish via edge tests)
+  function segHitsRect(a,b,z){
+    const r=rectAbs(z);
+    // quick reject
+    if(Math.max(a.x,b.x)<r.x||Math.min(a.x,b.x)>r.x+r.w||Math.max(a.y,b.y)<r.y||Math.min(a.y,b.y)>r.y+r.h) return false;
+    const edges=[[r.x,r.y,r.x+r.w,r.y],[r.x+r.w,r.y,r.x+r.w,r.y+r.h],[r.x+r.w,r.y+r.h,r.x,r.y+r.h],[r.x,r.y+r.h,r.x,r.y]];
+    for(const e of edges){ if(segSeg(a.x,a.y,b.x,b.y,e[0],e[1],e[2],e[3])) return true; }
+    // fully inside counts as hit too
+    return inRect(a,z)||inRect(b,z);
+  }
+  function segSeg(x1,y1,x2,y2,x3,y3,x4,y4){
+    const d=(x2-x1)*(y4-y3)-(y2-y1)*(x4-x3); if(d===0) return false;
+    const t=((x3-x1)*(y4-y3)-(y3-y1)*(x4-x3))/d, u=((x3-x1)*(y2-y1)-(y3-y1)*(x2-x1))/d;
+    return t>=0&&t<=1&&u>=0&&u<=1;
+  }
+  function bleClear(a,b){ for(const bld of buildings) if(segHitsRect(a,b,bld)) return false; return true; }
+
+  // ---- compute the current edge set (respecting toggles) ----
+  function computeEdges(){
+    const E=[]; const n=devices.length;
+    for(let i=0;i<n;i++){
+      const di=devices[i], pi=px(di), zi=zoneOf(di);
+      for(let j=i+1;j<n;j++){
+        const dj=devices[j], pj=px(dj);
+        // Wi-Fi: same zone (any distance within the zone)
+        if(opt.wifi && zi>=0 && zi===zoneOf(dj)){ E.push({i,j,kind:'wifi'}); continue; }
+        // BLE: in range + line of sight (not through a building)
+        if(opt.ble && di.ble && dj.ble){
+          const dx=pi.x-pj.x, dy=pi.y-pj.y;
+          if(dx*dx+dy*dy < BLE_R*BLE_R && bleClear(pi,pj)){ E.push({i,j,kind:'ble'}); }
+        }
+      }
+    }
+    return E;
+  }
+
+  // adjacency incl. the relay hub (all net devices ~1 hop via backbone)
+  function adjacency(E){
+    const adj=Array.from({length:devices.length},()=>[]);
+    for(const e of E){ adj[e.i].push(e.j); adj[e.j].push(e.i); }
+    if(opt.net){
+      const netIdx=devices.map((d,i)=>hasNet(d)?i:-1).filter(i=>i>=0);
+      for(let a=0;a<netIdx.length;a++) for(let b=a+1;b<netIdx.length;b++){ adj[netIdx[a]].push(netIdx[b]); adj[netIdx[b]].push(netIdx[a]); }
+    }
+    return adj;
+  }
+  function reachFrom(start, adj){
+    const seen=new Set([start]), q=[start];
+    while(q.length){ const u=q.shift(); for(const v of adj[u]) if(!seen.has(v)){ seen.add(v); q.push(v); } }
+    return seen;
+  }
+
+  // ---- render ----
+  function draw(){
+    update();
+    ctx.clearRect(0,0,W,H);
+
+    // zones (wifi areas)
+    zones.forEach(z=>{
+      const a=rectAbs(z);
+      ctx.fillStyle = z.online ? '#0d1a2410' : '#10151310';
+      ctx.strokeStyle = z.online ? '#243a5266' : '#283139';
+      ctx.lineWidth=1; roundRect(a.x,a.y,a.w,a.h,12); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = z.online ? '#5b7da8' : '#5d6a66';
+      ctx.font='11px '+mono(); ctx.fillText((z.online?'⌁ ':'')+z.label, a.x+10, a.y+18);
+    });
+    // buildings (BLE blockers)
+    buildings.forEach(b=>{
+      const a=rectAbs(b);
+      ctx.fillStyle='#05070888'; ctx.strokeStyle='#2b2230'; ctx.lineWidth=1;
+      roundRect(a.x,a.y,a.w,a.h,6); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#4a3b3b'; ctx.font='10px '+mono(); ctx.fillText('building', a.x+8, a.y+16);
+    });
+
+    const E=computeEdges();
+    const adj=adjacency(E);
+    const reach = selected!=null ? reachFrom(selected, adj) : null;
+
+    // relays + backbone links
+    if(opt.net){
+      const rp=relays.map(r=>({x:r.x*W,y:r.y*H}));
+      ctx.strokeStyle='#ffb43a55'; ctx.lineWidth=1.4; ctx.setLineDash([5,5]);
+      // relay-to-relay
+      for(let a=0;a<rp.length;a++) for(let b=a+1;b<rp.length;b++){ line(rp[a],rp[b]); }
+      // net device -> nearest relay
+      devices.forEach((d,i)=>{ if(!hasNet(d)) return; const p=px(d); let nr=rp[0],best=1e9;
+        rp.forEach(r=>{const dx=p.x-r.x,dy=p.y-r.y,dd=dx*dx+dy*dy; if(dd<best){best=dd;nr=r;}});
+        ctx.globalAlpha = reach && !reach.has(i) ? 0.18 : 0.6; line(p,nr); });
+      ctx.globalAlpha=1; ctx.setLineDash([]);
+      rp.forEach(r=>{ glowDot(r.x,r.y,7,'#ffb43a'); ctx.fillStyle='#7a5a1e'; ctx.font='10px '+mono(); ctx.fillText('relay', r.x-14, r.y-12); });
+    }
+
+    // links
+    E.forEach(e=>{
+      const a=px(devices[e.i]), b=px(devices[e.j]);
+      const dim = reach && !(reach.has(e.i)&&reach.has(e.j));
+      ctx.globalAlpha = dim?0.10:0.55;
+      ctx.strokeStyle = e.kind==='wifi' ? '#74b6ff' : '#2bf0a0';
+      ctx.lineWidth = e.kind==='wifi'?1.4:1.1; line(a,b);
+    });
+    ctx.globalAlpha=1;
+
+    // devices
+    devices.forEach((d,i)=>{
+      const p=px(d), net=hasNet(d), z=zoneOf(d);
+      const dim = reach && !reach.has(i);
+      ctx.globalAlpha = dim?0.3:1;
+      // wifi ring
+      if(z>=0){ ctx.beginPath(); ctx.arc(p.x,p.y,d.r+4,0,7); ctx.strokeStyle=net?'#ffb43a':'#74b6ff'; ctx.lineWidth=1.4; ctx.stroke(); }
+      // body
+      ctx.beginPath(); ctx.arc(p.x,p.y,d.r,0,7);
+      ctx.fillStyle = i===selected ? '#fff' : (d.ble ? '#cfe8df' : '#6b7672');
+      ctx.fill();
+      if(i===selected){ ctx.beginPath(); ctx.arc(p.x,p.y,d.r+8,0,7); ctx.strokeStyle='#2bf0a0'; ctx.lineWidth=1.6; ctx.stroke(); }
+      ctx.globalAlpha=1;
+    });
+
+    document.getElementById('count').textContent =
+      devices.length+' devices · '+E.length+' live links'+(opt.net?' · relays on':' · relays off');
+
+    if(selected!=null && reach) updateInspect(selected, E, reach);
+    requestAnimationFrame(draw);
+  }
+
+  function update(){
+    const dt=1/60;
+    devices.forEach(d=>{
+      if(d.state==='dwell'){ d.dwell-=dt; if(d.dwell<=0){ pickTarget(d); d.state='move'; } return; }
+      const dx=d.tx-d.x, dy=d.ty-d.y, dist=Math.hypot(dx,dy);
+      if(dist<0.012){                                   // arrived → linger
+        d.state='dwell';
+        d.dwell = d.zoneTarget ? 3+Math.random()*8 : 0.8+Math.random()*2.6;
+        return;
+      }
+      const step=Math.min(d.speed*dt, dist);
+      d.x+=dx/dist*step; d.y+=dy/dist*step;
+    });
+  }
+
+  // ---- inspector ----
+  function updateInspect(i, E, reach){
+    const d=devices[i], z=zoneOf(d), net=hasNet(d);
+    let ble=0, wifi=0;
+    E.forEach(e=>{ if(e.i===i||e.j===i){ if(e.kind==='ble')ble++; else wifi++; } });
+    const el=document.getElementById('inspect');
+    el.classList.add('on');
+    el.innerHTML =
+      `<div class="id">device #${String(i).padStart(2,'0')}</div>`+
+      `<div class="row"><span>Bluetooth</span>${d.ble?'<b class="v-green">on</b>':'<b class="v-off">off</b>'}</div>`+
+      `<div class="row"><span>Wi-Fi / LAN</span>${z>=0?`<b class="v-blue">${zones[z].label}</b>`:'<b class="v-off">—</b>'}</div>`+
+      `<div class="row"><span>Internet</span>${net?'<b class="v-amber">reachable</b>':'<b class="v-off">no</b>'}</div>`+
+      `<div class="row"><span>direct links</span><b>${ble} BLE · ${wifi} Wi-Fi</b></div>`+
+      `<div class="reach">reaches <b>${reach.size}</b> of ${devices.length} devices right now<br><span style="color:var(--ink-faint)">(its connected mesh, this instant)</span></div>`;
+  }
+
+  // helpers
+  function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  function line(a,b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  function glowDot(x,y,r,c){ ctx.save(); ctx.shadowColor=c; ctx.shadowBlur=10; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fillStyle=c; ctx.fill(); ctx.restore(); ctx.fillStyle='#04130c'; ctx.beginPath(); ctx.arc(x,y,2.4,0,7); ctx.fill(); }
+  function mono(){ return getComputedStyle(document.body).getPropertyValue('--mono'); }
+
+  // interaction
+  cv.addEventListener('click', (e)=>{
+    const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    let best=null, bd=18*18;
+    devices.forEach((d,i)=>{ const p=px(d); const dd=(p.x-mx)**2+(p.y-my)**2; if(dd<bd){bd=dd;best=i;} });
+    selected = best===selected ? null : best;
+    if(selected==null) document.getElementById('inspect').classList.remove('on');
+  });
+  function toggle(id,key){ const b=document.getElementById(id); b.onclick=()=>{ opt[key]=!opt[key]; b.setAttribute('aria-pressed',opt[key]); }; }
+  toggle('t-ble','ble'); toggle('t-wifi','wifi'); toggle('t-net','net');
+  document.getElementById('regen').onclick=()=>{ selected=null; document.getElementById('inspect').classList.remove('on'); buildWorld(); };
+
+  window.addEventListener('resize', resize);
+  buildWorld(); resize(); requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

@@ -1,11 +1,27 @@
 ---
 // ScenarioPlayer — an interactive data-flow map. Tab through real situations
-// and watch a message route itself across the mesh: hopping, holding, and
-// arriving over multiple independent paths (binary spray-and-wait).
+// and watch a message route itself across the mesh.
+//
+//   mesh  scenarios: sealed copies spray across independent fixed routes
+//                    (binary spray-and-wait — first copy to arrive wins).
+//   carry scenarios: store-carry-forward. A carrier node physically MOVES;
+//                    links attach/detach as it enters and leaves range; the
+//                    message is picked up, ferried, handed off carrier-to-
+//                    carrier, dropped to wait, and delivered at the far end.
+//
+// Props:
+//   ids — optional array of scenario ids. When given, only those scenarios
+//         show (used on use-case pages to surface the relevant animations).
+//         When omitted, every scenario shows (the homepage hero).
 //
 // Styles are global-but-namespaced under `.scenario` so the SVG and tabs that
-// the inline script injects at runtime are styled (Astro's component-scoped
-// styles only reach markup present at build time, not injected DOM).
+// the script injects at runtime are styled (Astro's component-scoped styles
+// only reach markup present at build time, not injected DOM).
+import { scenarios as ALL } from '../data/scenarios.js';
+const { ids } = Astro.props;
+const SCEN = (ids && ids.length)
+  ? ids.map((id) => ALL.find((s) => s.id === id)).filter(Boolean)
+  : ALL;
 ---
 <div class="scenario">
   <div class="sp-tabs" id="sp-tabs" role="tablist"></div>
@@ -44,40 +60,54 @@
     --green:#2bf0a0; --green-deep:#12c585; --amber:#ffb43a; --blue:#74b6ff; --red:#e0564f;
     --sp-panel:#0e1215; --sp-soft:#0c0f12; --sp-line:#1b2227; --sp-line2:#283139;
     --sp-ink:#eaf0ee; --sp-dim:#92a09b; --sp-faint:#5d6a66;
+    --sp-stage1:#0a0d0c; --sp-stage2:#0b1110; --sp-grid:#0c2b2810;
+    --sp-surf:#0b1210; --sp-surf2:#0d1411; --sp-edge:#243029; --sp-stroke:#3a4d44;
+    --sp-road:#33402f; --sp-dead:#5b2b2b; --sp-hover:#3a4248;
+    --sp-afill:#0a1c14; --sp-abd:#1c4a34; --sp-shadow:#00000060;
+    --sp-held-b:#54430f; --sp-held-bg:#1c1606e6;
+    --sp-transit-b:#243a52; --sp-transit-bg:#0d1722e6;
+    --sp-deliv-bg:#0a1c14e6;
   }
   /* tabs */
   .scenario .sp-tabs{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .scenario .sp-tabs:empty{display:none}
   .scenario .sp-tab{font-family:var(--mono);font-size:13px;color:var(--sp-dim);border:1px solid var(--sp-line2);
     background:var(--sp-soft);border-radius:999px;padding:9px 16px;cursor:pointer;transition:.14s;display:flex;align-items:center;gap:8px}
-  .scenario .sp-tab:hover{border-color:#3a4248;color:var(--sp-ink)}
-  .scenario .sp-tab[aria-selected="true"]{border-color:var(--green);color:var(--green);background:#0a1c14}
-  .scenario .sp-tab .ic{font-size:14px}
+  .scenario .sp-tab:hover{border-color:var(--sp-hover);color:var(--sp-ink)}
+  .scenario .sp-tab[aria-selected="true"]{border-color:var(--green);color:var(--green);background:var(--sp-afill)}
+  .scenario .sp-tab i{font-size:12.5px;width:15px;text-align:center}
 
   /* player */
   .scenario .sp-player{margin-top:22px;border:1px solid var(--sp-line2);border-radius:16px;overflow:hidden;
-    background:var(--sp-panel);box-shadow:0 30px 80px #00000060;display:grid;grid-template-columns:1.5fr 1fr}
+    background:var(--sp-panel);box-shadow:0 30px 80px var(--sp-shadow);display:grid;grid-template-columns:1.5fr 1fr}
   .scenario .sp-stage{position:relative;border-right:1px solid var(--sp-line);min-height:440px;
-    background:linear-gradient(0deg,#0a0d0c,#0b1110);
-    background-image:linear-gradient(#0c2b2810 1px,transparent 1px),linear-gradient(90deg,#0c2b2810 1px,transparent 1px);
+    background:linear-gradient(0deg,var(--sp-stage1),var(--sp-stage2));
+    background-image:linear-gradient(var(--sp-grid) 1px,transparent 1px),linear-gradient(90deg,var(--sp-grid) 1px,transparent 1px);
     background-size:34px 34px}
   .scenario .sp-corner{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:11px;color:var(--sp-faint);letter-spacing:.1em;z-index:2}
   .scenario .sp-corner.r{left:auto;right:14px;color:var(--green)}
   .scenario .sp-stage svg{position:absolute;inset:0;width:100%;height:100%}
   .scenario .sp-badge{position:absolute;transform:translate(-50%,-150%);font-family:var(--mono);font-size:10px;letter-spacing:.03em;
     padding:3px 7px;border-radius:5px;border:1px solid;white-space:nowrap;pointer-events:none;z-index:3}
-  .scenario .sp-badge.held{color:var(--amber);border-color:#54430f;background:#1c1606e6}
-  .scenario .sp-badge.transit{color:var(--blue);border-color:#243a52;background:#0d1722e6}
-  .scenario .sp-badge.deliv{color:var(--green);border-color:#1c4a34;background:#0a1c14e6}
+  .scenario .sp-badge.held{color:var(--amber);border-color:var(--sp-held-b);background:var(--sp-held-bg)}
+  .scenario .sp-badge.transit{color:var(--blue);border-color:var(--sp-transit-b);background:var(--sp-transit-bg)}
+  .scenario .sp-badge.deliv{color:var(--green);border-color:var(--sp-abd);background:var(--sp-deliv-bg)}
+  /* in-svg badges (scale + stay pinned to their node) */
+  .scenario .sp-bdg text{font:600 10px var(--mono)}
+  .scenario .sp-bdg rect{stroke-width:1}
+  .scenario .sp-bdg.held rect{fill:var(--sp-held-bg);stroke:var(--sp-held-b)} .scenario .sp-bdg.held text{fill:var(--amber)}
+  .scenario .sp-bdg.transit rect{fill:var(--sp-transit-bg);stroke:var(--sp-transit-b)} .scenario .sp-bdg.transit text{fill:var(--blue)}
+  .scenario .sp-bdg.deliv rect{fill:var(--sp-deliv-bg);stroke:var(--sp-abd)} .scenario .sp-bdg.deliv text{fill:var(--green)}
 
   /* svg primitives */
-  .scenario .edge{stroke:#243029;stroke-width:1.7;fill:none}
-  .scenario .edge.road{stroke:#33402f;stroke-dasharray:2 6;stroke-linecap:round}
-  .scenario .edge.dead{stroke:#5b2b2b;stroke-dasharray:5 5}
-  .scenario .node{fill:#0b1210;stroke:#3a4d44;stroke-width:1.7}
+  .scenario .edge{stroke:var(--sp-edge);stroke-width:1.7;fill:none}
+  .scenario .edge.road{stroke:var(--sp-road);stroke-dasharray:2 6;stroke-linecap:round}
+  .scenario .edge.dead{stroke:var(--sp-dead);stroke-dasharray:5 5}
+  .scenario .node{fill:var(--sp-surf);stroke:var(--sp-stroke);stroke-width:1.7}
   .scenario .node.live{stroke:var(--green)} .scenario .core{fill:var(--green)}
   .scenario .ring{fill:none;stroke:var(--green);stroke-dasharray:3 4;opacity:.8}
-  .scenario .dev{fill:#0b1210;stroke:#3a4d44;stroke-width:1.7}
-  .scenario .cloud{fill:#0d1411;stroke:var(--green);stroke-width:1.6}
+  .scenario .dev{fill:var(--sp-surf);stroke:var(--sp-stroke);stroke-width:1.7}
+  .scenario .cloud{fill:var(--sp-surf2);stroke:var(--green);stroke-width:1.6}
   .scenario .cloud.down{stroke:var(--red);stroke-dasharray:5 4}
   .scenario .glyph{fill:var(--sp-dim);font:600 11px var(--mono)}
   .scenario .lbl{fill:var(--sp-faint);font:600 10.5px var(--mono);text-anchor:middle}
@@ -86,7 +116,14 @@
   .scenario .pulse{fill:none;stroke:var(--green)}
   .scenario .pkt{fill:var(--green);filter:drop-shadow(0 0 6px var(--green))}
   .scenario .pkt.alt{fill:var(--green);filter:none}
+  .scenario .pkt.held{fill:var(--amber);filter:drop-shadow(0 0 5px var(--amber))}
   .scenario .trail{fill:none;stroke:var(--green);stroke-width:2.5;opacity:.16;stroke-linecap:round;stroke-linejoin:round}
+  /* carry mode */
+  .scenario .carrier{transition:none}
+  .scenario .rangelink{stroke:var(--green);stroke-width:2.2;stroke-dasharray:2 5;stroke-linecap:round;opacity:.95;
+    filter:drop-shadow(0 0 4px var(--green));animation:sp-dash .55s linear infinite}
+  @keyframes sp-dash{to{stroke-dashoffset:-14}}
+  .scenario .carrier .lbl{fill:var(--sp-dim)}
 
   /* narrative */
   .scenario .sp-story{padding:26px 26px 24px;display:flex;flex-direction:column}
@@ -95,17 +132,32 @@
   .scenario .sp-body{color:var(--sp-dim);margin-top:14px;font-size:15px}
   .scenario .sp-flow{margin-top:18px;font-family:var(--mono);font-size:12px;color:var(--sp-dim);line-height:1.9}
   .scenario .sp-flow .a{color:var(--green)}
-  .scenario .sp-mpath{margin-top:14px;padding-left:12px;border-left:2px solid #1c4a34;font-size:12.5px;color:var(--sp-dim)}
+  .scenario .sp-mpath{margin-top:14px;padding-left:12px;border-left:2px solid var(--sp-abd);font-size:12.5px;color:var(--sp-dim)}
   .scenario .sp-mpath b{color:var(--green);font-weight:600}
   .scenario .sp-legend{display:flex;gap:14px;margin-top:18px;font-family:var(--mono);font-size:11px;color:var(--sp-faint);flex-wrap:wrap}
   .scenario .sp-legend span{display:flex;align-items:center;gap:6px}
   .scenario .sp-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
   .scenario .sp-stat{margin-top:auto;padding-top:20px}
   .scenario .sp-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--green);
-    border:1px solid #1c4a34;background:#0a1c14;border-radius:8px;padding:8px 13px}
+    border:1px solid var(--sp-abd);background:var(--sp-afill);border-radius:8px;padding:8px 13px}
   .scenario .sp-ctl{display:flex;gap:10px;margin-top:16px;align-items:center;font-family:var(--mono);font-size:11.5px;color:var(--sp-faint)}
   .scenario .sp-ctl button{font-family:var(--mono);font-size:11.5px;color:var(--sp-dim);background:none;border:1px solid var(--sp-line2);border-radius:6px;padding:5px 10px;cursor:pointer}
-  .scenario .sp-ctl button:hover{color:var(--sp-ink);border-color:#3a4248}
+  .scenario .sp-ctl button:hover{color:var(--sp-ink);border-color:var(--sp-hover)}
+  .scenario.solo .sp-ctl{display:none}
+
+  /* light theme — flip the panel tokens; accents deepen for contrast on white */
+  :root[data-theme="light"] .scenario{
+    --green:#10a877; --green-deep:#0c8f63; --amber:#c2851b; --blue:#2f7fe0; --red:#cf4a43;
+    --sp-panel:#ffffff; --sp-soft:#f4f7fc; --sp-line:#e7edf5; --sp-line2:#dce4ee;
+    --sp-ink:#0d1626; --sp-dim:#44536e; --sp-faint:#6f7c93;
+    --sp-stage1:#f7fafe; --sp-stage2:#eef3fb; --sp-grid:#1f74d80f;
+    --sp-surf:#ffffff; --sp-surf2:#f2faf6; --sp-edge:#c6d4cc; --sp-stroke:#8cbfab;
+    --sp-road:#cdd6ce; --sp-dead:#e0a39c; --sp-hover:#c3cfe0;
+    --sp-afill:#e7f8f0; --sp-abd:#a9ddc7; --sp-shadow:#1f2a4014;
+    --sp-held-b:#e0b35a; --sp-held-bg:#fff4d8f2;
+    --sp-transit-b:#a9c8ec; --sp-transit-bg:#e7f1fcf2;
+    --sp-deliv-bg:#e7f8f0f2;
+  }
 
   @media(max-width:900px){
     .scenario .sp-player{grid-template-columns:1fr}
@@ -113,9 +165,14 @@
   }
 </style>
 
-<script is:inline>
+<script define:vars={{ SCEN }}>
 (function(){
   const VB = {w:660, h:440};
+  const root = document.querySelector('.scenario');
+  if(!root) return;
+  const $ = (id) => root.querySelector('#'+id);
+
+  // ---- shared svg helpers ----
   function lbl(n){ return `<text class="lbl ${n.hi?'hi':''}" x="${n.x}" y="${n.y+ (n.type==='cloud'||n.type==='cloud-down'?34:26)}">${n.label||''}</text>`; }
   function nodeSVG(n){
     let s='';
@@ -153,106 +210,136 @@
     return s;
   }
   function routePath(route,N){return 'M'+route.map(id=>`${N[id].x},${N[id].y}`).join(' L');}
-
-  const SCEN = [
-   {tab:'P2P messaging', ic:'💬', scene:'NEIGHBORHOOD · PURE PEER-TO-PEER', dur:4.8,
-    title:'A neighborhood that talks to itself.',
-    body:'No tower, no plan — a block, a village, a campus runs its own mesh. Messages thread between whoever’s nearby. Send one person or the whole area; copies fan out across every path at once and the first to arrive delivers.',
-    flow:['<span class="a">you</span>','neighbors','neighbors','your contact'],
-    stat:'whole-area comms · many paths · no infrastructure',
-    nodes:{you:{type:'you',x:78,y:228,label:'you',hi:1},p1:{type:'relay',x:190,y:138,label:'neighbor'},p2:{type:'relay',x:200,y:330,label:'neighbor'},p3:{type:'relay',x:330,y:215,label:'neighbor'},p4:{type:'relay',x:345,y:362,label:'neighbor'},p5:{type:'relay',x:462,y:140,label:'neighbor'},p6:{type:'relay',x:470,y:312,label:'neighbor'},dest:{type:'dest',x:585,y:225,label:'your contact'}},
-    edges:[['you','p1'],['you','p2'],['p1','p3'],['p2','p3'],['p2','p4'],['p1','p5'],['p3','p5'],['p3','p6'],['p4','p6'],['p5','dest'],['p6','dest']],
-    routes:[['you','p1','p5','dest'],['you','p2','p3','p6','dest'],['you','p2','p4','p6','dest']],
-    badges:[{cls:'transit',x:330,y:215,t:'fanning out'},{cls:'deliv',x:585,y:225,t:'first copy wins'}]},
-   {tab:'Disaster', ic:'🛟', scene:'EARTHQUAKE · TOWER DOWN', dur:4.4,
-    title:'The tower is gone. The phones aren\'t.',
-    body:'A quake knocks out the cell site. Phones in the blast radius can’t reach anyone — except each other. Copies of the message take every responder path at once until one reaches the handset with a satellite uplink, and the command post.',
-    flow:['<span class="a">trapped phone</span>','responders (BLE)','satellite uplink','command post'],
-    stat:'delivered · redundant paths · no infrastructure',
-    nodes:{you:{type:'you',x:80,y:345,label:'trapped',hi:1},tower:{type:'tower-down',x:150,y:195,label:'cell tower'},r1:{type:'relay',x:225,y:305,label:'responder'},r2:{type:'relay',x:340,y:250,label:'responder'},r3:{type:'relay',x:335,y:375,label:'responder'},up:{type:'uplink',x:490,y:170,label:'sat uplink'},cmd:{type:'cloud',x:588,y:325,label:'',glyph:'command'}},
-    edges:[['you','tower','dead'],['you','r1'],['r1','tower','dead'],['r1','r2'],['r1','r3'],['r2','r3'],['r2','up'],['r3','up'],['up','cmd']],
-    routes:[['you','r1','r2','up','cmd'],['you','r1','r3','up','cmd']],
-    badges:[{cls:'held',x:80,y:345,t:'no signal'},{cls:'transit',x:340,y:250,t:'in transit'},{cls:'deliv',x:588,y:325,t:'delivered'}]},
-   {tab:'Remote IoT', ic:'📡', scene:'SENSORS PAST COVERAGE', dur:4.0,
-    title:'Sensors where there’s no cell at all.',
-    body:'Monitoring kit on the pipeline sits far past coverage. Each reading hops across the sensor mesh to whichever gateway it can reach, which bridges home the moment a maintenance truck — or any passing uplink — comes into range.',
-    flow:['<span class="a">field sensor</span>','sensor mesh','gateway','passing uplink','cloud'],
-    stat:'redundant gateways · bridged on contact',
-    nodes:{s1:{type:'sensor',x:80,y:140,label:'sensor'},s2:{type:'sensor',x:95,y:255,label:'sensor'},s3:{type:'sensor',x:150,y:362,label:'sensor',hi:1},g1:{type:'relay',x:290,y:185,label:'gateway'},g2:{type:'relay',x:300,y:335,label:'gateway'},up:{type:'uplink',x:470,y:185,label:'truck uplink'},cloud:{type:'cloud',x:588,y:255,label:'',glyph:'cloud'}},
-    edges:[['s1','g1'],['s2','g1'],['s2','g2'],['s3','g1'],['s3','g2'],['g1','g2'],['g1','up'],['g2','up'],['up','cloud']],
-    routes:[['s3','g1','up','cloud'],['s3','g2','up','cloud']],
-    badges:[{cls:'transit',x:300,y:335,t:'buffered'},{cls:'deliv',x:588,y:255,t:'delivered'}]},
-   {tab:'Off-grid towns', ic:'🌍', scene:'RURAL · DATA RIDES THE ROAD', dur:7.0,
-    title:'Between towns, there’s only the road.',
-    body:'No link runs between the villages — just the daily traffic. A clinic record from Town A rides whichever route moves first — the bus through Town B, the truck through the village — and syncs the instant it reaches a town that’s online.',
-    flow:['<span class="a">Town A · clinic</span>','road → Town B / village','Town C (online)','cloud'],
-    stat:'2 roads · carried by traffic · eventual',
-    nodes:{a:{type:'you',x:90,y:300,label:'Town A · clinic',hi:1},b:{type:'relay',x:290,y:210,label:'Town B'},v:{type:'relay',x:310,y:372,label:'village'},c:{type:'uplink',x:530,y:300,label:'Town C · online'},cloud:{type:'cloud',x:590,y:150,label:'',glyph:'cloud'}},
-    edges:[['a','b','road'],['a','v','road'],['b','v','road'],['b','c','road'],['v','c','road'],['c','cloud']],
-    routes:[['a','b','c','cloud'],['a','v','c','cloud']],
-    badges:[{cls:'held',x:90,y:300,t:'waiting for traffic'},{cls:'transit',x:290,y:210,t:'en route'},{cls:'deliv',x:590,y:150,t:'synced'}]},
-   {tab:'No data plan', ic:'📵', scene:'NO SIM · BORROW A PATH', dur:3.6,
-    title:'No plan? Borrow a path, not a phone.',
-    body:'A handset with no SIM or no data still sends. The sealed message hops over Bluetooth to whichever nearby phone has a connection — each carries it blind — and on to a hop-endpoint that terminates the request, fulfills it on the internet, and relays the sealed response back. Only the endpoint can read the egress traffic; the phones in the middle never can.',
-    flow:['<span class="a">your phone · no data</span>','nearby phones (relay, blind)','hop-endpoint · decrypts &amp; forwards','internet'],
-    stat:'egress via hop-endpoint · relays never see your traffic',
-    nodes:{you:{type:'you',x:85,y:320,label:'no SIM',hi:1},f1:{type:'relay',x:245,y:248,label:'nearby phone'},f2:{type:'relay',x:265,y:385,label:'nearby phone'},gw:{type:'uplink',x:440,y:200,label:'hop-endpoint'},cloud:{type:'cloud',x:590,y:255,label:'',glyph:'internet'}},
-    edges:[['you','f1'],['you','f2'],['f1','f2'],['f1','gw'],['f2','gw'],['gw','cloud']],
-    routes:[['you','f1','gw','cloud'],['you','f2','gw','cloud']],
-    badges:[{cls:'transit',x:245,y:248,t:'carries it blind'},{cls:'deliv',x:590,y:255,t:'fulfilled'}]},
-   {tab:'Blackout', ic:'🌑', scene:'REGIONAL INTERNET CUT', dur:4.8,
-    title:'The internet gets cut. Talk anyway.',
-    body:'When connectivity drops for a whole region, local messages keep flowing across the mesh on every available path — and anything bound for the outside waits for, and finds, a link still standing at the edge.',
-    flow:['<span class="a">you</span>','local mesh (stays up)','edge link','outside world'],
-    stat:'local stays up · many paths · routes out at the edge',
-    nodes:{down:{type:'cloud-down',x:330,y:108,label:'',glyph:'region net'},you:{type:'you',x:95,y:330,label:'you',hi:1},r1:{type:'relay',x:205,y:295,label:'neighbor'},r2:{type:'relay',x:300,y:362,label:'neighbor'},r3:{type:'relay',x:345,y:250,label:'neighbor'},edge:{type:'uplink',x:495,y:250,label:'edge link'},out:{type:'cloud',x:590,y:150,label:'',glyph:'outside'}},
-    edges:[['you','r1'],['r1','r2'],['r1','r3'],['r2','r3'],['r3','down','dead'],['r2','edge'],['r3','edge'],['edge','out']],
-    routes:[['you','r1','r3','edge','out'],['you','r1','r2','edge','out']],
-    badges:[{cls:'transit',x:205,y:295,t:'local mesh'},{cls:'held',x:345,y:250,t:'no net here'},{cls:'deliv',x:590,y:150,t:'out'}]},
-   {tab:'Expedition', ic:'🥾', scene:'BACKCOUNTRY · PEER-TO-PEER, NO UPLINK', dur:4.8,
-    title:'No bars for miles. Tell the group anyway.',
-    body:'A trekking party strung along the ridge has no signal, and nowhere to get one. “Stopping to filter water — 20 min behind” fans out phone to phone up the line, over the high traverse and the low trail at once, until it reaches the lead. No tower, no internet — just the people in between.',
-    flow:['<span class="a">you · mid-pack</span>','hikers ahead','hikers ahead','the lead'],
-    stat:'reached the lead · parallel paths · zero infrastructure',
-    nodes:{you:{type:'you',x:80,y:335,label:'you',hi:1},h1:{type:'relay',x:185,y:288,label:'hiker'},h2:{type:'relay',x:300,y:340,label:'hiker'},h2b:{type:'relay',x:288,y:205,label:'hiker'},h3:{type:'relay',x:430,y:248,label:'hiker'},lead:{type:'dest',x:565,y:150,label:'the lead'}},
-    edges:[['you','h1'],['h1','h2'],['h1','h2b'],['h2','h3'],['h2b','h3'],['h2b','lead'],['h3','lead']],
-    routes:[['you','h1','h2b','h3','lead'],['you','h1','h2','h3','lead']],
-    badges:[{cls:'transit',x:288,y:205,t:'relaying'},{cls:'deliv',x:565,y:150,t:'reached the lead'}]},
-   {tab:'Ski resort', ic:'🎿', scene:'MOUNTAIN · PEER-TO-PEER', dur:4.8,
-    title:'Find your crew across the mountain.',
-    body:'Coverage on the back bowls is a rumor. “Last run — meet at the mid-lodge” spreads across other skiers on the lift line and the slopes, taking more than one way down, until it lands with your group. Nobody pings a tower; the message rides the crowd.',
-    flow:['<span class="a">you · summit</span>','skiers on the slope','lift line','your crew'],
-    stat:'crew found · multiple paths · no cell',
-    nodes:{you:{type:'you',x:118,y:120,label:'you · summit',hi:1},s1:{type:'relay',x:235,y:212,label:'skier'},s2:{type:'relay',x:330,y:305,label:'lift line'},s2b:{type:'relay',x:360,y:178,label:'skier'},s3:{type:'relay',x:455,y:248,label:'skier'},crew:{type:'dest',x:565,y:330,label:'your crew'}},
-    edges:[['you','s1'],['s1','s2'],['s1','s2b'],['s2','s3'],['s2b','s3'],['s2','crew'],['s3','crew']],
-    routes:[['you','s1','s2','s3','crew'],['you','s1','s2b','s3','crew']],
-    badges:[{cls:'transit',x:330,y:305,t:'passing along'},{cls:'deliv',x:565,y:330,t:'crew found'}]},
-   {tab:'Convoy', ic:'🚙', scene:'MOVING TEAM · NO BACKHAUL', dur:4.8,
-    title:'Keep the picture on the move.',
-    body:'A team on the move with no backhaul to lean on — a convoy strung along a track, a crew spread across terrain. Position and status hop vehicle to vehicle, taking more than one path, so the lead keeps the full picture even as units drop in and out of range.',
-    flow:['<span class="a">your unit</span>','vehicles ahead','vehicles ahead','the lead'],
-    stat:'shared picture on the move · no backhaul · redundant paths',
-    nodes:{you:{type:'you',x:85,y:340,label:'your unit',hi:1},u1:{type:'relay',x:195,y:300,label:'vehicle'},u2:{type:'relay',x:300,y:332,label:'vehicle'},u2b:{type:'relay',x:300,y:205,label:'vehicle'},u3:{type:'relay',x:430,y:250,label:'vehicle'},lead:{type:'dest',x:570,y:155,label:'the lead'}},
-    edges:[['you','u1'],['u1','u2'],['u1','u2b'],['u2','u3'],['u2b','u3'],['u2b','lead'],['u3','lead']],
-    routes:[['you','u1','u2b','u3','lead'],['you','u1','u2','u3','lead']],
-    badges:[{cls:'transit',x:300,y:205,t:'relaying'},{cls:'deliv',x:570,y:155,t:'reached the lead'}]},
-   {tab:'Disaster · no uplink', ic:'🆘', scene:'COLLAPSE · NO UPLINK AT ALL', dur:4.4,
-    title:'No tower, no satellite. Talk anyway.',
-    body:'Total blackout — no cell, no satellite, no internet anywhere. Inside the cordon, survivors and responders still coordinate: “two trapped, west stairwell” meshes phone to phone, across every responder in range, to the on-site incident lead. When nothing reaches out, the network turns inward.',
-    flow:['<span class="a">survivor</span>','responders (BLE)','responders','incident lead · on-site'],
-    stat:'coordinated on-site · redundant paths · no uplink',
-    nodes:{you:{type:'you',x:90,y:335,label:'survivor',hi:1},tower:{type:'tower-down',x:175,y:185,label:'cell tower'},r1:{type:'relay',x:255,y:300,label:'responder'},r2:{type:'relay',x:365,y:248,label:'responder'},r2b:{type:'relay',x:385,y:368,label:'responder'},lead:{type:'dest',x:545,y:300,label:'incident lead'}},
-    edges:[['you','tower','dead'],['you','r1'],['r1','tower','dead'],['r1','r2'],['r1','r2b'],['r2','r2b'],['r2','lead'],['r2b','lead']],
-    routes:[['you','r1','r2','lead'],['you','r1','r2b','lead']],
-    badges:[{cls:'held',x:90,y:335,t:'no signal'},{cls:'transit',x:365,y:248,t:'in transit'},{cls:'deliv',x:545,y:300,t:'on-site lead'}]},
-  ];
-
-  const $=id=>document.getElementById(id);
+  // badges live INSIDE the svg (viewBox space) so they scale and stay pinned to
+  // their node — never drifting onto labels the way %-positioned HTML did.
+  function badgesSVG(s){
+    let b='';(s.badges||[]).forEach(x=>{
+      const w=x.t.length*6.7+18, y=x.y-30;          // float above the point
+      b+=`<g class="sp-bdg ${x.cls}" transform="translate(${x.x},${y})">`+
+         `<rect x="${(-w/2).toFixed(1)}" y="-10" width="${w.toFixed(1)}" height="20" rx="6"/>`+
+         `<text x="0" y="4" text-anchor="middle">${x.t}</text></g>`;
+    });
+    return b;
+  }
   const stage=$('sp-stage');
   if(!stage) return;
-  function render(i){
-    const s=SCEN[i], N=s.nodes;
-    const routes = s.routes || [s.route];
+
+  // ---- carry-mode geometry ----
+  function dist(ax,ay,bx,by){return Math.hypot(ax-bx,ay-by);}
+  function ptAlong(path,t){
+    const segs=[];let total=0;
+    for(let i=0;i<path.length-1;i++){const d=dist(path[i][0],path[i][1],path[i+1][0],path[i+1][1]);segs.push(d);total+=d;}
+    let dd=t*total;
+    for(let i=0;i<segs.length;i++){
+      if(dd<=segs[i]||i===segs.length-1){const f=segs[i]?dd/segs[i]:0;
+        return [path[i][0]+(path[i+1][0]-path[i][0])*f, path[i][1]+(path[i+1][1]-path[i][1])*f];}
+      dd-=segs[i];
+    }
+    return path[path.length-1].slice();
+  }
+  function carrierSVG(c){
+    return `<circle class="ring" r="13"/><circle class="node live" r="9"/><circle class="core" r="3"/>`+
+           (c.label?`<text class="lbl" y="27" text-anchor="middle">${c.label}</text>`:'');
+  }
+
+  let rafId=null;
+  function stopRAF(){ if(rafId){cancelAnimationFrame(rafId);rafId=null;} }
+
+  function renderCarry(s){
+    const N=s.nodes, src=N[s.src], dst=N[s.dst], range=s.range||110;
+    const LINK_DELAY=380;   // ms a connection visibly forms before the message transfers
+    let svg=`<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
+    if(s.road){ (s.carriers||[]).forEach(c=>{ svg+=`<path class="edge road" d="M${c.path.map(p=>p.join(',')).join(' L')}"/>`; }); }
+    svg+=`<g class="sp-links"></g>`;
+    Object.values(N).forEach(n=>svg+=nodeSVG(n));
+    (s.carriers||[]).forEach((c,ci)=>{ svg+=`<g class="carrier" data-ci="${ci}">${carrierSVG(c)}</g>`; });
+    svg+=`<circle class="pkt" data-msg r="5.5"/></svg>`;
+    // no static badges in carry mode — the moving message dot is the only state indicator
+    stage.innerHTML=`<span class="sp-corner">${s.scene}</span><span class="sp-corner r">● live</span>`+svg;
+
+    const linksEl=stage.querySelector('.sp-links');
+    const msgEl=stage.querySelector('[data-msg]');
+    const carEls=[...stage.querySelectorAll('.carrier')];
+    const NC=(s.carriers||[]).length;
+    const cs=(s.carriers||[]).map(()=>({pos:[src.x,src.y],prev:1e9,dD:1e9,fwd:true}));
+    // message: held at a point, or riding a carrier; `link` = the connection currently forming
+    let st={mode:'held', pos:[src.x,src.y], holder:-1, link:null};
+    const t0=performance.now();
+
+    function msgPos(){ return st.mode==='ride' ? cs[st.holder].pos : st.pos; }
+    function tgtPos(tg){ return tg.kind==='dest' ? [dst.x,dst.y] : cs[tg.i].pos; }
+    // the forward-moving carrier nearest the destination, within range of (px,py)
+    function forwardInRange(px,py,except){
+      let best=-1, bestD=1e9;
+      for(let i=0;i<NC;i++){
+        if(i===except) continue;
+        if(cs[i].fwd && cs[i].dD<bestD && dist(px,py,cs[i].pos[0],cs[i].pos[1])<=range){ bestD=cs[i].dD; best=i; }
+      }
+      return best;
+    }
+
+    function frame(now){
+      const t=(now-t0)/1000;
+      for(let i=0;i<NC;i++){
+        const c=s.carriers[i];
+        const tt=((t/(c.period||7))+(c.phase||0))%1;
+        const p=ptAlong(c.path,tt);
+        cs[i].pos=p;
+        carEls[i].setAttribute('transform',`translate(${p[0].toFixed(1)},${p[1].toFixed(1)})`);
+        const dD=dist(p[0],p[1],dst.x,dst.y);
+        cs[i].fwd = dD < cs[i].prev - 0.04;   // heading toward the destination
+        cs[i].prev=dD; cs[i].dD=dD;
+      }
+
+      if(st.mode==='done'){
+        st.link=null;
+        if(now-st.doneAt>700) st={mode:'held', pos:[src.x,src.y], holder:-1, link:null};
+      } else {
+        const p=msgPos();
+        // who should the message connect to next?
+        let tg=null;
+        if(st.link){
+          tg=st.link.tg;                                     // an in-progress connection runs to completion — don't drop it on a brief range change (fast carriers pass quickly)
+        } else if(st.mode==='ride'){
+          if(dist(p[0],p[1],dst.x,dst.y)<=range) tg={kind:'dest'};         // close enough to deliver
+          else if(!cs[st.holder].fwd){                                     // carrier turned back — hand off to a forward one
+            const f=forwardInRange(p[0],p[1],st.holder); if(f>=0) tg={kind:'car', i:f};
+          }                                                  // else still advancing — just ride, no link
+        } else {                                             // held — board a forward carrier in range
+          const f=forwardInRange(p[0],p[1],-1); if(f>=0) tg={kind:'car', i:f};
+        }
+
+        if(tg){
+          const key = tg.kind==='dest' ? 'dest' : 'c'+tg.i;
+          if(!st.link || st.link.key!==key) st.link={key, tg, since:now};   // a new connection forms
+          if(now-st.link.since >= LINK_DELAY){                              // …held a beat, then transfer
+            if(tg.kind==='dest') st={mode:'done', pos:[dst.x,dst.y], holder:-1, link:null, doneAt:now};
+            else                 st={mode:'ride', holder:tg.i, pos:cs[tg.i].pos.slice(), link:null};
+          }
+        } else {
+          st.link=null;                                      // connection breaks
+          if(st.mode==='ride' && !cs[st.holder].fwd) st={mode:'held', pos:[p[0],p[1]], holder:-1, link:null};
+        }
+      }
+
+      const mp=msgPos(), my=mp[1]-13;   // float the message just above whatever carries it
+      msgEl.setAttribute('cx',mp[0].toFixed(1));
+      msgEl.setAttribute('cy',my.toFixed(1));
+      msgEl.setAttribute('r', st.mode==='done'?7:5.5);
+      msgEl.setAttribute('class', st.mode==='held'?'pkt held':'pkt');   // amber while waiting, green once moving/delivered
+
+      if(st.link){
+        const b=tgtPos(st.link.tg);
+        linksEl.innerHTML=`<line class="rangelink" x1="${mp[0].toFixed(1)}" y1="${my.toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${(b[1]-13).toFixed(1)}"/>`;
+      } else linksEl.innerHTML='';
+
+      rafId=requestAnimationFrame(frame);
+    }
+    rafId=requestAnimationFrame(frame);
+  }
+
+  function renderMesh(s){
+    const N=s.nodes, routes=s.routes||[s.route];
     let svg=`<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
     s.edges.forEach(e=>svg+=edgeSVG(e,N));
     svg+=`<path class="trail" d="${routePath(routes[0],N)}"/>`;
@@ -265,30 +352,40 @@
       svg+=`<circle class="${cls}" r="${r}"><animateMotion dur="${d}s" begin="${begin}s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.07;0.9;1" calcMode="linear" path="${p}"/>`+
            `<animate attributeName="opacity" values="0;${op};${op};${op};0" keyTimes="0;0.07;0.5;0.9;1" dur="${d}s" begin="${begin}s" repeatCount="indefinite"/></circle>`;
     });
-    svg+=`</svg>`;
-    let badges='';
-    (s.badges||[]).forEach(b=>{badges+=`<span class="sp-badge ${b.cls}" style="left:${(b.x/VB.w*100).toFixed(2)}%;top:${(b.y/VB.h*100).toFixed(2)}%">${b.t}</span>`;});
-    stage.innerHTML=`<span class="sp-corner">${s.scene}</span><span class="sp-corner r">● live</span>`+svg+badges;
+    svg+=badgesSVG(s)+`</svg>`;
+    stage.innerHTML=`<span class="sp-corner">${s.scene}</span><span class="sp-corner r">● live</span>`+svg;
+  }
+
+  function render(i){
+    const s=SCEN[i];
+    stopRAF();
+    if(s.kind==='carry') renderCarry(s); else renderMesh(s);
     $('sp-no').textContent='SCENARIO '+('0'+(i+1)).slice(-2)+' / '+('0'+SCEN.length).slice(-2);
     $('sp-title').textContent=s.title;
     $('sp-body').textContent=s.body;
     $('sp-flow').innerHTML=s.flow.join('  →  ');
     $('sp-stat').textContent='✓ '+s.stat;
-    [...document.querySelectorAll('.scenario .sp-tab')].forEach((t,k)=>t.setAttribute('aria-selected',k===i));
+    [...root.querySelectorAll('.sp-tab')].forEach((t,k)=>t.setAttribute('aria-selected',k===i));
   }
+
   const tabsEl=$('sp-tabs');
-  SCEN.forEach((s,i)=>{
-    const b=document.createElement('button');
-    b.className='sp-tab';b.type='button';b.setAttribute('role','tab');
-    b.innerHTML=`<span class="ic">${s.ic}</span>${s.tab}`;
-    b.onclick=()=>{cur=i;render(i);stopAuto();};
-    tabsEl.appendChild(b);
-  });
+  const solo=SCEN.length<2;
+  if(solo){ root.classList.add('solo'); }
+  if(!solo){
+    SCEN.forEach((s,i)=>{
+      const b=document.createElement('button');
+      b.className='sp-tab'; b.type='button'; b.setAttribute('role','tab');
+      b.innerHTML=`<i class="${s.fa||'fa-duotone fa-solid fa-circle-nodes'}"></i>${s.tab}`;
+      b.onclick=()=>{cur=i;render(i);stopAuto();};
+      tabsEl.appendChild(b);
+    });
+  }
+
   let cur=0, auto;
   function stopAuto(){clearInterval(auto);const a=$('sp-auto');if(a)a.textContent='paused';}
-  function startAuto(){auto=setInterval(()=>{cur=(cur+1)%SCEN.length;render(cur);},7000);}
-  $('sp-next').onclick=()=>{cur=(cur+1)%SCEN.length;render(cur);stopAuto();};
-  $('sp-prev').onclick=()=>{cur=(cur-1+SCEN.length)%SCEN.length;render(cur);stopAuto();};
-  render(0);startAuto();
+  function startAuto(){ if(solo) return; auto=setInterval(()=>{cur=(cur+1)%SCEN.length;render(cur);},7000); }
+  if($('sp-next')) $('sp-next').onclick=()=>{cur=(cur+1)%SCEN.length;render(cur);stopAuto();};
+  if($('sp-prev')) $('sp-prev').onclick=()=>{cur=(cur-1+SCEN.length)%SCEN.length;render(cur);stopAuto();};
+  render(0); startAuto();
 })();
 </script>
