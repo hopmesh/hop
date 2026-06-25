@@ -1362,8 +1362,10 @@ final class HopBearer: NSObject, ObservableObject {
 
     // MARK: - Message history persistence (survives app restart)
 
-    /// On-disk form of a chat message. Omits `trace` (FFI type, incoming-path debug only) and
-    /// the per-session `id`/`bundleId` — neither is meaningful after a relaunch.
+    /// On-disk form of a chat message. Omits `trace` (FFI type, incoming-path debug only) but KEEPS
+    /// `bundleId`: the node persists undelivered own-bundles and keeps spraying them after a restart
+    /// (node.rs rehydrate), and for an established session the bundle id is stable, so we re-query
+    /// `messageStatus(bundleId)` on relaunch and the message flips to Delivered when its ACK lands.
     private struct StoredMessage: Codable {
         var peer: String; var text: String; var incoming: Bool
         var peerAddr: Data?; var contentType: String
@@ -1371,6 +1373,7 @@ final class HopBearer: NSObject, ObservableObject {
         var hops: UInt8; var latencyMs: UInt64?
         var sentAt: Date; var deliveredAt: Date?
         var relayed: UInt32; var delivered: Bool; var deliveryHops: UInt8; var failed: Bool
+        var bundleId: Data?
     }
 
     private static var messagesFileURL: URL {
@@ -1396,7 +1399,8 @@ final class HopBearer: NSObject, ObservableObject {
                           hops: $0.hops, latencyMs: $0.latencyMs,
                           sentAt: $0.sentAt, deliveredAt: $0.deliveredAt,
                           relayed: $0.relayed, delivered: $0.delivered,
-                          deliveryHops: $0.deliveryHops, failed: $0.failed)
+                          deliveryHops: $0.deliveryHops, failed: $0.failed,
+                          bundleId: $0.bundleId)
         }
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: HopBearer.messagesFileURL, options: .atomic)
@@ -1428,15 +1432,17 @@ final class HopBearer: NSObject, ObservableObject {
         guard let data = try? Data(contentsOf: HopBearer.messagesFileURL),
               let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
         loadingMessages = true
-        // An outgoing message that was still in flight when we quit can never be ACKed now
-        // (the in-memory delivery tracking is gone) — show it as not sent rather than "Sending…".
+        // An outgoing message still in flight when we quit KEEPS sending: the node persists the
+        // bundle and re-sprays it after restart until its delivery ACK (node.rs rehydrate). So we
+        // restore it in-flight with its bundleId — refresh() re-queries messageStatus and it flips
+        // to Delivered when the ACK lands — rather than falsely marking it "Not sent".
         messages = stored.map { s in
             Message(peer: s.peer, text: s.text, incoming: s.incoming, peerAddr: s.peerAddr,
                     contentType: s.contentType, imageData: s.imageData, images: s.images,
+                    bundleId: s.bundleId,
                     hops: s.hops, latencyMs: s.latencyMs, sentAt: s.sentAt,
                     deliveredAt: s.deliveredAt, relayed: s.relayed, delivered: s.delivered,
-                    deliveryHops: s.deliveryHops,
-                    failed: s.failed || (!s.incoming && !s.delivered))
+                    deliveryHops: s.deliveryHops, failed: s.failed)
         }
         loadingMessages = false
     }

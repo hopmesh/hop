@@ -992,6 +992,9 @@ class HopBearer private constructor(private val context: Context) {
             o.put("relayed", m.relayed.toLong())
             o.put("delivered", m.delivered); o.put("deliveryHops", m.deliveryHops.toInt())
             o.put("failed", m.failed)
+            // Keep the bundleId: the node re-sprays undelivered own-bundles after restart (node.rs
+            // rehydrate); persisting it lets refresh() re-query messageStatus and flip to Delivered.
+            m.bundleId?.let { o.put("bundleId", android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)) }
             arr.put(o)
         }
         runCatching { messagesFile.writeText(arr.toString()) }
@@ -1018,8 +1021,11 @@ class HopBearer private constructor(private val context: Context) {
                 deliveredAt = if (o.has("deliveredAt")) o.getLong("deliveredAt") else null,
                 relayed = o.optLong("relayed", 0).toUInt(), delivered = delivered,
                 deliveryHops = o.optInt("deliveryHops", 0).toUByte(),
-                // An outgoing message still in flight at quit can never ACK now — show "not sent".
-                failed = o.optBoolean("failed", false) || (!incoming && !delivered),
+                // An outgoing message still in flight KEEPS sending after restart — the node re-sprays
+                // it until its ACK (node.rs rehydrate). Restore it in-flight with its bundleId so
+                // refresh() reconciles to Delivered when it lands, rather than falsely showing "not sent".
+                failed = o.optBoolean("failed", false),
+                bundleId = if (o.has("bundleId")) android.util.Base64.decode(o.getString("bundleId"), android.util.Base64.NO_WRAP) else null,
             ))
         }
     }

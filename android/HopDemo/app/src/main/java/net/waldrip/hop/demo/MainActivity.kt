@@ -15,6 +15,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.animation.core.*
+import androidx.compose.ui.draw.clip
+import kotlinx.coroutines.delay
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -121,7 +124,32 @@ private fun messageMeta(m: HopBearer.Message): String {
         return "Delivered, ${HopBearer.hopsLabel(m.deliveryHops)}, $dur"
     }
     if (m.failed) return "Not sent"
-    return if (m.relayed > 0u) "Sent, ${m.relayed} peer${if (m.relayed == 1u) "" else "s"}" else "Sending…"
+    // relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
+    return "Sent · ${m.relayed} peer${if (m.relayed == 1u) "" else "s"}"
+}
+
+/// In-flight status for a message not yet handed to any peer: a pulsing dot + a live "Awaiting
+/// peers · Ns" timer, so it reads as "working, holding for a peer" instead of a static, alarming
+/// "Sending…". Flips to the peer hand-off count (messageMeta) once relayed > 0.
+@Composable
+private fun SendingIndicator(sentAt: Long) {
+    var elapsed by remember(sentAt) { mutableStateOf(0L) }
+    LaunchedEffect(sentAt) {
+        while (true) {
+            elapsed = (System.currentTimeMillis() - sentAt).coerceAtLeast(0L) / 1000
+            delay(1000)
+        }
+    }
+    val pulse = rememberInfiniteTransition(label = "pulse")
+    val alpha by pulse.animateFloat(
+        initialValue = 1f, targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "alpha")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFFF9500).copy(alpha = alpha)))
+        Spacer(Modifier.width(5.dp))
+        Text("Awaiting peers · ${elapsed}s", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
@@ -566,6 +594,8 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                         Text("⟳ Not sent · tap to retry", color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.clickable { bearer.retry(m, peer) })
+                    } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
+                        SendingIndicator(m.sentAt)   // pulsing + live timer instead of a static "Sending…"
                     } else {
                         Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
                     }
