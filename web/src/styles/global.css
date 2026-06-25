@@ -23,6 +23,10 @@
   --accent-ink:#04130c;
   --held:      #ffb43a;   /* held / waiting */
 
+  /* code blocks — tokenized so they flip with the theme (dark default) */
+  --code-bg:#0b1018; --code-fg:#c7d2e6;
+  --tok-comment:#6f7c98; --tok-kw:#9d8cff; --tok-str:#38e0b0; --tok-type:#74b6ff;
+
   --radius:   16px;
   --radius-sm:10px;
   --maxw:     1080px;
@@ -324,6 +328,10 @@ code {
   --accent-2:  #0f9d72;
   --accent-3:  #6f5ef0;
   --accent-ink:#ffffff;   /* white text on the accent button */
+
+  /* light code theme — soft surface, dark text, readable syntax colors */
+  --code-bg:#f3f5fb; --code-fg:#2b3340;
+  --tok-comment:#8a93a3; --tok-kw:#7c3aed; --tok-str:#0f8a4d; --tok-type:#1f6feb;
 }
 
 :root[data-theme="light"] body {
@@ -353,8 +361,8 @@ code {
 /* code block — always dark so syntax colors hold in both themes */
 .code-block {
   margin: 0; padding: 22px; overflow-x: auto;
-  font: 13px/1.7 var(--mono); color: #c7d2e6;
-  background: #0b1018;
+  font: 13px/1.7 var(--mono); color: var(--code-fg);
+  background: var(--code-bg);
 }
 :root[data-theme="light"] .code-card { border-color: var(--line); }
 

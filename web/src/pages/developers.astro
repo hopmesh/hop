@@ -2,23 +2,23 @@
 import Base from '../layouts/Base.astro';
 
 // Rendered via set:html so the Rust snippet's braces aren't parsed as JSX.
-const codeHtml = `<span style="color:#6f7c98">// open a node with your 32-byte secret</span>
-<span style="color:#9d8cff">let</span> node = HopNode::open(secret)?;
+const codeHtml = `<span style="color:var(--tok-comment)">// open a node with your 32-byte secret</span>
+<span style="color:var(--tok-kw)">let</span> node = HopNode::open(secret)?;
 
-<span style="color:#6f7c98">// reach a device by its address (its public key)</span>
+<span style="color:var(--tok-comment)">// reach a device by its address (its public key)</span>
 node.send(
     Destination::Device(peer_address),
-    Payload::message(<span style="color:#38e0b0">"on my way"</span>),
+    Payload::message(<span style="color:var(--tok-str)">"on my way"</span>),
 )?;
 
-<span style="color:#6f7c98">// reach the internet from offline — any gateway fulfills it</span>
+<span style="color:var(--tok-comment)">// reach the internet from offline — any gateway fulfills it</span>
 node.send(
     Destination::InternetEgress,
-    Payload::http_get(<span style="color:#38e0b0">"hops://example.com/status"</span>),
+    Payload::http_get(<span style="color:var(--tok-str)">"hops://example.com/status"</span>),
 )?;
 
-<span style="color:#6f7c98">// drain inbox: sealed bundles addressed to you</span>
-<span style="color:#9d8cff">for</span> msg <span style="color:#9d8cff">in</span> node.receive()? {
+<span style="color:var(--tok-comment)">// drain inbox: sealed bundles addressed to you</span>
+<span style="color:var(--tok-kw)">for</span> msg <span style="color:var(--tok-kw)">in</span> node.receive()? {
     handle(msg.open()?);
 }`;
 ---
