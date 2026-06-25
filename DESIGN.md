@@ -9,6 +9,11 @@ It is the [Bundle Protocol (RFC 9171)](https://www.rfc-editor.org/rfc/rfc9171.ht
 lineage of Delay/Disruption Tolerant Networking, with a BLE bearer, a phone-shaped
 routing layer, and an HTTP egress role.
 
+See [MECHANISMS.md](MECHANISMS.md) for a living catalog of every mechanism split by
+whether it lives **in the protocol** (`hop-core`, wire-compatible across all hosts)
+or is the **host's** to supply (bearers, UI, identity seed) — plus the
+privacy/identity roadmap.
+
 ---
 
 ## 1. Goals & non-goals
