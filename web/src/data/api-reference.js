@@ -5,7 +5,7 @@
 // interface (one Rust definition → all bindings) so they track the real API, then weave
 // in per-language notes. Shape: each flow has one shared description + a snippet per
 // language. Add languages to `apiLangs` and a matching key to each `samples`.
-const S = '#38e0b0', K = '#9d8cff', C = '#6f7c98';
+const S = 'var(--tok-str)', K = 'var(--tok-kw)', C = 'var(--tok-comment)';
 const s = (x) => `<span style="color:${S}">${x}</span>`;
 const k = (x) => `<span style="color:${K}">${x}</span>`;
 

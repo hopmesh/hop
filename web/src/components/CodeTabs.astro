@@ -1,6 +1,6 @@
 ---
 // Multi-language code sample with a tab toggle — same call, three platforms.
-const C = '#6f7c98', K = '#9d8cff', S = '#38e0b0';
+const C = 'var(--tok-comment)', K = 'var(--tok-kw)', S = 'var(--tok-str)';
 const rust = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
 <span style="color:${K}">let</span> node = HopNode::open(secret)?;
 
@@ -39,11 +39,12 @@ const panes = [['rust', 'Rust core', rust], ['swift', 'Swift · iOS', swift], ['
 </div>
 
 <style>
-  .codetabs { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #0b1018; box-shadow: 0 18px 50px #00000045; }
+  .codetabs { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--code-bg); box-shadow: 0 18px 50px #00000045; }
+  :root[data-theme="light"] .codetabs { box-shadow: 0 16px 40px -18px rgba(16,42,67,.30); }
   .ct-tabs { display: flex; gap: 4px; padding: 8px 8px 0; background: var(--panel-2); border-bottom: 1px solid var(--line); }
   .ct-tab { font: 600 12.5px/1 var(--mono); color: var(--ink-mut); background: none; border: 0; padding: 9px 13px; border-radius: 8px 8px 0 0; cursor: pointer; transition: color .12s ease, background .12s ease; }
   .ct-tab:hover { color: var(--ink-dim); }
-  .ct-tab.active { color: #e8eef5; background: #0b1018; }   /* active tab is always dark (matches the code pane) — keep text light in both themes */
+  .ct-tab.active { color: var(--code-fg); background: var(--code-bg); }   /* active tab matches the code pane in both themes */
   .ct-pane { display: none; margin: 0; }
   .ct-pane.active { display: block; }
 </style>
