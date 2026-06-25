@@ -5,7 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.bluetooth.*
 import android.bluetooth.le.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -215,6 +218,11 @@ class HopBearer private constructor(private val context: Context) {
         // scans in short windows with long idle gaps so the radio stays mostly in peripheral mode
         // — a continuous scan saturated the radio and starved discovery (iOS couldn't connect).
         startCentral()
+        // Auto-heal a wedged BLE stack: when the user (or a watchdog) toggles Bluetooth off→on, the
+        // L2CAP listener / GATT server / advertising sets all become invalid and the app would
+        // otherwise sit deaf until a full restart (the recurring "links cycle but no data flows, had
+        // to force-stop" failure). Re-initialize the peripheral + central when the adapter returns.
+        registerBtStateReceiver()
         // Cross-platform Wi-Fi paths: NSD/TCP on a shared network, Wi-Fi Direct peer-to-peer when
         // there's no router. Both feed the node like any other transport.
         startLan()
@@ -1251,6 +1259,65 @@ class HopBearer private constructor(private val context: Context) {
     }
 
     // ---- peripheral: advertise + accept L2CAP -------------------------------
+
+    /// Watches the Bluetooth adapter so a wedged stack can be cleared by toggling BT (the proven
+    /// recovery) WITHOUT a full app restart. On OFF we drop the now-dead peripheral handles; on ON
+    /// we rebuild the L2CAP listener, GATT server, advertising, and beacon from scratch.
+    private var btReceiverRegistered = false
+    private val btStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_OFF -> {
+                    android.util.Log.i("HOPLOG", "BLE: adapter OFF → dropping stale peripheral handles")
+                    teardownBlePeripheral()
+                }
+                BluetoothAdapter.STATE_ON -> {
+                    // Let the stack settle before re-listening (listenUsingInsecureL2capChannel can
+                    // fail if called the instant the adapter reports ON).
+                    main.postDelayed({ restartBle() }, 800)
+                }
+            }
+        }
+    }
+
+    private fun registerBtStateReceiver() {
+        if (btReceiverRegistered) return
+        runCatching {
+            context.registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+            btReceiverRegistered = true
+        }
+    }
+
+    /// Close the peripheral handles that go invalid when the adapter powers down. Closing the L2CAP
+    /// server socket unblocks the accept thread so it exits its loop; nulling the advertising sets
+    /// forces startAdvertise()/startBeacon() to re-arm (they early-return while the ref is non-null).
+    private fun teardownBlePeripheral() {
+        runCatching { serverSocket?.close() }
+        serverSocket = null
+        runCatching { gattServer?.close() }
+        gattServer = null
+        advSet = null
+        beaconSet = null
+        psm = -1
+    }
+
+    /// Re-initialize BLE after the adapter returns (or recovers from a wedge). Rebuilds the
+    /// peripheral and clears central dial bookkeeping so we can re-dial peers immediately. The
+    /// scan loop is self-sustaining (it reschedules itself), so it recovers on its own.
+    private fun restartBle() {
+        if (!started) return
+        android.util.Log.i("HOPLOG", "BLE: adapter ON → re-initializing peripheral + central")
+        teardownBlePeripheral()
+        // BLE dial state is per-adapter; every BLE socket died with the adapter, so clear it to
+        // allow fresh dials. (LAN/relay links live in `links` under their own ids and are untouched.)
+        connecting.clear()
+        dialing.values.forEach { runCatching { it.close() } }
+        dialing.clear()
+        dialBackoffUntil.clear()
+        runCatching { startPeripheral() }
+            .onFailure { android.util.Log.w("HOPLOG", "BLE re-init failed: $it") }
+    }
 
     private fun startPeripheral() {
         val ss = adapter.listenUsingInsecureL2capChannel()
