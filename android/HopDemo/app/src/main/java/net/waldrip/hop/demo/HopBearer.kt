@@ -376,8 +376,12 @@ class HopBearer private constructor(private val context: Context) {
         val id = nextLinkId++
         val remoteAddr = runCatching { socket.remoteDevice?.address }.getOrNull()
         val link = HopLink(id, socket,
-            onBytes = { lid, data -> main.post { node.received(lid, data); pump() } },
+            onBytes = { lid, data -> main.post {
+                android.util.Log.i("HOPLOG", "ble rx ${data.size}B on id=$lid")   // DIAG: handshake byte flow
+                node.received(lid, data); pump()
+            } },
             onClose = { lid -> main.post {
+                android.util.Log.i("HOPLOG", "ble link CLOSED id=$lid")           // DIAG
                 links.remove(lid)
                 remoteAddr?.let {
                     connecting.remove(it); dialing.remove(it)
