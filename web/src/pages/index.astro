@@ -4,7 +4,7 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
 ---
 <Base
   title="Hop — the network that finds a way"
-  description="Hop is a delay-tolerant mesh: end-to-end encrypted datagrams that hop device to device — over Bluetooth, LoRa, the internet — until they reach the person or service you meant. Held, never dropped. One transport every offline app builds on."
+  description="Hop is a delay-tolerant mesh: end-to-end encrypted datagrams that hop device to device — over Bluetooth and the internet — until they reach the person or service you meant. Held, never dropped. One transport every offline app builds on."
   path="/"
 >
   <!-- hero: the scenario player is the pitch -->
@@ -13,12 +13,12 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
       <div class="eyebrow" style="margin-bottom:14px;">Delay-tolerant mesh transport</div>
       <h1 style="max-width:none;margin:0 auto;">The network that finds a way.</h1>
       <p class="lede" style="margin:20px auto 0;">
-        Encrypted datagrams hop device to device — over Bluetooth, LoRa, the internet — until they
+        Encrypted datagrams hop device to device — over Bluetooth and the internet — until they
         reach the person or service you meant. No tower required. Held, never dropped.
       </p>
       <div class="hero-cta" style="justify-content:center;">
         <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
-        <a class="btn btn-ghost" href="/docs/">Read the protocol</a>
+        <a class="btn btn-ghost" href="/protocol/">Read the protocol</a>
       </div>
     </div>
   </section>
@@ -54,27 +54,27 @@ import ScenarioPlayer from '../components/ScenarioPlayer.astro';
         <div class="lrow">
           <span class="lvl">Semantics</span>
           <div class="chips">
-            <a class="lchip code" href="/docs/hops/">hops://</a>
-            <a class="lchip code" href="/docs/hps/">hps://</a>
-            <a class="lchip code" href="/docs/streams/">streams</a>
-            <a class="lchip code" href="/docs/hns/">HNS</a>
+            <a class="lchip code" href="/protocol/hops/">hops://</a>
+            <a class="lchip code" href="/protocol/hps/">hps://</a>
+            <a class="lchip code" href="/protocol/streams/">streams</a>
+            <a class="lchip code" href="/protocol/hns/">HNS</a>
           </div>
         </div>
         <div class="lrow waist">
           <span class="lvl">Waist</span>
           <div class="chips">
-            <a class="lchip code" href="/docs/hdp/">hdp://</a>
-            <a class="lchip" href="/docs/hdp/">end-to-end encrypted, store-and-forward datagrams</a>
+            <a class="lchip code" href="/protocol/hdp/">hdp://</a>
+            <a class="lchip" href="/protocol/hdp/">end-to-end encrypted, store-and-forward datagrams</a>
           </div>
           <span class="waisttag">the waist</span>
         </div>
         <div class="lrow bearer">
           <span class="lvl">Bearer</span>
           <div class="chips">
-            <a class="lchip" href="/docs/ble/">Bluetooth LE</a>
-            <a class="lchip" href="/docs/l2cap/">L2CAP</a>
-            <a class="lchip" href="/docs/tcp/">TCP / WebSocket</a>
-            <a class="lchip" href="/docs/bearers/">LoRa, Wi-Fi Aware…</a>
+            <a class="lchip" href="/protocol/ble/">Bluetooth LE</a>
+            <a class="lchip" href="/protocol/l2cap/">L2CAP</a>
+            <a class="lchip" href="/protocol/tcp/">TCP / WebSocket</a>
+            <a class="lchip" href="/protocol/bearers/">Wi-Fi Aware, Multipeer…</a>
           </div>
         </div>
       </div>

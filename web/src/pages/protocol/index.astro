@@ -3,16 +3,16 @@ import Base from '../../layouts/Base.astro';
 import { layers, groups, DESIGN } from '../../data/protocol.js';
 ---
 <Base
-  title="Docs — the Hop protocol by layer"
-  description="The Hop stack by layer: hdp (the datagram waist), hops, hps, streams, HNS, and the Bluetooth LE / L2CAP / TCP bearers."
-  path="/docs"
+  title="Protocol — the Hop stack by layer"
+  description="The Hop stack by layer: hdp (the datagram waist), hops, hps, streams, HNS, and the Bluetooth LE / L2CAP / TCP bearers. Each layer with a visual of how it works."
+  path="/protocol"
 >
   <section class="hero" style="padding-bottom:24px;">
     <div class="wrap">
-      <div class="eyebrow">Docs</div>
+      <div class="eyebrow">Protocol</div>
       <h1>The protocol, <span style="color:var(--accent)">by layer.</span></h1>
       <p class="lede">A map of the stack — the datagram waist, the semantics above it, and the bearers
-         below. The full design lives in
+         below. Open any layer for a visual of how it works; the implementation detail lives in
          <a class="mono" style="color:var(--accent)" href={DESIGN}>DESIGN.md</a>.</p>
     </div>
   </section>
@@ -23,7 +23,7 @@ import { layers, groups, DESIGN } from '../../data/protocol.js';
         <div class="eyebrow">{g}</div>
         <div class="stack-rows" style="margin-top:16px;">
           {layers.filter((l) => l.group === g).map((l) => (
-            <a class="srow" href={`/docs/${l.id}/`} style="text-decoration:none;">
+            <a class="srow" href={`/protocol/${l.id}/`} style="text-decoration:none;">
               <div class="lbl" class:list={[{ mono: l.mono }]} set:html={l.name}></div>
               <div class="body">
                 <h3 set:html={l.tagline}></h3>
