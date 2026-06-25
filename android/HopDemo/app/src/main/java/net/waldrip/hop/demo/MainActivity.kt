@@ -550,8 +550,10 @@ private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Pee
         headlineContent = { Text(p.name + if (locked) "  🔒" else "") },
         supportingContent = { Text(subline) },
         trailingContent = {
+            val isLive = bearer.peers.any { it.address.contentEquals(p.address) }
             Text(
-                (transport?.let { "$it · " } ?: "") + HopBearer.hopsLabel(p.hops),
+                if (!isLive) "offline"
+                else (transport?.let { "$it · " } ?: "") + HopBearer.hopsLabel(p.hops),
                 style = MaterialTheme.typography.bodySmall,
             )
         },
