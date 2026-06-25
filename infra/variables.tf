@@ -140,3 +140,16 @@ variable "pages_challenge_txt" {
   type        = string
   default     = "a6ef60e39735942241ca277889d93d"
 }
+
+variable "google_dkim_txt" {
+  description = <<-EOT
+    Google Workspace DKIM value for google._domainkey.hopme.sh, generated in the Admin
+    console (Apps → Google Workspace → Gmail → Authenticate email → Generate new record).
+    The 2048-bit key exceeds the 255-char TXT limit, so supply it split into quoted
+    chunks: '"v=DKIM1; k=rsa; p=<first 255 chars>" "<remainder>"'. Set via
+    TF_VAR_google_dkim_txt or a tfvars file; leave empty to skip the record (see
+    mail_dns.tf) until the key exists. Not a credential — it is a public DNS record.
+  EOT
+  type        = string
+  default     = ""
+}
