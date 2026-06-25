@@ -1,0 +1,126 @@
+---
+// ProtocolDiagram — a small, on-brand diagram of how one protocol layer works.
+// Rendered at build time from a `viz` spec (see data/protocol.js). Static SVG
+// with SMIL animation, so there's no client JS.
+const { viz } = Astro.props;
+const VB = { w: 640, h: 300 };
+
+const N = viz.nodes;
+const lblY = (n) => n.y + (n.type === 'cloud' ? 34 : n.type === 'endpoint' ? 38 : n.type === 'chunks' ? 30 : 30);
+function lbl(n) {
+  return n.label ? `<text class="pd-lbl" x="${n.x}" y="${lblY(n)}" text-anchor="middle">${n.label}</text>` : '';
+}
+function nodeSVG(n) {
+  let s = '';
+  switch (n.type) {
+    case 'cloud':
+      s += `<rect class="pd-cloud ${n.dim ? 'dim' : ''}" x="${n.x - 48}" y="${n.y - 18}" width="96" height="36" rx="9"/>`
+         + `<text class="pd-glyph ${n.dim ? 'dim' : ''}" text-anchor="middle" x="${n.x}" y="${n.y + 4}">${n.glyph || ''}</text>`;
+      break;
+    case 'endpoint':
+      s += `<rect class="pd-ep" x="${n.x - 22}" y="${n.y - 22}" width="44" height="44" rx="10"/>`
+         + `<line class="pd-epl" x1="${n.x - 11}" y1="${n.y - 6}" x2="${n.x + 11}" y2="${n.y - 6}"/>`
+         + `<line class="pd-epl" x1="${n.x - 11}" y1="${n.y + 2}" x2="${n.x + 11}" y2="${n.y + 2}"/>`
+         + `<circle class="pd-core" cx="${n.x - 6}" cy="${n.y + 10}" r="2.4"/>`;
+      break;
+    case 'uplink':
+      s += `<circle class="pd-ring" cx="${n.x}" cy="${n.y}" r="18"/><circle class="pd-node live" cx="${n.x}" cy="${n.y}" r="11"/><circle class="pd-core" cx="${n.x}" cy="${n.y}" r="3.6"/>`;
+      break;
+    case 'dest':
+      s += `<circle class="pd-pulse" cx="${n.x}" cy="${n.y}" r="15"><animate attributeName="r" values="15;31" dur="2.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.5;0" dur="2.2s" repeatCount="indefinite"/></circle>`
+         + `<circle class="pd-node live" cx="${n.x}" cy="${n.y}" r="14"/><circle class="pd-core" cx="${n.x}" cy="${n.y}" r="4.5"/>`;
+      break;
+    case 'you':
+      s += `<circle class="pd-node live" cx="${n.x}" cy="${n.y}" r="14"/><circle class="pd-core" cx="${n.x}" cy="${n.y}" r="4.5"/>`;
+      break;
+    case 'chunks': {
+      const w = 13, gap = 6, count = 4, total = count * w + (count - 1) * gap, x0 = n.x - total / 2;
+      for (let i = 0; i < count; i++) {
+        const cx = x0 + i * (w + gap);
+        s += `<rect class="pd-chunk" x="${cx}" y="${n.y - 7}" width="${w}" height="14" rx="3"/>`;
+      }
+      break;
+    }
+    default: // relay
+      s += `<circle class="pd-node" cx="${n.x}" cy="${n.y}" r="12"/><circle class="pd-core" cx="${n.x}" cy="${n.y}" r="3.2"/>`;
+  }
+  return s + lbl(n);
+}
+function edgeSVG(e) {
+  const a = N[e[0]], b = N[e[1]], cls = e[2] || '';
+  if (cls === 'pipe') {
+    return `<line class="pd-pipe-bg" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/><line class="pd-pipe" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;
+  }
+  let s = `<line class="pd-edge ${cls}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;
+  if (cls === 'dead') {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    s += `<g transform="translate(${mx},${my})"><line class="pd-x" x1="-6" y1="-6" x2="6" y2="6"/><line class="pd-x" x1="6" y1="-6" x2="-6" y2="6"/></g>`;
+  }
+  return s;
+}
+const path = (route) => 'M' + route.map((id) => `${N[id].x},${N[id].y}`).join(' L');
+
+let svg = `<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
+viz.edges.forEach((e) => (svg += edgeSVG(e)));
+svg += `<path class="pd-trail" d="${path(viz.routes[0])}"/>`;
+Object.values(N).forEach((n) => (svg += nodeSVG(n)));
+viz.routes.forEach((rt) => {
+  const p = path(rt);
+  svg += `<circle class="pd-pkt" r="5"><animateMotion dur="3.4s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.9;1" calcMode="linear" path="${p}"/>`
+       + `<animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.9;1" dur="3.4s" repeatCount="indefinite"/></circle>`;
+});
+if (viz.return) {
+  const rp = 'M' + [...viz.routes[0]].reverse().map((id) => `${N[id].x},${N[id].y}`).join(' L');
+  svg += `<circle class="pd-pkt resp" r="4.2"><animateMotion dur="3.4s" begin="1.7s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.08;0.9;1" calcMode="linear" path="${rp}"/>`
+       + `<animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.08;0.5;0.9;1" dur="3.4s" begin="1.7s" repeatCount="indefinite"/></circle>`;
+}
+(viz.notes || []).forEach((nt) => {
+  const w = nt.t.length * 6.6 + 16;
+  svg += `<g transform="translate(${nt.x},${nt.y - 26})"><rect class="pd-note ${nt.tone}" x="${-w / 2}" y="-11" width="${w}" height="20" rx="5"/>`
+       + `<text class="pd-note-t ${nt.tone}" x="0" y="3.5" text-anchor="middle">${nt.t}</text></g>`;
+});
+svg += `</svg>`;
+---
+<figure class="pdiagram">
+  <div class="pd-stage" set:html={svg}></div>
+  <figcaption class="pd-cap">{viz.caption}</figcaption>
+</figure>
+
+<style is:global>
+  .pdiagram{ --green:#2bf0a0; --amber:#ffb43a; --blue:#74b6ff; --red:#e0564f;
+    --pd-ink:#92a09b; --pd-faint:#5d6a66; margin:0; }
+  .pdiagram .pd-stage{ border:1px solid #283139; border-radius:14px; background:linear-gradient(0deg,#0a0d0c,#0b1110);
+    background-image:linear-gradient(#0c2b2810 1px,transparent 1px),linear-gradient(90deg,#0c2b2810 1px,transparent 1px);
+    background-size:32px 32px; overflow:hidden; }
+  .pdiagram .pd-stage svg{ display:block; width:100%; height:auto; }
+  .pdiagram .pd-cap{ margin-top:14px; color:var(--pd-ink); font-size:14.5px; max-width:64ch; }
+
+  .pdiagram .pd-edge{ stroke:#243029; stroke-width:1.8; fill:none; }
+  .pdiagram .pd-edge.dead{ stroke:#5b2b2b; stroke-dasharray:5 5; }
+  .pdiagram .pd-edge.avail{ stroke:#2d4a3d; stroke-dasharray:4 5; }
+  .pdiagram .pd-pipe-bg{ stroke:#0a1c14; stroke-width:22; stroke-linecap:round; }
+  .pdiagram .pd-pipe{ stroke:#1c4a34; stroke-width:22; stroke-linecap:round; opacity:.5; }
+  .pdiagram .pd-node{ fill:#0b1210; stroke:#3a4d44; stroke-width:1.8; }
+  .pdiagram .pd-node.live{ stroke:var(--green); }
+  .pdiagram .pd-core{ fill:var(--green); }
+  .pdiagram .pd-ring{ fill:none; stroke:var(--green); stroke-dasharray:3 4; opacity:.8; }
+  .pdiagram .pd-pulse{ fill:none; stroke:var(--green); }
+  .pdiagram .pd-cloud{ fill:#0d1411; stroke:var(--green); stroke-width:1.6; }
+  .pdiagram .pd-cloud.dim{ stroke:#3a4d44; }
+  .pdiagram .pd-glyph{ fill:#cfe8df; font:600 12px var(--mono); }
+  .pdiagram .pd-glyph.dim{ fill:var(--pd-faint); }
+  .pdiagram .pd-ep{ fill:#0d1411; stroke:var(--green); stroke-width:1.8; }
+  .pdiagram .pd-epl{ stroke:#3a5d50; stroke-width:2; stroke-linecap:round; }
+  .pdiagram .pd-chunk{ fill:#0b1a14; stroke:var(--green); stroke-width:1.6; }
+  .pdiagram .pd-lbl{ fill:var(--pd-faint); font:600 11.5px var(--mono); }
+  .pdiagram .pd-x{ stroke:var(--red); stroke-width:2; }
+  .pdiagram .pd-trail{ fill:none; stroke:var(--green); stroke-width:2.5; opacity:.16; stroke-linecap:round; stroke-linejoin:round; }
+  .pdiagram .pd-pkt{ fill:var(--green); filter:drop-shadow(0 0 6px var(--green)); }
+  .pdiagram .pd-pkt.resp{ fill:var(--blue); filter:none; }
+  .pdiagram .pd-note{ fill:#0a1c14; stroke:#1c4a34; stroke-width:1; }
+  .pdiagram .pd-note.held{ fill:#1c1606; stroke:#54430f; }
+  .pdiagram .pd-note.transit{ fill:#0d1722; stroke:#243a52; }
+  .pdiagram .pd-note-t{ fill:var(--green); font:600 11px var(--mono); }
+  .pdiagram .pd-note-t.held{ fill:var(--amber); }
+  .pdiagram .pd-note-t.transit{ fill:var(--blue); }
+</style>

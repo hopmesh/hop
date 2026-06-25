@@ -1,5 +1,6 @@
 ---
 import Base from '../../layouts/Base.astro';
+import ProtocolDiagram from '../../components/ProtocolDiagram.astro';
 import { layers, DESIGN } from '../../data/protocol.js';
 
 export function getStaticPaths() {
@@ -14,11 +15,11 @@ const plain = l.name.replace(/&amp;/g, '&');
 <Base
   title={`${plain} — Hop protocol`}
   description={`${plain}: ${l.tagline}. Part of the Hop ${l.group.toLowerCase()} layer.`}
-  path="/docs"
+  path="/protocol"
 >
   <section class="hero" style="padding-bottom:24px;">
     <div class="wrap">
-      <div class="eyebrow"><a href="/docs/" style="color:var(--accent)">Docs</a> · {l.group}</div>
+      <div class="eyebrow"><a href="/protocol/" style="color:var(--accent)">Protocol</a> · {l.group}</div>
       <h1 class:list={[{ mono: l.mono }]} style="max-width:20ch;" set:html={l.name}></h1>
       <p class="lede" style="margin-top:14px;" set:html={l.tagline}></p>
     </div>
@@ -26,14 +27,19 @@ const plain = l.name.replace(/&amp;/g, '&');
 
   <section class="band" style="padding-top:8px;">
     <div class="wrap">
+      {l.viz && (
+        <div style="margin-bottom:30px;">
+          <ProtocolDiagram viz={l.viz} />
+        </div>
+      )}
       <div class="prose">
         <p set:html={l.body}></p>
-        <p style="margin-top:18px;"><a class="link-go" href={DESIGN}>Read the design ({l.ref}) →</a></p>
+        <p style="margin-top:18px;"><a class="link-go" href={DESIGN}>Implementation details — DESIGN.md ({l.ref}) →</a></p>
       </div>
 
       <div class="prevnext" style="display:flex;justify-content:space-between;gap:16px;margin-top:40px;border-top:1px solid var(--line-soft);padding-top:22px;">
-        <a class="link-go" href={`/docs/${prev.id}/`}>← <span set:html={prev.name}></span></a>
-        <a class="link-go" href={`/docs/${next.id}/`}><span set:html={next.name}></span> →</a>
+        <a class="link-go" href={`/protocol/${prev.id}/`}>← <span set:html={prev.name}></span></a>
+        <a class="link-go" href={`/protocol/${next.id}/`}><span set:html={next.name}></span> →</a>
       </div>
     </div>
   </section>
@@ -43,7 +49,7 @@ const plain = l.name.replace(/&amp;/g, '&');
       <h2>Ready to build on it?</h2>
       <div class="hero-cta">
         <a class="btn btn-primary" href="/quickstart/">Quickstart →</a>
-        <a class="btn btn-ghost" href="/docs/">All layers</a>
+        <a class="btn btn-ghost" href="/protocol/">All layers</a>
       </div>
     </div>
   </section>
