@@ -1958,8 +1958,12 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // Fast path: PSM already known from the advert → open L2CAP directly, skipping GATT
-        // discovery (and its cache). Fall back to reading the PSM characteristic otherwise.
+        // ALWAYS discover services: we need the DATA characteristic for the GATT-data fallback (the
+        // path that actually works to Android), even when the advert already gave us a PSM. Without
+        // this the advert fast-path skipped discovery, so the fallback could never find DATA.
+        peripheral.discoverServices([HopBearer.serviceUUID])
+        // Fast path: PSM known from the advert → also kick off L2CAP now (skips waiting on the GATT
+        // read). The `opened` guard stops the GATT-read path from double-opening.
         if let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) {
             opened.insert(peripheral.identifier)
             l2capAttempts[peripheral.identifier] = 0
@@ -1967,7 +1971,6 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             openL2CAP(peripheral, psm)
         } else {
             status = "connected (GATT), reading PSM…"
-            peripheral.discoverServices([HopBearer.serviceUUID])
         }
     }
 
