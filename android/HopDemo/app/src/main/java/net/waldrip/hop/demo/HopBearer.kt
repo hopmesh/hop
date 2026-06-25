@@ -138,7 +138,14 @@ class HopBearer private constructor(private val context: Context) {
     private var psm: Int = -1
     private var serverSocket: BluetoothServerSocket? = null
     private var gattServer: BluetoothGattServer? = null
-    private val connecting = HashSet<String>()
+    private val connecting = HashSet<String>()       // BLE addrs we have a link to OR are dialing
+    // Push-to-peripheral central (DESIGN.md §11): to deliver we connect as a central to a peer's
+    // peripheral and write — but GENTLY. Cap concurrent outbound dials, time them out, and back off
+    // peers that fail, so the central never floods/saturates the radio and starves OUR peripheral
+    // (the inbox other devices push into). All mutated on the main thread.
+    private val dialing = HashMap<String, BluetoothGatt>()      // outbound connects in flight → their gatt
+    private val dialBackoffUntil = HashMap<String, Long>()      // addr → earliest next attempt (wall ms)
+    private val dialBackoffStep = HashMap<String, Long>()       // addr → current backoff interval
     private val nameByAddr = HashMap<List<Byte>, String>()
 
     // Cloud relay bearer — reaches a hop-relayd over the internet (DESIGN.md §19, §21).
@@ -347,7 +354,12 @@ class HopBearer private constructor(private val context: Context) {
             onBytes = { lid, data -> main.post { node.received(lid, data); pump() } },
             onClose = { lid -> main.post {
                 links.remove(lid)
-                remoteAddr?.let { connecting.remove(it) }  // link dropped → allow a reconnect
+                remoteAddr?.let {
+                    connecting.remove(it); dialing.remove(it)
+                    // Brief backoff before re-dialing a just-dropped peer, so a flapping link doesn't
+                    // re-dial instantly and churn the radio.
+                    dialBackoffUntil[it] = System.currentTimeMillis() + DIAL_BACKOFF_MIN_MS
+                }
                 node.disconnected(lid); scheduleRefresh()
             } })
         links[id] = link
@@ -1378,15 +1390,47 @@ class HopBearer private constructor(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            if (!connecting.add(device.address)) return
-            android.util.Log.i("HOPLOG", "BLE central: found ${device.address}, connecting…")
-            // connectGatt MUST run on the main thread — calling it from this binder callback
-            // thread is a common cause of the status-133 connect failure on many devices.
-            main.post { device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE) }
+            main.post { tryDial(device) }   // gating + connectGatt on the main thread
         }
         override fun onScanFailed(errorCode: Int) {
             android.util.Log.w("HOPLOG", "BLE scan FAILED: code=$errorCode")
         }
+    }
+
+    /// Connect (as a central) to a peer's peripheral to push to it — GENTLY: skip peers we already
+    /// link to or are dialing, cap concurrent outbound dials, and honour a per-peer backoff so a
+    /// peer that keeps failing (the iOS status-133 case) isn't hammered into starving our peripheral.
+    private fun tryDial(device: BluetoothDevice) {
+        val addr = device.address
+        if (connecting.contains(addr) || dialing.containsKey(addr)) return  // already linked / dialing it
+        if (dialing.size >= MAX_DIALS_IN_FLIGHT) return                     // one or two outbound at a time
+        if (System.currentTimeMillis() < (dialBackoffUntil[addr] ?: 0L)) return  // backing off this peer
+        connecting.add(addr)
+        val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        if (gatt == null) { connecting.remove(addr); return }
+        dialing[addr] = gatt
+        android.util.Log.i("HOPLOG", "BLE central: dialing $addr (push)")
+        // A dial that doesn't connect+handshake in time is stuck — close it and free the slot so the
+        // central keeps making progress instead of one hung 133 connect blocking everything.
+        main.postDelayed({
+            if (dialing.containsKey(addr)) {
+                android.util.Log.i("HOPLOG", "BLE central: dial $addr timed out")
+                runCatching { dialing[addr]?.close() }
+                dialFailed(addr)
+            }
+        }, DIAL_TIMEOUT_MS)
+    }
+
+    private fun dialFailed(addr: String) {
+        dialing.remove(addr); connecting.remove(addr)
+        val step = ((dialBackoffStep[addr] ?: (DIAL_BACKOFF_MIN_MS / 2)) * 2).coerceIn(DIAL_BACKOFF_MIN_MS, DIAL_BACKOFF_MAX_MS)
+        dialBackoffStep[addr] = step
+        dialBackoffUntil[addr] = System.currentTimeMillis() + step
+    }
+
+    private fun dialSucceeded(addr: String) {
+        dialing.remove(addr)   // handshake/L2CAP done; `connecting` keeps the live-link marker
+        dialBackoffStep.remove(addr); dialBackoffUntil.remove(addr)  // it works — reset the backoff
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -1394,18 +1438,21 @@ class HopBearer private constructor(private val context: Context) {
             if (newState == BluetoothProfile.STATE_CONNECTED && statusCode == BluetoothGatt.GATT_SUCCESS) {
                 gatt.discoverServices()
             } else {
-                // Failed or dropped. MUST close to free the GATT client — Android caps these,
-                // and leaked failed connects make every later connect time out. Drop from the
-                // in-flight set so a later scan can retry. (A live link keeps its GATT open, so
-                // no disconnect fires for it.)
+                // Failed or dropped. MUST close to free the GATT client (Android caps them) and back
+                // off this peer so we don't re-dial it on the very next scan and flood the radio.
                 android.util.Log.i("HOPLOG", "BLE central: ${gatt.device.address} disconnected status=$statusCode state=$newState")
                 runCatching { gatt.close() }
-                connecting.remove(gatt.device.address)
+                val addr = gatt.device.address
+                main.post { dialFailed(addr) }
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, statusCode: Int) {
-            val ch = gatt.getService(SERVICE_UUID)?.getCharacteristic(PSM_CHAR_UUID) ?: return
+            val ch = gatt.getService(SERVICE_UUID)?.getCharacteristic(PSM_CHAR_UUID) ?: run {
+                runCatching { gatt.close() }
+                val a = gatt.device.address; main.post { dialFailed(a) }   // not a Hop peripheral / no PSM char
+                return
+            }
             gatt.readCharacteristic(ch)
         }
 
@@ -1413,21 +1460,24 @@ class HopBearer private constructor(private val context: Context) {
         override fun onCharacteristicRead(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, statusCode: Int,
         ) {
-            val v = characteristic.value ?: return
-            if (v.size < 2) return
+            val device = gatt.device
+            val v = characteristic.value
+            if (v == null || v.size < 2) {
+                runCatching { gatt.close() }; main.post { dialFailed(device.address) }; return
+            }
             // 2 bytes big-endian (matches iOS's UInt16 PSM).
             val psm = (v[0].toInt() and 0xff shl 8) or (v[1].toInt() and 0xff)
-            val device = gatt.device
             thread(name = "hop-l2cap-connect") {
                 val socket = runCatching {
                     device.createInsecureL2capChannel(psm).apply { connect() }
                 }.getOrNull()
                 if (socket == null) {
-                    runCatching { gatt.close() }      // free the GATT client
-                    connecting.remove(device.address) // allow a retry on the next scan
+                    runCatching { gatt.close() }
+                    main.post { dialFailed(device.address) }
                     return@thread
                 }
-                addLink(socket, initiator = true)     // GATT stays open to hold the link
+                addLink(socket, initiator = true)             // GATT stays open to hold the link
+                main.post { dialSucceeded(device.address) }   // it worked — clear the dial + backoff
             }
         }
     }
@@ -1441,6 +1491,10 @@ class HopBearer private constructor(private val context: Context) {
         const val DEFAULT_RELAY = "wss://relay.hopme.sh/"
         const val SCAN_WINDOW_MS = 5_000L   // central scans in short bursts…
         const val SCAN_IDLE_MS = 15_000L    // …then idles so the radio stays mostly in peripheral mode
+        const val MAX_DIALS_IN_FLIGHT = 2   // gentle central: at most this many outbound connects at once
+        const val DIAL_TIMEOUT_MS = 15_000L // a dial that hasn't linked by now is stuck → drop it
+        const val DIAL_BACKOFF_MIN_MS = 8_000L    // first backoff after a failed/dropped dial
+        const val DIAL_BACKOFF_MAX_MS = 120_000L  // ceiling (a chronically unreachable peer)
         const val HOP_MFG_ID = 0xFFFF       // BLE manufacturer ID (reserved/test) carrying our L2CAP PSM
         const val APPLE_MFG_ID = 0x004C     // Apple company ID — required for the iBeacon iOS recognizes
         // iBeacon proximity UUID the iOS app monitors (HopBearer.beaconUUID). Advertising it from
