@@ -853,7 +853,16 @@ impl<S: Store> Node<S> {
         // payload now, send it; otherwise we have no prekey yet — DON'T static-seal, queue the
         // content and return a stable handle. It flushes the moment a prekey arrives.
         match self.session_payload(&dst, content_type.clone(), body.clone())? {
-            Some(payload) => self.dispatch_content(dst, payload, request_ack, None),
+            Some(payload) => {
+                let id = self.dispatch_content(dst, payload, request_ack, None)?;
+                // Sending this may have just established a session to `dst` (the prekey path in
+                // session_payload). Any EARLIER content deferred for the same peer ("Securing…")
+                // can ratchet now — flush it immediately instead of waiting for the next tick,
+                // which won't run if the app backgrounds right after this send. (The stuck-"Securing"
+                // bug: a queued message never left because its flush only ever fired on tick.)
+                self.flush_pending_content();
+                Ok(id)
+            }
             None => {
                 self.pending_seq += 1;
                 let h = blake3::hash(
@@ -1060,6 +1069,10 @@ impl<S: Store> Node<S> {
                 match decrypted {
                     Ok(inner) => {
                         self.persist_session(&from); // ratchet advanced — save it
+                        // A peer initiating to us establishes a session both ways — so content we'd
+                        // deferred to them (no prekey yet → "Securing…") can ratchet now. Flush it
+                        // here too, not just on the prekey-advert/tick paths.
+                        self.flush_pending_content();
                         self.surface_session_inner(from, &inner)
                     }
                     Err(e) => {
@@ -3448,6 +3461,46 @@ mod tests {
             }
         }
         assert!(got.contains(&b"healed".to_vec()), "ratchet recovered after the reset");
+    }
+
+    #[test]
+    fn deferred_content_flushes_when_peer_initiates_session() {
+        // A message sent before we know the recipient's prekey is deferred ("Securing…"). If the
+        // recipient then messages US first, that establishes a session — and the deferred message
+        // must ratchet + send right then, WITHOUT waiting for a tick. (The stuck-"Securing" bug:
+        // flush only ran on tick/prekey-advert, so a message queued just before the app
+        // backgrounded never left even though a session later formed via the inbound path.)
+        let alice = Identity::generate().to_secret_bytes();
+        let mut nodes = [Node::from_identity_secret(&alice), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        // Alice publishes her prekey so Bob can initiate; Bob does NOT, so Alice must defer.
+        nodes[0].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+
+        // Alice messages Bob with no prekey for him → deferred; nothing reaches Bob yet.
+        nodes[0].send_message(nodes[1].address(), "t".into(), b"deferred".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_inbox().is_empty(), "no prekey for Bob → message defers, not sent");
+
+        // Bob messages Alice first; his SessionInit establishes a session on Alice's side.
+        nodes[1].send_message(nodes[0].address(), "t".into(), b"hi".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+        for b in nodes[0].take_inbox() {
+            let _ = nodes[0].read_message(&b); // establishing the session here must flush the deferral
+        }
+        net.pump(&mut nodes); // shuttle the now-flushed deferred message — NO tick() anywhere
+
+        let mut bob_got: Vec<Vec<u8>> = Vec::new();
+        for b in nodes[1].take_inbox() {
+            if let Ok(Some(m)) = nodes[1].read_message(&b) {
+                bob_got.push(m.body);
+            }
+        }
+        assert!(
+            bob_got.contains(&b"deferred".to_vec()),
+            "deferred message flushed + arrived once the inbound session formed (no tick)"
+        );
     }
 
     #[test]
