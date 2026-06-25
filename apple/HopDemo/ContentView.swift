@@ -522,7 +522,7 @@ struct ChatView: View {
                                 // In flight, not yet handed to any peer. With peers around, the holdup is
                                 // the recipient's forward-secret session, not peer availability — only with
                                 // no reachable peers is it genuinely "Awaiting peers".
-                                SendingIndicator(sentAt: m.sentAt, peersReachable: !bearer.reachable.isEmpty)
+                                SendingIndicator(sentAt: m.sentAt, peersReachable: !bearer.reachable.isEmpty || bearer.linkCount > 0)
                             } else {
                                 Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
                             }
