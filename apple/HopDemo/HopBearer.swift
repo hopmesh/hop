@@ -1962,23 +1962,17 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // ALWAYS discover services: we need the DATA characteristic for the GATT-data path.
+        // Central side ALWAYS uses GATT-data, never L2CAP:
+        //  • Apple→Android L2CAP can't open, and *attempting* it tears the whole peripheral
+        //    connection down (~1s "peer left"), killing the link before any fallback.
+        //  • We can't reliably tell a peer's platform before connecting (a peer reconnected via
+        //    state restoration arrives with no advert, so the Android-PSM hint is absent).
+        //  • GATT-data works to every peer (Android and iOS), so one uniform path is the reliable
+        //    choice. iOS↔iOS loses L2CAP throughput but gains a path that actually establishes.
+        // The link comes up in didDiscoverCharacteristicsFor → startCentralGattData.
+        gattFallbackPending.insert(peripheral.identifier)
+        status = "connected (GATT) → GATT-data…"
         peripheral.discoverServices([HopBearer.serviceUUID])
-        if psmFromAdvert.contains(peripheral.identifier) {
-            // ANDROID peer. Apple→Android L2CAP can't open, AND *attempting* it tears the whole
-            // peripheral connection down (~1s "peer left"), killing the link before GATT-data can
-            // start. So never try L2CAP here — go straight to GATT-data once DATA is discovered.
-            status = "connected (GATT), Android → GATT-data…"
-            gattFallbackPending.insert(peripheral.identifier)
-        } else if let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) {
-            // iOS peer (no advertised PSM ⇒ this came from a GATT read): L2CAP works iOS↔iOS.
-            opened.insert(peripheral.identifier)
-            l2capAttempts[peripheral.identifier] = 0
-            status = "opening L2CAP (psm \(psm))…"
-            openL2CAP(peripheral, psm)
-        } else {
-            status = "connected (GATT), reading PSM…"
-        }
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -2019,15 +2013,13 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if error != nil { return recover(peripheral) }
-        for ch in service.characteristics ?? [] {
-            if ch.uuid == HopBearer.dataCharUUID {
-                gattDataCharFor[peripheral.identifier] = ch
-                // L2CAP already failed and was waiting on this → start the GATT-data fallback now.
-                if gattFallbackPending.remove(peripheral.identifier) != nil {
-                    _ = startCentralGattData(peripheral)
-                }
+        for ch in service.characteristics ?? [] where ch.uuid == HopBearer.dataCharUUID {
+            gattDataCharFor[peripheral.identifier] = ch
+            // Central always wants GATT-data → subscribe as soon as DATA is discovered. (We no longer
+            // read the PSM characteristic / open L2CAP from the central side.)
+            if gattFallbackPending.remove(peripheral.identifier) != nil {
+                _ = startCentralGattData(peripheral)
             }
-            if ch.uuid == HopBearer.psmCharUUID { peripheral.readValue(for: ch) }
         }
     }
 
