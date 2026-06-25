@@ -19,6 +19,7 @@ targets:
       - ContentView.swift
       - HopBearer.swift
       - HopLink.swift
+      - GattDataLink.swift
       - QRViews.swift
       - HopWebView.swift
       - HopObjCExceptionCatcher.h

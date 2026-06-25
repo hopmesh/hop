@@ -144,6 +144,14 @@ class HopBearer private constructor(private val context: Context) {
     private var psm: Int = -1
     private var serverSocket: BluetoothServerSocket? = null
     private var gattServer: BluetoothGattServer? = null
+    // GATT-data fallback bearer (cross-platform, when L2CAP can't open — esp. Apple→Android).
+    private var peripheralDataChar: BluetoothGattCharacteristic? = null
+    private val gattLinks = HashMap<ULong, GattDataLink>()        // all GATT-data links (central + peripheral)
+    private val gattLinkDevice = HashMap<ULong, BluetoothDevice>() // peripheral side: link → the central device
+    private val gattLinkGatt = HashMap<ULong, BluetoothGatt>()     // central side: link → its gatt client
+    private val deviceGattLink = HashMap<String, ULong>()          // peripheral side: central addr → link id
+    private val gattMtu = HashMap<String, Int>()                  // device addr → negotiated ATT MTU (default 23)
+    private var nextGattLinkId = GattDataLink.GATT_LINK_BASE
     private val connecting = HashSet<String>()       // BLE addrs we have a link to OR are dialing
     // Push-to-peripheral central (DESIGN.md §11): to deliver we connect as a central to a peer's
     // peripheral and write — but GENTLY. Cap concurrent outbound dials, time them out, and back off
@@ -264,10 +272,27 @@ class HopBearer private constructor(private val context: Context) {
                         relayUrl?.let { connectRelay(it) }
                     }
                 }
+                maintainGattLinks()
                 pump()
                 main.postDelayed(this, 1000)
             }
         }, 1000)
+    }
+
+    /// Keepalive + reaping for GATT-data links (the bearer drives these; GattDataLink has no timer
+    /// of its own). Reap a half-open link (subscribed but never sent a frame — the dead-link case)
+    /// or one silent past the liveness window; otherwise send an empty keepalive frame.
+    private fun maintainGattLinks() {
+        if (gattLinks.isEmpty()) return
+        for (id in gattLinks.keys.toList()) {
+            val link = gattLinks[id] ?: continue
+            if (link.isHalfOpen() || link.idleMs() > GATT_LIVENESS_MS) {
+                android.util.Log.i("HOPLOG", "GATT-data link reaped id=$id")
+                closeGattLink(id)
+            } else {
+                link.send(ByteArray(0))   // keepalive
+            }
+        }
     }
 
     /// Re-publish our presence advert so it stays within TTL and renames propagate.
@@ -535,6 +560,7 @@ class HopBearer private constructor(private val context: Context) {
             val link = links[pkt.link]
             if (link != null) link.send(pkt.bytes)
             else if (pkt.link == relayLinkId) relaySend(pkt.bytes)
+            else if (gattLinks.containsKey(pkt.link)) gattLinks[pkt.link]?.send(pkt.bytes)  // GATT-data fallback
             else lanLinks[pkt.link]?.send(pkt.bytes)   // LAN / Wi-Fi Direct TCP link
         }
         scheduleRefresh()
@@ -1317,6 +1343,9 @@ class HopBearer private constructor(private val context: Context) {
         dialing.values.forEach { runCatching { it.close() } }
         dialing.clear()
         dialBackoffUntil.clear()
+        // GATT-data links died with the adapter too.
+        gattLinks.keys.toList().forEach { closeGattLink(it) }
+        gattMtu.clear()
         runCatching { startPeripheral() }
             .onFailure { android.util.Log.w("HOPLOG", "BLE re-init failed: $it") }
     }
@@ -1347,6 +1376,20 @@ class HopBearer private constructor(private val context: Context) {
                 BluetoothGattCharacteristic.PERMISSION_READ,
             )
         )
+        // GATT-data fallback characteristic: write (central→us) + indicate (us→central), both acked.
+        val dataChar = BluetoothGattCharacteristic(
+            DATA_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_INDICATE,
+            BluetoothGattCharacteristic.PERMISSION_WRITE,
+        )
+        dataChar.addDescriptor(
+            BluetoothGattDescriptor(
+                CCCD_UUID,
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
+            )
+        )
+        service.addCharacteristic(dataChar)
+        peripheralDataChar = dataChar
         server.addService(service)
         gattServer = server
 
@@ -1439,6 +1482,82 @@ class HopBearer private constructor(private val context: Context) {
             } else ByteArray(0)
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
         }
+
+        override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            gattMtu[device.address] = mtu
+        }
+
+        // A central enabled indications on the DATA characteristic → it's about to drive a GATT-data
+        // link to us (the L2CAP fallback). Spin up our peripheral (responder) side now.
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
+        ) {
+            if (descriptor.uuid == CCCD_UUID && descriptor.characteristic.uuid == DATA_CHAR_UUID) {
+                main.post { peripheralGattLinkFor(device) }
+            }
+            if (responseNeeded) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+            }
+        }
+
+        // Inbound GATT-data chunk (one ATT write) from a central → reassemble into Hop frames.
+        override fun onCharacteristicWriteRequest(
+            device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
+        ) {
+            if (characteristic.uuid == DATA_CHAR_UUID) {
+                main.post { peripheralGattLinkFor(device).onChunkReceived(value) }
+            }
+            if (responseNeeded) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+            }
+        }
+
+        // Our indication was delivered + acked → the link can send its next chunk.
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            val id = deviceGattLink[device.address] ?: return
+            main.post { gattLinks[id]?.onChunkSent() }
+        }
+    }
+
+    /// Get (or create) the peripheral-side GATT-data link for a connected central. Creating it
+    /// registers the link with the node as a Noise responder and wires its sends to indications.
+    private fun peripheralGattLinkFor(device: BluetoothDevice): GattDataLink {
+        deviceGattLink[device.address]?.let { gattLinks[it]?.let { l -> return l } }
+        val id = nextGattLinkId++
+        val link = GattDataLink(
+            id = id,
+            usablePayload = { (gattMtu[device.address] ?: 23) - 3 },
+            sendChunk = { chunk ->
+                val ch = peripheralDataChar ?: return@GattDataLink false
+                ch.value = chunk
+                @Suppress("DEPRECATION")
+                gattServer?.notifyCharacteristicChanged(device, ch, true) == true  // true = indication (acked)
+            },
+            onBytes = { lid, data -> node.received(lid, data); pump() },
+            onClose = { lid -> main.post { closeGattLink(lid) } },
+        )
+        gattLinks[id] = link
+        gattLinkDevice[id] = device
+        deviceGattLink[device.address] = id
+        node.connected(id, false)   // peripheral = Noise responder
+        android.util.Log.i("HOPLOG", "GATT-data link UP id=$id initiator=false remote=${device.address}")
+        pump()
+        return link
+    }
+
+    private fun closeGattLink(id: ULong) {
+        gattLinks.remove(id)?.close()
+        // Central link: drop the underlying GATT connection so the dial/backoff cycle rebuilds it
+        // (a degraded link that just lingers never recovers — the "works then degrades" failure).
+        gattLinkGatt.remove(id)?.let { gatt ->
+            val addr = gatt.device.address
+            runCatching { gatt.close() }
+            connecting.remove(addr); dialFailed(addr)
+        }
+        gattLinkDevice.remove(id)?.let { deviceGattLink.remove(it.address) }
+        node.disconnected(id); scheduleRefresh()
     }
 
     private var advSet: android.bluetooth.le.AdvertisingSet? = null
@@ -1549,15 +1668,22 @@ class HopBearer private constructor(private val context: Context) {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, statusCode: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED && statusCode == BluetoothGatt.GATT_SUCCESS) {
+                runCatching { gatt.requestMtu(517) }   // bigger ATT MTU = fewer GATT-data chunks (best-effort)
                 gatt.discoverServices()
             } else {
                 // Failed or dropped. MUST close to free the GATT client (Android caps them) and back
                 // off this peer so we don't re-dial it on the very next scan and flood the radio.
                 android.util.Log.i("HOPLOG", "BLE central: ${gatt.device.address} disconnected status=$statusCode state=$newState")
+                // Tear down any GATT-data link riding this connection.
+                val deadId = gattLinkGatt.entries.firstOrNull { it.value === gatt }?.key
                 runCatching { gatt.close() }
                 val addr = gatt.device.address
-                main.post { dialFailed(addr) }
+                main.post { deadId?.let { closeGattLink(it) }; dialFailed(addr) }
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            gattMtu[gatt.device.address] = mtu
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, statusCode: Int) {
@@ -1587,8 +1713,10 @@ class HopBearer private constructor(private val context: Context) {
                 }.onFailure { android.util.Log.w("HOPLOG", "central L2CAP open to ${device.address} FAILED: $it") }  // DIAG
                  .getOrNull()
                 if (socket == null) {
-                    runCatching { gatt.close() }
-                    main.post { dialFailed(device.address) }
+                    // L2CAP couldn't open (Apple→Android always fails this way). DON'T drop the GATT
+                    // connection — fall back to the GATT-data bearer over it instead.
+                    android.util.Log.i("HOPLOG", "central L2CAP failed → GATT-data fallback to ${device.address}")
+                    main.post { startCentralGattData(gatt) }
                     return@thread
                 }
                 android.util.Log.i("HOPLOG", "central L2CAP OPEN ok to ${device.address} psm=$psm")  // DIAG
@@ -1596,15 +1724,97 @@ class HopBearer private constructor(private val context: Context) {
                 main.post { dialSucceeded(device.address) }   // it worked — clear the dial + backoff
             }
         }
+
+        // GATT-data: our subscribe to the peer's DATA characteristic completed → bring the link up.
+        @Deprecated("compat with API < 33")
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int,
+        ) {
+            if (descriptor.uuid == CCCD_UUID && descriptor.characteristic.uuid == DATA_CHAR_UUID) {
+                main.post { gattDataLinkUp(gatt) }
+            }
+        }
+
+        // GATT-data: an indication from the peripheral → reassemble Hop frames.
+        @Deprecated("compat with API < 33")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic,
+        ) {
+            if (characteristic.uuid == DATA_CHAR_UUID) {
+                val data = characteristic.value ?: return
+                val id = gattLinkGatt.entries.firstOrNull { it.value === gatt }?.key ?: return
+                main.post { gattLinks[id]?.onChunkReceived(data) }
+            }
+        }
+
+        // GATT-data: our write-with-response was acked → the link can send its next chunk.
+        @Deprecated("compat with API < 33")
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int,
+        ) {
+            if (characteristic.uuid == DATA_CHAR_UUID) {
+                val id = gattLinkGatt.entries.firstOrNull { it.value === gatt }?.key ?: return
+                main.post { gattLinks[id]?.onChunkSent() }
+            }
+        }
+    }
+
+    /// Central GATT-data fallback step 1: subscribe to the peer's DATA characteristic (enable
+    /// indications). The link comes up in onDescriptorWrite → gattDataLinkUp.
+    private fun startCentralGattData(gatt: BluetoothGatt) {
+        val ch = gatt.getService(SERVICE_UUID)?.getCharacteristic(DATA_CHAR_UUID) ?: run {
+            runCatching { gatt.close() }; main.post { dialFailed(gatt.device.address) }; return
+        }
+        runCatching { gatt.setCharacteristicNotification(ch, true) }
+        val cccd = ch.getDescriptor(CCCD_UUID) ?: run {
+            runCatching { gatt.close() }; main.post { dialFailed(gatt.device.address) }; return
+        }
+        @Suppress("DEPRECATION")
+        cccd.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        @Suppress("DEPRECATION")
+        if (gatt.writeDescriptor(cccd) != true) { runCatching { gatt.close() }; main.post { dialFailed(gatt.device.address) } }
+    }
+
+    /// Central GATT-data step 2: subscription confirmed → register the link (Noise initiator) and
+    /// wire its sends to write-with-response. node.connected queues m1, which pump() ships.
+    private fun gattDataLinkUp(gatt: BluetoothGatt) {
+        if (gattLinkGatt.values.any { it === gatt }) return   // already up
+        val device = gatt.device
+        val ch = gatt.getService(SERVICE_UUID)?.getCharacteristic(DATA_CHAR_UUID) ?: return
+        val id = nextGattLinkId++
+        val link = GattDataLink(
+            id = id,
+            usablePayload = { (gattMtu[device.address] ?: 23) - 3 },
+            sendChunk = { chunk ->
+                ch.value = chunk
+                ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT   // write-with-response (acked)
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(ch) == true
+            },
+            onBytes = { lid, data -> node.received(lid, data); pump() },
+            onClose = { lid -> main.post { closeGattLink(lid) } },
+        )
+        gattLinks[id] = link
+        gattLinkGatt[id] = gatt
+        connecting.add(device.address)
+        node.connected(id, true)   // central = Noise initiator
+        android.util.Log.i("HOPLOG", "GATT-data link UP id=$id initiator=true remote=${device.address}")
+        dialSucceeded(device.address)
+        pump()
     }
 
     companion object {
         val SERVICE_UUID: UUID = UUID.fromString("F0900000-0000-4000-8000-000000000000")
         val PSM_CHAR_UUID: UUID = UUID.fromString("F0900001-0000-4000-8000-000000000000")
+        // GATT-data fallback (cross-platform, when L2CAP can't open): central WRITEs frames to this
+        // characteristic, peripheral INDICATEs frames back. Both acked → reliable, ordered.
+        val DATA_CHAR_UUID: UUID = UUID.fromString("F0900002-0000-4000-8000-000000000000")
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val CHANNEL_ID = "hop.messages"
         const val PRESENCE_SERVICE = "presence"
         const val PRESENCE_TTL_MS: UInt = 600_000u
         const val DEFAULT_RELAY = "wss://relay.hopme.sh/"
+        const val GATT_LIVENESS_MS = 20_000L  // reap a GATT-data link silent this long (keepalives are 1s)
         const val SCAN_WINDOW_MS = 5_000L   // central scans in short bursts…
         const val SCAN_IDLE_MS = 15_000L    // …then idles so the radio stays mostly in peripheral mode
         const val MAX_DIALS_IN_FLIGHT = 2   // gentle central: at most this many outbound connects at once

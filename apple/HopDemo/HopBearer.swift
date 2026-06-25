@@ -41,6 +41,9 @@ final class HopBearer: NSObject, ObservableObject {
 
     static let serviceUUID = CBUUID(string: "F0900000-0000-4000-8000-000000000000")
     static let psmCharUUID = CBUUID(string: "F0900001-0000-4000-8000-000000000000")
+    // GATT-data fallback (cross-platform, when L2CAP can't open — esp. Apple→Android): central
+    // WRITEs frames here, peripheral INDICATEs frames back. Both acked → reliable, ordered.
+    static let dataCharUUID = CBUUID(string: "F0900002-0000-4000-8000-000000000000")
     static let beaconUUID = UUID(uuidString: "F0900BEA-C000-4000-8000-000000000000")!
     static let refreshTaskId = "net.waldrip.hop.refresh"
     /// Longer background-processing task (runs idle/charging) to drain a backlog — e.g. a
@@ -248,6 +251,15 @@ final class HopBearer: NSObject, ObservableObject {
     private var l2capPsm: [UUID: CBL2CAPPSM] = [:]    // last PSM read per peripheral
     private var l2capAttempts: [UUID: Int] = [:]      // L2CAP open retry counter
     private var didSetupPeripheral = false            // peripheral published this power cycle
+    // GATT-data fallback bearer.
+    private var peripheralDataChar: CBMutableCharacteristic?
+    private var gattLinks: [UInt64: GattDataLink] = [:]          // all GATT-data links (central + peripheral)
+    private var gattLinkCentral: [UInt64: CBCentral] = [:]       // peripheral side: link → subscribed central
+    private var gattLinkPeripheral: [UInt64: CBPeripheral] = [:] // central side: link → remote peripheral
+    private var gattDataCharFor: [UUID: CBCharacteristic] = [:]  // central side: peripheral id → its DATA char
+    private var centralGattLink: [UUID: UInt64] = [:]            // peripheral side: central id → link
+    private var peripheralBackpressure: [UInt64: Data] = [:]     // peripheral side: chunk awaiting isReady
+    private var nextGattLinkId: UInt64 = 60_000
     private var nameByAddr: [Data: String] = [:]
     private var contacts: [Data: Peer] = [:]   // app-side contact book (address → peer)
     /// Our own raw 32-byte address (for marking our own hps posts).
@@ -413,7 +425,23 @@ final class HopBearer: NSObject, ObservableObject {
                 connectRelay(relayURL ?? HopBearer.defaultRelay)
             }
         }
+        maintainGattLinks()
         pump()
+    }
+
+    /// Keepalive + reaping for GATT-data links (the bearer drives these; GattDataLink has no timer
+    /// of its own). Reap a half-open link (subscribed but never delivered a frame) or one silent
+    /// past the liveness window; otherwise send an empty keepalive frame.
+    private func maintainGattLinks() {
+        guard !gattLinks.isEmpty else { return }
+        for (id, link) in gattLinks {
+            if link.isHalfOpen || link.idle > 20 {
+                NSLog("HOPLOG GATT-data link reaped id=\(id)")
+                closeGattLink(id)
+            } else {
+                link.send(Data())  // keepalive
+            }
+        }
     }
 
     /// Persisted display name to use across launches (falls back to the device name).
@@ -908,6 +936,8 @@ final class HopBearer: NSObject, ObservableObject {
                 relaySend(pkt.bytes)                       // cloud relay (TCP) link
             } else if let lan = lanLinks[pkt.link] {
                 lan.send(pkt.bytes)                         // LAN (Wi-Fi TCP) link
+            } else if let gatt = gattLinks[pkt.link] {
+                gatt.send(pkt.bytes)                        // GATT-data fallback (cross-platform BLE)
             } else if let ws = endpointWS[pkt.link] {
                 ws.send(.data(pkt.bytes)) { _ in }         // direct hops:// endpoint link (§30)
             }
@@ -1771,8 +1801,12 @@ extension HopBearer: CBPeripheralManagerDelegate {
         let value = Data(bytes: &be, count: MemoryLayout<CBL2CAPPSM>.size)
         let char = CBMutableCharacteristic(type: HopBearer.psmCharUUID, properties: [.read],
                                            value: value, permissions: [.readable])
+        // GATT-data fallback: dynamic (value: nil) write+indicate characteristic.
+        let dataChar = CBMutableCharacteristic(type: HopBearer.dataCharUUID, properties: [.write, .indicate],
+                                               value: nil, permissions: [.writeable])
+        peripheralDataChar = dataChar
         let service = CBMutableService(type: HopBearer.serviceUUID, primary: true)
-        service.characteristics = [char]
+        service.characteristics = [char, dataChar]
         p.add(service)
         startAdvertisingCycle()
     }
@@ -1786,6 +1820,85 @@ extension HopBearer: CBPeripheralManagerDelegate {
         }
         guard let channel else { return }
         addLink(channel, initiator: false)
+    }
+
+    // MARK: - GATT-data peripheral side (the L2CAP fallback)
+
+    /// A central subscribed to our DATA characteristic → it's about to drive a GATT-data link to us.
+    /// Bring up our peripheral (responder) side now.
+    func peripheralManager(_ p: CBPeripheralManager, central: CBCentral,
+                           didSubscribeTo characteristic: CBCharacteristic) {
+        guard characteristic.uuid == HopBearer.dataCharUUID else { return }
+        _ = peripheralGattLink(for: central)
+    }
+
+    func peripheralManager(_ p: CBPeripheralManager, central: CBCentral,
+                           didUnsubscribeFrom characteristic: CBCharacteristic) {
+        guard characteristic.uuid == HopBearer.dataCharUUID else { return }
+        if let id = centralGattLink[central.identifier] { closeGattLink(id) }
+    }
+
+    /// Inbound GATT-data chunks (ATT writes) from a central → reassemble into Hop frames.
+    func peripheralManager(_ p: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
+        for req in requests where req.characteristic.uuid == HopBearer.dataCharUUID {
+            if let v = req.value { peripheralGattLink(for: req.central).received(v) }
+        }
+        if let first = requests.first { p.respond(to: first, withResult: .success) }
+    }
+
+    /// The notify transmit queue drained → resume any back-pressured peripheral sends.
+    func peripheralManagerIsReady(toUpdateSubscribers p: CBPeripheralManager) {
+        for (id, chunk) in peripheralBackpressure {
+            guard let ch = peripheralDataChar, let central = gattLinkCentral[id] else { continue }
+            if p.updateValue(chunk, for: ch, onSubscribedCentrals: [central]) {
+                peripheralBackpressure[id] = nil
+                gattLinks[id]?.chunkSent()
+            } else {
+                break // still full — wait for the next isReady
+            }
+        }
+    }
+
+    private func peripheralGattLink(for central: CBCentral) -> GattDataLink {
+        if let id = centralGattLink[central.identifier], let l = gattLinks[id] { return l }
+        let id = nextGattLinkId; nextGattLinkId += 1
+        let link = GattDataLink(
+            id: id,
+            usablePayload: { central.maximumUpdateValueLength },
+            sendChunk: { [weak self] chunk in
+                guard let self, let p = self.peripheralMgr, let ch = self.peripheralDataChar else { return false }
+                if p.updateValue(chunk, for: ch, onSubscribedCentrals: [central]) {
+                    DispatchQueue.main.async { self.gattLinks[id]?.chunkSent() } // queued → free for next
+                } else {
+                    self.peripheralBackpressure[id] = chunk  // full → resume in isReady
+                }
+                return true
+            },
+            onBytes: { [weak self] lid, data in self?.node.received(link: lid, bytes: data); self?.pump() },
+            onClose: { [weak self] lid in self?.closeGattLink(lid) })
+        gattLinks[id] = link
+        gattLinkCentral[id] = central
+        centralGattLink[central.identifier] = id
+        node.connected(link: id, initiator: false)  // peripheral = Noise responder
+        NSLog("HOPLOG GATT-data link UP id=\(id) initiator=false (peripheral)")
+        pump()
+        return link
+    }
+
+    func closeGattLink(_ id: UInt64) {
+        gattLinks[id]?.close()
+        gattLinks[id] = nil
+        peripheralBackpressure[id] = nil
+        if let c = gattLinkCentral[id] { centralGattLink[c.identifier] = nil }
+        gattLinkCentral[id] = nil
+        // Central link: drop the underlying GATT connection so scheduleReconnect rebuilds it
+        // (a degraded link that just lingers never recovers — the "works then degrades" failure).
+        if let p = gattLinkPeripheral[id] {
+            gattDataCharFor[p.identifier] = nil
+            centralMgr?.cancelPeripheralConnection(p)
+        }
+        gattLinkPeripheral[id] = nil
+        node.disconnected(link: id); scheduleRefresh()
     }
 }
 
@@ -1864,6 +1977,11 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         opened.remove(peripheral.identifier)
+        gattDataCharFor[peripheral.identifier] = nil
+        // Tear down any GATT-data link that rode this connection.
+        if let id = gattLinkPeripheral.first(where: { $0.value.identifier == peripheral.identifier })?.key {
+            closeGattLink(id)
+        }
         status = "peer left — awaiting return…"
         scheduleReconnect(peripheral)
     }
@@ -1871,7 +1989,7 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if error != nil { return recover(peripheral) }
         for s in peripheral.services ?? [] where s.uuid == HopBearer.serviceUUID {
-            peripheral.discoverCharacteristics([HopBearer.psmCharUUID], for: s)
+            peripheral.discoverCharacteristics([HopBearer.psmCharUUID, HopBearer.dataCharUUID], for: s)
         }
     }
 
@@ -1889,12 +2007,21 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if error != nil { return recover(peripheral) }
-        for ch in service.characteristics ?? [] where ch.uuid == HopBearer.psmCharUUID {
-            peripheral.readValue(for: ch)
+        for ch in service.characteristics ?? [] {
+            if ch.uuid == HopBearer.dataCharUUID { gattDataCharFor[peripheral.identifier] = ch }
+            if ch.uuid == HopBearer.psmCharUUID { peripheral.readValue(for: ch) }
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        // GATT-data indication from a peripheral we fell back to → reassemble Hop frames.
+        if characteristic.uuid == HopBearer.dataCharUUID {
+            guard error == nil, let v = characteristic.value,
+                  let id = gattLinkPeripheral.first(where: { $0.value.identifier == peripheral.identifier })?.key
+            else { return }
+            gattLinks[id]?.received(v)
+            return
+        }
         if error != nil { return recover(peripheral) }
         guard let v = characteristic.value, v.count >= 2 else { return }
         // CoreBluetooth raises an NSAssertion (→ SIGABRT) if openL2CAPChannel is
@@ -1933,10 +2060,17 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
                     self.openL2CAP(p, psm)
                 }
             } else {
-                NSLog("HOPLOG L2CAP wedged after \(n) tries → full reconnect (fresh PSM)")
                 l2capAttempts[id] = nil
-                l2capPsm[id] = nil          // force a fresh PSM re-read via GATT on the new connection
-                recover(peripheral)          // cancel → didDisconnect → scheduleReconnect → rediscover → reopen
+                // L2CAP won't open (Apple→Android always fails this way). Fall back to GATT-data over
+                // the SAME GATT connection — don't tear it down. Only if that can't start do we
+                // reconnect fresh and retry L2CAP (covers a genuinely wedged iOS↔iOS connection).
+                if peripheral.state == .connected, startCentralGattData(peripheral) {
+                    NSLog("HOPLOG L2CAP failed after \(n) tries → GATT-data fallback")
+                } else {
+                    NSLog("HOPLOG L2CAP wedged after \(n) tries → full reconnect (fresh PSM)")
+                    l2capPsm[id] = nil       // force a fresh PSM re-read via GATT on the new connection
+                    recover(peripheral)       // cancel → didDisconnect → scheduleReconnect → rediscover → reopen
+                }
             }
             return
         }
@@ -1957,6 +2091,51 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             NSLog("HOPLOG openL2CAPChannel threw: \(error.localizedDescription) — recovering")
             recover(peripheral)
         }
+    }
+
+    // MARK: - GATT-data central side (the L2CAP fallback)
+
+    /// Subscribe to the peer's DATA characteristic (enable indications). The link comes up in
+    /// didUpdateNotificationStateFor. Returns false if the characteristic wasn't discovered.
+    private func startCentralGattData(_ peripheral: CBPeripheral) -> Bool {
+        guard let ch = gattDataCharFor[peripheral.identifier] else { return false }
+        peripheral.setNotifyValue(true, for: ch)
+        return true
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        guard characteristic.uuid == HopBearer.dataCharUUID else { return }
+        if error != nil { return recover(peripheral) }
+        guard characteristic.isNotifying else { return }
+        // Already linked? (a duplicate callback) — ignore.
+        if gattLinkPeripheral.contains(where: { $0.value.identifier == peripheral.identifier }) { return }
+        let id = nextGattLinkId; nextGattLinkId += 1
+        let link = GattDataLink(
+            id: id,
+            usablePayload: { peripheral.maximumWriteValueLength(for: .withResponse) },
+            sendChunk: { [weak self] chunk in
+                guard self != nil, peripheral.state == .connected else { return false }
+                peripheral.writeValue(chunk, for: characteristic, type: .withResponse) // → didWriteValueFor
+                return true
+            },
+            onBytes: { [weak self] lid, data in self?.node.received(link: lid, bytes: data); self?.pump() },
+            onClose: { [weak self] lid in self?.closeGattLink(lid) })
+        gattLinks[id] = link
+        gattLinkPeripheral[id] = peripheral
+        connecting.insert(peripheral.identifier)
+        node.connected(link: id, initiator: true)   // central = Noise initiator
+        NSLog("HOPLOG GATT-data link UP id=\(id) initiator=true (central)")
+        backoff[peripheral.identifier] = nil
+        pump()
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == HopBearer.dataCharUUID else { return }
+        guard let id = gattLinkPeripheral.first(where: { $0.value.identifier == peripheral.identifier })?.key
+        else { return }
+        if error != nil { closeGattLink(id); return }
+        gattLinks[id]?.chunkSent()
     }
 
     /// Reset a stuck peripheral and let the backoff path re-establish (not in a tight
