@@ -1113,6 +1113,7 @@ final class HopBearer: NSObject, ObservableObject {
     /// Resolve a trace hop to a display label: a known node's name (or a relay's domain),
     /// else the carrying-app label + the hop's short address in hex (§27).
     func traceLabel(_ hop: TraceHopInfo) -> String {
+        if hop.node.allSatisfy({ $0 == 0 }) { return hop.appLabel }   // anonymized device hop (§27)
         if hop.node == HopBearer.shortData(node.address()) { return "you" }
         if let name = nameByShort[hop.node], !name.isEmpty { return name }
         return "\(hop.appLabel) \(HopBearer.hex(hop.node))"

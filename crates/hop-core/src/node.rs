@@ -23,7 +23,7 @@ use crate::bundle::{
     Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload, StreamId,
 };
 use crate::stream::StreamReassembler;
-use crate::crypto::{self, short_addr, Identity, PubKeyBytes, SignedPreKey, XPubKeyBytes};
+use crate::crypto::{self, short_addr, Identity, PubKeyBytes, ShortAddr, SignedPreKey, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::dnssec;
 use crate::hps;
@@ -2982,7 +2982,12 @@ impl<S: Store> Node<S> {
 
     /// Offer stored bundles to one link, applying binary spray-and-wait.
     fn offer_bundles_to_link(&mut self, link: LinkId) {
-        let me_short = short_addr(&self.identity.address());
+        // Provenance privacy (§27): a DEVICE relay leaves its address OUT of the trace (stamps a
+        // zeroed short-addr) so the recipient learns only the hop count + carrier type ("device"),
+        // never WHICH devices carried it. Infra relays self-identify (their address is public) so a
+        // recipient can still see "via Hop Relay". A device's own address is in the bundle `src`
+        // anyway, so hiding it in the trace loses nothing — it only protects intermediate relays.
+        let me_short = if self.trace_app == FABRIC_APP { ShortAddr::default() } else { short_addr(&self.identity.address()) };
         let me_app = short_app(&self.trace_app);
         let now = self.now_ms;
         // Snapshot ids, ordered by utility so the most-likely-to-deliver bundles go
@@ -4172,9 +4177,11 @@ mod tests {
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1);
         let trace = inbox[0].trace();
-        assert!(trace.iter().any(|h| h.node == s0), "source's hop recorded");
-        assert!(trace.iter().any(|h| h.node == s1), "relay's hop recorded");
         assert_eq!(trace.len(), 2, "exactly the two forwarders, in order");
+        // Provenance privacy (§27): device hops carry the count + app label but NOT the address —
+        // they're anonymized to a zeroed short-addr, so the recipient can't see WHICH devices relayed.
+        let _ = (s0, s1);
+        assert!(trace.iter().all(|h| h.node == ShortAddr::default()), "device hops anonymized (no address)");
         // App defaults to the shared fabric here (no set_app), stamped on each hop.
         assert!(trace.iter().all(|h| h.app == short_app(&crate::FABRIC_APP)), "carrier app stamped");
     }

@@ -575,6 +575,7 @@ class HopBearer private constructor(private val context: Context) {
 
     /// Resolve a trace hop to a label: us, a known name, else app-label + short id (§27).
     private fun traceLabel(h: TraceHopInfo): String {
+        if (h.node.all { it == 0.toByte() }) return h.appLabel   // anonymized device hop (§27)
         val name = nameByAddr[h.node.toList()]
         return name ?: "${h.appLabel} ${shortHex(h.node)}"
     }
