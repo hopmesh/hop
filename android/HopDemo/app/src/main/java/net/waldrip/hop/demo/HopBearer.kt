@@ -73,10 +73,6 @@ class HopBearer private constructor(private val context: Context) {
         APP_SECRET,
     )
     val peers = mutableStateListOf<Peer>()
-    /// Live links right now, incl. anonymous neighbours (no presence/identity). The "can I hand
-    /// this off?" signal — routing floods over every link — so the UI shows "Securing" not
-    /// "Awaiting peers" whenever this is > 0 even with no *identified* peer.
-    val linkCount = androidx.compose.runtime.mutableIntStateOf(0)
     /// Persistent address book: everyone we've seen, messaged, or been messaged by, keyed by address.
     /// `seen` is the subset NOT currently reachable — so past conversations stay reachable even when
     /// the peer is offline / out of range / after a restart (mirrors iOS).
@@ -244,9 +240,6 @@ class HopBearer private constructor(private val context: Context) {
         // this alive; the tick loop below reconnects it if it ever drops.
         pinnedRelay.value = prefs.getString("pinnedRelay", null)
         privateMode.value = prefs.getBoolean("privateMode", false)
-        // Honor persisted private mode on links: private = stay anonymous to neighbours (don't
-        // send the signed link-identity), so they can't learn who we are just by connecting.
-        runCatching { node.setRevealIdentity(!privateMode.value) }
         connectRelay(pinnedRelay.value ?: DEFAULT_RELAY)
         var ticks = 0
         main.postDelayed(object : Runnable {
@@ -292,7 +285,6 @@ class HopBearer private constructor(private val context: Context) {
     fun setPrivateMode(on: Boolean) {
         privateMode.value = on
         prefs.edit().putBoolean("privateMode", on).apply()
-        runCatching { node.setRevealIdentity(!on) }   // also stop/resume revealing identity on links
         if (on) {
             val meta = "${if (appActive) "fg" else "bg"}|android|$appName"
             runCatching { node.publishService(PRESENCE_SERVICE, myName.value, meta, emptyList(), 1000u) }
@@ -1227,7 +1219,6 @@ class HopBearer private constructor(private val context: Context) {
             it.peer.copy(hops = hops)
         }.sortedBy { addressBase58(it.address) }
         peers.clear(); peers.addAll(list)
-        linkCount.intValue = runCatching { node.linkCount().toInt() }.getOrDefault(0)
 
         // Address book: fold every live peer into the (persisted) contact book; the contacts NOT
         // currently reachable form the offline "seen" list, so past conversations stay reachable

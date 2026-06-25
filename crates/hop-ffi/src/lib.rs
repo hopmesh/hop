@@ -587,25 +587,9 @@ impl HopNode {
         }
     }
 
-    /// Addresses of currently-connected peers that opted in to being known (sent a signed
-    /// link-identity). Anonymous neighbours are excluded — use [`Self::link_count`] for the
-    /// "is anyone in range to relay through?" signal.
+    /// Addresses of currently-connected, authenticated peers.
     pub fn peers(&self) -> Vec<Vec<u8>> {
         self.inner.lock().unwrap().peers().iter().map(|a| a.to_vec()).collect()
-    }
-
-    /// How many links are up right now, **including anonymous ones**. The right signal for
-    /// "can I hand a message off?" — routing floods over every link, identified or not — so a
-    /// UI should show "sending" (not "awaiting peers") whenever this is non-zero.
-    pub fn link_count(&self) -> u32 {
-        self.inner.lock().unwrap().link_count() as u32
-    }
-
-    /// Reveal our identity to direct neighbours (send a signed link-identity on each new
-    /// link), enabling direct delivery + peer attribution. On by default; the host's
-    /// private-mode toggle turns it off so we stay an anonymous relay even to neighbours.
-    pub fn set_reveal_identity(&self, reveal: bool) {
-        self.inner.lock().unwrap().set_reveal_identity(reveal);
     }
 
     /// Whether this node has learned a live route toward `address` from observed
@@ -629,10 +613,8 @@ impl HopNode {
             .collect()
     }
 
-    /// Send a message to a directly-connected peer that has revealed its identity on the
-    /// link (forward-secret, ratcheted to its address). Returns the bundle id; yields None
-    /// if not connected to that address — including an anonymous neighbour that hasn't
-    /// revealed an identity, in which case the host should fall back to `send_message`.
+    /// Send a message to a directly-connected peer (sealed with the key learned at
+    /// handshake). Returns the bundle id; errors if not connected to that address.
     pub fn send_to(
         &self,
         address: Vec<u8>,

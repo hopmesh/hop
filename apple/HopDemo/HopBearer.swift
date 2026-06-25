@@ -97,21 +97,18 @@ final class HopBearer: NSObject, ObservableObject {
 
     @Published var myAddress = ""
     @Published var myName = ""
-    /// Privacy: when on, we stop broadcasting our presence advert (name + address) AND stop
-    /// revealing our identity on links (the signed link-identity), so a neighbour learns nothing
-    /// about who we are just by connecting. We stay fully relay-capable and reachable by anyone
+    /// Privacy: when on, we stop broadcasting our presence advert (name + address), so we don't
+    /// show up by name in others' nearby lists. We stay fully relay-capable and reachable by anyone
     /// who already has our address (e.g. via a scanned QR / manual add). Persisted.
     @Published var privateMode: Bool = UserDefaults.standard.bool(forKey: "hop.privateMode") {
         didSet {
             UserDefaults.standard.set(privateMode, forKey: "hop.privateMode")
-            node.setRevealIdentity(reveal: !privateMode)
             if privateMode { retractPresence() } else { publishPresence() }
         }
     }
     @Published var idNote = ""   // identity persistence outcome (diagnostic)
     @Published var status = "starting…" { didSet { NSLog("HOPLOG status: \(status)") } }
     @Published var reachable: [Peer] = []   // discovered now (direct + mesh)
-    @Published var linkCount: Int = 0       // live links incl. anonymous neighbours (relay-capable)
     @Published var seen: [Peer] = []        // historical, not currently reachable
     @Published var secured: Set<Data> = []  // addresses we have a forward-secret session with
     @Published var routed: Set<Data> = []   // addresses we've learned a live route to (§27)
@@ -295,7 +292,6 @@ final class HopBearer: NSObject, ObservableObject {
         loadHpsTopics()  // restore hosted/subscribed channels (the node persists them)
         myName = name
         node.setName(name: name)   // what hop.identify reports for us (§29)
-        node.setRevealIdentity(reveal: !privateMode)   // honor persisted private mode on links
         // Set the node clock to real time BEFORE publishing any adverts. The node starts at
         // now_ms=0, and the first tick (1s away on the timer) runs directory.expire() — so a
         // prekey/presence advert stamped created_at=0 here would be judged expired (1970 + TTL)
@@ -1669,9 +1665,6 @@ final class HopBearer: NSObject, ObservableObject {
         hnsCache = node.hnsCache().map {
             HnsCacheRow(domain: $0.domain, address: $0.address, ttl: $0.ttlSecs)
         }
-        // Links up right now, incl. anonymous neighbours (no presence/identity). Drives the
-        // "can I hand this off?" UI so a message never says "Awaiting peers" with a live link.
-        linkCount = Int(node.linkCount())
         if reachable.count != lastReachLog { NSLog("HOPLOG reachable=\(reachable.count)"); lastReachLog = reachable.count }
         let relayN = queue.filter { !$0.own }.count
         if relayN != lastRelayLog { NSLog("HOPLOG relayQueue=\(relayN) total=\(queue.count)"); lastRelayLog = relayN }
