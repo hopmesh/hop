@@ -53,29 +53,45 @@ enum LinkPacket {
 /// including the 16-byte AEAD tag; we leave headroom for the postcard `LinkPacket` framing.
 const MAX_RECORD_PLAINTEXT: usize = 60_000;
 
-/// Claims the peer's hop address during the Noise handshake. No signature needed:
-/// the sealing key is derived from the address (Montgomery), so the peer is bound to
-/// the address iff `address_to_x(address)` equals the static key Noise authenticated.
+/// An **opt-in** identity proof a node sends over an established (anonymous) link to
+/// reveal who it is (DESIGN.md §4). The link handshake itself (Noise NN) is anonymous,
+/// so this is what re-enables direct delivery and peer attribution for nodes that *want*
+/// to be known. `sig` is the node's Ed25519 signature over the channel-binding hash —
+/// binding the claimed address to *this* link, so a man-in-the-middle running separate
+/// handshakes with each side can't relay one party's record onto the other's link.
 #[derive(Serialize, Deserialize)]
-struct LinkAuth {
+struct LinkIdentity {
     address: PubKeyBytes,
+    sig: Vec<u8>,
 }
+
+/// Domain-separation prefix for the link-identity signature (signed over the Noise
+/// channel-binding hash). Distinct from every other signing context so a signature here
+/// can't be replayed as a prekey/advert/service signature.
+const LINK_IDENTITY_CONTEXT: &[u8] = b"hop.link.identity.v1";
 
 /// An application record exchanged over an established link.
 #[derive(Serialize, Deserialize)]
 enum Wire {
     Bundle(Bundle),
     Advert(Advert),
+    /// Opt-in: "I am this address," provable via [`LinkIdentity`] (bound to the channel).
+    Identity(LinkIdentity),
 }
 
 struct Handshaking {
     hs: LinkHandshake,
-    verified: Option<PubKeyBytes>,
 }
 
 struct Established {
     session: LinkSession,
-    peer: PubKeyBytes,
+    /// The peer's authenticated hop address, once it has *opted in* by sending a signed
+    /// [`LinkIdentity`] over this link. `None` for an anonymous neighbour — still a fully
+    /// usable relay link (we flood to it), just not attributable or directly addressable.
+    peer: Option<PubKeyBytes>,
+    /// Noise channel-binding hash for this link; a received [`LinkIdentity`] signature must
+    /// verify against it before we trust the claimed `peer`.
+    channel_binding: [u8; 32],
     sent_bundles: HashSet<crate::bundle::BundleId>,
     sent_adverts: HashSet<crate::discover::AdvertId>,
     /// Reassembly of an in-progress fragmented record (DESIGN.md §20): accumulated decrypted
@@ -446,6 +462,11 @@ pub struct Node<S: Store = MemoryStore> {
     /// this set resolves HNS itself — no relay round-trip required (DESIGN.md §30). Off by
     /// default; a relay or an internet-connected phone turns it on.
     internet: bool,
+    /// Whether to reveal our identity on a new link by sending a signed [`LinkIdentity`]
+    /// over it (DESIGN.md §4). On = direct delivery + peer attribution work for our
+    /// neighbours (the debug default, so the demo can show who's who). Off = we stay an
+    /// anonymous relay even to direct neighbours; the host's private-mode toggle flips it.
+    reveal_identity: bool,
     /// HNS resolution cache: `domain → (address?, expires_at_ms)`. `None` is a negative
     /// (NXDOMAIN-like) cache entry. Honors the DNS TTL and propagates like a DNS resolver.
     hns_cache: HashMap<String, HnsEntry>,
@@ -601,6 +622,7 @@ impl<S: Store> Node<S> {
             pending_seq: 0,
             last_reset_req: HashMap::new(),
             internet: false,
+            reveal_identity: true,
             hns_cache: HashMap::new(),
             dns_lookups: Vec::new(),
             dns_inflight: HashSet::new(),
@@ -2187,15 +2209,28 @@ impl<S: Store> Node<S> {
         self.pending.clear();
     }
 
-    /// Addresses of currently-connected, authenticated peers (handshake complete).
+    /// Addresses of currently-connected peers that have **opted in** to being known
+    /// (sent a verified [`LinkIdentity`]). Anonymous neighbours are excluded — see
+    /// [`Node::link_count`] for "how many links are up regardless of identity."
     pub fn peers(&self) -> Vec<PubKeyBytes> {
         self.links
             .values()
             .filter_map(|s| match s {
-                LinkState::Up(e) => Some(e.peer),
+                LinkState::Up(e) => e.peer,
                 _ => None,
             })
             .collect()
+    }
+
+    /// Number of established links right now, **including anonymous ones** (peers who
+    /// haven't revealed an identity). This is the right signal for "are there peers to
+    /// relay through?" — routing floods over every link, identified or not. A message can
+    /// be handed off whenever this is non-zero even if [`Node::peers`] is empty.
+    pub fn link_count(&self) -> usize {
+        self.links
+            .values()
+            .filter(|s| matches!(s, LinkState::Up(_)))
+            .count()
     }
 
     /// `(peer address, link id)` for every live link — lets the host map a direct
@@ -2205,7 +2240,7 @@ impl<S: Store> Node<S> {
         self.links
             .iter()
             .filter_map(|(id, s)| match s {
-                LinkState::Up(e) => Some((e.peer, *id)),
+                LinkState::Up(e) => e.peer.map(|p| (p, *id)),
                 _ => None,
             })
             .collect()
@@ -2224,7 +2259,7 @@ impl<S: Store> Node<S> {
         let connected = self
             .links
             .values()
-            .any(|s| matches!(s, LinkState::Up(e) if e.peer == *address));
+            .any(|s| matches!(s, LinkState::Up(e) if e.peer == Some(*address)));
         if !connected {
             return Ok(None);
         }
@@ -2379,27 +2414,52 @@ impl<S: Store> Node<S> {
 
     // --- connection lifecycle -------------------------------------------------
 
-    fn auth_payload(&self) -> Vec<u8> {
-        let auth = LinkAuth { address: self.identity.address() };
-        postcard::to_allocvec(&auth).expect("auth encode")
+    /// Whether to reveal our identity to direct neighbours (send a signed [`LinkIdentity`]
+    /// on each new link). See the field docs; the host's private-mode toggle drives this.
+    pub fn set_reveal_identity(&mut self, reveal: bool) {
+        self.reveal_identity = reveal;
+    }
+
+    /// Is identity revelation on links currently enabled?
+    pub fn reveals_identity(&self) -> bool {
+        self.reveal_identity
+    }
+
+    /// The message a [`LinkIdentity`] signs / verifies over: a domain-separated commitment
+    /// to *this link's* Noise channel binding, so the proof can't be relayed to another link.
+    fn link_identity_msg(binding: &[u8; 32]) -> Vec<u8> {
+        let mut m = Vec::with_capacity(LINK_IDENTITY_CONTEXT.len() + 32);
+        m.extend_from_slice(LINK_IDENTITY_CONTEXT);
+        m.extend_from_slice(binding);
+        m
+    }
+
+    /// Send our opt-in identity proof over an established link (DESIGN.md §4).
+    fn send_link_identity(&mut self, link: LinkId) {
+        let Some(LinkState::Up(est)) = self.links.get(&link) else {
+            return;
+        };
+        let sig = self.identity.sign(&Self::link_identity_msg(&est.channel_binding)).to_vec();
+        let rec = LinkIdentity { address: self.identity.address(), sig };
+        self.send_record(link, &Wire::Identity(rec));
     }
 
     fn on_connected(&mut self, link: LinkId, role: Role) {
         let Ok(mut hs) = (match role {
-            Role::Initiator => LinkHandshake::initiator(&self.identity),
-            Role::Responder => LinkHandshake::responder(&self.identity),
+            Role::Initiator => LinkHandshake::initiator(),
+            Role::Responder => LinkHandshake::responder(),
         }) else {
             return;
         };
 
-        // The initiator sends the first handshake message immediately.
+        // NN: the initiator sends the first (ephemeral-only) handshake message immediately.
         if role == Role::Initiator {
-            if let Ok(msg) = hs.write(&self.auth_payload()) {
+            if let Ok(msg) = hs.write(&[]) {
                 self.send_packet(link, LinkPacket::Handshake(msg));
             }
         }
         self.links
-            .insert(link, LinkState::Handshaking(Box::new(Handshaking { hs, verified: None })));
+            .insert(link, LinkState::Handshaking(Box::new(Handshaking { hs })));
     }
 
     fn on_data(&mut self, link: LinkId, bytes: Vec<u8>) {
@@ -2420,54 +2480,75 @@ impl<S: Store> Node<S> {
         };
         let mut state = *boxed;
 
-        let Ok(payload) = state.hs.read(msg) else {
+        if state.hs.read(msg).is_err() {
             return; // drop link on bad handshake
-        };
-
-        // Bind the peer's claimed address to the Noise-authenticated static key:
-        // they match iff the address's derived X25519 key equals `remote_static`.
-        if let Some(remote_static) = state.hs.remote_static() {
-            match postcard::from_bytes::<LinkAuth>(&payload) {
-                Ok(auth) if crypto::address_to_x(&auth.address) == Some(remote_static) => {
-                    state.verified = Some(auth.address);
-                }
-                Ok(_) => return, // address doesn't match the link key → drop
-                Err(_) => {}     // no claim in this message (e.g. m1) → keep going
-            }
         }
 
+        // NN responder: having read `-> e`, write the reply `<- e, ee`, which completes it.
         if !state.hs.is_finished() {
-            if let Ok(out) = state.hs.write(&self.auth_payload()) {
+            if let Ok(out) = state.hs.write(&[]) {
                 self.send_packet(link, LinkPacket::Handshake(out));
             }
         }
 
         if state.hs.is_finished() {
-            let (Some(peer), Ok(session)) = (state.verified, state.hs.into_session()) else {
-                return; // finished without an authenticated peer → drop
+            // Capture the channel binding *before* consuming the handshake; a later
+            // identity proof is verified against it.
+            let channel_binding = state.hs.handshake_hash();
+            let Ok(session) = state.hs.into_session() else {
+                return;
             };
             self.links.insert(
                 link,
                 LinkState::Up(Box::new(Established {
                     session,
-                    peer,
+                    peer: None, // anonymous until the peer opts in with a LinkIdentity
+                    channel_binding,
                     sent_bundles: HashSet::new(),
                     sent_adverts: HashSet::new(),
                     frag_buf: Vec::new(),
                     frag_next: 0,
                 })),
             );
+            // Opt-in identity: reveal who we are so direct delivery/attribution work. The
+            // peer does the same; until each side receives the other's record the link is
+            // a working anonymous relay (we already flood bundles/adverts to it below).
+            if self.reveal_identity {
+                self.send_link_identity(link);
+            }
             self.offer_bundles_to_link(link);
             self.offer_adverts_to_link(link);
-            // A new peer might be able to resolve names we're still waiting on — ask it
-            // (delay-tolerant HNS, §30). Skip if we have internet (we resolve ourselves).
-            if !self.internet && !self.pending_resolves.is_empty() {
-                for key in self.pending_resolves.iter().cloned().collect::<Vec<_>>() {
-                    self.send_hns_query(peer, &key);
-                }
-            }
         } else {
             self.links.insert(link, LinkState::Handshaking(Box::new(state)));
+        }
+    }
+
+    /// Handle a peer's opt-in identity proof: verify the signature is bound to *this*
+    /// link's channel, then record the now-known peer and unblock peer-keyed work
+    /// (direct delivery, delay-tolerant HNS queries) that an anonymous link couldn't do.
+    fn on_link_identity(&mut self, link: LinkId, rec: LinkIdentity) {
+        let Some(LinkState::Up(est)) = self.links.get_mut(&link) else {
+            return;
+        };
+        // Ignore a re-announcement or a mismatched/forged claim; keep the link as-is.
+        if est.peer == Some(rec.address) {
+            return;
+        }
+        let msg = Self::link_identity_msg(&est.channel_binding);
+        if !crypto::verify(&rec.address, &msg, &rec.sig) {
+            return; // unverifiable identity → stay anonymous, don't trust it
+        }
+        let peer = rec.address;
+        est.peer = Some(peer);
+        // Now that the destination might be this neighbour, re-offer so direct delivery
+        // can short-circuit the flood; already-sent copies are deduped by `sent_bundles`.
+        self.offer_bundles_to_link(link);
+        // A newly-identified peer might resolve names we're still waiting on (§30). Skip if
+        // we have internet (we resolve ourselves).
+        if !self.internet && !self.pending_resolves.is_empty() {
+            for key in self.pending_resolves.iter().cloned().collect::<Vec<_>>() {
+                self.send_hns_query(peer, &key);
+            }
         }
     }
 
@@ -2484,6 +2565,7 @@ impl<S: Store> Node<S> {
         match postcard::from_bytes::<Wire>(&plaintext) {
             Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
             Ok(Wire::Advert(a)) => self.on_advert(peer, a),
+            Ok(Wire::Identity(rec)) => self.on_link_identity(link, rec),
             Err(_) => {}
         }
     }
@@ -2523,6 +2605,7 @@ impl<S: Store> Node<S> {
             match postcard::from_bytes::<Wire>(&plaintext) {
                 Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
                 Ok(Wire::Advert(a)) => self.on_advert(peer, a),
+                Ok(Wire::Identity(rec)) => self.on_link_identity(link, rec),
                 Err(_) => {}
             }
         }
@@ -2937,8 +3020,8 @@ impl<S: Store> Node<S> {
         }
     }
 
-    fn on_advert(&mut self, peer: PubKeyBytes, advert: Advert) {
-        let _ = peer; // reserved for finer-grained relay scoring (DESIGN.md §18)
+    fn on_advert(&mut self, peer: Option<PubKeyBytes>, advert: Advert) {
+        let _ = peer; // reserved for finer-grained relay scoring (DESIGN.md §18); None if anon
         // Service adverts flood the directory (subscribed → full retention, else the
         // bounded relay cache). Re-gossip only when newly accepted.
         let is_prekey = matches!(advert.body.kind, AdvertKind::PreKey { .. });
@@ -3005,7 +3088,9 @@ impl<S: Store> Node<S> {
             if est.sent_bundles.contains(&id) {
                 continue;
             }
-            let peer = est.peer;
+            // Anonymous neighbour → no known address: it's a relay, never a direct
+            // destination, and routing scoring treats it as the default unknown peer.
+            let peer = est.peer.unwrap_or_default();
             let Some(b) = self.store.get(&id) else {
                 continue;
             };
@@ -3168,7 +3253,7 @@ impl<S: Store> Node<S> {
         };
         self.links
             .values()
-            .any(|s| matches!(s, LinkState::Up(e) if e.peer == dst))
+            .any(|s| matches!(s, LinkState::Up(e) if e.peer == Some(dst)))
     }
 }
 
@@ -3969,6 +4054,53 @@ mod tests {
             .send_to(&[9u8; 32], "t".into(), vec![], false)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn anonymous_links_relay_without_revealing_identity() {
+        // With identity revelation off on both ends, the Noise NN link is anonymous:
+        // neither learns the other's address (peers() is empty), yet the link is fully
+        // usable as a relay — link_count sees it and a flooded message still arrives.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        nodes[0].set_reveal_identity(false);
+        nodes[1].set_reveal_identity(false);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        assert!(nodes[0].peers().is_empty(), "no identity revealed → no known peer");
+        assert!(nodes[1].peers().is_empty());
+        assert_eq!(nodes[0].link_count(), 1, "but the link is up and relay-capable");
+        assert_eq!(nodes[1].link_count(), 1);
+
+        // Prekeys still gossip as adverts (link-anonymous), so content can ratchet and the
+        // epidemic flood delivers it even though the destination was never a "known peer".
+        exchange_prekeys(&mut net, &mut nodes);
+        let dst = nodes[1].address();
+        nodes[0].send_message(dst, "text/plain".into(), b"anon relay".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+
+        let inbox = nodes[1].take_inbox();
+        assert_eq!(inbox.len(), 1);
+        let m = nodes[1].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.body, b"anon relay");
+    }
+
+    #[test]
+    fn identity_revelation_is_per_node_optin() {
+        // Identity is opt-in *per node*: the side that reveals becomes a known peer to the
+        // other; the side that stays private remains anonymous. Attribution tracks exactly
+        // the opt-in signal, never something a neighbour learns just by connecting.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        nodes[0].set_reveal_identity(true); // node 0 announces itself
+        nodes[1].set_reveal_identity(false); // node 1 stays anonymous
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Node 1 received node 0's signed identity → it knows node 0.
+        assert_eq!(nodes[1].peers(), vec![nodes[0].address()]);
+        // Node 0 got nothing back → node 1 is still an anonymous neighbour to it.
+        assert!(nodes[0].peers().is_empty());
+        assert_eq!(nodes[0].link_count(), 1);
     }
 
     #[test]

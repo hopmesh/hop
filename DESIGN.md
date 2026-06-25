@@ -91,9 +91,8 @@ fully unit-testable without a radio). Only the Bearer is native per-platform.
   Ed25519↔Curve25519 conversion (`crypto::address_to_x`, verified by
   `montgomery_correspondence`). So **an address is all you need** to both verify a
   peer's signatures *and* seal messages to it — no separate sealing key is exchanged
-  or carried on the wire. This drops `src_x`/`publisher_x` from bundles/adverts and
-  lets the Noise link bind the address by checking `address_to_x(address) ==
-  authenticated static` (no extra signature). Addresses are shown in **base58**.
+  or carried on the wire. This drops `src_x`/`publisher_x` from bundles/adverts.
+  Addresses are shown in **base58**.
 - **Layering:** the address (a public key) is the *only* identity the protocol knows.
   Human **common names / contacts are an app concern** (DESIGN.md §23), not part of
   the raw protocol — an app exchanges contact metadata over sealed messages and keeps
@@ -103,10 +102,21 @@ fully unit-testable without a radio). Only the Bearer is native per-platform.
   can verify origin; relays verify before forwarding to avoid amplifying garbage.
 - **Confidentiality:** payload is sealed to the destination with a Noise-style
   X25519 + ChaCha20-Poly1305 box. Relays see headers (for routing) but not payload.
-- **Link security:** each link runs a **Noise XX** handshake so adjacent nodes
-  mutually authenticate and get a fresh symmetric session. This stops a passive BLE
-  sniffer from even seeing which bundles transit a link, and lets nodes apply
-  per-peer trust/rate limits.
+- **Link security:** each link runs an **anonymous Noise NN** handshake — ephemeral
+  keys only, no static identity — so adjacent nodes get a fresh symmetric session
+  without either learning who the other is. This stops a passive BLE sniffer from even
+  seeing which bundles transit a link, and means **connecting reveals nothing** about
+  your identity (the privacy default). Identity is **opt-in**: a node that wants to be
+  known sends a self-signed `LinkIdentity { address, sig }` over the established
+  channel, where `sig` covers the **Noise handshake hash** (channel binding). Because a
+  man-in-the-middle runs a *separate* handshake with each side, it gets a different
+  binding on each link and cannot relay one party's identity record onto the other's —
+  so a revealed identity is authenticated, while an unrevealed one stays anonymous. Once
+  revealed, the address re-enables the direct-delivery shortcut and peer attribution;
+  until then the link is still a fully usable anonymous relay (routing floods over it
+  regardless). End-to-end content is forward-secret (Double Ratchet, §4/§25) either way —
+  the link layer never sees plaintext. The host's **private mode** turns revelation off
+  (`set_reveal_identity(false)`), keeping a device anonymous even to direct neighbours.
 - **Replay/dedup:** bundle ID is `BLAKE3(src_pubkey || nonce || payload_hash)`,
   globally unique. Nodes keep a dedup set of seen IDs (bloom + LRU) bounded by
   bundle lifetime.
