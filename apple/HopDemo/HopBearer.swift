@@ -1914,23 +1914,29 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
         if error != nil || channel == nil {
             let e = (error as NSError?)
             NSLog("HOPLOG open L2CAP failed: domain=\(e?.domain ?? "nil") code=\(e?.code ?? -1) — \(e?.localizedDescription ?? "?")")
-            // Older radios (e.g. iPhone XR) fail the first open intermittently; retry
-            // the same PSM a few times before tearing the connection down.
             let id = peripheral.identifier
             let n = (l2capAttempts[id] ?? 0) + 1
             l2capAttempts[id] = n
-            if n <= 3, let psm = l2capPsm[id] {
+            // TWO quick same-connection retries cover the transient XR-radio first-open glitch.
+            // Beyond that the GATT connection itself is wedged — re-opening on the same handle just
+            // keeps failing (CBErrorDomain "Unknown error") and leaves a half-open the Android peer
+            // accepted but we abandoned. So tear the whole connection down and reconnect FRESH:
+            // a clean GATT link + a freshly re-read PSM is what actually clears the wedge. The
+            // scheduleReconnect backoff (1→20s) keeps this from hammering a flaky radio.
+            if n <= 2, peripheral.state == .connected, let psm = l2capPsm[id] {
                 status = "L2CAP retry \(n) (psm \(psm))…"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard let self, let p = self.retained[id] else { return }
-                    // Peripheral may have dropped during the retry delay; openL2CAPChannel
-                    // asserts (→ crash) if it isn't connected.
-                    guard p.state == .connected else { self.recover(p); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self, let p = self.retained[id], p.state == .connected else {
+                        if let p = self?.retained[id] { self?.recover(p) }
+                        return
+                    }
                     self.openL2CAP(p, psm)
                 }
             } else {
+                NSLog("HOPLOG L2CAP wedged after \(n) tries → full reconnect (fresh PSM)")
                 l2capAttempts[id] = nil
-                recover(peripheral)
+                l2capPsm[id] = nil          // force a fresh PSM re-read via GATT on the new connection
+                recover(peripheral)          // cancel → didDisconnect → scheduleReconnect → rediscover → reopen
             }
             return
         }

@@ -1580,15 +1580,18 @@ class HopBearer private constructor(private val context: Context) {
             }
             // 2 bytes big-endian (matches iOS's UInt16 PSM).
             val psm = (v[0].toInt() and 0xff shl 8) or (v[1].toInt() and 0xff)
+            android.util.Log.i("HOPLOG", "central read PSM=$psm from ${device.address} → opening L2CAP")  // DIAG
             thread(name = "hop-l2cap-connect") {
                 val socket = runCatching {
                     device.createInsecureL2capChannel(psm).apply { connect() }
-                }.getOrNull()
+                }.onFailure { android.util.Log.w("HOPLOG", "central L2CAP open to ${device.address} FAILED: $it") }  // DIAG
+                 .getOrNull()
                 if (socket == null) {
                     runCatching { gatt.close() }
                     main.post { dialFailed(device.address) }
                     return@thread
                 }
+                android.util.Log.i("HOPLOG", "central L2CAP OPEN ok to ${device.address} psm=$psm")  // DIAG
                 addLink(socket, initiator = true)             // GATT stays open to hold the link
                 main.post { dialSucceeded(device.address) }   // it worked — clear the dial + backoff
             }
