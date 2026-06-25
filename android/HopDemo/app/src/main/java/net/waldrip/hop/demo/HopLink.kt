@@ -24,6 +24,8 @@ class HopLink(
     private val outbox = LinkedBlockingQueue<ByteArray>()
     @Volatile private var running = true
     @Volatile private var lastRead = System.currentTimeMillis()
+    private val created = System.currentTimeMillis()
+    @Volatile private var gotFrame = false   // received at least one real (non-keepalive) frame
 
     init {
         thread(name = "hoplink-read-$id") { readLoop() }
@@ -51,6 +53,7 @@ class HopLink(
                 if (len < 0 || len > MAX_FRAME) throw IllegalStateException("bad frame len $len")
                 lastRead = System.currentTimeMillis()
                 if (len == 0) continue // keepalive — liveness only, nothing to surface
+                gotFrame = true
                 val buf = ByteArray(len)
                 input.readFully(buf)
                 onBytes(id, buf)
@@ -87,6 +90,15 @@ class HopLink(
             while (running) {
                 Thread.sleep(KEEPALIVE_MS)
                 if (!running) break
+                // Half-open reaper: an inbound L2CAP channel that never delivered a single frame is a
+                // dead half-open — iOS's openL2CAPChannel failed ("Unknown error") and abandoned its
+                // end, but Android's accept() succeeded, so it sits here forever waiting for an m1 that
+                // will never come. Reap it fast (not the 15s liveness timeout): these orphans otherwise
+                // pile up against BT's concurrent-L2CAP-channel cap and trigger MORE open failures.
+                if (!gotFrame && System.currentTimeMillis() - created > HANDSHAKE_TIMEOUT_MS) {
+                    android.util.Log.i("HOPLOG", "ble link reaped (no handshake) id=$id")
+                    close(); break
+                }
                 if (System.currentTimeMillis() - lastRead > LIVENESS_MS) { close(); break } // peer silent
                 outbox.put(ByteArray(0)) // 0-length keepalive frame (distinct instance from POISON)
             }
@@ -98,6 +110,7 @@ class HopLink(
         private const val MAX_FRAME = 4 * 1024 * 1024
         private const val KEEPALIVE_MS = 4000L
         private const val LIVENESS_MS = 15000L
+        private const val HANDSHAKE_TIMEOUT_MS = 3500L  // reap a half-open that never sent a frame
         private val POISON = ByteArray(0) // close sentinel, distinguished by reference identity
     }
 }
