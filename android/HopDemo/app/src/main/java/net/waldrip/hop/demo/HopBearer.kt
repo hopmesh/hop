@@ -157,7 +157,7 @@ class HopBearer private constructor(private val context: Context) {
     // peripheral and write — but GENTLY. Cap concurrent outbound dials, time them out, and back off
     // peers that fail, so the central never floods/saturates the radio and starves OUR peripheral
     // (the inbox other devices push into). All mutated on the main thread.
-    private val dialing = HashMap<String, BluetoothGatt>()      // outbound connects in flight → their gatt
+    private val dialing = HashSet<String>()                     // outbound L2CAP dials in flight (addrs)
     private val dialBackoffUntil = HashMap<String, Long>()      // addr → earliest next attempt (wall ms)
     private val dialBackoffStep = HashMap<String, Long>()       // addr → current backoff interval
     private val nameByAddr = HashMap<List<Byte>, String>()
@@ -1340,7 +1340,6 @@ class HopBearer private constructor(private val context: Context) {
         // BLE dial state is per-adapter; every BLE socket died with the adapter, so clear it to
         // allow fresh dials. (LAN/relay links live in `links` under their own ids and are untouched.)
         connecting.clear()
-        dialing.values.forEach { runCatching { it.close() } }
         dialing.clear()
         dialBackoffUntil.clear()
         // GATT-data links died with the adapter too.
@@ -1408,9 +1407,11 @@ class HopBearer private constructor(private val context: Context) {
         // reads it fresh from the scan and opens L2CAP DIRECTLY — skipping GATT service discovery,
         // which iOS caches by our BLE address and serves stale after an app restart (the "connects
         // but never reads PSM" stall). 18B (128-bit UUID) + 6B (mfg) + 3B (flags) = 27B, fits in 31.
+        // Manufacturer data: [PSM 2B big-endian][advert id 4B]. iOS reads PSM (skip GATT) + our id
+        // (role tiebreaker). 18B(UUID) + 12B(mfg: 2 hdr + 2 company + 2 psm + 4 id) + ... fits in 31.
         val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(SERVICE_UUID))
-            .addManufacturerData(HOP_MFG_ID, byteArrayOf((psm ushr 8).toByte(), psm.toByte()))
+            .addManufacturerData(HOP_MFG_ID, byteArrayOf((psm ushr 8).toByte(), psm.toByte()) + myAdvertId)
             .build()
         // The device name rides the SCAN RESPONSE (the 31-byte advert is full: UUID + PSM + flags).
         val scanResponse = AdvertiseData.Builder()
@@ -1470,6 +1471,18 @@ class HopBearer private constructor(private val context: Context) {
     // down (failed dial / timeout) terminates the shared link — killing their inbound connection
     // mid-handshake (the dual-role conflict that caused "peer left" before the GATT-data fallback).
     private val gattServerClients = HashSet<String>()
+    // Random per-launch advert ID for deterministic role assignment (Ditto's pattern): of any two
+    // peers, the one with the LOWER id is the central (dials), the higher is the peripheral (waits).
+    // Exactly one connection per pair → no dual-role ACL teardown. Identity-free (the Noise handshake
+    // supplies the real id); transparent to BLE-address rotation. 4 bytes fits the 31-byte advert.
+    private val myAdvertId: ByteArray = ByteArray(4).also { java.security.SecureRandom().nextBytes(it) }
+    private fun idLessThan(a: ByteArray, b: ByteArray): Boolean {
+        for (i in 0 until minOf(a.size, b.size)) {
+            val ai = a[i].toInt() and 0xff; val bi = b[i].toInt() and 0xff
+            if (ai != bi) return ai < bi
+        }
+        return a.size < b.size
+    }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
@@ -1477,9 +1490,9 @@ class HopBearer private constructor(private val context: Context) {
             main.post {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     gattServerClients.add(device.address)
-                    // If we were mid-dial to this same device, cancel our central leg — their inbound
-                    // connection carries the link now (they write, we indicate back). One pipe per pair.
-                    dialing.remove(device.address)?.let { runCatching { it.close() } }
+                    // If we were mid-dial to this same device, drop our in-flight marker — their
+                    // inbound connection carries the link now. One pipe per pair.
+                    dialing.remove(device.address)
                     connecting.remove(device.address)
                 } else {
                     gattServerClients.remove(device.address)
@@ -1641,41 +1654,66 @@ class HopBearer private constructor(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            main.post { tryDial(device) }   // gating + connectGatt on the main thread
+            val peer = peerAdvert(result)
+            main.post { tryDial(device, peer) }   // gating + direct L2CAP on the main thread
         }
         override fun onScanFailed(errorCode: Int) {
             android.util.Log.w("HOPLOG", "BLE scan FAILED: code=$errorCode")
         }
     }
 
-    /// Connect (as a central) to a peer's peripheral to push to it — GENTLY: skip peers we already
-    /// link to or are dialing, cap concurrent outbound dials, and honour a per-peer backoff so a
-    /// peer that keeps failing (the iOS status-133 case) isn't hammered into starving our peripheral.
-    private fun tryDial(device: BluetoothDevice) {
+    /// The peer's advert id, for the role tiebreaker. Android peers carry it in manufacturer data
+    /// ([PSM 2B][id 4B]); iOS peers (which can't advertise mfg data) put it in the local name as hex.
+    /// Returns null if unreadable (e.g. a backgrounded iOS peer whose name is in the scan overflow).
+    /// A peer's advert: its L2CAP PSM, its random role id, and whether it's an Android peer.
+    data class PeerAdvert(val psm: Int, val id: ByteArray, val isAndroid: Boolean)
+
+    private fun peerAdvert(result: ScanResult): PeerAdvert? {
+        // Android peer: mfg data [PSM 2B big-endian][id 4B].
+        val mfg = result.scanRecord?.getManufacturerSpecificData(HOP_MFG_ID)
+        if (mfg != null && mfg.size >= 6) {
+            val psm = (mfg[0].toInt() and 0xff shl 8) or (mfg[1].toInt() and 0xff)
+            return PeerAdvert(psm, mfg.copyOfRange(2, 6), isAndroid = true)
+        }
+        // iOS peer: local name = hex([PSM 2B][id 4B]) = 12 hex chars (iOS can't advertise mfg data).
+        val name = result.scanRecord?.deviceName
+        if (name != null && name.length == 12) {
+            return runCatching {
+                val bytes = ByteArray(6) { name.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+                val psm = (bytes[0].toInt() and 0xff shl 8) or (bytes[1].toInt() and 0xff)
+                PeerAdvert(psm, bytes.copyOfRange(2, 6), isAndroid = false)
+            }.getOrNull()
+        }
+        return null
+    }
+
+    /// Open an L2CAP channel (as central) directly to a peer's advertised PSM — no GATT at all
+    /// (pure L2CAP, the Ditto pattern). GENTLY: cap concurrent dials and back off failures.
+    /// Role policy (one pipe per pair):
+    ///   • iOS peer  → ALWAYS dial it. Apple→Android L2CAP can't open, so Android must be the
+    ///     central in any Android↔iOS pair; the iOS side waits as peripheral.
+    ///   • Android peer → random-id tiebreaker: only the LOWER id dials, the higher waits.
+    private fun tryDial(device: BluetoothDevice, peer: PeerAdvert?) {
         val addr = device.address
-        if (connecting.contains(addr) || dialing.containsKey(addr)) return  // already linked / dialing it
-        // Already connected to us right now (they're a central to our GATT server)? Don't dial them
-        // back — one pipe per pair. Two devices share one BLE ACL, so a second connection that later
-        // tears down kills the shared link (the "peer left" dual-role conflict). Their inbound
-        // connection carries the link: they write our DATA char, we indicate back. (Transparent to
-        // address rotation — a rotated address is just a different, not-yet-connected peer.)
-        if (gattServerClients.contains(addr)) return
+        if (peer == null) return                                            // no PSM/id (e.g. bg iOS) → can't open L2CAP
+        if (connecting.contains(addr) || dialing.contains(addr)) return     // already linked / dialing it
+        if (peer.isAndroid && !idLessThan(myAdvertId, peer.id)) return       // Android↔Android tiebreaker
+        if (gattServerClients.contains(addr)) return                        // already a central to us — let it carry the link
         if (dialing.size >= MAX_DIALS_IN_FLIGHT) return                     // one or two outbound at a time
         if (System.currentTimeMillis() < (dialBackoffUntil[addr] ?: 0L)) return  // backing off this peer
-        connecting.add(addr)
-        val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        if (gatt == null) { connecting.remove(addr); return }
-        dialing[addr] = gatt
-        android.util.Log.i("HOPLOG", "BLE central: dialing $addr (push)")
-        // A dial that doesn't connect+handshake in time is stuck — close it and free the slot so the
-        // central keeps making progress instead of one hung 133 connect blocking everything.
-        main.postDelayed({
-            if (dialing.containsKey(addr)) {
-                android.util.Log.i("HOPLOG", "BLE central: dial $addr timed out")
-                runCatching { dialing[addr]?.close() }
-                dialFailed(addr)
+        connecting.add(addr); dialing.add(addr)
+        android.util.Log.i("HOPLOG", "BLE central: opening L2CAP to $addr psm=${peer.psm} (${if (peer.isAndroid) "android" else "ios"})")
+        thread(name = "hop-l2cap-dial-$addr") {
+            val socket = runCatching { device.createInsecureL2capChannel(peer.psm).apply { connect() } }
+                .onFailure { android.util.Log.w("HOPLOG", "central L2CAP open to $addr FAILED: $it") }
+                .getOrNull()
+            main.post {
+                if (socket == null) { dialFailed(addr); return@post }
+                android.util.Log.i("HOPLOG", "central L2CAP OPEN ok to $addr")
+                addLink(socket, initiator = true)
+                dialSucceeded(addr)
             }
-        }, DIAL_TIMEOUT_MS)
+        }
     }
 
     private fun dialFailed(addr: String) {

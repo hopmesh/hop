@@ -259,6 +259,14 @@ final class HopBearer: NSObject, ObservableObject {
     private var gattDataCharFor: [UUID: CBCharacteristic] = [:]  // central side: peripheral id → its DATA char
     private var gattFallbackPending: Set<UUID> = []             // L2CAP failed before DATA was discovered
     private var psmFromAdvert: Set<UUID> = []                   // PSM came from mfg data ⇒ peer is ANDROID
+    // Random per-launch advert id for deterministic role assignment (Ditto's pattern): of two peers,
+    // the LOWER id is the central (connects), the higher is the peripheral (waits). One pipe per pair,
+    // identity-free, transparent to address rotation. iOS advertises it as the local name (hex).
+    private let myAdvertId: [UInt8] = (0..<4).map { _ in UInt8.random(in: 0...255) }
+    private static func idLessThan(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        for i in 0..<min(a.count, b.count) where a[i] != b[i] { return a[i] < b[i] }
+        return a.count < b.count
+    }
     private var centralGattLink: [UUID: UInt64] = [:]            // peripheral side: central id → link
     private var peripheralBackpressure: [UInt64: Data] = [:]     // peripheral side: chunk awaiting isReady
     private var nextGattLinkId: UInt64 = 60_000
@@ -1748,7 +1756,12 @@ final class HopBearer: NSObject, ObservableObject {
         if beacon, let data = beaconRegion.peripheralData(withMeasuredPower: nil) as? [String: Any] {
             p.startAdvertising(data)
         } else {
-            p.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [HopBearer.serviceUUID]])
+            // Local name carries PSM + advert id as hex ([2B PSM][4B id] = 12 hex chars) — iOS can't
+            // advertise manufacturer data, so this is how peers read our PSM (pure-L2CAP, no GATT) and
+            // our id (role tiebreaker).
+            let nameHex = String(format: "%04x", psm) + myAdvertId.map { String(format: "%02x", $0) }.joined()
+            p.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [HopBearer.serviceUUID],
+                                CBAdvertisementDataLocalNameKey: nameHex])
         }
     }
 
@@ -1939,20 +1952,17 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        // Read the peer's L2CAP PSM straight from the advert (manufacturer data: [2B company id]
-        // [2B PSM big-endian]). It's fresh on every scan, so we never depend on iOS's cached GATT
-        // — which serves a stale PSM after the peer (Android) restarts, the "connects but never
-        // reads PSM" stall. Android peers carry this; iOS peers don't (iOS can't advertise mfg
-        // data), so those fall back to the GATT read below.
-        if let mfg = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
-            let b = [UInt8](mfg)
-            if b.count >= 4 {
-                let psm = CBL2CAPPSM(UInt16(b[2]) << 8 | UInt16(b[3]))
-                // Only Android can advertise manufacturer data, so a PSM here means an ANDROID peer —
-                // and Apple→Android L2CAP never opens. Mark it so we skip L2CAP and go GATT-data direct.
-                if psm != 0 { l2capPsm[peripheral.identifier] = psm; psmFromAdvert.insert(peripheral.identifier) }
-            }
-        }
+        // Pure L2CAP, no GATT: read the peer's PSM + advert id straight from the advert (Android
+        // mfg data, iOS local name). Fresh every scan, so no cached-GATT staleness ever.
+        guard let (psm, peerId) = HopBearer.parseAdvert(advertisementData), psm != 0 else { return }
+        // Platform-biased role: Apple→Android L2CAP can't open (the central side fails), but
+        // Android→Apple does. So NEVER dial an Android peer — wait for it to dial us (we're the
+        // peripheral). An Android peer is identifiable: only Android advertises manufacturer data.
+        let peerIsAndroid = advertisementData[CBAdvertisementDataManufacturerDataKey] != nil
+        if peerIsAndroid { return }
+        // Same-platform (iOS↔iOS): random-id tiebreaker — only the LOWER id connects, one pipe per pair.
+        guard HopBearer.idLessThan(myAdvertId, peerId) else { return }
+        l2capPsm[peripheral.identifier] = psm
         guard !connecting.contains(peripheral.identifier) else { return }
         connecting.insert(peripheral.identifier)
         retained[peripheral.identifier] = peripheral
@@ -1961,18 +1971,40 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
         c.connect(peripheral)
     }
 
+    /// Parse PSM + advert id from an advert. Android: manufacturer data `[2B company][2B PSM][4B id]`.
+    /// iOS: local name = hex(`[2B PSM][4B id]`) = 12 hex chars (iOS can't advertise mfg data).
+    static func parseAdvert(_ data: [String: Any]) -> (CBL2CAPPSM, [UInt8])? {
+        if let mfg = data[CBAdvertisementDataManufacturerDataKey] as? Data {
+            let b = [UInt8](mfg)
+            if b.count >= 8 { return (CBL2CAPPSM(UInt16(b[2]) << 8 | UInt16(b[3])), Array(b[4..<8])) }
+        }
+        if let name = data[CBAdvertisementDataLocalNameKey] as? String, name.count == 12,
+           let bytes = hexToBytes(name), bytes.count == 6 {
+            return (CBL2CAPPSM(UInt16(bytes[0]) << 8 | UInt16(bytes[1])), Array(bytes[2..<6]))
+        }
+        return nil
+    }
+
+    private static func hexToBytes(_ s: String) -> [UInt8]? {
+        let chars = Array(s); guard chars.count % 2 == 0 else { return nil }
+        var out = [UInt8](); out.reserveCapacity(chars.count / 2)
+        var i = 0
+        while i < chars.count {
+            guard let v = UInt8(String(chars[i...i+1]), radix: 16) else { return nil }
+            out.append(v); i += 2
+        }
+        return out
+    }
+
     func centralManager(_ c: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // Central side ALWAYS uses GATT-data, never L2CAP:
-        //  • Apple→Android L2CAP can't open, and *attempting* it tears the whole peripheral
-        //    connection down (~1s "peer left"), killing the link before any fallback.
-        //  • We can't reliably tell a peer's platform before connecting (a peer reconnected via
-        //    state restoration arrives with no advert, so the Android-PSM hint is absent).
-        //  • GATT-data works to every peer (Android and iOS), so one uniform path is the reliable
-        //    choice. iOS↔iOS loses L2CAP throughput but gains a path that actually establishes.
-        // The link comes up in didDiscoverCharacteristicsFor → startCentralGattData.
-        gattFallbackPending.insert(peripheral.identifier)
-        status = "connected (GATT) → GATT-data…"
-        peripheral.discoverServices([HopBearer.serviceUUID])
+        // Pure L2CAP: open the channel to the advertised PSM directly — no service discovery.
+        guard let psm = l2capPsm[peripheral.identifier], !opened.contains(peripheral.identifier) else {
+            recover(peripheral); return
+        }
+        opened.insert(peripheral.identifier)
+        l2capAttempts[peripheral.identifier] = 0
+        status = "opening L2CAP (psm \(psm))…"
+        openL2CAP(peripheral, psm)
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -2052,20 +2084,22 @@ extension HopBearer: CBCentralManagerDelegate, CBPeripheralDelegate {
             let e = (error as NSError?)
             NSLog("HOPLOG open L2CAP failed: domain=\(e?.domain ?? "nil") code=\(e?.code ?? -1) — \(e?.localizedDescription ?? "?")")
             let id = peripheral.identifier
-            l2capAttempts[id] = nil
-            // Apple→Android L2CAP NEVER opens (CBErrorDomain "Unknown error"), and CoreBluetooth
-            // tears the whole peripheral connection down ~1s after the failure — faster than any
-            // retry. So DON'T retry L2CAP; immediately fall back to GATT-data over the SAME GATT
-            // connection (a synchronous setNotifyValue beats the impending disconnect). iOS↔iOS
-            // L2CAP succeeds and never reaches here, so this only affects the failing (Android) case.
-            guard peripheral.state == .connected else { recover(peripheral); return }
-            if startCentralGattData(peripheral) {
-                NSLog("HOPLOG L2CAP failed → GATT-data fallback (immediate)")
+            let n = (l2capAttempts[id] ?? 0) + 1
+            l2capAttempts[id] = n
+            // With one pipe per pair (the advert-id tiebreaker), there's no dual-ACL conflict, so
+            // L2CAP should open — a failure here is a transient radio glitch. Retry a few times on
+            // the same connection, then reconnect fresh.
+            if n <= 3, peripheral.state == .connected, let psm = l2capPsm[id] {
+                status = "L2CAP retry \(n) (psm \(psm))…"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self, let p = self.retained[id], p.state == .connected else {
+                        if let p = self?.retained[id] { self?.recover(p) }; return
+                    }
+                    self.openL2CAP(p, psm)
+                }
             } else {
-                // DATA characteristic not discovered yet (the failure raced discovery). Mark it
-                // pending; didDiscoverCharacteristicsFor starts the fallback the moment DATA appears.
-                NSLog("HOPLOG L2CAP failed → awaiting DATA discovery for GATT-data fallback")
-                gattFallbackPending.insert(id)
+                l2capAttempts[id] = nil
+                recover(peripheral)
             }
             return
         }
