@@ -306,6 +306,8 @@ class HopBearer private constructor(private val context: Context, private val co
                 // DIAG: per-BLE-link byte flow. If a link is UP but stuck (no peerLinks), this shows
                 // whether the Noise handshake is exchanging: rx=0 → peer never sent m1 (its send side);
                 // tx>0,rx=0 → we sent but peer silent; tx>0,rx>0 → bytes flow but handshake won't finish.
+                val upLinks = runCatching { node.peerLinks().size }.getOrDefault(-1)
+                if (links.isNotEmpty()) android.util.Log.i("HOPLOG", "NODESTATE upLinks=$upLinks bleLinks=${links.size}")
                 for ((lid, _) in links) {
                     android.util.Log.i("HOPLOG", "LINKFLOW id=$lid tx=${linkTx[lid] ?: 0L} rx=${linkRx[lid] ?: 0L}")
                 }

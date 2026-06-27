@@ -4010,6 +4010,55 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_links_to_same_peer_dont_loop() {
+        // Field bug (resource exhaustion): an iOS rotating-MAC dialer can open MORE THAN ONE
+        // L2CAP channel to the same Android peer, so the node ends up with two Up links to the
+        // SAME peer. If it doesn't dedup them, traffic can loop between the two links and exhaust
+        // the (few-KB/s) BLE pipe — which is exactly the megabyte flood seen on-device. This test
+        // reproduces it deterministically: connect two nodes with TWO link pairs, then verify the
+        // network reaches quiescence with BOUNDED traffic (no loop) and the peer is identified once.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // link pair #1: node0 link1 <-> node1 link1
+        net.connect(&mut nodes, 0, 2, 1, 2); // link pair #2: node0 link2 <-> node1 link2 (SAME peer)
+
+        // Drive a message and pump with a byte/round budget. A loop manifests as either hitting
+        // the round cap (never quiescent) or an explosive byte count.
+        let b = msg(&nodes[0], &nodes[1], b"hi");
+        nodes[0].submit(b);
+
+        let mut total_bytes = 0usize;
+        let mut rounds = 0usize;
+        let quiesced = loop {
+            if rounds >= 5000 {
+                break false;
+            }
+            rounds += 1;
+            let mut any = false;
+            for i in 0..nodes.len() {
+                let other = 1 - i;
+                for (link, bytes) in nodes[i].drain_outgoing() {
+                    any = true;
+                    total_bytes += bytes.len();
+                    // links are symmetric here (1<->1, 2<->2)
+                    nodes[other].handle(BearerEvent::Data(link, bytes));
+                }
+            }
+            if !any {
+                break true;
+            }
+        };
+
+        assert!(quiesced, "node never reached quiescence — TRAFFIC LOOP (rounds={rounds}, bytes={total_bytes})");
+        assert!(
+            total_bytes < 50_000,
+            "two-link handshake + one tiny message moved {total_bytes} bytes — amplification loop"
+        );
+        // The message must actually be delivered exactly once (not lost in the loop, not duplicated).
+        assert_eq!(nodes[1].take_inbox().len(), 1, "message should deliver exactly once over duplicate links");
+    }
+
+    #[test]
     fn send_to_connected_peer_is_forward_secret() {
         // Messaging a connected peer is always forward-secret (DESIGN.md §25): once prekeys
         // are exchanged, send_to opens a ratchet session and the message decrypts via
