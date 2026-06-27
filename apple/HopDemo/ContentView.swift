@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import ImageIO
 import UniformTypeIdentifiers
+import HopDriver
 #if canImport(UIKit)
 import UIKit
 #endif

@@ -33,6 +33,19 @@ impl SqliteStore {
     }
 
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
+        // Performance-critical: the node holds its single Mutex across every store write, so each
+        // write's fsync stalls ALL node processing (link Noise handshakes, prekey gossip, sends).
+        // The default journal_mode=DELETE + synchronous=FULL does an fsync per statement — under
+        // multi-peer BLE load that fsync storm jams the serial executor and links never reach Up,
+        // so prekeys never exchange and messages hang "Securing" forever. WAL + synchronous=NORMAL
+        // keeps durability (survives app crash; only loses the last commits on an OS/power crash —
+        // acceptable for a store-and-forward cache) while removing the per-write fsync. busy_timeout
+        // lets a reader wait out a concurrent writer instead of erroring. (No-op on :memory: tests.)
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;",
+        )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS bundles (id BLOB PRIMARY KEY, data BLOB NOT NULL);
              CREATE TABLE IF NOT EXISTS seen (id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL);

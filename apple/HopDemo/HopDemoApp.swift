@@ -1,5 +1,24 @@
 import SwiftUI
 import BackgroundTasks
+import UIKit
+import HopDriver
+
+extension HopBearer {
+    /// The app's single shared Hop runtime — the dev `Config` (messages db in the document dir, the
+    /// dev app secret "H"×32, the anycast cloud relay, full role). One instance shared by the app's
+    /// background tasks and `ContentView`, so there's exactly one `HopNode` open on the db.
+    static let shared: HopBearer = {
+        let db = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("hop.db").path
+        return HopBearer(config: .init(
+            dbPath: db,
+            deviceSeed: IdentityStore.deviceSeed(),
+            appSecret: HopBearer.appSecret,
+            displayName: HopBearer.savedName(default: UIDevice.current.name),
+            defaultRelay: HopBearer.defaultRelay,
+            role: .full))
+    }()
+}
 
 @main
 struct HopDemoApp: App {

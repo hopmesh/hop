@@ -1,0 +1,11 @@
+HOPLAB     0.000 STATE HopBleLab macOS CLI starting (service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F)
+HOPLAB     0.000 STATE node-start myId=a63e07b0920b36130b59c76b80a2c0dc (greater-nodeId dials)
+HOPLAB     0.046 STATE central state=poweredOn
+HOPLAB     0.046 STATE central scan-started service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F
+HOPLAB     0.063 STATE peripheral state=poweredOn
+HOPLAB     0.063 STATE peripheral gatt-service-added
+HOPLAB     0.063 STATE peripheral l2cap-published psm=192
+HOPLAB     0.063 STATE peripheral advertising-started service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F
+HOPLAB     5.011 STATUS links=0
+HOPLAB    10.011 STATUS links=0
+HOPLAB    15.011 STATUS links=0

@@ -1,0 +1,56 @@
+name: HopBleLab
+options:
+  bundleIdPrefix: co.hopmesh
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+targets:
+  HopBleLab:
+    type: application
+    platform: iOS
+    sources:
+      - BleLabApp.swift
+      - BeaconWake.swift
+      - ContentView.swift
+      - ../apple/HopBleLab.swift
+    info:
+      path: HopBleLab-Info.plist
+      properties:
+        CFBundleDisplayName: BLE Lab
+        NSBluetoothAlwaysUsageDescription: "BLE Lab tests Bluetooth LE connectivity between devices over L2CAP."
+        NSBluetoothPeripheralUsageDescription: "BLE Lab advertises a BLE service and hosts an L2CAP channel for the proof-of-pipe test."
+        NSLocationWhenInUseUsageDescription: "BLE Lab detects a nearby Hop device beacon to reconnect."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "BLE Lab monitors a Hop iBeacon region so it can relaunch in the background and reconnect to nearby devices even when the app is closed."
+        UIBackgroundModes:
+          - bluetooth-central
+          - bluetooth-peripheral
+          - location
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.hopmesh.blelab
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        DEVELOPMENT_TEAM: 8H7HVPHS87
+        CODE_SIGN_STYLE: Automatic
+
+  HopBleLabUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests/GrantBTPermission.swift
+    dependencies:
+      - target: HopBleLab
+    settings:
+      base:
+        DEVELOPMENT_TEAM: 8H7HVPHS87
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: HopBleLab

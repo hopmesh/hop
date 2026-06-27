@@ -1,0 +1,133 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:2:1-51:12
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:2:1-51:12
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:2:1-51:12
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:2:1-51:12
+	package
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.BLUETOOTH_SCAN
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:5:5-6:58
+	android:usesPermissionFlags
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:6:9-55
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:5:22-70
+uses-permission#android.permission.BLUETOOTH_ADVERTISE
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:7:5-78
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:7:22-75
+uses-permission#android.permission.BLUETOOTH_CONNECT
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:8:5-76
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:8:22-73
+uses-permission#android.permission.BLUETOOTH
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:5-95
+	android:maxSdkVersion
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:66-92
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:22-65
+uses-permission#android.permission.BLUETOOTH_ADMIN
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:5-101
+	android:maxSdkVersion
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:72-98
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:22-71
+uses-permission#android.permission.ACCESS_FINE_LOCATION
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:5-106
+	android:maxSdkVersion
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:77-103
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:22-76
+uses-feature#android.hardware.bluetooth_le
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:5-90
+	android:required
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:64-87
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:19-63
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:18:5-77
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:18:22-74
+uses-permission#android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:19:5-94
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:19:22-91
+uses-permission#android.permission.POST_NOTIFICATIONS
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:21:5-77
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:21:22-74
+uses-permission#android.permission.RECEIVE_BOOT_COMPLETED
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:23:5-81
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:23:22-78
+uses-permission#android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:24:5-95
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:24:22-92
+application
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:26:5-50:19
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:26:5-50:19
+	android:extractNativeLibs
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	android:supportsRtl
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:28:9-35
+	android:label
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:27:9-32
+	android:theme
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:29:9-60
+activity#net.waldrip.blelab.MainActivity
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:30:9-37:20
+	android:exported
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:32:13-36
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:31:13-41
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:33:13-36:29
+action#android.intent.action.MAIN
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:34:17-69
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:34:25-66
+category#android.intent.category.LAUNCHER
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:35:17-77
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:35:27-74
+service#net.waldrip.blelab.BleService
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:38:9-41:63
+	android:exported
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:40:13-37
+	android:foregroundServiceType
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:41:13-60
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:39:13-39
+receiver#net.waldrip.blelab.BootReceiver
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:9-46:20
+	android:exported
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:48-71
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:19-47
+intent-filter#action:name:android.intent.action.BOOT_COMPLETED
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:43:13-45:29
+action#android.intent.action.BOOT_COMPLETED
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:44:17-79
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:44:25-76
+receiver#net.waldrip.blelab.AnchorWatchdogReceiver
+ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:9-85
+	android:exported
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:58-82
+	android:name
+		ADDED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:19-57
+uses-sdk
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml

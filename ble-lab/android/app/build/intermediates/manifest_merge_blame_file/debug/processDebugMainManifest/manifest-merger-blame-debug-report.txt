@@ -1,0 +1,133 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="net.waldrip.blelab"
+4    android:versionCode="1"
+5    android:versionName="0.1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="29"
+9        android:targetSdkVersion="34" />
+10
+11    <!-- BLE permissions (Android 12+ model). -->
+12    <uses-permission
+12-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:5:5-6:58
+13        android:name="android.permission.BLUETOOTH_SCAN"
+13-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:5:22-70
+14        android:usesPermissionFlags="neverForLocation" />
+14-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:6:9-55
+15    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+15-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:7:5-78
+15-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:7:22-75
+16    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+16-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:8:5-76
+16-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:8:22-73
+17    <!-- Pre-Android-12 fallbacks (API 29-30). -->
+18    <uses-permission
+18-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:5-95
+19        android:name="android.permission.BLUETOOTH"
+19-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:22-65
+20        android:maxSdkVersion="30" />
+20-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:10:66-92
+21    <uses-permission
+21-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:5-101
+22        android:name="android.permission.BLUETOOTH_ADMIN"
+22-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:22-71
+23        android:maxSdkVersion="30" />
+23-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:11:72-98
+24    <!-- BLE scanning needed location through API 30 (neverForLocation caps at 30). -->
+25    <uses-permission
+25-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:5-106
+26        android:name="android.permission.ACCESS_FINE_LOCATION"
+26-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:22-76
+27        android:maxSdkVersion="30" />
+27-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:13:77-103
+28
+29    <uses-feature
+29-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:5-90
+30        android:name="android.hardware.bluetooth_le"
+30-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:19-63
+31        android:required="true" />
+31-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:15:64-87
+32
+33    <!-- Keep both BLE planes alive in the background via a foreground service. -->
+34    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+34-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:18:5-77
+34-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:18:22-74
+35    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+35-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:19:5-94
+35-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:19:22-91
+36    <!-- Foreground-service notification, Android 13+. -->
+37    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+37-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:21:5-77
+37-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:21:22-74
+38    <!-- Restart the FGS after reboot + ask to be exempt from battery optimization. -->
+39    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+39-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:23:5-81
+39-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:23:22-78
+40    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+40-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:24:5-95
+40-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:24:22-92
+41
+42    <application
+42-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:26:5-50:19
+43        android:debuggable="true"
+44        android:extractNativeLibs="false"
+45        android:label="BLE Lab"
+45-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:27:9-32
+46        android:supportsRtl="true"
+46-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:28:9-35
+47        android:theme="@android:style/Theme.Material.Light" >
+47-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:29:9-60
+48        <activity
+48-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:30:9-37:20
+49            android:name="net.waldrip.blelab.MainActivity"
+49-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:31:13-41
+50            android:exported="true" >
+50-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:32:13-36
+51            <intent-filter>
+51-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:33:13-36:29
+52                <action android:name="android.intent.action.MAIN" />
+52-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:34:17-69
+52-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:34:25-66
+53
+54                <category android:name="android.intent.category.LAUNCHER" />
+54-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:35:17-77
+54-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:35:27-74
+55            </intent-filter>
+56        </activity>
+57
+58        <service
+58-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:38:9-41:63
+59            android:name="net.waldrip.blelab.BleService"
+59-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:39:13-39
+60            android:exported="false"
+60-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:40:13-37
+61            android:foregroundServiceType="connectedDevice" />
+61-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:41:13-60
+62
+63        <receiver
+63-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:9-46:20
+64            android:name="net.waldrip.blelab.BootReceiver"
+64-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:19-47
+65            android:exported="true" >
+65-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:42:48-71
+66            <intent-filter>
+66-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:43:13-45:29
+67                <action android:name="android.intent.action.BOOT_COMPLETED" />
+67-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:44:17-79
+67-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:44:25-76
+68            </intent-filter>
+69        </receiver>
+70        <!--
+71             Self-resurrection watchdog: woken by an exact alarm to restart the anchor FGS so the
+72             iBeacon comes back and can wake a killed iOS peer. Triggered explicitly (no filter).
+73        -->
+74        <receiver
+74-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:9-85
+75            android:name="net.waldrip.blelab.AnchorWatchdogReceiver"
+75-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:19-57
+76            android:exported="false" />
+76-->/Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/AndroidManifest.xml:49:58-82
+77    </application>
+78
+79</manifest>

@@ -4,6 +4,7 @@
 import SwiftUI
 import AVFoundation
 import CoreImage.CIFilterBuiltins
+import HopDriver
 
 /// QR payload format, shared with Android: "<base58 address>|<name>". The name is optional.
 enum HopQR {
