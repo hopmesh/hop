@@ -2300,12 +2300,15 @@ impl<S: Store> Node<S> {
         // receiver dedups unchanged adverts, so it's cheap. (DESIGN.md §16/§25.)
         if now_ms.saturating_sub(self.last_regossip_ms) >= REGOSSIP_INTERVAL_MS {
             self.last_regossip_ms = now_ms;
-            for state in self.links.values_mut() {
-                if let LinkState::Up(est) = state {
-                    est.sent_adverts.clear();
-                }
-            }
-            self.offer_adverts_to_all();
+            // Re-gossip intentionally does NOT clear sent_adverts + re-flood the whole directory.
+            // That was O(directory × links) EVERY interval and, in a busy multi-peer mesh, floods the
+            // few-KB/s BLE pipe (tx >> rx since the peer just dedups) and starves real messages —
+            // the minutes-to-hours delivery / resource-exhaustion bug. Propagation is already covered
+            // WITHOUT a re-flood: a newly ingested/published advert is offered immediately (on_advert/
+            // publish → offer_adverts_to_all; it's absent from sent_adverts so it goes out), and
+            // prekeys/presence are periodically RE-published as fresh adverts that propagate the same
+            // way. So a peer lacking our prekey at connect gets it on our next prekey re-publish —
+            // bounded per link regardless of how many peers or how large the directory.
         }
         // Retry any content still waiting on a prekey (it gossips, §25).
         self.flush_pending_content();
@@ -4124,6 +4127,93 @@ mod tests {
         // 30 idle seconds on an established link should move only a handful of presence adverts —
         // KB, not the tens-to-hundreds of KB the device shows. A flood means a gossip re-send loop.
         assert!(bytes < 20_000, "idle link flooded {bytes} bytes in 30s — steady-state gossip loop");
+    }
+
+    #[test]
+    fn regossip_does_not_reflood_the_directory() {
+        // Field bug (resource exhaustion at scale): the 12s re-gossip cleared sent_adverts on every
+        // link and re-sent the WHOLE directory — O(directory x links) every cycle. In a busy multi-
+        // peer mesh that floods the few-KB/s BLE pipe (tx >> rx, since the peer just dedups) and
+        // starves real messages — minutes-to-hours delivery. New adverts already propagate on their
+        // own (not in sent_adverts), and prekeys/presence are periodically RE-published, so the full
+        // re-flood is redundant. Assert the re-gossip moves only a trickle when nothing changed.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Populate node 0 with many adverts from distinct publishers (a busy mesh's directory).
+        for i in 0..40u32 {
+            let pubid = Identity::generate();
+            let a = Advert::publish(
+                &pubid,
+                AdvertKind::Service {
+                    service: "presence".into(),
+                    title: format!("n{i}"),
+                    summary: String::new(),
+                    tags: vec![],
+                },
+                1_000,
+                120_000,
+                1,
+            )
+            .unwrap();
+            nodes[0].publish(a);
+        }
+        net.pump(&mut nodes); // node 1 receives the 40 adverts once (initial sync)
+
+        // Run 5 re-gossip cycles with NO new adverts; measure bytes moved. An unchanged directory
+        // should move almost nothing — the bug re-floods all 40 adverts every 12s cycle.
+        let mut bytes = 0usize;
+        let mut now = 1_000u64;
+        for _ in 0..5 {
+            now += REGOSSIP_INTERVAL_MS + 1_000;
+            for n in nodes.iter_mut() {
+                n.tick(now);
+            }
+            for _ in 0..2000 {
+                let mut any = false;
+                for i in 0..nodes.len() {
+                    let other = 1 - i;
+                    for (link, b) in nodes[i].drain_outgoing() {
+                        any = true;
+                        bytes += b.len();
+                        nodes[other].handle(BearerEvent::Data(link, b));
+                    }
+                }
+                if !any {
+                    break;
+                }
+            }
+        }
+        assert!(bytes < 5_000, "re-gossip re-flooded the directory: {bytes} bytes over 5 idle cycles");
+    }
+
+    #[test]
+    fn prekey_published_after_connect_propagates_over_stable_link() {
+        // Removing the re-gossip re-flood must NOT regress prekey propagation: a prekey published
+        // AFTER the link is up must still reach the peer over the STABLE link (no reconnect), so a
+        // deferred forward-secret message flushes. This was the "move out of range and back to send"
+        // case — now served by immediate new-advert propagation, not a directory re-flood.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // connect with NO prekeys exchanged
+
+        // node 0 sends to node 1 but has no prekey yet → deferred ("Securing"), nothing delivered.
+        let _ = nodes[0]
+            .send_message(nodes[1].address(), "t".into(), b"hi".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[1].take_inbox().len(), 0, "no prekey yet → nothing delivered");
+
+        // node 1 publishes its prekey AFTER connect — over the stable link it must reach node 0.
+        nodes[1].publish_prekey().unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(
+            nodes[1].take_inbox().len(),
+            1,
+            "deferred message must flush once node 1's prekey propagates over the stable link"
+        );
     }
 
     #[test]
