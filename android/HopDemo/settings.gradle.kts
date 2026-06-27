@@ -12,4 +12,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "HopDemo"
-include(":app")
+include(":app", ":hop-driver")

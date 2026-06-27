@@ -2470,8 +2470,11 @@ impl<S: Store> Node<S> {
                     frag_next: 0,
                 })),
             );
-            self.offer_bundles_to_link(link);
+            // Adverts (prekeys + presence) FIRST, then bulk bundles: a peer needs our prekey to
+            // open a forward-secret session to us, so it must not sit behind a burst of relay-bundle
+            // offers on a rate-limited BLE link (that head-of-line blocking delayed "Securing").
             self.offer_adverts_to_link(link);
+            self.offer_bundles_to_link(link);
             // A new peer might be able to resolve names we're still waiting on — ask it
             // (delay-tolerant HNS, §30). Skip if we have internet (we resolve ourselves).
             if !self.internet && !self.pending_resolves.is_empty() {
@@ -2986,6 +2989,13 @@ impl<S: Store> Node<S> {
     /// toward a destination we have a route to beats one toward an unknown destination.
     fn bundle_utility(&self, id: &BundleId, now: u64) -> f64 {
         let Some(b) = self.store.get(id) else { return 0.0 };
+        self.bundle_utility_of(&b, now)
+    }
+
+    /// Utility from an ALREADY-loaded bundle — avoids a `store.get` per call. `offer_bundles_to_link`
+    /// uses this so its transmit-order sort does O(N) reads (load once), not O(N log N) (one read per
+    /// sort comparison), which under the held node Mutex was starving link handshakes.
+    fn bundle_utility_of(&self, b: &Bundle, now: u64) -> f64 {
         let route = match b.inner.dst {
             Destination::Device(d) => self.routes.utility(&d, now),
             _ => 0.0,
@@ -3005,13 +3015,23 @@ impl<S: Store> Node<S> {
         let now = self.now_ms;
         // Snapshot ids, ordered by utility so the most-likely-to-deliver bundles go
         // first during a short contact (DESIGN.md §27).
-        let mut ids = self.store.have().ids;
-        ids.sort_by(|a, b| {
-            self.bundle_utility(b, now)
-                .partial_cmp(&self.bundle_utility(a, now))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for id in ids {
+        // Load each bundle ONCE, compute its utility, then sort by the precomputed value — O(N)
+        // store reads, not the O(N log N) the per-comparison bundle_utility(id) used to do. Under
+        // the held node Mutex that read storm (×fsync from synchronous=FULL) starved link Noise
+        // handshakes and prekey gossip, which is what made messages hang "Securing" under load.
+        let mut loaded: Vec<(BundleId, Bundle, f64)> = self
+            .store
+            .have()
+            .ids
+            .into_iter()
+            .filter_map(|id| {
+                let b = self.store.get(&id)?;
+                let u = self.bundle_utility_of(&b, now);
+                Some((id, b, u))
+            })
+            .collect();
+        loaded.sort_by(|x, y| y.2.partial_cmp(&x.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (id, b, _) in loaded {
             let Some(LinkState::Up(est)) = self.links.get(&link) else {
                 return;
             };
@@ -3019,9 +3039,6 @@ impl<S: Store> Node<S> {
                 continue;
             }
             let peer = est.peer;
-            let Some(b) = self.store.get(&id) else {
-                continue;
-            };
             let meta = BundleMeta::from(&b);
             let direct = is_for(&b, &peer);
             // If we can reach the destination directly right now, don't spray copies

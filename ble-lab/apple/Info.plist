@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>co.hopmesh.ble-lab</string>
+	<key>CFBundleName</key>
+	<string>HopBleLab</string>
+	<key>CFBundleExecutable</key>
+	<string>blepeer</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>HopBleLab uses Bluetooth LE to prove a dual-role L2CAP byte channel between devices.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>HopBleLab advertises a BLE service and hosts an L2CAP channel for the proof-of-pipe test.</string>
+</dict>
+</plist>

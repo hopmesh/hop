@@ -1,0 +1,7 @@
+net.waldrip.blelab.app-pngs-0 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/build/generated/res/pngs/debug
+net.waldrip.blelab.app-resValues-1 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/build/generated/res/resValues/debug
+net.waldrip.blelab.app-packageDebugResources-2 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
+net.waldrip.blelab.app-packageDebugResources-3 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
+net.waldrip.blelab.app-debug-4 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/build/intermediates/merged_res/debug/mergeDebugResources
+net.waldrip.blelab.app-debug-5 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/debug/res
+net.waldrip.blelab.app-main-6 /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android/app/src/main/res

@@ -8,6 +8,7 @@
 
 import SwiftUI
 import WebKit
+import HopDriver
 
 /// Routes WKWebView's `hops://` requests through the Hop mesh. The page's content-type comes
 /// back from the endpoint, so HTML renders as HTML and sub-resources load with the right MIME.

@@ -1,0 +1,19 @@
+HOPLAB     0.000 STATE HopBleLab macOS CLI starting (service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F)
+HOPLAB     0.012 STATE node-start myId=f490ee1c07bf8ea905e4303aaf1542a3 (greater-nodeId dials)
+HOPLAB     0.057 STATE peripheral state=poweredOn
+HOPLAB     0.058 STATE peripheral gatt-service-added
+HOPLAB     0.097 STATE central state=poweredOn
+HOPLAB     0.097 STATE central scan-started service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F
+HOPLAB     0.097 STATE peripheral l2cap-published psm=192
+HOPLAB     0.097 STATE peripheral advertising-started service=7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F
+HOPLAB     0.168 STATE discovered id=DC28C015 prefix=a988d9fc51f1 rssi=-53 decision=DIAL
+HOPLAB     0.168 STATE DIALING id=DC28C015
+HOPLAB     5.025 STATUS links=0
+HOPLAB    10.025 STATUS links=0
+HOPLAB    12.768 STATE dial-timeout id=DC28C015
+HOPLAB    12.769 STATE COOLDOWN id=DC28C015 backoff=1.1s
+HOPLAB    15.025 STATUS links=0
+HOPLAB    20.025 STATUS links=0
+HOPLAB    25.025 STATUS links=0
+HOPLAB    30.025 STATUS links=0
+HOPLAB    35.025 STATUS links=0

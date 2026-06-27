@@ -11,8 +11,12 @@ site/target/
 .DS_Store
 
 # ---- iOS / Xcode ----
-# generated XCFramework + Swift bindings
+# generated XCFramework + Swift bindings (legacy path + the HopDriver package)
 apple/generated/
+apple/HopDriver/Frameworks/
+apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
+apple/HopDriver/.build-staging/
+apple/HopDriver/.build/
 # regenerate with xcodegen
 *.xcodeproj
 # xcodebuild output / DerivedData

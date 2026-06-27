@@ -1,5 +1,6 @@
 package net.waldrip.hop.demo
 
+import net.waldrip.hop.driver.*
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -76,7 +79,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        bearer = HopBearer.shared(this)
+        // Configure the driver from the app's sources (identity, storage, backbone, presentation),
+        // then hand off; the foreground service keeps the same shared instance running.
+        val config = HopConfig(
+            dbPath = java.io.File(filesDir, "hop.db").absolutePath,
+            identitySecret = HopBearer.deviceSeed(this),
+            appSecret = HopBearer.APP_SECRET,
+            deviceName = HopConfig.deviceName(this),
+            relayUrl = HopBearer.DEFAULT_RELAY,
+            notificationIcon = android.R.drawable.ic_dialog_email,
+        )
+        bearer = HopBearer.shared(this, config)
+        // Edge-to-edge so Compose actually receives IME (keyboard) insets: Compose does NOT reliably
+        // react to windowSoftInputMode=adjustResize on its own, so screens apply imePadding/
+        // safeDrawingPadding to lift content above the keyboard + system bars.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { MaterialTheme { HopApp(bearer) } }
         requestPerms.launch(permissions)
     }
@@ -132,8 +149,9 @@ private fun messageMeta(m: HopBearer.Message): String {
         if (m.trace.isNotEmpty()) s += "  ·  via ${m.trace.joinToString(" → ")}"
         return s
     }
-    if (m.delivered && m.deliveredAt != null) {
-        val dur = HopBearer.compactDuration((m.deliveredAt - m.sentAt).coerceAtLeast(0).toULong())
+    val deliveredAt = m.deliveredAt
+    if (m.delivered && deliveredAt != null) {
+        val dur = HopBearer.compactDuration((deliveredAt - m.sentAt).coerceAtLeast(0).toULong())
         return "Delivered, ${HopBearer.hopsLabel(m.deliveryHops)}, $dur"
     }
     if (m.failed) return "Not sent"
@@ -185,7 +203,7 @@ fun HopApp(bearer: HopBearer) {
                 icon = { Text("⚙️") }, label = { Text("Status") })
         }
     }) { pad ->
-        Box(Modifier.padding(pad)) {
+        Box(Modifier.padding(pad).imePadding()) {
             when (tab) {
                 0 -> ChatsScreen(bearer) { selected = it }
                 1 -> ChannelsScreen(bearer)
@@ -640,10 +658,10 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
             }
         }
     }
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
+        val locked = bearer.secured.contains(peer.address.toList())
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Back") }
-            val locked = bearer.secured.contains(peer.address.toList())
             Text(peer.name + if (locked) "  🔒" else "", style = MaterialTheme.typography.titleLarge)
         }
         LazyColumn(Modifier.weight(1f)) {
@@ -665,11 +683,13 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                         Text("⟳ Not sent · tap to retry", color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.clickable { bearer.retry(m, peer) })
-                    } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
-                        // relayed==0 with peers around isn't "awaiting peers" — it's awaiting the
-                        // forward-secret session with THIS recipient (require-ratchet). Only with no
-                        // reachable peers is it genuinely awaiting peers.
+                    } else if (!m.incoming && !m.delivered && m.relayed == 0u && !locked) {
+                        // Genuinely "Securing": no forward-secret session with THIS recipient yet (no
+                        // prekey). Once the session is locked the message HAS been sent — it's awaiting
+                        // a delivery ack, NOT securing — so don't keep showing "Securing".
                         SendingIndicator(m.sentAt, peersReachable = bearer.peers.isNotEmpty())
+                    } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
+                        Text("Sent · awaiting delivery", style = MaterialTheme.typography.bodySmall)
                     } else {
                         Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
                     }

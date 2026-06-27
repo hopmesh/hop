@@ -1,6 +1,9 @@
 # XcodeGen spec for the Hop iOS/iPadOS demo chat app.
 # Generate the project with:  cd apple/HopDemo && xcodegen
-# (run apple/build-xcframework.sh first so generated/ exists)
+# (run apple/build-xcframework.sh first so HopDriver's xcframework + bindings exist)
+#
+# The Hop runtime (bearer + transports + the FFI bindings + the xcframework) lives in the local
+# HopDriver SwiftPM package; this app is a thin SwiftUI consumer.
 name: HopDemo
 options:
   bundleIdPrefix: net.waldrip.hop
@@ -10,6 +13,9 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+packages:
+  HopDriver:
+    path: ../HopDriver
 targets:
   HopDemo:
     type: application
@@ -17,17 +23,11 @@ targets:
     sources:
       - HopDemoApp.swift
       - ContentView.swift
-      - HopBearer.swift
-      - HopLink.swift
-      - GattDataLink.swift
       - QRViews.swift
       - HopWebView.swift
-      - HopObjCExceptionCatcher.h
-      - HopObjCExceptionCatcher.m
-      - ../generated/Sources/hop_ffi.swift
     dependencies:
-      - framework: ../generated/HopFFI.xcframework
-        embed: true
+      - package: HopDriver
+        product: HopDriver
     info:
       path: HopDemo-Info.plist
       properties:
@@ -53,4 +53,3 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: 8H7HVPHS87
         CODE_SIGN_STYLE: Automatic
-        SWIFT_OBJC_BRIDGING_HEADER: HopDemo-Bridging-Header.h
