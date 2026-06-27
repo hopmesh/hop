@@ -20,7 +20,7 @@ OUT="$RESULTS/$ROUND.jsonl"; : > "$OUT"
 MAXWAIT="${TK_MAXWAIT:-60}"     # seconds to wait for delivery before recording a timeout
 POLL="${TK_POLL:-2}"
 
-CORE_IDS=(pixel tab xr bush ipad)
+CORE_IDS=(pixel tab xr jpad)
 # Build the ordered-pair list unless overridden.
 PAIRS=()
 if [ -n "$PAIRS_IN" ]; then
