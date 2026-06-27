@@ -435,6 +435,7 @@ class Central(
     private val inFlight = mutableSetOf<String>() // R2: short-lived, MAC-keyed
     private val backoff = mutableMapOf<String, Long>() // R2: prefix-hex (stable) or MAC
     private val addrToBkey = HashMap<String, String>() // MAC → backoff key (prefix once known)
+    private val addrToPeerId = HashMap<String, ByteArray>() // MAC → resolved peerId; dial-suppression for prefix-less (macOS/iOS) adverts
     private val pendingWaits = mutableSetOf<String>() // R4: one wait per MAC
     private val gattByAddr = HashMap<String, BluetoothGatt>()
     private val scanStarts = ArrayDeque<Long>() // R9: 30 s sliding window of startScan times
@@ -503,7 +504,12 @@ class Central(
     private fun tryDial(dev: BluetoothDevice, pre: ByteArray?) {
         val addr = dev.address
         if (inFlight.size >= MAX_DIALS || addr in inFlight) return
-        if (pre != null && haveLinkToPrefix(pre)) return // R4
+        if (pre != null && haveLinkToPrefix(pre)) return // R4 (advert carries the mfg prefix)
+        // Address-based suppression: peers whose advert has NO mfg prefix (pre=null — the macOS/iOS
+        // peripherals) skip the prefix gate and were re-dialed on EVERY advert just to cancel after the
+        // PSM read (the redial storm: ~99% wasted GATT connects, a battery/radio killer on BLE-only
+        // nodes). Once we've resolved this MAC's peerId, suppress re-dials while we hold that link.
+        addrToPeerId[addr]?.let { if (haveLinkTo(it)) return }
         val bkey = pre?.toHex() ?: addr
         if (System.currentTimeMillis() < (backoff[bkey] ?: 0L)) return // R2
         addrToBkey[addr] = bkey
@@ -570,6 +576,7 @@ class Central(
             g.close(); gattByAddr.remove(addr); fail(addr); return
         }
         val peerId = value.copyOfRange(2, 18)
+        addrToPeerId[addr] = peerId // remember MAC→peerId so future prefix-less adverts from this MAC are dial-suppressed while linked
         addrToBkey[addr] = peerId.copyOfRange(0, 6).toHex() // R2: promote to stable nodeId prefix
         if (haveLinkTo(peerId)) { // R4: already linked → no redundant CoC
             Log.i(TAG, "GATT read: already linked to ${peerId.toHex().take(8)} → cancel dial")
