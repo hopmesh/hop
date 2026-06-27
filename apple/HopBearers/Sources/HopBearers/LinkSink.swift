@@ -30,7 +30,15 @@ public protocol LinkSink: AnyObject {
 /// A transport that discovers peers, forms links, and shuttles application bytes. The bearer owns
 /// liveness (keepalive + watchdog) and one-pipe-per-peer dedup internally; the consumer only sees
 /// up / bytes / down and calls `send`.
+///
+/// This is the WHOLE contract — uniform across every transport. It names nothing about BLE, Wi-Fi,
+/// sockets, or any radio: a new transport is written purely against `start`/`stop`/`send`/`sink`, then
+/// handed to a `BearerManager` via `register(_:)`. Nothing transport-specific crosses this boundary.
 public protocol Bearer: AnyObject {
+    /// Where this bearer reports link events. The consumer wires itself here directly for a single
+    /// bearer; a `BearerManager` wires a per-bearer lane here so it can multiplex many bearers behind
+    /// one sink. Implement as `weak` (the sink/manager owns the bearer, so a strong ref would cycle).
+    var sink: LinkSink? { get set }
     /// Begin advertising/scanning (or the transport's equivalent) and forming links.
     func start()
     /// Tear down all links + radios; the sink gets `linkDown` for each live link.
