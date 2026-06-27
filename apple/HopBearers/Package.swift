@@ -19,5 +19,7 @@ let package = Package(
         .target(name: "HopBearers"),
         // Clean-room CLI consumer: the "proof of pipe" pinger, re-seamed onto BleBearer via LinkSink.
         .executableTarget(name: "blepeer", dependencies: ["HopBearers"]),
+        // Deterministic registry tests (no radio): prove BearerManager's multiplexing/routing/id-space.
+        .testTarget(name: "HopBearersTests", dependencies: ["HopBearers"]),
     ]
 )
