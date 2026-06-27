@@ -33,3 +33,4 @@ android/HopDemo/local.properties
 
 # Local marketing-site preview renders
 web/.preview/
+apple/HopBearers/.build/

@@ -13,8 +13,11 @@ let package = Package(
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
         .library(name: "HopBearers", targets: ["HopBearers"]),
+        .executable(name: "blepeer", targets: ["blepeer"]),
     ],
     targets: [
         .target(name: "HopBearers"),
+        // Clean-room CLI consumer: the "proof of pipe" pinger, re-seamed onto BleBearer via LinkSink.
+        .executableTarget(name: "blepeer", dependencies: ["HopBearers"]),
     ]
 )
