@@ -4059,6 +4059,74 @@ mod tests {
     }
 
     #[test]
+    fn idle_established_link_does_not_flood() {
+        // Field bug (resource exhaustion): on-device an idle, established BLE link sends ~10+ KB/s
+        // continuously on near-empty stores (tx ~3-4x rx), saturating the few-KB/s pipe so real
+        // messages crawl through over minutes/hours. This reproduces steady-state operation: two
+        // connected nodes, prekeys exchanged, then many "ticks" with the periodic presence/prekey
+        // re-publish the bearer does — and asserts an idle link moves only a TRICKLE, not a flood.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+
+        let mut now = 10_000u64;
+        let tick_pump = |nodes: &mut [Node], now: u64, bytes: &mut usize| {
+            for n in nodes.iter_mut() {
+                n.tick(now);
+            }
+            for _ in 0..2000 {
+                let mut any = false;
+                for i in 0..nodes.len() {
+                    let other = 1 - i;
+                    for (link, b) in nodes[i].drain_outgoing() {
+                        any = true;
+                        *bytes += b.len();
+                        nodes[other].handle(BearerEvent::Data(link, b));
+                    }
+                }
+                if !any {
+                    break;
+                }
+            }
+        };
+
+        // Warm up 60 "seconds" (let any initial gossip settle), re-publishing presence every 20s
+        // and prekeys every 120s exactly like the Android/iOS bearer tick.
+        let mut scratch = 0usize;
+        for s in 0..60u64 {
+            now += 1000;
+            if s % 20 == 0 {
+                for n in nodes.iter_mut() {
+                    let _ = n.publish_service("presence".into(), "x".into(), String::new(), vec![], 120_000);
+                }
+            }
+            if s % 120 == 0 {
+                for n in nodes.iter_mut() {
+                    let _ = n.publish_prekey();
+                }
+            }
+            tick_pump(&mut nodes, now, &mut scratch);
+        }
+
+        // Now MEASURE steady-state for 30 idle seconds.
+        let mut bytes = 0usize;
+        for s in 0..30u64 {
+            now += 1000;
+            if s % 20 == 0 {
+                for n in nodes.iter_mut() {
+                    let _ = n.publish_service("presence".into(), "x".into(), String::new(), vec![], 120_000);
+                }
+            }
+            tick_pump(&mut nodes, now, &mut bytes);
+        }
+
+        // 30 idle seconds on an established link should move only a handful of presence adverts —
+        // KB, not the tens-to-hundreds of KB the device shows. A flood means a gossip re-send loop.
+        assert!(bytes < 20_000, "idle link flooded {bytes} bytes in 30s — steady-state gossip loop");
+    }
+
+    #[test]
     fn send_to_connected_peer_is_forward_secret() {
         // Messaging a connected peer is always forward-secret (DESIGN.md §25): once prekeys
         // are exchanged, send_to opens a ratchet session and the message decrypts via
