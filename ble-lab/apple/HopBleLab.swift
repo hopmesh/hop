@@ -57,7 +57,8 @@ private let processStart = Date()
 /// Grep-able structured log. Every line begins with `HOPLAB`. Categories: STATE, PROOF, DEDUP, STATUS, WARN.
 func log(_ category: String, _ message: String) {
     let t = Date().timeIntervalSince(processStart)
-    print("HOPLAB \(String(format: "%9.3f", t)) \(category) \(message)")
+    print("HOPLAB \(String(format: "%9.3f", t)) \(category) \(message)")   // stdout (macOS CLI capture)
+    NSLog("HOPLAB %9.3f %@ %@", t, category, message)   // unified log too → iOS device log capturable (idb/Console) for diagnosis
 }
 
 func nowMs() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
