@@ -303,17 +303,43 @@ class HopBearer private constructor(private val context: Context, private val co
                 }
                 maintainGattLinks()
                 pump()
+                dedupBleLinks()
                 // DIAG: per-BLE-link byte flow. If a link is UP but stuck (no peerLinks), this shows
                 // whether the Noise handshake is exchanging: rx=0 → peer never sent m1 (its send side);
                 // tx>0,rx=0 → we sent but peer silent; tx>0,rx>0 → bytes flow but handshake won't finish.
-                val upLinks = runCatching { node.peerLinks().size }.getOrDefault(-1)
-                if (links.isNotEmpty()) android.util.Log.i("HOPLOG", "NODESTATE upLinks=$upLinks bleLinks=${links.size}")
+                val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
+                val distinctPeers = pls.map { it.address.toList() }.distinct().size
+                if (links.isNotEmpty()) android.util.Log.i("HOPLOG",
+                    "NODESTATE upLinks=${pls.size} bleLinks=${links.size} peers=$distinctPeers " +
+                    pls.joinToString(" ") { "id${it.link}=${it.address.take(3).joinToString(""){ b -> "%02x".format(b) }}" })
                 for ((lid, _) in links) {
                     android.util.Log.i("HOPLOG", "LINKFLOW id=$lid tx=${linkTx[lid] ?: 0L} rx=${linkRx[lid] ?: 0L}")
                 }
                 core.postDelayed(this, 1000)
             }
         }, 1000)
+    }
+
+    /// One-pipe-per-pair. An iOS rotating-MAC dialer can open SEVERAL L2CAP channels to us, leaving
+    /// multiple Up links to the SAME identified peer. The node then gossips/offers across ALL of them
+    /// and traffic AMPLIFIES into a flood that saturates the few-KB/s BLE pipe (resource exhaustion) —
+    /// real messages then crawl through over minutes/hours. node.peerLinks() maps each Up link to its
+    /// peer address, so once a duplicate's handshake completes we detect it and close the extra,
+    /// keeping exactly ONE BLE link per peer. Runs on hop.core (the 1 Hz tick). Only inspects BLE
+    /// links (the `links` map) — a legit BLE+LAN dual-transport to one peer is left alone.
+    private fun dedupBleLinks() {
+        val byPeer = HashMap<List<Byte>, MutableList<ULong>>()
+        runCatching { node.peerLinks() }.getOrDefault(emptyList()).forEach { pl ->
+            if (links.containsKey(pl.link)) byPeer.getOrPut(pl.address.toList()) { mutableListOf() }.add(pl.link)
+        }
+        for ((_, lids) in byPeer) {
+            if (lids.size <= 1) continue
+            // Keep the lowest (oldest) link id; close the newer duplicate dials.
+            lids.sorted().drop(1).forEach { dup ->
+                android.util.Log.i("HOPLOG", "DEDUP closing duplicate BLE link id=$dup (same peer, ${lids.size} links)")
+                runCatching { links[dup]?.close() }
+            }
+        }
     }
 
     /// Keepalive + reaping for GATT-data links (the bearer drives these; GattDataLink has no timer
