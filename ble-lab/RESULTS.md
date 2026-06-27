@@ -82,8 +82,12 @@ concentrated on the iOS L2CAP channels and the dialer.
    close originates on whichever side sees a `> deadLimit` RX gap. The Mac's redial churn is
    *downstream* of this (close → `retained` cleared → re-dial). Suspects: the still-un-fixed Mac/iOS
    redial storm disrupting the ACL; iOS background ping-timer throttling; or a `bleRunLoop` stall.
-   **Next:** capture the iOS node's own HOPLAB log for the close reason + RX-gap timing; consider a
-   background-surviving heartbeat and/or a higher foreground deadline.
+   **Next:** capture the iOS node's own HOPLAB log for the close reason + RX-gap timing. (Capture
+   method, learned this session: `log()` now also `NSLog`s → unified log, but `idb log` only carries
+   the legacy syslog (bluetoothd), NOT the app's os_log, and `log collect --device-udid <hw-udid>`
+   needs **root**. So read the device's HOPLAB lines with `sudo log collect --device-udid
+   00008020-00143064343A402E --last 5m` then `log show … --predicate 'eventMessage CONTAINS "HOPLAB"'`,
+   or via Console.app.) Then consider a background-surviving heartbeat and/or a higher fg deadline.
 3. **[MEDIUM] ~5-min rediscovery** after a peer relaunches under a fresh nodeId — tighten the central
    re-scan / dial-backoff cap so reacquisition is seconds, not minutes.
 4. **[MEDIUM] Layer-C iOS force-quit wake UNVERIFIED** — the soak harness no-op'd on an empty pid
