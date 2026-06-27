@@ -15,6 +15,8 @@ data class HopConfig(
     val appSecret: ByteArray,
     val deviceName: String,
     val relayUrl: String = HopBearer.DEFAULT_RELAY,
+    /** When false the bearer never dials the backbone relay — pure P2P (BLE/LAN/Wi-Fi Direct) only. */
+    val relaysEnabled: Boolean = true,
     val notificationIcon: Int = android.R.drawable.ic_dialog_email,
 ) {
     companion object {

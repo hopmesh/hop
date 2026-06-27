@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Single bash entrypoint for the Hop test harness — call as `./testkit/tk <cmd> <args>`.
+# Runs under bash regardless of the caller's shell (zsh doesn't word-split like bash).
+#
+#   tk ids                          list device ids
+#   tk addr <id>                    print a device's base58 address (from addrs.env)
+#   tk selfaddr <id>                discover a device's address live
+#   tk refresh                      rebuild addrs.env from live devices
+#   tk send <from-id> <to-addr> <marker>
+#   tk sendto <from-id> <to-id> <marker>     (resolves to-id -> addr from addrs.env)
+#   tk verify <to-id> <marker>      -> count received (>0 = got it)
+#   tk delivered <from-id> <marker> -> true/false (end-to-end ack on sender)
+#   tk fg <id> | tk bg <id>         foreground / background the app
+#   tk nodestate <id>               last NODESTATE log line (android)
+#   tk logclear <id> | tk logcap <id> <outfile>
+#   tk pull <id>                    pull iOS automation.json
+#   tk name <id> | tk platform <id> | tk transport <id>
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$HERE/lib.sh"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  ids)        dev_ids;;
+  addr)       eval "echo \"\${ADDR_$1:-}\"";;
+  selfaddr)   tk_self_addr "$@";;
+  refresh)    bash "$HERE/refresh-addrs.sh";;
+  send)       tk_send "$@";;
+  sendto)     # sendto <from> <to-id> <marker>
+              from="$1"; toid="$2"; mark="$3"
+              eval "toaddr=\"\${ADDR_$toid:-}\""
+              [ -z "$toaddr" ] && { echo "no addr for $toid (run tk refresh)" >&2; exit 3; }
+              tk_send "$from" "$toaddr" "$mark";;
+  verify)     tk_verify "$@";;
+  delivered)  tk_delivered "$@";;
+  fg)         tk_fg "$@";;
+  bg)         tk_bg "$@";;
+  nodestate)  tk_nodestate "$@";;
+  logclear)   tk_logclear "$@";;
+  logcap)     tk_logcap "$@";;
+  pull)       tk_pull_automation "$@";;
+  name)       dev_name "$@";;
+  platform)   dev_platform "$@";;
+  transport)  dev_transport "$@";;
+  *) echo "unknown cmd: '$cmd' — see header of $0" >&2; exit 2;;
+esac

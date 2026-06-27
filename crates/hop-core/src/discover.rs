@@ -373,6 +373,14 @@ impl Directory {
         self.all().filter(|a| !peer_seen.contains(&a.id)).collect()
     }
 
+    /// Advert ids we currently hold that were published by `pubk` — our OWN prekey/presence when
+    /// `pubk` is us. Used to ALWAYS re-offer our own securing adverts on link-up (and periodically),
+    /// so a peer that lost state (restart / data-wipe / cache-evict) can re-secure — WITHOUT
+    /// re-flooding the foreign directory bulk, which stays per-peer-deduped.
+    pub fn advert_ids_by_publisher(&self, pubk: &PubKeyBytes) -> Vec<AdvertId> {
+        self.all().filter(|a| a.body.publisher == *pubk).map(|a| a.id).collect()
+    }
+
     /// Drop expired service adverts. Call periodically (DESIGN.md §8, §23).
     pub fn expire(&mut self, now_ms: u64) {
         self.subscribed.retain(|_, a| !a.is_expired(now_ms));

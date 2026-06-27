@@ -23,18 +23,29 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>net.waldrip.hop.demo.automation</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hopdemo</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Hop relays messages over Bluetooth so you can chat with people nearby without the internet.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Scan a Hop QR code to add someone as a contact.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_hop-mesh._tcp</string>
 		<string>_hop-mesh._udp</string>
 		<string>_hoplan._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan a Hop QR code to add someone as a contact.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hop meshes with nearby devices over Wi-Fi to relay messages without the internet.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

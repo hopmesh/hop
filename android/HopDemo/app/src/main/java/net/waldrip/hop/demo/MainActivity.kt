@@ -2,6 +2,7 @@ package net.waldrip.hop.demo
 
 import net.waldrip.hop.driver.*
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -87,6 +88,7 @@ class MainActivity : ComponentActivity() {
             appSecret = HopBearer.APP_SECRET,
             deviceName = HopConfig.deviceName(this),
             relayUrl = HopBearer.DEFAULT_RELAY,
+            relaysEnabled = false,   // P2P-ONLY test mode: never dial the backbone relay (BLE/LAN/Wi-Fi Direct only)
             notificationIcon = android.R.drawable.ic_dialog_email,
         )
         bearer = HopBearer.shared(this, config)
@@ -96,6 +98,26 @@ class MainActivity : ComponentActivity() {
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { MaterialTheme { HopApp(bearer) } }
         requestPerms.launch(permissions)
+        handleAutomationIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleAutomationIntent(intent)
+    }
+
+    /** Test/automation hook: `hopdemo://send?to=<base58>&text=<marker>` drives a send with NO UI taps,
+     *  exercising the same bearer.send path the UI button uses. */
+    private fun handleAutomationIntent(intent: Intent?) {
+        val d = intent?.data ?: return
+        if (d.scheme == "hopdemo" && d.host == "send") {
+            val to = d.getQueryParameter("to"); val text = d.getQueryParameter("text")
+            if (!to.isNullOrBlank() && text != null) {
+                bearer.sendTo(to, text)
+                android.util.Log.i("HOPLOG", "HOPAUTO sent to=${to.take(8)} text=$text")
+            }
+        }
     }
 
     override fun onResume() { super.onResume(); bearer.setForeground(true) }
@@ -647,7 +669,7 @@ private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Pee
 fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     val attached = remember { mutableStateListOf<ByteArray>() } // staged images for one multipart send
-    val thread = bearer.messages.filter { it.peer == peer.name }
+    val thread = bearer.messages.filter { it.peer == bearer.keyFor(peer) }   // key by ADDRESS, not name (two same-named peers must not merge)
     val context = LocalContext.current
     // Pick one OR MORE images, downscale to JPEG, and stage them; Send fires one multipart (§20).
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->

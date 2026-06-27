@@ -15,7 +15,7 @@ extension HopBearer {
             deviceSeed: IdentityStore.deviceSeed(),
             appSecret: HopBearer.appSecret,
             displayName: HopBearer.savedName(default: UIDevice.current.name),
-            defaultRelay: HopBearer.defaultRelay,
+            defaultRelay: nil,   // P2P-ONLY test mode: no backbone relay (BLE/LAN only). Was HopBearer.defaultRelay.
             role: .full))
     }()
 }
@@ -30,11 +30,16 @@ struct HopDemoApp: App {
         // accumulates across short wakes. Registered here (must be before launch finishes);
         // the appRefresh handler below is registered by the SwiftUI .backgroundTask modifier.
         HopDemoApp.registerProcessing()
+        // TEST/AUTOMATION: cold-launch send driven by the HOP_AUTO launch env var (hands-off
+        // harness testing on dev-owned devices, no UI tapping). See runAutomationEnv.
+        HopDemoApp.runAutomationEnv()
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                // TEST/AUTOMATION: drive a send from `hopdemo://send?to=<base58>&text=<marker>`.
+                .onOpenURL { url in HopDemoApp.handleAutomationURL(url) }
         }
         // Short, frequent-ish OS wake to tick + reconnect the relay + drain (best-effort,
         // OS-scheduled; more often for actively-used apps). See DESIGN.md §22/§28.
@@ -91,6 +96,33 @@ struct HopDemoApp: App {
                 }
             }
             loop()
+        }
+    }
+
+    // MARK: - Automation control surface (TEST/AUTOMATION — headless harness, no UI tapping)
+
+    /// Handle `hopdemo://send?to=<base58addr>&text=<marker>`: parse the address + marker text and
+    /// drive a send through the bearer's `sendTo` automation hook. Authorized internal testing only.
+    static func handleAutomationURL(_ url: URL) {
+        guard url.scheme == "hopdemo", url.host == "send",
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let items = comps.queryItems ?? []
+        guard let to = items.first(where: { $0.name == "to" })?.value,
+              let text = items.first(where: { $0.name == "text" })?.value else { return }
+        HopBearer.shared.sendTo(addressBase58: to, text: text)
+    }
+
+    /// Cold-launch send driven by `HOP_AUTO=send|<base58addr>|<marker text>` (set via
+    /// `xcrun devicectl ... --environment-variables`). The marker text may contain spaces (only the
+    /// first two `|` are structural). Fires ~3s after launch so BLE links can form first.
+    static func runAutomationEnv() {
+        guard let spec = ProcessInfo.processInfo.environment["HOP_AUTO"] else { return }
+        let parts = spec.components(separatedBy: "|")
+        guard parts.count >= 3, parts[0] == "send" else { return }
+        let to = parts[1]
+        let text = parts[2...].joined(separator: "|")   // rejoin any stray pipes into the marker text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            HopBearer.shared.sendTo(addressBase58: to, text: text)
         }
     }
 }
