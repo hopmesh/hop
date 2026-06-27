@@ -84,6 +84,16 @@ struct Established {
     frag_next: u16,
 }
 
+/// Per-PEER gossip dedup that SURVIVES link re-establishment. The per-`Established` `sent_*` sets
+/// are wiped on every (re)connect; on a flapping BLE link that re-floods the whole directory to the
+/// peer each cycle — the resource-exhaustion field bug (tx >> rx, real messages starve). We snapshot
+/// them here on Disconnect, keyed by peer address, and restore them on the next Up to the same peer.
+#[derive(Default)]
+struct PeerSent {
+    adverts: HashSet<crate::discover::AdvertId>,
+    bundles: HashSet<crate::bundle::BundleId>,
+}
+
 // Boxed because a Noise handshake state is much larger than an established session.
 enum LinkState {
     Handshaking(Box<Handshaking>),
@@ -101,10 +111,12 @@ struct PendingTx {
     retx_interval: u64,
 }
 
-/// Default *initial* gap between retransmission attempts for an unacked bundle. The gap
-/// then backs off exponentially up to [`MAX_RETX_INTERVAL_MS`], so a days-long hop costs a
-/// handful of retransmits rather than thousands.
-pub const DEFAULT_RETX_INTERVAL_MS: u64 = 30_000;
+/// Default *initial* gap between retransmission attempts for an unacked bundle. Short so a copy
+/// lost on a flaky local BLE link (drop mid-send) recovers in seconds, not half a minute; it then
+/// backs off exponentially up to [`MAX_RETX_INTERVAL_MS`], so a days-long hop still costs only a
+/// handful of retransmits rather than thousands. (Reconnects re-offer pending bundles immediately
+/// via the link-up path, so this is the fallback for losses without a reconnect.)
+pub const DEFAULT_RETX_INTERVAL_MS: u64 = 5_000;
 
 /// Ceiling on the retransmission backoff (15 min). Past this, retries pace at this rate
 /// for the rest of the bundle's lifetime.
@@ -358,6 +370,8 @@ pub struct Node<S: Store = MemoryStore> {
     /// STABLE links, not just at link-up — see the re-gossip in `tick`).
     last_regossip_ms: u64,
     links: HashMap<LinkId, LinkState>,
+    /// Per-peer gossip dedup, preserved across link flaps so a reconnect doesn't re-flood the directory.
+    peer_sent: HashMap<PubKeyBytes, PeerSent>,
     outgoing: Vec<(LinkId, Vec<u8>)>,
     inbox: Vec<Bundle>,
     /// Locally-originated bundles awaiting an ACK, retransmitted until acked/expired.
@@ -568,6 +582,7 @@ impl<S: Store> Node<S> {
             now_ms: 0,
             last_regossip_ms: 0,
             links: HashMap::new(),
+            peer_sent: HashMap::new(),
             outgoing: Vec::new(),
             inbox: Vec::new(),
             pending: HashMap::new(),
@@ -2300,15 +2315,24 @@ impl<S: Store> Node<S> {
         // receiver dedups unchanged adverts, so it's cheap. (DESIGN.md §16/§25.)
         if now_ms.saturating_sub(self.last_regossip_ms) >= REGOSSIP_INTERVAL_MS {
             self.last_regossip_ms = now_ms;
-            // Re-gossip intentionally does NOT clear sent_adverts + re-flood the whole directory.
-            // That was O(directory × links) EVERY interval and, in a busy multi-peer mesh, floods the
-            // few-KB/s BLE pipe (tx >> rx since the peer just dedups) and starves real messages —
-            // the minutes-to-hours delivery / resource-exhaustion bug. Propagation is already covered
-            // WITHOUT a re-flood: a newly ingested/published advert is offered immediately (on_advert/
-            // publish → offer_adverts_to_all; it's absent from sent_adverts so it goes out), and
-            // prekeys/presence are periodically RE-published as fresh adverts that propagate the same
-            // way. So a peer lacking our prekey at connect gets it on our next prekey re-publish —
-            // bounded per link regardless of how many peers or how large the directory.
+            // Re-gossip ONLY our OWN prekey/presence to every live link (NOT the whole directory).
+            // Re-flooding the whole directory was O(directory × links) every interval — the multi-peer
+            // resource-exhaustion bug (tx >> rx, real messages starve). But re-offering just our own
+            // securing adverts is cheap (~2-3 adverts × links) and lets a peer that silently lost state
+            // on a STABLE link (no flap to trigger the link-up re-offer) re-secure within the interval.
+            // The foreign bulk stays per-peer-deduped; newly published/ingested adverts still propagate
+            // immediately via on_advert/publish → offer_adverts_to_all.
+            let own = self.directory.advert_ids_by_publisher(&self.identity.address());
+            if !own.is_empty() {
+                for state in self.links.values_mut() {
+                    if let LinkState::Up(est) = state {
+                        for id in &own {
+                            est.sent_adverts.remove(id);
+                        }
+                    }
+                }
+                self.offer_adverts_to_all();
+            }
         }
         // Retry any content still waiting on a prekey (it gossips, §25).
         self.flush_pending_content();
@@ -2387,7 +2411,13 @@ impl<S: Store> Node<S> {
         match event {
             BearerEvent::Connected(link, role) => self.on_connected(link, role),
             BearerEvent::Disconnected(link) => {
-                self.links.remove(&link);
+                // Snapshot what we've already gossiped to this PEER so a reconnect doesn't re-flood
+                // the whole directory (the flapping-link resource-exhaustion bug). Keyed by peer, not
+                // by link instance — the link id changes on every reconnect, the peer address doesn't.
+                if let Some(LinkState::Up(est)) = self.links.remove(&link) {
+                    self.peer_sent
+                        .insert(est.peer, PeerSent { adverts: est.sent_adverts, bundles: est.sent_bundles });
+                }
             }
             BearerEvent::Data(link, bytes) => self.on_data(link, bytes),
         }
@@ -2401,6 +2431,12 @@ impl<S: Store> Node<S> {
     }
 
     fn on_connected(&mut self, link: LinkId, role: Role) {
+        // Idempotent: a spurious Connected for a link we already hold must not tear down its live
+        // Noise session (a re-handshake would reset dedup + re-flood). Real reconnects are preceded
+        // by Disconnected (bearer contract), which removes the entry and snapshots its dedup per-peer.
+        if self.links.contains_key(&link) {
+            return;
+        }
         let Ok(mut hs) = (match role {
             Role::Initiator => LinkHandshake::initiator(&self.identity),
             Role::Responder => LinkHandshake::responder(&self.identity),
@@ -2462,17 +2498,40 @@ impl<S: Store> Node<S> {
             let (Some(peer), Ok(session)) = (state.verified, state.hs.into_session()) else {
                 return; // finished without an authenticated peer → drop
             };
+            // Restore the per-peer dedup so a reconnect to a peer we've already synced doesn't
+            // re-flood the directory; a brand-new peer has no entry → empty sets → full first sync
+            // (prekey + presence + bundle handoff) still happens exactly once (DESIGN.md §16/§25/§27).
+            let prior = self.peer_sent.remove(&peer).unwrap_or_default();
             self.links.insert(
                 link,
                 LinkState::Up(Box::new(Established {
                     session,
                     peer,
-                    sent_bundles: HashSet::new(),
-                    sent_adverts: HashSet::new(),
+                    sent_bundles: prior.bundles,
+                    sent_adverts: prior.adverts,
                     frag_buf: Vec::new(),
                     frag_next: 0,
                 })),
             );
+            // ALWAYS re-offer our OWN adverts (prekey/presence) on link-up: clear them from the
+            // restored per-peer dedup so they go out again. A peer that lost state (restart / data-
+            // wipe / cache-evict) must be able to re-secure to us — it needs our prekey. The FOREIGN
+            // directory bulk stays deduped (no reflood), so this re-offers only ~2-3 small adverts.
+            let own = self.directory.advert_ids_by_publisher(&self.identity.address());
+            // Our own UNDELIVERED messages (awaiting an ACK): re-offer them on link-up too, so a
+            // reconnect re-sends them IMMEDIATELY instead of waiting out the exponential-backoff
+            // retransmit timer (30s → 15min). A bundle "sent" on a link that then dropped sits in the
+            // restored per-peer dedup marked already-sent — which is what made delivery take minutes
+            // on a flaky BLE link even after securing succeeded.
+            let pending_ids: Vec<BundleId> = self.pending.keys().copied().collect();
+            if let Some(LinkState::Up(est)) = self.links.get_mut(&link) {
+                for id in &own {
+                    est.sent_adverts.remove(id);
+                }
+                for id in &pending_ids {
+                    est.sent_bundles.remove(id);
+                }
+            }
             // Adverts (prekeys + presence) FIRST, then bulk bundles: a peer needs our prekey to
             // open a forward-secret session to us, so it must not sit behind a burst of relay-bundle
             // offers on a rate-limited BLE link (that head-of-line blocking delayed "Securing").
@@ -4186,6 +4245,94 @@ mod tests {
             }
         }
         assert!(bytes < 5_000, "re-gossip re-flooded the directory: {bytes} bytes over 5 idle cycles");
+    }
+
+    #[test]
+    fn reconnect_does_not_reflood_the_directory_3node() {
+        // Field bug (resource exhaustion): the per-link gossip dedup (sent_adverts/sent_bundles) lived
+        // on the `Established` instance and was wiped on every (re)establishment. BLE links flap, so
+        // each reconnect re-offered the WHOLE directory to the peer — the ~116 rec/s, byte-identical-
+        // across-links flood that saturated the pipe and starved real messages. The fix keys the dedup
+        // on the PEER (snapshot on Disconnect, restore on Up), so after the one-time initial sync a
+        // flapping link moves ~nothing.
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        // Full triangle, distinct link ids per neighbour.
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        net.connect(&mut nodes, 0, 2, 2, 20);
+        net.connect(&mut nodes, 1, 12, 2, 21);
+
+        // Each node's OWN securing adverts (prekey + presence) — these SHOULD re-offer on every flap.
+        for n in nodes.iter_mut() {
+            n.publish_prekey().unwrap();
+            let _ = n.publish_service("presence".into(), "x".into(), String::new(), vec![], 120_000);
+        }
+        // A LARGE FOREIGN directory (40 other devices' service adverts) — the bulk that must NOT be
+        // re-flooded on a flap. This is what made the field flood catastrophic.
+        for i in 0..40u32 {
+            let pubid = Identity::generate();
+            let a = Advert::publish(
+                &pubid,
+                AdvertKind::Service {
+                    service: "market".into(),
+                    title: format!("item{i}"),
+                    summary: String::new(),
+                    tags: vec![],
+                },
+                1_000,
+                120_000,
+                1,
+            )
+            .unwrap();
+            nodes[0].publish(a);
+        }
+        net.pump(&mut nodes);
+
+        let pairs: [((usize, LinkId), (usize, LinkId)); 3] =
+            [((0, 1), (1, 10)), ((0, 2), (2, 20)), ((1, 12), (2, 21))];
+
+        // Flap every link 10x (BLE drop/reconnect) with NO new adverts. Count only encrypted records
+        // (the flood); handshake packets legitimately re-cross on reconnect and are not the bug.
+        let mut data_bytes = 0usize;
+        for _ in 0..10 {
+            for &((a, la), (b, lb)) in pairs.iter() {
+                nodes[a].handle(BearerEvent::Disconnected(la));
+                nodes[b].handle(BearerEvent::Disconnected(lb));
+                nodes[a].handle(BearerEvent::Connected(la, Role::Initiator));
+                nodes[b].handle(BearerEvent::Connected(lb, Role::Responder));
+            }
+            for _ in 0..2000 {
+                let mut any = false;
+                for i in 0..nodes.len() {
+                    for (link, bts) in nodes[i].drain_outgoing() {
+                        any = true;
+                        if matches!(
+                            postcard::from_bytes::<LinkPacket>(&bts),
+                            Ok(LinkPacket::Data(_)) | Ok(LinkPacket::DataFrag { .. })
+                        ) {
+                            data_bytes += bts.len();
+                        }
+                        if let Some(&(j, jl)) = net.routes.get(&(i, link)) {
+                            nodes[j].handle(BearerEvent::Data(jl, bts));
+                        }
+                    }
+                }
+                if !any {
+                    break;
+                }
+            }
+        }
+        // Post-fix: each flap re-offers each node's ~2 OWN securing adverts (intended, so a state-lost
+        // peer re-secures) but NOT the 40-advert FOREIGN bulk. Pre-fix wiped the per-link dedup on every
+        // (re)establishment → re-flooded the whole directory (40 foreign × every flap → hundreds of KB).
+        assert!(
+            data_bytes < 100_000,
+            "reconnect re-flooded the foreign directory: {data_bytes} bytes over 10 flap cycles"
+        );
     }
 
     #[test]

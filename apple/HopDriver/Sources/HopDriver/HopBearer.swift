@@ -481,6 +481,10 @@ public final class HopBearer: NSObject, ObservableObject {
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.backgroundTick()
         }
+
+        // TEST/AUTOMATION: publish the self-address mirror immediately so a headless harness can
+        // learn this device's address before any message flows (see writeAutomationDump).
+        writeAutomationDump()
     }
 
     private var tickCount = 0
@@ -629,6 +633,19 @@ public final class HopBearer: NSObject, ObservableObject {
         messages.append(msg)
         sendBundle(dst: peer.address, contentType: "text/plain; charset=utf-8",
                    body: Data(text.utf8), messageId: msg.id)
+    }
+
+    /// TEST/AUTOMATION hook: send `text` to a base58 ADDRESS, building a minimal peer (no UI
+    /// selection needed). Drives the headless automation surface (the `hopdemo://send` URL scheme
+    /// and the `HOP_AUTO` launch env var); not on any normal user path. The node defers/ratchets
+    /// to an as-yet-unreachable address like any send, so the target need not be discovered yet.
+    public func sendTo(addressBase58 b58: String, text: String) {
+        onMain { [weak self] in
+            guard let self else { return }
+            let addr = addressFromBase58(text: b58.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard addr.count == 32, addr != self.myAddrCache else { return }
+            self.send(text, to: Peer(address: addr, name: self.displayName(addr), hops: 0))
+        }
     }
 
     /// Send an image. It's just a message with an image content type and the raw bytes as
@@ -1663,6 +1680,43 @@ public final class HopBearer: NSObject, ObservableObject {
         }
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: HopBearer.messagesFileURL, options: .atomic)
+        writeAutomationDump()   // TEST/AUTOMATION: mirror self-addr + rx/tx for the headless harness
+    }
+
+    // MARK: - Automation control surface (TEST/AUTOMATION hook — headless harness only)
+
+    /// A PLAINTEXT mirror of our self-address + recent rx/tx, written to `Documents/automation.json`.
+    /// The encrypted hop.db has no plaintext mirror, so this is the ONLY way an external test harness
+    /// (which pulls the file via `xcrun devicectl device copy from`) can discover this device's
+    /// address (`self`) for targeting and verify iOS-side message receipt. Not a normal user path.
+    private struct AutomationDump: Codable {
+        struct Rx: Codable { let from: String; let text: String; let at: Int64 }
+        struct Tx: Codable { let to: String; let text: String; let delivered: Bool; let at: Int64 }
+        let `self`: String
+        let name: String
+        let rx: [Rx]
+        let tx: [Tx]
+    }
+    static var automationFileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("automation.json")
+    }
+    /// Rewrite the automation mirror (last ~100 rx + tx). Called on every message change (from
+    /// `saveMessages`) and once at startup so `self` is discoverable even before any traffic.
+    func writeAutomationDump() {
+        let rx = messages.filter { $0.incoming }.suffix(100).map {
+            AutomationDump.Rx(from: $0.peerAddr.map(HopBearer.base58) ?? $0.peer,
+                              text: $0.text, at: Int64($0.sentAt.timeIntervalSince1970 * 1000))
+        }
+        let tx = messages.filter { !$0.incoming }.suffix(100).map {
+            AutomationDump.Tx(to: $0.peerAddr.map(HopBearer.base58) ?? $0.peer,
+                              text: $0.text, delivered: $0.delivered,
+                              at: Int64($0.sentAt.timeIntervalSince1970 * 1000))
+        }
+        let dump = AutomationDump(self: myAddress, name: myName, rx: Array(rx), tx: Array(tx))
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(dump) else { return }
+        try? data.write(to: HopBearer.automationFileURL, options: .atomic)
     }
 
     private static var channelsFileURL: URL {

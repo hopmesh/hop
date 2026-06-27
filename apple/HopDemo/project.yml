@@ -42,6 +42,11 @@ targets:
         # MultipeerConnectivity Wi-Fi bearer (DESIGN.md §26) — required or it fails silently on iOS 14+.
         NSLocalNetworkUsageDescription: "Hop meshes with nearby devices over Wi-Fi to relay messages without the internet."
         NSBonjourServices: [_hop-mesh._tcp, _hop-mesh._udp, _hoplan._tcp]
+        # TEST/AUTOMATION: custom URL scheme so a headless harness can drive sends via
+        # `hopdemo://send?to=<base58>&text=<marker>` without UI tapping (HopDemoApp.handleAutomationURL).
+        CFBundleURLTypes:
+          - CFBundleURLName: net.waldrip.hop.demo.automation
+            CFBundleURLSchemes: [hopdemo]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

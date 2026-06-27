@@ -185,6 +185,10 @@ class HopBearer private constructor(private val context: Context, private val co
     // whether a link that came UP is actually exchanging the Noise handshake (rx>0 = peer is talking).
     private val linkTx = HashMap<ULong, Long>()
     private val linkRx = HashMap<ULong, Long>()
+    private val prevRx = HashMap<ULong, Long>()   // rx snapshot per dedup cycle → "is this link actively receiving?"
+    // DIAG: per-link outgoing LinkPacket-type histogram [handshake, data, datafrag, other] by
+    // postcard discriminant (bytes[0]). Tells us if a flood is re-handshakes vs data records.
+    private val pktHisto = HashMap<ULong, LongArray>()
     // Read from the UI thread (displayName) and written on core (refresh/pump), so concurrent-safe.
     private val nameByAddr = java.util.concurrent.ConcurrentHashMap<List<Byte>, String>()
 
@@ -230,6 +234,7 @@ class HopBearer private constructor(private val context: Context, private val co
         myNameVal = name; onUi { myName.value = name }
         val addr58 = addressBase58(node.address())
         myAddressVal = addr58; onUi { myAddress.value = addr58 }
+        android.util.Log.i("HOPLOG", "HOPAUTO self=$addr58 name=${config.deviceName}")   // test harness reads this for targeting
         // Presence is an app-level service (DESIGN.md §23): publish our name on the
         // "presence" topic and subscribe so discovered records are retained.
         runCatching { node.subscribe(PRESENCE_SERVICE) }
@@ -277,7 +282,8 @@ class HopBearer private constructor(private val context: Context, private val co
         val priv = prefs.getBoolean("privateMode", false)
         privateModeVal = priv
         onUi { pinnedRelay.value = pinned; privateMode.value = priv }
-        connectRelay(pinned ?: config.relayUrl)
+        if (config.relaysEnabled) connectRelay(pinned ?: config.relayUrl)
+        else onUi { relayStatus.value = "disabled" }   // pure-P2P mode (HopConfig.relaysEnabled=false)
         var ticks = 0
         core.postDelayed(object : Runnable {
             override fun run() {
@@ -291,10 +297,11 @@ class HopBearer private constructor(private val context: Context, private val co
                 // — e.g. OEM doze or a wedged stack). No reset of a healthy advert, so the name stays put.
                 if (ticks % 30 == 0) runCatching { startAdvertise() }
                 if (ticks % 30 == 0) runCatching { startBeacon() }   // self-heal the iBeacon too
+                if (ticks % 15 == 0) android.util.Log.i("HOPLOG", "HOPAUTO self=$myAddressVal name=${config.deviceName}")  // periodic, so the harness always finds it
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
-                if (!relayConnected && relayStatus.value != "connecting…") {
+                if (config.relaysEnabled && !relayConnected && relayStatus.value != "connecting…") {
                     val now = nowMs()
                     if (now - lastRelayDialMs > 4000u) {
                         lastRelayDialMs = now
@@ -310,10 +317,13 @@ class HopBearer private constructor(private val context: Context, private val co
                 val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
                 val distinctPeers = pls.map { it.address.toList() }.distinct().size
                 if (links.isNotEmpty()) android.util.Log.i("HOPLOG",
-                    "NODESTATE upLinks=${pls.size} bleLinks=${links.size} peers=$distinctPeers " +
-                    pls.joinToString(" ") { "id${it.link}=${it.address.take(3).joinToString(""){ b -> "%02x".format(b) }}" })
+                    "NODESTATE upLinks=${pls.size} bleLinks=${links.size} peers=$distinctPeers pend=${runCatching { node.pendingCount() }.getOrDefault(0u)} " +
+                    pls.joinToString(" ") { p -> "id${p.link}=${p.address.take(3).joinToString(""){ b -> "%02x".format(b) }}" +
+                        "[sec=${runCatching { node.isSecured(p.address) }.getOrDefault(false)},rt=${runCatching { node.knowsRoute(p.address) }.getOrDefault(false)}]" })
                 for ((lid, _) in links) {
-                    android.util.Log.i("HOPLOG", "LINKFLOW id=$lid tx=${linkTx[lid] ?: 0L} rx=${linkRx[lid] ?: 0L}")
+                    val h = pktHisto[lid] ?: LongArray(4)
+                    android.util.Log.i("HOPLOG", "LINKFLOW id=$lid tx=${linkTx[lid] ?: 0L} rx=${linkRx[lid] ?: 0L} " +
+                        "txpkts[hs=${h[0]} data=${h[1]} frag=${h[2]} other=${h[3]}]")
                 }
                 core.postDelayed(this, 1000)
             }
@@ -334,12 +344,22 @@ class HopBearer private constructor(private val context: Context, private val co
         }
         for ((_, lids) in byPeer) {
             if (lids.size <= 1) continue
-            // Keep the lowest (oldest) link id; close the newer duplicate dials.
-            lids.sorted().drop(1).forEach { dup ->
-                android.util.Log.i("HOPLOG", "DEDUP closing duplicate BLE link id=$dup (same peer, ${lids.size} links)")
+            // Keep the link that is ACTUALLY CARRYING TRAFFIC (rx grew since the last cycle ⇒ both
+            // ends agree it's alive); close the stale duplicates. Tie-break to the newest id when
+            // none (or several) are active. This CONVERGES — both peers keep the bidirectionally-live
+            // pipe — unlike keep-oldest (wedged on a dead link → endless re-dial churn) or keep-newest
+            // (ping-ponged when the peer was still using the older link).
+            val keep = lids.maxByOrNull { lid ->
+                val active = (linkRx[lid] ?: 0L) > (prevRx[lid] ?: 0L)
+                (if (active) 1_000_000_000_000_000L else 0L) + lid.toLong()
+            } ?: continue
+            lids.filter { it != keep }.forEach { dup ->
+                android.util.Log.i("HOPLOG", "DEDUP closing stale duplicate BLE link id=$dup keep=$keep (same peer, ${lids.size} links)")
                 runCatching { links[dup]?.close() }
             }
         }
+        // Snapshot rx for the next cycle's activity check.
+        runCatching { node.peerLinks() }.getOrDefault(emptyList()).forEach { prevRx[it.link] = linkRx[it.link] ?: 0L }
     }
 
     /// Keepalive + reaping for GATT-data links (the bearer drives these; GattDataLink has no timer
@@ -395,12 +415,23 @@ class HopBearer private constructor(private val context: Context, private val co
         core.post { publishPresence(); pump() }
     }
 
+    /** Stable conversation key for a peer — its base58 ADDRESS, never its display name. Two distinct
+     *  peers that happen to share a name (e.g. two "Pixel 7"s) must not collapse into one thread. */
+    fun keyFor(p: Peer): String = addressBase58(p.address)
+
+    /** Test/automation hook: send [text] to a base58 ADDRESS, building a minimal Peer (no UI selection
+     *  needed). Backs the hopdemo://send deep link so a harness can drive sends without UI taps. */
+    fun sendTo(addrBase58: String, text: String) {
+        val addr = runCatching { addressFromBase58(addrBase58.trim()) }.getOrNull() ?: return
+        send(text, Peer(addr, contacts[addr.toList()]?.name ?: "", 0u, active = false))
+    }
+
     fun send(text: String, to: Peer) = core.post {
         rememberContact(to)   // messaging someone adds them to your address book
         val id = runCatching {
             node.sendMessage(to.address, "text/plain", text.toByteArray(), true)
         }.getOrNull()
-        val msg = Message(localId = nextMsgId++, peer = to.name, text = text, incoming = false, bundleId = id)
+        val msg = Message(localId = nextMsgId++, peer = addressBase58(to.address), text = text, incoming = false, bundleId = id)
         onUi { messages.add(msg) }
         pump()
     }
@@ -412,7 +443,7 @@ class HopBearer private constructor(private val context: Context, private val co
         val id = runCatching {
             node.sendMessage(to.address, "image/jpeg", data, true)
         }.getOrNull()
-        val msg = Message(localId = nextMsgId++, peer = to.name, text = "", incoming = false,
+        val msg = Message(localId = nextMsgId++, peer = addressBase58(to.address), text = "", incoming = false,
             bundleId = id, contentType = "image/jpeg", imageData = data)
         onUi { messages.add(msg) }
         pump()
@@ -431,7 +462,7 @@ class HopBearer private constructor(private val context: Context, private val co
         val id = runCatching {
             node.sendMessage(to.address, "multipart/mixed", encodeMultipart(parts), true)
         }.getOrNull()
-        val msg = Message(localId = nextMsgId++, peer = to.name, text = t, incoming = false,
+        val msg = Message(localId = nextMsgId++, peer = addressBase58(to.address), text = t, incoming = false,
             bundleId = id, contentType = "multipart/mixed", images = images)
         onUi { messages.add(msg) }
         pump()
@@ -629,6 +660,9 @@ class HopBearer private constructor(private val context: Context, private val co
 
     private fun pump() {
         for (pkt in node.drainOutgoing()) {
+            val t = if (pkt.bytes.isNotEmpty()) (pkt.bytes[0].toInt() and 0xff) else 3   // LinkPacket discriminant
+            val h = pktHisto.getOrPut(pkt.link) { LongArray(4) }
+            h[if (t in 0..2) t else 3]++
             val link = links[pkt.link]
             if (link != null) { link.send(pkt.bytes); linkTx[pkt.link] = (linkTx[pkt.link] ?: 0L) + pkt.bytes.size }
             else if (pkt.link == relayLinkId) relaySend(pkt.bytes)
@@ -649,7 +683,7 @@ class HopBearer private constructor(private val context: Context, private val co
             }
             val now = nowMs()
             val latency = if (now >= m.createdAt) now - m.createdAt else 0uL
-            val msg = Message(localId = nextMsgId++, peer = who, text = text,
+            val msg = Message(localId = nextMsgId++, peer = addressBase58(m.from), text = text,
                 incoming = true, contentType = m.contentType,
                 imageData = if (isImage) m.body else null, images = images,
                 hops = m.hops, latencyMs = latency, trace = m.trace.map { traceLabel(it) })
@@ -1040,6 +1074,7 @@ class HopBearer private constructor(private val context: Context, private val co
 
     fun connectRelay(input: String) {
         val t = input.trim()
+        if (t.isEmpty() || !config.relaysEnabled) { onUi { relayStatus.value = "disabled" }; return }  // pure-P2P mode
         relayUrl = t   // remembered so the tick loop auto-reconnects on drop (§28)
         if (t.startsWith("ws://") || t.startsWith("wss://")) connectRelayWS(t)
         else connectRelayTcp(t)
