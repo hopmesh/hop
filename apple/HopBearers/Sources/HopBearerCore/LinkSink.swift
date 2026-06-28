@@ -39,6 +39,10 @@ public protocol Bearer: AnyObject {
     /// bearer; a `BearerManager` wires a per-bearer lane here so it can multiplex many bearers behind
     /// one sink. Implement as `weak` (the sink/manager owns the bearer, so a strong ref would cycle).
     var sink: LinkSink? { get set }
+    /// A short, stable transport tag for this bearer (e.g. "BT", "LAN", "Relay") — the SHORT tag the
+    /// consumer's per-peer transport map uses. Purely cosmetic: the consumer's UI uses it to label which
+    /// radio a link rode in on. NOTHING in routing/dedup/securing depends on it.
+    var transportName: String { get }
     /// Begin advertising/scanning (or the transport's equivalent) and forming links.
     func start()
     /// Tear down all links + radios; the sink gets `linkDown` for each live link.

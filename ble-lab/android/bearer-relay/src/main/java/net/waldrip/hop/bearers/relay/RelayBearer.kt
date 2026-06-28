@@ -44,6 +44,8 @@ private const val RELAY_BACKOFF_MAX_MS = 30_000L
 
 class RelayBearer(private val relayUrl: String) : Bearer {
     override var sink: LinkSink? = null
+    /// Short transport tag for the consumer's UI (Bearer contract). The cloud relay link surfaces as "Relay".
+    override val transportName = "Relay"
 
     /// ONE link — one WebSocket. The BearerManager translates this local id into its global id space and
     /// mints a fresh global on each reconnect (linkDown forgets the old mapping), so the node sees each

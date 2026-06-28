@@ -597,6 +597,8 @@ public final class BleBearer: Bearer {
     /// Where links surface. Set by the consumer (or a BearerManager) before `start()`. Weak: the
     /// sink/manager owns the bearer, so a strong ref back would cycle (see `Bearer.sink`).
     public weak var sink: LinkSink?
+    /// Short transport tag for the consumer's UI (Bearer contract). BLE links surface as "BT".
+    public let transportName = "BT"
     private var peripheral: Peripheral?
     private var central: Central?
     private var linksByPeerId = [Data: Link]()       // dedup: one survivor per peer (SPEC §2.3)

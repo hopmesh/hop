@@ -186,6 +186,8 @@ final class LanLink {
 public final class LanBearer: Bearer {
     private let myId: Data
     public weak var sink: LinkSink?
+    /// Short transport tag for the consumer's UI (Bearer contract). LAN (mDNS+TCP) links surface as "LAN".
+    public let transportName = "LAN"
 
     private let lanQueue = DispatchQueue(label: "hop.lan")
     private var listener: NWListener?

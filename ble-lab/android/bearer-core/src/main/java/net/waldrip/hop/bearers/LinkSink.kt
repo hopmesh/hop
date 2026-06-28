@@ -42,6 +42,11 @@ interface Bearer {
     /// BearerManager wires a per-bearer lane here so it can multiplex many bearers behind one sink.
     var sink: LinkSink?
 
+    /// A short, stable transport tag for this bearer (e.g. "BT", "LAN", "Wi-Fi Direct", "Relay") — the
+    /// SHORT tag the consumer's per-peer transport map uses. Purely cosmetic: the consumer's UI uses it
+    /// to label which radio a link rode in on. NOTHING in routing/dedup/securing depends on it.
+    val transportName: String
+
     /// Begin advertising/scanning (or the transport's equivalent) and forming links.
     fun start()
 

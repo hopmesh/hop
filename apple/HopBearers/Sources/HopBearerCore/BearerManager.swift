@@ -34,6 +34,11 @@ public final class BearerManager: Bearer {
     /// LinkId space. Weak: the consumer typically owns the manager, so a strong ref would cycle.
     public weak var sink: LinkSink?
 
+    /// Bearer contract. The manager aggregates many transports, so it has no single tag of its own; this
+    /// is only read if a manager were nested inside another (it isn't). Per-link tags come from
+    /// `transportName(of:)`, which reports the OWNING bearer's tag.
+    public let transportName = "Mesh"
+
     // THREADING: each bearer runs on its OWN queue (the BLE bearer's run loop, the LAN bearer's serial
     // queue, …) and the consumer pings from yet another, so the routing maps are touched concurrently.
     // A lock guards every map access; sink callbacks are always invoked OUTSIDE the lock (so a consumer
@@ -71,6 +76,24 @@ public final class BearerManager: Bearer {
     }
 
     private func snapshotBearers() -> [Bearer] { lock.lock(); defer { lock.unlock() }; return bearers }
+
+    // MARK: transport labelling — the consumer's UI tags each shared-bearer link by its REAL transport
+
+    /// The short transport tag (e.g. "BT"/"LAN"/"Relay") of the bearer owning `link`, or nil if the link
+    /// is unknown / already closed. Cosmetic only — the consumer uses it to label a shared-bearer peer.
+    public func transportName(of link: LinkId) -> String? {
+        lock.lock(); let route = fromGlobal[link]; lock.unlock()
+        return route?.0.transportName
+    }
+
+    /// Every currently-up global link grouped by its owning bearer's transport tag → count. The consumer
+    /// builds its per-transport status list from this when shared bearers are on.
+    public func activeTransports() -> [String: Int] {
+        lock.lock(); let routes = Array(fromGlobal.values); lock.unlock()
+        var out: [String: Int] = [:]
+        for (bearer, _) in routes { out[bearer.transportName, default: 0] += 1 }
+        return out
+    }
 
     // MARK: lane callbacks — bearer-local link ids in, global link ids out (map work locked, sink unlocked)
 

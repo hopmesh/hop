@@ -658,6 +658,8 @@ internal class Central(
 class BleBearer(private val ctx: Context, private val myId: ByteArray) : Bearer {
     /// Where links surface. Set by the consumer (or a BearerManager) before `start()`.
     override var sink: LinkSink? = null
+    /// Short transport tag for the consumer's UI (Bearer contract). BLE links surface as "BT".
+    override val transportName = "BT"
 
     private val lock = Any()
     private val linksByPeerId = HashMap<String, Link>()   // dedup: one survivor per peer (SPEC §2.3)

@@ -12,6 +12,8 @@ import XCTest
 /// link id `1`, which is exactly the collision the manager's global id space must resolve.
 private final class FakeBearer: Bearer {
     weak var sink: LinkSink?
+    let transportName: String
+    init(transportName: String = "FAKE") { self.transportName = transportName }
     private(set) var started = false
     private(set) var stopped = false
     private(set) var sent: [(LinkId, Data)] = []        // (local link id, bytes) the manager routed to us
@@ -161,5 +163,29 @@ final class BearerManagerTests: XCTestCase {
         mgr.send(Data([0xA2]), on: g2)
         XCTAssertEqual(a.sent.map { $0.0 }, [l1, l2])
         XCTAssertEqual(a.sent.map { $0.1 }, [Data([0xA1]), Data([0xA2])])
+    }
+
+    /// The cosmetic transport-labelling API: each global link reports its OWNING bearer's tag, and the
+    /// active-transports rollup groups live links by tag → count (and forgets a link once it drops).
+    func testTransportLabellingReportsOwningBearerTag() {
+        let mgr = BearerManager()
+        let sink = RecordingSink()
+        mgr.sink = sink
+        let bt = FakeBearer(transportName: "BT"), lan = FakeBearer(transportName: "LAN")
+        mgr.register(bt); mgr.register(lan); mgr.start()
+
+        let lbt1 = bt.bringUp(role: .dialer, peerId: Data([0x01]))
+        _ = bt.bringUp(role: .dialer, peerId: Data([0x02]))
+        _ = lan.bringUp(role: .acceptor, peerId: Data([0x03]))
+        let gBt1 = sink.upOrder[0]; let gLan = sink.upOrder[2]
+
+        XCTAssertEqual(mgr.transportName(of: gBt1), "BT")
+        XCTAssertEqual(mgr.transportName(of: gLan), "LAN")
+        XCTAssertNil(mgr.transportName(of: 999_999), "unknown link has no transport")
+        XCTAssertEqual(mgr.activeTransports(), ["BT": 2, "LAN": 1])
+
+        bt.drop(lbt1)   // one BT link drops — rollup must follow
+        XCTAssertNil(mgr.transportName(of: gBt1))
+        XCTAssertEqual(mgr.activeTransports(), ["BT": 1, "LAN": 1])
     }
 }

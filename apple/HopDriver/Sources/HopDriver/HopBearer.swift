@@ -2028,22 +2028,43 @@ public final class HopBearer: NSObject, ObservableObject {
         let lanActive = wifiUp || !lanLinks.isEmpty
         let relayActive = (relayConn != nil || relayWS != nil) && relayStatus == "connected"
         let pls = snap.peerLinks
-        transports = [
-            TransportStatus(id: "Bluetooth", active: bleActive, links: links.count),
-            TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: mcPeerByLink.count),
-            TransportStatus(id: "Local Net", active: lanActive, links: lanLinks.count),
-            TransportStatus(id: "Relay", active: relayActive, links: relayActive ? 1 : 0),
-        ]
+        if useSharedBearers {
+            // Shared bearers mint links through the BearerManager (baseLinkId 1_000_000+), NOT the legacy
+            // radio objects, so the legacy radio-state flags above would show them inactive. Derive the
+            // per-transport status from the manager's live links instead — each short tag mapped to its
+            // display id. Multipeer (Peer-to-Peer) is NOT a shared bearer, so it stays on the legacy path.
+            let active = bearerMgr.activeTransports()          // short tag → live link count
+            var ts: [TransportStatus] = []
+            if let n = active["BT"]    { ts.append(TransportStatus(id: "Bluetooth", active: true, links: n)) }
+            ts.append(TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: mcPeerByLink.count))
+            if let n = active["LAN"]   { ts.append(TransportStatus(id: "Local Net", active: true, links: n)) }
+            if let n = active["Relay"] { ts.append(TransportStatus(id: "Relay", active: true, links: n)) }
+            transports = ts
+        } else {
+            transports = [
+                TransportStatus(id: "Bluetooth", active: bleActive, links: links.count),
+                TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: mcPeerByLink.count),
+                TransportStatus(id: "Local Net", active: lanActive, links: lanLinks.count),
+                TransportStatus(id: "Relay", active: relayActive, links: relayActive ? 1 : 0),
+            ]
+        }
 
-        // Map each direct neighbour to the transport(s) carrying it (the route).
+        // Map each direct neighbour to the transport(s) carrying it (the route). Shared-bearer links are
+        // minted by the BearerManager (baseLinkId 1_000_000+), so the legacy link-id ranges can't tag
+        // them — ask the manager for the owning bearer's REAL transport first, then fall back to the
+        // legacy ranges for any link the node still mints itself (Multipeer, legacy relay/endpoints).
         var lt = [Data: Set<String>]()
         for pl in pls {
             let t: String
-            switch pl.link {
-            case ..<10_000:  t = "BT"
-            case ..<20_000:  t = "P2P"       // MultipeerConnectivity / AWDL — peer-to-peer Wi-Fi, no router
-            case ..<40_000:  t = "Relay"     // relay (20k) + hops:// endpoints (30k) aren't local
-            default:          t = "LAN"        // 40k+ = LAN TCP over a shared network (mDNS)
+            if bearerLinksContains(pl.link), let tag = bearerMgr.transportName(of: pl.link) {
+                t = tag                          // shared bearer: real transport ("BT"/"LAN"/"Relay")
+            } else {
+                switch pl.link {
+                case ..<10_000:  t = "BT"
+                case ..<20_000:  t = "P2P"       // MultipeerConnectivity / AWDL — peer-to-peer Wi-Fi, no router
+                case ..<40_000:  t = "Relay"     // relay (20k) + hops:// endpoints (30k) aren't local
+                default:          t = "LAN"        // 40k+ = LAN TCP over a shared network (mDNS)
+                }
             }
             lt[pl.address, default: []].insert(t)
         }
