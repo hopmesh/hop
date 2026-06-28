@@ -38,4 +38,11 @@ dependencies {
     api("com.squareup.okhttp3:okhttp:4.12.0")
 
     implementation("androidx.core:core-ktx:1.13.1")
+
+    // Shared cross-platform transport layer (ble-lab modules, wired in settings.gradle.kts). When
+    // HopConfig.useSharedBearers is on (default), the driver forms BLE (pure-L2CAP) + LAN links
+    // through these via one BearerManager; the legacy in-driver transports stay as a flag-off fallback.
+    implementation(project(":bearer-core"))
+    implementation(project(":bearer-ble"))
+    implementation(project(":bearer-lan"))
 }

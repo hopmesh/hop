@@ -220,6 +220,41 @@ class HopBearer private constructor(private val context: Context, private val co
     @Volatile private var resolvingNsd = false          // NsdManager.resolveService is one-at-a-time
     private var wifiDirect: WifiDirectBearer? = null
 
+    // ---- shared cross-platform transport layer (ble-lab bearer-core/-ble/-lan) ----------------
+    // Default-on (config.useSharedBearers): pure-L2CAP BLE + LAN multiplexed by ONE BearerManager,
+    // surfaced through bearerSink into the SAME node seam the legacy transports use. The manager's
+    // global link-id space starts HIGH (1_000_000) so its ids never collide with the ULong nextLinkId
+    // (1+) / relay (20k) / LAN (40k) / Wi-Fi Direct (50k) ranges the legacy transports still mint.
+    private val bearerMgr = net.waldrip.hop.bearers.BearerManager(baseLinkId = 1_000_000L)
+    // One transport id shared by both bearers (the BLE/LAN HELLO id + greater-id dedup tiebreaker);
+    // distinct from the Hop node address — Noise is still negotiated over the bearer's DATA frames.
+    private val bearerId = net.waldrip.hop.bearers.randomNodeId()
+    // Link ids currently owned by the BearerManager, so pump() routes their packets to it. CORE-CONFINED:
+    // added/removed and read ONLY inside core.post (pump() also runs on core), so it needs no lock.
+    private val bearerLinks = HashSet<Long>()
+    // Adapts the shared BearerManager to the existing node seam. Every link from either bearer surfaces
+    // here and drives node.connected/received/disconnected exactly like the legacy paths (linkId
+    // mismatch: the bearer libs use Long, the node uses ULong — convert at this boundary).
+    private val bearerSink = object : net.waldrip.hop.bearers.LinkSink {
+        override fun linkUp(link: Long, role: net.waldrip.hop.bearers.LinkRole, peerId: ByteArray) {
+            core.post {
+                bearerLinks.add(link)
+                node.connected(link.toULong(), role == net.waldrip.hop.bearers.LinkRole.DIALER)
+                pump()   // ship the dialer's queued Noise m1 immediately (mirrors legacy addLink / Apple linkUp)
+            }
+        }
+        override fun linkBytes(link: Long, bytes: ByteArray) {
+            core.post { node.received(link.toULong(), bytes); pump() }
+        }
+        override fun linkDown(link: Long) {
+            core.post {
+                bearerLinks.remove(link)
+                node.disconnected(link.toULong())
+                scheduleRefresh()   // mirrors legacy onClose / Apple linkDown
+            }
+        }
+    }
+
     @Volatile var appInForeground = false
     private var started = false
 
@@ -248,21 +283,37 @@ class HopBearer private constructor(private val context: Context, private val co
         // Publish our prekey so peers can open forward-secret sessions (§25). Re-published
         // periodically in the tick loop too, so a lapsed/late neighbour can always re-open one.
         runCatching { node.publishPrekey() }
-        startPeripheral()
-        // Dual-role: always a peripheral (others connect TO us to push — the receive mailbox),
-        // plus a GENTLE, bursty central so we can push too (and reach Android peers). The central
-        // scans in short windows with long idle gaps so the radio stays mostly in peripheral mode
-        // — a continuous scan saturated the radio and starved discovery (iOS couldn't connect).
-        startCentral()
-        // Auto-heal a wedged BLE stack: when the user (or a watchdog) toggles Bluetooth off→on, the
-        // L2CAP listener / GATT server / advertising sets all become invalid and the app would
-        // otherwise sit deaf until a full restart (the recurring "links cycle but no data flows, had
-        // to force-stop" failure). Re-initialize the peripheral + central when the adapter returns.
-        registerBtStateReceiver()
-        // Cross-platform Wi-Fi paths: NSD/TCP on a shared network, Wi-Fi Direct peer-to-peer when
-        // there's no router. Both feed the node like any other transport.
-        startLan()
-        startWifiDirect()
+        if (config.useSharedBearers) {
+            // Shared transport layer (HopBearers): pure-L2CAP BLE + LAN multiplexed by ONE
+            // BearerManager. The BleBearer owns the peripheral+central roles and the LanBearer owns
+            // NSD/TCP, so the legacy in-driver BLE/LAN/Wi-Fi-Direct paths below are gated OFF (they'd
+            // otherwise double-run the radio). Seed the background flag (foreground-service default
+            // false), point the manager at our node adapter, register BLE + LAN, and start. NOTE:
+            // BleBearer is pure-L2CAP by design — the legacy GattDataLink fallback is simply not
+            // started on this path (the proven clean-room transport).
+            net.waldrip.hop.bearers.appInBackground = !appActive
+            bearerMgr.sink = bearerSink
+            bearerMgr.register(net.waldrip.hop.bearers.ble.BleBearer(context, bearerId))
+            bearerMgr.register(net.waldrip.hop.bearers.lan.LanBearer(context, bearerId))
+            bearerMgr.start()
+            android.util.Log.i("HOPLOG", "shared bearers started (BLE+LAN) id=${bearerId.take(4).joinToString("") { "%02x".format(it) }}")
+        } else {
+            startPeripheral()
+            // Dual-role: always a peripheral (others connect TO us to push — the receive mailbox),
+            // plus a GENTLE, bursty central so we can push too (and reach Android peers). The central
+            // scans in short windows with long idle gaps so the radio stays mostly in peripheral mode
+            // — a continuous scan saturated the radio and starved discovery (iOS couldn't connect).
+            startCentral()
+            // Auto-heal a wedged BLE stack: when the user (or a watchdog) toggles Bluetooth off→on, the
+            // L2CAP listener / GATT server / advertising sets all become invalid and the app would
+            // otherwise sit deaf until a full restart (the recurring "links cycle but no data flows, had
+            // to force-stop" failure). Re-initialize the peripheral + central when the adapter returns.
+            registerBtStateReceiver()
+            // Cross-platform Wi-Fi paths: NSD/TCP on a shared network, Wi-Fi Direct peer-to-peer when
+            // there's no router. Both feed the node like any other transport.
+            startLan()
+            startWifiDirect()
+        }
         // Declare internet reachability so the node resolves HNS itself by servicing
         // takeDnsLookups() (DESIGN.md §30). Track the default network so it stays accurate.
         val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
@@ -295,8 +346,9 @@ class HopBearer private constructor(private val context: Context, private val co
                 // Self-heal advertising: startAdvertise() is idempotent (no-op while the set is live),
                 // so this only restarts it if it actually stopped (advSet cleared in onAdvertisingSetStopped
                 // — e.g. OEM doze or a wedged stack). No reset of a healthy advert, so the name stays put.
-                if (ticks % 30 == 0) runCatching { startAdvertise() }
-                if (ticks % 30 == 0) runCatching { startBeacon() }   // self-heal the iBeacon too
+                // Legacy-path self-heal only: with the shared bearers ON, BleBearer owns advertising.
+                if (!config.useSharedBearers && ticks % 30 == 0) runCatching { startAdvertise() }
+                if (!config.useSharedBearers && ticks % 30 == 0) runCatching { startBeacon() }   // self-heal the iBeacon too
                 if (ticks % 15 == 0) android.util.Log.i("HOPLOG", "HOPAUTO self=$myAddressVal name=${config.deviceName}")  // periodic, so the harness always finds it
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
@@ -408,6 +460,7 @@ class HopBearer private constructor(private val context: Context, private val co
     fun setForeground(fg: Boolean) {
         appActive = fg
         appInForeground = fg
+        net.waldrip.hop.bearers.appInBackground = !fg   // shared bearers: relax liveness deadline when backgrounded
         if (fg) {   // the user is looking at the app → clear the unread badge + notifications
             unread.intValue = 0
             runCatching { NotificationManagerCompat.from(context).cancelAll() }
@@ -660,6 +713,8 @@ class HopBearer private constructor(private val context: Context, private val co
 
     private fun pump() {
         for (pkt in node.drainOutgoing()) {
+            // Shared BearerManager (BLE + LAN) owns this link → route to it, then the legacy fallback.
+            if (bearerLinks.contains(pkt.link.toLong())) { bearerMgr.send(pkt.bytes, pkt.link.toLong()); continue }
             val t = if (pkt.bytes.isNotEmpty()) (pkt.bytes[0].toInt() and 0xff) else 3   // LinkPacket discriminant
             val h = pktHisto.getOrPut(pkt.link) { LongArray(4) }
             h[if (t in 0..2) t else 3]++
