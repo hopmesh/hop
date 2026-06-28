@@ -405,6 +405,9 @@ public final class HopBearer: NSObject, ObservableObject {
     /// + the greater-id dedup tiebreaker). This is a TRANSPORT-layer id, distinct from the Hop node
     /// address (SPEC R11) — the node still negotiates Noise over the bearer's DATA frames.
     private let bearerId: Data = HopBearerCore.randomNodeId()
+    /// The shared BLE bearer, kept as a ref so a CoreLocation/background wake can poke its `wake()` to
+    /// re-arm scanning + re-adopt connected peripherals promptly (it self-recovers on `.poweredOn` too).
+    private lazy var bleBearer = BleBearer(myId: bearerId)
     /// Link ids currently owned by the `BearerManager`, so `applyOutgoing` routes their packets to it.
     /// Written from the sink callbacks (BLE I/O thread / LAN queue) and read in `applyOutgoing` (main) —
     /// guarded by `bearerLinksLock`.
@@ -894,7 +897,7 @@ public final class HopBearer: NSObject, ObservableObject {
         HopBearerBle.bleRunLoop = IOThread.shared.runLoop
         HopBearerBle.bleAppInBackground = !appActive
         bearerMgr.sink = bearerSink
-        bearerMgr.register(BleBearer(myId: bearerId))
+        bearerMgr.register(bleBearer)
         bearerMgr.register(LanBearer(myId: bearerId))
         bearerMgr.start()
         NSLog("HOPLOG shared bearers started (BLE+LAN) id=\(HopBearer.shortHex(bearerId))")
@@ -2684,11 +2687,20 @@ extension HopBearer: CLLocationManagerDelegate {
 
     public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         NSLog("HOPLOG beacon: entered region — woke")
+        wakeSharedBle("beacon-enter")
         backgroundTick()
     }
 
     public func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
-        if state == .inside { NSLog("HOPLOG beacon: inside region"); backgroundTick() }
+        if state == .inside { NSLog("HOPLOG beacon: inside region"); wakeSharedBle("beacon-inside"); backgroundTick() }
+    }
+
+    /// On a CoreLocation region wake, poke the shared BLE bearer to re-arm scanning + re-adopt any
+    /// peripherals iOS still considers connected (Layer C). No-op on the legacy path. Runs on the CB
+    /// queue (where the bearer's CBCentralManager lives).
+    private func wakeSharedBle(_ reason: String) {
+        guard config.useSharedBearers else { return }
+        bleQueue.async { [weak self] in self?.bleBearer.wake(reason) }
     }
 }
 
