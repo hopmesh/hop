@@ -23,5 +23,8 @@ android {
 }
 
 dependencies {
+    // The shared, transport-agnostic bearer layer (Bearer/LinkSink contract + BearerManager +
+    // BleBearer). Mirrors apple/HopBearers. The app supplies only the clean-room ProofSink consumer.
+    implementation(project(":bearers"))
     // Intentionally zero third-party deps: the proof-of-pipe core is pure platform BLE.
 }

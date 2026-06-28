@@ -13,3 +13,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "BleLab"
 include(":app")
+include(":bearers")
