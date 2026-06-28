@@ -13,12 +13,18 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import net.waldrip.hop.bearers.BearerManager
+import net.waldrip.hop.bearers.BleBearer
 
 // Foreground service that hosts BOTH BLE planes for the whole session and rebuilds them on an
 // adapter bounce WITHOUT re-rolling myId (SPEC §6 / §9 R11).
 class BleService : Service() {
 
-    private var node: Node? = null
+    // The transport layer, driven entirely through the Bearer contract: a BearerManager fanning out to
+    // a single BleBearer, with the clean-room ProofSink wired in as the consumer. Rebuilt on an adapter
+    // bounce; the ProofSink (and the stable myId) persist across rebuilds.
+    private var manager: BearerManager? = null
+    private val proof = ProofSink()
     private var receiver: BroadcastReceiver? = null
 
     override fun onCreate() {
@@ -35,9 +41,14 @@ class BleService : Service() {
     }
 
     private fun startNode() {
-        if (node != null) return
+        if (manager != null) return
         try {
-            node = Node(applicationContext)
+            val m = BearerManager()
+            m.register(BleBearer(applicationContext, myId)) // myId is the process-stable nodeId (R11)
+            proof.bearer = m   // proof pings route out through the manager (uniform Bearer)
+            m.sink = proof     // links from every registered bearer surface here, one id space
+            m.start()
+            manager = m
         } catch (e: Exception) {
             Log.e(TAG, "NODE START failed: ${e.message}", e)
         }
@@ -50,8 +61,8 @@ class BleService : Service() {
                 when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                     BluetoothAdapter.STATE_OFF -> {
                         Log.i(TAG, "ADAPTER STATE_OFF → closing all links, tearing down planes")
-                        node?.closeAll()
-                        node = null
+                        manager?.stop()
+                        manager = null
                     }
                     BluetoothAdapter.STATE_ON -> {
                         Log.i(TAG, "ADAPTER STATE_ON → rebuilding both planes (myId unchanged)")
@@ -72,8 +83,9 @@ class BleService : Service() {
         // Do NOT cancel the watchdog alarm here — if we were killed (not force-stopped), let it fire
         // and resurrect us so the iBeacon comes back to wake a killed iOS peer.
         receiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
-        node?.closeAll()
-        node = null
+        manager?.stop()
+        manager = null
+        proof.shutdown()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -105,6 +117,11 @@ class BleService : Service() {
         // Process-static liveness flag. Reset to false in a fresh process (after a kill), so the
         // watchdog correctly restarts the FGS when the alarm wakes a dead app.
         @Volatile var isRunning = false
+
+        // SPEC §1.2 / R11: the 16-byte nodeId, created ONCE per process and reused on every rebuild
+        // (an adapter bounce must NOT re-roll it). The transport used to own this as a top-level global
+        // in Ble.kt; now the app owns its lifetime and hands it to each BleBearer it builds.
+        val myId: ByteArray = BleBearer.randomNodeId()
 
         fun start(ctx: Context) {
             val i = Intent(ctx, BleService::class.java)
