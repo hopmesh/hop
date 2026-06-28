@@ -171,9 +171,10 @@ private fun messageMeta(m: HopBearer.Message): String {
         if (m.trace.isNotEmpty()) s += "  ·  via ${m.trace.joinToString(" → ")}"
         return s
     }
-    val deliveredAt = m.deliveredAt
-    if (m.delivered && deliveredAt != null) {
-        val dur = HopBearer.compactDuration((deliveredAt - m.sentAt).coerceAtLeast(0).toULong())
+    if (m.delivered) {
+        // FORWARD (A→B) time the recipient reported — how long the message took to reach them —
+        // not the A→B→A round trip (the ACK's return leg is uninteresting).
+        val dur = HopBearer.compactDuration(m.deliveryMs ?: 0uL)
         return "Delivered, ${HopBearer.hopsLabel(m.deliveryHops)}, $dur"
     }
     if (m.failed) return "Not sent"

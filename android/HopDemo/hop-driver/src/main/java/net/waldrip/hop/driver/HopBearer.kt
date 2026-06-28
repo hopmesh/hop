@@ -63,6 +63,7 @@ class HopBearer private constructor(private val context: Context, private val co
         val sentAt: Long = System.currentTimeMillis(),               // outgoing tracking
         val deliveredAt: Long? = null, val relayed: UInt = 0u,
         val delivered: Boolean = false, val deliveryHops: UByte = 0u,
+        val deliveryMs: ULong? = null, // forward-path (A→B) latency the recipient reported, ms
         val failed: Boolean = false,   // gave up (e.g. the queue was cleared before it sent)
     )
 
@@ -1323,6 +1324,7 @@ class HopBearer private constructor(private val context: Context, private val co
             m.deliveredAt?.let { o.put("deliveredAt", it) }
             o.put("relayed", m.relayed.toLong())
             o.put("delivered", m.delivered); o.put("deliveryHops", m.deliveryHops.toInt())
+            m.deliveryMs?.let { o.put("deliveryMs", it.toLong()) } // forward-path (A→B) latency
             o.put("failed", m.failed)
             // Keep the bundleId: the node re-sprays undelivered own-bundles after restart (node.rs
             // rehydrate); persisting it lets refresh() re-query messageStatus and flip to Delivered.
@@ -1354,6 +1356,7 @@ class HopBearer private constructor(private val context: Context, private val co
                 deliveredAt = if (o.has("deliveredAt")) o.getLong("deliveredAt") else null,
                 relayed = o.optLong("relayed", 0).toUInt(), delivered = delivered,
                 deliveryHops = o.optInt("deliveryHops", 0).toUByte(),
+                deliveryMs = if (o.has("deliveryMs")) o.getLong("deliveryMs").toULong() else null,
                 // An outgoing message still in flight KEEPS sending after restart — the node re-sprays
                 // it until its ACK (node.rs rehydrate). Restore it in-flight with its bundleId so
                 // refresh() reconciles to Delivered when it lands, rather than falsely showing "not sent".
@@ -1480,7 +1483,7 @@ class HopBearer private constructor(private val context: Context, private val co
             val s = node.messageStatus(m.bundleId)
             if (s.delivered && m.deliveredAt == null) {
                 msgUpdates.add(m.localId to m.copy(relayed = s.relayed, delivered = true,
-                    deliveryHops = s.deliveryHops, deliveredAt = now))
+                    deliveryHops = s.deliveryHops, deliveryMs = s.deliveryMs.toULong(), deliveredAt = now))
             } else if (s.relayed != m.relayed) {
                 msgUpdates.add(m.localId to m.copy(relayed = s.relayed))
             }

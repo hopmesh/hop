@@ -191,6 +191,7 @@ public final class HopBearer: NSObject, ObservableObject {
         public var relayed: UInt32 = 0
         public var delivered: Bool = false
         public var deliveryHops: UInt8 = 0
+        public var deliveryMs: UInt32 = 0   // forward-path (A→B) latency the recipient reported, ms
         public var failed: Bool = false   // gave up (e.g. the queue was cleared before it sent)
     }
     public struct QueueRow: Identifiable {
@@ -1800,7 +1801,7 @@ public final class HopBearer: NSObject, ObservableObject {
     /// address (`self`) for targeting and verify iOS-side message receipt. Not a normal user path.
     private struct AutomationDump: Codable {
         struct Rx: Codable { let from: String; let text: String; let at: Int64 }
-        struct Tx: Codable { let to: String; let text: String; let delivered: Bool; let at: Int64 }
+        struct Tx: Codable { let to: String; let text: String; let delivered: Bool; let deliveryMs: UInt32; let at: Int64 }
         let `self`: String
         let name: String
         let rx: [Rx]
@@ -1819,7 +1820,7 @@ public final class HopBearer: NSObject, ObservableObject {
         }
         let tx = messages.filter { !$0.incoming }.suffix(100).map {
             AutomationDump.Tx(to: $0.peerAddr.map(HopBearer.base58) ?? $0.peer,
-                              text: $0.text, delivered: $0.delivered,
+                              text: $0.text, delivered: $0.delivered, deliveryMs: $0.deliveryMs,
                               at: Int64($0.sentAt.timeIntervalSince1970 * 1000))
         }
         let dump = AutomationDump(self: myAddress, name: myName, rx: Array(rx), tx: Array(tx))
@@ -2129,6 +2130,7 @@ public final class HopBearer: NSObject, ObservableObject {
             guard let bid = messages[i].bundleId, let s = snap.statuses[bid] else { continue }
             messages[i].relayed = s.relayed
             messages[i].deliveryHops = s.deliveryHops
+            messages[i].deliveryMs = s.deliveryMs   // forward-path (A→B) latency from the ACK
             if s.delivered && messages[i].deliveredAt == nil {
                 messages[i].delivered = true
                 messages[i].deliveredAt = Date()  // our clock: send→delivered is skew-free

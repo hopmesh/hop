@@ -185,8 +185,11 @@ struct TxInfo {
     relayed: HashSet<PubKeyBytes>,
     /// The destination ACKed it back across the network.
     delivered: bool,
-    /// Hops the returning ACK travelled (a proxy for the delivery path length).
+    /// Hops the original message took to *reach* the destination (forward path length).
     delivered_hops: u8,
+    /// **Forward-path** latency to the destination in ms (the destination's receive time
+    /// minus our send time, as it reported in the ACK) — the A→B leg, not the round trip.
+    delivered_ms: u32,
 }
 
 /// A queued message for the UI: either ours awaiting send, or a peer's awaiting relay.
@@ -1171,13 +1174,14 @@ impl<S: Store> Node<S> {
             // A private delivery ACK for one of OUR sends: stop carrying/tracking it and mark
             // it Delivered. (No relay vaccine — the acked id can't ride in cleartext without
             // linking, so other relays drop their copy by TTL; the §39 storage cost.)
-            Payload::Ack { for_bundle_id, delivery_hops, .. } if first => {
+            Payload::Ack { for_bundle_id, delivery_hops, delivery_ms, .. } if first => {
                 self.pending.remove(&for_bundle_id);
                 self.store.remove(&for_bundle_id);
                 let display = self.display_id(&for_bundle_id);
                 if let Some(info) = self.tx.get_mut(&display) {
                     info.delivered = true;
                     info.delivered_hops = delivery_hops;
+                    info.delivered_ms = delivery_ms;
                 }
             }
             Payload::Ack { .. } => {} // a duplicate ACK — already handled
@@ -1193,7 +1197,9 @@ impl<S: Store> Node<S> {
                         None => true,
                     };
                     if due {
-                        self.emit_private_ack(sender, *id, bundle.env.hops);
+                        // Report the forward-path (A→B) latency we observed, not a round trip.
+                        let fwd = forward_ms(self.now_ms, bundle.inner.created_at);
+                        self.emit_private_ack(sender, *id, bundle.env.hops, fwd);
                     }
                 }
             }
@@ -1201,15 +1207,16 @@ impl<S: Store> Node<S> {
     }
 
     /// §39: seal a delivery ACK back to `to` (whom we learned from inside the message's seal)
-    /// for `for_bundle_id`, reporting the forward path length. It floods and is recognized
-    /// only by `to`. Needs `to`'s prekey; without it we can't ACK privately and the sender
-    /// stays "Sent" (a documented §39 limitation — both ends normally publish prekeys).
-    fn emit_private_ack(&mut self, to: PubKeyBytes, for_bundle_id: BundleId, delivery_hops: u8) {
+    /// for `for_bundle_id`, reporting the forward path length + the A→B latency we observed. It
+    /// floods and is recognized only by `to`. Needs `to`'s prekey; without it we can't ACK
+    /// privately and the sender stays "Sent" (a documented §39 limitation — both ends normally
+    /// publish prekeys).
+    fn emit_private_ack(&mut self, to: PubKeyBytes, for_bundle_id: BundleId, delivery_hops: u8, delivery_ms: u32) {
         let spk_pub = match self.directory.prekey(&to) {
             Some(b) => b.spk_pub,
             None => return,
         };
-        let ack = Payload::Ack { for_bundle_id, status: 0, delivery_hops };
+        let ack = Payload::Ack { for_bundle_id, status: 0, delivery_hops, delivery_ms };
         let wrapped = Payload::Private { sender: self.identity.address(), inner: Box::new(ack) };
         if let Ok(b) = Bundle::create_private(
             &to,
@@ -2322,8 +2329,10 @@ impl<S: Store> Node<S> {
     /// delivery_hops)`. Maps to Sending (0, false, _) / Sent N (N, false, _) /
     /// Delivered (_, true, hops). `delivery_hops` is the forward path length the
     /// destination observed (0 until delivered).
-    pub fn message_status(&self, id: &BundleId) -> Option<(u32, bool, u8)> {
-        self.tx.get(id).map(|i| (i.relayed.len() as u32, i.delivered, i.delivered_hops))
+    pub fn message_status(&self, id: &BundleId) -> Option<(u32, bool, u8, u32)> {
+        self.tx
+            .get(id)
+            .map(|i| (i.relayed.len() as u32, i.delivered, i.delivered_hops, i.delivered_ms))
     }
 
     /// The relay queue for display: our messages awaiting send (pinned) and peer
@@ -2840,7 +2849,7 @@ impl<S: Store> Node<S> {
             if bundle.inner.flags.is_ack {
                 // An ACK for one of our sent bundles: stop tracking & carrying it,
                 // and mark it Delivered for the UI.
-                if let Ok(Payload::Ack { for_bundle_id, delivery_hops, .. }) =
+                if let Ok(Payload::Ack { for_bundle_id, delivery_hops, delivery_ms, .. }) =
                     bundle.open(&self.identity)
                 {
                     self.pending.remove(&for_bundle_id);
@@ -2850,6 +2859,7 @@ impl<S: Store> Node<S> {
                     if let Some(info) = self.tx.get_mut(&display) {
                         info.delivered = true;
                         info.delivered_hops = delivery_hops;
+                        info.delivered_ms = delivery_ms;
                     }
                     // Our message reached its destination: learn the route (§27).
                     if let Some((s, d, _)) = self.forwarded.remove(&for_bundle_id) {
@@ -3198,7 +3208,12 @@ impl<S: Store> Node<S> {
             &self.identity,
             Destination::AckTo(orig.inner.src, orig.id()),
             &orig.inner.src,
-            &Payload::Ack { for_bundle_id: orig.id(), status: 0, delivery_hops: orig.env.hops },
+            &Payload::Ack {
+                for_bundle_id: orig.id(),
+                status: 0,
+                delivery_hops: orig.env.hops,
+                delivery_ms: forward_ms(self.now_ms, orig.inner.created_at),
+            },
             BundleOpts {
                 created_at: self.now_ms,
                 lifetime_ms: lifetime,
@@ -3509,6 +3524,14 @@ fn is_for(bundle: &Bundle, addr: &PubKeyBytes) -> bool {
         InternetEgress => false,
         Broadcast => false,
     }
+}
+
+/// Forward-path latency (ms) a receiver reports in its ACK: its receive time `now` minus the
+/// message's `created_at` (the sender's send time). Saturating + clamped to `u32` — a negative
+/// value (clock skew where the receiver's clock trails the sender's) reads as 0, and anything
+/// beyond ~49 days clamps rather than wrapping.
+fn forward_ms(now: u64, created_at: u64) -> u32 {
+    now.saturating_sub(created_at).min(u32::MAX as u64) as u32
 }
 
 #[cfg(test)]
@@ -4030,7 +4053,7 @@ mod tests {
 
         // The chunked message reports real relay progress + delivery under its original id
         // (carriers travel as separate bundles but attribute back — not a stuck "Sending").
-        let (relayed, delivered, _) = nodes[0].message_status(&orig).expect("tracked");
+        let (relayed, delivered, _, _) = nodes[0].message_status(&orig).expect("tracked");
         assert!(relayed >= 1, "shows Sent N (carriers relayed to the relay), not 0");
         assert!(delivered, "delivery ACK for the reassembled original marks it Delivered");
 
@@ -4153,10 +4176,33 @@ mod tests {
         net.pump(&mut nodes);
 
         assert_eq!(nodes[2].take_inbox().len(), 1, "Bob received the private message");
-        let (_, delivered, _) = nodes[0].message_status(&id).expect("tracked");
+        let (_, delivered, _, _) = nodes[0].message_status(&id).expect("tracked");
         assert!(delivered, "the private ACK flipped Alice's message to Delivered");
         // The relay is an endpoint for neither leg — both were anonymous broadcasts.
         assert!(nodes[1].take_inbox().is_empty(), "the relay is not an endpoint for either leg");
+    }
+
+    #[test]
+    fn ack_reports_forward_path_latency_not_round_trip() {
+        // "Delivered" should tell the sender how long A→B took (the forward leg the recipient
+        // observed), not the A→B→A round trip. The recipient stamps `received − created_at`
+        // into the ACK; the sender surfaces it via message_status's 4th field.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+
+        // Sender sends at t=1000; recipient's clock is 1500ms ahead → it observes a 1500ms
+        // forward leg. (set_time sets the clock directly; pump shuttles bytes without ticking.)
+        nodes[0].set_time(1_000);
+        nodes[1].set_time(2_500);
+        let bob = nodes[1].address();
+        let id = nodes[0].send_message(bob, "t".into(), b"time me".to_vec(), true).unwrap();
+        net.pump(&mut nodes);
+
+        let (_, delivered, _, fwd_ms) = nodes[0].message_status(&id).expect("tracked");
+        assert!(delivered);
+        assert_eq!(fwd_ms, 1_500, "ACK carries the A→B forward latency the recipient saw");
     }
 
     #[test]
@@ -4727,11 +4773,11 @@ mod tests {
             .unwrap();
         // Direct delivery to the destination isn't a relay handoff, so the relay
         // count stays 0 (it shows as Delivered once the ACK returns, not "Sent N").
-        assert_eq!(nodes[0].message_status(&id), Some((0, false, 0)));
+        assert_eq!(nodes[0].message_status(&id), Some((0, false, 0, 0)));
 
         net.pump(&mut nodes);
 
-        let (relayed, delivered, hops) = nodes[0].message_status(&id).unwrap();
+        let (relayed, delivered, hops, _) = nodes[0].message_status(&id).unwrap();
         assert_eq!(relayed, 0, "direct delivery is not counted as a relay peer");
         assert!(delivered, "ACK came back across the network → Delivered");
         assert_eq!(hops, 1, "direct delivery → 1 forward hop");
@@ -4762,7 +4808,7 @@ mod tests {
             nodes[2].queue().is_empty(),
             "relay should not be holding a needless sprayed copy"
         );
-        let (relayed, delivered, hops) = nodes[0].message_status(&id).unwrap();
+        let (relayed, delivered, hops, _) = nodes[0].message_status(&id).unwrap();
         assert_eq!(relayed, 0, "no relay handoffs — delivered directly");
         assert!(delivered);
         assert_eq!(hops, 1);
@@ -4801,7 +4847,7 @@ mod tests {
         assert_eq!(m.body, b"secret");
         assert!(nodes[1].has_session(&nodes[0].address()), "🔒 session established");
         // Delivery status follows the original handle through the deferral.
-        let (_, delivered, _) = nodes[0].message_status(&id).unwrap();
+        let (_, delivered, _, _) = nodes[0].message_status(&id).unwrap();
         assert!(delivered, "the ACK lands on the original handle");
     }
 
@@ -4834,7 +4880,7 @@ mod tests {
         assert_eq!(msg.from, nodes[0].address());
 
         // The ACK returned across the network → Delivered.
-        let (_, delivered, _) = nodes[0].message_status(&id).unwrap();
+        let (_, delivered, _, _) = nodes[0].message_status(&id).unwrap();
         assert!(delivered, "session message should still ACK back");
 
         // 1 → 0 reply rides the same session (responder now has a sending chain).
@@ -4892,7 +4938,7 @@ mod tests {
             .unwrap();
         net.pump(&mut nodes);
 
-        let (_, delivered, _) = nodes[0].message_status(&id).unwrap();
+        let (_, delivered, _, _) = nodes[0].message_status(&id).unwrap();
         assert!(delivered, "should be delivered across the relay");
         assert!(nodes[1].queue().is_empty(), "relay copy purged by the delivery-ACK vaccine");
         assert!(nodes[0].queue().is_empty(), "source releases its copy on ACK");

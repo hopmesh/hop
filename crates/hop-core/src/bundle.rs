@@ -135,6 +135,12 @@ pub enum Payload {
         /// Hops the original message took to reach the destination (the forward path
         /// length the destination observed on arrival). Reported back for the UI.
         delivery_hops: u8,
+        /// **Forward-path** latency the destination observed: its receive time minus the
+        /// message's `created_at` (the sender's send time). Reported back so the sender can
+        /// show "reached B in X" — the A→B leg — instead of the A→B→A round trip it would
+        /// otherwise measure from the ACK's arrival. Relies on rough clock agreement between
+        /// devices (NTP-synced phones are close); `delivery_hops` is the clock-free measure.
+        delivery_ms: u32,
     },
     /// Open a gateway-held streaming connection (SSE/WebSocket). See DESIGN.md §20.
     StreamOpen {

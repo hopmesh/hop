@@ -481,9 +481,11 @@ struct ChatView: View {
             if let lat = m.latencyMs { s += ", \(HopBearer.compactDuration(lat))" }
             return s
         }
-        if m.delivered, let d = m.deliveredAt {
-            let dur = HopBearer.compactDuration(UInt64(max(0, d.timeIntervalSince(m.sentAt)) * 1000))
-            return "Delivered, \(HopBearer.hopsLabel(m.deliveryHops)), \(dur)"
+        if m.delivered {
+            // Show the FORWARD (A→B) time the recipient reported — how long the message took to
+            // reach them — not the A→B→A round trip (the ACK's return leg is uninteresting).
+            let fwd = HopBearer.compactDuration(UInt64(m.deliveryMs))
+            return "Delivered, \(HopBearer.hopsLabel(m.deliveryHops)), \(fwd)"
         }
         if m.failed { return "Not sent" }
         // relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
