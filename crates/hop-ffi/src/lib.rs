@@ -351,6 +351,9 @@ pub struct MessageStatus {
     pub delivered: bool,
     /// Forward path length the destination observed (hops to delivery; 0 until delivered).
     pub delivery_hops: u8,
+    /// **Forward-path** (A→B) latency in ms the destination observed and reported in its ACK —
+    /// how long the message took to *reach* the recipient, NOT the round trip. 0 until delivered.
+    pub delivery_ms: u32,
 }
 
 /// An item in the relay queue: ours awaiting send, or a peer's awaiting relay.
@@ -564,14 +567,14 @@ impl HopNode {
 
     /// Delivery status of a message we sent, by its bundle id.
     pub fn message_status(&self, id: Vec<u8>) -> MessageStatus {
-        let blank = MessageStatus { relayed: 0, delivered: false, delivery_hops: 0 };
+        let blank = MessageStatus { relayed: 0, delivered: false, delivery_hops: 0, delivery_ms: 0 };
         let id = match to32(&id) {
             Ok(i) => i,
             Err(_) => return blank,
         };
         match self.inner.lock().unwrap().message_status(&id) {
-            Some((relayed, delivered, delivery_hops)) => {
-                MessageStatus { relayed, delivered, delivery_hops }
+            Some((relayed, delivered, delivery_hops, delivery_ms)) => {
+                MessageStatus { relayed, delivered, delivery_hops, delivery_ms }
             }
             None => blank,
         }
