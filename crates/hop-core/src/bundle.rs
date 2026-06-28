@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{self, Identity, PubKeyBytes, Sealed, ShortAddr, XPubKeyBytes};
+use crate::crypto::{self, Identity, PubKeyBytes, Sealed, ShortAddr, Tag, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::{AppId, ShortApp, FABRIC_APP};
 
@@ -235,15 +235,38 @@ pub enum Payload {
     SessionReset,
 }
 
-/// The signed portion of a bundle. The source signature covers this exactly.
+/// §39 private-bundle header. Present iff this is an **untraceable** bundle (DESIGN.md
+/// §39). Such a bundle carries no identity `src` (it is zeroed) and floods
+/// (`dst = Destination::Broadcast`) like any flood, but the recipient is found by the
+/// recognition `tag` rather than an address match, and it is not identity-signed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivateHeader {
+    /// Recognition tag — `KDF(ephemeral·SPK, id)`. Only the recipient recomputes it.
+    pub tag: Tag,
+    /// The recognition ephemeral public (the recipient DHs it against its prekey).
+    pub ephemeral: XPubKeyBytes,
+    /// Optional rotatable mailbox pseudonym, so a relay can spool by it for pull (§39).
+    pub mailbox: Option<Tag>,
+    /// Optional `k`-bit gradient prefix hint (blinded). Routing detail; opaque here.
+    pub hint: Option<Vec<u8>>,
+}
+
+/// The signed portion of a bundle. For a **traced** bundle the source signature covers
+/// this exactly. A **private** bundle (§39) sets `src = [0; 32]`, `dst =
+/// Destination::Broadcast`, carries a [`PrivateHeader`], and is not identity-signed (its
+/// id alone binds the sealed bytes); recognition replaces address routing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedInner {
     pub version: u8,
     /// Application namespace on the shared fabric (DESIGN.md §17).
     pub app: AppId,
     pub id: BundleId,
+    /// Sender address. Zeroed on a private bundle (§39) — its sender is anonymous.
     pub src: PubKeyBytes,
+    /// Destination. `Broadcast` on a private bundle (§39), which floods + is recognized.
     pub dst: Destination,
+    /// Present iff this is a §39 private (untraceable) bundle.
+    pub private: Option<PrivateHeader>,
     /// Sender clock in ms — advisory only (see DESIGN.md §8).
     pub created_at: u64,
     pub lifetime_ms: u32,
@@ -335,6 +358,7 @@ impl Bundle {
             id,
             src,
             dst,
+            private: None,
             created_at: opts.created_at,
             lifetime_ms: opts.lifetime_ms,
             flags: opts.flags,
@@ -354,6 +378,63 @@ impl Bundle {
         Ok(Bundle { inner, env, sig })
     }
 
+    /// Build a §39 **private** (untraceable) bundle: no identity `src` (zeroed), it floods
+    /// (`Destination::Broadcast`), and it is not identity-signed (empty `sig`). `seal_to`
+    /// seals the payload (for now to an address — session-based sealing is a later phase);
+    /// `recipient_spk_pub` is the recipient's signed-prekey public, used to derive the
+    /// recognition tag only the recipient can recompute.
+    pub fn create_private(
+        seal_to: &PubKeyBytes,
+        recipient_spk_pub: &XPubKeyBytes,
+        payload: &Payload,
+        mailbox: Option<Tag>,
+        hint: Option<Vec<u8>>,
+        opts: BundleOpts,
+    ) -> Result<Self> {
+        let plaintext = postcard::to_allocvec(payload)?;
+        let sealed = crypto::seal(seal_to, &plaintext)?;
+        let id = compute_private_id(&sealed);
+        let (ephemeral, tag) = crypto::recognition_tag_sender(recipient_spk_pub, &id);
+
+        let inner = SignedInner {
+            version: BUNDLE_VERSION,
+            app: opts.app,
+            id,
+            src: [0u8; 32],
+            dst: Destination::Broadcast,
+            private: Some(PrivateHeader { tag, ephemeral, mailbox, hint }),
+            created_at: opts.created_at,
+            lifetime_ms: opts.lifetime_ms,
+            flags: opts.flags,
+            priority: opts.priority,
+            payload: sealed,
+        };
+        let env = Envelope {
+            hop_limit: opts.hop_limit,
+            custody: None,
+            copies: opts.copies.max(1),
+            hops: 0,
+            trace: Vec::new(),
+        };
+        Ok(Bundle { inner, env, sig: Vec::new() })
+    }
+
+    /// Is this a §39 private (untraceable) bundle?
+    pub fn is_private(&self) -> bool {
+        self.inner.private.is_some()
+    }
+
+    /// §39 "is this mine?": true iff this is a private bundle whose recognition tag the
+    /// holder of `spk_secret` recomputes. One DH + one hash; no payload decryption.
+    pub fn recognized_by(&self, spk_secret: &[u8; 32]) -> bool {
+        match &self.inner.private {
+            Some(ph) => {
+                crypto::recognition_tag_recipient(spk_secret, &ph.ephemeral, &self.inner.id) == ph.tag
+            }
+            None => false,
+        }
+    }
+
     /// The bundle id.
     pub fn id(&self) -> BundleId {
         self.inner.id
@@ -362,6 +443,15 @@ impl Bundle {
     /// Verify the source signature and that the id matches the sealed payload.
     /// Relays should call this before forwarding to avoid amplifying garbage.
     pub fn verify(&self) -> Result<()> {
+        // Private bundle (§39): not identity-signed. The id alone binds the sealed bytes;
+        // the recipient is found by the recognition tag, not a signature or a dst.
+        if self.inner.private.is_some() {
+            return if compute_private_id(&self.inner.payload) == self.inner.id {
+                Ok(())
+            } else {
+                Err(Error::BadSignature)
+            };
+        }
         if compute_id(&self.inner.src, &self.inner.payload) != self.inner.id {
             return Err(Error::BadSignature);
         }
@@ -446,6 +536,17 @@ fn compute_id(src: &PubKeyBytes, sealed: &Sealed) -> BundleId {
     *hasher.finalize().as_bytes()
 }
 
+/// §39 private bundle id: `BLAKE3(domain ‖ sealed)` — no `src`. The seal's own ephemeral
+/// + nonce make it unique per message, and the recognition tag binds to it.
+fn compute_private_id(sealed: &Sealed) -> BundleId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"hop private bundle id v1");
+    hasher.update(&sealed.ephemeral_pub);
+    hasher.update(&sealed.nonce);
+    hasher.update(&sealed.ciphertext);
+    *hasher.finalize().as_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +612,61 @@ mod tests {
 
         assert!(b.decrement_hop()); // relays mutate the envelope
         b.verify().unwrap(); // signature still valid
+    }
+
+    // --- §39 private (untraceable) bundles -------------------------------------
+
+    fn sample_private(to: &Identity, spk_pub: &XPubKeyBytes) -> Bundle {
+        Bundle::create_private(
+            &to.address(),
+            spk_pub,
+            &Payload::PeerMessage { content_type: "text/plain".into(), body: b"psst".to_vec() },
+            None,
+            None,
+            BundleOpts::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn private_bundle_roundtrips_recognizes_and_verifies() {
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        let b = sample_private(&bob, &spk.public);
+
+        // No identity src; floods; not identity-signed.
+        assert!(b.is_private());
+        assert_eq!(b.inner.src, [0u8; 32]);
+        assert!(matches!(b.inner.dst, Destination::Broadcast));
+        assert!(b.sig.is_empty());
+
+        // Survives the wire and still verifies (id binds the sealed bytes, no signature).
+        let decoded = Bundle::from_bytes(&b.to_bytes().unwrap()).unwrap();
+        assert_eq!(b, decoded);
+        decoded.verify().unwrap();
+
+        // "Is this mine?" — the recipient's prekey recognizes it; a stranger's does not.
+        assert!(decoded.recognized_by(&spk.secret_bytes()));
+        assert!(!decoded.recognized_by(&Identity::generate().derive_prekey().secret_bytes()));
+
+        // And the recipient can open the sealed payload.
+        match decoded.open(&bob).unwrap() {
+            Payload::PeerMessage { body, .. } => assert_eq!(body, b"psst"),
+            _ => panic!("wrong payload"),
+        }
+    }
+
+    #[test]
+    fn private_bundle_id_tamper_breaks_verify_and_traced_is_not_private() {
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        let mut b = sample_private(&bob, &spk.public);
+        b.inner.id[0] ^= 1; // tamper the id → no longer binds the sealed bytes
+        assert!(matches!(b.verify(), Err(Error::BadSignature)));
+
+        // A normal traced bundle is not private and isn't recognized by anyone's prekey.
+        let traced = sample(&Identity::generate(), &bob.address());
+        assert!(!traced.is_private());
+        assert!(!traced.recognized_by(&spk.secret_bytes()));
     }
 }
