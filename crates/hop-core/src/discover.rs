@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{self, Identity, PreKeyBundle, PubKeyBytes, XPubKeyBytes};
+use crate::crypto::{self, Identity, PreKeyBundle, PubKeyBytes, Tag, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::util;
 use crate::{AppId, FABRIC_APP};
@@ -40,6 +40,9 @@ const TOPIC_CONTROL: &str = "_control";
 const TOPIC_KEYS: &str = "_keys";
 /// Reserved topic for `hps://` discoverable channel/service announcements (DESIGN.md §32).
 const TOPIC_HPS: &str = "_hps";
+/// §39 P4 receiver-beacons (routing gradient). Always-retained like the other control topics so
+/// a beacon propagates a few hops to lay the gradient; short TTL keeps it soft-state.
+const TOPIC_BEACON: &str = "_beacon";
 
 /// Default bound on the best-effort relay cache (number of adverts).
 pub const DEFAULT_RELAY_CACHE_CAP: usize = 256;
@@ -73,6 +76,17 @@ pub enum AdvertKind {
     /// key, so only same-app nodes can read it — a foreign app can carry/relay it but can't
     /// enumerate the topic. Never carries the content key.
     HpsTopic { nonce: [u8; 12], ct: Vec<u8> },
+    /// §39 P4 receiver-beacon: the publisher (a recipient in "route-to-me" mode) advertises
+    /// its **mailbox-tag** so nodes lay a soft-state gradient toward it *by prefix*. As this
+    /// floods a few hops, every node records "this mailbox is reachable via the link I heard
+    /// it on", and then forwards a matching **private** bundle down that gradient instead of
+    /// blind-flooding (DESIGN.md §39). The advert's publisher signature (which already binds
+    /// the publisher's identity — the same key that signs its `SignedPreKey`) is what stops
+    /// any other node hijacking/black-holing the prefix: only the mailbox owner can beacon it.
+    /// `prefix_bits` (k) is how many leading bits of `mailbox` are the routable gradient prefix
+    /// — `k=0` ⇒ no useful prefix ⇒ full-flood privacy floor; larger k ⇒ sharper gradient over
+    /// a smaller anonymity set (~N/2^k), trading destination entropy for routability.
+    RecvBeacon { mailbox: Tag, prefix_bits: u8 },
 }
 
 /// The signed body of an advert. The publisher signature covers this exactly.
@@ -171,6 +185,7 @@ impl Advert {
             AdvertKind::PreKey { .. } => TOPIC_KEYS,
             AdvertKind::Tombstone { .. } => TOPIC_CONTROL,
             AdvertKind::HpsTopic { .. } => TOPIC_HPS,
+            AdvertKind::RecvBeacon { .. } => TOPIC_BEACON,
         }
     }
 }
@@ -294,7 +309,7 @@ impl Directory {
     }
 
     fn is_subscribed(&self, topic: &str) -> bool {
-        topic == TOPIC_CONTROL || topic == TOPIC_KEYS || topic == TOPIC_HPS
+        topic == TOPIC_CONTROL || topic == TOPIC_KEYS || topic == TOPIC_HPS || topic == TOPIC_BEACON
             || self.subscriptions.contains(topic)
     }
 
