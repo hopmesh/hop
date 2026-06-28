@@ -32,8 +32,9 @@ privacy/identity roadmap.
 ### Non-goals (v1)
 - Low-latency / real-time delivery. Hop is *eventually* delivered; lifetime is
   measured in hours-to-days, not milliseconds.
-- Anonymity / metadata privacy at the Briar level. We encrypt payloads; we do not
-  (yet) hide who-talks-to-whom from on-path relays. See §10.
+- Anonymity / metadata privacy at the Briar level *in v1*. v1 encrypts payloads but not
+  metadata; **untraceable-by-default messaging (opt-in trace) is now designed in §39**,
+  promoting this from a non-goal. See §10, §39.
 - Exactly-once delivery. Impossible over a lossy partitioned network; we do
   at-least-once + idempotency. See §7.
 - Non-BLE bearers in v1 (Wi-Fi Aware, MultipeerConnectivity, LoRa). The bearer is
@@ -370,13 +371,13 @@ without a prior shared secret. Candidate approaches, to decide before coding §4
 | Payload integrity / origin auth | ✅ | Ed25519 bundle signature |
 | Link confidentiality from BLE sniffers | ✅ | Noise XX per link |
 | Replay safety | ✅ | dedup by bundle ID + lifetime |
-| Traffic-analysis / metadata privacy | ❌ | relays see src/dst headers; future work |
+| Traffic-analysis / metadata privacy | ❌ v1 → §39 | v1: relays see src/dst headers. §39 designs untraceable-by-default (no cleartext src/dst, recognition-by-tag, flood) with opt-in trace. |
 | Sybil / flooding resistance | ⚠️ | hop_limit, spray cap, per-peer rate limit; not robust against a determined adversary |
 | Gateway request abuse | ⚠️ | rate limit + URL policy + size caps |
 
-Hop is **not** an anonymity network in v1. If that becomes a requirement, the model
-moves toward Briar (onion-style layered sealing, no cleartext dst in headers), which
-is a significant redesign of §4–§5.
+Hop is **not** an anonymity network in v1. §39 designs the move toward it — no cleartext
+src/dst in headers, recognition-by-tag, flood delivery (untraceable by default, opt-in
+trace) — as a deliberate redesign of §5's header.
 
 ---
 
@@ -2316,4 +2317,218 @@ exactly like any chunk (§37), so the platform and the business model stay one a
 range-based set-reconciliation exchange and the namespace replica are the two new pieces. Wire types:
 `SyncFingerprint`, `SyncIdList`, `SyncWant`, plus `hps`-carried item notifications — all `hdp`
 bundles, all sealed, all forwardable.
+
+---
+
+## 39. Untraceable-by-default messaging — receiver-driven routing, opt-in provenance
+
+§5 puts `src`/`dst` in cleartext and §27 records a provenance trace on every hop, so relays spray
+toward the destination and learn routes. The cost: unicast is **traceable by default** — on-path relays
+see who→whom and the path is recorded (the ❌ row in §10). This section **inverts the default**: a
+message is **untraceable by default** — no cleartext sender, recipient, or path — and traceable only
+when the sender opts in.
+
+The idea that makes private *routing* (not just privacy) possible is to flip its direction: **you never
+route toward a hidden destination; the destination advertises a gradient toward *itself*, by prefix, and
+nodes follow it** knowing only "prefix P is that way," never who P is. The only thing the network does
+to a private bundle is ask **"is this mine?"** (a cheap recognition check) and, if not, forward it down
+whatever gradient it has — or, lacking one, hold it. It builds on primitives Hop already has: the
+`topic_tag` recognition of §32, the `Broadcast` flood of §5/§7, the X3DH prekeys of §4/§25, the
+demand-summoned regions of §28, the anti-entropy of §38, and the §27 trace machinery (now opt-in).
+
+### What a private bundle exposes (and doesn't)
+
+- **No `dst`.** Replaced by a per-message **recognition tag** only the recipient can match, plus an
+  optional **mailbox-tag** (a rotatable pseudonym, below) when the recipient wants to be *pulled*, and
+  an optional **`k`-bit prefix hint** for gradient routing.
+- **No `src`, no identity signature.** Sender authenticity moves *inside* the seal — the recipient
+  authenticates the sender from the established ratchet/X3DH session (§25), not a cleartext header
+  signature (which would re-expose the sender).
+- **`BundleId = H(sealed ‖ ephemeral)`** instead of `H(src ‖ sealed)` (§5) — globally unique, dedups
+  under flood, leaks nothing about the endpoints.
+- **Empty `trace`** (§27) — no hop recording.
+- **Sealed payload unchanged** (§4). Content was already private; §39 closes the *metadata* gap.
+
+A relay holding a private bundle sees an opaque tag, an opaque sealed blob, a BundleId, a lifetime, and
+an app id — never the sender, the recipient, or (without colluding across the whole path) the route.
+
+### Two tags: recognition vs reachability
+
+Privacy needs one tag; being *reachable* needs another. They trade differently, so they are separate:
+
+- **Ephemeral recognition tag (per message) — unlinkable.** `tag = KDF(g^{e·P_recipient}, BundleId)`,
+  with the ephemeral public `g^e` in the header. The recipient recomputes `KDF(g^{e·s}, BundleId)` per
+  prekey and checks for a match — a few scalar-mults, no payload decryption. Because the ephemeral
+  changes every message, two bundles for the same recipient share nothing a relay can correlate. This
+  is the **transit** identity, for *recognize-as-it-floods-by*. (A static `H(prekey)` tag would be
+  O(1) but linkable; full trial-decrypt is unlinkable but an AEAD attempt per node — the ephemeral tag
+  is the same privacy, far cheaper.)
+- **Mailbox-tag (per prekey-epoch) — a rotatable pseudonym.** `mailbox = H(recipient's current
+  prekey)`. Any sender can stamp it on a bundle, a relay can *bucket* by it, and the recipient can name
+  it in a beacon ("spray me mailbox M"). It is **not** the address — you can't seal to it or message
+  it, only group by it — and the recipient rotates it by publishing a new prekey epoch. It exists only
+  because **you cannot solicit a bundle you have not seen**: the ephemeral tag is uncomputable in
+  advance, so pulling needs a standing handle. That handle is linkable while it lives (an indexer
+  clusters "mailbox M's traffic") — the honest, irreducible price of being reachable while offline.
+  Passive recipients never use it.
+
+### Routing: the beacon gradient (soft state)
+
+A recipient that wants to be *routed to* (not merely recognized as traffic floods past) emits a
+**beacon**: a small signed bundle carrying its mailbox-tag (or `k`-bit prefix) and a fresh
+**reverse-path token**. As the beacon propagates, every node it crosses records a **gradient**: "prefix
+P / mailbox M is reachable via the neighbor I heard this from." A node then **holds** a private bundle
+until it has a gradient for that bundle's prefix and **forwards down the gradient** — directed, cheap,
+and private (the node knows a direction, never an identity).
+
+Three rules keep this sound, not a foot-gun:
+
+- **Signed beacons.** The beacon is signed by the prekey behind its mailbox-tag, so only the holder of
+  M can advertise a gradient for M. No node can hijack or black-hole a prefix it doesn't own.
+- **Soft state that decays.** A gradient is recency-weighted (§18/§27 half-life), refreshed by periodic
+  re-beaconing, superseded when a newer beacon arrives from a different direction. "Holds a path" means
+  *between refreshes*, never forever — otherwise a moved recipient black-holes.
+- **Flood is the fallback, not the default.** With no gradient yet (cold start, or a never-seen
+  prefix), a node falls back to bounded flood — the local physical mesh, the `k`-bit anonymity-set, or
+  `Broadcast`. The recipient's beacon *is* the bootstrap: you can only route to a prefix that has
+  advertised itself, so an offline recipient has no live gradient and senders hold (in the durable
+  spool, below).
+
+A beacon is just a bundle, so the gradient is **bearer-agnostic** (§26): one learned over BLE is
+followed by a bundle arriving over LAN or a relay link — the `BearerManager` seam makes the transport
+irrelevant to routing.
+
+### Reaching a recipient: want beacons and the gateway-as-bearer
+
+"A relay is just another bearer" — a **gateway** is simply a node whose `BearerManager` has a relay
+link up (§9/§19/§26). A recipient several P2P hops from any internet node never touches a relay
+directly; it **pulls from its local mesh**, and its want beacon recruits whoever can help: **holders** (a
+peer or carrier with a matching bundle) spray it back along the reverse-path gradient, and **gateways**
+reconcile its pending set from the backbone and spray it back the same way. Two shapes, the familiar
+privacy/bandwidth knob:
+
+- **Passive (max privacy):** no beacon — the recipient recognizes by ephemeral tag whatever floods
+  through its mesh (a gateway injecting the region's pending set is one such source). Zero linkable
+  handle; you only get what physically reaches you.
+- **Active (reachable):** a want beacon with a mailbox-tag — reachable deep in the mesh and across
+  dormant regions — at the cost of that pseudonym being clusterable while it lives.
+
+If there is **no gateway in the component** (offline island), pure DTN applies: the bundle arrives when
+a node already holding it carries a link — or itself — into the island (a data mule), or when the
+island gains a gateway. Nothing is dropped; held until lifetime/ACK.
+
+The **inbox bifurcates by mode**: §34/§28's `inbox/{recipient-address}` is recipient-*keyed* (a
+cleartext-dst construct). Private mode has no recipient-keyed inbox — it has a **blind spool** keyed by
+mailbox-tag that the recipient pulls; traced mode keeps the address-keyed inbox and targeted
+spray-and-wait. Privacy means the gateway can't *target* the recipient, so it floods the component or
+answers a blind pull — the routing-vs-privacy asymmetry, one layer down.
+
+### Cross-region under dormancy: eventual delivery, no global store
+
+Regions are **anycast** and **demand-summoned** (§21/§28): a sender always deposits in *its own* nearest
+region (it can't, and under privacy shouldn't, target the recipient's), and a region's relay is dormant
+when its region has no active devices. So a message to Bob in another region lands in the sender's
+regional DB, whose compute may scale to zero before Bob ever wakes his. That is fine, for two reasons:
+
+- **The durable store outlives the compute.** A region's spool (Firestore/GCS, §33) persists when its
+  Cloud Run scales to zero. Dormancy stops *forwarding*, not *storage*.
+- **Delivery is eventual, via relay-tier epidemic — not a global DB and not simultaneous wake.** While
+  awake, a region anti-entropy-syncs its pending set to **whatever other regions are awake then** (§28
+  online-only relay epidemic, §38 RBSR). The bundle **store-carries-forwards across the region mesh over
+  time** — region A↔B now, B↔C later — riding pairwise awake-overlaps. The recipient's region, on wake,
+  reconciles with **whatever regions are awake now** (not the depositing one); if the bundle reached the
+  awake set it's there, and if not, continued spread brings it before `lifetime` (§8) expires. Delivery
+  holds as long as the region graph is *temporally connected* within the bundle's lifetime — which a
+  globally-active device population provides.
+
+So "keep both relays awake" is the *fast* path; the dormant path is slower but certain. No region ever
+wakes another; the durable regional spools plus the awake-set epidemic are the rendezvous. This keeps
+§28's **regional DBs as-is** — no continental or global store.
+
+### Opt-in trace: buy back routing and visibility
+
+Setting the trace flag reverts *that one message* to §5/§27: cleartext `Destination::Device(dst)` (so
+relays run spray-and-wait §6 and learn routes §27) and per-hop `TraceHop` recording (so the sender
+watches the path and "Sent N / delivered"). A deliberate trade of privacy for **both** efficiency and
+visibility — right for debugging or a public/infra flow, wrong for a personal message. The machinery
+already exists; §39 only flips which mode is the default.
+
+### The anonymity-set hint, and soft-state discipline
+
+The `k`-bit hint *is* the gradient's prefix: a beacon for a `k`-bit prefix maintains a gradient shared
+by the ~`N/2^k` nodes in that anonymity set, so private routing is exactly "gradient toward the prefix."
+`k=0` = no hint = full flood (the privacy floor); larger `k` = a sharper gradient and fewer holders, but
+it leaks `k` bits of destination entropy and adds prefix-level linkability (a recipient's messages share
+their prefix). A mesh dials `k` up only when it grows large enough that flooding hurts.
+
+**Treat every piece of routing/spool state as soft-state with a TTL and a cap, from day one.** Gradients
+decay (above); mailbox-tags rotate per prekey-epoch; held private bundles evict at `lifetime` (§8); each
+node caps its gradient table (signed beacons stop *hijack*; caps + rate-limits stop a Sybil *bloating*
+it with fake mailbox-tags; §35 keying gates relays). Anything that "remembers forever" is a storage and
+DoS liability.
+
+### Costs (honest)
+
+The model trades targeted routing for privacy, and the bill is real:
+
+- **Storage amplification (the first to bite).** A private bundle replicates across many regional DBs
+  (epidemic) and device stores (flood). The hint bounds *which* regions/holders carry it; `lifetime`
+  eviction bounds *how long*. This is the price of hiding the destination.
+- **Beacon control-traffic.** Gradient freshness costs periodic beacons; budget it like any routing
+  protocol's control plane (low-rate, prefix-scoped, soft-state).
+- **Latency / eventual confirmation.** The dormant path is minutes-to-hours, and the ACK is itself a
+  private bundle making the same round-trip, so "delivered" is eventual too. Consistent with §1/§8.
+- **The linkability floor (fundamental).** Reachable-while-offline-across-regions requires the standing
+  mailbox-tag, so an indexer can cluster a pseudonym. Pure unlinkability is local-only. Rotation bounds
+  the window at the cost of a hand-off. You cannot have global reachability *and* zero linkability.
+- **Mobility → flood.** Move faster than your beacon refresh and gradients go stale; you degrade to
+  flood (the safety net), less efficient but still delivered.
+
+None are fatal; the latency, linkability, and mobility costs are inherent to (privacy + DTN + dormancy),
+exactly what Hop's thesis signs up for. (Operational flood-alerting can come later.)
+
+### Worked scenarios
+
+1. **Alice → Bob, private, Bob beaconing.** Bob's beacon has laid a gradient for his prefix across his
+   reachable mesh and (via gateways) the awake backbone. Alice seals to Bob, stamps the ephemeral tag
+   (+ mailbox-tag + hint), and her node forwards it **down the gradient** — directed, no flood. Bob
+   recognizes it by ephemeral tag, opens it, authenticates Alice from the session. Relays saw a
+   direction for a prefix, never Alice or Bob. The ACK rides Bob→Alice's gradient back.
+2. **Bob offline, in another (dormant) region.** No live gradient → Alice's bundle holds in her region's
+   durable spool, epidemic-spreads to co-awake regions over time. Bob comes online → anycast wakes his
+   region → it reconciles the pending set from the awake backbone → Bob's fresh beacon drains it the
+   last hops to him. Slower, certain, and no region was woken to push.
+3. **Alice opts into trace.** Cleartext `Device(Bob)` + growing `trace`: relays spray-and-wait toward
+   Bob and record each hop; Alice watches the path and a live "delivered." Faster and visible — and
+   on-path relays now see Alice→Bob. Her choice, that message only.
+
+### Why this is best-effort flood-containment, not a global epidemic
+
+Privacy (hide dst) and routing (need dst) are opposed; the model makes **privacy the default** and gives
+efficiency back as **opt-in dials** (the hint's `k`, full trace), while several bounds compound to keep
+even the private default from going global:
+
+1. **Physical scoping (free):** a BLE/LAN flood reaches only the physical connected component.
+2. **Gradient-first, not flood-first:** with a live gradient there is no flood at all — directed
+   forwarding; flood is only the bootstrap/fallback.
+3. **No relay push-down:** relays never push-flood private bundles into device meshes.
+4. **Lazy, awake-only backbone epidemic:** `O(diff)` reconciliation among awake regions; dormant
+   regions catch up on wake — no per-message global push, no wake-churn.
+5. **The `k`-bit hint:** caps holders to ~`N/2^k` and sharpens the gradient.
+6. **Hard caps:** `lifetime`, `hop_limit`, spray budget `L`, dedup-by-`BundleId` (§5/§6/§7).
+7. **Opt-in trace** for the efficient targeted gear.
+8. **Keyed/metered backbone (§35)** bounds a node trying to flood globally.
+
+Best-effort, not a hard guarantee — a leaderless privacy mesh can't promise a global bound — but the
+common case is gradient-directed and physically small, and the cross-region case is eventual and capped,
+never a global push.
+
+**Status: design.** New wire pieces: the private header variant (ephemeral tag + `g^e`, optional
+mailbox-tag, optional `k`-bit hint; no src/dst/sig), the ephemeral-tag and mailbox-tag KDFs, the
+**signed beacon** + reverse-path token + per-node gradient table (soft state), the blind regional spool,
+and the want-beacon / `InternetEgress` pull verb. Reuses: `Broadcast` flood + BundleId dedup (§5/§7),
+`topic_tag` recognition (§32), X3DH prekeys (§25), the §27 trace machinery (now opt-in), demand-summoned
+regions (§28), regional spools + online-only relay epidemic (§28/§34), and §38 RBSR for cross-region
+catch-up. Supersedes the §10 metadata-privacy non-goal for unicast content; keeps §28's regional DBs
+unchanged (no global/continental store).
 
