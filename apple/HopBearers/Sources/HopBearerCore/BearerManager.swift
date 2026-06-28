@@ -45,7 +45,10 @@ public final class BearerManager: Bearer {
     private var toGlobal: [ObjectIdentifier: [LinkId: LinkId]] = [:]  // bearer -> (localLink -> globalLink)
     private var fromGlobal: [LinkId: (Bearer, LinkId)] = [:]          // globalLink -> (owning bearer, localLink)
 
-    public init() {}
+    /// `baseLinkId` offsets this manager's global link-id space. A host that mints link ids for OTHER
+    /// transports outside the manager (e.g. the production node's relay/Multipeer links) passes a high
+    /// base so manager ids can never collide with those. Default 1 (standalone / clean-room use).
+    public init(baseLinkId: LinkId = 1) { self.nextGlobal = baseLinkId }
 
     /// Register a bearer. The manager installs itself as the bearer's sink (via a private per-bearer
     /// lane that tags + translates the bearer's link ids), so from here on the bearer's links flow up
