@@ -20,15 +20,17 @@ let package = Package(
     products: [
         .library(name: "HopBearerCore",  targets: ["HopBearerCore"]),
         .library(name: "HopBearerBle",   targets: ["HopBearerBle"]),
+        .library(name: "HopBearerLan",   targets: ["HopBearerLan"]),
         .library(name: "HopBearerProof", targets: ["HopBearerProof"]),
         .executable(name: "blepeer", targets: ["blepeer"]),
     ],
     targets: [
         .target(name: "HopBearerCore"),
         .target(name: "HopBearerBle",   dependencies: ["HopBearerCore"]),
+        .target(name: "HopBearerLan",   dependencies: ["HopBearerCore"]),
         .target(name: "HopBearerProof", dependencies: ["HopBearerCore"]),
-        // Clean-room CLI: bootstraps a BearerManager, registers BleBearer, wires the shared ProofSink.
-        .executableTarget(name: "blepeer", dependencies: ["HopBearerCore", "HopBearerBle", "HopBearerProof"]),
+        // Clean-room CLI: bootstraps a BearerManager, registers bearers, wires the shared ProofSink.
+        .executableTarget(name: "blepeer", dependencies: ["HopBearerCore", "HopBearerBle", "HopBearerLan", "HopBearerProof"]),
         // Deterministic registry tests (no radio): prove BearerManager's multiplexing/routing/id-space.
         .testTarget(name: "HopBearerCoreTests", dependencies: ["HopBearerCore"]),
     ]

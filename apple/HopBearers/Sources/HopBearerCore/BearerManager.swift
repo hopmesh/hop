@@ -34,6 +34,11 @@ public final class BearerManager: Bearer {
     /// LinkId space. Weak: the consumer typically owns the manager, so a strong ref would cycle.
     public weak var sink: LinkSink?
 
+    // THREADING: each bearer runs on its OWN queue (the BLE bearer's run loop, the LAN bearer's serial
+    // queue, …) and the consumer pings from yet another, so the routing maps are touched concurrently.
+    // A lock guards every map access; sink callbacks are always invoked OUTSIDE the lock (so a consumer
+    // that calls back into `send` from linkUp/linkBytes can't deadlock).
+    private let lock = NSLock()
     private var bearers: [Bearer] = []
     private var lanes: [Lane] = []                                    // keep per-bearer shims alive (bearer.sink is weak)
     private var nextGlobal: LinkId = 1                                // global link-id space (distinct from any bearer's)
@@ -48,39 +53,46 @@ public final class BearerManager: Bearer {
     public func register(_ bearer: Bearer) {
         let lane = Lane(manager: self, bearer: bearer)
         bearer.sink = lane                                           // bearer holds this weakly...
-        lanes.append(lane)                                          // ...so the manager keeps it alive
-        bearers.append(bearer)
+        lock.lock(); lanes.append(lane); bearers.append(bearer); lock.unlock()  // ...manager keeps it alive
     }
 
     // MARK: Bearer — the uniform interface the consumer drives (fans out to every registered bearer)
 
-    public func start() { bearers.forEach { $0.start() } }
-    public func stop()  { bearers.forEach { $0.stop() } }
+    public func start() { snapshotBearers().forEach { $0.start() } }
+    public func stop()  { snapshotBearers().forEach { $0.stop() } }
 
     public func send(_ bytes: Data, on link: LinkId) {
-        guard let (bearer, local) = fromGlobal[link] else { return } // unknown / already-closed global link
+        lock.lock(); let route = fromGlobal[link]; lock.unlock()
+        guard let (bearer, local) = route else { return }            // unknown / already-closed global link
         bearer.send(bytes, on: local)
     }
 
-    // MARK: lane callbacks — bearer-local link ids in, global link ids out
+    private func snapshotBearers() -> [Bearer] { lock.lock(); defer { lock.unlock() }; return bearers }
+
+    // MARK: lane callbacks — bearer-local link ids in, global link ids out (map work locked, sink unlocked)
 
     fileprivate func up(_ bearer: Bearer, _ local: LinkId, _ role: LinkRole, _ peerId: Data) {
+        lock.lock()
         let g = nextGlobal; nextGlobal += 1
         toGlobal[ObjectIdentifier(bearer), default: [:]][local] = g
         fromGlobal[g] = (bearer, local)
+        lock.unlock()
         sink?.linkUp(g, role: role, peerId: peerId)
     }
 
     fileprivate func bytes(_ bearer: Bearer, _ local: LinkId, _ data: Data) {
-        guard let g = toGlobal[ObjectIdentifier(bearer)]?[local] else { return }
+        lock.lock(); let g = toGlobal[ObjectIdentifier(bearer)]?[local]; lock.unlock()
+        guard let g else { return }
         sink?.linkBytes(g, data)
     }
 
     fileprivate func down(_ bearer: Bearer, _ local: LinkId) {
         let oid = ObjectIdentifier(bearer)
-        guard let g = toGlobal[oid]?[local] else { return }
-        toGlobal[oid]?[local] = nil
-        fromGlobal[g] = nil
+        lock.lock()
+        let g = toGlobal[oid]?[local]
+        if let g { toGlobal[oid]?[local] = nil; fromGlobal[g] = nil }
+        lock.unlock()
+        guard let g else { return }
         sink?.linkDown(g)
     }
 }
