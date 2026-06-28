@@ -17,7 +17,8 @@
 import SwiftUI
 import CoreBluetooth
 import UIKit
-import HopBearers       // shared transport: BleBearer + BearerManager + the bleQueue/bleRunLoop hooks
+import HopBearerCore    // BearerManager + the contract
+import HopBearerBle     // BleBearer + the bleQueue/bleRunLoop/bleAppInBackground host hooks
 import HopBearerProof   // shared clean-room consumer: ProofSink (same one blepeer uses)
 
 // MARK: - §8.1 Dedicated I/O thread (owns bleRunLoop) -------------------------------------------

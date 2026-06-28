@@ -1,29 +1,35 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// HopBearers — the cross-platform transport layer (BLE first; LAN / Wi-Fi Direct / relay to follow),
-// shared verbatim by BOTH the clean-room test harness (ble-lab) and the production app (HopDriver).
-// A bearer forms links to peers and shuttles bytes behind a tiny LinkSink contract; the consumer is
-// either the clean-room PROOF pinger or the production HopNode adapter. One transport, two consumers —
-// so a fix proven in the clean room is the app's fix the moment it lands here (no hand fold-back).
+// HopBearers — the cross-platform transport layer for Hop, as a family of INDEPENDENT libraries.
+// There is NO master library: a small core defines the contract + registry, and each transport is its
+// OWN library that depends only on the core. An app (or the clean room) pulls in just the bearers it
+// wants and registers them with a BearerManager — so a BLE-only build never links LAN/relay code.
 //
-// Pure CoreBluetooth/Foundation — NO Rust / hop-ffi dependency, so the lab keeps building standalone.
+//   HopBearerCore   — the Bearer/LinkSink contract, BearerManager registry, shared log/hex helpers
+//   HopBearerBle    — the BLE transport (CoreBluetooth)           [depends: Core]
+//   HopBearerLan    — the LAN transport (mDNS + TCP)              [depends: Core]   (added next)
+//   HopBearerRelay  — the relay transport (WebSocket)            [depends: Core]   (added next)
+//   HopBearerProof  — the clean-room proof-of-pipe consumer       [depends: Core]
+//
+// Each bearer library names nothing outside its own transport; the core names nothing transport-
+// specific. Pure CoreBluetooth/Foundation — NO Rust / hop-ffi dependency, so the lab builds standalone.
 let package = Package(
     name: "HopBearers",
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
-        .library(name: "HopBearers", targets: ["HopBearers"]),
-        // The clean-room proof consumer, shared by the macOS CLI and the iOS clean-room app.
+        .library(name: "HopBearerCore",  targets: ["HopBearerCore"]),
+        .library(name: "HopBearerBle",   targets: ["HopBearerBle"]),
         .library(name: "HopBearerProof", targets: ["HopBearerProof"]),
         .executable(name: "blepeer", targets: ["blepeer"]),
     ],
     targets: [
-        .target(name: "HopBearers"),
-        // Clean-room "proof of pipe" consumer (LinkSink) shared by blepeer + the iOS app — one copy.
-        .target(name: "HopBearerProof", dependencies: ["HopBearers"]),
-        // Clean-room CLI: just bootstraps a BearerManager + BleBearer + the shared ProofSink.
-        .executableTarget(name: "blepeer", dependencies: ["HopBearers", "HopBearerProof"]),
+        .target(name: "HopBearerCore"),
+        .target(name: "HopBearerBle",   dependencies: ["HopBearerCore"]),
+        .target(name: "HopBearerProof", dependencies: ["HopBearerCore"]),
+        // Clean-room CLI: bootstraps a BearerManager, registers BleBearer, wires the shared ProofSink.
+        .executableTarget(name: "blepeer", dependencies: ["HopBearerCore", "HopBearerBle", "HopBearerProof"]),
         // Deterministic registry tests (no radio): prove BearerManager's multiplexing/routing/id-space.
-        .testTarget(name: "HopBearersTests", dependencies: ["HopBearers"]),
+        .testTarget(name: "HopBearerCoreTests", dependencies: ["HopBearerCore"]),
     ]
 )

@@ -8,8 +8,9 @@
 // CLI defaults (HopBearers): bleQueue = .main, bleRunLoop = .main — no UI contends.
 
 import Foundation
-import HopBearers
-import HopBearerProof
+import HopBearerCore    // BearerManager + the contract
+import HopBearerBle     // the BLE transport lib (registered below)
+import HopBearerProof   // the clean-room proof consumer
 
 setbuf(stdout, nil)                    // unbuffered logs so `timeout`/piping flush immediately
 

@@ -1,5 +1,5 @@
 import XCTest
-@testable import HopBearers
+@testable import HopBearerCore
 
 // Deterministic, radio-free proof that BearerManager actually multiplexes. The whole reason the
 // registry exists is the claim "register any Bearer, the consumer sees one uniform link space, and

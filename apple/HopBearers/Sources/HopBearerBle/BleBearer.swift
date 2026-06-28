@@ -18,6 +18,7 @@
 import Foundation
 import CoreBluetooth
 import Security
+import HopBearerCore   // the Bearer/LinkSink contract, BearerManager, and the shared log/hex helpers
 
 // MARK: - Fresh service scheme (SPEC §1.1) -------------------------------------------------------
 
@@ -58,21 +59,7 @@ public var bleRunLoop: RunLoop = .main
 public var bleAppInBackground = false
 
 // MARK: - Small helpers -------------------------------------------------------------------------
-
-private let processStart = Date()
-/// Grep-able structured log. Every line begins with `HOPLAB`. Categories: STATE, DEDUP, STATUS, WARN
-/// (the transport) and PROOF (the clean-room consumer). Public so the consumer reuses the EXACT format.
-public func log(_ category: String, _ message: String) {
-    let t = Date().timeIntervalSince(processStart)
-    print("HOPLAB \(String(format: "%9.3f", t)) \(category) \(message)")   // stdout (macOS CLI capture)
-    NSLog("HOPLAB %9.3f %@ %@", t, category, message)   // unified log too → iOS device log capturable (idb/Console)
-}
-
-public func nowMs() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
-func nowS()  -> Double { Date().timeIntervalSince1970 }
-func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
-/// First-4-bytes hex (8 chars) — the short peer label shared by transport + consumer logs.
-public func shortHex(_ d: Data?) -> String { d.map { hex($0.prefix(4)) } ?? "????????" }
+// log / nowMs / nowS / hex / shortHex now live in HopBearerCore (shared by every bearer + consumer).
 
 /// Unsigned big-endian compare: a > b (byte 0 most significant). SPEC §1.2 tiebreaker primitive.
 func gt(_ a: Data, _ b: Data) -> Bool {

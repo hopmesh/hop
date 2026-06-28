@@ -73,16 +73,23 @@ What it does, purely in terms of the contract (no transport types cross the boun
   collide), and the manager translates each into a process-global `LinkId`. The consumer sees a single
   id space regardless of which radio a link rode in on.
 
-This multiplexing is proven deterministically (no radio) in `Tests/HopBearersTests` — colliding local
-ids → distinct globals, correct send-routing, up/bytes/down translation, linkDown cleanup.
+This multiplexing is proven deterministically (no radio) in `Tests/HopBearerCoreTests` — colliding
+local ids → distinct globals, correct send-routing, up/bytes/down translation, linkDown cleanup.
 
-## What's in the box
+## What's in the box — one core, one library per bearer (NO master library)
 
-| Target | Role |
+| Library | Role |
 | --- | --- |
-| `HopBearers` (library) | `Bearer`/`LinkSink` contract, `BearerManager` registry, `BleBearer` transport |
-| `blepeer` (executable) | clean-room "proof of pipe" consumer — pings over DATA frames, logs `HOPLAB … PROOF …` |
-| `HopBearersTests` | deterministic registry tests |
+| `HopBearerCore` | `Bearer`/`LinkSink` contract, `BearerManager` registry, shared `log`/`hex` helpers — names nothing transport-specific |
+| `HopBearerBle` | the BLE transport (CoreBluetooth) — depends on Core |
+| `HopBearerLan` | the LAN transport (mDNS + TCP) — depends on Core *(coming next)* |
+| `HopBearerRelay` | the relay transport (WebSocket) — depends on Core *(coming next)* |
+| `HopBearerProof` | clean-room "proof of pipe" consumer — pings over DATA frames, logs `HOPLAB … PROOF …` |
+| `blepeer` (executable) | clean-room CLI host: registers `BleBearer`, wires `ProofSink` |
+| `HopBearerCoreTests` | deterministic registry tests |
+
+Each bearer is its own library so a BLE-only app never links LAN/relay code. Add a transport by
+shipping a new `HopBearerXxx` library that depends only on `HopBearerCore`, then `register()` it.
 
 `BleBearer` is the clean-room BLE transport (ble-lab/SPEC.md) re-seamed behind `Bearer`: dual-role
 (advertise + scan), GATT-read PSM, L2CAP for data, 4-byte BE framing, 1 Hz keepalive + adaptive
@@ -103,9 +110,9 @@ and calls `bearer.wake(_:)` from the AppDelegate on a CoreLocation region wake.
 ## Build / test
 
 ```sh
-swift build                 # library + blepeer (macOS host)
-swift test                  # registry tests
+swift build                 # all libraries + blepeer (macOS host)
+swift test                  # registry tests (HopBearerCoreTests)
 swift run blepeer           # run the clean-room pinger (needs BLE permission)
-# iOS library build:
-xcodebuild build -scheme HopBearers -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO
+# iOS library build (per-lib scheme):
+xcodebuild build -scheme HopBearerBle -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO
 ```
