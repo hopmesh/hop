@@ -477,7 +477,9 @@ impl HopNode {
     }
 
     /// Send a peer message to `dst` (an address — sealing key is derived from it).
-    /// Returns the bundle id. Set `request_ack` to track delivery confirmation.
+    /// **Untraceable by default** (DESIGN.md §39): no cleartext src/dst, the bundle floods
+    /// and is recognized only by `dst`. Still forward-secret + sender-authenticated. Returns
+    /// the bundle id. Set `request_ack` for a private delivery confirmation.
     pub fn send_message(
         &self,
         dst: Vec<u8>,
@@ -491,6 +493,26 @@ impl HopNode {
             .lock()
             .unwrap()
             .send_message(dst, content_type, body, request_ack)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(id.to_vec())
+    }
+
+    /// Send a peer message to `dst` with full §27 provenance — cleartext src/dst, route
+    /// learning, relay-vaccinating ACKs. The **opt-in traced** path; prefer [`Self::send_message`]
+    /// (untraceable) unless the user has explicitly chosen a traceable send.
+    pub fn send_message_traced(
+        &self,
+        dst: Vec<u8>,
+        content_type: String,
+        body: Vec<u8>,
+        request_ack: bool,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let dst = to32(&dst)?;
+        let id = self
+            .inner
+            .lock()
+            .unwrap()
+            .send_message_traced(dst, content_type, body, request_ack)
             .map_err(|e| FfiError::Hop(e.to_string()))?;
         Ok(id.to_vec())
     }
