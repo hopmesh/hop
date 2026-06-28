@@ -23,7 +23,7 @@ use crate::bundle::{
     Bundle, BundleFlags, BundleId, BundleOpts, Destination, Payload, StreamId,
 };
 use crate::stream::StreamReassembler;
-use crate::crypto::{self, short_addr, Identity, PubKeyBytes, ShortAddr, SignedPreKey, XPubKeyBytes};
+use crate::crypto::{self, short_addr, Identity, PubKeyBytes, ShortAddr, SignedPreKey, Tag, XPubKeyBytes};
 use crate::error::{Error, Result};
 use crate::dnssec;
 use crate::hps;
@@ -163,6 +163,23 @@ pub const DEFAULT_MAX_FORWARDED: usize = 4_096;
 /// can always open a session (DESIGN.md §25).
 pub const PREKEY_TTL_MS: u32 = 604_800_000;
 
+/// §39 P4 receiver-beacon: how long a laid gradient entry lives without a refresh. Kept SHORT
+/// (relative to [`PREKEY_TTL_MS`]) so a moved/silent recipient stops attracting bundles within
+/// one TTL — no permanent black-hole. Refresh interval must be well under this.
+pub const RECV_BEACON_TTL_MS: u32 = 90_000;
+/// How often a "route-to-me" recipient re-emits its beacon to keep the gradient fresh. Well
+/// under [`RECV_BEACON_TTL_MS`] so a single missed beacon self-heals; the gradient tracks a
+/// mobile recipient at this cadence.
+pub const RECV_BEACON_REFRESH_MS: u64 = 30_000;
+/// Leading bits of the mailbox-tag used as the routable gradient prefix (the `k` of §39). Kept
+/// at the full tag width for v1 (k = 128): a sharp gradient with no false-sharing. The privacy
+/// floor (k=0 ⇒ full flood) is available by setting this to 0; dialing k *down* trades
+/// routability for a larger anonymity set, only worth it once flooding hurts.
+pub const RECV_BEACON_PREFIX_BITS: u8 = 128;
+/// Cap on the soft-state gradient table (bounds a Sybil flooding fake mailbox-tags; signed
+/// beacons stop *hijack*, this stops *bloat*). On overflow the nearest-to-expiry entry is evicted.
+pub const MAX_RECV_GRADIENT: usize = 4_096;
+
 /// TTL for an `hps://` discoverable-topic advert (7 days). Re-publish before it lapses so
 /// same-app peers keep seeing the topic (DESIGN.md §32).
 pub const HPS_TOPIC_TTL_MS: u32 = 604_800_000;
@@ -190,6 +207,22 @@ struct TxInfo {
     /// **Forward-path** latency to the destination in ms (the destination's receive time
     /// minus our send time, as it reported in the ACK) — the A→B leg, not the round trip.
     delivered_ms: u32,
+}
+
+/// §39 P4: one soft-state gradient entry — "the recipient behind this mailbox-tag is reachable
+/// via `inbound`." Recorded from a signed [`AdvertKind::RecvBeacon`]; the closest (fewest-hop)
+/// fresh beacon wins, and a higher `seq` from a new direction supersedes (handles a moved
+/// recipient). Pruned at `expires_at`.
+#[derive(Clone, Copy, Debug)]
+struct GradientEntry {
+    /// The link a matching private bundle should be forwarded down (next hop toward the recipient).
+    inbound: LinkId,
+    /// Distance to the recipient in advert-hops (lower = closer; breaks ties when re-pointing).
+    hops: u8,
+    /// `beacon.created_at + ttl_ms` — dropped once the clock passes this (no refresh ⇒ no route).
+    expires_at: u64,
+    /// The beacon's per-publisher `seq`; a strictly-higher seq supersedes even from a new link.
+    seq: u64,
 }
 
 /// A queued message for the UI: either ours awaiting send, or a peer's awaiting relay.
@@ -373,6 +406,12 @@ pub struct Node<S: Store = MemoryStore> {
     /// Last time we re-gossiped adverts to all live links (so prekeys/presence propagate over
     /// STABLE links, not just at link-up — see the re-gossip in `tick`).
     last_regossip_ms: u64,
+    /// Last time we emitted our §39 P4 receiver-beacon (re-emitted on [`RECV_BEACON_REFRESH_MS`]).
+    last_recv_beacon_ms: u64,
+    /// "Route-to-me" mode: emit a receiver-beacon so private bundles route to us via the gradient.
+    /// Default on (the common case — be reachable); a max-privacy passive recipient sets it off and
+    /// only recognizes what floods past, advertising no linkable mailbox handle (DESIGN.md §39).
+    route_to_me: bool,
     links: HashMap<LinkId, LinkState>,
     /// Per-peer gossip dedup, preserved across link flaps so a reconnect doesn't re-flood the directory.
     peer_sent: HashMap<PubKeyBytes, PeerSent>,
@@ -395,6 +434,12 @@ pub struct Node<S: Store = MemoryStore> {
     prekey: SignedPreKey,
     /// Retained prekey secrets by public, so late session inits still resolve.
     spk_secrets: HashMap<XPubKeyBytes, [u8; 32]>,
+    /// §39 P4 soft-state routing gradient: mailbox-tag → the next hop *toward* that recipient.
+    /// Laid by recipients' signed [`AdvertKind::RecvBeacon`]s as they flood a few hops; a node
+    /// then forwards a matching **private** bundle down `inbound` instead of blind-flooding. Soft
+    /// state — pruned by `expires_at` in [`Node::tick`], superseded by a fresher/closer beacon,
+    /// capped at [`MAX_RECV_GRADIENT`]. Empty ⇒ flood fallback (the privacy floor / cold start).
+    recv_gradient: HashMap<Tag, GradientEntry>,
     /// Forward-secret sessions, by peer address (DESIGN.md §25).
     sessions: HashMap<PubKeyBytes, PeerSession>,
     /// Bundle ids we've been "vaccinated" against by a passing delivery ACK — we
@@ -585,6 +630,8 @@ impl<S: Store> Node<S> {
             directory: Directory::new(),
             now_ms: 0,
             last_regossip_ms: 0,
+            last_recv_beacon_ms: 0,
+            route_to_me: true,
             links: HashMap::new(),
             peer_sent: HashMap::new(),
             outgoing: Vec::new(),
@@ -598,6 +645,7 @@ impl<S: Store> Node<S> {
             relay_fwd: HashMap::new(),
             prekey,
             spk_secrets,
+            recv_gradient: HashMap::new(),
             sessions: HashMap::new(),
             immune: HashMap::new(),
             http_requests: Vec::new(),
@@ -1001,12 +1049,15 @@ impl<S: Store> Node<S> {
     ) -> Result<BundleId> {
         let wrapped =
             Payload::Private { sender: self.identity.address(), inner: Box::new(inner) };
+        // §39 P4: stamp the recipient's mailbox-tag so a node holding a gradient toward it can
+        // route this bundle there (instead of blind-flooding) — without any cleartext dst. The
+        // sender already has `spk_pub`, so it computes the SAME tag the recipient beacons.
         let bundle = Bundle::create_private(
             &dst,
             &spk_pub,
             &wrapped,
-            None, // mailbox-tag (offline pull / solicitation) — §39 P5
-            None, // routing hint (gradient prefix) — §39 P4
+            Some(crypto::mailbox_tag(&spk_pub)), // mailbox-tag = the gradient key (P4 routing; P5 pull)
+            None, // sub-prefix hint (k<128) — unused for v1's full-tag prefix
             BundleOpts {
                 created_at: self.now_ms,
                 flags: BundleFlags { request_ack, ..Default::default() },
@@ -1140,6 +1191,29 @@ impl<S: Store> Node<S> {
         Ok(id)
     }
 
+    /// §39 P4: publish (and gossip) this node's signed **receiver-beacon** so peers lay a
+    /// gradient toward our mailbox-tag and route private bundles to us instead of blind-flooding.
+    /// Call this when in "route-to-me" mode (a recipient that wants to be reachable deep in the
+    /// mesh / across a relay→BLE bridge); a passive recipient skips it for max privacy and just
+    /// recognizes whatever floods past. Re-published on a short interval from [`Node::tick`] so the
+    /// gradient stays fresh + tracks a mobile recipient. Returns the advert id.
+    pub fn publish_recv_beacon(&mut self) -> Result<AdvertId> {
+        self.advert_seq += 1;
+        let advert = Advert::publish(
+            &self.identity,
+            AdvertKind::RecvBeacon {
+                mailbox: crypto::mailbox_tag(&self.prekey.public),
+                prefix_bits: RECV_BEACON_PREFIX_BITS,
+            },
+            self.now_ms,
+            RECV_BEACON_TTL_MS,
+            self.advert_seq,
+        )?;
+        let id = advert.id;
+        self.publish(advert);
+        Ok(id)
+    }
+
     /// Whether we hold a forward-secret session with `addr` — i.e. messages to/from
     /// it are ratchet-encrypted rather than static-sealed (DESIGN.md §25).
     pub fn has_session(&self, addr: &PubKeyBytes) -> bool {
@@ -1222,7 +1296,7 @@ impl<S: Store> Node<S> {
             &to,
             &spk_pub,
             &wrapped,
-            None,
+            Some(crypto::mailbox_tag(&spk_pub)), // §39 P4: ride `to`'s gradient back (not blind flood)
             None,
             BundleOpts { created_at: self.now_ms, ..Default::default() },
         ) {
@@ -2466,6 +2540,9 @@ impl<S: Store> Node<S> {
     pub fn tick(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
         self.directory.expire(now_ms);
+        // §39 P4: drop stale routing-gradient entries — a recipient that stopped beaconing (moved
+        // or went passive) stops attracting bundles within one TTL (no permanent black-hole).
+        self.recv_gradient.retain(|_, e| e.expires_at > now_ms);
         // Re-advertise hosted Discoverable topics we don't currently have a live advert for —
         // e.g. after a restart, where the topic persists but the in-memory directory/advert do
         // not. Runs with the real clock set (above), so created_at is valid; once published the
@@ -2535,6 +2612,12 @@ impl<S: Store> Node<S> {
                 }
                 self.offer_adverts_to_all();
             }
+        }
+        // §39 P4: keep our receiver-beacon fresh (short interval ≪ its TTL) so the gradient toward
+        // us stays alive and re-points if we move. Passive (max-privacy) recipients skip this.
+        if self.route_to_me && now_ms.saturating_sub(self.last_recv_beacon_ms) >= RECV_BEACON_REFRESH_MS {
+            self.last_recv_beacon_ms = now_ms;
+            let _ = self.publish_recv_beacon();
         }
         // Retry any content still waiting on a prekey (it gossips, §25).
         self.flush_pending_content();
@@ -2763,7 +2846,7 @@ impl<S: Store> Node<S> {
         let peer = est.peer;
         match postcard::from_bytes::<Wire>(&plaintext) {
             Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
-            Ok(Wire::Advert(a)) => self.on_advert(peer, a),
+            Ok(Wire::Advert(a)) => self.on_advert(link, peer, a),
             Err(_) => {}
         }
     }
@@ -2802,7 +2885,7 @@ impl<S: Store> Node<S> {
         if let Some((plaintext, peer)) = ready {
             match postcard::from_bytes::<Wire>(&plaintext) {
                 Ok(Wire::Bundle(b)) => self.on_bundle(link, b),
-                Ok(Wire::Advert(a)) => self.on_advert(peer, a),
+                Ok(Wire::Advert(a)) => self.on_advert(link, peer, a),
                 Err(_) => {}
             }
         }
@@ -3231,18 +3314,66 @@ impl<S: Store> Node<S> {
         }
     }
 
-    fn on_advert(&mut self, peer: PubKeyBytes, advert: Advert) {
+    fn on_advert(&mut self, from_link: LinkId, peer: PubKeyBytes, advert: Advert) {
         let _ = peer; // reserved for finer-grained relay scoring (DESIGN.md §18)
         // Service adverts flood the directory (subscribed → full retention, else the
         // bounded relay cache). Re-gossip only when newly accepted.
         let is_prekey = matches!(advert.body.kind, AdvertKind::PreKey { .. });
+        // §39 P4: a signed receiver-beacon lays/refreshes a gradient toward its mailbox via the
+        // link we heard it on. Read its fields before `ingest` consumes the advert.
+        let beacon = match advert.body.kind {
+            AdvertKind::RecvBeacon { mailbox, .. } => {
+                Some((mailbox, advert.hops, advert.body.created_at, advert.body.ttl_ms, advert.body.seq))
+            }
+            _ => None,
+        };
         if self.directory.ingest(advert, self.now_ms).unwrap_or(false) {
             self.offer_adverts_to_all();
             // A newly-learned prekey may unblock content we were holding to ratchet (§25).
             if is_prekey {
                 self.flush_pending_content();
             }
+            if let Some((mailbox, hops, created_at, ttl_ms, seq)) = beacon {
+                self.record_gradient(mailbox, from_link, hops, created_at, ttl_ms, seq);
+            }
         }
+    }
+
+    /// §39 P4: record/refresh a routing-gradient entry from a verified receiver-beacon — the
+    /// recipient behind `mailbox` is reachable via `from_link`. A strictly-fresher beacon (higher
+    /// `seq`) supersedes even from a new direction (a moved recipient re-points the route); among
+    /// equal seq, the closer (fewer-hop) copy wins. After recording, immediately re-offer any
+    /// already-HELD private bundles down the new link — without this, a bundle parked before the
+    /// gradient existed waits forever (the relay already deduped it on the bridge link at link-up).
+    fn record_gradient(&mut self, mailbox: Tag, from_link: LinkId, hops: u8, created_at: u64, ttl_ms: u32, seq: u64) {
+        let expires_at = created_at.saturating_add(ttl_ms as u64);
+        if expires_at <= self.now_ms {
+            return; // already stale on arrival
+        }
+        let entry = GradientEntry { inbound: from_link, hops, expires_at, seq };
+        let install = match self.recv_gradient.get(&mailbox) {
+            // Fresher beacon, or same generation but a closer/equal path → take it.
+            Some(e) => seq > e.seq || (seq == e.seq && hops <= e.hops),
+            None => true,
+        };
+        if !install {
+            return;
+        }
+        if self.recv_gradient.len() >= MAX_RECV_GRADIENT && !self.recv_gradient.contains_key(&mailbox) {
+            // Bound the table (Sybil): evict the nearest-to-expiry entry.
+            if let Some(&victim) = self
+                .recv_gradient
+                .iter()
+                .min_by_key(|(_, e)| e.expires_at)
+                .map(|(k, _)| k)
+            {
+                self.recv_gradient.remove(&victim);
+            }
+        }
+        self.recv_gradient.insert(mailbox, entry);
+        // The fix for the live "held=95 never drains" bug: a freshly-laid gradient is a NEW
+        // trigger to push parked private bundles toward the recipient, not just at link-up.
+        self.offer_bundles_to_link(from_link);
     }
 
     // --- outbound offers ------------------------------------------------------
@@ -3317,6 +3448,23 @@ impl<S: Store> Node<S> {
                 continue;
             }
             let peer = est.peer;
+            // §39 P4: route a private bundle DOWN its gradient (toward the recipient) instead of
+            // blind-flooding. If we hold a live gradient for its mailbox and the next-hop link is
+            // up, send ONLY on that link — skip every other. No gradient (cold start / passive
+            // recipient) or a flapping next-hop → fall through to the epidemic flood fallback.
+            if b.is_private() {
+                if let Some(mailbox) = b.inner.private.as_ref().and_then(|p| p.mailbox) {
+                    if let Some(&entry) = self.recv_gradient.get(&mailbox) {
+                        // Only a LIVE gradient whose next hop is actually up steers the bundle; an
+                        // expired/flapping entry falls through to the flood fallback (never parks).
+                        let usable = entry.expires_at > now
+                            && matches!(self.links.get(&entry.inbound), Some(LinkState::Up(_)));
+                        if usable && link != entry.inbound {
+                            continue; // the directed copy rides only the gradient's link
+                        }
+                    }
+                }
+            }
             let meta = BundleMeta::from(&b);
             let direct = is_for(&b, &peer);
             // If we can reach the destination directly right now, don't spray copies
@@ -4203,6 +4351,92 @@ mod tests {
         let (_, delivered, _, fwd_ms) = nodes[0].message_status(&id).expect("tracked");
         assert!(delivered);
         assert_eq!(fwd_ms, 1_500, "ACK carries the A→B forward latency the recipient saw");
+    }
+
+    // --- §39 P4 gradient routing -----------------------------------------------
+
+    /// 4-node A—R—B with a decoy D also hanging off R (the relay/bridge has 3 links). Models the
+    /// live bug: a remote sender A reaches a recipient B only through a relay R, with other clients
+    /// (D) also on R.
+    fn gradient_topology() -> ([Node; 4], Wire2) {
+        let mut nodes = [
+            Node::new(Identity::generate()), // 0 A (sender)
+            Node::new(Identity::generate()), // 1 R (relay / bridge)
+            Node::new(Identity::generate()), // 2 B (recipient, no direct link to A)
+            Node::new(Identity::generate()), // 3 D (decoy also on R)
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // A <-> R   (R link 1)
+        net.connect(&mut nodes, 1, 2, 2, 2); // R <-> B   (R link 2)
+        net.connect(&mut nodes, 1, 3, 3, 3); // R <-> D   (R link 3)
+        exchange_prekeys(&mut net, &mut nodes); // A learns B's prekey (to seal + tag the bundle)
+        (nodes, net)
+    }
+
+    #[test]
+    fn private_bundle_routes_down_the_gradient_not_flooded_to_decoys() {
+        // The fix for the relay-bridged regression: B advertises a receiver-beacon → R lays a
+        // gradient toward B; A's private message then routes DOWN it (R→B only), reaching B
+        // WITHOUT being flooded to the decoy D — directed delivery, not blind flood.
+        let (mut nodes, mut net) = gradient_topology();
+
+        nodes[2].publish_recv_beacon().unwrap(); // B in "route-to-me" mode
+        net.pump(&mut nodes);
+
+        // R laid a gradient toward B's mailbox, pointing at the R—B link (R's link 2).
+        let bmail = crypto::mailbox_tag(&nodes[2].prekey.public);
+        let g = nodes[1].recv_gradient.get(&bmail).expect("R holds a gradient toward B");
+        assert_eq!(g.inbound, 2, "gradient points down the R—B link, not R—A/R—D");
+
+        let bob = nodes[2].address();
+        let id = nodes[0].send_message(bob, "t".into(), b"routed".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[2].take_inbox().len(), 1, "B received it via the gradient (through R)");
+        assert!(!nodes[3].store.contains(&id), "decoy D never got a copy — directed, not flooded");
+    }
+
+    #[test]
+    fn private_bundle_floods_as_fallback_without_a_gradient() {
+        // No beacon ⇒ no gradient ⇒ R falls back to the epidemic flood, so the decoy D DOES
+        // receive (+ stores) a copy it can't open. This is the contrast that proves the gradient
+        // is what makes routing directed — and that delivery still works on the cold-start floor.
+        let (mut nodes, mut net) = gradient_topology();
+
+        let bmail = crypto::mailbox_tag(&nodes[2].prekey.public);
+        assert!(!nodes[1].recv_gradient.contains_key(&bmail), "no beacon → no gradient at R");
+
+        let bob = nodes[2].address();
+        let id = nodes[0].send_message(bob, "t".into(), b"flooded".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[2].take_inbox().len(), 1, "B still gets it on the flood fallback");
+        assert!(nodes[3].store.contains(&id), "decoy D got a copy — flooded (no gradient to steer it)");
+    }
+
+    #[test]
+    fn gradient_expires_and_falls_back_to_flood_no_black_hole() {
+        // Soft state: once B stops beaconing, its gradient entry expires (no permanent black-hole).
+        // A subsequent private send then falls back to flood rather than dead-ending on a stale path.
+        let (mut nodes, mut net) = gradient_topology();
+        nodes[2].publish_recv_beacon().unwrap();
+        net.pump(&mut nodes);
+        let bmail = crypto::mailbox_tag(&nodes[2].prekey.public);
+        assert!(nodes[1].recv_gradient.contains_key(&bmail), "gradient laid");
+
+        // Advance every node past the beacon TTL with no refresh; tick prunes the dead entry.
+        let t = (RECV_BEACON_TTL_MS as u64) + 1;
+        for n in nodes.iter_mut() {
+            n.tick(t);
+        }
+        assert!(!nodes[1].recv_gradient.contains_key(&bmail), "stale gradient pruned at R");
+
+        // Delivery still works (via flood), and the decoy now sees it again (no gradient to steer).
+        let bob = nodes[2].address();
+        let id = nodes[0].send_message(bob, "t".into(), b"after expiry".to_vec(), false).unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[2].take_inbox().len(), 1, "B still reachable after the gradient expired");
+        assert!(nodes[3].store.contains(&id), "fell back to flood (decoy got a copy)");
     }
 
     #[test]
