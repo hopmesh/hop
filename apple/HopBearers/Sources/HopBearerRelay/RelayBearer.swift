@@ -24,6 +24,8 @@ private let RELAY_BACKOFF_MAX_S: Double = 30.0
 
 public final class RelayBearer: NSObject, Bearer {
     public weak var sink: LinkSink?
+    /// Short transport tag for the consumer's UI (Bearer contract). The cloud relay link surfaces as "Relay".
+    public let transportName = "Relay"
 
     private let relayURL: String
     /// Stable synthetic peer id (16 bytes) for the manager's bookkeeping — derived from the relay URL so

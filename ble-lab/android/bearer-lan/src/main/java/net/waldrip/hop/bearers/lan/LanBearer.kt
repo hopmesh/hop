@@ -193,6 +193,8 @@ internal class LanLink(
 // ---- LanBearer: NSD register + discover, one TCP ServerSocket, one-pipe-per-peer dedup, monotonic id --
 class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer {
     override var sink: LinkSink? = null
+    /// Short transport tag for the consumer's UI (Bearer contract). LAN (mDNS+TCP) links surface as "LAN".
+    override val transportName = "LAN"
 
     private val lock = Any()
     private val linksByPeerId = HashMap<String, LanLink>()  // dedup: one survivor per peer

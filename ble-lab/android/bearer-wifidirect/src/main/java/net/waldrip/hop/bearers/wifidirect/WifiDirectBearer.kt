@@ -216,6 +216,8 @@ internal class WifiDirectLink(
 // ---- WifiDirectBearer: Wi-Fi P2P discover/connect + one TCP ServerSocket, one-pipe-per-peer dedup -----
 class WifiDirectBearer(private val ctx: Context, private val myId: ByteArray) : Bearer {
     override var sink: LinkSink? = null
+    /// Short transport tag for the consumer's UI (Bearer contract). Wi-Fi Direct links surface as "Wi-Fi Direct".
+    override val transportName = "Wi-Fi Direct"
 
     private val lock = Any()
     private val linksByPeerId = HashMap<String, WifiDirectLink>() // dedup: one survivor per peer

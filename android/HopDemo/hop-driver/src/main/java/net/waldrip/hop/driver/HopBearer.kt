@@ -1428,7 +1428,12 @@ class HopBearer private constructor(private val context: Context, private val co
         val ltLocal = LinkedHashMap<List<Byte>, String>()
         val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
         pls.forEach { pl ->
-            ltLocal[pl.address.toList()] = when {
+            // Shared-bearer links are minted by the BearerManager (baseLinkId 1_000_000+), so the legacy
+            // link-id ranges below can't tag them — ask the manager for the owning bearer's REAL transport
+            // first (BT / LAN / Wi-Fi Direct / Relay), then fall back to the legacy ranges for the links
+            // the node still mints itself. (refresh() runs on core, so reading bearerLinks here is safe.)
+            val sharedTag = if (bearerLinks.contains(pl.link.toLong())) bearerMgr.transportNameOf(pl.link.toLong()) else null
+            ltLocal[pl.address.toList()] = sharedTag ?: when {
                 pl.link == relayLinkId -> "Relay"
                 pl.link >= 50_000u -> "P2P"
                 pl.link >= 40_000u -> "LAN"
@@ -1448,7 +1453,8 @@ class HopBearer private constructor(private val context: Context, private val co
         val list = agg.values.map {
             val key = it.peer.address.toList()
             val t = ltLocal[key]
-            val hops = if (t == "BT" || t == "LAN" || t == "P2P") 1u.toUByte() else it.minHops
+            // Every shared/local radio link is a 1-hop direct path; "Relay" is the only non-direct tag.
+            val hops = if (t == "BT" || t == "LAN" || t == "P2P" || t == "Wi-Fi Direct") 1u.toUByte() else it.minHops
             it.peer.copy(hops = hops)
         }.sortedBy { addressBase58(it.address) }
 

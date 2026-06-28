@@ -32,6 +32,11 @@ class BearerManager(baseLinkId: LinkId = 1) : Bearer {
     /// LinkId space.
     override var sink: LinkSink? = null
 
+    /// Bearer contract. The manager aggregates many transports, so it has no single tag of its own; this
+    /// is only read if a manager were nested inside another (it isn't). Per-link tags come from
+    /// `transportNameOf(link)`, which reports the OWNING bearer's tag.
+    override val transportName = "Mesh"
+
     private val lock = Any()
     private val bearers = CopyOnWriteArrayList<Bearer>() // iterated lock-free by start()/stop()
     private val lanes = CopyOnWriteArrayList<Lane>()     // keep per-bearer shims alive
@@ -55,6 +60,24 @@ class BearerManager(baseLinkId: LinkId = 1) : Bearer {
     override fun send(bytes: ByteArray, link: LinkId) {
         val target = synchronized(lock) { fromGlobal[link] } ?: return // unknown / already-closed global link
         target.first.send(bytes, target.second)
+    }
+
+    // ---- transport labelling — the consumer's UI tags each shared-bearer link by its REAL transport ----
+
+    /// The short transport tag (e.g. "BT"/"LAN"/"Wi-Fi Direct"/"Relay") of the bearer owning `link`, or
+    /// null if the link is unknown / already closed. Cosmetic only — used to label a shared-bearer peer.
+    /// (Named `…Of` rather than `transportName(link)` to avoid colliding with the Bearer `transportName`
+    /// property above — Kotlin can't disambiguate a same-named property and function at a call site.)
+    fun transportNameOf(link: LinkId): String? =
+        synchronized(lock) { fromGlobal[link] }?.first?.transportName
+
+    /// Every currently-up global link grouped by its owning bearer's transport tag → count. The consumer
+    /// builds its per-transport status list from this when shared bearers are on.
+    fun activeTransports(): Map<String, Int> {
+        val routes = synchronized(lock) { fromGlobal.values.toList() }
+        val out = HashMap<String, Int>()
+        for ((bearer, _) in routes) out[bearer.transportName] = (out[bearer.transportName] ?: 0) + 1
+        return out
     }
 
     // ---- lane callbacks — bearer-local link ids in, global link ids out ----
