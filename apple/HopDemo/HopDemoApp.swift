@@ -20,8 +20,27 @@ extension HopBearer {
     }()
 }
 
+/// Boots the Hop runtime on EVERY launch type — most importantly a cold BACKGROUND / force-quit
+/// relaunch triggered by a CoreLocation iBeacon region event, where there is no window and thus
+/// `ContentView.onAppear` never runs (BACKGROUND.md §3.4 Layer C). `application(_:didFinishLaunching…)`
+/// is the one entry point guaranteed to run first on all launch types and to carry `launchOptions`.
+/// `HopBearer.start(name:)` is idempotent, so the UI's later `onAppear` is harmless.
+final class HopAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        let bg = application.applicationState == .background
+        let loc = launchOptions?[.location] != nil
+        NSLog("HOPLOG COLD LAUNCH background=\(bg) location=\(loc)")
+        // Construct + start the shared runtime now → CoreLocation re-arms region monitoring and the
+        // BLE bearer (state restoration + the wake bridge) reconnects even with no UI on screen.
+        HopBearer.shared.start(name: HopBearer.savedName(default: UIDevice.current.name))
+        return true
+    }
+}
+
 @main
 struct HopDemoApp: App {
+    @UIApplicationDelegateAdaptor(HopAppDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     init() {

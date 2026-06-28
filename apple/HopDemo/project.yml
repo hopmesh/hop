@@ -34,8 +34,10 @@ targets:
       properties:
         CFBundleDisplayName: Hop Debug
         NSCameraUsageDescription: "Scan a Hop QR code to add someone as a contact."
-        # Keep BLE alive in the background and wake on BLE events (DESIGN.md §22).
-        UIBackgroundModes: [bluetooth-central, bluetooth-peripheral, fetch, processing]
+        # Keep BLE alive in the background and wake on BLE events (DESIGN.md §22). `location`
+        # lets us range the Hop iBeacon to extend the ~10s region-wake window so a relaunched
+        # app has runway to re-scan → connect → L2CAP before iOS re-suspends (BACKGROUND.md §3.1).
+        UIBackgroundModes: [bluetooth-central, bluetooth-peripheral, location, fetch, processing]
         BGTaskSchedulerPermittedIdentifiers: [net.waldrip.hop.refresh, net.waldrip.hop.process]
         NSBluetoothAlwaysUsageDescription: "Hop relays messages over Bluetooth so you can chat with people nearby without the internet."
         NSLocationWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to notice people nearby so it can relay messages."

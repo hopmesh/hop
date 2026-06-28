@@ -148,7 +148,11 @@ public final class HopBearer: NSObject, ObservableObject {
     // GATT-data fallback (cross-platform, when L2CAP can't open — esp. Apple→Android): central
     // WRITEs frames here, peripheral INDICATEs frames back. Both acked → reliable, ordered.
     static let dataCharUUID = CBUUID(string: "F0900002-0000-4000-8000-000000000000")
-    static let beaconUUID = UUID(uuidString: "F0900BEA-C000-4000-8000-000000000000")!
+    // MUST byte-match the Android bearer's iBeacon proximity UUID (ble-lab bearer-ble
+    // BleBearer.kt `BEACON_UUID`). Android is the iBeacon EMITTER; every iOS device monitors
+    // THIS region so a force-quit app relaunches on proximity (BACKGROUND.md Layer C). A mismatch
+    // = iOS never sees the Android beacon = no killed-app wake (was F0900BEA… — a silent bug).
+    static let beaconUUID = UUID(uuidString: "7ED7BEAC-3C2A-4F19-9B8E-1A2B3C4D5E6F")!
     public static let refreshTaskId = "net.waldrip.hop.refresh"
     /// Longer background-processing task (runs idle/charging) to drain a backlog — e.g. a
     /// large image accumulating across wakes (DESIGN.md §22, §28).
