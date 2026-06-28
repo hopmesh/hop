@@ -280,6 +280,69 @@ pub fn verify(address: &PubKeyBytes, msg: &[u8], sig: &[u8]) -> bool {
     vk.verify_strict(msg, &sig).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// §39 metadata privacy: recognition tags + mailbox pseudonyms
+// ---------------------------------------------------------------------------
+
+/// Length of a §39 tag (recognition or mailbox). 16 bytes — collision-safe for
+/// recognition while staying small on the wire.
+pub const TAG_LEN: usize = 16;
+/// An opaque §39 tag carried in a private bundle header (no identity leaks from it).
+pub type Tag = [u8; TAG_LEN];
+
+fn tag16(context: &str, key_material: &[u8]) -> Tag {
+    let h = blake3::derive_key(context, key_material);
+    let mut t = [0u8; TAG_LEN];
+    t.copy_from_slice(&h[..TAG_LEN]);
+    t
+}
+
+fn recognition_tag_from_shared(shared: &[u8; 32], bundle_id: &[u8; 32]) -> Tag {
+    let mut km = [0u8; 64];
+    km[..32].copy_from_slice(shared);
+    km[32..].copy_from_slice(bundle_id);
+    tag16("hop recog tag v1", &km)
+}
+
+/// §39 **recognition tag** — the "is this mine?" primitive (DESIGN.md §39). Bound to a
+/// recipient signed prekey (SPK, §25) and the bundle id via an ephemeral DH, so the
+/// sender and the recipient derive the SAME tag while an on-path relay (holding neither
+/// secret) cannot. The recipient matches with one DH + one hash — no payload decryption.
+/// Domain-separated from the seal/X3DH KDFs, so the tag never leaks a session key.
+///
+/// Sender side: pick a fresh ephemeral, DH against the recipient's SPK public, and return
+/// the ephemeral public (to carry in the header) alongside the tag.
+pub fn recognition_tag_sender(
+    recipient_spk_pub: &XPubKeyBytes,
+    bundle_id: &[u8; 32],
+) -> (XPubKeyBytes, Tag) {
+    let ephemeral = StaticSecret::random_from_rng(OsRng);
+    let eph_pub = XPublicKey::from(&ephemeral).to_bytes();
+    let shared = ephemeral.diffie_hellman(&XPublicKey::from(*recipient_spk_pub));
+    (eph_pub, recognition_tag_from_shared(shared.as_bytes(), bundle_id))
+}
+
+/// Recipient side: re-derive the recognition tag for one of its prekeys against the
+/// header's ephemeral public + bundle id, to compare with the bundle's tag. A new
+/// ephemeral per message makes two tags for the same recipient uncorrelatable.
+pub fn recognition_tag_recipient(
+    spk_secret: &[u8; 32],
+    ephemeral_pub: &XPubKeyBytes,
+    bundle_id: &[u8; 32],
+) -> Tag {
+    let secret = StaticSecret::from(*spk_secret);
+    let shared = secret.diffie_hellman(&XPublicKey::from(*ephemeral_pub));
+    recognition_tag_from_shared(shared.as_bytes(), bundle_id)
+}
+
+/// §39 **mailbox-tag** — a recipient's rotatable pseudonym: `H(SPK public)`. NOT the
+/// address (you cannot seal to it or message it, only bucket by it); it rotates when the
+/// prekey rotates. A relay buckets a blind spool by it and a recipient names it in a want
+/// beacon. Linkable while it lives — the documented cost of being pull-reachable (§39).
+pub fn mailbox_tag(spk_pub: &XPubKeyBytes) -> Tag {
+    tag16("hop mailbox tag v1", spk_pub)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +446,53 @@ mod tests {
         // A different identity cannot open it.
         let other = Identity::generate();
         assert!(other.open(&sealed).is_err());
+    }
+
+    // --- §39 recognition + mailbox tags ----------------------------------------
+
+    #[test]
+    fn recognition_tag_sender_and_recipient_agree() {
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        let bundle_id = [42u8; 32];
+        let (eph_pub, tag) = recognition_tag_sender(&spk.public, &bundle_id);
+        let got = recognition_tag_recipient(&spk.secret_bytes(), &eph_pub, &bundle_id);
+        assert_eq!(tag, got, "recipient must recompute the sender's recognition tag");
+    }
+
+    #[test]
+    fn recognition_tag_rejects_wrong_recipient_and_wrong_bundle() {
+        let bob = Identity::generate();
+        let eve = Identity::generate();
+        let spk_bob = bob.derive_prekey();
+        let spk_eve = eve.derive_prekey();
+        let bundle_id = [7u8; 32];
+        let (eph_pub, tag) = recognition_tag_sender(&spk_bob.public, &bundle_id);
+        // Eve's prekey derives a different tag → not hers.
+        assert_ne!(tag, recognition_tag_recipient(&spk_eve.secret_bytes(), &eph_pub, &bundle_id));
+        // Same recipient, different bundle id → different tag (no cross-bundle linkage).
+        assert_ne!(tag, recognition_tag_recipient(&spk_bob.secret_bytes(), &eph_pub, &[8u8; 32]));
+    }
+
+    #[test]
+    fn recognition_tag_is_unlinkable_across_messages() {
+        // Two messages to the same recipient use independent ephemerals → unrelated tags,
+        // so a relay cannot cluster "same recipient".
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        let (e1, t1) = recognition_tag_sender(&spk.public, &[1u8; 32]);
+        let (e2, t2) = recognition_tag_sender(&spk.public, &[2u8; 32]);
+        assert_ne!(e1, e2, "independent ephemerals per message");
+        assert_ne!(t1, t2, "tags for the same recipient must not correlate");
+    }
+
+    #[test]
+    fn mailbox_tag_stable_per_prekey_and_rotates() {
+        let bob = Identity::generate();
+        // Stable across re-derivations of the same (deterministic) prekey epoch.
+        assert_eq!(mailbox_tag(&bob.derive_prekey().public), mailbox_tag(&bob.derive_prekey().public));
+        // A different identity's prekey → a different mailbox (it's a pseudonym, not shared).
+        let alice = Identity::generate();
+        assert_ne!(mailbox_tag(&bob.derive_prekey().public), mailbox_tag(&alice.derive_prekey().public));
     }
 }
