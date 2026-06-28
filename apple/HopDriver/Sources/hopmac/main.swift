@@ -18,13 +18,18 @@ setvbuf(stdout, nil, _IONBF, 0)   // unbuffered so logs flush immediately (even 
 
 // A fresh random identity + temp db every run; the dev app secret ("H"×32) so we interoperate with
 // the HopDemo dev builds. No relay, central-only role.
+// useSharedBearers:false pins hopmac to the LEGACY in-driver BLE central path, preserving its
+// documented central-only test behavior (scan-only, no advertising/Wi-Fi/LAN). The shared BleBearer is
+// dual-role by design (it always advertises), so it has no central-only mode; the production iOS app
+// gets the shared path via the Config default (true).
 let config = HopBearer.Config(
     dbPath: NSTemporaryDirectory() + "hopmac-\(UUID().uuidString).db",
     deviceSeed: Data((0..<32).map { _ in UInt8.random(in: 0...255) }),
     appSecret: HopBearer.appSecret,
     displayName: "MacHopTest",
     defaultRelay: nil,
-    role: .centralOnly)
+    role: .centralOnly,
+    useSharedBearers: false)
 
 let bearer = HopBearer(config: config)
 bearer.start(name: "MacHopTest")

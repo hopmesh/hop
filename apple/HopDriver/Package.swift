@@ -14,6 +14,13 @@ let package = Package(
         .library(name: "HopDriver", targets: ["HopDriver"]),
         .executable(name: "hopmac", targets: ["hopmac"]),
     ],
+    // The shared cross-platform transport layer (HopBearers), a sibling SwiftPM package. The driver
+    // pulls in the contract/registry (Core) + the BLE and LAN bearers; the new shared-bearer path
+    // (Config.useSharedBearers, default on) forms BLE+LAN links through these, with the legacy in-driver
+    // HopLink/GattDataLink/LanLink kept as a flag-off fallback.
+    dependencies: [
+        .package(path: "../HopBearers"),
+    ],
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,
         // ios-sim, macos). Built by apple/build-xcframework.sh.
@@ -27,7 +34,12 @@ let package = Package(
         .target(name: "HopFFIBindings", dependencies: ["hop_ffiFFI"]),
 
         // The bearer + transports.
-        .target(name: "HopDriver", dependencies: ["HopFFIBindings", "HopObjC"]),
+        .target(name: "HopDriver", dependencies: [
+            "HopFFIBindings", "HopObjC",
+            .product(name: "HopBearerCore", package: "HopBearers"),
+            .product(name: "HopBearerBle",  package: "HopBearers"),
+            .product(name: "HopBearerLan",  package: "HopBearers"),
+        ]),
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.
         .executableTarget(name: "hopmac", dependencies: ["HopDriver"]),

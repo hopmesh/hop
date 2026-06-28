@@ -9,11 +9,16 @@ import Network
 final class IOThread {
     static let shared = IOThread()
     private var cfRunLoop: CFRunLoop!
+    /// The Foundation `RunLoop` of the I/O thread, captured on that thread. Exposed so the shared
+    /// HopBearerBle transport (when `Config.useSharedBearers` is on) can schedule its L2CAP streams +
+    /// timers on this SAME long-lived dedicated thread instead of spinning up a second I/O thread.
+    private(set) var runLoop: RunLoop!
 
     private init() {
         let sem = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in
             cfRunLoop = CFRunLoopGetCurrent()
+            runLoop = RunLoop.current
             // A port keeps the runloop alive when it has no other input sources (else run() returns).
             RunLoop.current.add(NSMachPort(), forMode: .common)
             sem.signal()

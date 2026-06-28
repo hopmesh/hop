@@ -6,6 +6,12 @@ import Network
 import UserNotifications
 import CryptoKit
 import HopObjC
+// The shared cross-platform transport layer (sibling SwiftPM package). Core = Bearer/LinkSink contract
+// + BearerManager registry + randomNodeId/log; Ble/Lan = the proven clean-room bearers. The
+// shared-bearer path (Config.useSharedBearers, default on) forms BLE+LAN links through these.
+import HopBearerCore
+import HopBearerBle
+import HopBearerLan
 // Re-export the generated FFI types (HopNode records like HpsTopicInfo, HpsAccess, TraceHopInfo…)
 // so a host that imports HopDriver sees them without importing HopFFIBindings directly.
 @_exported import HopFFIBindings
@@ -56,10 +62,18 @@ public final class HopBearer: NSObject, ObservableObject {
         public var displayName: String
         public var defaultRelay: String?
         public var role: Role
+        /// When true (the default), BLE + LAN links are formed by the shared HopBearers
+        /// `BearerManager` (the proven clean-room transport layer). When false, the legacy in-driver
+        /// `HopLink` (L2CAP) / `GattDataLink` (GATT-data) / `LanLink` paths run instead — the additive,
+        /// flag-off fallback. Multipeer (Wi-Fi P2P) and the cloud-relay / hops:// endpoint links are
+        /// unaffected either way (they have no shared bearer yet and run as before).
+        public var useSharedBearers: Bool
         public init(dbPath: String, deviceSeed: Data, appSecret: Data,
-                    displayName: String, defaultRelay: String?, role: Role = .full) {
+                    displayName: String, defaultRelay: String?, role: Role = .full,
+                    useSharedBearers: Bool = true) {
             self.dbPath = dbPath; self.deviceSeed = deviceSeed; self.appSecret = appSecret
             self.displayName = displayName; self.defaultRelay = defaultRelay; self.role = role
+            self.useSharedBearers = useSharedBearers
         }
     }
 
@@ -380,6 +394,25 @@ public final class HopBearer: NSObject, ObservableObject {
     private let pathMonitor = NWPathMonitor()
     private var wifiUp = false
 
+    // MARK: - Shared HopBearers transport layer (BLE + LAN) — gated by config.useSharedBearers
+    /// Convenience accessor for the flag (default true → the new shared-bearer path is ON).
+    private var useSharedBearers: Bool { config.useSharedBearers }
+    /// The shared bearer registry/multiplexer. Its global link-id space starts high (1_000_000) so the
+    /// ids it mints can never collide with the legacy / Multipeer / relay / endpoint / LAN / GATT ranges
+    /// (1, 10k, 20k, 30k, 40k, 60k) that `nextLinkId` & friends still serve for the non-shared transports.
+    private let bearerMgr = BearerManager(baseLinkId: 1_000_000)
+    /// One stable transport id for this process, shared by every registered bearer (the BLE/LAN HELLO id
+    /// + the greater-id dedup tiebreaker). This is a TRANSPORT-layer id, distinct from the Hop node
+    /// address (SPEC R11) — the node still negotiates Noise over the bearer's DATA frames.
+    private let bearerId: Data = HopBearerCore.randomNodeId()
+    /// Link ids currently owned by the `BearerManager`, so `applyOutgoing` routes their packets to it.
+    /// Written from the sink callbacks (BLE I/O thread / LAN queue) and read in `applyOutgoing` (main) —
+    /// guarded by `bearerLinksLock`.
+    private var bearerLinks = Set<UInt64>()
+    private let bearerLinksLock = NSLock()
+    /// Strong ref to the sink adapter — `BearerManager.sink` holds it weakly.
+    private lazy var bearerSink = BearerSink(self)
+
     /// The app embedding Hop on this device (shown to peers via presence).
     static let appName: String =
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "HopDemo"
@@ -430,28 +463,45 @@ public final class HopBearer: NSObject, ObservableObject {
             // word until we return — peers show that as our state).
             let nc = NotificationCenter.default
             nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.appActive = true; self?.publishPresence(); self?.restartWiFi(); self?.restartLan()
-                self?.scheduleRelayReconnect()   // re-check-in on foreground (§28)
-                self?.pump()
+                guard let self else { return }
+                self.appActive = true
+                HopBearerBle.bleAppInBackground = false   // shared BLE: foreground liveness deadline
+                self.publishPresence(); self.restartWiFi()
+                if !self.useSharedBearers { self.restartLan() }  // shared LAN bearer manages its own lifecycle
+                self.scheduleRelayReconnect()   // re-check-in on foreground (§28)
+                self.pump()
             }
             nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.appActive = false; self?.publishPresence(); self?.pump()
+                guard let self else { return }
+                self.appActive = false
+                HopBearerBle.bleAppInBackground = true    // shared BLE: relaxed background deadline
+                self.publishPresence(); self.pump()
             }
             #endif
 
             // The peripheral side (advertising + accepting L2CAP) is full-host only. Delegate
             // callbacks land on `bleQueue`, off the main runloop (iOS 18 drops CB callbacks on main).
-            peripheralMgr = CBPeripheralManager(delegate: self, queue: bleQueue,
-                options: [CBPeripheralManagerOptionRestoreIdentifierKey: "hop.peripheral"])
+            // LEGACY path only: with the shared bearers ON, BleBearer owns the peripheral role.
+            if !useSharedBearers {
+                peripheralMgr = CBPeripheralManager(delegate: self, queue: bleQueue,
+                    options: [CBPeripheralManagerOptionRestoreIdentifierKey: "hop.peripheral"])
+            }
         }
 
         // BLE central runs in both roles (hopmac is central-only). Delegate callbacks on `bleQueue`.
-        centralMgr = CBCentralManager(delegate: self, queue: bleQueue,
-            options: [CBCentralManagerOptionRestoreIdentifierKey: "hop.central"])
+        // LEGACY path only: with the shared bearers ON, BleBearer owns the central role too.
+        if !useSharedBearers {
+            centralMgr = CBCentralManager(delegate: self, queue: bleQueue,
+                options: [CBCentralManagerOptionRestoreIdentifierKey: "hop.central"])
+        }
+
+        // Shared transport layer (HopBearers): pure-L2CAP BLE + LAN, multiplexed by one BearerManager.
+        // Runs for every role (hopmac pins this OFF to keep its legacy central-only test behavior).
+        if useSharedBearers { startSharedBearers() }
 
         if isFull {
             startWiFi()
-            startLan()
+            if !useSharedBearers { startLan() }   // shared LAN bearer replaces the legacy LAN path
 
             // Reflect the real Wi-Fi radio in the indicator (MC's session stays non-nil even
             // when Wi-Fi is switched off, which kept it showing green).
@@ -830,6 +880,50 @@ public final class HopBearer: NSObject, ObservableObject {
         startLan()
     }
 
+    // MARK: - Shared HopBearers wiring (BLE + LAN through one BearerManager)
+
+    /// Stand up the shared transport layer. First point the BLE transport's iOS host hooks at the
+    /// driver's existing infrastructure — the dedicated `bleQueue` (CoreBluetooth callbacks) and the
+    /// long-lived `IOThread` runloop (L2CAP streams + timers), REUSED rather than spinning a second I/O
+    /// thread — and seed the background flag. Then register the BLE + LAN bearers and start. Every link
+    /// from either bearer surfaces through `bearerSink`, which drives the SAME node seam the legacy paths
+    /// use (`linkUp` / `deliver` / `linkDown`). NOTE: `BleBearer` is pure-L2CAP by design — the legacy
+    /// `GattDataLink` fallback is simply not started on this path (the proven clean-room transport).
+    private func startSharedBearers() {
+        HopBearerBle.bleQueue = bleQueue
+        HopBearerBle.bleRunLoop = IOThread.shared.runLoop
+        HopBearerBle.bleAppInBackground = !appActive
+        bearerMgr.sink = bearerSink
+        bearerMgr.register(BleBearer(myId: bearerId))
+        bearerMgr.register(LanBearer(myId: bearerId))
+        bearerMgr.start()
+        NSLog("HOPLOG shared bearers started (BLE+LAN) id=\(HopBearer.shortHex(bearerId))")
+    }
+
+    /// True iff `link` is owned by the shared `BearerManager` (read on main in `applyOutgoing`).
+    fileprivate func bearerLinksContains(_ link: UInt64) -> Bool {
+        bearerLinksLock.lock(); defer { bearerLinksLock.unlock() }
+        return bearerLinks.contains(link)
+    }
+
+    /// Shared-bearer link up: record the id (so `applyOutgoing` routes it), then drive the node's Noise
+    /// handshake through the existing seam (dialer → initiator). Called on the bearer's work queue.
+    fileprivate func bearerLinkUp(_ id: UInt64, role: LinkRole) {
+        bearerLinksLock.lock(); bearerLinks.insert(id); bearerLinksLock.unlock()
+        linkUp(id, initiator: role == .dialer)
+    }
+
+    /// Shared-bearer inbound DATA frame → the node, via the existing seam.
+    fileprivate func bearerDeliver(_ id: UInt64, bytes: Data) {
+        deliver(link: id, bytes: bytes)
+    }
+
+    /// Shared-bearer link down: forget the id, then tell the node through the existing seam.
+    fileprivate func bearerLinkDown(_ id: UInt64) {
+        bearerLinksLock.lock(); bearerLinks.remove(id); bearerLinksLock.unlock()
+        linkDown(id)
+    }
+
     /// Wrap an NWConnection in a LanLink and register it. `node.connected` fires on `.ready`
     /// (TCP up); the dial side is the Noise initiator. Returns the assigned link id.
     @discardableResult
@@ -1093,7 +1187,9 @@ public final class HopBearer: NSObject, ObservableObject {
     /// others are thread-safe / main-confined.
     private func applyOutgoing(_ outgoing: [OutPacket]) {
         for pkt in outgoing {
-            if let link = links[pkt.link] {
+            if bearerLinksContains(pkt.link) {              // shared BearerManager (BLE + LAN) owns it
+                bearerMgr.send(pkt.bytes, on: pkt.link)
+            } else if let link = links[pkt.link] {
                 link.send(pkt.bytes)                       // BLE L2CAP link (→ IOThread)
             } else if let peer = mcPeerByLink[pkt.link] {
                 try? mcSession?.send(pkt.bytes, toPeers: [peer], with: .reliable) // Wi-Fi link
@@ -2634,4 +2730,19 @@ extension HopBearer: URLSessionWebSocketDelegate {
         scheduleRelayReconnect()   // re-check-in (§28)
         linkDown(relayLinkId)
     }
+}
+
+// MARK: - Shared HopBearers sink adapter
+
+/// Adapts the shared `BearerManager` to HopBearer's existing node seam. Every link from every
+/// registered bearer (BLE + LAN) surfaces here in ONE global link-id space and is driven straight into
+/// the same `linkUp` / `deliver` / `linkDown` the legacy transports use — so the node sees no difference
+/// in which radio a link rode in on. Holds the owner `unowned`: HopBearer owns this sink (a stored
+/// property), so it never outlives its owner.
+private final class BearerSink: LinkSink {
+    unowned let owner: HopBearer
+    init(_ owner: HopBearer) { self.owner = owner }
+    func linkUp(_ link: LinkId, role: LinkRole, peerId: Data) { owner.bearerLinkUp(link, role: role) }
+    func linkBytes(_ link: LinkId, _ bytes: Data) { owner.bearerDeliver(link, bytes: bytes) }
+    func linkDown(_ link: LinkId) { owner.bearerLinkDown(link) }
 }
