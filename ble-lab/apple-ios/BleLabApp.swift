@@ -17,6 +17,8 @@
 import SwiftUI
 import CoreBluetooth
 import UIKit
+import HopBearers       // shared transport: BleBearer + BearerManager + the bleQueue/bleRunLoop hooks
+import HopBearerProof   // shared clean-room consumer: ProofSink (same one blepeer uses)
 
 // MARK: - §8.1 Dedicated I/O thread (owns bleRunLoop) -------------------------------------------
 
@@ -60,7 +62,11 @@ private func redirectLogsToFile() {
 // restored peripherals to willRestoreState (Layer B).
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    static var node: Node?
+    // Retained for the process lifetime. The manager is the uniform transport façade; the bearer is
+    // what the beacon wake pokes; the sink is the proof consumer (kept alive — the manager holds it weakly).
+    static var manager: BearerManager?
+    static var bearer: BleBearer?
+    private var sink: ProofSink?
     private var beacon: BeaconWake?
 
     func application(_ application: UIApplication,
@@ -68,8 +74,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Capture logs before anything else.
         redirectLogsToFile()
 
-        // §8.1: dedicated CB queue + I/O run loop BEFORE Node() (main queue silently drops CB
-        // callbacks on iOS 18+). bleQueue / bleRunLoop are mutable globals declared in HopBleLab.swift.
+        // §8.1: dedicated CB queue + I/O run loop BEFORE the bearer starts (the main queue silently
+        // drops CB callbacks on iOS 18+). bleQueue / bleRunLoop are public host hooks in HopBearers.
         bleQueue   = DispatchQueue(label: "hop.ble.cb", qos: .userInitiated, attributes: [])
         bleRunLoop = BLEIOThread.shared.runLoop   // blocks until I/O thread is ready
 
@@ -78,9 +84,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let cbc = launchOptions?[.bluetoothCentrals] != nil
         log("STATE", "COLD LAUNCH background=\(bg) location=\(loc) bluetoothCentrals=\(cbc)")
 
-        let node = Node()                       // re-creates CB managers with the SAME restore IDs (Layer B)
-        AppDelegate.node = node
-        beacon = BeaconWake { reason in node.wake(reason) }   // Layer C
+        // Same bootstrap shape as the macOS CLI (blepeer): manager ← register(bearer); proof consumer
+        // wired; start(). start() re-creates the CB managers with the SAME restore IDs (Layer B).
+        let manager = BearerManager()
+        let bearer = BleBearer(myId: BleBearer.randomNodeId())
+        manager.register(bearer)
+        let sink = ProofSink()
+        sink.bearer = manager
+        manager.sink = sink
+        manager.start()
+        AppDelegate.manager = manager
+        AppDelegate.bearer = bearer
+        self.sink = sink
+
+        beacon = BeaconWake { reason in bearer.wake(reason) }   // Layer C
         beacon?.start()
         return true
     }

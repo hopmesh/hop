@@ -49,12 +49,13 @@ let FRAME_DATA:  UInt8 = 0x10
 
 // MARK: - Platform config (SPEC §8 / §8.1). Overridable by the iOS app BEFORE BleBearer.start() ---
 //
-// CLI default: everything on .main (no UI contends — SPEC R8). A future iOS app target instead points
-// bleQueue at a dedicated serial queue and bleRunLoop at a dedicated I/O thread's RunLoop, and sets
-// bleAppInBackground from scenePhase. Plain mutable globals so the host reassigns them without edits.
-var bleQueue: DispatchQueue = .main
-var bleRunLoop: RunLoop = .main
-var bleAppInBackground = false
+// CLI default: everything on .main (no UI contends — SPEC R8). An iOS app instead points bleQueue at
+// a dedicated serial queue and bleRunLoop at a dedicated I/O thread's RunLoop, and sets
+// bleAppInBackground from scenePhase. Public mutable globals so the host (app) reassigns them BEFORE
+// BleBearer.start() without editing the package.
+public var bleQueue: DispatchQueue = .main
+public var bleRunLoop: RunLoop = .main
+public var bleAppInBackground = false
 
 // MARK: - Small helpers -------------------------------------------------------------------------
 

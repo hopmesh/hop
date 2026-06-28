@@ -13,12 +13,16 @@ let package = Package(
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
         .library(name: "HopBearers", targets: ["HopBearers"]),
+        // The clean-room proof consumer, shared by the macOS CLI and the iOS clean-room app.
+        .library(name: "HopBearerProof", targets: ["HopBearerProof"]),
         .executable(name: "blepeer", targets: ["blepeer"]),
     ],
     targets: [
         .target(name: "HopBearers"),
-        // Clean-room CLI consumer: the "proof of pipe" pinger, re-seamed onto BleBearer via LinkSink.
-        .executableTarget(name: "blepeer", dependencies: ["HopBearers"]),
+        // Clean-room "proof of pipe" consumer (LinkSink) shared by blepeer + the iOS app — one copy.
+        .target(name: "HopBearerProof", dependencies: ["HopBearers"]),
+        // Clean-room CLI: just bootstraps a BearerManager + BleBearer + the shared ProofSink.
+        .executableTarget(name: "blepeer", dependencies: ["HopBearers", "HopBearerProof"]),
         // Deterministic registry tests (no radio): prove BearerManager's multiplexing/routing/id-space.
         .testTarget(name: "HopBearersTests", dependencies: ["HopBearers"]),
     ]
