@@ -22,7 +22,9 @@ targets:
       - ContentView.swift
     dependencies:
       - package: HopBearers
-        product: HopBearers
+        product: HopBearerCore
+      - package: HopBearers
+        product: HopBearerBle
       - package: HopBearers
         product: HopBearerProof
     info:
