@@ -12,6 +12,7 @@ import HopObjC
 import HopBearerCore
 import HopBearerBle
 import HopBearerLan
+import HopBearerRelay
 // Re-export the generated FFI types (HopNode records like HpsTopicInfo, HpsAccess, TraceHopInfo…)
 // so a host that imports HopDriver sees them without importing HopFFIBindings directly.
 @_exported import HopFFIBindings
@@ -453,7 +454,8 @@ public final class HopBearer: NSObject, ObservableObject {
         // checked in by auto-reconnecting on drop/foreground (DESIGN.md §28). If the user
         // pinned a specific relay, use that single endpoint instead of the anycast default.
         // Full host only — a central-only node (hopmac) carries no relay/advertising.
-        if isFull, let relay = config.defaultRelay {
+        // LEGACY path only: with the shared bearers ON, the shared RelayBearer owns the cloud relay.
+        if !useSharedBearers, isFull, let relay = config.defaultRelay {
             connectRelay(pinnedRelay ?? relay)
         }
 
@@ -471,7 +473,8 @@ public final class HopBearer: NSObject, ObservableObject {
                 HopBearerBle.bleAppInBackground = false   // shared BLE: foreground liveness deadline
                 self.publishPresence(); self.restartWiFi()
                 if !self.useSharedBearers { self.restartLan() }  // shared LAN bearer manages its own lifecycle
-                self.scheduleRelayReconnect()   // re-check-in on foreground (§28)
+                // LEGACY relay only: the shared RelayBearer reconnects itself with its own backoff.
+                if !self.useSharedBearers { self.scheduleRelayReconnect() }   // re-check-in on foreground (§28)
                 self.pump()
             }
             nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
@@ -589,7 +592,8 @@ public final class HopBearer: NSObject, ObservableObject {
         // anything queued for us at the relay (DESIGN.md §28). Throttled so the 1s foreground
         // timer can't hammer the dial; "connecting…" is skipped to avoid overlapping dials.
         // Full host only — a central-only node carries no relay.
-        if isFull, let relay = config.defaultRelay,
+        // LEGACY path only: with the shared bearers ON, the shared RelayBearer owns reconnection.
+        if !useSharedBearers, isFull, let relay = config.defaultRelay,
            relayStatus != "connected" && relayStatus != "connecting…" {
             let now = HopBearer.nowMs()
             if now &- lastRelayDialMs > 4000 {
@@ -899,8 +903,14 @@ public final class HopBearer: NSObject, ObservableObject {
         bearerMgr.sink = bearerSink
         bearerMgr.register(bleBearer)
         bearerMgr.register(LanBearer(myId: bearerId))
+        // Cloud relay (WebSocket) as a shared bearer — ONE outbound link to the backbone, registered only
+        // on a full host with a relay configured. The legacy in-driver relay dial is gated OFF below so the
+        // two never double-connect. (P2P test mode leaves `defaultRelay == nil`, so this stays unregistered.)
+        if isFull, let relay = config.defaultRelay {
+            bearerMgr.register(RelayBearer(relayURL: pinnedRelay ?? relay))
+        }
         bearerMgr.start()
-        NSLog("HOPLOG shared bearers started (BLE+LAN) id=\(HopBearer.shortHex(bearerId))")
+        NSLog("HOPLOG shared bearers started (BLE+LAN\(isFull && config.defaultRelay != nil ? "+Relay" : "")) id=\(HopBearer.shortHex(bearerId))")
     }
 
     /// True iff `link` is owned by the shared `BearerManager` (read on main in `applyOutgoing`).

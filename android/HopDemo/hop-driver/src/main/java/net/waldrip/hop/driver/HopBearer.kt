@@ -298,8 +298,17 @@ class HopBearer private constructor(private val context: Context, private val co
             // Wi-Fi Direct (Android-only): peer-to-peer Wi-Fi when there's no shared router. Self-contained
             // standalone bearer (its own P2P group + TCP server/socket), same nodeId + global LinkId space.
             bearerMgr.register(net.waldrip.hop.bearers.wifidirect.WifiDirectBearer(context, bearerId))
+            // Cloud relay (WebSocket) as a shared bearer — ONE outbound link to the backbone, registered
+            // only when relays are enabled and a URL exists. The legacy in-driver relay dial is gated OFF
+            // below so the two never double-connect. (P2P test mode sets relaysEnabled=false, so this
+            // stays unregistered — the relay is COMPILE-VERIFIED here, not runtime-proven.)
+            if (config.relaysEnabled) {
+                val relay = prefs.getString("pinnedRelay", null) ?: config.relayUrl
+                if (relay.isNotEmpty())
+                    bearerMgr.register(net.waldrip.hop.bearers.relay.RelayBearer(relay))
+            }
             bearerMgr.start()
-            android.util.Log.i("HOPLOG", "shared bearers started (BLE+LAN+Wi-Fi-Direct) id=${bearerId.take(4).joinToString("") { "%02x".format(it) }}")
+            android.util.Log.i("HOPLOG", "shared bearers started (BLE+LAN+Wi-Fi-Direct${if (config.relaysEnabled) "+Relay" else ""}) id=${bearerId.take(4).joinToString("") { "%02x".format(it) }}")
         } else {
             startPeripheral()
             // Dual-role: always a peripheral (others connect TO us to push — the receive mailbox),
@@ -336,8 +345,11 @@ class HopBearer private constructor(private val context: Context, private val co
         val priv = prefs.getBoolean("privateMode", false)
         privateModeVal = priv
         onUi { pinnedRelay.value = pinned; privateMode.value = priv }
-        if (config.relaysEnabled) connectRelay(pinned ?: config.relayUrl)
-        else onUi { relayStatus.value = "disabled" }   // pure-P2P mode (HopConfig.relaysEnabled=false)
+        // LEGACY relay only: with the shared bearers ON, the shared RelayBearer owns the cloud relay.
+        if (!config.useSharedBearers) {
+            if (config.relaysEnabled) connectRelay(pinned ?: config.relayUrl)
+            else onUi { relayStatus.value = "disabled" }   // pure-P2P mode (HopConfig.relaysEnabled=false)
+        }
         var ticks = 0
         core.postDelayed(object : Runnable {
             override fun run() {
@@ -356,7 +368,8 @@ class HopBearer private constructor(private val context: Context, private val co
                 // Keep the relay connected: a foreground service runs continuously, so a
                 // reconnect here means real-time background delivery, not just on next launch.
                 // Throttled so a flapping link doesn't hammer the dial (§28).
-                if (config.relaysEnabled && !relayConnected && relayStatus.value != "connecting…") {
+                // LEGACY relay only: the shared RelayBearer reconnects itself with its own backoff.
+                if (!config.useSharedBearers && config.relaysEnabled && !relayConnected && relayStatus.value != "connecting…") {
                     val now = nowMs()
                     if (now - lastRelayDialMs > 4000u) {
                         lastRelayDialMs = now

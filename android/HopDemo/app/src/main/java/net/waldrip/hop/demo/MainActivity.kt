@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
             appSecret = HopBearer.APP_SECRET,
             deviceName = HopConfig.deviceName(this),
             relayUrl = HopBearer.DEFAULT_RELAY,
-            relaysEnabled = false,   // P2P-ONLY test mode: never dial the backbone relay (BLE/LAN/Wi-Fi Direct only)
+            relaysEnabled = true,   // cloud relay re-enabled (wss://relay.hopme.sh via the shared RelayBearer)
             notificationIcon = android.R.drawable.ic_dialog_email,
         )
         bearer = HopBearer.shared(this, config)

@@ -47,4 +47,7 @@ dependencies {
     implementation(project(":bearer-lan"))
     // Wi-Fi Direct (Android-only) shared bearer — peer-to-peer Wi-Fi with no router, same node seam.
     implementation(project(":bearer-wifidirect"))
+    // Cloud relay (WebSocket) shared bearer — one outbound link to the backbone, same node seam. Carries
+    // OkHttp transitively (already a direct dep above); consumed only in prod, never in the ble-lab P2P room.
+    implementation(project(":bearer-relay"))
 }

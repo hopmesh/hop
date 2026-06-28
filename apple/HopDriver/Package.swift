@@ -36,9 +36,10 @@ let package = Package(
         // The bearer + transports.
         .target(name: "HopDriver", dependencies: [
             "HopFFIBindings", "HopObjC",
-            .product(name: "HopBearerCore", package: "HopBearers"),
-            .product(name: "HopBearerBle",  package: "HopBearers"),
-            .product(name: "HopBearerLan",  package: "HopBearers"),
+            .product(name: "HopBearerCore",  package: "HopBearers"),
+            .product(name: "HopBearerBle",   package: "HopBearers"),
+            .product(name: "HopBearerLan",   package: "HopBearers"),
+            .product(name: "HopBearerRelay", package: "HopBearers"),
         ]),
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.
