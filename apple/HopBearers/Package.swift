@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "HopBearerCore",  targets: ["HopBearerCore"]),
         .library(name: "HopBearerBle",   targets: ["HopBearerBle"]),
         .library(name: "HopBearerLan",   targets: ["HopBearerLan"]),
+        .library(name: "HopBearerRelay", targets: ["HopBearerRelay"]),
         .library(name: "HopBearerProof", targets: ["HopBearerProof"]),
         .executable(name: "blepeer", targets: ["blepeer"]),
     ],
@@ -28,6 +29,8 @@ let package = Package(
         .target(name: "HopBearerCore"),
         .target(name: "HopBearerBle",   dependencies: ["HopBearerCore"]),
         .target(name: "HopBearerLan",   dependencies: ["HopBearerCore"]),
+        // The cloud-relay transport (one outbound WebSocket, URLSession only — no third-party dep).
+        .target(name: "HopBearerRelay", dependencies: ["HopBearerCore"]),
         .target(name: "HopBearerProof", dependencies: ["HopBearerCore"]),
         // Clean-room CLI: bootstraps a BearerManager, registers bearers, wires the shared ProofSink.
         .executableTarget(name: "blepeer", dependencies: ["HopBearerCore", "HopBearerBle", "HopBearerLan", "HopBearerProof"]),

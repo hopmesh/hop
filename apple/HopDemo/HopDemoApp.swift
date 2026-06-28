@@ -15,7 +15,7 @@ extension HopBearer {
             deviceSeed: IdentityStore.deviceSeed(),
             appSecret: HopBearer.appSecret,
             displayName: HopBearer.savedName(default: UIDevice.current.name),
-            defaultRelay: nil,   // P2P-ONLY test mode: no backbone relay (BLE/LAN only). Was HopBearer.defaultRelay.
+            defaultRelay: HopBearer.defaultRelay,   // cloud relay re-enabled (wss://relay.hopme.sh)
             role: .full))
     }()
 }
