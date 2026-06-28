@@ -1,5 +1,13 @@
-package net.waldrip.hop.bearers
+package net.waldrip.hop.bearers.ble
 
+import net.waldrip.hop.bearers.Bearer
+import net.waldrip.hop.bearers.LinkId
+import net.waldrip.hop.bearers.LinkRole
+import net.waldrip.hop.bearers.LinkSink
+import net.waldrip.hop.bearers.TAG
+import net.waldrip.hop.bearers.appInBackground
+import net.waldrip.hop.bearers.nodeIdGreater
+import net.waldrip.hop.bearers.toHex
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -26,7 +34,6 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.io.IOException
-import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -50,8 +57,10 @@ import kotlin.concurrent.thread
 //     keepalive PING/PONG (0x02/0x03) frames stay transport-internal and NEVER surface as linkBytes.
 //
 // Grep the proof with:  adb logcat -s HOPLOG
-
-internal const val TAG = "HOPLOG"
+//
+// TAG, appInBackground, the ByteArray.toHex() helper, nodeIdGreater (the dial tiebreaker), and
+// randomNodeId now live in :bearer-core — they are transport-neutral and shared with LAN/relay. This
+// file imports them and keeps ONLY the BLE-specific constants + types below.
 
 internal val SERVICE_UUID: ParcelUuid = ParcelUuid.fromString("7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F")
 internal val ENDPOINT_CHAR: UUID = UUID.fromString("7ED70002-3C2A-4F19-9B8E-1A2B3C4D5E6F")
@@ -89,23 +98,6 @@ internal const val FRAME_HELLO = 0x01
 internal const val FRAME_PING = 0x02
 internal const val FRAME_PONG = 0x03
 internal const val FRAME_DATA = 0x10
-
-// R7: set from the app lifecycle; foreground-service default = false. Lives in the module package so
-// the transport reads it without depending on the app. (apple/HopBearers: `bleAppInBackground`.)
-@Volatile
-var appInBackground = false
-
-// unsigned big-endian compare: a > b
-internal fun gt(a: ByteArray, b: ByteArray): Boolean {
-    for (i in 0 until minOf(a.size, b.size)) {
-        val x = a[i].toInt() and 0xff
-        val y = b[i].toInt() and 0xff
-        if (x != y) return x > y
-    }
-    return a.size > b.size
-}
-
-internal fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
 // ---- One L2CAP link over a BluetoothSocket: 4-byte BE framing, 1 Hz PING (keepalive),
 //      adaptive liveness watchdog, 3 s half-open reaper. SPEC §4/§5/§8. ----
@@ -505,7 +497,7 @@ internal class Central(
             val pre = r.scanRecord?.getManufacturerSpecificData(MFG_ID)
                 ?.let { if (it.size >= 6) it.copyOfRange(0, 6) else null }
             val dev = r.device
-            val dialNow = if (pre != null) gt(myId.copyOfRange(0, 6), pre) else true // §2.1
+            val dialNow = if (pre != null) nodeIdGreater(myId.copyOfRange(0, 6), pre) else true // §2.1
             if (dialNow) {
                 tryDial(dev, pre)
             } else if (pendingWaits.add(dev.address)) { // R4: one wait per peer
@@ -680,11 +672,6 @@ class BleBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
     //   debug.blelab.noscan 1  → peripheral-only (don't scan/dial) — isolates scan-vs-peripheral starvation
     private val noScan = sysProp("debug.blelab.noscan") == "1"
 
-    /// Convenience: a fresh random 16-byte nodeId (SPEC §1.2 / R11), stable for the process lifetime.
-    companion object {
-        fun randomNodeId(): ByteArray = ByteArray(16).also { SecureRandom().nextBytes(it) }
-    }
-
     override fun start() {
         Log.i(TAG, "NODE START myId=${myId.toHex()} — ${if (noScan) "PERIPHERAL-ONLY (noscan)" else "symmetric dual role (peripheral + central)"}")
         peripheral = Peripheral(
@@ -744,7 +731,7 @@ class BleBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
             if (existing == null || existing === link) {
                 linksByPeerId[key] = link
             } else {
-                val keepDialed = gt(myId, peer) // keep MY dialed channel iff I'm the greater id
+                val keepDialed = nodeIdGreater(myId, peer) // keep MY dialed channel iff I'm the greater id
                 val keep = listOf(existing, link).firstOrNull { it.isDialer == keepDialed } ?: link
                 drop = if (keep === link) existing else link
                 linksByPeerId[key] = keep // R3: set survivor BEFORE closing the dropped channel

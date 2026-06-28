@@ -3,11 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// :bearers — the shared, transport-agnostic bearer layer (the Android mirror of apple/HopBearers).
-// Holds the Bearer/LinkSink contract, the BearerManager registry, and BleBearer (the re-seamed
-// dual-role BLE transport). The proof-of-pipe consumer (ProofSink) lives in the app, not here.
+// :bearer-ble — the BLE transport as its OWN library (Android mirror of apple/HopBearers' HopBearerBle).
+// Holds BleBearer (+ its internal Link / Peripheral / Central): the proven dual-role L2CAP transport,
+// re-seamed behind the Bearer/LinkSink contract. Depends ONLY on :bearer-core. Names nothing about LAN.
 android {
-    namespace = "net.waldrip.hop.bearers"
+    namespace = "net.waldrip.hop.bearers.ble"
     compileSdk = 34
 
     defaultConfig {
@@ -22,5 +22,6 @@ android {
 }
 
 dependencies {
+    implementation(project(":bearer-core")) // the Bearer/LinkSink contract + nodeId/log helpers
     // Intentionally zero third-party deps: the transport is pure platform BLE.
 }

@@ -12,5 +12,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "BleLab"
-include(":app")
-include(":bearers")
+// One core lib + one lib per bearer (NO master lib): mirrors apple/HopBearers' package structure.
+include(":bearer-core", ":bearer-ble", ":bearer-lan", ":app")
