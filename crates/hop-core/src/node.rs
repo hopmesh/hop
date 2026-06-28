@@ -233,6 +233,7 @@ struct PendingContent {
     content_type: String,
     body: Vec<u8>,
     request_ack: bool,
+    private: bool, // §39: send untraceably (no cleartext src/dst, floods, recognized by tag)
 }
 
 /// A decrypted user message ready for the inbox — uniform across static-sealed and
@@ -878,24 +879,69 @@ impl<S: Store> Node<S> {
                 self.flush_pending_content();
                 Ok(id)
             }
-            None => {
-                self.pending_seq += 1;
-                let h = blake3::hash(
-                    &[&dst[..], content_type.as_bytes(), &body, &self.pending_seq.to_be_bytes()].concat(),
-                );
-                let display_id: BundleId = *h.as_bytes();
-                self.tx.entry(display_id).or_default(); // shows as Sending… until ratcheted
-                self.pending_content.push(PendingContent {
-                    display_id,
-                    dst,
-                    content_type,
-                    body,
-                    request_ack,
-                });
-                self.persist_pending_content(); // a sent-but-deferred message must survive restart
-                Ok(display_id)
-            }
+            None => Ok(self.defer_content(dst, content_type, body, request_ack, false)),
         }
+    }
+
+    /// §39: send `body` to `dst` **untraceably** — no cleartext src/dst, the bundle floods
+    /// (`Broadcast`) and is recognized only by the holder of `dst`'s prekey. The content is
+    /// still forward-secret (the inner ratchet) and the sender authenticated (its identity
+    /// rides *inside* the seal). Falls back to the same defer-until-prekey queue as
+    /// [`send_message`] when we haven't seen `dst`'s prekey yet — we need it for both the
+    /// ratchet and the recognition tag, so without it there's nothing to send.
+    ///
+    /// (No `request_ack`: an anonymous envelope has no return path yet — private delivery
+    /// confirmation arrives with the want-beacon work, §39 P5.)
+    pub fn send_message_private(
+        &mut self,
+        dst: PubKeyBytes,
+        content_type: String,
+        body: Vec<u8>,
+    ) -> Result<BundleId> {
+        // We need `dst`'s published prekey up front — for the recognition tag *and* the
+        // ratchet. Resolve it BEFORE encrypting so we never advance the ratchet only to
+        // defer (which would silently drop a real ciphertext and desync the session).
+        let spk_pub = match self.directory.prekey(&dst) {
+            Some(pb) => pb.spk_pub,
+            None => return Ok(self.defer_content(dst, content_type, body, false, true)),
+        };
+        match self.session_payload(&dst, content_type.clone(), body.clone())? {
+            Some(inner) => {
+                let id = self.dispatch_private(dst, spk_pub, inner, None)?;
+                self.flush_pending_content();
+                Ok(id)
+            }
+            None => Ok(self.defer_content(dst, content_type, body, false, true)),
+        }
+    }
+
+    /// Queue content we can't ratchet yet (no prekey for `dst`): we never static-seal user
+    /// content (§25). Returns a stable handle the UI shows as "Sending…"; it flushes the
+    /// moment we learn `dst`'s prekey. `private` routes the eventual send through §39.
+    fn defer_content(
+        &mut self,
+        dst: PubKeyBytes,
+        content_type: String,
+        body: Vec<u8>,
+        request_ack: bool,
+        private: bool,
+    ) -> BundleId {
+        self.pending_seq += 1;
+        let h = blake3::hash(
+            &[&dst[..], content_type.as_bytes(), &body, &self.pending_seq.to_be_bytes()].concat(),
+        );
+        let display_id: BundleId = *h.as_bytes();
+        self.tx.entry(display_id).or_default(); // shows as Sending… until ratcheted
+        self.pending_content.push(PendingContent {
+            display_id,
+            dst,
+            content_type,
+            body,
+            request_ack,
+            private,
+        });
+        self.persist_pending_content(); // a sent-but-deferred message must survive restart
+        display_id
     }
 
     /// Build + submit a ratcheted content bundle. `display_id` is `Some` when this content was
@@ -931,6 +977,38 @@ impl<S: Store> Node<S> {
         Ok(display)
     }
 
+    /// Build + flood a §39 private bundle: wrap the (already forward-secret) `inner` payload
+    /// with our identity, then seal the whole thing to `dst`'s address inside an anonymous,
+    /// flooding envelope. `display_id` aliases a deferred send's handle (as in
+    /// [`dispatch_content`]). No `forwarded` route-learning and no carrier chunking — there's
+    /// no cleartext dst to route toward or ACK back from (that's the gradient/want work, P4/P5).
+    fn dispatch_private(
+        &mut self,
+        dst: PubKeyBytes,
+        spk_pub: XPubKeyBytes,
+        inner: Payload,
+        display_id: Option<BundleId>,
+    ) -> Result<BundleId> {
+        let wrapped =
+            Payload::Private { sender: self.identity.address(), inner: Box::new(inner) };
+        let bundle = Bundle::create_private(
+            &dst,
+            &spk_pub,
+            &wrapped,
+            None, // mailbox-tag (offline pull / solicitation) — §39 P5
+            None, // routing hint (gradient prefix) — §39 P4
+            BundleOpts { created_at: self.now_ms, ..Default::default() },
+        )?;
+        let real = bundle.id();
+        let display = display_id.unwrap_or(real);
+        if display != real {
+            self.tx_alias.insert(real, display);
+        }
+        self.tx.entry(display).or_default(); // track for the UI (stays "Sent" — no private ACK yet)
+        self.submit(bundle); // Broadcast → floods to every link; recognized only by `dst`
+        Ok(display)
+    }
+
     /// Try to flush queued content now that we may know more peers' prekeys (called when a
     /// prekey advert is accepted, and on tick). Anything still without a prekey stays queued.
     fn flush_pending_content(&mut self) {
@@ -939,7 +1017,17 @@ impl<S: Store> Node<S> {
         }
         let mut still = Vec::new();
         for pc in std::mem::take(&mut self.pending_content) {
+            // A §39 private send also needs the recipient's prekey for its recognition tag —
+            // resolve it before encrypting so we never advance the ratchet only to re-defer.
+            let spk_pub = if pc.private { self.directory.prekey(&pc.dst).map(|b| b.spk_pub) } else { None };
+            if pc.private && spk_pub.is_none() {
+                still.push(pc); // no prekey yet → keep waiting (it gossips, §25)
+                continue;
+            }
             match self.session_payload(&pc.dst, pc.content_type.clone(), pc.body.clone()) {
+                Ok(Some(payload)) if pc.private => {
+                    let _ = self.dispatch_private(pc.dst, spk_pub.unwrap(), payload, Some(pc.display_id));
+                }
                 Ok(Some(payload)) => {
                     let _ = self.dispatch_content(pc.dst, payload, pc.request_ack, Some(pc.display_id));
                 }
@@ -1047,13 +1135,32 @@ impl<S: Store> Node<S> {
         bundle.open(&self.identity)
     }
 
+    /// §39: does any prekey we still hold the secret for recognize this private bundle as
+    /// ours? One DH + one hash per prekey — the cost of "is this mine?" as the bundle floods
+    /// past. (We keep retired prekey secrets in `spk_secrets`, so a message in flight when we
+    /// rotated is still recognized.)
+    fn recognizes(&self, bundle: &Bundle) -> bool {
+        self.spk_secrets.values().any(|secret| bundle.recognized_by(secret))
+    }
+
     /// Read a user message addressed to this node — uniform across static-sealed
     /// (`PeerMessage`) and forward-secret session payloads. Establishes the responder
     /// side of a session on first `SessionInit`. Returns `None` for non-user payloads
     /// (HTTP/stream/ack). Mutates session state, so it must be called once per bundle.
     pub fn read_message(&mut self, bundle: &Bundle) -> Result<Option<ReadMessage>> {
-        let from = bundle.inner.src;
         match bundle.open(&self.identity)? {
+            // §39 untraceable: the *real* sender rode inside the seal (the envelope src is
+            // zeroed). Use it — the inner ratchet authenticates that it's genuinely them.
+            Payload::Private { sender, inner } => self.read_inner_message(sender, *inner),
+            other => self.read_inner_message(bundle.inner.src, other),
+        }
+    }
+
+    /// Decrypt a user-message payload attributed to `from` — shared by the normal path (where
+    /// `from` is the cleartext envelope src) and the §39 private path (where it came from
+    /// inside the seal). Establishes the responder side of a session on first `SessionInit`.
+    fn read_inner_message(&mut self, from: PubKeyBytes, payload: Payload) -> Result<Option<ReadMessage>> {
+        match payload {
             Payload::PeerMessage { content_type, body } => {
                 Ok(Some(ReadMessage { from, content_type, body }))
             }
@@ -2612,11 +2719,22 @@ impl<S: Store> Node<S> {
         }
         let id = bundle.id();
 
-        // A broadcast (hps:// publish, §32) is processed by everyone and relayed by everyone.
-        // Process once (deduped), then fall through to the store+offer flood below.
+        // A broadcast is processed by everyone and relayed by everyone. Process once
+        // (deduped), then fall through to the store+offer flood below.
         if matches!(bundle.inner.dst, Destination::Broadcast) {
             if !self.store.seen(&id) {
-                self.process_broadcast(&bundle);
+                if bundle.is_private() {
+                    // §39 "is this mine?": trial-match against our prekeys. If recognized,
+                    // deliver locally (read_message reads the sender from inside the seal).
+                    // Either way it keeps flooding below — we never short-circuit, since
+                    // halting the flood here would out us as the recipient.
+                    if self.recognizes(&bundle) {
+                        self.inbox.push(bundle.clone());
+                    }
+                } else {
+                    // An hps:// publish (§32).
+                    self.process_broadcast(&bundle);
+                }
             }
         }
 
@@ -3838,6 +3956,97 @@ mod tests {
         let m = nodes[2].read_message(&inbox[0]).unwrap().expect("a user message");
         assert_eq!(m.content_type, "image/jpeg");
         assert_eq!(m.body, body, "bytes reassembled exactly, in order");
+    }
+
+    // --- §39 untraceable (private) messaging ----------------------------------
+
+    #[test]
+    fn private_message_floods_anonymously_and_only_the_recipient_recognizes_it() {
+        // §39: Alice → Bob with nobody in between able to see who it's for. A relay (Carol)
+        // carries it but can't tell it's Bob's; Bob recognizes it ("is this mine?") and reads
+        // the true sender from inside the seal even though the envelope names no one.
+        let mut nodes = [
+            Node::new(Identity::generate()), // 0 Alice (sender)
+            Node::new(Identity::generate()), // 1 Carol (relay, not the recipient)
+            Node::new(Identity::generate()), // 2 Bob   (recipient)
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // Alice <-> Carol
+        net.connect(&mut nodes, 1, 2, 2, 2); // Carol <-> Bob
+        exchange_prekeys(&mut net, &mut nodes); // content is forward-secret — need prekeys (§25)
+
+        let alice = nodes[0].address();
+        let bob = nodes[2].address();
+        nodes[0]
+            .send_message_private(bob, "text/plain".into(), b"meet at dawn".to_vec())
+            .unwrap();
+        net.pump(&mut nodes);
+
+        // The relay never recognized it as anyone's — it just floods past.
+        assert!(nodes[1].take_inbox().is_empty(), "the relay can't tell the message is Bob's");
+
+        // Bob recognized + holds exactly one; on the wire it named no src and flooded.
+        let inbox = nodes[2].take_inbox();
+        assert_eq!(inbox.len(), 1, "only the intended recipient recognizes the private bundle");
+        assert!(inbox[0].is_private());
+        assert_eq!(inbox[0].inner.src, [0u8; 32], "no cleartext sender on the wire");
+        assert!(matches!(inbox[0].inner.dst, Destination::Broadcast), "floods — no cleartext dst");
+
+        // ...and Bob reads the *real* sender (from inside the seal) plus the content.
+        let m = nodes[2].read_message(&inbox[0]).unwrap().expect("a user message");
+        assert_eq!(m.from, alice, "sender recovered from the seal, not the (zeroed) envelope");
+        assert_eq!(m.content_type, "text/plain");
+        assert_eq!(m.body, b"meet at dawn");
+    }
+
+    #[test]
+    fn private_conversation_round_trips_both_ways() {
+        // A full private exchange: Alice → Bob, then Bob → Alice — both untraceable and both
+        // forward-secret (the reply rides the session Bob established from Alice's first message).
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+        let alice = nodes[0].address();
+        let bob = nodes[1].address();
+
+        nodes[0].send_message_private(bob, "t".into(), b"hi bob".to_vec()).unwrap();
+        net.pump(&mut nodes);
+        let inb = nodes[1].take_inbox();
+        let m = nodes[1].read_message(&inb[0]).unwrap().expect("msg");
+        assert_eq!((m.from, m.body.as_slice()), (alice, b"hi bob".as_slice()));
+        assert!(nodes[1].has_session(&alice), "Bob established a session from the private SessionInit");
+
+        nodes[1].send_message_private(alice, "t".into(), b"hi alice".to_vec()).unwrap();
+        net.pump(&mut nodes);
+        let inb = nodes[0].take_inbox();
+        let m = nodes[0].read_message(&inb[0]).unwrap().expect("reply");
+        assert_eq!((m.from, m.body.as_slice()), (bob, b"hi alice".as_slice()));
+    }
+
+    #[test]
+    fn private_send_defers_until_prekey_then_floods() {
+        // require-ratchet (§25) holds for private sends too: with no prekey for Bob yet, the
+        // message is queued ("Sending…"), never static-sealed — then flushes the moment Bob's
+        // prekey advert arrives, and reaches him untraceably.
+        let mut nodes = [Node::new(Identity::generate()), Node::new(Identity::generate())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        nodes[0].publish_prekey().unwrap(); // Alice's prekey out; Bob's NOT yet
+        net.pump(&mut nodes);
+
+        let bob = nodes[1].address();
+        nodes[0].send_message_private(bob, "t".into(), b"later".to_vec()).unwrap();
+        net.pump(&mut nodes);
+        assert!(nodes[1].take_inbox().is_empty(), "no prekey for Bob → deferred, not sent");
+
+        nodes[1].publish_prekey().unwrap(); // Bob's prekey arrives → Alice can ratchet + tag
+        net.pump(&mut nodes);
+        let inb = nodes[1].take_inbox();
+        assert_eq!(inb.len(), 1, "deferred private message flushed once the prekey was known");
+        let m = nodes[1].read_message(&inb[0]).unwrap().expect("msg");
+        assert_eq!(m.body, b"later");
+        assert_eq!(m.from, nodes[0].address());
     }
 
     #[test]

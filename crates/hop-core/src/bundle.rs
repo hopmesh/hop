@@ -118,6 +118,17 @@ pub enum Payload {
     SessionMessage {
         msg: crate::session::RatchetMessage,
     },
+    /// §39 untraceable wrapper. Carries the *real* sender's identity plus an already
+    /// forward-secret inner payload (a `SessionInit`/`SessionMessage`), the whole of which
+    /// is sealed to the recipient's address inside a [`PrivateHeader`] envelope whose
+    /// cleartext src is zeroed and whose dst floods (`Broadcast`). The network learns
+    /// nothing; only the holder of the matching prekey recognizes and opens it, then reads
+    /// `sender` (authenticated by the inner ratchet — X3DH binds this identity) instead of
+    /// the zeroed envelope src.
+    Private {
+        sender: PubKeyBytes,
+        inner: Box<Payload>,
+    },
     Ack {
         for_bundle_id: BundleId,
         status: u8,
