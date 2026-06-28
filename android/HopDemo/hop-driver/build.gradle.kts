@@ -45,4 +45,6 @@ dependencies {
     implementation(project(":bearer-core"))
     implementation(project(":bearer-ble"))
     implementation(project(":bearer-lan"))
+    // Wi-Fi Direct (Android-only) shared bearer — peer-to-peer Wi-Fi with no router, same node seam.
+    implementation(project(":bearer-wifidirect"))
 }

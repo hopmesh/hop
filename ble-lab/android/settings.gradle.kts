@@ -13,4 +13,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "BleLab"
 // One core lib + one lib per bearer (NO master lib): mirrors apple/HopBearers' package structure.
-include(":bearer-core", ":bearer-ble", ":bearer-lan", ":app")
+// :bearer-wifidirect is Android-only (no Apple counterpart — iOS has no Wi-Fi Direct).
+include(":bearer-core", ":bearer-ble", ":bearer-lan", ":bearer-wifidirect", ":app")

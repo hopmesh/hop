@@ -295,8 +295,11 @@ class HopBearer private constructor(private val context: Context, private val co
             bearerMgr.sink = bearerSink
             bearerMgr.register(net.waldrip.hop.bearers.ble.BleBearer(context, bearerId))
             bearerMgr.register(net.waldrip.hop.bearers.lan.LanBearer(context, bearerId))
+            // Wi-Fi Direct (Android-only): peer-to-peer Wi-Fi when there's no shared router. Self-contained
+            // standalone bearer (its own P2P group + TCP server/socket), same nodeId + global LinkId space.
+            bearerMgr.register(net.waldrip.hop.bearers.wifidirect.WifiDirectBearer(context, bearerId))
             bearerMgr.start()
-            android.util.Log.i("HOPLOG", "shared bearers started (BLE+LAN) id=${bearerId.take(4).joinToString("") { "%02x".format(it) }}")
+            android.util.Log.i("HOPLOG", "shared bearers started (BLE+LAN+Wi-Fi-Direct) id=${bearerId.take(4).joinToString("") { "%02x".format(it) }}")
         } else {
             startPeripheral()
             // Dual-role: always a peripheral (others connect TO us to push — the receive mailbox),
