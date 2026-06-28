@@ -7,6 +7,11 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+packages:
+  HopBearers:
+    # The shared transport package. The iOS clean-room app now runs the SAME BleBearer the macOS CLI
+    # (blepeer) runs — a fix proven in the package is this app's fix with no copy. Was: ../apple/HopBleLab.swift.
+    path: ../../apple/HopBearers
 targets:
   HopBleLab:
     type: application
@@ -15,7 +20,11 @@ targets:
       - BleLabApp.swift
       - BeaconWake.swift
       - ContentView.swift
-      - ../apple/HopBleLab.swift
+    dependencies:
+      - package: HopBearers
+        product: HopBearers
+      - package: HopBearers
+        product: HopBearerProof
     info:
       path: HopBleLab-Info.plist
       properties:

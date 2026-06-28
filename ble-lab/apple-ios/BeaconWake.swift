@@ -3,6 +3,7 @@
 import Foundation
 import CoreLocation
 import UIKit
+import HopBearers   // log() now lives in the shared transport package
 
 // Must byte-match the Android iBeacon proximity UUID (Ble.kt BEACON_UUID).
 let BEACON_UUID = UUID(uuidString: "7ED7BEAC-3C2A-4F19-9B8E-1A2B3C4D5E6F")!
