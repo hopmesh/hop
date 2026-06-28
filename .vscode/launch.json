@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:hop}/apple/HopDriver",
+            "name": "Debug hopmac (apple/HopDriver)",
+            "target": "hopmac",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug hopmac (apple/HopDriver)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:hop}/apple/HopDriver",
+            "name": "Release hopmac (apple/HopDriver)",
+            "target": "hopmac",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release hopmac (apple/HopDriver)"
+        }
+    ]
+}
