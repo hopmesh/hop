@@ -24,7 +24,10 @@ package net.waldrip.hop.bearers
 import java.util.concurrent.CopyOnWriteArrayList
 
 /// The registry + multiplexer. Register bearers, set `sink`, then drive everything as one Bearer.
-class BearerManager : Bearer {
+// `baseLinkId` offsets this manager's global link-id space. A host that mints link ids for OTHER
+// transports outside the manager (the production node's relay/Multipeer links share one nextLinkId
+// counter) passes a high base so manager ids can never collide. Default 1 (standalone / clean-room).
+class BearerManager(baseLinkId: LinkId = 1) : Bearer {
     /// The consumer's sink — every link, from every registered bearer, surfaces here in ONE global
     /// LinkId space.
     override var sink: LinkSink? = null
@@ -32,7 +35,7 @@ class BearerManager : Bearer {
     private val lock = Any()
     private val bearers = CopyOnWriteArrayList<Bearer>() // iterated lock-free by start()/stop()
     private val lanes = CopyOnWriteArrayList<Lane>()     // keep per-bearer shims alive
-    private var nextGlobal: LinkId = 1                   // global link-id space (distinct from any bearer's)
+    private var nextGlobal: LinkId = baseLinkId          // global link-id space (distinct from any bearer's)
     private val fromGlobal = HashMap<LinkId, Pair<Bearer, LinkId>>() // global -> (owning bearer, local)
 
     /// Register a bearer. The manager installs itself as the bearer's sink (via a private per-bearer
