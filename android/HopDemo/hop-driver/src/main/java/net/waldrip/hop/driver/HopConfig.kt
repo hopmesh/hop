@@ -18,6 +18,11 @@ data class HopConfig(
     /** When false the bearer never dials the backbone relay — pure P2P (BLE/LAN/Wi-Fi Direct) only. */
     val relaysEnabled: Boolean = true,
     val notificationIcon: Int = android.R.drawable.ic_dialog_email,
+    /// When true (the default) the driver forms BLE (pure-L2CAP) + LAN links through the shared
+    /// cross-platform BearerManager (ble-lab bearer-core/-ble/-lan), mirroring the Apple fold-in.
+    /// When false it falls back to the legacy in-driver BLE/LAN/Wi-Fi-Direct transports. ADDITIVE +
+    /// default-on; the legacy path is kept as a flag-off fallback (iteration-mode pre-prod).
+    val useSharedBearers: Boolean = true,
 ) {
     companion object {
         /// Build a config from the values the demo app previously hard-coded: the device-derived
