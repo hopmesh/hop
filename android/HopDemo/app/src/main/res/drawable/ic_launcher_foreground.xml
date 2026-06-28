@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive-icon foreground: the green hop glyph (arc through three nodes),
+     sized inside the central safe zone so launcher masks never clip it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2BF0A0"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:pathData="M36,66 Q54,26 72,66" />
+    <path
+        android:fillColor="#2BF0A0"
+        android:pathData="M29.5,66 a6.5,6.5 0 1,1 13,0 a6.5,6.5 0 1,1 -13,0 Z" />
+    <path
+        android:fillColor="#2BF0A0"
+        android:pathData="M65.5,66 a6.5,6.5 0 1,1 13,0 a6.5,6.5 0 1,1 -13,0 Z" />
+    <path
+        android:fillColor="#2BF0A0"
+        android:pathData="M47.5,40 a6.5,6.5 0 1,1 13,0 a6.5,6.5 0 1,1 -13,0 Z" />
+</vector>
