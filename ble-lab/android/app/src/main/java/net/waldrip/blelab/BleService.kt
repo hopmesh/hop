@@ -14,7 +14,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import net.waldrip.hop.bearers.BearerManager
-import net.waldrip.hop.bearers.BleBearer
+import net.waldrip.hop.bearers.randomNodeId
+import net.waldrip.hop.bearers.ble.BleBearer
+import net.waldrip.hop.bearers.lan.LanBearer
 
 // Foreground service that hosts BOTH BLE planes for the whole session and rebuilds them on an
 // adapter bounce WITHOUT re-rolling myId (SPEC §6 / §9 R11).
@@ -44,7 +46,11 @@ class BleService : Service() {
         if (manager != null) return
         try {
             val m = BearerManager()
-            m.register(BleBearer(applicationContext, myId)) // myId is the process-stable nodeId (R11)
+            // Register every transport against the SAME process-stable nodeId (R11) — one identity
+            // across radios. The manager fans start/stop/send out to both and multiplexes their links
+            // into one global LinkId space behind the single ProofSink.
+            m.register(BleBearer(applicationContext, myId))
+            m.register(LanBearer(applicationContext, myId))
             proof.bearer = m   // proof pings route out through the manager (uniform Bearer)
             m.sink = proof     // links from every registered bearer surface here, one id space
             m.start()
@@ -119,9 +125,9 @@ class BleService : Service() {
         @Volatile var isRunning = false
 
         // SPEC §1.2 / R11: the 16-byte nodeId, created ONCE per process and reused on every rebuild
-        // (an adapter bounce must NOT re-roll it). The transport used to own this as a top-level global
-        // in Ble.kt; now the app owns its lifetime and hands it to each BleBearer it builds.
-        val myId: ByteArray = BleBearer.randomNodeId()
+        // (an adapter bounce must NOT re-roll it). id-gen now lives in :bearer-core (one identity shared
+        // across transports); the app owns its lifetime and hands it to every bearer it builds.
+        val myId: ByteArray = randomNodeId()
 
         fun start(ctx: Context) {
             val i = Intent(ctx, BleService::class.java)

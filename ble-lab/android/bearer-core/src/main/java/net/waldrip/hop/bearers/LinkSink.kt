@@ -19,9 +19,9 @@ enum class LinkRole { DIALER, ACCEPTOR }
 ///   - the production app implements it as the HopNode adapter.
 /// Same bearer, two sinks.
 ///
-/// NOTE (Android): unlike Apple's single-run-loop model, these callbacks arrive from MULTIPLE threads
-/// (per-link l2cap-rx threads, the main Handler, the accept thread). Implementations MUST guard any
-/// shared state accordingly.
+/// NOTE (Android): unlike Apple's single-run-loop model, these callbacks arrive from MULTIPLE threads —
+/// each transport surfaces them from its own workers (per-link rx threads, accept threads, discovery
+/// callbacks, keepalive timers). Implementations MUST guard any shared state accordingly.
 interface LinkSink {
     /// A link to `peerId` is up and identity-verified (post-HELLO). `link` is now usable for `send`.
     fun linkUp(link: LinkId, role: LinkRole, peerId: ByteArray)
