@@ -22,6 +22,7 @@
   --accent-3:  #74b6ff;   /* in-transit blue */
   --accent-ink:#04130c;
   --held:      #ffb43a;   /* held / waiting */
+  --logo:      #2bf0a0;   /* brand mark — green; flips deeper on light */
 
   /* code blocks — tokenized so they flip with the theme (dark default) */
   --code-bg:#0b1018; --code-fg:#c7d2e6;
@@ -31,7 +32,7 @@
   --radius-sm:10px;
   --maxw:     1080px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  --sans: "Poppins", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 /* ---------- base ---------- */
@@ -53,7 +54,7 @@ img, svg { display: block; max-width: 100%; }
 section { position: relative; }
 
 /* ---------- type ---------- */
-h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.08; font-weight: 760; }
+h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.08; font-weight: 700; }
 h1 { font-size: clamp(38px, 6.2vw, 68px); }
 h2 { font-size: clamp(26px, 3.6vw, 40px); }
 h3 { font-size: 19px; letter-spacing: -0.01em; }
@@ -329,6 +330,7 @@ code {
   --accent-3:  #6f5ef0;
   --accent-ink:#ffffff;   /* white text on the accent button */
 
+  --logo:#0c8f63;   /* deeper green for the mark on white */
   /* light code theme — soft surface, dark text, readable syntax colors */
   --code-bg:#f3f5fb; --code-fg:#2b3340;
   --tok-comment:#8a93a3; --tok-kw:#7c3aed; --tok-str:#0f8a4d; --tok-type:#1f6feb;
@@ -427,6 +429,11 @@ code {
 .ea-badge { font: 600 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
   color: var(--accent); border: 1px solid var(--accent-2); border-radius: 999px; padding: 4px 8px; white-space: nowrap; }
 @media (max-width: 520px) { .ea-badge { display: none; } }
+
+/* brand mark (cursive hop logo) */
+.hop-logo { display: inline-block; line-height: 0; color: var(--logo); }
+.hop-logo svg { display: block; height: 30px; width: auto; }
+.site-foot .hop-logo svg { height: 34px; }
 
 /* lead / early-access form */
 .lead-form { display: grid; gap: 16px; }

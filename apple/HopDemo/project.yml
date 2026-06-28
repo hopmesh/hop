@@ -25,6 +25,7 @@ targets:
       - ContentView.swift
       - QRViews.swift
       - HopWebView.swift
+      - Assets.xcassets
     dependencies:
       - package: HopDriver
         product: HopDriver
@@ -53,6 +54,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.waldrip.hop.demo
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
