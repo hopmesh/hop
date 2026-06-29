@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CRATE="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$CRATE/../.." && pwd)"
 
-cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
+cargo build -p hop --manifest-path "$ROOT/Cargo.toml"
 "$CRATE/regen-header.sh"
 
 LIBDIR="$ROOT/target/debug"

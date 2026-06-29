@@ -30,14 +30,14 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import uniffi.hop_ffi.HopNode
-import uniffi.hop_ffi.HnsLookupResult
-import uniffi.hop_ffi.HpsKind
-import uniffi.hop_ffi.TraceHopInfo
-import uniffi.hop_ffi.addressBase58
-import uniffi.hop_ffi.addressFromBase58
-import uniffi.hop_ffi.decodeIdentity
-import uniffi.hop_ffi.serviceIdentify
+import uniffi.hop.HopNode
+import uniffi.hop.HnsLookupResult
+import uniffi.hop.HpsKind
+import uniffi.hop.TraceHopInfo
+import uniffi.hop.addressBase58
+import uniffi.hop.addressFromBase58
+import uniffi.hop.decodeIdentity
+import uniffi.hop.serviceIdentify
 
 /**
  * Foreground Android BLE bearer for Hop: each device acts as both peripheral
@@ -102,7 +102,7 @@ class HopBearer private constructor(private val context: Context, private val co
     val hpsTopics = mutableStateListOf<HpsTopic>()
     val hpsThreads = mutableStateMapOf<String, SnapshotStateList<HpsMsg>>() // topic id → messages
     val hpsUnread = mutableStateMapOf<String, Int>()                        // topic id → unread
-    val hpsInvites = mutableStateListOf<uniffi.hop_ffi.HpsInvite>()         // invites received
+    val hpsInvites = mutableStateListOf<uniffi.hop.HpsInvite>()         // invites received
     @Volatile var activeTopic: String? = null                              // topic on screen
 
     // Diagnostics (Status tab) — parity with iOS: service-call log + relay queue.
@@ -113,7 +113,7 @@ class HopBearer private constructor(private val context: Context, private val co
     private val identifyReqs = HashSet<List<Byte>>()    // outstanding identify request ids
     data class HpsTopic(
         val host: ByteArray, val path: String, val channel: Boolean, val hosting: Boolean,
-        val access: uniffi.hop_ffi.HpsAccess = uniffi.hop_ffi.HpsAccess.OPEN,
+        val access: uniffi.hop.HpsAccess = uniffi.hop.HpsAccess.OPEN,
     ) {
         val id: String get() = addressBase58(host) + "/" + path
         val writable: Boolean get() = channel || hosting
@@ -847,12 +847,12 @@ class HopBearer private constructor(private val context: Context, private val co
     // ---- hps:// pub/sub (DESIGN.md §32) -------------------------------------
 
     fun hpsRegister(path: String, channel: Boolean,
-                    access: uniffi.hop_ffi.HpsAccess = uniffi.hop_ffi.HpsAccess.OPEN,
+                    access: uniffi.hop.HpsAccess = uniffi.hop.HpsAccess.OPEN,
                     discoverable: Boolean = false) = core.post {
         val p = path.trim(); if (p.isEmpty()) return@post
         runCatching {
             node.registerService(p, if (channel) HpsKind.CHANNEL else HpsKind.SERVICE, access,
-                if (discoverable) uniffi.hop_ffi.HpsVisibility.DISCOVERABLE else uniffi.hop_ffi.HpsVisibility.PRIVATE)
+                if (discoverable) uniffi.hop.HpsVisibility.DISCOVERABLE else uniffi.hop.HpsVisibility.PRIVATE)
         }
         val topic = HpsTopic(node.address(), p, channel, hosting = true, access = access)
         onUi { if (hpsTopics.none { it.host.contentEquals(topic.host) && it.path == p }) hpsTopics.add(0, topic) }
@@ -871,7 +871,7 @@ class HopBearer private constructor(private val context: Context, private val co
         pump()
     }
 
-    fun hpsJoin(t: uniffi.hop_ffi.HpsTopicInfo) = core.post {
+    fun hpsJoin(t: uniffi.hop.HpsTopicInfo) = core.post {
         hpsSubscribeTo(t.host, t.path, t.kind == HpsKind.CHANNEL)
     }
 
@@ -887,7 +887,7 @@ class HopBearer private constructor(private val context: Context, private val co
         runCatching { node.hpsInvite(topic.path, to) }; pump()
     }
 
-    fun hpsAcceptInvite(inv: uniffi.hop_ffi.HpsInvite) = core.post {
+    fun hpsAcceptInvite(inv: uniffi.hop.HpsInvite) = core.post {
         runCatching { node.hpsAcceptInvite(inv.host, inv.path) }
         val topic = HpsTopic(inv.host, inv.path, inv.kind == HpsKind.CHANNEL, hosting = false)
         onUi {
@@ -897,7 +897,7 @@ class HopBearer private constructor(private val context: Context, private val co
         pump()
     }
 
-    fun hpsDeclineInvite(inv: uniffi.hop_ffi.HpsInvite) = core.post {
+    fun hpsDeclineInvite(inv: uniffi.hop.HpsInvite) = core.post {
         runCatching { node.hpsDeclineInvite(inv.host, inv.path) } // durable: won't reappear
         onUi { hpsInvites.removeAll { it.path == inv.path && it.host.contentEquals(inv.host) } }
     }
@@ -908,7 +908,7 @@ class HopBearer private constructor(private val context: Context, private val co
     fun hpsReach(topic: HpsTopic): Int = runCatching { node.hpsReach(topic.path).toInt() }.getOrDefault(0)
     fun hpsMembers(topic: HpsTopic): List<ByteArray> = runCatching { node.hpsMembers(topic.path) }.getOrDefault(emptyList())
     fun hpsRekey(topic: HpsTopic, remove: List<ByteArray> = emptyList()) = core.post { runCatching { node.hpsRekey(topic.path, "", remove) }; pump() }
-    fun hpsBrowse(): List<uniffi.hop_ffi.HpsTopicInfo> = runCatching { node.browseDiscoverable() }.getOrDefault(emptyList())
+    fun hpsBrowse(): List<uniffi.hop.HpsTopicInfo> = runCatching { node.browseDiscoverable() }.getOrDefault(emptyList())
 
     /// Rebuild the channel list from the node's persisted topics (hosted + subscribed) at startup.
     private fun loadHpsTopics() {

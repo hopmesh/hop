@@ -2,8 +2,8 @@
 # Build the Hop Android native libs (.so per ABI) + Kotlin bindings from hop-ffi.
 #
 # Output (gitignored): android/generated/
-#   - jniLibs/<abi>/libhop.so          (the C ABI / sh.hop SDK; + a libhop_ffi.so copy for UniFFI)
-#   - kotlin/uniffi/hop_ffi/hop_ffi.kt (legacy UniFFI bindings, until the crate rename)
+#   - jniLibs/<abi>/libhop.so      (the C ABI / sh.hop SDK AND UniFFI — the crate is now `hop`)
+#   - kotlin/uniffi/hop/hop.kt     (the UniFFI Kotlin bindings, namespace uniffi.hop)
 #
 # Prerequisites (one-time):
 #   1. Android NDK. Either:
@@ -19,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CRATE=hop-ffi
+CRATE=hop
 OUT=android/HopDemo/generated   # gradle sourceSets read ../generated from :app
 T=target
 
@@ -31,17 +31,12 @@ rm -rf "$OUT"; mkdir -p "$OUT/kotlin"
 echo "▸ building libhop.so for each ABI"
 cargo ndk -t arm64-v8a -t x86_64 -t armeabi-v7a -o "$OUT/jniLibs" \
   build -p "$CRATE" --release
-# The cdylib is now `libhop` (the C ABI / new sh.hop SDK loads "hop"). The legacy UniFFI bindings
-# load the component by name "hop_ffi", so keep a libhop_ffi.so alongside until the crate is renamed
-# (see core/hop-ffi/Cargo.toml). Same library, two names — drop the copy once UniFFI is gone.
-for abi in arm64-v8a x86_64 armeabi-v7a; do
-  cp -f "$OUT/jniLibs/$abi/libhop.so" "$OUT/jniLibs/$abi/libhop_ffi.so"
-done
+# ONE libhop.so per ABI now serves both the C ABI (sh.hop loads "hop") and UniFFI (component "hop").
 
 echo "▸ generating Kotlin bindings"
 cargo build -p "$CRATE"   # host lib for bindgen metadata
 cargo run -p "$CRATE" --features cli --bin uniffi-bindgen -- \
   generate --library "$T/debug/libhop.dylib" --language kotlin --out-dir "$OUT/kotlin"
 
-echo "✓ $OUT/jniLibs/<abi>/libhop.so (+ libhop_ffi.so copy for legacy UniFFI)"
-echo "✓ $OUT/kotlin/uniffi/hop_ffi/hop_ffi.kt"
+echo "✓ $OUT/jniLibs/<abi>/libhop.so"
+echo "✓ $OUT/kotlin/uniffi/hop/hop.kt"

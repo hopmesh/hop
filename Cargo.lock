@@ -870,6 +870,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hop"
+version = "0.0.1"
+dependencies = [
+ "bs58",
+ "hop-core",
+ "hop-store-sqlite",
+ "postcard",
+ "thiserror 2.0.18",
+ "uniffi",
+]
+
+[[package]]
 name = "hop-core"
 version = "0.0.1"
 dependencies = [
@@ -904,18 +916,6 @@ dependencies = [
 [[package]]
 name = "hop-example-origin"
 version = "0.0.1"
-
-[[package]]
-name = "hop-ffi"
-version = "0.0.1"
-dependencies = [
- "bs58",
- "hop-core",
- "hop-store-sqlite",
- "postcard",
- "thiserror 2.0.18",
- "uniffi",
-]
 
 [[package]]
 name = "hop-gateway"

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "core/hop-core",
-    "core/hop-ffi",
+    "core/hop",
     "core/hop-sim",
     "core/stores/hop-store-sqlite",
     "core/stores/hop-store-firestore",

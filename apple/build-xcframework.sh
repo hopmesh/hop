@@ -3,13 +3,13 @@
 #
 # Output (gitignored): apple/HopDriver/
 #   - Frameworks/HopFFI.xcframework        (ios-arm64 device + ios-sim + macos universal)
-#   - Sources/HopFFIBindings/hop_ffi.swift (the generated Swift API — a package target)
+#   - Sources/HopFFIBindings/hop.swift (the generated Swift API — a package target)
 #
 # Requires: Xcode, rustup. Run from anywhere.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CRATE=hop-ffi
+CRATE=hop
 LIB=libhop.a
 PKG=apple/HopDriver
 OUT=apple/HopDriver/.build-staging   # scratch for headers + generated swift
@@ -24,12 +24,12 @@ cargo build -p "$CRATE"
 rm -rf "$OUT"; mkdir -p "$OUT/Sources" "$OUT/Headers"
 cargo run -p "$CRATE" --features cli --bin uniffi-bindgen -- \
   generate --library "$T/debug/$LIB" --language swift --out-dir "$OUT/Sources"
-cp "$OUT/Sources/hop_ffiFFI.h" "$OUT/Headers/"
-cp "$OUT/Sources/hop_ffiFFI.modulemap" "$OUT/Headers/module.modulemap"
+cp "$OUT/Sources/hopFFI.h" "$OUT/Headers/"
+cp "$OUT/Sources/hopFFI.modulemap" "$OUT/Headers/module.modulemap"
 
 # Place the generated Swift API as the HopFFIBindings target's source.
 mkdir -p "$PKG/Sources/HopFFIBindings"
-cp "$OUT/Sources/hop_ffi.swift" "$PKG/Sources/HopFFIBindings/hop_ffi.swift"
+cp "$OUT/Sources/hop.swift" "$PKG/Sources/HopFFIBindings/hop.swift"
 
 echo "▸ cross-compiling release staticlibs (iOS device + sim, macOS arm64 + x86_64)"
 cargo build -p "$CRATE" --release --target aarch64-apple-ios
@@ -63,4 +63,4 @@ xcodebuild -create-xcframework \
   -output "$DEST" >/dev/null
 
 echo "✓ $DEST"
-echo "✓ $PKG/Sources/HopFFIBindings/hop_ffi.swift"
+echo "✓ $PKG/Sources/HopFFIBindings/hop.swift"

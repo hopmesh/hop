@@ -31,14 +31,14 @@ let package = Package(
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,
         // ios-sim, macos). Built by apple/build-xcframework.sh.
-        .binaryTarget(name: "hop_ffiFFI", path: "Frameworks/HopFFI.xcframework"),
+        .binaryTarget(name: "hopFFI", path: "Frameworks/HopFFI.xcframework"),
 
         // The Objective-C exception catcher (CoreBluetooth raises NSExceptions Swift can't catch).
         // A Clang target with an include/ umbrella header — replaces the app's bridging header.
         .target(name: "HopObjC"),
 
-        // The UniFFI-generated Swift API (hop_ffi.swift), which imports the binary module.
-        .target(name: "HopFFIBindings", dependencies: ["hop_ffiFFI"]),
+        // The UniFFI-generated Swift API (hop.swift), which imports the binary module.
+        .target(name: "HopFFIBindings", dependencies: ["hopFFI"]),
 
         // The bearer + transports.
         .target(name: "HopDriver", dependencies: [
