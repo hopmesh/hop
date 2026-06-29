@@ -60,3 +60,6 @@ bearers/android/.gradle/
 bearers/android/build/
 bearers/android/**/build/
 bearers/android/local.properties
+
+# Android driver build
+drivers/android/**/build/
