@@ -13,6 +13,7 @@ let package = Package(
     products: [
         .library(name: "HopDriver", targets: ["HopDriver"]),
         .executable(name: "hopmac", targets: ["hopmac"]),
+        .executable(name: "relaymac", targets: ["relaymac"]),
     ],
     // The shared cross-platform transport layer (HopBearers), a sibling SwiftPM package. The driver
     // pulls in the contract/registry (Core) + the BLE and LAN bearers; the new shared-bearer path
@@ -44,5 +45,7 @@ let package = Package(
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.
         .executableTarget(name: "hopmac", dependencies: ["HopDriver"]),
+        // Headless macOS RELAY-ONLY client (`.relayOnly` mode) — no BLE/LAN/Wi-Fi, relay path only.
+        .executableTarget(name: "relaymac", dependencies: ["HopDriver"]),
     ]
 )
