@@ -21,6 +21,8 @@ data class HopMessage(val from: ByteArray, val contentType: String, val body: By
 /** The raw JNA binding — one function per `hop_*` symbol. Internal; callers use [HopNode]. */
 internal interface CHop : Library {
     fun hop_node_new(): Pointer?
+    fun hop_node_open(dbPath: String, secret: ByteArray?, secretLen: NativeLong, appSecret: ByteArray?, appSecretLen: NativeLong): Pointer?
+    fun hop_node_with_secret(secret: ByteArray?, secretLen: NativeLong): Pointer?
     fun hop_node_free(node: Pointer?)
     fun hop_node_address(node: Pointer?, out: ByteArray): Boolean
     fun hop_node_tick(node: Pointer?, nowMs: Long)
@@ -51,6 +53,12 @@ class HopNode private constructor(internal val raw: Pointer) {
     companion object {
         internal val C: CHop = Native.load("hop", CHop::class.java)
         fun ephemeral(): HopNode = HopNode(C.hop_node_new() ?: error("hop_node_new returned null"))
+
+        /** Open with persistent storage at [dbPath], a saved 32-byte [secret] (empty = fresh), and an
+         *  [appSecret] (empty = open fabric). Null only on a NULL/invalid path. */
+        fun open(dbPath: String, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
+            C.hop_node_open(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()))
+                ?.let { HopNode(it) }
     }
 
     fun address(): ByteArray = ByteArray(32).also { C.hop_node_address(raw, it) }
