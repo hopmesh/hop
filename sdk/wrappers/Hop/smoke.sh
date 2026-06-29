@@ -11,6 +11,6 @@ cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
 
 cd "$HERE"
 # NOTE: build flags MUST precede the product name; anything after it is the executable's argv.
-LINK=(-Xlinker -L"$LIBDIR" -Xlinker -lhop_ffi -Xlinker -rpath -Xlinker "$LIBDIR")
+LINK=(-Xlinker -L"$LIBDIR" -Xlinker -lhop -Xlinker -rpath -Xlinker "$LIBDIR")
 swift run "${LINK[@]}" HopSmoke       # Swift wrapper -> C ABI -> protocol
 swift run "${LINK[@]}" RuntimeSmoke   # HopRuntime + a Bearer -> node seam -> protocol
