@@ -37,3 +37,7 @@ apple/HopBearers/.build/
 
 # libhop C smoke-test binary (build artifact; source is examples/smoke.c)
 crates/hop-ffi/examples/smoke
+
+# SwiftPM build dirs for the SDK wrappers / bearer packages
+sdk/wrappers/swift/.build/
+bearers/apple/**/.build/
