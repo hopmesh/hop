@@ -14,7 +14,10 @@
 //! some re-flooding, which the receiver dedups; §7).
 //!
 //! Durable cleanup of expired bundles is left to a **Firestore TTL policy** on the
-//! `expiresAt` field (a one-time setup), so `prune` stays a fast in-memory op.
+//! `expireAt` timestamp field (a one-time setup; TTL only sweeps `timestampValue`
+//! fields, so every doc carries one — see `doc_json`), keeping `prune` a fast
+//! in-memory op. One policy on the `bundles` collection group covers both the
+//! per-relay handoff inbox and the §39 mailbox spool.
 //!
 //! Auth: a Bearer token from the GCE/Cloud Run **metadata server** (workload
 //! identity), or the `FIRESTORE_ACCESS_TOKEN` env var for local runs.
@@ -116,7 +119,7 @@ impl Store for FirestoreStore {
 
     fn prune(&mut self, now_ms: u64) {
         // In-memory only; the durable copies are reaped by a Firestore TTL policy on
-        // `expiresAt` (one-time setup), keeping prune off the network.
+        // the `expireAt` timestamp (one-time setup), keeping prune off the network.
         self.inner.prune(now_ms);
     }
 
@@ -569,8 +572,9 @@ impl Presence {
     /// 16-byte tag) — a rotatable pseudonym, NOT an address — so an offline recipient can pull it on
     /// return. A separate collection from the device-address inbox (`relays/{node}`); the relay never
     /// opens the sealed envelope. The recipient is unlinkable here except by the mailbox-tag while it
-    /// lives (the §39 cost of being pull-reachable offline). Swept at its own §8 lifetime by a
-    /// Firestore TTL policy on `expiresAt` over the `mailboxes` collection group (zero compute).
+    /// lives (the §39 cost of being pull-reachable offline). Swept at its own §8 lifetime by the
+    /// `expireAt` TTL policy on the `bundles` collection group (zero compute) — same policy that
+    /// reaps the handoff inbox, since both collections share the `bundles` id.
     pub fn spool_to_mailbox(
         &self,
         tag_b58: &str,
@@ -684,9 +688,36 @@ fn doc_json(data: &[u8], expires_at: u64) -> serde_json::Value {
     serde_json::json!({
         "fields": {
             "data": { "bytesValue": b64 },
+            // Integer epoch-millis — what `parse_doc` reads back.
             "expiresAt": { "integerValue": expires_at.to_string() },
+            // RFC3339 timestamp — the field the ACTIVE Firestore TTL policy sweeps on. TTL acts
+            // ONLY on a `timestampValue` field (an integer is silently ignored), so this is what
+            // actually garbage-collects expired handoff/spool bundles at their §8 lifetime.
+            "expireAt": { "timestampValue": rfc3339_utc(expires_at) },
         }
     })
+}
+
+/// Format epoch-milliseconds as an RFC3339 UTC timestamp (e.g. `"2001-09-09T01:46:40Z"`) — the
+/// shape Firestore stores as a `timestampValue`, the only field type its TTL feature acts on.
+/// Pure integer math (no date crate): civil-from-days per Howard Hinnant's `chrono` algorithm.
+fn rfc3339_utc(epoch_ms: u64) -> String {
+    let secs = (epoch_ms / 1000) as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // civil_from_days: days since 1970-01-01 → (year, month, day).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
 /// Parse a Firestore document into `(bundle bytes, expires_at)`.
@@ -711,6 +742,21 @@ mod tests {
         let (got, expires) = parse_doc(&doc).expect("parse");
         assert_eq!(got, data);
         assert_eq!(expires, 123_456);
+    }
+
+    #[test]
+    fn doc_carries_a_timestamp_for_ttl() {
+        // The TTL policy is on `expireAt` and only acts on a `timestampValue`, so every doc
+        // must carry one (an integer-only doc would never be swept — the bug this guards).
+        let json = doc_json(b"x", 1_000_000_000_000); // 2001-09-09T01:46:40Z
+        assert_eq!(json["fields"]["expireAt"]["timestampValue"], "2001-09-09T01:46:40Z");
+    }
+
+    #[test]
+    fn rfc3339_utc_matches_known_epochs() {
+        assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(1_000_000_000_000), "2001-09-09T01:46:40Z"); // Unix billennium
+        assert_eq!(rfc3339_utc(1_700_000_000_000), "2023-11-14T22:13:20Z");
     }
 
     #[test]
