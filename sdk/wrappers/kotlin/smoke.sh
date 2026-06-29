@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 
 cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
-"$ROOT/crates/hop-ffi/regen-header.sh" >/dev/null
+"$ROOT/core/hop-ffi/regen-header.sh" >/dev/null
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export HOP_LIBDIR="$ROOT/target/debug"

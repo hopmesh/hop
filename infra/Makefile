@@ -14,7 +14,7 @@ auth:
 # Build for linux/amd64 (Cloud Run) regardless of host arch.
 image:
 	docker build --platform linux/amd64 \
-	  -f $(ROOT)/crates/hop-relayd/Dockerfile \
+	  -f $(ROOT)/services/hop-relayd/Dockerfile \
 	  -t $(IMAGE) $(ROOT)
 
 push: image

@@ -3,12 +3,14 @@
 # over the WebSocket bearer so Cloud Run / the global LB can front it.
 #
 # Build context is the repo root:
-#   docker build -f crates/hop-relayd/Dockerfile -t hop-relayd .
+#   docker build -f services/hop-relayd/Dockerfile -t hop-relayd .
 
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY core ./core
+COPY services ./services
+COPY examples ./examples
 RUN cargo build --release -p hop-relayd --features firestore
 
 FROM debian:bookworm-slim

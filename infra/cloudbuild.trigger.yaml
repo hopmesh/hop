@@ -8,7 +8,7 @@ steps:
     args:
       - build
       - -f
-      - crates/hop-relayd/Dockerfile
+      - services/hop-relayd/Dockerfile
       - -t
       - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:$SHORT_SHA
       - -t
@@ -20,7 +20,7 @@ steps:
     args:
       - build
       - -f
-      - crates/hop-endpoint/Dockerfile
+      - services/hop-endpoint/Dockerfile
       - -t
       - us-central1-docker.pkg.dev/hop-mesh/hop/hop-example:$SHORT_SHA
       - -t

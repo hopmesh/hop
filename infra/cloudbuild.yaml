@@ -3,7 +3,7 @@
 #     --substitutions _IMAGE=us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:TAG .
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-f', 'crates/hop-relayd/Dockerfile', '-t', '${_IMAGE}', '.']
+    args: ['build', '-f', 'services/hop-relayd/Dockerfile', '-t', '${_IMAGE}', '.']
 images:
   - '${_IMAGE}'
 options:

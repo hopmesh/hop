@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/hop-core",
-    "crates/hop-gateway",
-    "crates/hop-sim",
-    "crates/hop-ffi",
-    "crates/hop-store-sqlite",
-    "crates/hop-relay",
-    "crates/hop-relayd",
-    "crates/hop-store-firestore",
-    "crates/hop-endpoint",
-    "crates/hop-example-origin",
+    "core/hop-core",
+    "core/hop-ffi",
+    "core/hop-sim",
+    "core/stores/hop-store-sqlite",
+    "core/stores/hop-store-firestore",
+    "services/hop-relay",
+    "services/hop-relayd",
+    "services/hop-gateway",
+    "services/hop-endpoint",
+    "examples/hop-example-origin",
 ]
 exclude = ["site"]
 
@@ -22,9 +22,9 @@ license-file = "LICENSE.md"
 repository = "https://github.com/jwaldrip/hop"
 
 [workspace.dependencies]
-hop-core = { path = "crates/hop-core" }
-hop-store-sqlite = { path = "crates/hop-store-sqlite" }
-hop-store-firestore = { path = "crates/hop-store-firestore" }
+hop-core = { path = "core/hop-core" }
+hop-store-sqlite = { path = "core/stores/hop-store-sqlite" }
+hop-store-firestore = { path = "core/stores/hop-store-firestore" }
 
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
