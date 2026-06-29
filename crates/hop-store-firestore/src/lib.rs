@@ -257,7 +257,12 @@ fn fetch_gcp_token(http: &reqwest::blocking::Client) -> Result<String, String> {
             return Ok(t);
         }
     }
-    let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+    // Ask the metadata server for a token scoped to Firestore. Without an explicit `scopes`,
+    // the runtime SA token was rejected by Firestore with 401 (the presence/§28 backbone never
+    // authenticated — failing silently since deploy). The SA has roles/datastore.user; this just
+    // mints a token carrying the matching OAuth scope. `cloud-platform` covers every API the relay
+    // touches (all of which are Firestore today) so we don't have to enumerate per-API scopes.
+    let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloud-platform";
     let resp =
         http.get(url).header("Metadata-Flavor", "Google").send().map_err(|e| e.to_string())?;
     let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
