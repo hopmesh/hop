@@ -16,6 +16,10 @@ use std::sync::{Arc, Mutex};
 use hop_core::prelude::*;
 use hop_store_sqlite::SqliteStore;
 
+/// libhop — the stable C ABI (cbindgen → `include/hop.h`): the universal client SDK + bearer seam,
+/// for every non-UniFFI target (C/C++, ESP32, …). Wraps the SAME `HopNode` as the UniFFI surface.
+pub mod cabi;
+
 uniffi::setup_scaffolding!();
 
 /// Build an identity from saved secret bytes, or a fresh one if absent/invalid.
