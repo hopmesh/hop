@@ -41,3 +41,7 @@ crates/hop-ffi/examples/smoke
 # SwiftPM build dirs for the SDK wrappers / bearer packages
 sdk/wrappers/swift/.build/
 bearers/apple/**/.build/
+
+# Kotlin/JVM SDK build dirs
+sdk/wrappers/kotlin/.gradle/
+sdk/wrappers/kotlin/build/
