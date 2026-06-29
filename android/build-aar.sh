@@ -33,7 +33,7 @@ cargo ndk -t arm64-v8a -t x86_64 -t armeabi-v7a -o "$OUT/jniLibs" \
   build -p "$CRATE" --release
 # The cdylib is now `libhop` (the C ABI / new sh.hop SDK loads "hop"). The legacy UniFFI bindings
 # load the component by name "hop_ffi", so keep a libhop_ffi.so alongside until the crate is renamed
-# (see crates/hop-ffi/Cargo.toml). Same library, two names — drop the copy once UniFFI is gone.
+# (see core/hop-ffi/Cargo.toml). Same library, two names — drop the copy once UniFFI is gone.
 for abi in arm64-v8a x86_64 armeabi-v7a; do
   cp -f "$OUT/jniLibs/$abi/libhop.so" "$OUT/jniLibs/$abi/libhop_ffi.so"
 done
