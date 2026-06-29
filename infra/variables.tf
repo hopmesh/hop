@@ -17,8 +17,8 @@ variable "build_connection_name" {
   default     = ""
 }
 
-variable "spacelift_commit_sha" {
-  description = "Injected by Spacelift (TF_VAR_spacelift_commit_sha). Used to derive the deploy image tag so it matches the commit Cloud Build built."
+variable "deploy_image_sha" {
+  description = "Commit short-sha to deploy. Passed by the Cloud Build apply step as -var deploy_image_sha=$SHORT_SHA so the relay + example images match the just-built commit. Empty falls back to :latest."
   type        = string
   default     = ""
 }

@@ -1,10 +1,13 @@
 # Build & push the hop-relayd image, then apply the fleet.
+# Local runs use OpenTofu (TF=tofu) against the GCS backend; CI uses the same on
+# Cloud Build. Override with `make TF=terraform ...` if you must.
 PROJECT ?= hop-mesh
 REGION  ?= us-central1
 REPO    ?= $(REGION)-docker.pkg.dev/$(PROJECT)/hop
 TAG     ?= $(shell git rev-parse --short HEAD)
 IMAGE   ?= $(REPO)/hop-relayd:$(TAG)
 ROOT    := $(shell git rev-parse --show-toplevel)
+TF      ?= tofu
 
 .PHONY: auth image push deploy plan apply seed-identity
 
@@ -28,7 +31,7 @@ seed-identity:
 	  | gcloud secrets versions add hop-relay-identity --project $(PROJECT) --data-file=-
 
 plan:
-	terraform plan -var relay_image=$(IMAGE)
+	$(TF) plan -var relay_image=$(IMAGE)
 
 apply: push
-	terraform apply -var relay_image=$(IMAGE)
+	$(TF) apply -var relay_image=$(IMAGE)

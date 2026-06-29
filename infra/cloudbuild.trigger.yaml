@@ -1,43 +1,46 @@
-# GitOps image build, run by the GitHub-connected Cloud Build trigger (no GitHub
-# Actions). On each push it builds hop-relayd and pushes two tags: the commit
-# $SHORT_SHA (what Spacelift deploys — it derives the same tag from the run's
-# commit) and :latest (convenience). See infra/cloudbuild_trigger.tf.
+# GitOps build + deploy — one Cloud Build run on every push to main (no GitHub
+# Actions, no Spacelift). It builds + pushes both images, then runs `tofu apply`
+# with the just-built $SHORT_SHA so Cloud Run rolls to exactly this commit. State
+# lives in GCS (gs://hop-mesh-tfstate, see infra/versions.tf) — OpenTofu, no
+# HashiCorp/Spacelift SaaS. Because the push steps complete BEFORE apply (waitFor),
+# the tag always exists when Cloud Run pulls it — the old before_apply image-wait
+# hook is gone.
+substitutions:
+  _AR: us-central1-docker.pkg.dev/hop-mesh/hop
+  _TOFU: ghcr.io/opentofu/opentofu:1.12.3 # must be >= the version that wrote the state
 steps:
   - name: gcr.io/cloud-builders/docker
-    id: relayd
-    args:
-      - build
-      - -f
-      - services/hop-relayd/Dockerfile
-      - -t
-      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:$SHORT_SHA
-      - -t
-      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest
-      - .
-  # The example.hopme.sh hops:// demo image (hop-endpoint + hop-example-origin).
+    id: build-relayd
+    args: [build, -f, services/hop-relayd/Dockerfile, -t, '${_AR}/hop-relayd:$SHORT_SHA', -t, '${_AR}/hop-relayd:latest', .]
   - name: gcr.io/cloud-builders/docker
-    id: example
+    id: build-example
+    args: [build, -f, services/hop-endpoint/Dockerfile, -t, '${_AR}/hop-example:$SHORT_SHA', -t, '${_AR}/hop-example:latest', .]
+  # Push explicitly (not via `images:`) so the tags exist in Artifact Registry
+  # before the apply step pulls them into Cloud Run.
+  - name: gcr.io/cloud-builders/docker
+    id: push-relayd
+    waitFor: [build-relayd]
+    args: [push, --all-tags, '${_AR}/hop-relayd']
+  - name: gcr.io/cloud-builders/docker
+    id: push-example
+    waitFor: [build-example]
+    args: [push, --all-tags, '${_AR}/hop-example']
+  # Apply the fleet. Runs as the build trigger's service account (needs deploy +
+  # state-bucket perms — see infra/cloudbuild_trigger.tf). deploy_image_sha pins the
+  # relay + example images to this commit.
+  - name: '${_TOFU}'
+    id: apply
+    waitFor: [push-relayd, push-example]
+    dir: infra
+    entrypoint: sh
     args:
-      - build
-      - -f
-      - services/hop-endpoint/Dockerfile
-      - -t
-      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-example:$SHORT_SHA
-      - -t
-      - us-central1-docker.pkg.dev/hop-mesh/hop/hop-example:latest
-      - .
-images:
-  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:$SHORT_SHA
-  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest
-  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-example:$SHORT_SHA
-  - us-central1-docker.pkg.dev/hop-mesh/hop/hop-example:latest
+      - -ec
+      - |
+        tofu init -input=false
+        tofu apply -input=false -auto-approve -var deploy_image_sha=$SHORT_SHA
 options:
   machineType: E2_HIGHCPU_8
   # Required when the build runs as a user-specified service account (no default
   # Cloud Build logs bucket).
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s
-
-# autodeploy e2e test marker
-
-# autodeploy verified 7f14615

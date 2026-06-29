@@ -16,12 +16,11 @@ terraform {
     }
   }
 
-  # State is managed by Spacelift by default. To run locally instead, uncomment
-  # and point at a GCS bucket you create out-of-band (chicken-and-egg with this
-  # module, so it must pre-exist):
-  #
-  # backend "gcs" {
-  #   bucket = "hop-mesh-tfstate"
-  #   prefix = "relay-fleet"
-  # }
+  # State lives in GCS (migrated off Spacelift). The bucket is created out-of-band
+  # (chicken-and-egg with this module, so it must pre-exist) and is versioned for
+  # rollback safety. GCS has native state locking — no DynamoDB-style lock table.
+  backend "gcs" {
+    bucket = "hop-mesh-tfstate"
+    prefix = "relay-fleet"
+  }
 }

@@ -13,7 +13,7 @@ locals {
   example_domain   = "example.${trimsuffix(var.dns_zone_dns_name, ".")}" # example.hopme.sh
   example_ar_image = "us-central1-docker.pkg.dev/${var.project_id}/hop/hop-example"
   example_image = (
-    length(var.spacelift_commit_sha) >= 7 ? "${local.example_ar_image}:${substr(var.spacelift_commit_sha, 0, 7)}" :
+    length(var.deploy_image_sha) >= 7 ? "${local.example_ar_image}:${substr(var.deploy_image_sha, 0, 7)}" :
     "${local.example_ar_image}:latest"
   )
   # The endpoint's published Hop address (base58), computed once from its identity seed via
