@@ -5,6 +5,7 @@
 
 import Foundation
 import Hop
+import HopContract
 
 /// A trivial in-memory bearer: it "links up" with a fixed partner on start, and `send` hands bytes
 /// straight to the partner as inbound. Exercises exactly the Bearer/LinkSink/Manager/Runtime path a

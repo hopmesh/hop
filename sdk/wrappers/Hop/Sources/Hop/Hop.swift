@@ -6,14 +6,7 @@
 
 import CHop
 import Foundation
-
-/// Which side opened a bearer link (the Noise role).
-public enum HopRole {
-    case dialer    // we dialed out → Noise initiator
-    case acceptor  // a peer connected in → Noise responder
-
-    fileprivate var c: HopLinkRole { self == .dialer ? HopLinkRole_Dialer : HopLinkRole_Acceptor }
-}
+import HopContract   // HopRole + the Bearer contract (pure Swift, no libhop)
 
 /// A decrypted message delivered to this node.
 public struct HopMessage {
@@ -89,7 +82,9 @@ public final class HopNode {
 
     // MARK: bearer seam (the part a Bearer drives)
 
-    public func linkUp(_ link: UInt64, role: HopRole) { hop_link_up(raw, link, role.c) }
+    public func linkUp(_ link: UInt64, role: HopRole) {
+        hop_link_up(raw, link, role == .dialer ? HopLinkRole_Dialer : HopLinkRole_Acceptor)
+    }
     public func linkDown(_ link: UInt64) { hop_link_down(raw, link) }
 
     public func bytesReceived(_ link: UInt64, _ bytes: Data) {
