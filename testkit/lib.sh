@@ -45,6 +45,9 @@ tk_send() {                 # tk_send <from-id> <to-addr> <marker>
   plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
   if [ "$plat" = android ]; then
     adb -s "$handle" shell "am start -a android.intent.action.VIEW -d 'hopdemo://send?to=$to&text=$mark'" >/dev/null 2>&1
+    # Android coalesces VIEW intents fired back-to-back (LAUNCH_MULTIPLE) and silently drops
+    # one when sends are <~100ms apart. Settle between consecutive sends so each registers.
+    sleep 0.7
   else
     # cold relaunch with the send command in the env; the app fires it ~3s post-launch.
     xcrun devicectl device process launch --device "$handle" --terminate-existing \
