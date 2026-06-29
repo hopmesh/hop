@@ -38,11 +38,23 @@ const struct HopNode *hop_node_open(const char *db_path,
 // Create a node with a fresh identity and ephemeral (in-memory) storage. Free with `hop_node_free`.
 const struct HopNode *hop_node_new(void);
 
+// Open a node from a saved 32-byte identity `secret` with ephemeral (in-memory) storage. Pass
+// NULL/0 for a fresh identity. Free with `hop_node_free`.
+const struct HopNode *hop_node_with_secret(const uint8_t *secret, uintptr_t secret_len);
+
 // Free a node handle returned by any constructor. Safe to pass NULL.
 void hop_node_free(const struct HopNode *node);
 
 // Write this node's 32-byte address into `out` (must have room for 32 bytes). False on NULL.
 bool hop_node_address(const struct HopNode *node, uint8_t *out);
+
+// Write this node's 32-byte identity secret into `out` (room for 32 bytes) so the host can persist
+// it (e.g. in the Keychain) and restore the node later with `hop_node_with_secret`/`hop_node_open`.
+// Returns the number of bytes written (32), or 0 on NULL.
+uintptr_t hop_node_secret(const struct HopNode *node, uint8_t *out);
+
+// Set the display name this node reports via presence / `hop.identify` (DESIGN.md §29).
+void hop_node_set_name(const struct HopNode *node, const char *name);
 
 // Advance time: expire adverts, retransmit unacked bundles, prune dedup. Call ~1 Hz.
 void hop_node_tick(const struct HopNode *node, uint64_t now_ms);
@@ -86,6 +98,42 @@ void hop_poll_inbox(const struct HopNode *node, void (*sink)(void *ctx,
                                                              uintptr_t body_len,
                                                              uint8_t hops,
                                                              uint64_t created_at), void *ctx);
+
+// Send to a DIRECTLY-CONNECTED peer `dst` (32 bytes), sealed with the key learned at handshake
+// (the directed §27 path; prefer `hop_send_message` unless you specifically want a directed send).
+// On success writes the 32-byte bundle id to `out_id` (may be NULL) and returns true; false if not
+// connected to that peer or on error.
+bool hop_send_to(const struct HopNode *node,
+                 const uint8_t *dst,
+                 const char *content_type,
+                 const uint8_t *body,
+                 uintptr_t body_len,
+                 bool request_ack,
+                 uint8_t *out_id);
+
+// Delivery status of a message we sent, by its 32-byte bundle `id`. Writes each field to its
+// (nullable) out-param: `relayed` = distinct peers handed a copy; `delivered` = destination
+// confirmed; `hops`/`ms` = the FORWARD-path (A→B) length + latency the destination reported (§39
+// private ACK), 0 until delivered. Returns false on NULL node/id.
+bool hop_message_status(const struct HopNode *node,
+                        const uint8_t *id,
+                        uint32_t *out_relayed,
+                        bool *out_delivered,
+                        uint8_t *out_hops,
+                        uint32_t *out_ms);
+
+// True iff messaging `addr` (32 bytes) is forward-secret — a ratchet session exists (DESIGN.md §25)
+// rather than a static seal. Drives a lock indicator. False on NULL.
+bool hop_is_secured(const struct HopNode *node,
+                    const uint8_t *addr);
+
+// Encode a 32-byte `addr` as base58 into the C buffer `out` (`out_cap` bytes incl. NUL). Returns
+// the string length (excluding NUL), or 0 on NULL / insufficient capacity.
+uintptr_t hop_address_to_base58(const uint8_t *addr, char *out, uintptr_t out_cap);
+
+// Decode a base58 address C string `text` into `out32` (32 bytes). Returns true iff it decoded to
+// exactly 32 bytes.
+bool hop_address_from_base58(const char *text, uint8_t *out32);
 
 // Send a message to the 32-byte address `dst` — untraceable by default (DESIGN.md §39).
 // `content_type` is a UTF-8 C string (e.g. "text/plain"); `body`/`body_len` is the payload. If
