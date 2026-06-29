@@ -10,5 +10,5 @@ cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
 "$CRATE/regen-header.sh"
 
 LIBDIR="$ROOT/target/debug"
-clang "$HERE/smoke.c" -I "$CRATE/include" -L "$LIBDIR" -lhop_ffi -Wl,-rpath,"$LIBDIR" -o "$HERE/smoke"
+clang "$HERE/smoke.c" -I "$CRATE/include" -L "$LIBDIR" -lhop -Wl,-rpath,"$LIBDIR" -o "$HERE/smoke"
 "$HERE/smoke"

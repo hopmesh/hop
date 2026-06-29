@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CRATE=hop-ffi
-LIB=libhop_ffi.a
+LIB=libhop.a
 PKG=apple/HopDriver
 OUT=apple/HopDriver/.build-staging   # scratch for headers + generated swift
 T=target

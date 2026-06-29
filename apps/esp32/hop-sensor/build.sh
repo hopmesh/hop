@@ -9,5 +9,5 @@ LIBDIR="$ROOT/target/debug"
 cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
 "$ROOT/crates/hop-ffi/regen-header.sh" >/dev/null
 
-clang "$HERE/main.c" -I "$ROOT/sdk" -L "$LIBDIR" -lhop_ffi -Wl,-rpath,"$LIBDIR" -o "$HERE/hop-sensor"
+clang "$HERE/main.c" -I "$ROOT/sdk" -L "$LIBDIR" -lhop -Wl,-rpath,"$LIBDIR" -o "$HERE/hop-sensor"
 "$HERE/hop-sensor"

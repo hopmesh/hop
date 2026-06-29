@@ -1,6 +1,6 @@
 // Hop — the idiomatic Kotlin face of libhop's C ABI (hop.h), via JNA. Same role as the Swift `Hop`
 // wrapper: a thin, type-safe shim over the generated C contract (so it can't drift). Android bearers
-// and the app use this; on Android the same .so is loaded, here (host JVM) it's libhop_ffi.dylib.
+// and the app use this; on Android the same .so is loaded, here (host JVM) it is libhop.dylib.
 
 package sh.hop
 
@@ -49,7 +49,7 @@ internal fun interface InboxSink : Callback {
 /** A running Hop node. Owns the libhop handle. */
 class HopNode private constructor(internal val raw: Pointer) {
     companion object {
-        internal val C: CHop = Native.load("hop_ffi", CHop::class.java)
+        internal val C: CHop = Native.load("hop", CHop::class.java)
         fun ephemeral(): HopNode = HopNode(C.hop_node_new() ?: error("hop_node_new returned null"))
     }
 
