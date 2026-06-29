@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 cd "$ROOT"
-CRATE=hop-ffi
+CRATE=hop
 LIB=libhop.a
 T=target
 
@@ -15,7 +15,7 @@ echo "▸ ensuring Apple Rust targets"
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
                   aarch64-apple-darwin x86_64-apple-darwin >/dev/null
 
-core/hop-ffi/regen-header.sh >/dev/null   # hop.h current
+core/hop/regen-header.sh >/dev/null   # hop.h current
 
 echo "▸ cross-compiling libhop.a (release) for each slice"
 for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin; do
@@ -24,7 +24,7 @@ done
 
 # The xcframework header dir: hop.h + a module map naming the module CHop (what Hop.swift imports).
 HDR="$T/libhop-headers"; rm -rf "$HDR"; mkdir -p "$HDR"
-cp core/hop-ffi/include/hop.h "$HDR/hop.h"
+cp core/hop/include/hop.h "$HDR/hop.h"
 cat > "$HDR/module.modulemap" <<'EOF'
 module CHop {
     header "hop.h"

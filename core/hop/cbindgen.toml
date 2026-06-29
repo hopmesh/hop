@@ -1,5 +1,5 @@
 # cbindgen config for libhop — generates include/hop.h (the C ABI / universal client SDK).
-# Run:  cbindgen --config cbindgen.toml --crate hop-ffi --output include/hop.h
+# Run:  cbindgen --config cbindgen.toml --crate hop --output include/hop.h
 # Only the `cabi` module's `#[no_mangle] extern "C"` items + HopLinkRole are exported; the UniFFI
 # surface and hop-core internals are NOT (parse_deps = false, and only C-ABI symbols are no_mangle).
 

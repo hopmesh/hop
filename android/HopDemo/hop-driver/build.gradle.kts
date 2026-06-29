@@ -26,7 +26,7 @@ android {
 
 dependencies {
     // UniFFI-generated Kotlin uses JNA; the @aar variant bundles its native libs. `api` so the
-    // generated `uniffi.hop_ffi.*` types stay usable from consumers (the app references them).
+    // generated `uniffi.hop.*` types stay usable from consumers (the app references them).
     api("net.java.dev.jna:jna:5.14.0@aar")
 
     // The bearer exposes Compose snapshot state (mutableStateOf/…), so the runtime is part of the

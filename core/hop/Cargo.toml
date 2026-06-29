@@ -1,5 +1,5 @@
 [package]
-name = "hop-ffi"
+name = "hop"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -8,8 +8,7 @@ description = "Cross-platform bindings for Hop (Swift/Kotlin via UniFFI — DESI
 
 [lib]
 # The compiled artifact is `libhop` (the C ABI / universal SDK — see src/cabi.rs + sdk/hop.h),
-# even though the crate is still named hop-ffi (the UniFFI namespace stays `hop_ffi` until the
-# crate is renamed during the tree migration; build-aar.sh keeps a libhop_ffi.so for UniFFI).
+# The crate is `hop` and the UniFFI namespace is `hop` (uniffi.hop), matching the lib.
 name = "hop"
 # cdylib/staticlib are what the iOS/Android builds link against; lib keeps it
 # usable from Rust tests and the workspace.

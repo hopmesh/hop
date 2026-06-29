@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The generated bindings + headers now live in the HopDriver package (build-xcframework.sh output).
-BINDINGS=apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
+BINDINGS=apple/HopDriver/Sources/HopFFIBindings/hop.swift
 INC=apple/HopDriver/Frameworks/HopFFI.xcframework/macos-arm64_x86_64/Headers
 [ -f "$BINDINGS" ] || { echo "run apple/build-xcframework.sh first"; exit 1; }
 cargo build -p hop-ffi >/dev/null   # host staticlib at target/debug/libhop_ffi.a
@@ -14,7 +14,7 @@ cargo build -p hop-ffi >/dev/null   # host staticlib at target/debug/libhop_ffi.
 WORK=$(mktemp -d)
 cp "$BINDINGS" "$WORK/"
 mkdir -p "$WORK/inc"
-cp "$INC/hop_ffiFFI.h" "$WORK/inc/"
+cp "$INC/hopFFI.h" "$WORK/inc/"
 cp "$INC/module.modulemap" "$WORK/inc/"
 
 cat > "$WORK/main.swift" <<'SWIFT'
@@ -49,5 +49,5 @@ print("✅ Swift → Rust FFI: node B received \"\(t)\" from a \(inbox[0].from.c
 SWIFT
 
 swiftc -O -I "$WORK/inc" -L target/debug -lhop_ffi \
-  "$WORK/hop_ffi.swift" "$WORK/main.swift" -o "$WORK/hoptest"
+  "$WORK/hop.swift" "$WORK/main.swift" -o "$WORK/hoptest"
 "$WORK/hoptest"

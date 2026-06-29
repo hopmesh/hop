@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 CRATE="$(pwd)"
 ROOT="$(cd "$CRATE/../.." && pwd)"
 
-cbindgen --config cbindgen.toml --crate hop-ffi --output include/hop.h
+cbindgen --config cbindgen.toml --crate hop --output include/hop.h
 echo "regenerated include/hop.h"
 
 # Publish copies for the SDK + its language wrappers (kept in lockstep; consumers don't run cbindgen).

@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Files that form the contract + its language faces (NOT the bearer implementations).
 TARGETS=(
   "$ROOT/sdk/hop.h"
-  "$ROOT/core/hop-ffi/include/hop.h"
+  "$ROOT/core/hop/include/hop.h"
   "$ROOT/sdk/wrappers/Hop/Sources/Hop"
   "$ROOT/sdk/wrappers/kotlin/src/main/kotlin/sh/hop"
 )

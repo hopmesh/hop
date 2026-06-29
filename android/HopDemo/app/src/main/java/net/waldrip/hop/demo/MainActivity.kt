@@ -496,11 +496,11 @@ fun HpsAddPanel(bearer: HopBearer, onDone: () -> Unit) {
     var mode by remember { mutableStateOf(0) }
     var newPath by remember { mutableStateOf("") }
     var isChannel by remember { mutableStateOf(true) }
-    var access by remember { mutableStateOf(uniffi.hop_ffi.HpsAccess.OPEN) }
+    var access by remember { mutableStateOf(uniffi.hop.HpsAccess.OPEN) }
     var discoverable by remember { mutableStateOf(false) }
     var subHost by remember { mutableStateOf("") }
     var subPath by remember { mutableStateOf("") }
-    var found by remember { mutableStateOf(listOf<uniffi.hop_ffi.HpsTopicInfo>()) }
+    var found by remember { mutableStateOf(listOf<uniffi.hop.HpsTopicInfo>()) }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item {
@@ -527,11 +527,11 @@ fun HpsAddPanel(bearer: HopBearer, onDone: () -> Unit) {
                     }
                     Text("Access", style = MaterialTheme.typography.bodySmall)
                     Row {
-                        FilterChip(access == uniffi.hop_ffi.HpsAccess.OPEN, { access = uniffi.hop_ffi.HpsAccess.OPEN }, label = { Text("Open") })
+                        FilterChip(access == uniffi.hop.HpsAccess.OPEN, { access = uniffi.hop.HpsAccess.OPEN }, label = { Text("Open") })
                         Spacer(Modifier.width(6.dp))
-                        FilterChip(access == uniffi.hop_ffi.HpsAccess.REQUEST_TO_JOIN, { access = uniffi.hop_ffi.HpsAccess.REQUEST_TO_JOIN }, label = { Text("Request") })
+                        FilterChip(access == uniffi.hop.HpsAccess.REQUEST_TO_JOIN, { access = uniffi.hop.HpsAccess.REQUEST_TO_JOIN }, label = { Text("Request") })
                         Spacer(Modifier.width(6.dp))
-                        FilterChip(access == uniffi.hop_ffi.HpsAccess.INVITE, { access = uniffi.hop_ffi.HpsAccess.INVITE }, label = { Text("Invite") })
+                        FilterChip(access == uniffi.hop.HpsAccess.INVITE, { access = uniffi.hop.HpsAccess.INVITE }, label = { Text("Invite") })
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(discoverable, { discoverable = it }); Text("Discoverable nearby")
@@ -552,10 +552,10 @@ fun HpsAddPanel(bearer: HopBearer, onDone: () -> Unit) {
                     found.forEach { t ->
                         ListItem(
                             headlineContent = { Text(t.path) },
-                            supportingContent = { Text((if (t.kind == uniffi.hop_ffi.HpsKind.CHANNEL) "channel" else "service") + " · " + HopBearer.shortHex(t.host)) },
+                            supportingContent = { Text((if (t.kind == uniffi.hop.HpsKind.CHANNEL) "channel" else "service") + " · " + HopBearer.shortHex(t.host)) },
                             trailingContent = {
                                 TextButton(onClick = { bearer.hpsJoin(t); onDone() }) {
-                                    Text(if (t.access == uniffi.hop_ffi.HpsAccess.OPEN) "Join" else "Request")
+                                    Text(if (t.access == uniffi.hop.HpsAccess.OPEN) "Join" else "Request")
                                 }
                             },
                         )
