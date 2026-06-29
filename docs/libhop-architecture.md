@@ -46,6 +46,9 @@ The whole spine is proven end to end, **four languages against one generated hea
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
 | Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}` | each an independent SwiftPM package, `swift build` clean |
 | Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + all 4 bearers; whole stack `swift build`s together |
+| Bearers (Android) | `bearers/android/bearer-{ble,lan,wifidirect,relay}` | each an independent Gradle module on `sh.hop`; all `compileDebugKotlin` clean (AGP 8.5/Kotlin 1.9/gradle 8.9) |
+| Driver (Android) | `drivers/android/hop-driver` | thin glue composing the node + all 4 bearers; `compileDebugKotlin` clean |
+| Tree | `core/` `services/` `examples/` `sdk/` `bearers/` `drivers/` | north-star layout (`git mv` done), Cargo + Dockerfiles + Cloud Build updated, all green |
 
 Run it all: `crates/hop-ffi/examples/smoke.sh`, `sdk/wrappers/Hop/smoke.sh`,
 `sdk/wrappers/kotlin/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (128 + crates green).
@@ -59,27 +62,26 @@ tree migration; `build-aar.sh` keeps a `libhop_ffi.so` copy so legacy UniFFI sti
 `HopRuntime` and runs the real protocol — the four real radios conform to the same `Bearer` protocol,
 so they behave identically once wired to hardware.
 
-**Done since the first handoff:** tree migration (`crates/`→`core/`+`services/`+`examples/`, Cargo +
-Dockerfiles + Cloud Build trigger updated, all green); the **libhop iOS xcframework** (the Hop package
-is a binaryTarget — the whole Apple stack builds+links for ios-arm64 + sim + macOS; `HopBearerBle`
-compiles for `arm64-apple-ios` incl. its CoreLocation/beacon wake); the CI **contract-purity guard**.
+**The complete SDK→bearers→driver stack is built + compile-verified on BOTH platforms** — that's the
+whole architecture. What's left is wiring the two *shipping apps* to it.
 
-## What REMAINS — the two app cutovers (need device runtime to verify, not just compile)
+## What REMAINS — the two app UI cutovers (only verifiable on a device)
 
-These are app data-layer rewrites: compile-checking is possible but **correctness** (UI, messaging,
-persistence, the actual radios + the killed-app beacon wake) can only be verified on hardware, and
-doing them blind would replace the *working* apps with unverified code. So they're for us together:
+Both are rewrites of the **working** apps' data layers onto the new driver. Compile-checking is
+possible, but **correctness** — UI updates, message flow, persistence, the actual radios, the
+killed-app beacon wake — can only be verified by running on hardware, and doing them blind would
+replace working apps with unverified code. So these are for us together, on devices:
 
-1. **Apple app cutover** — grow `drivers/apple/HopDriver` into the app-facing runtime (observable
-   messages/peers/send/automation, ported from the old `HopBearer.swift`), point `HopDemo` at it +
-   the libhop xcframework, delete the old `apple/HopBearers` + in-driver legacy. Stack is ready +
-   device-buildable; this is the data-layer port + on-device verify.
-2. **Android bearers + app** — re-home `ble-lab/android/bearer-{ble,lan,wifidirect,relay}` onto the
-   Kotlin SDK (`sh.hop`) as isolated gradle modules (a composite-build wiring `sdk/wrappers/kotlin`),
-   collapse the ~2200-line `HopBearer.kt` god-object **and delete the stale `F0900BEA` beacon** (→
-   `7ED7BEAC`). Needs the Android build env + device verify.
+1. **Apple `HopDemo` cutover** — grow `drivers/apple/HopDriver` into the app-facing observable runtime
+   (`@Published` messages/peers/secured/transports/send/automation, ported from the old
+   `HopBearer.swift`), repoint `apple/HopDemo/project.yml` at `HopDriver` + the libhop xcframework,
+   rewire `ContentView`, delete the old `apple/HopBearers` + in-driver `HopLink`/`GattDataLink`. The
+   stack is ready + device-buildable.
+2. **Android `HopDemo` cutover** — repoint the app at `drivers/android/hop-driver` + the four
+   `bearers/android` modules, collapse the ~2200-line `HopBearer.kt` god-object onto them, **delete
+   the stale `F0900BEA` beacon** (the modules carry the correct `7ED7BEAC`), drop UniFFI for the C ABI.
 3. **Crate rename** `hop-ffi`→`hop` — drops the transitional `libhop_ffi.so` copy; app-breaking for
-   `import uniffi.hop_ffi.*`, so it rides with #1/#2 once UniFFI is dropped.
+   `import uniffi.hop_ffi.*`, so it rides with #2 once UniFFI is dropped.
 4. **Full client API** — expand the C ABI as consumers need (peers, queue, hps channels,
    HTTP-over-hops). Pattern is set; add along the way.
 
