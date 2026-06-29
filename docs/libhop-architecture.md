@@ -65,33 +65,37 @@ so they behave identically once wired to hardware.
 **The complete SDK→bearers→driver stack is built + compile-verified on BOTH platforms** — that's the
 whole architecture. What's left is wiring the two *shipping apps* to it.
 
-## What REMAINS — the two app UI cutovers (only verifiable on a device)
+## App cutovers — DONE (compile-verified; on-device verify is the last step)
 
-Both are rewrites of the **working** apps' data layers onto the new driver. Compile-checking is
-possible, but **correctness** — UI updates, message flow, persistence, the actual radios, the
-killed-app beacon wake — can only be verified by running on hardware, and doing them blind would
-replace working apps with unverified code. So these are for us together, on devices:
+Both shipping apps now drive the node via UniFFI **through the new isolated bearer architecture**:
 
-1. **Apple `HopDemo` cutover** — grow `drivers/apple/HopDriver` into the app-facing observable runtime
-   (`@Published` messages/peers/secured/transports/send/automation, ported from the old
-   `HopBearer.swift`), repoint `apple/HopDemo/project.yml` at `HopDriver` + the libhop xcframework,
-   rewire `ContentView`, delete the old `apple/HopBearers` + in-driver `HopLink`/`GattDataLink`. The
-   stack is ready + device-buildable.
-2. **Android `HopDemo` cutover** — repoint the app at `drivers/android/hop-driver` + the four
-   `bearers/android` modules, collapse the ~2200-line `HopBearer.kt` god-object onto them, **delete
-   the stale `F0900BEA` beacon** (the modules carry the correct `7ED7BEAC`), drop UniFFI for the C ABI.
-3. **Crate rename** `hop-ffi`→`hop` — drops the transitional `libhop_ffi.so` copy; app-breaking for
-   `import uniffi.hop_ffi.*`, so it rides with #2 once UniFFI is dropped.
-4. **Full client API** — expand the C ABI as consumers need (peers, queue, hps channels,
-   HTTP-over-hops). Pattern is set; add along the way.
+- **Apple** — `apple/HopDriver` depends on `bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}` +
+  `HopContract` (pure Swift, no libhop — so no double-link of the Rust core with UniFFI's xcframework).
+  `swift build` of HopDriver + hopmac + relaymac is clean; the app consumes it unchanged. The SDK was
+  split into `HopContract` (libhop-free bearer kit) + `Hop` (libhop node) to enable this.
+- **Android** — `android/HopDemo` consumes `bearers/android/bearer-{ble,lan,wifidirect,relay}` +
+  `:hop-sdk` (`sh.hop`) instead of the ble-lab modules; `:app` + `:hop-driver` `compileDebugKotlin`
+  clean. (No double-core: JNA loads libhop.so lazily and the app never makes a `sh.hop.HopNode`.)
+
+Remaining is **on-device verification** (UI, messaging, persistence, the radios, the killed-app beacon
+wake) + the bounded-cutover cleanup: delete the dormant legacy `!useSharedBearers` paths, the redundant
+facade beacon monitor, the stale `F0900BEA`, and the old `apple/HopBearers`.
+
+## Deliberately deferred (a design decision, per "UniFFI stays optional")
+
+- **Crate rename `hop-ffi`→`hop`** — would change the UniFFI namespace (`uniffi.hop_ffi`→`uniffi.hop`),
+  force a regen of both apps' bindings + break their `import uniffi.hop_ffi.*`, for ZERO functional
+  benefit while UniFFI remains the apps' node API. The lib is already `libhop`; the crate name is an
+  internal detail. Do it WITH a future decision to drop UniFFI — not before.
+- **Full client API** — expand the C ABI as consumers need (peers, queue, hps channels,
+  HTTP-over-hops). Pattern is set; add along the way.
 
 ## Deferred questions
 
 - ~~SwiftPM package id~~ → **done**: renamed `sdk/wrappers/Hop` (`package: "Hop"`).
 - ~~libhop naming~~ → **done**: cdylib/staticlib is now `libhop`.
-- **Crate rename** `hop-ffi` → `hop` (so the UniFFI namespace + Android `import uniffi.hop_ffi.*`
-  become `hop`, dropping the transitional `libhop_ffi.so` copy) — do this with the tree migration +
-  device verification (app-breaking otherwise).
+- **Crate rename `hop-ffi`→`hop`** → deferred (see "Deliberately deferred" above) — it rides with a
+  future UniFFI-drop, your call.
 - **ObjC/Java idiomatic wrappers** — generate thin ones over `hop.h` now, or rely on Swift/Kotlin
   interop until a consumer needs them? (Open.)
 
