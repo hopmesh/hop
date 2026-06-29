@@ -440,6 +440,10 @@ pub struct Node<S: Store = MemoryStore> {
     /// state — pruned by `expires_at` in [`Node::tick`], superseded by a fresher/closer beacon,
     /// capped at [`MAX_RECV_GRADIENT`]. Empty ⇒ flood fallback (the privacy floor / cold start).
     recv_gradient: HashMap<Tag, GradientEntry>,
+    /// §39 P5: mailbox-tags whose recipient just (re)beaconed here — i.e. a want-beacon. The host
+    /// drains these via [`take_wanted_mailboxes`] and reloads that mailbox's durable blind spool, so
+    /// an offline-deposited private bundle is pulled the moment the recipient comes back. Bounded.
+    wanted_mailboxes: Vec<Tag>,
     /// Forward-secret sessions, by peer address (DESIGN.md §25).
     sessions: HashMap<PubKeyBytes, PeerSession>,
     /// Bundle ids we've been "vaccinated" against by a passing delivery ACK — we
@@ -646,6 +650,7 @@ impl<S: Store> Node<S> {
             prekey,
             spk_secrets,
             recv_gradient: HashMap::new(),
+            wanted_mailboxes: Vec::new(),
             sessions: HashMap::new(),
             immune: HashMap::new(),
             http_requests: Vec::new(),
@@ -1571,6 +1576,14 @@ impl<S: Store> Node<S> {
         std::mem::take(&mut self.dns_lookups)
     }
 
+    /// §39 P5: mailbox-tags that just received a want-beacon (a recipient's [`AdvertKind::RecvBeacon`]
+    /// newly accepted here), clearing the queue. The host reloads each mailbox's durable blind spool
+    /// and re-ingests the held private bundles, which P4's freshly-laid gradient then steers to the
+    /// recipient. The node does no durable I/O itself — it only surfaces the tags (cf. DNS lookups).
+    pub fn take_wanted_mailboxes(&mut self) -> Vec<Tag> {
+        std::mem::take(&mut self.wanted_mailboxes)
+    }
+
     /// Feed back the raw DoH response bodies for a domain's full DNSSEC chain (DESIGN.md §30):
     /// the `_hopaddress` TXT plus the DNSKEY/DS records for every zone up to the root. Core
     /// validates the chain to the baked-in root anchors and only then caches the resolved
@@ -2458,6 +2471,37 @@ impl<S: Store> Node<S> {
             if let Ok(bytes) = b.to_bytes() {
                 let expires = b.inner.created_at.saturating_add(b.inner.lifetime_ms as u64);
                 out.push((id, dst, bytes, expires));
+            }
+        }
+        out
+    }
+
+    /// §39 P5: private bundles we should DURABLY spool by mailbox-tag — the offline / cross-partition
+    /// case P4's live gradient can't cover. A bundle qualifies iff it's private, carries a mailbox-tag,
+    /// and we hold NO live (usable) gradient for that tag right now — so a bundle is spooled XOR
+    /// live-routed, never both (no double-send). When the recipient later beacons, the host reloads
+    /// the spool and P4 steers the reloaded copy down the freshly-laid gradient. The relay never opens
+    /// the envelope — sealed bytes verbatim. Returns (id, mailbox-tag, sealed bytes, expires_at).
+    pub fn spoolable_private_bundles(&self) -> Vec<(BundleId, Tag, Vec<u8>, u64)> {
+        let now = self.now_ms;
+        let mut out = Vec::new();
+        for id in self.store.have().ids {
+            let Some(b) = self.store.get(&id) else { continue };
+            if !b.is_private() {
+                continue;
+            }
+            let Some(tag) = b.inner.private.as_ref().and_then(|p| p.mailbox) else { continue };
+            // A live, usable gradient means P4 already steers this bundle — don't also spool it.
+            // (Same liveness predicate as the forward gate in offer_bundles_to_link.)
+            let live = self.recv_gradient.get(&tag).is_some_and(|e| {
+                e.expires_at > now && matches!(self.links.get(&e.inbound), Some(LinkState::Up(_)))
+            });
+            if live {
+                continue;
+            }
+            if let Ok(bytes) = b.to_bytes() {
+                let expires = b.inner.created_at.saturating_add(b.inner.lifetime_ms as u64);
+                out.push((id, tag, bytes, expires));
             }
         }
         out
@@ -3371,6 +3415,16 @@ impl<S: Store> Node<S> {
             }
         }
         self.recv_gradient.insert(mailbox, entry);
+        // §39 P5: a newly-accepted beacon IS a want-beacon — surface the mailbox so the host reloads
+        // its durable blind spool (an offline-deposited bundle is pulled the moment we hear from the
+        // recipient). Bounded so a beacon storm can't grow this unboundedly; a dropped tag just waits
+        // for the next periodic re-beacon. (Deduped against the tail to avoid a refresh re-queuing it.)
+        if self.wanted_mailboxes.last() != Some(&mailbox) {
+            if self.wanted_mailboxes.len() >= MAX_RECV_GRADIENT {
+                self.wanted_mailboxes.remove(0);
+            }
+            self.wanted_mailboxes.push(mailbox);
+        }
         // The fix for the live "held=95 never drains" bug: a freshly-laid gradient is a NEW
         // trigger to push parked private bundles toward the recipient, not just at link-up.
         self.offer_bundles_to_link(from_link);
@@ -4437,6 +4491,52 @@ mod tests {
         net.pump(&mut nodes);
         assert_eq!(nodes[2].take_inbox().len(), 1, "B still reachable after the gradient expired");
         assert!(nodes[3].store.contains(&id), "fell back to flood (decoy got a copy)");
+    }
+
+    #[test]
+    fn spool_then_want_beacon_reloads() {
+        // §39 P5: a private bundle reaching a relay with NO live gradient toward its recipient is
+        // SPOOLABLE (durably held by mailbox-tag) and NOT on the device-handoff path. When the
+        // recipient later beacons, the relay lays a gradient AND surfaces the mailbox as "wanted"
+        // (the want-beacon → the host reloads the durable spool), and the bundle is no longer
+        // spoolable — P4 now owns it (spool XOR live-route, no double-send).
+        let bob = Identity::generate();
+        let bob_mailbox = crypto::mailbox_tag(&bob.derive_prekey().public);
+
+        // A private bundle sealed to bob + stamped with bob's mailbox-tag (as dispatch_private does).
+        let pb = Bundle::create_private(
+            &bob.address(),
+            &bob.derive_prekey().public,
+            &Payload::PeerMessage { content_type: "t".into(), body: b"offline".to_vec() },
+            Some(bob_mailbox),
+            None,
+            BundleOpts::default(),
+        )
+        .unwrap();
+        let pid = pb.id();
+
+        let mut relay = Node::new(Identity::generate());
+        relay.ingest(pb);
+
+        // No recipient, no beacon → spoolable by mailbox-tag; and NOT on the device handoff path.
+        let s = relay.spoolable_private_bundles();
+        assert_eq!(s.len(), 1, "private bundle with no live gradient is spoolable");
+        assert_eq!((s[0].0, s[0].1), (pid, bob_mailbox), "keyed by bob's mailbox-tag");
+        assert!(relay.undeliverable_device_bundles().is_empty(), "a Broadcast private bundle never rides the device handoff");
+
+        // Bob comes online behind the relay and beacons (the want-beacon).
+        let mut nodes = [relay, Node::from_identity_secret(&bob.to_secret_bytes())];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1); // relay <-> bob
+        nodes[1].publish_recv_beacon().unwrap();
+        net.pump(&mut nodes);
+
+        // The relay laid a gradient toward bob AND surfaced his mailbox as a want-beacon (pull trigger).
+        assert!(nodes[0].recv_gradient.contains_key(&bob_mailbox), "gradient laid from the beacon");
+        assert!(nodes[0].take_wanted_mailboxes().contains(&bob_mailbox), "beacon surfaced the wanted mailbox");
+        assert!(nodes[0].take_wanted_mailboxes().is_empty(), "wanted drains once");
+        // Live gradient now → the bundle is no longer spooled (P4 owns it).
+        assert!(nodes[0].spoolable_private_bundles().is_empty(), "live gradient → not spooled (spool XOR route)");
     }
 
     #[test]

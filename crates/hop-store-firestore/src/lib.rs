@@ -564,6 +564,94 @@ impl Presence {
             Err(format!("put_bundle_to {}", resp.status()))
         }
     }
+
+    /// §39 P5 blind spool: durably hold a PRIVATE bundle keyed by its **mailbox-tag** (base58 of the
+    /// 16-byte tag) — a rotatable pseudonym, NOT an address — so an offline recipient can pull it on
+    /// return. A separate collection from the device-address inbox (`relays/{node}`); the relay never
+    /// opens the sealed envelope. The recipient is unlinkable here except by the mailbox-tag while it
+    /// lives (the §39 cost of being pull-reachable offline). Swept at its own §8 lifetime by a
+    /// Firestore TTL policy on `expiresAt` over the `mailboxes` collection group (zero compute).
+    pub fn spool_to_mailbox(
+        &self,
+        tag_b58: &str,
+        id: &BundleId,
+        data: &[u8],
+        expires_at: u64,
+    ) -> Result<(), String> {
+        let base = "https://firestore.googleapis.com/v1";
+        let doc = bs58::encode(id).into_string();
+        let url = format!(
+            "{base}/projects/{}/databases/(default)/documents/mailboxes/{tag_b58}/bundles/{doc}",
+            self.project
+        );
+        let body = doc_json(data, expires_at);
+        let token = self.token()?;
+        let resp =
+            self.http.patch(&url).bearer_auth(token).json(&body).send().map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("spool_to_mailbox {}", resp.status()))
+        }
+    }
+
+    /// §39 P5: list a mailbox-tag's spooled private bundles, as `(sealed bytes, expires_at)`. Pulled
+    /// when that recipient's want-beacon arrives (it then re-ingests them; P4's gradient steers each).
+    pub fn list_mailbox(&self, tag_b58: &str) -> Result<Vec<(Vec<u8>, u64)>, String> {
+        let base = "https://firestore.googleapis.com/v1";
+        let collection_url = format!(
+            "{base}/projects/{}/databases/(default)/documents/mailboxes/{tag_b58}/bundles",
+            self.project
+        );
+        let token = self.token()?;
+        let mut out = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut url = format!("{collection_url}?pageSize=300");
+            if let Some(t) = &page_token {
+                url.push_str(&format!("&pageToken={t}"));
+            }
+            let resp =
+                self.http.get(&url).bearer_auth(&token).send().map_err(|e| e.to_string())?;
+            if resp.status().as_u16() == 404 {
+                return Ok(out); // mailbox empty / never spooled
+            }
+            if !resp.status().is_success() {
+                return Err(format!("list_mailbox {}", resp.status()));
+            }
+            let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+            if let Some(docs) = v["documents"].as_array() {
+                for d in docs {
+                    if let Some(pair) = parse_doc(d) {
+                        out.push(pair);
+                    }
+                }
+            }
+            match v["nextPageToken"].as_str() {
+                Some(t) if !t.is_empty() => page_token = Some(t.to_string()),
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// §39 P5: drop one spooled bundle after it's been pulled (the recipient is now reachable, so
+    /// P4's live gradient delivers it). Idempotent — a 404 (already gone / TTL-swept) is fine.
+    pub fn delete_mailbox_bundle(&self, tag_b58: &str, id: &BundleId) -> Result<(), String> {
+        let base = "https://firestore.googleapis.com/v1";
+        let doc = bs58::encode(id).into_string();
+        let url = format!(
+            "{base}/projects/{}/databases/(default)/documents/mailboxes/{tag_b58}/bundles/{doc}",
+            self.project
+        );
+        let token = self.token()?;
+        let resp = self.http.delete(&url).bearer_auth(token).send().map_err(|e| e.to_string())?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(format!("delete_mailbox_bundle {}", resp.status()))
+        }
+    }
 }
 
 /// Build a Firestore document body for a device presence record.

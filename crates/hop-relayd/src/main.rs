@@ -434,6 +434,8 @@ fn main() {
                     now_ms: now,
                     devices: node.peers(),
                     undeliverable: node.undeliverable_device_bundles(),
+                    spool: node.spoolable_private_bundles(),
+                    wanted: node.take_wanted_mailboxes(),
                 });
             }
         }
@@ -862,7 +864,7 @@ mod handoff {
     use std::time::Duration;
 
     use hop_core::bundle::BundleId;
-    use hop_core::crypto::PubKeyBytes;
+    use hop_core::crypto::{PubKeyBytes, Tag};
     use hop_store_firestore::Presence;
 
     use super::{region_node_b58, Ev};
@@ -879,6 +881,12 @@ mod handoff {
         pub now_ms: u64,
         pub devices: Vec<PubKeyBytes>,
         pub undeliverable: Vec<(BundleId, PubKeyBytes, Vec<u8>, u64)>,
+        /// §39 P5: private bundles with no live recv-gradient — durably spool each by its
+        /// mailbox-tag (a rotatable pseudonym) so an offline recipient can pull it on return.
+        pub spool: Vec<(BundleId, Tag, Vec<u8>, u64)>,
+        /// §39 P5: mailbox-tags whose recv-gradient we just (re)laid — the want-beacon. That
+        /// recipient is reachable again, so pull anything spooled under each tag and re-ingest.
+        pub wanted: Vec<Tag>,
     }
 
     /// Start the presence/handoff worker and the warm-reload thread. Returns the channel
@@ -900,13 +908,24 @@ mod handoff {
             let presence = Presence::new(&project);
             let region = region.clone();
             let known_relays = known_relays.clone();
+            let ev_tx = ev_tx.clone();
             std::thread::spawn(move || {
                 // Bundles already handed off (id → dest region), so we don't re-write them
                 // every cycle. Bounded reset keeps it from growing unboundedly.
                 let mut handed: HashSet<(BundleId, String)> = HashSet::new();
+                // §39 P5: private bundles already spooled to a mailbox (id → tag), and bundles
+                // already pulled back from a mailbox (id), so neither is redone every cycle.
+                let mut spooled: HashSet<(BundleId, Tag)> = HashSet::new();
+                let mut pulled: HashSet<BundleId> = HashSet::new();
                 for snap in snap_rx {
                     if handed.len() > 100_000 {
                         handed.clear();
+                    }
+                    if spooled.len() > 100_000 {
+                        spooled.clear();
+                    }
+                    if pulled.len() > 100_000 {
+                        pulled.clear();
                     }
                     // Record presence for connected device peers (skip peer relays).
                     for dev in &snap.devices {
@@ -950,6 +969,64 @@ mod handoff {
                                 super::short_b58(id),
                                 super::short_b58(dst)
                             ));
+                        }
+                    }
+
+                    // §39 P5 blind spool: a private bundle with no live recv-gradient anywhere
+                    // we can see is durably held by its mailbox-tag — a rotatable pseudonym, not
+                    // an address — so an offline recipient can pull it when they next surface.
+                    // (Spool XOR live-route: the driver only lists bundles whose gradient is
+                    // absent/expired, so we never double-store something already in flight.)
+                    for (id, tag, bytes, expires) in &snap.spool {
+                        if !spooled.insert((*id, *tag)) {
+                            continue; // already spooled this cycle-set
+                        }
+                        let tag_b58 = bs58::encode(tag).into_string();
+                        if let Err(e) = presence.spool_to_mailbox(&tag_b58, id, bytes, *expires) {
+                            super::netlog(format!(
+                                "spool FAILED: msg {} → mailbox {}: {e}",
+                                super::short_b58(id),
+                                &tag_b58[..tag_b58.len().min(8)]
+                            ));
+                            spooled.remove(&(*id, *tag)); // let a later cycle retry
+                        } else {
+                            super::netlog(format!(
+                                "spool: msg {} → mailbox {}",
+                                super::short_b58(id),
+                                &tag_b58[..tag_b58.len().min(8)]
+                            ));
+                        }
+                    }
+
+                    // §39 P5 want-beacon: a mailbox-tag whose recv-gradient we just laid means
+                    // that recipient is reachable again. Pull anything spooled under the tag and
+                    // re-ingest it — P4's live gradient then steers each bundle down to them —
+                    // and drop the spool copy (idempotent; TTL sweeps anything we miss).
+                    for tag in &snap.wanted {
+                        let tag_b58 = bs58::encode(tag).into_string();
+                        let held = match presence.list_mailbox(&tag_b58) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                eprintln!("spool: list_mailbox failed: {e}");
+                                continue;
+                            }
+                        };
+                        for (bytes, _expires) in held {
+                            let Ok(b) = hop_core::bundle::Bundle::from_bytes(&bytes) else {
+                                continue;
+                            };
+                            let id = b.id();
+                            if pulled.insert(id) {
+                                super::netlog(format!(
+                                    "want-beacon: pulled msg {} from mailbox {}",
+                                    super::short_b58(&id),
+                                    &tag_b58[..tag_b58.len().min(8)]
+                                ));
+                                if ev_tx.send(Ev::Ingest(bytes)).is_err() {
+                                    return; // driver gone
+                                }
+                            }
+                            let _ = presence.delete_mailbox_bundle(&tag_b58, &id);
                         }
                     }
                 }
