@@ -19,5 +19,6 @@ let package = Package(
         .systemLibrary(name: "CHop", path: "Sources/CHop"),
         .target(name: "Hop", dependencies: ["CHop"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),
+        .executableTarget(name: "RuntimeSmoke", dependencies: ["Hop"]),
     ]
 )
