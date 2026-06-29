@@ -59,23 +59,29 @@ tree migration; `build-aar.sh` keeps a `libhop_ffi.so` copy so legacy UniFFI sti
 `HopRuntime` and runs the real protocol — the four real radios conform to the same `Bearer` protocol,
 so they behave identically once wired to hardware.
 
-## What REMAINS (device/toolchain-gated — for the morning, together)
+**Done since the first handoff:** tree migration (`crates/`→`core/`+`services/`+`examples/`, Cargo +
+Dockerfiles + Cloud Build trigger updated, all green); the **libhop iOS xcframework** (the Hop package
+is a binaryTarget — the whole Apple stack builds+links for ios-arm64 + sim + macOS; `HopBearerBle`
+compiles for `arm64-apple-ios` incl. its CoreLocation/beacon wake); the CI **contract-purity guard**.
 
-1. **Apple app cutover** — wire `HopDemo` to `HopRuntime` + the four `bearers/apple` packages, delete
-   the old `apple/HopBearers` + the in-driver legacy (`HopLink`/`GattDataLink`). Needs an **xcframework
-   of libhop for iOS-arm64** (extend `apple/build-xcframework.sh`) and **on-device verification**
-   (foreground link + the killed-app beacon wake, now owned by `HopBearerBle`).
-2. **Android bearers + app** — mirror the Apple work: re-home the Android transports
-   (`bearer-ble/lan/wifidirect/relay`) onto the Kotlin SDK as isolated gradle modules; delete the
-   ~2200-line `HopBearer.kt` god-object **and the stale `F0900BEA` beacon UUID** (use `7ED7BEAC`);
-   wire the app. Needs the Android toolchain + device verification.
-3. **Tree migration** — `git mv` `crates/`→`core/`+`services/`, etc., into the layout above; update the
-   Cargo workspace + package paths; keep every build green. Mechanical but touches the shipping build,
-   so do it with builds running.
-4. **Full client API** — expand the C ABI as needed (peers list, queue, hps channels, HTTP-over-hops,
-   identity rotation). The pattern is set; add along the way.
-5. **CI guardrail** — a lint that fails if any transport symbol (CBUUID/BluetoothGatt/CLBeaconRegion/…)
-   appears in the SDK contract or `hop-ffi` C-ABI surface.
+## What REMAINS — the two app cutovers (need device runtime to verify, not just compile)
+
+These are app data-layer rewrites: compile-checking is possible but **correctness** (UI, messaging,
+persistence, the actual radios + the killed-app beacon wake) can only be verified on hardware, and
+doing them blind would replace the *working* apps with unverified code. So they're for us together:
+
+1. **Apple app cutover** — grow `drivers/apple/HopDriver` into the app-facing runtime (observable
+   messages/peers/send/automation, ported from the old `HopBearer.swift`), point `HopDemo` at it +
+   the libhop xcframework, delete the old `apple/HopBearers` + in-driver legacy. Stack is ready +
+   device-buildable; this is the data-layer port + on-device verify.
+2. **Android bearers + app** — re-home `ble-lab/android/bearer-{ble,lan,wifidirect,relay}` onto the
+   Kotlin SDK (`sh.hop`) as isolated gradle modules (a composite-build wiring `sdk/wrappers/kotlin`),
+   collapse the ~2200-line `HopBearer.kt` god-object **and delete the stale `F0900BEA` beacon** (→
+   `7ED7BEAC`). Needs the Android build env + device verify.
+3. **Crate rename** `hop-ffi`→`hop` — drops the transitional `libhop_ffi.so` copy; app-breaking for
+   `import uniffi.hop_ffi.*`, so it rides with #1/#2 once UniFFI is dropped.
+4. **Full client API** — expand the C ABI as consumers need (peers, queue, hps channels,
+   HTTP-over-hops). Pattern is set; add along the way.
 
 ## Deferred questions
 
