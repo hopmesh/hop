@@ -465,7 +465,11 @@ public final class HopBearer: NSObject, ObservableObject {
         }
 
         if isFull {
+            #if os(iOS)
+            // User-notification auth is an iOS-app concern; on a bare macOS CLI host (hopmac)
+            // `UNUserNotificationCenter.current()` throws (no bundle/entitlement). Guard it.
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            #endif
 
             #if canImport(UIKit)
             // Re-publish presence with our foreground/background state on each transition
