@@ -238,7 +238,7 @@ fn is_direct(dst: &Destination, addr: &PubKeyBytes) -> bool {
     match dst {
         Destination::Device(d) => d == addr,
         Destination::AckTo(d, _) => d == addr,
-        Destination::InternetEgress | Destination::Broadcast => false,
+        Destination::Broadcast => false,
     }
 }
 
