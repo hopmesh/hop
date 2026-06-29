@@ -48,5 +48,48 @@ fun main() {
     println("${if (b58ok) "PASS" else "FAIL"}: base58 round-trip ($b58)")
 
     a.free(); b.free()
-    exitProcess(if (pass && b58ok) 0 else 1)
+
+    val rtOk = runtimeSmoke()
+    exitProcess(if (pass && b58ok && rtOk) 0 else 1)
+}
+
+/** A trivial in-memory bearer: links up with a fixed partner; `send` hands bytes straight to it. */
+private class LoopbackBearer(private val dialer: Boolean) : Bearer {
+    override var sink: LinkSink? = null
+    override val transportName = "LOOP"
+    var partner: LoopbackBearer? = null
+    override fun start() { sink?.linkUp(1, if (dialer) HopRole.DIALER else HopRole.ACCEPTOR, ByteArray(0)) }
+    override fun stop() { sink?.linkDown(1) }
+    override fun send(bytes: ByteArray, link: Long) { partner?.sink?.linkBytes(1, bytes) }  // out on A == in on B
+}
+
+/** Proves HopRuntime + a Bearer drive the node end to end (parity with Swift RuntimeSmoke). */
+private fun runtimeSmoke(): Boolean {
+    val bA = LoopbackBearer(dialer = true)
+    val bB = LoopbackBearer(dialer = false)
+    bA.partner = bB; bB.partner = bA
+
+    val rtA = HopRuntime(HopNode.ephemeral())
+    val rtB = HopRuntime(HopNode.ephemeral())
+    var now = 1_700_000_000_000L
+    rtA.tick(now); rtB.tick(now)
+    rtA.node.publishPrekey(); rtB.node.publishPrekey()
+    val bAddr = rtB.node.address()
+    rtA.register(bA); rtB.register(bB)
+    rtA.start(); rtB.start()
+
+    fun pump(rounds: Int, done: () -> Boolean = { false }): Boolean {
+        repeat(rounds) { rtA.pump(); rtB.pump(); now += 100; rtA.tick(now); rtB.tick(now); if (done()) return true }
+        return done()
+    }
+    pump(50)
+    val text = "hello through Kotlin HopRuntime + a Bearer"
+    val id = rtA.node.send(bAddr, body = text.toByteArray(), requestAck = true) ?: return false
+    var got: HopMessage? = null
+    val ok = pump(400) { rtB.node.pollInbox { got = it }; got != null && rtA.node.delivered(id) }
+    val body = got?.let { String(it.body) } ?: ""
+    val pass = ok && body == text && rtA.node.delivered(id)
+    println("${if (pass) "PASS" else "FAIL"}: runtime+bearer delivered=${rtA.node.delivered(id)} via ${rtB.bearers.transportName(1_000_000)}")
+    rtA.node.free(); rtB.node.free()
+    return pass
 }
