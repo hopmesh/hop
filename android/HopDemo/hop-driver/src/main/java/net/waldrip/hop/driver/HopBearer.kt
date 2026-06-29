@@ -226,21 +226,21 @@ class HopBearer private constructor(private val context: Context, private val co
     // surfaced through bearerSink into the SAME node seam the legacy transports use. The manager's
     // global link-id space starts HIGH (1_000_000) so its ids never collide with the ULong nextLinkId
     // (1+) / relay (20k) / LAN (40k) / Wi-Fi Direct (50k) ranges the legacy transports still mint.
-    private val bearerMgr = net.waldrip.hop.bearers.BearerManager(baseLinkId = 1_000_000L)
+    private val bearerMgr = sh.hop.BearerManager(baseLinkId = 1_000_000L)
     // One transport id shared by both bearers (the BLE/LAN HELLO id + greater-id dedup tiebreaker);
     // distinct from the Hop node address — Noise is still negotiated over the bearer's DATA frames.
-    private val bearerId = net.waldrip.hop.bearers.randomNodeId()
+    private val bearerId = sh.hop.randomNodeId()
     // Link ids currently owned by the BearerManager, so pump() routes their packets to it. CORE-CONFINED:
     // added/removed and read ONLY inside core.post (pump() also runs on core), so it needs no lock.
     private val bearerLinks = HashSet<Long>()
     // Adapts the shared BearerManager to the existing node seam. Every link from either bearer surfaces
     // here and drives node.connected/received/disconnected exactly like the legacy paths (linkId
     // mismatch: the bearer libs use Long, the node uses ULong — convert at this boundary).
-    private val bearerSink = object : net.waldrip.hop.bearers.LinkSink {
-        override fun linkUp(link: Long, role: net.waldrip.hop.bearers.LinkRole, peerId: ByteArray) {
+    private val bearerSink = object : sh.hop.LinkSink {
+        override fun linkUp(link: Long, role: sh.hop.HopRole, peerId: ByteArray) {
             core.post {
                 bearerLinks.add(link)
-                node.connected(link.toULong(), role == net.waldrip.hop.bearers.LinkRole.DIALER)
+                node.connected(link.toULong(), role == sh.hop.HopRole.DIALER)
                 pump()   // ship the dialer's queued Noise m1 immediately (mirrors legacy addLink / Apple linkUp)
             }
         }
@@ -292,7 +292,7 @@ class HopBearer private constructor(private val context: Context, private val co
             // false), point the manager at our node adapter, register BLE + LAN, and start. NOTE:
             // BleBearer is pure-L2CAP by design — the legacy GattDataLink fallback is simply not
             // started on this path (the proven clean-room transport).
-            net.waldrip.hop.bearers.appInBackground = !appActive
+            sh.hop.appInBackground = !appActive
             bearerMgr.sink = bearerSink
             bearerMgr.register(net.waldrip.hop.bearers.ble.BleBearer(context, bearerId))
             bearerMgr.register(net.waldrip.hop.bearers.lan.LanBearer(context, bearerId))
@@ -477,7 +477,7 @@ class HopBearer private constructor(private val context: Context, private val co
     fun setForeground(fg: Boolean) {
         appActive = fg
         appInForeground = fg
-        net.waldrip.hop.bearers.appInBackground = !fg   // shared bearers: relax liveness deadline when backgrounded
+        sh.hop.appInBackground = !fg   // shared bearers: relax liveness deadline when backgrounded
         if (fg) {   // the user is looking at the app → clear the unread badge + notifications
             unread.intValue = 0
             runCatching { NotificationManagerCompat.from(context).cancelAll() }

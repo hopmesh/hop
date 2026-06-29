@@ -89,7 +89,7 @@ private fun runtimeSmoke(): Boolean {
     val ok = pump(400) { rtB.node.pollInbox { got = it }; got != null && rtA.node.delivered(id) }
     val body = got?.let { String(it.body) } ?: ""
     val pass = ok && body == text && rtA.node.delivered(id)
-    println("${if (pass) "PASS" else "FAIL"}: runtime+bearer delivered=${rtA.node.delivered(id)} via ${rtB.bearers.transportName(1_000_000)}")
+    println("${if (pass) "PASS" else "FAIL"}: runtime+bearer delivered=${rtA.node.delivered(id)} via ${rtB.bearers.transportNameOf(1_000_000)}")
     rtA.node.free(); rtB.node.free()
     return pass
 }

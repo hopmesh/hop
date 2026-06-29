@@ -42,7 +42,7 @@ dependencies {
     // Shared cross-platform transport layer (ble-lab modules, wired in settings.gradle.kts). When
     // HopConfig.useSharedBearers is on (default), the driver forms BLE (pure-L2CAP) + LAN links
     // through these via one BearerManager; the legacy in-driver transports stay as a flag-off fallback.
-    implementation(project(":bearer-core"))
+    implementation(project(":hop-sdk"))
     implementation(project(":bearer-ble"))
     implementation(project(":bearer-lan"))
     // Wi-Fi Direct (Android-only) shared bearer — peer-to-peer Wi-Fi with no router, same node seam.

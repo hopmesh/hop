@@ -55,7 +55,7 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
 
     private fun snapshot(): List<Bearer> = synchronized(lock) { ArrayList(bearers) }
 
-    fun transportName(of: Long): String? = synchronized(lock) { fromGlobal[of] }?.first?.transportName
+    fun transportNameOf(link: LinkId): String? = synchronized(lock) { fromGlobal[link] }?.first?.transportName
 
     internal fun up(bearer: Bearer, local: Long, role: HopRole, peerId: ByteArray) {
         val g: Long
