@@ -159,10 +159,10 @@ public final class HopBearer: NSObject, ObservableObject {
     // THIS region so a force-quit app relaunches on proximity (BACKGROUND.md Layer C). A mismatch
     // = iOS never sees the Android beacon = no killed-app wake (was F0900BEA… — a silent bug).
     static let beaconUUID = UUID(uuidString: "7ED7BEAC-3C2A-4F19-9B8E-1A2B3C4D5E6F")!
-    public static let refreshTaskId = "net.waldrip.hop.refresh"
+    public static let refreshTaskId = "sh.hopme.refresh"
     /// Longer background-processing task (runs idle/charging) to drain a backlog — e.g. a
     /// large image accumulating across wakes (DESIGN.md §22, §28).
-    public static let processTaskId = "net.waldrip.hop.process"
+    public static let processTaskId = "sh.hopme.process"
     /// App-level presence service: title = display name (DESIGN.md §23).
     static let presenceService = "presence"
     /// MultipeerConnectivity service type for the Wi-Fi bearer (≤15 chars).

@@ -9,7 +9,7 @@
 # (Android: logcat "HOPAUTO self=" ; iOS: automation.json .self). Identity is device-seed-derived
 # and STABLE across reinstalls/data-wipes, so the map is durable.
 
-BUNDLE=net.waldrip.hop.demo
+BUNDLE=sh.hopme.demo
 
 # id        platform  handle                                  transport  displayname
 # The 4-device unattended fleet: BushidoPhone + Decklan's iPad left the network.

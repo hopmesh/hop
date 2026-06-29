@@ -11,7 +11,7 @@ plugins {
 // Per "each bearer its own lib" the framing is DUPLICATED here (not shared with :bearer-lan) — the two
 // libs only agree on the wire bytes, not on code. Names nothing about BLE or LAN.
 android {
-    namespace = "net.waldrip.hop.bearers.wifidirect"
+    namespace = "sh.hopme.bearers.wifidirect"
     compileSdk = 34
 
     defaultConfig {

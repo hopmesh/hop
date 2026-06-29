@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "net.waldrip.blelab"
+    namespace = "sh.hopme.blelab"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "net.waldrip.blelab"
+        applicationId = "sh.hopme.blelab"
         minSdk = 29 // L2CAP CoC (listen/createInsecureL2capChannel) requires API 29+
         targetSdk = 34
         versionCode = 1

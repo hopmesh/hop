@@ -7,7 +7,7 @@ plugins {
 // Holds BleBearer (+ its internal Link / Peripheral / Central): the proven dual-role L2CAP transport,
 // re-seamed behind the Bearer/LinkSink contract. Depends ONLY on :bearer-core. Names nothing about LAN.
 android {
-    namespace = "net.waldrip.hop.bearers.ble"
+    namespace = "sh.hopme.bearers.ble"
     compileSdk = 34
 
     defaultConfig {

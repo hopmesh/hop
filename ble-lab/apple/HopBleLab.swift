@@ -15,7 +15,7 @@
 // watchdog and a 3 s half-open reaper.
 //
 // Fresh UUID/bundle scheme (does NOT collide with apple/hopmac's F09… service): SERVICE 7ED70001…,
-// CHAR 7ED70002…, restore ids "hoplab.ble.*", bundle co.hopmesh.ble-lab.
+// CHAR 7ED70002…, restore ids "hoplab.ble.*", bundle sh.hopme.blelab.
 
 import Foundation
 import CoreBluetooth

@@ -11,7 +11,7 @@ plugins {
 // P2P clean room does NOT include this module: it keeps OkHttp out of the lab.) Names nothing about
 // BLE/LAN — it is written purely against the Bearer/LinkSink contract.
 android {
-    namespace = "net.waldrip.hop.bearers.relay"
+    namespace = "sh.hopme.bearers.relay"
     compileSdk = 34
 
     defaultConfig {

@@ -1,6 +1,6 @@
 name: HopBleLab
 options:
-  bundleIdPrefix: co.hopmesh
+  bundleIdPrefix: sh.hopme
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -44,7 +44,7 @@ targets:
           UIApplicationSupportsMultipleScenes: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: co.hopmesh.blelab
+        PRODUCT_BUNDLE_IDENTIFIER: sh.hopme.blelab
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"

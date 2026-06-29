@@ -4,8 +4,8 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>net.waldrip.hop.refresh</string>
-		<string>net.waldrip.hop.process</string>
+		<string>sh.hopme.refresh</string>
+		<string>sh.hopme.process</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
@@ -27,7 +27,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>net.waldrip.hop.demo.automation</string>
+			<string>sh.hopme.demo.automation</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>hopdemo</string>

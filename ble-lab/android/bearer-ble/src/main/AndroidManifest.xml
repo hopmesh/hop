@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Library module: namespace is declared in build.gradle.kts. BLE / FGS / location permissions stay in
-     the consuming app's manifest (net.waldrip.blelab) — they are NOT declared here. -->
+     the consuming app's manifest (sh.hopme.blelab) — they are NOT declared here. -->
 <manifest />
