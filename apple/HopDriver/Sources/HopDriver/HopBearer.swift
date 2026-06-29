@@ -50,8 +50,10 @@ public enum IdentityStore {
 public final class HopBearer: NSObject, ObservableObject {
     /// How a host drives the runtime. `.full` = every transport + background/advertising
     /// (the iOS app). `.centralOnly` = node + BLE central scanning only, no advertising /
-    /// Wi-Fi / LAN / relay / beacon (the headless `hopmac` macOS test node).
-    public enum Role { case full, centralOnly }
+    /// Wi-Fi / LAN / relay / beacon (the headless `hopmac` macOS test node). `.relayOnly` =
+    /// node + the cloud relay ONLY — NO BLE (no advertise/scan), no LAN, no Wi-Fi — so the only
+    /// path to a peer is the relay (a clean relay-path test client; it must NOT appear on BLE).
+    public enum Role { case full, centralOnly, relayOnly }
 
     /// The host-supplied seam that replaces the formerly-hardcoded db path, identity seed,
     /// app secret, display name and default relay (DESIGN.md §32 app isolation). The host owns
@@ -81,6 +83,10 @@ public final class HopBearer: NSObject, ObservableObject {
     private let config: Config
     /// `.full` host (iOS app) vs a stripped central-only node (hopmac).
     private var isFull: Bool { config.role == .full }
+    /// Relay-and-nothing-else: no BLE (advertise/scan), no LAN, no Wi-Fi — the relay is the only bearer.
+    private var isRelayOnly: Bool { config.role == .relayOnly }
+    /// Whether this host should connect the cloud relay link (full app, or a relay-only test client).
+    private var wantsRelay: Bool { isFull || isRelayOnly }
 
     // Threading model (Stage C — move BLE + node off main):
     //  • `core`     — the ONLY queue that may touch `node`. UniFFI HopNode is NOT thread-safe, so a
@@ -460,7 +466,7 @@ public final class HopBearer: NSObject, ObservableObject {
         // pinned a specific relay, use that single endpoint instead of the anycast default.
         // Full host only — a central-only node (hopmac) carries no relay/advertising.
         // LEGACY path only: with the shared bearers ON, the shared RelayBearer owns the cloud relay.
-        if !useSharedBearers, isFull, let relay = config.defaultRelay {
+        if !useSharedBearers, wantsRelay, let relay = config.defaultRelay {
             connectRelay(pinnedRelay ?? relay)
         }
 
@@ -505,14 +511,16 @@ public final class HopBearer: NSObject, ObservableObject {
 
         // BLE central runs in both roles (hopmac is central-only). Delegate callbacks on `bleQueue`.
         // LEGACY path only: with the shared bearers ON, BleBearer owns the central role too.
-        if !useSharedBearers {
+        // .relayOnly forms NO BLE links at all (it must not appear on Bluetooth).
+        if !useSharedBearers, !isRelayOnly {
             centralMgr = CBCentralManager(delegate: self, queue: bleQueue,
                 options: [CBCentralManagerOptionRestoreIdentifierKey: "hop.central"])
         }
 
         // Shared transport layer (HopBearers): pure-L2CAP BLE + LAN, multiplexed by one BearerManager.
-        // Runs for every role (hopmac pins this OFF to keep its legacy central-only test behavior).
-        if useSharedBearers { startSharedBearers() }
+        // Runs for every role (hopmac pins this OFF to keep its legacy central-only test behavior;
+        // .relayOnly pins it off too — relay is its only bearer).
+        if useSharedBearers, !isRelayOnly { startSharedBearers() }
 
         if isFull {
             startWiFi()
