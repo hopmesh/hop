@@ -309,6 +309,123 @@ pub unsafe extern "C" fn hop_is_secured(node: *const HopNode, addr: *const u8) -
     matches!((node_ref(node), addr.is_null()), (Some(node), false) if node.is_secured(slice(addr, 32).to_vec()))
 }
 
+// ---- hops:// request/response (a FULL round trip — HDP in BOTH directions) --------------------
+//
+// Distinct from `hop_send_message` (a one-way HDP datagram whose only "response" is the network
+// delivery-ACK): a hops:// service request expects a sealed RESPONSE back over the network. The
+// caller fires a request and later drains the reply; the host drains requests and seals responses.
+// This is what makes an ESP32 a full hops:// client (e.g. POST weather → get an ack/result body).
+
+/// Send a hops:// service request to `dst` (32 bytes): invoke `method` on `service` with `args`.
+/// The reply arrives later via `hop_poll_service_responses`. Writes the 32-byte request id to
+/// `out_id` (may be NULL) and returns true.
+#[no_mangle]
+pub unsafe extern "C" fn hop_send_service_request(
+    node: *const HopNode,
+    dst: *const u8,
+    service: *const c_char,
+    method: *const c_char,
+    args: *const u8,
+    args_len: usize,
+    out_id: *mut u8,
+) -> bool {
+    let Some(node) = node_ref(node) else {
+        return false;
+    };
+    let (Some(service), Some(method)) = (cstr(service), cstr(method)) else {
+        return false;
+    };
+    if dst.is_null() {
+        return false;
+    }
+    match node.send_service_request(
+        slice(dst, 32).to_vec(),
+        service.to_string(),
+        method.to_string(),
+        slice(args, args_len).to_vec(),
+    ) {
+        Ok(id) => {
+            if !out_id.is_null() {
+                std::ptr::copy_nonoverlapping(id.as_ptr(), out_id, id.len().min(32));
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Seal a hops:// response back to a request's caller (host side). `to` = the request's `from`;
+/// `for_request_id` = its `request_id`. Returns true on success.
+#[no_mangle]
+pub unsafe extern "C" fn hop_send_service_response(
+    node: *const HopNode,
+    to: *const u8,
+    for_request_id: *const u8,
+    status: u16,
+    body: *const u8,
+    body_len: usize,
+) -> bool {
+    let Some(node) = node_ref(node) else {
+        return false;
+    };
+    if to.is_null() || for_request_id.is_null() {
+        return false;
+    }
+    node.send_service_response(
+        slice(to, 32).to_vec(),
+        slice(for_request_id, 32).to_vec(),
+        status,
+        slice(body, body_len).to_vec(),
+    )
+    .is_ok()
+}
+
+/// Drain hops:// service requests addressed to this node (host side). Invokes
+/// `sink(ctx, from32, request_id32, service_cstr, method_cstr, args_ptr, args_len)` per request.
+#[no_mangle]
+pub unsafe extern "C" fn hop_poll_service_requests(
+    node: *const HopNode,
+    sink: Option<
+        extern "C" fn(
+            ctx: *mut c_void,
+            from: *const u8,
+            request_id: *const u8,
+            service: *const c_char,
+            method: *const c_char,
+            args: *const u8,
+            args_len: usize,
+        ),
+    >,
+    ctx: *mut c_void,
+) {
+    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+        return;
+    };
+    for r in node.take_service_requests() {
+        let svc = std::ffi::CString::new(r.service).unwrap_or_default();
+        let mth = std::ffi::CString::new(r.method).unwrap_or_default();
+        sink(ctx, r.from.as_ptr(), r.request_id.as_ptr(), svc.as_ptr(), mth.as_ptr(), r.args.as_ptr(), r.args.len());
+    }
+}
+
+/// Drain hops:// service responses sealed back to this node (caller side). Invokes
+/// `sink(ctx, from32, for_request_id32, status, body_ptr, body_len)` per response.
+#[no_mangle]
+pub unsafe extern "C" fn hop_poll_service_responses(
+    node: *const HopNode,
+    sink: Option<
+        extern "C" fn(ctx: *mut c_void, from: *const u8, for_request_id: *const u8, status: u16, body: *const u8, body_len: usize),
+    >,
+    ctx: *mut c_void,
+) {
+    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+        return;
+    };
+    for r in node.take_service_responses() {
+        sink(ctx, r.from.as_ptr(), r.for_request_id.as_ptr(), r.status, r.body.as_ptr(), r.body.len());
+    }
+}
+
 // ---- address encoding helpers (base58) --------------------------------------------------------
 
 /// Encode a 32-byte `addr` as base58 into the C buffer `out` (`out_cap` bytes incl. NUL). Returns

@@ -127,6 +127,49 @@ bool hop_message_status(const struct HopNode *node,
 bool hop_is_secured(const struct HopNode *node,
                     const uint8_t *addr);
 
+// Send a hops:// service request to `dst` (32 bytes): invoke `method` on `service` with `args`.
+// The reply arrives later via `hop_poll_service_responses`. Writes the 32-byte request id to
+// `out_id` (may be NULL) and returns true.
+bool hop_send_service_request(const struct HopNode *node,
+                              const uint8_t *dst,
+                              const char *service,
+                              const char *method,
+                              const uint8_t *args,
+                              uintptr_t args_len,
+                              uint8_t *out_id);
+
+// Seal a hops:// response back to a request's caller (host side). `to` = the request's `from`;
+// `for_request_id` = its `request_id`. Returns true on success.
+bool hop_send_service_response(const struct HopNode *node,
+                               const uint8_t *to,
+                               const uint8_t *for_request_id,
+                               uint16_t status,
+                               const uint8_t *body,
+                               uintptr_t body_len);
+
+// Drain hops:// service requests addressed to this node (host side). Invokes
+// `sink(ctx, from32, request_id32, service_cstr, method_cstr, args_ptr, args_len)` per request.
+void hop_poll_service_requests(const struct HopNode *node,
+                               void (*sink)(void *ctx,
+                                            const uint8_t *from,
+                                            const uint8_t *request_id,
+                                            const char *service,
+                                            const char *method,
+                                            const uint8_t *args,
+                                            uintptr_t args_len),
+                               void *ctx);
+
+// Drain hops:// service responses sealed back to this node (caller side). Invokes
+// `sink(ctx, from32, for_request_id32, status, body_ptr, body_len)` per response.
+void hop_poll_service_responses(const struct HopNode *node,
+                                void (*sink)(void *ctx,
+                                             const uint8_t *from,
+                                             const uint8_t *for_request_id,
+                                             uint16_t status,
+                                             const uint8_t *body,
+                                             uintptr_t body_len),
+                                void *ctx);
+
 // Encode a 32-byte `addr` as base58 into the C buffer `out` (`out_cap` bytes incl. NUL). Returns
 // the string length (excluding NUL), or 0 on NULL / insufficient capacity.
 uintptr_t hop_address_to_base58(const uint8_t *addr, char *out, uintptr_t out_cap);

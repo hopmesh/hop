@@ -35,6 +35,32 @@ static void on_message(void *ctx, const uint8_t *from, const char *content_type,
     in->got = 1;
 }
 
+// hops:// host-side: capture one inbound service request (so we can seal a reply to its caller).
+typedef struct { int got, answered; uint8_t from[32], req_id[32]; char service[64], method[64]; } ReqCap;
+
+static void on_request(void *ctx, const uint8_t *from, const uint8_t *request_id,
+                       const char *service, const char *method, const uint8_t *args, size_t args_len) {
+    (void)args; (void)args_len;
+    ReqCap *r = (ReqCap *)ctx;
+    if (r->got) return;
+    memcpy(r->from, from, 32); memcpy(r->req_id, request_id, 32);
+    snprintf(r->service, sizeof(r->service), "%s", service);
+    snprintf(r->method, sizeof(r->method), "%s", method);
+    r->got = 1;
+}
+
+// hops:// caller-side: capture the response sealed back to us.
+typedef struct { int got; uint16_t status; char body[256]; } RespCap;
+
+static void on_response(void *ctx, const uint8_t *from, const uint8_t *for_request_id,
+                        uint16_t status, const uint8_t *body, size_t body_len) {
+    (void)from; (void)for_request_id;
+    RespCap *r = (RespCap *)ctx;
+    size_t n = body_len < sizeof(r->body) - 1 ? body_len : sizeof(r->body) - 1;
+    memcpy(r->body, body, n); r->body[n] = '\0';
+    r->status = status; r->got = 1;
+}
+
 int main(void) {
     const HopNode *a = hop_node_new();
     const HopNode *b = hop_node_new();
@@ -90,7 +116,28 @@ int main(void) {
     int b58_ok = blen > 0 && hop_address_from_base58(b58, back) && memcmp(b_addr, back, 32) == 0;
     printf("%s: base58 round-trip (%s)\n", b58_ok ? "PASS" : "FAIL", b58);
 
+    // hops:// FULL round trip: A requests a service B hosts; B replies; A reads the response.
+    // (Unlike the datagram above, this needs HDP in BOTH directions.)
+    uint8_t reqId[32];
+    const char *args = "zip=80202";
+    hop_send_service_request(a, b_addr, "weather", "report", (const uint8_t *)args, strlen(args), reqId);
+    ReqCap req = {0}; RespCap resp = {0};
+    for (int i = 0; i < 400 && !resp.got; i++) {
+        hop_drain_outgoing(a, forward, &to_b);
+        hop_drain_outgoing(b, forward, &to_a);
+        hop_poll_service_requests(b, on_request, &req);     // B (host) sees the request...
+        if (req.got && !req.answered) {                     // ...and seals a response back to its caller
+            req.answered = 1;
+            const char *reply = "72F sunny";
+            hop_send_service_response(b, req.from, req.req_id, 200, (const uint8_t *)reply, strlen(reply));
+        }
+        hop_poll_service_responses(a, on_response, &resp);  // A (caller) reads the reply
+        now += 100; hop_node_tick(a, now); hop_node_tick(b, now);
+    }
+    int svc_ok = resp.got && resp.status == 200 && strcmp(resp.body, "72F sunny") == 0;
+    printf("%s: hops:// service round-trip status=%u body=\"%s\"\n", svc_ok ? "PASS" : "FAIL", resp.status, resp.body);
+
     hop_node_free(a);
     hop_node_free(b);
-    return (ok && b58_ok) ? 0 : 1;
+    return (ok && b58_ok && svc_ok) ? 0 : 1;
 }
