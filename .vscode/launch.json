@@ -19,6 +19,26 @@
             "target": "hopmac",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release hopmac (apple/HopDriver)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:hop}/apple/HopDriver",
+            "name": "Debug relaymac (apple/HopDriver)",
+            "target": "relaymac",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug relaymac (apple/HopDriver)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:hop}/apple/HopDriver",
+            "name": "Release relaymac (apple/HopDriver)",
+            "target": "relaymac",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release relaymac (apple/HopDriver)"
         }
     ]
 }
