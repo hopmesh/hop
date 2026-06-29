@@ -20,7 +20,13 @@ let package = Package(
     // (Config.useSharedBearers, default on) forms BLE+LAN links through these, with the legacy in-driver
     // HopLink/GattDataLink/LanLink kept as a flag-off fallback.
     dependencies: [
-        .package(path: "../HopBearers"),
+        // The node API stays on UniFFI (HopFFI.xcframework). The bearers are now the INDEPENDENT
+        // packages, binding HopContract (pure Swift, no libhop) — so no double-link of the Rust core.
+        .package(path: "../../sdk/wrappers/Hop"),
+        .package(path: "../../bearers/apple/HopBearerBle"),
+        .package(path: "../../bearers/apple/HopBearerLan"),
+        .package(path: "../../bearers/apple/HopBearerMultipeer"),
+        .package(path: "../../bearers/apple/HopBearerRelay"),
     ],
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,
@@ -37,10 +43,11 @@ let package = Package(
         // The bearer + transports.
         .target(name: "HopDriver", dependencies: [
             "HopFFIBindings", "HopObjC",
-            .product(name: "HopBearerCore",  package: "HopBearers"),
-            .product(name: "HopBearerBle",   package: "HopBearers"),
-            .product(name: "HopBearerLan",   package: "HopBearers"),
-            .product(name: "HopBearerRelay", package: "HopBearers"),
+            .product(name: "HopContract",        package: "Hop"),
+            .product(name: "HopBearerBle",       package: "HopBearerBle"),
+            .product(name: "HopBearerLan",       package: "HopBearerLan"),
+            .product(name: "HopBearerMultipeer", package: "HopBearerMultipeer"),
+            .product(name: "HopBearerRelay",     package: "HopBearerRelay"),
         ]),
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.

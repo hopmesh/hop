@@ -9,7 +9,7 @@ import HopObjC
 // The shared cross-platform transport layer (sibling SwiftPM package). Core = Bearer/LinkSink contract
 // + BearerManager registry + randomNodeId/log; Ble/Lan = the proven clean-room bearers. The
 // shared-bearer path (Config.useSharedBearers, default on) forms BLE+LAN links through these.
-import HopBearerCore
+import HopContract
 import HopBearerBle
 import HopBearerLan
 import HopBearerRelay
@@ -416,7 +416,7 @@ public final class HopBearer: NSObject, ObservableObject {
     /// One stable transport id for this process, shared by every registered bearer (the BLE/LAN HELLO id
     /// + the greater-id dedup tiebreaker). This is a TRANSPORT-layer id, distinct from the Hop node
     /// address (SPEC R11) — the node still negotiates Noise over the bearer's DATA frames.
-    private let bearerId: Data = HopBearerCore.randomNodeId()
+    private let bearerId: Data = HopContract.randomNodeId()
     /// The shared BLE bearer, kept as a ref so a CoreLocation/background wake can poke its `wake()` to
     /// re-arm scanning + re-adopt connected peripherals promptly (it self-recovers on `.poweredOn` too).
     private lazy var bleBearer = BleBearer(myId: bearerId)
@@ -938,7 +938,7 @@ public final class HopBearer: NSObject, ObservableObject {
 
     /// Shared-bearer link up: record the id (so `applyOutgoing` routes it), then drive the node's Noise
     /// handshake through the existing seam (dialer → initiator). Called on the bearer's work queue.
-    fileprivate func bearerLinkUp(_ id: UInt64, role: LinkRole) {
+    fileprivate func bearerLinkUp(_ id: UInt64, role: HopRole) {
         bearerLinksLock.lock(); bearerLinks.insert(id); bearerLinksLock.unlock()
         linkUp(id, initiator: role == .dialer)
     }
@@ -2803,7 +2803,7 @@ extension HopBearer: URLSessionWebSocketDelegate {
 private final class BearerSink: LinkSink {
     unowned let owner: HopBearer
     init(_ owner: HopBearer) { self.owner = owner }
-    func linkUp(_ link: LinkId, role: LinkRole, peerId: Data) { owner.bearerLinkUp(link, role: role) }
+    func linkUp(_ link: LinkId, role: HopRole, peerId: Data) { owner.bearerLinkUp(link, role: role) }
     func linkBytes(_ link: LinkId, _ bytes: Data) { owner.bearerDeliver(link, bytes: bytes) }
     func linkDown(_ link: LinkId) { owner.bearerLinkDown(link) }
 }
