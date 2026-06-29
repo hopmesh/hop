@@ -18,10 +18,9 @@ DEVICES=(
   "tab     android   R95YA01J6QZ                             full       Galaxy Tab A9+"
   "xr      ios       802500FE-27D7-502F-9D2C-9486D5CA74B2     ble        Test iPhone (XR)"
   "jpad    ios       DE7FC4B6-0573-5836-9D0F-73F597502C5C     full       Jillian's iPad"
+  "bush    ios       0280AC9F-551E-55DA-A969-62D4242A003C     full       BushidoPhone"
+  "ipad    ios       FCFFD6B3-49D0-58E5-BF6B-D46EA444145A     full       Decklan's iPad"
 )
-# Devices that left the network (re-add for larger-mesh runs):
-#   "bush   ios       0280AC9F-551E-55DA-A969-62D4242A003C     full       BushidoPhone"
-#   "ipad   ios       FCFFD6B3-49D0-58E5-BF6B-D46EA444145A     full       Decklan's iPad"
 
 # --- accessors: field <id> <col 2=platform 3=handle 4=transport 5=name> ---
 dev_field() {
