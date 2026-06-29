@@ -34,3 +34,6 @@ android/HopDemo/local.properties
 # Local marketing-site preview renders
 web/.preview/
 apple/HopBearers/.build/
+
+# libhop C smoke-test binary (build artifact; source is examples/smoke.c)
+crates/hop-ffi/examples/smoke
