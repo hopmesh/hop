@@ -808,7 +808,15 @@ class HopBearer private constructor(private val context: Context, private val co
                 logLines.add("identify ← $label (${info.kind})")
                 scheduleRefresh()
             } else {
-                logLines.add("service ← ${resp.status}: ${String(resp.body).take(120)}")
+                // Service-response bodies are usually binary (postcard) — a lenient String(bytes)
+                // mojibakes them. Match iOS: strict UTF-8 decode, else show a byte count.
+                val text = runCatching {
+                    Charsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(resp.body)).toString()
+                }.getOrNull() ?: "<${resp.body.size} bytes>"
+                logLines.add("service ← ${resp.status}: ${text.take(120)}")
             }
         }
         for (req in node.takeServiceRequests()) {
@@ -825,7 +833,7 @@ class HopBearer private constructor(private val context: Context, private val co
 
     private fun refreshQueue() {
         val rows = runCatching { node.queue() }.getOrDefault(emptyList()).map { q ->
-            QueueRow(q.own, if (q.to.isEmpty()) "egress" else shortHex(q.to), q.priority, q.hops)
+            QueueRow(q.own, if (q.to.isEmpty()) "broadcast" else shortHex(q.to), q.priority, q.hops)
         }
         onUi { queue.clear(); queue.addAll(rows) }
     }
