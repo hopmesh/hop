@@ -48,3 +48,6 @@ sdk/wrappers/kotlin/build/
 
 # ESP32 example host binary
 apps/esp32/hop-sensor/hop-sensor
+
+# Apple driver build dir
+drivers/apple/**/.build/
