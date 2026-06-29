@@ -13,4 +13,3 @@ echo "regenerated include/hop.h"
 # Publish copies for the SDK + its language wrappers (kept in lockstep; consumers don't run cbindgen).
 publish() { mkdir -p "$(dirname "$1")"; cp -f include/hop.h "$1"; echo "published $1"; }
 publish "$ROOT/sdk/hop.h"
-publish "$ROOT/sdk/wrappers/Hop/Sources/CHop/hop.h"

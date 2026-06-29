@@ -1,4 +1,0 @@
-module CHop {
-    header "hop.h"
-    export *
-}
