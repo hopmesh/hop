@@ -65,22 +65,32 @@ int main(void) {
 
     uint8_t msg_id[32];
     const char *text = "hello over the C ABI";
-    if (!hop_send_message(a, b_addr, "text/plain", (const uint8_t *)text, strlen(text), 0, msg_id)) {
+    // request_ack=1 so B seals a private delivery-ACK back to A (§39) — proves the return path too.
+    if (!hop_send_message(a, b_addr, "text/plain", (const uint8_t *)text, strlen(text), 1, msg_id)) {
         printf("FAIL: send_message returned false\n"); return 1;
     }
 
-    // Pump until B receives it (or we give up).
-    for (int i = 0; i < 200 && !inbox.got; i++) {
+    // Pump until B receives it AND A sees it delivered (the ACK flowed back), or we give up.
+    bool delivered = false; uint32_t relayed = 0, ms = 0; uint8_t dhops = 0;
+    for (int i = 0; i < 400 && !(inbox.got && delivered); i++) {
         hop_drain_outgoing(a, forward, &to_b);
         hop_drain_outgoing(b, forward, &to_a);
         hop_poll_inbox(b, on_message, &inbox);
+        hop_message_status(a, msg_id, &relayed, &delivered, &dhops, &ms);
         now += 100; hop_node_tick(a, now); hop_node_tick(b, now);
     }
 
-    int ok = inbox.got && strcmp(inbox.text, text) == 0;
-    printf("%s: B inbox got=%d text=\"%s\" hops=%u\n", ok ? "PASS" : "FAIL", inbox.got, inbox.text, inbox.hops);
+    int ok = inbox.got && strcmp(inbox.text, text) == 0 && delivered;
+    printf("%s: B inbox got=%d text=\"%s\" hops=%u | A sees delivered=%d fwd_hops=%u\n",
+           ok ? "PASS" : "FAIL", inbox.got, inbox.text, inbox.hops, delivered, dhops);
+
+    // Exercise the base58 round-trip helper too.
+    char b58[64]; uint8_t back[32];
+    size_t blen = hop_address_to_base58(b_addr, b58, sizeof(b58));
+    int b58_ok = blen > 0 && hop_address_from_base58(b58, back) && memcmp(b_addr, back, 32) == 0;
+    printf("%s: base58 round-trip (%s)\n", b58_ok ? "PASS" : "FAIL", b58);
 
     hop_node_free(a);
     hop_node_free(b);
-    return ok ? 0 : 1;
+    return (ok && b58_ok) ? 0 : 1;
 }
