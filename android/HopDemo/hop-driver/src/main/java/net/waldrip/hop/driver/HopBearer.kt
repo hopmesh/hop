@@ -2108,7 +2108,7 @@ class HopBearer private constructor(private val context: Context, private val co
         const val APPLE_MFG_ID = 0x004C     // Apple company ID — required for the iBeacon iOS recognizes
         // iBeacon proximity UUID the iOS app monitors (HopBearer.beaconUUID). Advertising it from
         // Android wakes a backgrounded/killed iPhone via iOS region monitoring (DESIGN.md §22).
-        val HOP_BEACON_UUID: UUID = UUID.fromString("F0900BEA-C000-4000-8000-000000000000")
+        val HOP_BEACON_UUID: UUID = UUID.fromString("7ED7BEAC-3C2A-4F19-9B8E-1A2B3C4D5E6F")
         const val LAN_SERVICE = "_hoplan._tcp"   // Bonjour/NSD type, matches iOS HopBearer.lanServiceType
         const val LAN_PORT = 47474          // fixed TCP port: NSD advertises it; Wi-Fi Direct GO listens here
         /// Shared app secret for Hop Debug — all our demo devices use it so they interoperate.
