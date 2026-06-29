@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "net.waldrip.hop.demo"
+    namespace = "sh.hopme.demo"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "net.waldrip.hop.demo"
+        applicationId = "sh.hopme.demo"
         minSdk = 29 // L2CAP CoC (createInsecureL2capChannel) requires API 29+
         targetSdk = 34
         versionCode = 1

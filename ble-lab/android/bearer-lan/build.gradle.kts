@@ -8,7 +8,7 @@ plugins {
 // TCP. Depends ONLY on :bearer-core, and speaks the SAME link grammar (HELLO/PING/PONG/DATA over a
 // 4-byte length prefix) as the Apple LanBearer so Android<->Apple interop. Names nothing about BLE.
 android {
-    namespace = "net.waldrip.hop.bearers.lan"
+    namespace = "sh.hopme.bearers.lan"
     compileSdk = 34
 
     defaultConfig {

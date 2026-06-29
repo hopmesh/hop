@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "net.waldrip.hop.driver"
+    namespace = "sh.hopme.driver"
     compileSdk = 34
 
     defaultConfig {

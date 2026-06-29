@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>co.hopmesh.ble-lab</string>
+	<string>sh.hopme.blelab</string>
 	<key>CFBundleName</key>
 	<string>HopBleLab</string>
 	<key>CFBundleExecutable</key>

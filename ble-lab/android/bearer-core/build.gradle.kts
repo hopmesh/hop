@@ -9,7 +9,7 @@ plugins {
 // log/hex utilities. Each transport is its OWN library (`:bearer-ble`, `:bearer-lan`, …) that depends
 // only on this core — a BLE-only build never links LAN code. This file names NOTHING transport-specific.
 android {
-    namespace = "net.waldrip.hop.bearers"
+    namespace = "sh.hopme.bearers"
     compileSdk = 34
 
     defaultConfig {

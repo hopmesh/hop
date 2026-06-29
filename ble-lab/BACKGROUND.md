@@ -3,8 +3,8 @@
 **Scope.** We already have a proven, minimal, cross-platform dual-role BLE transport (insecure L2CAP CoC, Ditto-style: Android advertises a connectable service, iOS central connects, reads a PSM from one GATT char, opens L2CAP, bytes flow). Foreground works perfectly; a **backgrounded-but-alive** iOS app holds its L2CAP link fine (`UIBackgroundModes` `bluetooth-central`/`bluetooth-peripheral` + the 1 Hz PING keepalive). This document specifies the one remaining hard problem: a **SUSPENDED or TERMINATED (killed)** iOS app must **eventually** (re)connect to a nearby Android device, with **eventual latency acceptable but total failure not**.
 
 The current code (verified in this repo):
-- Android `net.waldrip.blelab` — `android/app/src/main/java/net/waldrip/blelab/{Ble.kt,BleService.kt,MainActivity.kt}`, `AndroidManifest.xml`. One connectable `AdvertisingSet` (service UUID `7ED70001…` + 6-byte mfg prefix), GATT one-char PSM read, insecure L2CAP listener, all inside a `connectedDevice` foreground service.
-- iOS `co.hopmesh.blelab` — shared core `apple/HopBleLab.swift` (the `Node`/`Central`/`Peripheral`/`Link`), app shell `apple-ios/{BleLabApp.swift,ContentView.swift}`, `apple-ios/project.yml` (XcodeGen, deployment target **iOS 16.0**), `apple-ios/HopBleLab-Info.plist`. The `Central` already opts into CoreBluetooth State Restoration via `CBCentralManagerOptionRestoreIdentifierKey: "hoplab.ble.central"`, but `willRestoreState` is a stub and there is **no CoreLocation**.
+- Android `sh.hopme.blelab` — `android/app/src/main/java/net/waldrip/blelab/{Ble.kt,BleService.kt,MainActivity.kt}`, `AndroidManifest.xml`. One connectable `AdvertisingSet` (service UUID `7ED70001…` + 6-byte mfg prefix), GATT one-char PSM read, insecure L2CAP listener, all inside a `connectedDevice` foreground service.
+- iOS `sh.hopme.blelab` — shared core `apple/HopBleLab.swift` (the `Node`/`Central`/`Peripheral`/`Link`), app shell `apple-ios/{BleLabApp.swift,ContentView.swift}`, `apple-ios/project.yml` (XcodeGen, deployment target **iOS 16.0**), `apple-ios/HopBleLab-Info.plist`. The `Central` already opts into CoreBluetooth State Restoration via `CBCentralManagerOptionRestoreIdentifierKey: "hoplab.ble.central"`, but `willRestoreState` is a stub and there is **no CoreLocation**.
 
 ---
 
@@ -31,7 +31,7 @@ Starting iOS 26, generic CoreBluetooth state-restoration **relaunch-from-termina
 
 ---
 
-## 3. iOS implementation — exact code-level changes (`co.hopmesh.blelab`)
+## 3. iOS implementation — exact code-level changes (`sh.hopme.blelab`)
 
 ### 3.1 Info.plist / `project.yml` keys
 
@@ -247,7 +247,7 @@ struct BleLabApp: App {
 
 ---
 
-## 4. Android implementation — exact code-level changes (`net.waldrip.blelab`)
+## 4. Android implementation — exact code-level changes (`sh.hopme.blelab`)
 
 ### 4.1 iBeacon over-the-air byte layout (legacy ≤31-byte PDU)
 
@@ -363,7 +363,7 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 New file **`android/app/src/main/java/net/waldrip/blelab/BootReceiver.kt`** (restart the FGS after reboot — `connectedDevice` is allowed to start from `BOOT_COMPLETED` on Android 14):
 
 ```kotlin
-package net.waldrip.blelab
+package sh.hopme.blelab
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -437,14 +437,14 @@ Both sides must agree byte-for-byte:
 ```bash
 # Android
 cd /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android && ./gradlew installDebug
-adb shell am start -n net.waldrip.blelab/.MainActivity
+adb shell am start -n sh.hopme.blelab/.MainActivity
 
 # iOS (XcodeGen project)
 cd /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/apple-ios && xcodegen generate
 # then build+install+launch onto the USB device via Xcode (Run), or:
 xcrun devicectl list devices                       # grab the iPhone's identifier
 xcrun devicectl device install app --device <UDID> <path-to-HopBleLab.app>
-xcrun devicectl device process launch --device <UDID> co.hopmesh.blelab
+xcrun devicectl device process launch --device <UDID> sh.hopme.blelab
 ```
 
 ### Step 2 — confirm a foreground baseline link
@@ -461,7 +461,7 @@ xcrun devicectl device process launch --device <UDID> co.hopmesh.blelab
 - After 1–5 min, pull the iOS log:
 ```bash
 xcrun devicectl device copy from --device <UDID> \
-  --domain-type appDataContainer --domain-identifier co.hopmesh.blelab \
+  --domain-type appDataContainer --domain-identifier sh.hopme.blelab \
   --source Documents/blelab.log --destination ./ios-blelab.log
 # (or Xcode → Devices and Simulators → BLE Lab → ⚙︎ → Download Container → show package → AppData/Documents/blelab.log)
 ```
@@ -512,13 +512,13 @@ BLE advertising and the iBeacon ride the Android controller through Doze (contro
 
 ## 8. Change checklist
 
-**iOS (`co.hopmesh.blelab`)**
+**iOS (`sh.hopme.blelab`)**
 - [ ] `project.yml` + `HopBleLab-Info.plist`: add `location` background mode, `NSLocationWhenInUseUsageDescription`, `NSLocationAlwaysAndWhenInUseUsageDescription`, (optional) `UIRequiredDeviceCapabilities: location-services`; register `BeaconWake.swift` source.
 - [ ] `apple/HopBleLab.swift`: implement `Central.willRestoreState` (re-adopt peripherals), add `Central.wake(_:)`, add `Node.wake(_:)`.
 - [ ] New `apple-ios/BeaconWake.swift` (CLLocationManager monitor + Always flow + background-task extension).
 - [ ] `apple-ios/BleLabApp.swift`: introduce `AppDelegate` via `@UIApplicationDelegateAdaptor`; move bootstrap + `Node()` + `BeaconWake` into `didFinishLaunchingWithOptions`; log `COLD LAUNCH`.
 
-**Android (`net.waldrip.blelab`)**
+**Android (`sh.hopme.blelab`)**
 - [ ] `Ble.kt`: add `BEACON_UUID`/constants + `iBeaconPayload`; add `startBeacon()`, `beaconCb`, `startBeaconCycler()`, beacon teardown in `stop()`; call `startBeacon()` + `startBeaconCycler()` from `Peripheral.start()`.
 - [ ] `BleService.kt`: typed 3-arg `startForeground(..., FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)`.
 - [ ] New `BootReceiver.kt`; manifest: `RECEIVE_BOOT_COMPLETED`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `<receiver>` for boot.
