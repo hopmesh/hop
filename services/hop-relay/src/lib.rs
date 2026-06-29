@@ -34,7 +34,6 @@ enum MailKey {
 fn mail_key(dst: &Destination) -> MailKey {
     match dst {
         Destination::Device(a) | Destination::AckTo(a, _) => MailKey::Device(*a),
-        Destination::InternetEgress => MailKey::Egress,
         // Broadcasts flood live; they are not parked in a mailbox.
         Destination::Broadcast => MailKey::Egress,
     }
@@ -315,7 +314,7 @@ mod tests {
         let mut mb = Mailbox::default();
         let req = Bundle::create(
             &client,
-            Destination::InternetEgress,
+            Destination::Broadcast,
             &gw.address(),
             &Payload::HttpRequest {
                 host: String::new(),
