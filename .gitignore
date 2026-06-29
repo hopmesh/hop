@@ -54,3 +54,9 @@ drivers/apple/**/.build/
 
 # libhop xcframework (gitignored artifact; build-xcframework.sh)
 sdk/wrappers/Hop/Frameworks/
+
+# Android bearer build artifacts
+bearers/android/.gradle/
+bearers/android/build/
+bearers/android/**/build/
+bearers/android/local.properties

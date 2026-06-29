@@ -6,6 +6,9 @@
 
 package sh.hop
 
+/** A transport link identifier, unique per (re)connection within a Bearer (the Swift SDK: `UInt64`). */
+typealias LinkId = Long
+
 /** What a Bearer reports to the BearerManager. The only seam between a transport and the node mux. */
 interface LinkSink {
     fun linkUp(link: Long, role: HopRole, peerId: ByteArray)
