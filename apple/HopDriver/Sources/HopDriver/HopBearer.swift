@@ -2108,10 +2108,11 @@ public final class HopBearer: NSObject, ObservableObject {
         }
         .sorted { $0.name < $1.name }
 
-        // Connected hops:// endpoints (the directly-dialed origin links, ≥30_000). These are
-        // not part of the relay backbone; we reach them straight (DESIGN.md §30). Named by the
-        // domain they back via hop.identify.
-        endpoints = pls.filter { $0.link >= 30_000 }.map { pl in
+        // Connected hops:// endpoints (the directly-dialed origin links, the legacy 30_000–39_999
+        // range). NOT the relay backbone; we reach them straight (DESIGN.md §30). Bounded to that
+        // range so the new shared-bearer links (BearerManager baseLinkId 1_000_000+ — ordinary
+        // BLE/LAN peers) are NOT misclassified as endpoints. Named by the domain via hop.identify.
+        endpoints = pls.filter { (30_000..<40_000).contains($0.link) }.map { pl in
             let name = identities[pl.address]?.name.isEmpty == false
                 ? identities[pl.address]!.name
                 : (nameByAddr[pl.address] ?? HopBearer.shortHex(pl.address))
@@ -2131,7 +2132,7 @@ public final class HopBearer: NSObject, ObservableObject {
 
         queue = snap.queue.map {
             QueueRow(id: $0.id, own: $0.own,
-                     to: $0.to.isEmpty ? "internet" : HopBearer.shortHex($0.to),
+                     to: $0.to.isEmpty ? "broadcast" : HopBearer.shortHex($0.to),
                      priority: $0.priority, hops: $0.hops)
         }
         // Live HNS cache snapshot (ticks down each refresh as the node clock advances, §30).
