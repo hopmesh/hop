@@ -45,3 +45,6 @@ bearers/apple/**/.build/
 # Kotlin/JVM SDK build dirs
 sdk/wrappers/kotlin/.gradle/
 sdk/wrappers/kotlin/build/
+
+# ESP32 example host binary
+apps/esp32/hop-sensor/hop-sensor
