@@ -51,3 +51,6 @@ apps/esp32/hop-sensor/hop-sensor
 
 # Apple driver build dir
 drivers/apple/**/.build/
+
+# libhop xcframework (gitignored artifact; build-xcframework.sh)
+sdk/wrappers/Hop/Frameworks/

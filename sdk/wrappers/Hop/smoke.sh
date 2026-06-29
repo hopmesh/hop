@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Build libhop, publish hop.h into the Swift package, then build+run the Swift smoke against the C ABI.
-# Proves the Swift wrapper drives libhop (the same proof as core/hop-ffi/examples/smoke.sh, one rung up).
+# Build+run the Swift smokes against libhop via the libhop.xcframework binary target. The xcframework
+# carries the static lib, so swift links it automatically — no -L/-l flags. Proves the Swift wrapper
+# (and HopRuntime + a Bearer) drive the C ABI.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../../.." && pwd)"
-LIBDIR="$ROOT/target/debug"
 
-cargo build -p hop-ffi --manifest-path "$ROOT/Cargo.toml"
-"$ROOT/core/hop-ffi/regen-header.sh" >/dev/null
+# Ensure the xcframework exists (first run / after editing cabi.rs cross-compiles all slices).
+[ -d "$HERE/Frameworks/libhop.xcframework" ] || "$HERE/build-xcframework.sh"
 
 cd "$HERE"
-# NOTE: build flags MUST precede the product name; anything after it is the executable's argv.
-LINK=(-Xlinker -L"$LIBDIR" -Xlinker -lhop -Xlinker -rpath -Xlinker "$LIBDIR")
-swift run "${LINK[@]}" HopSmoke       # Swift wrapper -> C ABI -> protocol
-swift run "${LINK[@]}" RuntimeSmoke   # HopRuntime + a Bearer -> node seam -> protocol
+swift run HopSmoke       # Swift wrapper -> C ABI -> protocol
+swift run RuntimeSmoke   # HopRuntime + a Bearer -> node seam -> protocol
