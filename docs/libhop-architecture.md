@@ -45,9 +45,15 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Kotlin SDK | `sdk/wrappers/kotlin` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
 | Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}` | each an independent SwiftPM package, `swift build` clean |
+| Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + all 4 bearers; whole stack `swift build`s together |
 
-Run it all: `crates/hop-ffi/examples/smoke.sh`, `sdk/wrappers/swift/smoke.sh`,
+Run it all: `crates/hop-ffi/examples/smoke.sh`, `sdk/wrappers/Hop/smoke.sh`,
 `sdk/wrappers/kotlin/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (128 + crates green).
+
+**Renames done** (both your "yes"es): the SDK package is `sdk/wrappers/Hop` (clean `package: "Hop"` id),
+and the cdylib/staticlib is now **`libhop`** (`[lib] name = "hop"`; C ABI / SDK / ESP32 link `-lhop`).
+The crate is still `hop-ffi` so the UniFFI namespace stays `hop_ffi` until the crate rename rides the
+tree migration; `build-aar.sh` keeps a `libhop_ffi.so` copy so legacy UniFFI still loads.
 
 **The Swift bearer stack is functionally proven**: `RuntimeSmoke` registers a `Bearer` with
 `HopRuntime` and runs the real protocol — the four real radios conform to the same `Bearer` protocol,
@@ -71,15 +77,15 @@ so they behave identically once wired to hardware.
 5. **CI guardrail** — a lint that fails if any transport symbol (CBUUID/BluetoothGatt/CLBeaconRegion/…)
    appears in the SDK contract or `hop-ffi` C-ABI surface.
 
-## Deferred questions (answer when convenient — none block the above)
+## Deferred questions
 
-- **SwiftPM package identity** is the *directory* name, so the bearer packages reference
-  `package: "swift"` (product is `Hop`). Rename `sdk/wrappers/swift` → e.g. `sdk/wrappers/Hop` for a
-  clean `package: "Hop"`? (Cosmetic.)
-- **libhop naming** — the cdylib is still `libhop_ffi` (crate name). Rename the lib output to `libhop`
-  during the tree migration? (Touches the xcframework/AAR scripts.)
+- ~~SwiftPM package id~~ → **done**: renamed `sdk/wrappers/Hop` (`package: "Hop"`).
+- ~~libhop naming~~ → **done**: cdylib/staticlib is now `libhop`.
+- **Crate rename** `hop-ffi` → `hop` (so the UniFFI namespace + Android `import uniffi.hop_ffi.*`
+  become `hop`, dropping the transitional `libhop_ffi.so` copy) — do this with the tree migration +
+  device verification (app-breaking otherwise).
 - **ObjC/Java idiomatic wrappers** — generate thin ones over `hop.h` now, or rely on Swift/Kotlin
-  interop until a consumer needs them?
+  interop until a consumer needs them? (Open.)
 
 ## How to extend
 
