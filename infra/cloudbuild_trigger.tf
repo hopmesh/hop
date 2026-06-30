@@ -39,15 +39,25 @@ resource "google_project_iam_member" "build" {
     "roles/cloudbuild.builds.builder",
     "roles/artifactregistry.writer",
     "roles/logging.logWriter",
-    "roles/owner", # runs `tofu apply` for the whole module (parity with the old Spacelift SA)
+    # Deploy perms for `tofu apply` — replaces the blunt roles/owner. `editor` does the
+    # create/update across run/compute/dns/certmanager/firestore/secrets/artifact-registry;
+    # the rest add the IAM-policy + connection powers `editor` lacks. No billing, org-policy,
+    # or owner-granting (the owner-only powers the apply never needs).
+    "roles/editor",
+    "roles/resourcemanager.projectIamAdmin", # google_project_iam_member bindings
+    "roles/iam.serviceAccountAdmin",         # create/manage the build + relay SAs
+    "roles/iam.serviceAccountUser",          # Cloud Run deploy runs services as the relay SA
+    "roles/run.admin",                       # run service setIamPolicy (allUsers invoker)
+    "roles/secretmanager.admin",             # secret setIamPolicy
+    "roles/storage.admin",                   # state-bucket setIamPolicy (build_state below)
+    "roles/cloudbuild.connectionAdmin",      # google_cloudbuildv2_repository / connection
   ]) : []
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.build[0].email}"
 }
 
-# State bucket access for the apply step (roles/owner already covers this project-wide,
-# but make the dependency explicit so the bucket grant survives a future role tightening).
+# Explicit state-bucket grant for the apply step (storage.admin covers it project-wide too).
 resource "google_storage_bucket_iam_member" "build_state" {
   count  = local.build_enabled ? 1 : 0
   bucket = "hop-mesh-tfstate"
