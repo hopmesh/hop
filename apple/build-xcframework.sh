@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Hop XCFramework + Swift bindings from hop-ffi, into the HopDriver package.
 #
-# Output (gitignored): apple/HopDriver/
+# Output (gitignored): drivers/apple/HopDriver/
 #   - Frameworks/HopFFI.xcframework        (ios-arm64 device + ios-sim + macos universal)
 #   - Sources/HopFFIBindings/hop.swift (the generated Swift API — a package target)
 #
@@ -11,8 +11,8 @@ cd "$(dirname "$0")/.."
 
 CRATE=hop
 LIB=libhop.a
-PKG=apple/HopDriver
-OUT=apple/HopDriver/.build-staging   # scratch for headers + generated swift
+PKG=drivers/apple/HopDriver
+OUT=drivers/apple/HopDriver/.build-staging   # scratch for headers + generated swift
 T=target
 
 echo "▸ ensuring iOS + macOS Rust targets"
@@ -31,12 +31,23 @@ cp "$OUT/Sources/hopFFI.modulemap" "$OUT/Headers/module.modulemap"
 mkdir -p "$PKG/Sources/HopFFIBindings"
 cp "$OUT/Sources/hop.swift" "$PKG/Sources/HopFFIBindings/hop.swift"
 
+# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT — the host passes a
+# Keychain-derived key to HopNode.open_keyed and every db page is encrypted. Set HOP_SQLCIPHER=0 for
+# a faster plain-SQLite dev build (no OpenSSL vendored compile, but no at-rest encryption either).
+if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
+  FEAT=(--no-default-features --features sqlcipher)
+  echo "▸ SQLCipher at-rest ENABLED (set HOP_SQLCIPHER=0 to disable)"
+else
+  FEAT=()
+  echo "▸ SQLCipher DISABLED — plain SQLite (no at-rest encryption)"
+fi
+
 echo "▸ cross-compiling release staticlibs (iOS device + sim, macOS arm64 + x86_64)"
-cargo build -p "$CRATE" --release --target aarch64-apple-ios
-cargo build -p "$CRATE" --release --target aarch64-apple-ios-sim
-cargo build -p "$CRATE" --release --target x86_64-apple-ios
-cargo build -p "$CRATE" --release --target aarch64-apple-darwin
-cargo build -p "$CRATE" --release --target x86_64-apple-darwin
+cargo build -p "$CRATE" --release --target aarch64-apple-ios "${FEAT[@]}"
+cargo build -p "$CRATE" --release --target aarch64-apple-ios-sim "${FEAT[@]}"
+cargo build -p "$CRATE" --release --target x86_64-apple-ios "${FEAT[@]}"
+cargo build -p "$CRATE" --release --target aarch64-apple-darwin "${FEAT[@]}"
+cargo build -p "$CRATE" --release --target x86_64-apple-darwin "${FEAT[@]}"
 
 # Fat simulator slice so the framework runs on Apple Silicon and Intel Macs.
 SIM_FAT="$T/sim-universal"; mkdir -p "$SIM_FAT"

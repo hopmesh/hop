@@ -14,7 +14,8 @@ The transport seam is the dividing line: `hop-core` only ever sees opaque `LinkI
 
 | Mechanism | What it is | Wire surface |
 |---|---|---|
-| **Bundles** | the unit: self-contained, content-addressed (`blake3(src‖nonce‖payload)`), with src/dst, flags, copy budget, provenance trace | `Bundle`, `BundleEnvelope` |
+| **Bundles** | the unit: self-contained, content-addressed. TRACED bundles carry `src`/`dst`, flags, copy budget, provenance trace. The DEFAULT send is now **untraceable** (§39): a `PrivateHeader` bundle with **zeroed src**, `dst = Broadcast`, **no identity signature**, and `id = blake3("hop private bundle id v1"‖sealed)`. Wire version = 2 (F-06). | `Bundle`, `Envelope`, `SignedInner`, `PrivateHeader` |
+| **Untraceable delivery (§39, SHIPPED)** | untraceable-by-default. `PrivateHeader{tag, ephemeral, mailbox, hint}`: **recognition tag** `KDF(ephemeral·SPK, id)` (recipient recognizes as-it-floods, ephemeral per message so two bundles don't correlate); **mailbox-tag** `H("v2"‖address‖epoch)` — a per-epoch rotating pull pseudonym (F-06); **receiver-beacon** gradient (P4) + **want-beacon / blind-spool pull** (P5). Beacon mailbox is bound to the publisher's signed address+epoch at ingest, so it can't be hijacked (F-05). | `PrivateHeader`, `AdvertKind::RecvBeacon`, `Payload::Private` |
 | **Link encryption** | per-link **Noise XX** channel — mutual auth, so each side learns the other's static key (= address) | wire `LinkPacket::{Handshake,Data}` |
 | **Routing** | binary spray-and-wait: epidemic flood with copy budgets, custody (forward-before-evict), dedup (`seen`), delivery-ACK vaccine | — |
 | **Discovery / directory** | signed adverts, gossiped + deduped, superseded by `(publisher, seq)`, app-scoped (§17); offered on link-up and re-gossiped every 12s | `AdvertKind::Service`, `PreKey`, `Tombstone`, `HpsTopic` |
@@ -37,7 +38,7 @@ The transport seam is the dividing line: `hop-core` only ever sees opaque `LinkI
 
 ## Out of protocol (host / app)
 
-- **Bearers** — BLE (GATT + L2CAP + iBeacon wake), LAN (mDNS + TCP), Wi-Fi Direct, MultipeerConnectivity, relay TCP/WS. Link-id assignment, the gentle push-to-peripheral central, scanning cadence. The core only sees `LinkId`s.
+- **Bearers** — BLE (GATT + L2CAP + iBeacon wake), LAN (mDNS + TCP), MultipeerConnectivity (Apple), relay TCP/WS. (Wi-Fi Direct was removed — commit c059d69 — its per-device approval dialog breaks the passive/no-pairing principle.) Link-id assignment, the gentle push-to-peripheral central, scanning cadence. The core only sees `LinkId`s.
 - **"presence"** — a *convention*, not a protocol feature: the topic name `"presence"`, the `fg|ios|HopDemo` meta string, the publish cadence, the private-mode toggle. The core only provides the generic `Service` advert; choosing to call one "presence" is the app's.
 - **Address book / contacts** (`contacts.json`), **message history** (`messages.json`), threads, delivery UI, `SendingIndicator`.
 - **QR identity exchange** — out-of-band handoff of `"<base58>|<name>"`; just calls `addContact`.
@@ -49,9 +50,10 @@ The transport seam is the dividing line: `hop-core` only ever sees opaque `LinkI
 The principle: **identity is opt-in; everything else carries you anonymously.** Relay never needs
 to know who you are — it floods on the bundle's sealed destination. Status:
 
+0. **Untraceable-by-default messaging (§39)** — SHIPPED. The default send is a `PrivateHeader` bundle (zeroed src, no signature) recognized by tag; per-epoch rotating mailbox-tags; receiver-beacon gradient + blind-spool pull. See the §39 rows above.
 1. **Private-mode toggle** — DONE. Stops broadcasting the `presence` advert; you stay relay-capable + reachable by anyone who has your address.
 2. **Anonymized provenance** — DONE. Device hops stamp a zeroed address; recipient sees count + "device"/"Hop Relay" type, never which devices.
-3. **Anonymous links (Noise XX → NN)** — TODO. Switch the link handshake to ephemeral-only so a neighbour no longer learns your address just by connecting. Reworks: `Established.peer` becomes optional; the direct-delivery shortcut + `peer_links` attribution + connect-time address verify go best-effort; an **opt-in signed identity record** sent over the link re-enables them for peers who want to be known (debug default: send it). E2E ratchet/messaging untouched.
+3. **Anonymous links (Noise XX → NN)** — ATTEMPTED & REVERTED. Switching the link handshake to ephemeral-only passed in-memory but broke messaging on real BLE (apps key liveness off link-count and assume every link yields an identified peer), so it was reverted (only an auto-heal fix was kept). Revisit only with a real per-link identity story: make `Established.peer` optional + an **opt-in signed identity record** over the link, and fix the app assumptions first. E2E ratchet/messaging untouched by the design.
 4. **Identity as a sealed mechanism (two complementary options):**
    - **(a) presence-over-hps** — re-home presence onto an hps **Invite service** with a content key. Your name/address advert is encrypted to a key you share only with contacts → discoverable to your circle, invisible to strangers, still anonymous-relay for everyone. Reuses §32 wholesale.
    - **(b) HNS-backed identity at `id.hopme.sh`** — publish a **DNSSEC-secured record at `<name>.id.hopme.sh`** mapping a claimed name → Hop address (and optionally prekey), with a **very long TTL** (identity is stable, so cache it for ~days). Resolving someone = an HNS lookup over §30 (works over the internet *or* over the mesh), DNSSEC-validated so a name can't be spoofed. "Backed" = a small service writes the record when a device claims a name. This gives **authoritative, cacheable, infra-anchored identity without flooding presence** — and `identify` (§29) already covers the sealed on-demand "who are you?" between two reachable nodes. Needs: the `id.hopme.sh` DNSSEC zone + a claim/write service (infra), plus an app "add by name" that resolves via the existing HNS path. (a) and (b) compose: (a) = private discovery within a circle; (b) = a public, verifiable handle you can hand out.

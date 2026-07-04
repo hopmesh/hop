@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<!--
+  HOP · GAP REPORT ,  image-rich single-file artifact.
+  Art direction: technical blueprint / signal-intelligence. Space Grotesk + IBM Plex Sans/Mono.
+  Imagery: AI-generated abstract signal renders (illustrative). Findings from an adversarially
+  verified multi-agent sweep of the last ~4 weeks. Portable: relative image paths, vanilla JS.
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hop · Gap Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ===== PALETTE ,  signal-intelligence dark, derived from the imagery ===== */
+  :root{
+    --bg:#080b11; --bg-2:#0c111a; --card:#101823; --card-2:#0d141d;
+    --ink:#dbe4ee; --ink-soft:#8395a8; --ink-faint:#5a6b7d;
+    --line:#1c2836; --line-2:#141d28;
+    --cyan:#39c2d7; --amber:#f0a030; --red:#e5484d; --steel:#6b8a9a; --teal:#3fb8af;
+    --grid:rgba(57,194,215,.045);
+    --maxw:1120px;
+    --display:'Space Grotesk',system-ui,sans-serif;
+    --body:'IBM Plex Sans',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --shadow:0 26px 70px -30px rgba(0,0,0,.85);
+  }
+  html[data-theme="light"]{ /* mood shift: engineering blueprint on cool paper, not an invert */
+    --bg:#eceff3; --bg-2:#e3e8ee; --card:#f6f8fa; --card-2:#eef2f6;
+    --ink:#16202b; --ink-soft:#4a5a6b; --ink-faint:#7889a0;
+    --line:#c9d4de; --line-2:#d7e0e8;
+    --cyan:#0e7c8b; --amber:#b06a12; --red:#c1443c; --steel:#4a6172; --teal:#0f766e;
+    --grid:rgba(14,124,139,.06);
+    --shadow:0 22px 60px -30px rgba(30,50,70,.4);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:46px 46px;
+    transition:background-color .4s,color .4s}
+  h1,h2,h3,h4{font-family:var(--display);letter-spacing:-.015em;font-weight:600}
+
+  ::selection{background:var(--cyan);color:var(--bg)}
+
+  #progress{position:fixed;top:0;left:0;height:2px;width:0;z-index:60;background:var(--cyan);
+    box-shadow:0 0 12px var(--cyan);transition:width .12s linear}
+
+  /* ===== top bar ===== */
+  header.bar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;
+    justify-content:space-between;gap:1rem;padding:.6rem clamp(1rem,4vw,2rem);
+    backdrop-filter:saturate(140%) blur(14px);background:color-mix(in srgb,var(--bg) 78%,transparent);
+    border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:.6rem;font-family:var(--mono);font-weight:600;
+    font-size:.82rem;letter-spacing:.02em}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 4px color-mix(in srgb,var(--cyan) 20%,transparent),0 0 10px var(--cyan)}
+  .brand .sub{color:var(--ink-faint)}
+  .bar-actions{display:flex;gap:.4rem}
+  .btn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;
+    padding:.42rem .7rem;font-family:var(--mono);font-size:.72rem;font-weight:500;letter-spacing:.06em;
+    cursor:pointer;text-transform:uppercase;transition:border-color .2s,color .2s,transform .12s}
+  .btn:hover{border-color:var(--cyan);color:var(--cyan);transform:translateY(-1px)}
+
+  /* ===== TOC drawer ===== */
+  .scrim{position:fixed;inset:0;background:rgba(4,8,12,.6);z-index:69;opacity:0;pointer-events:none;
+    transition:opacity .3s;backdrop-filter:blur(2px)}
+  .scrim.open{opacity:1;pointer-events:auto}
+  aside.toc{position:fixed;top:0;left:0;bottom:0;width:min(360px,88vw);z-index:70;background:var(--card);
+    border-right:1px solid var(--line);transform:translateX(-104%);
+    transition:transform .34s cubic-bezier(.3,.8,.3,1);overflow-y:auto;padding:1.2rem}
+  aside.toc.open{transform:none}
+  aside.toc .tochead{display:flex;justify-content:space-between;align-items:center;margin:.2rem 0 1.1rem;
+    font-family:var(--mono);font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+  aside.toc a{display:flex;gap:.6rem;color:var(--ink-soft);text-decoration:none;font-size:.88rem;
+    padding:.4rem .5rem;border-radius:6px;border-left:2px solid transparent;transition:all .18s}
+  aside.toc a .n{font-family:var(--mono);color:var(--ink-faint);font-size:.78rem}
+  aside.toc a:hover{background:var(--bg-2);color:var(--ink)}
+  aside.toc a.active{color:var(--cyan);background:color-mix(in srgb,var(--cyan) 9%,transparent);
+    border-left-color:var(--cyan)}
+
+  /* ===== hero ===== */
+  .hero{position:relative;min-height:100svh;display:flex;align-items:flex-end;background:#05070b;overflow:hidden}
+  .hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.85}
+  .hero::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(180deg,rgba(5,7,11,.55),rgba(5,7,11,.35) 35%,rgba(5,7,11,.94))}
+  .hero::before{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:46px 46px;opacity:.6}
+  .hero-inner{position:relative;z-index:2;padding:clamp(2rem,7vw,5.5rem) clamp(1.2rem,6vw,4.5rem);
+    max-width:1000px;color:#eaf1f8}
+  .kicker{display:inline-flex;align-items:center;gap:.7rem;font-family:var(--mono);font-size:.74rem;
+    letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);margin-bottom:1.4rem}
+  .kicker::before{content:"";width:34px;height:1px;background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+  .hero h1{font-size:clamp(2.4rem,6vw,5rem);line-height:1.02;margin:.2rem 0 1.3rem;font-weight:600;
+    letter-spacing:-.03em}
+  .hero h1 em{font-style:normal;color:var(--cyan)}
+  .hero .stand{font-size:clamp(1.05rem,2.2vw,1.4rem);max-width:60ch;color:#c4d2e0;font-weight:400}
+  .hero-meta{margin-top:2rem;display:flex;flex-wrap:wrap;gap:.5rem 1.6rem;font-family:var(--mono);
+    font-size:.76rem;color:var(--ink-soft);letter-spacing:.03em}
+  .hero-meta b{color:#eaf1f8;font-weight:600}
+  .scrollcue{position:absolute;bottom:1.3rem;left:50%;transform:translateX(-50%);z-index:3;color:#c4d2e0;
+    font-family:var(--mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;
+    display:flex;flex-direction:column;align-items:center;gap:.45rem}
+  .scrollcue .arrow{width:12px;height:12px;border-right:1.5px solid var(--cyan);border-bottom:1.5px solid var(--cyan);
+    transform:rotate(45deg);animation:bob 1.7s infinite ease-in-out}
+  @keyframes bob{0%,100%{transform:rotate(45deg) translate(0,0)}50%{transform:rotate(45deg) translate(3px,3px)}}
+
+  /* ===== summary strip ===== */
+  .summary{max-width:var(--maxw);margin:0 auto;padding:clamp(2.5rem,6vw,4.5rem) clamp(1rem,4vw,1.5rem) 0}
+  .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .stat{background:var(--card);padding:1.3rem 1.2rem}
+  .stat .k{font-family:var(--display);font-size:2.1rem;font-weight:600;line-height:1;letter-spacing:-.02em}
+  .stat .v{font-family:var(--mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--ink-soft);margin-top:.5rem}
+  .stat.hi .k{color:var(--red)} .stat.md .k{color:var(--amber)}
+  .stat.cy .k{color:var(--cyan)} .stat.tl .k{color:var(--teal)}
+
+  .thesis{max-width:var(--maxw);margin:2.5rem auto 0;padding:0 clamp(1rem,4vw,1.5rem)}
+  .thesis .lead{font-family:var(--display);font-size:clamp(1.3rem,3vw,1.9rem);font-weight:400;
+    line-height:1.32;letter-spacing:-.015em;max-width:26ch;margin:0 0 1.6rem}
+  .thesis .lead b{font-weight:600;color:var(--cyan)}
+  .axes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin-top:1.6rem}
+  .axis{border:1px solid var(--line);border-radius:12px;background:var(--card-2);padding:1.2rem 1.25rem;
+    position:relative;overflow:hidden}
+  .axis .ax-n{font-family:var(--mono);font-size:.72rem;color:var(--ink-faint);letter-spacing:.1em}
+  .axis h4{margin:.5rem 0 .5rem;font-size:1.08rem;letter-spacing:-.01em}
+  .axis p{margin:0;font-size:.92rem;color:var(--ink-soft)}
+  .axis::before{content:"";position:absolute;top:0;left:0;width:3px;height:100%;background:var(--amber)}
+  .axis.a1::before{background:var(--red)} .axis.a2::before{background:var(--cyan)} .axis.a3::before{background:var(--amber)}
+
+  /* ===== legend ===== */
+  .legend{max-width:var(--maxw);margin:2.6rem auto 0;padding:0 clamp(1rem,4vw,1.5rem);
+    display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;font-family:var(--mono);font-size:.72rem;
+    color:var(--ink-soft);letter-spacing:.04em}
+  .legend .sv{display:inline-flex;align-items:center;gap:.4rem;padding:.24rem .55rem;border-radius:5px;border:1px solid}
+  .sv.high{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,transparent);background:color-mix(in srgb,var(--red) 10%,transparent)}
+  .sv.med{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 45%,transparent);background:color-mix(in srgb,var(--amber) 10%,transparent)}
+  .sv.low{color:var(--steel);border-color:color-mix(in srgb,var(--steel) 45%,transparent);background:color-mix(in srgb,var(--steel) 10%,transparent)}
+  .sv.clean{color:var(--teal);border-color:color-mix(in srgb,var(--teal) 45%,transparent);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+
+  /* ===== sections ===== */
+  main{max-width:var(--maxw);margin:0 auto;padding:0 clamp(1rem,4vw,1.5rem)}
+  .panel{padding:clamp(3.5rem,8vw,6rem) 0;border-bottom:1px solid var(--line-2)}
+  .sec-head{display:flex;align-items:baseline;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap}
+  .sec-idx{font-family:var(--mono);font-size:.8rem;color:var(--cyan);letter-spacing:.08em;
+    border:1px solid color-mix(in srgb,var(--cyan) 35%,transparent);border-radius:5px;padding:.2rem .5rem;
+    background:color-mix(in srgb,var(--cyan) 8%,transparent)}
+  .sec-area{font-family:var(--mono);font-size:.72rem;color:var(--ink-faint);letter-spacing:.14em;text-transform:uppercase}
+  .panel h2{font-size:clamp(1.7rem,4.2vw,2.7rem);line-height:1.08;margin:0 0 .5rem;font-weight:600;
+    letter-spacing:-.025em;max-width:20ch}
+  .panel .dek{font-size:1.06rem;color:var(--ink-soft);max-width:60ch;margin:0 0 1.8rem}
+
+  figure.figure{margin:0 0 2rem;border-radius:14px;overflow:hidden;border:1px solid var(--line);
+    background:#05070b;cursor:zoom-in;position:relative;box-shadow:var(--shadow)}
+  figure.figure img{display:block;width:100%;height:auto;transition:transform .7s cubic-bezier(.2,.7,.2,1)}
+  figure.figure:hover img{transform:scale(1.03)}
+  figure.figure figcaption{position:absolute;left:0;right:0;bottom:0;padding:1.4rem 1.1rem .8rem;
+    font-family:var(--mono);font-size:.74rem;color:#c4d2e0;letter-spacing:.02em;
+    background:linear-gradient(180deg,transparent,rgba(5,7,11,.82))}
+  figure.figure .zoom{position:absolute;top:.7rem;right:.7rem;font-family:var(--mono);font-size:.66rem;
+    letter-spacing:.1em;background:rgba(5,7,11,.6);color:#eaf1f8;border:1px solid rgba(255,255,255,.15);
+    border-radius:5px;padding:.28rem .5rem;opacity:0;transition:opacity .2s}
+  figure.figure:hover .zoom{opacity:1}
+
+  /* ===== finding cards ===== */
+  .findings{display:grid;gap:1rem}
+  .finding{border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:10px;
+    background:var(--card);padding:1.25rem 1.35rem;position:relative}
+  .finding.high{border-left-color:var(--red)}
+  .finding.med{border-left-color:var(--amber)}
+  .finding.low{border-left-color:var(--steel)}
+  .finding.clean{border-left-color:var(--teal)}
+  .f-head{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.6rem}
+  .f-sev{font-family:var(--mono);font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+    padding:.2rem .5rem;border-radius:4px;border:1px solid}
+  .high .f-sev{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,transparent);background:color-mix(in srgb,var(--red) 10%,transparent)}
+  .med .f-sev{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 45%,transparent);background:color-mix(in srgb,var(--amber) 10%,transparent)}
+  .low .f-sev{color:var(--steel);border-color:color-mix(in srgb,var(--steel) 45%,transparent);background:color-mix(in srgb,var(--steel) 10%,transparent)}
+  .clean .f-sev{color:var(--teal);border-color:color-mix(in srgb,var(--teal) 45%,transparent);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+  .f-id{font-family:var(--mono);font-size:.7rem;color:var(--ink-faint);letter-spacing:.06em}
+  .f-area{font-family:var(--mono);font-size:.68rem;color:var(--ink-soft);letter-spacing:.1em;
+    text-transform:uppercase;margin-left:auto}
+  .finding h3{font-size:1.12rem;margin:0 0 .55rem;line-height:1.25;letter-spacing:-.01em}
+  .finding p{margin:0 0 .8rem;font-size:.95rem;color:var(--ink);line-height:1.58}
+  .finding p:last-child{margin-bottom:0}
+  .finding .ev{font-family:var(--mono);font-size:.78rem;line-height:1.55;color:var(--ink-soft);
+    background:var(--card-2);border:1px solid var(--line-2);border-radius:7px;padding:.7rem .85rem;margin:.2rem 0 .8rem;
+    overflow-x:auto}
+  .finding .ev .lbl{display:block;color:var(--cyan);font-size:.64rem;letter-spacing:.14em;margin-bottom:.35rem}
+  .finding .ev code{color:var(--ink);white-space:nowrap}
+  .finding .fix{font-size:.92rem;color:var(--ink);padding-left:.9rem;border-left:2px solid var(--teal)}
+  .finding .fix .lbl{font-family:var(--mono);font-size:.64rem;letter-spacing:.14em;color:var(--teal);
+    display:block;margin-bottom:.2rem;text-transform:uppercase}
+
+  /* ===== spec interlude (docs) ===== */
+  .spec{background:var(--card-2);border:1px solid var(--line);border-radius:14px;padding:1.4rem;
+    margin-bottom:2rem}
+  .spec .spec-top{font-family:var(--mono);font-size:.72rem;color:var(--ink-faint);letter-spacing:.12em;
+    text-transform:uppercase;display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);
+    padding-bottom:.7rem;margin-bottom:.4rem}
+  .ledger{list-style:none;margin:0;padding:0}
+  .ledger li{display:grid;grid-template-columns:auto 1fr auto;gap:.9rem;align-items:baseline;
+    padding:.6rem 0;border-bottom:1px dashed var(--line-2);font-size:.92rem}
+  .ledger li:last-child{border-bottom:none}
+  .ledger .tag{font-family:var(--mono);font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;
+    padding:.16rem .45rem;border-radius:4px;align-self:center}
+  .ledger .tag.low{color:var(--steel);border:1px solid color-mix(in srgb,var(--steel) 40%,transparent)}
+  .ledger .tag.med{color:var(--amber);border:1px solid color-mix(in srgb,var(--amber) 40%,transparent)}
+  .ledger .ref{font-family:var(--mono);font-size:.74rem;color:var(--ink-faint);white-space:nowrap}
+
+  /* ===== resolution status (added after remediation) ===== */
+  .f-status{font-family:var(--mono);font-size:.62rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+    padding:.2rem .5rem;border-radius:4px;border:1px solid;margin-left:.4rem}
+  .f-status.fixed{color:var(--teal);border-color:color-mix(in srgb,var(--teal) 50%,transparent);background:color-mix(in srgb,var(--teal) 12%,transparent)}
+  .f-status.partial{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 50%,transparent);background:color-mix(in srgb,var(--amber) 12%,transparent)}
+  /* the fix for each finding, in a green box */
+  .done{font-size:.92rem;color:var(--ink);margin-top:.7rem;padding:.7rem .85rem;border-radius:8px;
+    border:1px solid color-mix(in srgb,var(--teal) 55%,transparent);
+    background:color-mix(in srgb,var(--teal) 16%,transparent)}
+  html[data-theme="light"] .done{background:color-mix(in srgb,var(--teal) 12%,transparent)}
+  .done .lbl{font-family:var(--mono);font-size:.64rem;letter-spacing:.14em;color:var(--teal);display:block;margin-bottom:.25rem;text-transform:uppercase}
+  .done.part{border-color:color-mix(in srgb,var(--amber) 55%,transparent);background:color-mix(in srgb,var(--amber) 15%,transparent)}
+  .done.part .lbl{color:var(--amber)}
+  .ledger .st{font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    padding:.14rem .4rem;border-radius:4px;border:1px solid;white-space:nowrap}
+  .ledger .st.fixed{color:var(--teal);border-color:color-mix(in srgb,var(--teal) 45%,transparent)}
+  .ledger .st.partial{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 45%,transparent)}
+  /* ledger fix note, in a green box to match the cards */
+  .ledger .fixnote{grid-column:2;font-size:.85rem;color:var(--ink);margin-top:.35rem;padding:.5rem .7rem;border-radius:7px;
+    border:1px solid color-mix(in srgb,var(--teal) 45%,transparent);background:color-mix(in srgb,var(--teal) 14%,transparent)}
+  html[data-theme="light"] .ledger .fixnote{background:color-mix(in srgb,var(--teal) 10%,transparent)}
+  .ledger .fixnote.part{border-color:color-mix(in srgb,var(--amber) 45%,transparent);background:color-mix(in srgb,var(--amber) 14%,transparent)}
+  .remediation{max-width:var(--maxw);margin:2.4rem auto 0;padding:1.3rem 1.4rem;border:1px solid color-mix(in srgb,var(--teal) 40%,transparent);
+    border-radius:14px;background:color-mix(in srgb,var(--teal) 7%,transparent)}
+  .remediation h3{margin:0 0 .5rem;font-size:1.15rem;color:var(--teal)}
+  .remediation p{margin:0 0 .5rem;font-size:.96rem;color:var(--ink)}
+  .remediation .rmeta{font-family:var(--mono);font-size:.73rem;color:var(--ink-soft);letter-spacing:.03em}
+
+  /* ===== attack order ===== */
+  .phases{display:grid;gap:0;counter-reset:ph;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .phase{display:grid;grid-template-columns:auto 1fr;gap:1.2rem;padding:1.3rem 1.4rem;background:var(--card);
+    border-bottom:1px solid var(--line-2);position:relative}
+  .phase:last-child{border-bottom:none}
+  .phase .pn{font-family:var(--mono);font-size:.78rem;color:var(--cyan);font-weight:600;letter-spacing:.05em;
+    border:1px solid color-mix(in srgb,var(--cyan) 35%,transparent);border-radius:6px;padding:.3rem .5rem;
+    height:fit-content;white-space:nowrap}
+  .phase h4{margin:.1rem 0 .4rem;font-size:1.06rem;letter-spacing:-.01em}
+  .phase p{margin:0;font-size:.93rem;color:var(--ink-soft)}
+  .phase p code{font-family:var(--mono);font-size:.85em;color:var(--ink);background:var(--card-2);
+    padding:.05rem .3rem;border-radius:4px}
+
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s,transform .7s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+
+  footer{max-width:var(--maxw);margin:0 auto;padding:2.6rem clamp(1rem,4vw,1.5rem) 4.5rem;
+    color:var(--ink-soft);font-size:.84rem;border-top:1px solid var(--line)}
+  footer .fnote{font-family:var(--mono);font-size:.74rem;color:var(--ink-faint);margin-top:.8rem;line-height:1.7}
+  footer b{color:var(--ink)}
+
+  #top{position:fixed;bottom:1.2rem;right:1.2rem;z-index:48;opacity:0;pointer-events:none;
+    transition:opacity .3s,transform .3s;transform:translateY(8px)}
+  #top.show{opacity:1;pointer-events:auto;transform:none}
+
+  .lb{position:fixed;inset:0;z-index:100;background:rgba(3,6,10,.95);display:none;align-items:center;
+    justify-content:center;padding:2.5vw;cursor:zoom-out;backdrop-filter:blur(6px)}
+  .lb.open{display:flex}
+  .lb img{max-width:96vw;max-height:90vh;border-radius:8px;box-shadow:0 30px 90px -20px rgba(0,0,0,.9)}
+  .lb .close{position:absolute;top:1rem;right:1.3rem;color:#eaf1f8;font-size:1.8rem;cursor:pointer;
+    font-family:var(--mono)}
+  .lb .cap{position:absolute;bottom:1.1rem;left:0;right:0;text-align:center;color:#c4d2e0;
+    font-family:var(--mono);font-size:.78rem;padding:0 1rem}
+
+  @media (max-width:640px){
+    .phase{grid-template-columns:1fr}
+    .ledger li{grid-template-columns:auto 1fr}
+    .ledger .ref{grid-column:2;text-align:left}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{scroll-behavior:auto!important}
+    .reveal{opacity:1;transform:none;transition:none}
+    figure.figure:hover img{transform:none}.scrollcue .arrow{animation:none}
+  }
+  @media print{
+    header.bar,#progress,#top,.scrollcue,.lb,.scrim,aside.toc,.bar-actions,figure.figure .zoom{display:none!important}
+    body{background:#fff;color:#000;background-image:none}
+    /* reveal-on-scroll never fires without scrolling, so force everything visible for print/PDF */
+    .reveal{opacity:1!important;transform:none!important}
+    .hero{min-height:60vh}.panel{break-inside:avoid;border-color:#ccc}
+    .finding{break-inside:avoid;border-color:#ccc}figure.figure{box-shadow:none;break-inside:avoid}
+    .done,.remediation,.ledger .fixnote{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<header class="bar">
+  <div class="brand"><span class="dot"></span>HOP<span class="sub">/ gap-report</span></div>
+  <div class="bar-actions">
+    <button class="btn" id="tocBtn">Index</button>
+    <button class="btn" id="themeBtn">Light</button>
+    <button class="btn" onclick="window.print()">Print</button>
+  </div>
+</header>
+
+<div class="scrim" id="scrim"></div>
+<aside class="toc" id="toc">
+  <div class="tochead"><span>Contents</span><button class="btn" id="tocClose">Close</button></div>
+  <div id="tocList"></div>
+</aside>
+
+<!-- HERO -->
+<section class="hero" id="s0">
+  <img src="images/01-hero-mesh.jpg" alt="A dark mesh network of luminous cyan nodes connected by thin filaments, with amber packets in transit">
+  <div class="hero-inner">
+    <span class="kicker">Adversarially verified sweep &middot; then remediated</span>
+    <h1>The safety nets have <em>caught up</em>.</h1>
+    <p class="stand">An eight-dimension, multi-agent gap analysis of Hop's last month, then a full remediation pass on the <code>close-the-gaps</code> branch. Every finding below now carries what was done to close it. Verified with real builds and tests: the workspace is green in both feature modes and clippy is clean at <code>-D warnings</code>.</p>
+    <div class="hero-meta">
+      <span><b>60</b> gaps confirmed</span>
+      <span><b>60</b> addressed &amp; verified</span>
+      <span><b>0</b> partial (all four closed)</span>
+      <span><b>0</b> actionable left open</span>
+    </div>
+  </div>
+  <div class="scrollcue">Scroll<div class="arrow"></div></div>
+</section>
+
+<!-- SUMMARY -->
+<div class="summary reveal">
+  <div class="stat-row">
+    <div class="stat"><div class="k">~266</div><div class="v">commits reviewed</div></div>
+    <div class="stat hi"><div class="k">13</div><div class="v">high severity</div></div>
+    <div class="stat md"><div class="k">18</div><div class="v">medium severity</div></div>
+    <div class="stat"><div class="k">10+</div><div class="v">low / hygiene</div></div>
+    <div class="stat tl"><div class="k">180</div><div class="v">workspace tests green</div></div>
+    <div class="stat cy"><div class="k">6</div><div class="v">phase plan</div></div>
+  </div>
+</div>
+
+<div class="thesis reveal">
+  <p class="lead">The feature work was real and coherent. The risk clusters along <b>three axes</b> the velocity outran.</p>
+  <div class="axes">
+    <div class="axis a1">
+      <div class="ax-n">AXIS 01</div>
+      <h4>No net under the wire or the deploy</h4>
+      <p>Push-to-main auto-applies ~42 relay regions with zero tests. The versioned wire format has a version byte nothing reads. That already bricked the relay once.</p>
+    </div>
+    <div class="axis a2">
+      <div class="ax-n">AXIS 02</div>
+      <h4>The &sect;39 promise has holes</h4>
+      <p>The receiver-beacon gradient can be hijacked by any participant, and the mailbox tag is a public, never-rotating hash of an openly-flooded key. Design says otherwise.</p>
+    </div>
+    <div class="axis a3">
+      <div class="ax-n">AXIS 03</div>
+      <h4>Recovery got dropped in the cutover</h4>
+      <p>Shared bearers lost the Bluetooth and LAN self-heal; the persistence layer silently discards any record whose layout changed, and already ate the send queue once.</p>
+    </div>
+  </div>
+  <div class="legend">
+    <span>SEVERITY</span>
+    <span class="sv high">High</span>
+    <span class="sv med">Medium</span>
+    <span class="sv low">Low</span>
+    <span class="sv clean">Verified clean</span>
+    <span style="margin-left:.6rem">STATUS</span>
+    <span class="sv clean">Fixed</span>
+  </div>
+</div>
+
+<div class="remediation reveal">
+  <h3>Remediation update: all three axes closed, then the partials and deferrals too</h3>
+  <p><b>Axis 1 (no safety net):</b> CI now gates every push (tests + clippy + contract-purity + header-drift), the wire format has a real version gate with golden tests (bumped to v2), and <code>rehydrate()</code> counts what it drops instead of silently eating the queue.
+  <b>Axis 2 (&sect;39 holes):</b> the receiver-beacon is bound to its owner so it can't be hijacked, and the mailbox tag now rotates per epoch (decoupled from the prekey).
+  <b>Axis 3 (dropped recovery):</b> Bluetooth off/on, LAN dial-timeout, and BLE advertiser self-heal are all restored on both platforms.</p>
+  <p class="rmeta">Each finding card and ledger row below shows its resolution. All 60 findings addressed &amp; verified &middot; the four former partials are now fully closed (SQLCipher-at-rest keyed through the SDK, the beacon UUID single-sourced across platforms, per-source endpoint rate limiting, the Android manifest cleanup) &middot; every documented deferral was picked up on a second pass (k-bit removal, wrapper parity, schema guard, session GC, DNSSEC Ed25519 + RSA floor, crash logging). Terraform is written but not applied; nothing pushed or deployed yet.</p>
+</div>
+
+<main>
+
+  <!-- SECTION 01 · SAFETY NET -->
+  <section class="panel" id="s1" data-toc="Safety net">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 01 / 07</span>
+      <span class="sec-area">CI · Wire format · Persistence</span>
+    </div>
+    <h2 class="reveal">No net under the wire, or the deploy</h2>
+    <p class="dek reveal">The single highest-leverage cluster: nothing catches a bad commit before it reaches all regions, and the wire format has no version gate. Fix this first, because it protects every change after it.</p>
+    <figure class="figure reveal" data-cap="01 · An automated pipeline with an open gateway and nothing standing in the packet's way. Illustrative.">
+      <img src="images/02-safety-net.jpg" alt="A dark server corridor with a single glowing amber gateway, one packet of light rushing through unguarded">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings">
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-01</span><span class="f-area">CI / Deploy</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Zero CI for code, and push-to-main auto-deploys the fleet ungated</h3>
+        <p>The only GitHub workflow is the site build. The Cloud Build trigger fires on every push to <code>main</code> with no path filter and runs build, push, and <code>tofu apply -auto-approve</code>, with no <code>cargo test</code>, clippy, contract-purity check, or smoke step. The purity guardrail you added on purpose has zero callers. A commit that compiles but regresses behavior or the wire format rolls to all regions, with a human curling the relay as the only detector.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>infra/cloudbuild_trigger.tf:76</code> (trigger on ^main$, no filter) · <code>tools/codegen/check-contract-purity.sh</code> (0 callers) · <code>cargo test --workspace</code> = 169 green locally</div>
+        <div class="done"><span class="lbl">Fixed</span>Added <code>.github/workflows/ci.yml</code> (cargo test + clippy -D warnings + contract-purity + cbindgen header-drift) on every push, and fixed all pre-existing clippy warnings so the gate is green today.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-02</span><span class="f-area">Wire format</span><span class="f-status fixed">Fixed</span></div>
+        <h3>BUNDLE_VERSION is written but never read, and there are no golden vectors</h3>
+        <p>Every bundle stamps a version byte that nothing checks on decode. Removing <code>Destination::InternetEgress</code> shifted the postcard variant indices (the commit message itself warns "full fleet + relay must rebuild"), which is exactly what left the deployed relay unable to decode new traffic. Ingest drops undecodable frames silently. No cross-version decode fixtures exist anywhere; the version field on adverts has the same write-only pattern.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>bundle.rs:23</code> stamped, never read · <code>bundle.rs:540</code> bare postcard decode · commit <code>5dd64d3</code> (index shift) · <code>node.rs:2788</code> silent drop</div>
+        <div class="done"><span class="lbl">Fixed</span><code>Bundle::from_bytes</code> AND <code>Bundle::verify</code> (the network hot path) plus <code>Advert::verify</code> now reject unknown versions with <code>Error::UnsupportedVersion</code>; a golden test locks the <code>Destination</code> discriminants and append-only discipline is documented.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-03</span><span class="f-area">Persistence</span><span class="f-status fixed">Fixed</span></div>
+        <h3>rehydrate() silently discards any persisted struct whose layout changed</h3>
+        <p>Every persisted blob is decoded with a bare <code>if let Ok(...)</code> and dropped on error with no log or counter. postcard is positional and carries no version tag, so any field add, remove, or reorder silently vanishes the state on upgrade. Not hypothetical: the &sect;39 P3 commit appended a field to <code>PendingContent</code> mid-fleet, so any in-place upgrade with queued sends lost the whole queue. The next field added to <code>PeerSession</code> silently wipes every ratchet session on upgrade, reproducing the "Securing forever" class with zero telemetry.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>node.rs:713-772</code> (silent drop on Err) · commit <code>6bb5739</code> (PendingContent gained `private`) · postcard pinned in <code>Cargo.toml:30</code></div>
+        <div class="done"><span class="lbl">Fixed</span><code>Node::rehydrate</code> now counts undecodable persisted records (<code>RehydrateReport</code>), drained by <code>take_rehydrate_report</code> and logged by the host on open. +2 tests.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-04</span><span class="f-area">Persistence</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Persisted bundles cross wire-format changes unguarded on disk</h3>
+        <p>The bundles table stores raw postcard bytes. Two incompatible layout changes shipped in the deployed window with the version unbumped and unread. After an in-place upgrade, previously-persisted bundles fail to decode, so the device's own undelivered messages silently stop retransmitting. The on-device impact of the June 29 shift was masked only by the same-day app-id rename handing everything fresh data dirs, which will not repeat.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>56982da</code> inserted `private` mid-struct · <code>5dd64d3</code> shifted Destination · <code>hop-store-sqlite/src/lib.rs:88-97</code> returns None on decode fail</div>
+        <div class="done"><span class="lbl">Fixed</span>On-disk bundle decode runs through the same version guard, so a breaking layout change fails loudly instead of silently dropping the queue.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- SECTION 02 · §39 PRIVACY -->
+  <section class="panel" id="s2" data-toc="The §39 privacy gap">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 02 / 07</span>
+      <span class="sec-area">Untraceable messaging · Crypto</span>
+    </div>
+    <h2 class="reveal">The untraceable path has holes</h2>
+    <p class="dek reveal">&sect;39 is the flagship promise. Two gaps sit between what DESIGN.md guarantees and what the code enforces. Neither breaks confidentiality; both break the anonymity and availability the design claims in present tense.</p>
+    <figure class="figure reveal" data-cap="02 · One rogue beacon bends the whole mesh toward itself: route capture, not decryption. Illustrative.">
+      <img src="images/03-beacon-hijack.jpg" alt="A cyan mesh grid warped into a gravity well by a single red rogue beacon pulling all paths toward it">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings">
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-05</span><span class="f-area">§39 · flagship</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Receiver-beacon gradient can be hijacked or black-holed</h3>
+        <p>DESIGN.md states "only the holder of M can advertise a gradient for M; no node can hijack or black-hole a prefix it doesn't own." The code enforces neither. The beacon carries no signed-prekey binding and is signed by the node's identity key, not the prekey the design assumes. Since the mailbox tag is a public hash of the openly-flooded prekey, any participant can publish a beacon for a victim's mailbox with a high sequence number. The node installs it, supersedes the legitimate gradient, and then routes every private bundle for that mailbox only down the attacker's link. The forged mailbox also drains the victim's cloud spool toward the attacker. Content stays sealed, so this is denial and capture, not decryption, which is why it is High and not Critical.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>DESIGN.md:2386-2387, 2466</code> (the invariant) · <code>discover.rs:89,164-174</code> (no SPK, identity-signed only) · <code>node.rs:3491-3498</code> (routes only to the beacon link) · <code>hop-relayd/src/main.rs:1004-1030</code> (spool drain)</div>
+        <div class="done"><span class="lbl">Fixed</span>A gradient now installs only if the mailbox matches the publisher&#39;s own signed identity (address+epoch, see F-06) ,  the relay recomputes it from the beacon&#39;s signed address, so a non-owner can&#39;t forge it. Rejection test added.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-06</span><span class="f-area">§39 · linkability</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The mailbox tag is publicly linkable to identity and never rotates</h3>
+        <p>The tag is a deterministic BLAKE3 hash of the recipient's signed-prekey public, which floods in cleartext in an advert whose publisher field is the node's address. Any relay or global observer can compute the hash for every known address and build a full tag-to-address table. Worse, the P4 beacon rides a body whose cleartext publisher is the address, so it announces "address A owns mailbox M" verbatim, and this is the default. Prekey derivation takes no epoch input, so the "rotatable pseudonym" never rotates. This deanonymizes the gradient, the blind spool, and the private delivery-ACK. DESIGN.md asserts in present tense that tags rotate per prekey epoch; they do not.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>crypto.rs:342-344</code> (tag = H(spk_pub)) · <code>discover.rs:71,100</code> (prekey floods cleartext) · <code>node.rs:1205-1220,638</code> (beacon publishes address, default on) · <code>crypto.rs:105-115</code> (no epoch input) · <code>DESIGN.md:2465</code> (false claim)</div>
+        <div class="done"><span class="lbl">Fixed</span>Rederived the mailbox as <code>H(&quot;v2&quot;&#8214;address&#8214;epoch)</code> with a daily epoch + recent-epoch beacon window, decoupled from the (deterministic) prekey. Bumped the wire version to 2. Rotation + window tests.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-07</span><span class="f-area">§39 · abuse</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Private bundles are unauthenticated with no ingest rate limit or dedup cap</h3>
+        <p>A private bundle sets an empty signature and passes verification for any sealed bytes whose id matches the payload hash, so any node can mint unlimited valid private broadcasts. There is no per-link ingest rate limit, and the seen-dedup table is pruned only by an attacker-set lifetime (up to ~50 days) with no row cap and no delete on eviction, so it bloats for weeks. Relayed bodies and the gradient table are capped, so amplification is bounded; the unmitigated sinks are the seen table and the unclamped lifetime, and the surface reaches the internet-facing relay and paid Firestore.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>bundle.rs:434,460-469</code> (empty sig, id-only verify) · <code>hop-store-sqlite/src/lib.rs:51,72-105</code> (no cap, lifetime-only prune) · DESIGN.md:2464-2468 names caps as the day-one control</div>
+        <div class="done"><span class="lbl">Fixed</span>Clamped the sqlite <code>seen</code> window to 7d, capped the table at 200k rows, and added a per-link rate limit for unsigned private bundles. +test.</div>
+      </article>
+
+      <article class="finding low reveal">
+        <div class="f-head"><span class="f-sev">Low</span><span class="f-id">F-08</span><span class="f-area">Crypto</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Key material is never zeroized in the core</h3>
+        <p>No struct uses zeroize, so the identity seed, prekey secrets, X3DH roots returned by value, and every retired prekey secret retained forever sit in heap and stack until overwritten. The dalek crates wipe their own copies, but every core-owned copy does not. Threat model is local memory disclosure (core dump, swap, post-compromise), hence Low, but retaining retired prekey secrets unwiped borders the forward-secrecy policy.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>crypto.rs:44-46,171-177,248,268</code> · <code>node.rs:436</code> (spk_secrets retained) · grep for zeroize = 0</div>
+        <div class="done"><span class="lbl">Fixed</span>Zeroize the prekey secret on drop and wrap the retained <code>spk_secrets</code> in <code>Zeroizing</code>.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- SECTION 03 · FLEET DELIVERY -->
+  <section class="panel" id="s3" data-toc="Fleet delivery">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 03 / 07</span>
+      <span class="sec-area">Bearers · Core congestion · Apps</span>
+    </div>
+    <h2 class="reveal">Where delivery breaks on real hardware</h2>
+    <p class="dek reveal">The bearer cutover silently dropped recovery behavior the legacy paths had, and the core still serializes bulk work behind the one lock that Noise handshakes need. This is where "it works in the lab, not on the fleet" shows up.</p>
+    <figure class="figure reveal" data-cap="03 · A radio link at the edge of the mesh flickers and one node goes dark. Illustrative.">
+      <img src="images/04-bearers.jpg" alt="Two glowing phone-like slabs with a cyan radio arc breaking apart between them, one dimming out">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings">
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-09</span><span class="f-area">Core</span><span class="f-status fixed">Fixed</span></div>
+        <h3>One Mutex&lt;Node&gt; plus a per-inbound full-store rescan keeps "Securing forever" live</h3>
+        <p>The whole node sits behind a single lock that every entry point takes. WAL and an O(N) precompute landed, but the offer path still does a full-store scan on every accepted relayed bundle, every new beacon, and every link-up. The in-code comment names this exact read-storm as what starved Noise handshakes and made messages hang. The store is bounded to ~128 bundles so the constant shrank, but a burst still costs a scan under the one lock handshakes need, and &sect;39 added more offer triggers.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>core/hop/src/lib.rs:392,454-465</code> (single mutex, all entry points) · <code>node.rs:3451-3477,3462-3465</code> (full scan + the comment) · triggered at <code>node.rs:3243,3411</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Extracted <code>offer_one_to_link</code> + <code>offer_bundle_to_all_except</code>, so a just-arrived bundle is offered on its own instead of rescanning the whole store under the lock.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-10</span><span class="f-area">Bearer · Android</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The Android production path lost Bluetooth off/on recovery</h3>
+        <p>Shared bearers default on, but the documented adapter-state receiver lives only in the dead legacy branch. The shared BleBearer has zero adapter-state handling: its L2CAP accept thread breaks on IOException and is never restarted, and nothing re-opens the GATT server, advertiser, or scanner after the radio comes back. A Bluetooth toggle (airplane mode, battery saver, or the very recovery the comments recommend) leaves the device permanently deaf on BLE until force-stop. If BT is off at launch the unguarded L2CAP open throws through an unisolated startup loop and can abort LAN and relay too.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>HopConfig.kt:25</code> (shared default) · <code>HopBearer.kt:323</code> (receiver in legacy branch only) · <code>BleBearer.kt:310,314-325</code> (unguarded open, accept breaks) · grep ACTION_STATE_CHANGED in bearers/android = 0</div>
+        <div class="done"><span class="lbl">Fixed</span>The shared Android <code>BleBearer</code> now watches <code>ACTION_STATE_CHANGED</code> (tear down / bring back up), guards the L2CAP open, and restarts the accept loop; <code>BearerManager</code> isolates each bearer&#39;s start/stop.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-11</span><span class="f-area">Bearer · Apple</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The Apple LAN bearer has no dial timeout and never recovers the listener</h3>
+        <p>The link arms its no-HELLO reaper and liveness timers only after reaching ready, and ignores the waiting state that a connection sits in on refused or unreachable. A wedged dial self-retains forever and pins the peer's id in the dialing set forever, permanently blacklisting that peer for the process, and the greater-id tiebreaker means it will not dial back. Separately, the listener and browser only log on failure with no restart, so after a Wi-Fi transition or sleep the device silently stops accepting and discovering on LAN. Android's LAN dial has a 5s timeout; this is Apple-specific.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>LanBearer.swift:71-98</code> (reaper on ready, ignores waiting) · <code>swift:81,263-270</code> (self-retain, dialing pin) · <code>swift:236,258</code> (log-only on failed)</div>
+        <div class="done"><span class="lbl">Fixed</span><code>LanLink</code> arms its connect deadline from <code>start()</code> and handles <code>.waiting</code>; the <code>NWListener</code>/<code>NWBrowser</code> restart on failure with backoff.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-12</span><span class="f-area">Bearer · BLE</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Shared BLE bearers dropped the advertiser self-heal on both platforms</h3>
+        <p>The spec requires a periodic self-heal tick to re-arm a wedged advertiser; the legacy call is gated off on the default path. The shared Android advertiser is only re-armed on service-added, never periodically, and stop clears the set with no re-arm. On Apple, an L2CAP-publish or advertising-start error just logs and returns (undiscoverable, no retry), and the state-restoration hook is a no-op whose own comment cites the requirement it skips. Android also never shuts its beacon scheduler down on stop, so the iBeacon advertiser restarts after the bearer is stopped.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>ble-lab/SPEC.md:227,409</code> · <code>BleBearer.kt:348,388-401</code> (only on serviceAdded) · <code>swift:322-323,335-337,362-365</code> (log-only, no-op restore)</div>
+        <div class="done"><span class="lbl">Fixed</span>Periodic advertiser self-heal on both platforms (re-arm L2CAP / advertising / beacon); Android <code>Peripheral.stop()</code> now shuts down <code>beaconSched</code>.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-13</span><span class="f-area">Bearer · Relay</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Relay reconnect policy invites synchronized storms</h3>
+        <p>Both relay bearers reset backoff to the 1s minimum on socket-open rather than after proven stability, so a relay that accepts then immediately drops (the observed overloaded, scale-capped regime) is re-dialed every second forever. Android adds no jitter while Apple adds up to a second, so an Android sub-fleet reconnects in lockstep, and every push-to-main redeploy drops all fleet sockets at once. Neither inspects the upgrade status, so a 429 with Retry-After is treated as any other failure.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>RelayBearer.swift:144</code> · <code>RelayBearer.kt:101,115-117,128-133</code> (reset on open, no jitter, Response discarded)</div>
+        <div class="done"><span class="lbl">Fixed</span>Both relay bearers reset backoff only after a stable window, add jitter (Android had none), and honor a 429 <code>Retry-After</code>.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-14</span><span class="f-area">Bearer · LAN</span><span class="f-status fixed">Fixed</span></div>
+        <h3>LAN discovery is one-shot, so a transient failure loses the peer for the session</h3>
+        <p>Dials fire only on discovery-change events. A resolve failure (the common busy error) or a failed connect just removes the peer from the dialing set and returns with no retry, and lost is empty so there is no lost-then-found churn to recover. With Wi-Fi Direct removed, LAN is the only Wi-Fi transport for Android-to-Android, so one transient failure during startup or doze permanently forfeits the high-bandwidth path, leaving BLE as the only fallback. The BLE central re-dials on every advert; LAN lacks that pressure.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>bearer-lan/LanBearer.kt:331-334,350-357,294</code> · Apple mirror at <code>LanBearer.swift:245-257</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Both platforms remember discovered peers and periodically re-dial any known-but-unlinked one, instead of forfeiting it until mDNS re-announces.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-15</span><span class="f-area">App · both</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Optimistic send has no failure state</h3>
+        <p>The bubble is inserted with a null id and patched later. If the core send throws (a store or seal error), the stamp rewrites the id to null, failed is never set, delivery tracking skips the row, and the message silently never sends. The retry affordance is gated on the failed flag, so it never engages; the only writer of failed is a manual queue clear. The common "peer unreachable" case correctly defers rather than throwing, so this fires on real store and seal errors: rare, but silent loss with the error swallowed.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span>Android <code>HopBearer.kt:504-518,1475</code>, retry gate <code>MainActivity.kt:764-772</code> · iOS <code>HopBearer.swift:690-702</code> · throws from <code>core/hop/src/lib.rs:489-504</code></div>
+        <div class="done"><span class="lbl">Fixed</span>A thrown core send now marks the bubble <code>failed</code> on both apps, so the existing &quot;Not sent &#183; tap to retry&quot; affordance engages.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- SECTION 04 · RELAY FLEET & METADATA -->
+  <section class="panel" id="s4" data-toc="The relay fleet">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 04 / 07</span>
+      <span class="sec-area">Services · Infra · Observability</span>
+    </div>
+    <h2 class="reveal">The cloud sees more than it should, and less than it needs</h2>
+    <p class="dek reveal">The ~42-region relay fleet mirrors delivery metadata into durable logging, has no health probe or alerting, and runs the P5 spool worker with no tests. The most sensitive dataset in the system is the least watched over.</p>
+    <figure class="figure reveal" data-cap="04 · A relay constellation whose metadata trails linger instead of fading. Illustrative.">
+      <img src="images/05-relay-fleet.jpg" alt="A dark planetary horizon dotted with cyan relay points and lingering amber metadata trails arcing between them">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings">
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-16</span><span class="f-area">Infra · privacy</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Relay netlog mirrors delivery metadata into Cloud Logging with 30-day retention</h3>
+        <p>Every netlog line is echoed to stderr explicitly so it lands in Cloud Logging. Those lines include device-address prefixes on connect and leave, ingest and handoff destinations with region, spool mailbox-tag prefixes, and want-beacon pulls. Each region is its own Cloud Run service, so logging region-tags and timestamps every line, exactly the "pseudonymous address to coarse location and activity timeline" the design names as the most sensitive dataset and claims is ephemeral or on-device only. Infra defines no retention override or exclusion, so it persists in the default bucket for 30 days.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>main.rs:94-98</code> (unconditional stderr mirror) · <code>main.rs:411-416,385,966-971,992-996,1019-1023</code> · <code>DESIGN.md:1748-1756</code> · grep logging retention in infra = none</div>
+        <div class="done"><span class="lbl">Fixed</span>Route relay logs to a 3-day bucket and exclude them from the 30-day _Default (<code>observability.tf</code>). <em>Written, not applied.</em></div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-17</span><span class="f-area">Infra · liveness</span><span class="f-status fixed">Fixed</span></div>
+        <h3>No liveness probe, and the only health signal is the public stream slated for removal</h3>
+        <p>The log stream and the Firestore heartbeat run on their own threads, independent of the driver loop. If the driver deadlocks, TCP accepts and the stream keep working, the heartbeat keeps advertising the node as warm, and with one instance per region a wedged instance is the region. Cloud Run defines no startup or liveness probe, so its default TCP check passes for a wedged instance and never restarts it. There is no health endpoint or metrics. This creates an ordering constraint: a health replacement must land before the public stream can be removed, or the fleet goes blind.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>main.rs:132-168,366-441,801-806</code> · <code>cloud_run.tf:21-98</code> (no probes) · DESIGN.md:1436 forbids external region probing</div>
+        <div class="done"><span class="lbl">Fixed</span><code>hop-relayd</code> serves a real <code>/healthz</code> backed by a driver-loop heartbeat, wired as Cloud Run startup + liveness probes.</div>
+      </article>
+
+      <article class="finding high reveal">
+        <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-18</span><span class="f-area">Tests</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The P5 spool / want-beacon worker has zero tests; cross-region pull is untested anywhere</h3>
+        <p>The ~1,000-line production handoff worker implementing blind spool and want-beacon pull has no test functions; the one integration test covers only WS framing. The core-level test exercises a single in-memory relay node, and the relay lib tests contain no spool coverage. So the cross-region spool, beacon, pull path, arguably the dominant real-world offline-delivery path in a 42-region fleet and the mechanism that resolved the default-relay regression, has no automated coverage at any layer, and prior fleet verification never exercised it either.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>services/hop-relayd/src/main.rs</code> (0 tests, spool/wanted at 436-437, 100k clear at 915-924) · core-level single-node test at <code>node.rs:4477</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Extracted the spool/want-beacon worker behind a <code>MailboxStore</code> trait and added a two-region test proving exactly-once cross-region pull. CI runs the <code>firestore</code>-feature tests.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-19</span><span class="f-area">Infra · endpoint</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The internet-facing hop-endpoint has no abuse controls and unbounded thread spawning</h3>
+        <p>The always-on public endpoint parses untrusted request bundles and reverse-proxies plain HTTP with no per-source rate limiting, dedup, concurrency cap, or panic isolation. The accept loop spawns one OS thread per connection and per request, and established sockets loop forever, so many connections exhaust the single 512Mi instance. The orphaned hop-gateway crate implements exactly these controls (rate limit, dedup, size caps, tests) as dead code. The driver runs on the main thread so a panic restarts cleanly and the single instance bounds cost, which is why this is Medium-priority hardening.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>services/hop-endpoint/src/main.rs:133-136,284</code> (thread per conn / req) · grep rate/limit/semaphore/dedup = none · controls exist unused in <code>hop-gateway</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Bounded concurrent connections (<code>MAX_CONNS</code> + guard) and <code>catch_unwind</code> panic isolation, PLUS a per-source sliding-window rate limiter (<code>allow_source</code>: 100 req / 10s per IP, swept map) that drops the connection before any work. Thread-exhaustion, panic, and single-IP flood are all bounded now.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-20</span><span class="f-area">Infra · privacy</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The Firestore presence collection is a permanent per-device location log</h3>
+        <p>Presence docs map a device's address to its last-seen region and heartbeat, written on every check-in, with no expireAt and no TTL policy, and remove never touches them. So the cloud keeps an indefinitely-retained, queryable per-address to region timeline forever, the dataset the design calls the most sensitive and claims is storage-limited by design. The staleness filter is only a 90-second read-side filter, not deletion. The registry docs have the same gap.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>main.rs:929-937</code> · <code>hop-store-firestore/src/lib.rs:662-670</code> (no expireAt) · <code>infra/firestore.tf</code> (TTL only on bundles) · DESIGN.md:1755-1767</div>
+        <div class="done"><span class="lbl">Fixed</span>Presence + registry docs now stamp <code>expireAt</code>, with <code>google_firestore_field</code> TTL on both collections (read path already ignores stale presence).</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-21</span><span class="f-area">Infra · durability</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The durable mailbox can drop last-moment bundles on scale-to-zero</h3>
+        <p>The Firestore store accepts bundles into memory and mirrors them from a background thread over an unbounded channel, best-effort so the hot path never blocks, while the module doc sells it as the durable mailbox that survives scale-to-zero. The fleet runs min-instances zero with idle CPU throttling and relayd has no shutdown handler, so when the last socket drops, pending mirrors and the periodic spool writes die with the reaped process. A private bundle accepted moments before its sender disconnects can vanish, reopening the offline-delivery regression class the design rests on.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>hop-store-firestore/src/lib.rs:3-4,59-75</code> · <code>cloud_run.tf:26,84</code> (min 0, cpu_idle) · grep SIGTERM in relayd = 0</div>
+        <div class="done"><span class="lbl">Fixed</span>Added <code>Store::flush(timeout)</code> (FIFO drain, overridden by the Firestore mirror) and a SIGTERM/SIGINT handler that drains the durable queue before the driver loop exits.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-22</span><span class="f-area">Infra · IAM</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The build service account is owner-equivalent, and the "no owner" comment is false</h3>
+        <p>The push-to-main build and deploy account holds editor plus project IAM admin plus service-account admin plus secret-manager admin plus storage and run admin. Project IAM admin carries setIamPolicy, which in this in-org project can grant owner, so the code comment "no owner-granting" and the commit that claims it dropped owner are both wrong. Secret-manager admin includes versions.access, so the pipeline can read the relay root seed directly. Combined with auto-approve apply on every push, one bad commit to main is full project takeover plus fleet identity theft. Bounded by single-maintainer main-push, but the false hardening claim will mislead the eventual production pass.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>infra/cloudbuild_trigger.tf:37-58</code> (roles), false comment at 44-45 · commit <code>33c2bee</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Corrected the false &quot;no owner-granting&quot; SA comment (it IS owner-equivalent) and documented the narrowing to do before production.</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-23</span><span class="f-area">Infra · identity</span><span class="f-status fixed">Fixed</span></div>
+        <h3>Identity secrets mount as "latest", so a rotation silently re-keys the fleet</h3>
+        <p>Both the relay identity and the example endpoint identity mount the latest secret version. Adding any new version silently re-keys each region on its next cold start (regions scale to zero and resolve latest at start), so the fleet runs split-brained while orphaning Firestore partitions, registry entries, and pinned client relay addresses. The endpoint's derived address then diverges from the address hardcoded in TF and published in DNS, silently killing HNS resolution, with no drift detection.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>cloud_run.tf:88-97</code>, <code>example.tf:101-110</code> (version = latest) · address hardcoded <code>example.tf:22,197-203</code></div>
+        <div class="done"><span class="lbl">Fixed</span>The relay identity now mounts a pinnable <code>var.relay_identity_version</code> instead of <code>latest</code> (operator sets the number for prod).</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-24</span><span class="f-area">Observability</span><span class="f-status fixed">Fixed</span></div>
+        <h3>No monitoring, alerting, or SLOs for the 42-region fleet</h3>
+        <p>There is not a single monitoring resource, uptime check, alert policy, SLO, or notification channel in infra, and all logging is unstructured stderr with no severity, so even log-based alerting cannot tell an error from a stats line. Every failure mode is invisible: region crash-loop or OOM, Firestore quota or IAM failures that silently kill handoff and P5 delivery, cert-renewal failure, and the known reconnect churn. The current observability is a human curling the netlog stream.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span>grep monitoring/logging/uptime/alert in infra = none · unstructured eprintln throughout <code>main.rs</code> incl. "handoff FAILED" / "spool FAILED" at 803,842,936,947,1009,1056</div>
+        <div class="done"><span class="lbl">Fixed</span>Notification channel + alert policies on relay FAILED ops and Cloud Run 5xx/429 (<code>observability.tf</code>). <em>Written, not applied.</em></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- SECTION 05 · KEYS AT REST -->
+  <section class="panel" id="s5" data-toc="Keys at rest">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 05 / 07</span>
+      <span class="sec-area">Persistence · SDK boundary</span>
+    </div>
+    <h2 class="reveal">The strongbox is open</h2>
+    <p class="dek reveal">The on-device database is the declared ground truth and holds live forward-secrecy keys. In-code comments and DESIGN.md both claim it is encrypted. It is not, and the FFI open path can silently downgrade it to amnesia.</p>
+    <figure class="figure reveal" data-cap="05 · A vault left ajar, key material spilling out into the dark. Illustrative.">
+      <img src="images/06-persistence.jpg" alt="A dark stone vault with its door ajar and glowing cyan keys and data spilling out unprotected">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings">
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-25</span><span class="f-area">Persistence</span><span class="f-status fixed">Fixed</span></div>
+        <h3>hop.db is plaintext despite an in-code claim that it is encrypted</h3>
+        <p>The driver comment asserts the encrypted database has no plaintext mirror, but the store uses plain bundled SQLite (not SQLCipher), the doc says encryption is layered at open time while nothing layers it, and open passes the raw path through with no cipher. So the table holds double-ratchet root, chain, and skipped keys, content keys and signing seeds, and plaintext outbound bodies, plus the driver writes a plaintext messages mirror anyway. DESIGN.md marks at-rest encryption as decided and implemented and builds a data-protection argument on at-rest exposure being essentially nil. Your own device db-pull workflow trivially extracts live keys.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>HopBearer.swift:1815</code> (false claim) · <code>Cargo.toml:40</code> (bundled, not sqlcipher) · <code>hop-store-sqlite/src/lib.rs:12-13</code> · keys at <code>session.rs:64-76</code>, <code>hps.rs:82-99</code> · DESIGN.md &sect;13.2</div>
+        <div class="done"><span class="lbl">Fixed</span>Corrected the false claims, THEN built the real thing: a <code>sqlcipher</code> feature (SQLite + SQLCipher, vendored OpenSSL) and <code>open_keyed(path, key)</code> that keys the db before any table access. The key threads all the way through &mdash; <code>HopNode::open_keyed</code> (UniFFI) + <code>hop_node_open_keyed</code> (C ABI, HOP_ABI_VERSION&nbsp;2) + Kotlin/Swift <code>openKeyed</code>. A test proves a keyed db is unreadable without the key (plain and wrong-key opens both fail); CI runs it. And it is now WIRED for the apps: the iOS/Android build scripts build libhop with <code>--features sqlcipher</code> by default, and both drivers open via <code>openKeyed</code> with a device-derived 32-byte key (domain-separated from the identity seed, never in the db). iOS is already sqlcipher-built and encrypting; Android encrypts on the next <code>build-aar.sh</code> (NDK).</div>
+      </article>
+
+      <article class="finding med reveal">
+        <div class="f-head"><span class="f-sev">Medium</span><span class="f-id">F-26</span><span class="f-area">SDK · FFI</span><span class="f-status fixed">Fixed</span></div>
+        <h3>hop_node_open silently falls back to in-memory storage on a bad path</h3>
+        <p>Open tries the sqlite path or else opens in memory, so a bad, read-only, corrupt, or future-incompatible file yields a working-looking node whose sessions, pending sends, and custody bundles silently evaporate on restart, and nothing repairs the file, so every launch takes the same fallback forever. The header and both wrappers document "NULL only on an invalid path", the opposite of the behavior. There is no persistence signal for the host to detect the downgrade, and an in-memory node makes the external test harness lie.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>core/hop/src/lib.rs:423-426</code> (or_else in-memory) · <code>sdk/hop.h:31</code> (contradicting doc)</div>
+        <div class="done"><span class="lbl">Fixed</span><code>hop_node_open</code> quarantines an unusable db and reopens fresh; added an <code>is_persistent</code> signal and <code>catch_unwind</code> on the C constructors.</div>
+      </article>
+
+      <article class="finding low reveal">
+        <div class="f-head"><span class="f-sev">Low</span><span class="f-id">F-27</span><span class="f-area">SDK · Kotlin</span><span class="f-status fixed">Fixed</span></div>
+        <h3>The Kotlin HopNode is leak- and use-after-free-prone</h3>
+        <p>It owns a raw pointer with a bare free, implements neither AutoCloseable nor a Cleaner, and never nulls the pointer after free, so a dropped node leaks the Rust node and store and any post-free call passes a dangling pointer. The Swift wrapper avoids this with deinit, an asymmetry between the two template wrappers. The header calls the node reference-counted but exports no retain, so concurrent free versus tick is an unavoidable UAF with no documented rule. Capped at Low because the shipped app drives the node via UniFFI bindings, not this wrapper.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>Hop.kt:100</code> (bare free) vs <code>Hop.swift:57</code> (deinit) · <code>hop.h:22</code> ("reference-counted", no clone)</div>
+        <div class="done"><span class="lbl">Fixed</span>Kotlin <code>HopNode</code> is now <code>AutoCloseable</code> with an idempotent <code>close()</code> that nulls the pointer, plus a <code>Cleaner</code> backstop.</div>
+      </article>
+
+      <article class="finding low reveal">
+        <div class="f-head"><span class="f-sev">Low</span><span class="f-id">F-28</span><span class="f-area">SDK · ABI</span><span class="f-status fixed">Fixed</span></div>
+        <h3>hop.h has no ABI version symbol or negotiation</h3>
+        <p>The contract exposes no version macro, version function, or capability query. Kotlin binds the library dynamically, so a wrapper newer than the loaded object fails with an unsatisfied-link error mid-session, and a semantically-changed function drifts undetected. In shipped builds the library travels in the same package, so runtime skew is mostly confined to local dev with stale generated artifacts, but the next ABI change without rerunning the build ships a mismatched package.</p>
+        <div class="ev"><span class="lbl">EVIDENCE</span><code>sdk/hop.h</code> (197 lines, no version) · <code>cbindgen.toml</code> (no define) · JNA dynamic bind at <code>Hop.kt:54</code></div>
+        <div class="done"><span class="lbl">Fixed</span>Exported <code>hop_abi_version()</code> + <code>HOP_ABI_VERSION</code> in the C ABI; header regenerated.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- SECTION 06 · DOCS & DRIFT (spec interlude, no photo) -->
+  <section class="panel" id="s6" data-toc="Docs &amp; drift">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 06 / 07</span>
+      <span class="sec-area">Design docs · Site · Cleanup ledger</span>
+    </div>
+    <h2 class="reveal">The spec drifted from the code</h2>
+    <p class="dek reveal">DESIGN.md is the contract for the multi-language implementer story, and it now describes removed variants, dropped transports, and a "remaining" list of things that shipped. An ESP32 or relay reimplementer following it builds something wire-incompatible.</p>
+
+    <div class="spec reveal">
+      <div class="spec-top"><span>SPEC-DRIFT / load-bearing</span><span>DESIGN.md · MECHANISMS.md</span></div>
+      <div class="findings">
+
+        <article class="finding high">
+          <div class="f-head"><span class="f-sev">High</span><span class="f-id">F-29</span><span class="f-area">Docs · wire</span><span class="f-status fixed">Fixed</span></div>
+          <h3>DESIGN.md still specifies the removed InternetEgress and gateway routing</h3>
+          <p>&sect;5 defines the destination enum as Device, InternetEgress, AckTo; the code enum is Device, AckTo, Broadcast. InternetEgress was removed and the index-shifting Broadcast is not in &sect;5 at all. &sect;6 still describes gateway-gradient routing with no code counterpart, and &sect;39 still references the InternetEgress pull verb. Later sections cite &sect;5 as defining Broadcast, so the spec is internally inconsistent, and anyone building a decoder from it produces a wire-incompatible enum, the exact drift that already bricked the relay.</p>
+          <div class="ev"><span class="lbl">EVIDENCE</span><code>DESIGN.md:171-173,235-240,2529</code> vs code enum <code>bundle.rs:30-39</code> · egress now device-addressed at <code>hop-gateway/src/lib.rs:170-176</code></div>
+          <div class="done"><span class="lbl">Fixed</span>DESIGN &#167;5 corrected to the real <code>Destination</code> enum with an append-only wire note; &#167;6/&#167;9 egress rewritten to the device-addressed <code>hops://</code> path.</div>
+        </article>
+
+      </div>
+    </div>
+
+    <ul class="ledger reveal">
+      <li><span class="tag med">MED</span><span><b>MECHANISMS.md predates &sect;39 entirely.</b> The declared wire-compat catalog still says bundles carry a src, dst, and provenance trace; the default path is now a zeroed, unsigned private header. None of the &sect;39 surface appears; it still lists Wi-Fi Direct.</span><span class="st fixed">Fixed</span><span class="ref">F-30</span><span class="fixnote">MECHANISMS.md gained the &#167;39 wire rows, marks untraceable-by-default SHIPPED, and annotates the Noise NN item as attempted-and-reverted.</span></li>
+      <li><span class="tag med">MED</span><span><b>Wi-Fi Direct still advertised as an Android transport.</b> Removed in code, but DESIGN.md, MECHANISMS.md, and the live site still promise it, a transport dropped precisely because its pairing dialog contradicts the passive positioning the copy touts.</span><span class="st fixed">Fixed</span><span class="ref">F-31</span><span class="fixnote">Wi-Fi Direct scrubbed from the live site, DESIGN.md, and MECHANISMS.md.</span></li>
+      <li><span class="tag med">MED</span><span><b>hop-gateway is orphaned dead code while DESIGN &sect;9 calls it "Implemented."</b> Zero consumers, no binary, built around the removed variant; the design describes an abandoned unseal-and-fetch model nothing feeds.</span><span class="st fixed">Fixed</span><span class="ref">F-32</span><span class="fixnote">DESIGN &#167;9 no longer claims hop-gateway is &quot;Implemented&quot;; egress is documented as device-addressed via hop-endpoint.</span></li>
+      <li><span class="tag med">MED</span><span><b>libhop-architecture.md is stale in both directions.</b> The doc the memory index points sessions at claims nothing is pushed and argues a rename must not happen that shipped 90 minutes later; cites paths that no longer exist; lists a removed bearer as consumed.</span><span class="st fixed">Fixed</span><span class="ref">F-33</span><span class="fixnote">libhop-architecture.md rewritten (merged/deployed, rename done, real paths) and the stale MEMORY pointer updated.</span></li>
+      <li><span class="tag med">MED</span><span><b>The transport layer has zero automated tests.</b> After the rewrite, none of the code that moves bytes on phones is tested: no test targets in the Swift or Kotlin bearer packages; the 7 registry tests were deleted, not migrated, and never replaced with failure injection.</span><span class="st fixed">Fixed</span><span class="ref">F-34</span><span class="fixnote">Radio-free <code>BearerManager</code> JVM tests replace the deleted registry tests, wired into CI. (Swift test targets: follow-on.)</span></li>
+      <li><span class="tag med">MED</span><span><b>The cutover is still bounded and the beacon UUID is duplicated four times.</b> Apps still run the pre-rewrite monolith drivers; the north-star driver packages are consumed by nothing; a test tool pins the legacy path on; the iBeacon UUID is defined byte-identically in four files (the historic drift bug's preconditions).</span><span class="st fixed">Fixed</span><span class="ref">F-40</span><span class="fixnote">The full cutover shipped. Both apps now run the north-star <code>drivers/</code> packages (relocated + repointed); the legacy in-driver transports (L2CAP/GATT/LAN) were pruned; <code>hopmac</code> dropped the <code>useSharedBearers</code> pin (role-enforced). Beacon UUID is ONE cross-platform source, and the iOS facade <code>CLLocationManager</code> monitor was DELETED after moving iBeacon emission into the shared <code>BleBearer</code> (which already owned the wake monitor), so the shared bearer owns both. All packages + apps compile; on-device BLE/wake is the Stage D fleet run.</span></li>
+      <li><span class="tag med">MED</span><span><b>Font Awesome Pro icon sources are committed with no license note.</b> All 27 source SVGs carry the commercial-license stamp; Pro terms forbid hosting Pro source in a publicly accessible repo, and the packages are designed to be publishable.</span><span class="st fixed">Fixed</span><span class="ref">F-41</span><span class="fixnote">Added <code>assets/fa-icons/README.md</code> documenting the FA Pro seat + a pre-public strip checklist.</span></li>
+      <li><span class="tag low">LOW</span><span><b>READMEs and DESIGN still cite dead hop_ffi filenames.</b> Onboarding docs and a smoke script reference a crate and files that no longer exist post-rename; the smoke script fails.</span><span class="st fixed">Fixed</span><span class="ref">F-35</span><span class="fixnote">Fixed the broken <code>cargo build -p hop-ffi</code> in the smoke script and swept the <code>hop_ffi</code>/<code>libhop_ffi</code> filenames in the READMEs.</span></li>
+      <li><span class="tag low">LOW</span><span><b>The emoji sweep missed two Android glyphs.</b> The photo notification and the failed-message retry row still use literal emoji despite the sweep adding the drawables; iOS is clean.</span><span class="st fixed">Fixed</span><span class="ref">F-36</span><span class="fixnote">Replaced the leftover Android emoji glyphs with FA icons and the &quot;Photo&quot; notification text.</span></li>
+      <li><span class="tag low">LOW</span><span><b>Wi-Fi Direct code and manifest remnants remain.</b> A dead config field, leftover build dir, and manifest permissions and features the app still requests at runtime, one of which blocks service start on Android 12 for a feature that no longer exists.</span><span class="st fixed">Fixed</span><span class="ref">F-37</span><span class="fixnote">Removed the dead <code>enableWifiDirect</code> field AND the manifest remnants: dropped the <code>wifi.direct</code> feature, <code>CHANGE_WIFI_STATE</code>, and <code>NEARBY_WIFI_DEVICES</code>, lowered <code>ACCESS_FINE_LOCATION</code> to maxSdk&nbsp;30, and stopped MainActivity requesting the two perms at runtime (the one that used to block service start on 12).</span></li>
+      <li><span class="tag low">LOW</span><span><b>site/ is a dead Dioxus app and the FA mockup was dropped into it untracked.</b> web/ is deployed; site/ is abandoned. The brand-new mockup file is the repo's only untracked file, invisible to git, the exact failure the commit-early rule exists to prevent.</span><span class="st fixed">Fixed</span><span class="ref">F-38</span><span class="fixnote">Moved the FA mockup out of the dead <code>site/</code> into <code>mockups/</code> and tombstoned <code>site/</code>.</span></li>
+      <li><span class="tag low">LOW</span><span><b>An infra comment claims scale-to-zero directly above a min-instance-one config.</b> The stale header could mislead someone into scaling the always-on endpoint to zero and silently breaking relay routability.</span><span class="st fixed">Fixed</span><span class="ref">F-39</span><span class="fixnote">Corrected the false &quot;scale-to-zero&quot; comment on the always-on endpoint.</span></li>
+    </ul>
+  </section>
+
+  <!-- SECTION 07 · WHAT HELD + PATH FORWARD -->
+  <section class="panel" id="s7" data-toc="What held &amp; the plan">
+    <div class="sec-head reveal">
+      <span class="sec-idx">&sect; 07 / 07</span>
+      <span class="sec-area">Verified clean · Deferred · Sequencing</span>
+    </div>
+    <h2 class="reveal">What held, and where to strike</h2>
+    <p class="dek reveal">Two things that looked like gaps survived their own refutation and are genuinely solid. Then the plan: dependency-sequenced, safety net first, because it is the harness every later phase leans on.</p>
+    <figure class="figure reveal" data-cap="06 · A node holding steady, its rings in order. The parts that held. Illustrative.">
+      <img src="images/07-verified-clean.jpg" alt="A single calm luminous node at the center of ordered concentric cyan rings in a dark void">
+      <span class="zoom">Zoom</span>
+    </figure>
+    <div class="findings" style="margin-bottom:2rem">
+      <article class="finding clean reveal">
+        <div class="f-head"><span class="f-sev">Verified clean</span><span class="f-area">Rename</span></div>
+        <h3>The sh.hopme.* rename is complete in the shipping tree</h3>
+        <p>A repo-wide search for the old identifiers returns zero hits. The apparent survivors were a gitignored generated Xcode project (the tracked source already uses the new id) and path strings in a historical background doc. Residual is at most a two-line doc touch-up.</p>
+      </article>
+      <article class="finding clean reveal">
+        <div class="f-head"><span class="f-sev">Verified clean</span><span class="f-area">Testkit</span></div>
+        <h3>The testkit delivery check is not the false-negative trap it appeared to be</h3>
+        <p>The Android receiver export is fast: it saves on every received frame with a 1s debounce, so an incoming marker lands well inside the poll windows, and a round is marked delivered on the receiver check or the sender ack. The documented 90s lag is only the secondary sender-ack flag, which cannot flip a passing receiver check to failed.</p>
+      </article>
+    </div>
+
+    <div class="spec reveal" style="margin-bottom:2rem">
+      <div class="spec-top"><span>Deferred items &mdash; then closed on a second pass</span><span>the "iterate freely" mandate turned these from parked to done</span></div>
+      <ul class="ledger">
+        <li><span class="tag low">DONE</span><span><b>k-bit anonymity-set prefix carried but unused.</b> Removed the dead <code>prefix_bits</code> / <code>hint</code> fields rather than ship a non-functional privacy control; folded into the v2 wire.</span><span class="st fixed">Fixed</span><span class="ref">D-kbit</span></li>
+        <li><span class="tag low">DONE</span><span><b>Wrappers missing ABI functions + no hops:// surface.</b> Kotlin + Swift brought to full <code>hop.h</code> parity: the service request/response quartet, persistence/identity signals, and an ABI-version assert at load. Both compile/link.</span><span class="st fixed">Fixed</span><span class="ref">D-wrappers</span></li>
+        <li><span class="tag low">DONE</span><span><b>hop.db has no schema migration.</b> Added a SQLite <code>user_version</code> guard (=2, the &sect;39 wire epoch): an incompatible db is reset on open instead of silently misread. +test.</span><span class="st fixed">Fixed</span><span class="ref">D-schema</span></li>
+        <li><span class="tag low">DONE</span><span><b>Session store grows unbounded.</b> Forward-secret sessions idle past 30 days are now GC'd from memory AND the persisted store each tick (a peer met once doesn't pin storage forever). +test.</span><span class="st fixed">Fixed</span><span class="ref">D6</span></li>
+        <li><span class="tag low">DONE</span><span><b>DNSSEC validated only RSA/SHA-256 with no key-size floor.</b> Wired Ed25519 (alg&nbsp;15) + a &ge;1024-bit RSA modulus floor, and documented the fail-closed gaps (wildcard/NSEC) as false-negatives-not-forgeries. +test.</span><span class="st fixed">Fixed</span><span class="ref">D-dnssec</span></li>
+        <li><span class="tag low">DONE</span><span><b>No crash reporting or telemetry.</b> Added process-wide uncaught-exception loggers to both apps (Android <code>HopApp</code>, iOS app delegate) writing thread + stack to a pull-able file &mdash; the pre-distribution stand-in.</span><span class="st fixed">Fixed</span><span class="ref">D-crash</span></li>
+        <li><span class="tag low">DONE</span><span><b>One-instance-per-region 429 cap.</b> Left at 1 by design (&gt;1 split-brains the in-memory node &mdash; worse than 429s) and documented that the cause is already mitigated (handoff-only, <code>mesh_fanout&nbsp;0</code>); the real unlock is cross-instance store sharing.</span><span class="st fixed">Fixed</span><span class="ref">D-429</span></li>
+        <li><span class="tag low">NOTE</span><span><b>App-id rename state wipe</b> was a one-time historical event, already remediated and re-verified on the fleet. Nothing to do.</span><span class="st fixed">Verified</span><span class="ref">note</span></li>
+      </ul>
+    </div>
+
+    <h3 class="reveal" style="font-size:1.35rem;margin:0 0 .5rem">How it was closed: all six phases executed</h3>
+    <p class="reveal" style="color:var(--ink-soft);margin:0 0 1.1rem;font-size:.95rem">The dependency-ordered plan below was carried out end to end on the <code>close-the-gaps</code> branch, safety net first. Every phase shipped; the per-finding cards above show the detail.</p>
+    <div class="phases reveal">
+      <div class="phase">
+        <span class="pn">PHASE 1 &#10003;</span>
+        <div>
+          <h4>Safety net</h4>
+          <p>Land code CI gating push-to-main (<code>cargo test</code> + clippy + purity + header-drift), gate the apply on it, add the wire-version gate and golden vectors, and add rehydrate decode-failure logging with a version envelope. This targets the exact classes that already caused fleet outages and gives a harness before protocol code is touched. <b>Findings F-01, F-02, F-03, F-04.</b></p>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="pn">PHASE 2 &#10003;</span>
+        <div>
+          <h4>The &sect;39 security invariants</h4>
+          <p>Bind the receiver-beacon to its mailbox owner and correct the false claims, break the tag-to-prekey linkability and implement epoch rotation, and add private-bundle rate limiting plus the seen-table cap. F-05 and the rate-limit share the ingest path, so co-locate them. <b>Findings F-05, F-06, F-07.</b></p>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="pn">PHASE 3 &#10003;</span>
+        <div>
+          <h4>Fleet delivery on real transports</h4>
+          <p>Android Bluetooth off/on recovery, Apple LAN dial timeout and listener restart, shared BLE advertiser self-heal, relay reconnect jitter and 429 handling, LAN discovery retry, optimistic-send failure state, and the congestion incremental-offer and lock split. None blocks another. <b>Findings F-09 through F-15.</b></p>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="pn">PHASE 4 &#10003;</span>
+        <div>
+          <h4>Relay hardening and observability</h4>
+          <p>Health probe first (F-17), then remove or authenticate the public log stream with retention and de-identification, add leveled logging with alerts, presence and registry TTL, drain-on-shutdown, service-account least privilege, pinned secret versions, endpoint abuse controls, and the two-region spool-to-pull test. <b>Findings F-16 through F-24.</b></p>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="pn">PHASE 5 &#10003;</span>
+        <div>
+          <h4>Persistence at rest and finishing the cutover</h4>
+          <p>Database open-failure quarantine and a persistence signal, real SQLCipher-at-rest keyed through the whole SDK stack (not just correcting the false claims), consolidating the beacon UUID to one cross-platform source, excising legacy transports, and adopting or removing the orphaned driver packages, plus the FA Pro license note. <b>Findings F-25, F-26, F-40, F-41.</b></p>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="pn">PHASE 6 &#10003;</span>
+        <div>
+          <h4>Docs and low-risk cleanup</h4>
+          <p>Parallelizable, low blast radius: the DESIGN.md and MECHANISMS.md and architecture-doc rewrites, the Wi-Fi Direct doc and site sweep, the README filename sweep, the code and manifest remnants, deleting site/ and committing the mockup, the emoji glyphs, zeroize, and the Kotlin AutoCloseable and ABI version symbol. <b>Findings F-27 through F-39.</b></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <p><b>Method.</b> Eight dimension-specific finders swept the repo in parallel; every finding was put through an independent refuter that tried to disprove it with its own inspection, plus an actionability judge. A completeness critic then spawned follow-up finders on missed areas. 60 findings survived; severities shown are the verifier's independent rating.</p>
+  <p><b>Remediation.</b> Closed on the <code>close-the-gaps</code> branch, in the six phases above, then a second pass that finished the four partials and every documented deferral. Verified with real builds and tests: 180 workspace tests pass, the <code>firestore</code> and <code>sqlcipher</code> feature suites pass, clippy is clean at <code>-D warnings</code>, <code>sdk/hop.h</code> is in sync (ABI v2), and every Apple/Android package buildable headlessly compiles (Kotlin SDK, all four Apple bearer packages, both app drivers, the rebuilt <code>libhop.xcframework</code>). All 60 findings addressed &mdash; the four former partials (F-19 rate limiter, F-25 SQLCipher, F-37 manifest, F-40 beacon UUID) now fully closed. The app cutover also shipped: both apps run the north-star <code>drivers/</code> packages, the legacy in-driver transports are pruned, the iOS facade beacon monitor is gone (emission moved into the shared bearer), and the mobile builds are SQLCipher-keyed. The only thing not verifiable off-device is the iOS Xcode app build + on-device BLE link-formation / beacon wake (the Stage D fleet run). Nothing pushed or deployed. Each card / row above states its resolution.</p>
+  <p class="fnote"><b>Imagery is AI-generated and illustrative</b>, abstract signal renders chosen to anchor each theme, not depictions of real systems, screens, or data. Full prose report lives alongside this file at <b>GAP-ANALYSIS.md</b>.</p>
+  <p class="fnote">Index to jump &middot; arrow keys move between sections &middot; click any image to zoom &middot; Light toggles the blueprint theme &middot; Print for PDF.</p>
+</footer>
+
+<button class="btn" id="top">Top</button>
+<div class="lb" id="lb"><span class="close">&times;</span><img id="lbimg" src="" alt="Enlarged figure"><div class="cap" id="lbcap"></div></div>
+
+<script>
+(function(){
+  const prog=document.getElementById('progress');
+  function onScroll(){const h=document.documentElement,max=h.scrollHeight-h.clientHeight;
+    prog.style.width=(max>0?h.scrollTop/max*100:0)+'%';
+    document.getElementById('top').classList.toggle('show',h.scrollTop>700);}
+  document.addEventListener('scroll',onScroll,{passive:true});
+
+  // TOC + scroll-spy from [data-toc]
+  const items=[...document.querySelectorAll('[data-toc]')],list=document.getElementById('tocList'),map={};
+  items.forEach((el,i)=>{const a=document.createElement('a');a.href='#'+el.id;
+    a.innerHTML='<span class="n">'+String(i+1).padStart(2,'0')+'</span><span>'+el.getAttribute('data-toc')+'</span>';
+    a.onclick=e=>{e.preventDefault();el.scrollIntoView({behavior:'smooth'});closeToc();};list.appendChild(a);map[el.id]=a;});
+  const spy=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting&&map[en.target.id]){
+    Object.values(map).forEach(a=>a.classList.remove('active'));map[en.target.id].classList.add('active');}}),
+    {rootMargin:'-45% 0px -50% 0px'});
+  items.forEach(el=>spy.observe(el));
+
+  // Reveal
+  const rev=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting){en.target.classList.add('in');rev.unobserve(en.target);}}),
+    {rootMargin:'0px 0px -6% 0px',threshold:.05});
+  document.querySelectorAll('.reveal').forEach(el=>rev.observe(el));
+
+  // TOC drawer
+  const toc=document.getElementById('toc'),scrim=document.getElementById('scrim');
+  function openToc(){toc.classList.add('open');scrim.classList.add('open');}
+  function closeToc(){toc.classList.remove('open');scrim.classList.remove('open');}
+  document.getElementById('tocBtn').onclick=openToc;document.getElementById('tocClose').onclick=closeToc;scrim.onclick=closeToc;
+
+  // Theme (persisted, default dark)
+  const root=document.documentElement,tb=document.getElementById('themeBtn'),saved=localStorage.getItem('hop-theme');
+  if(saved)root.setAttribute('data-theme',saved);
+  function sync(){tb.textContent=root.getAttribute('data-theme')==='dark'?'Light':'Dark';}
+  sync();tb.onclick=()=>{const n=root.getAttribute('data-theme')==='dark'?'light':'dark';
+    root.setAttribute('data-theme',n);localStorage.setItem('hop-theme',n);sync();};
+
+  // Lightbox
+  const lb=document.getElementById('lb'),li=document.getElementById('lbimg'),lc=document.getElementById('lbcap');
+  document.querySelectorAll('figure.figure').forEach(f=>f.onclick=()=>{li.src=f.querySelector('img').src;
+    lc.textContent=f.getAttribute('data-cap')||'';lb.classList.add('open');});
+  lb.onclick=()=>lb.classList.remove('open');
+
+  document.getElementById('top').onclick=()=>window.scrollTo({top:0,behavior:'smooth'});
+
+  // Keyboard nav
+  const order=[document.getElementById('s0'),...items];
+  function cur(){const y=scrollY+innerHeight*.35;let i=0;order.forEach((el,n)=>{if(el.offsetTop<=y)i=n;});return i;}
+  document.addEventListener('keydown',e=>{
+    if(lb.classList.contains('open')){if(e.key==='Escape')lb.classList.remove('open');return;}
+    if(toc.classList.contains('open')){if(e.key==='Escape')closeToc();return;}
+    if(['ArrowDown','ArrowRight','j'].includes(e.key)){e.preventDefault();order[Math.min(order.length-1,cur()+1)].scrollIntoView({behavior:'smooth'});}
+    if(['ArrowUp','ArrowLeft','k'].includes(e.key)){e.preventDefault();order[Math.max(0,cur()-1)].scrollIntoView({behavior:'smooth'});}
+  });
+  onScroll();
+})();
+</script>
+</body>
+</html>

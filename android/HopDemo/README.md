@@ -26,8 +26,8 @@ rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-android
 ```
 
 Produces (gitignored) under `android/HopDemo/generated/`:
-- `jniLibs/<abi>/libhop_ffi.so` — the native libraries (wired in via `sourceSets`)
-- `kotlin/uniffi/hop_ffi/hop_ffi.kt` — the generated bindings (wired in via `sourceSets`)
+- `jniLibs/<abi>/libhop.so` — the native libraries (wired in via `sourceSets`)
+- `kotlin/uniffi/hop/hop.kt` — the generated bindings (wired in via `sourceSets`)
 
 ## Build & run the app
 

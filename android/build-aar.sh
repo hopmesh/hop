@@ -28,9 +28,20 @@ command -v cargo-ndk >/dev/null || { echo "missing: cargo install cargo-ndk"; ex
 
 rm -rf "$OUT"; mkdir -p "$OUT/kotlin"
 
+# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT — the host passes a
+# Keystore-derived key to HopNode.open_keyed and every db page is encrypted. Set HOP_SQLCIPHER=0 for
+# a faster plain-SQLite dev build (skips the vendored-OpenSSL cross-compile, but no at-rest encryption).
+if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
+  FEAT=(--no-default-features --features sqlcipher)
+  echo "▸ SQLCipher at-rest ENABLED (set HOP_SQLCIPHER=0 to disable)"
+else
+  FEAT=()
+  echo "▸ SQLCipher DISABLED — plain SQLite (no at-rest encryption)"
+fi
+
 echo "▸ building libhop.so for each ABI"
 cargo ndk -t arm64-v8a -t x86_64 -t armeabi-v7a -o "$OUT/jniLibs" \
-  build -p "$CRATE" --release
+  build -p "$CRATE" --release "${FEAT[@]}"
 # ONE libhop.so per ABI now serves both the C ABI (sh.hop loads "hop") and UniFFI (component "hop").
 
 echo "▸ generating Kotlin bindings"

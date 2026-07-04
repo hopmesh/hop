@@ -14,7 +14,7 @@ Produces (gitignored) under `apple/generated/`:
 
 - `HopFFI.xcframework` — device (`ios-arm64`) + simulator slices. Drag into your
   Xcode project (or add as a binary target in a Swift package).
-- `Sources/hop_ffi.swift` — the generated Swift API. Add it to your target.
+- `Sources/hop.swift` — the generated Swift API. Add it to your target.
 
 ## Verify it works (no device needed)
 

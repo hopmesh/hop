@@ -22,6 +22,7 @@ data class HopMessage(val from: ByteArray, val contentType: String, val body: By
 internal interface CHop : Library {
     fun hop_node_new(): Pointer?
     fun hop_node_open(dbPath: String, secret: ByteArray?, secretLen: NativeLong, appSecret: ByteArray?, appSecretLen: NativeLong): Pointer?
+    fun hop_node_open_keyed(dbPath: String, secret: ByteArray?, secretLen: NativeLong, appSecret: ByteArray?, appSecretLen: NativeLong, key: ByteArray?, keyLen: NativeLong): Pointer?
     fun hop_node_with_secret(secret: ByteArray?, secretLen: NativeLong): Pointer?
     fun hop_node_free(node: Pointer?)
     fun hop_node_address(node: Pointer?, out: ByteArray): Boolean
@@ -36,7 +37,40 @@ internal interface CHop : Library {
     fun hop_message_status(node: Pointer?, id: ByteArray, relayed: IntByReference?, delivered: ByteByReference?, hops: ByteByReference?, ms: IntByReference?): Boolean
     fun hop_address_to_base58(addr: ByteArray, out: ByteArray, outCap: NativeLong): NativeLong
     fun hop_address_from_base58(text: String, out32: ByteArray): Boolean
+    // D-wrappers: full hop.h parity — identity/status + the hops:// request/response surface.
+    fun hop_abi_version(): Int
+    fun hop_node_is_persistent(node: Pointer?): Boolean
+    fun hop_node_rehydrate_dropped(node: Pointer?): Int
+    fun hop_node_secret(node: Pointer?, out: ByteArray): NativeLong
+    fun hop_node_set_name(node: Pointer?, name: String)
+    fun hop_is_secured(node: Pointer?, addr: ByteArray): Boolean
+    fun hop_subscribe(node: Pointer?, topic: String)
+    fun hop_send_to(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Boolean
+    fun hop_send_service_request(node: Pointer?, dst: ByteArray, service: String, method: String, args: ByteArray?, argsLen: NativeLong, outId: ByteArray?): Boolean
+    fun hop_send_service_response(node: Pointer?, to: ByteArray, forRequestId: ByteArray, status: Short, body: ByteArray?, bodyLen: NativeLong): Boolean
+    fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
+    fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
 }
+
+/// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
+/// built against a newer header fails loudly instead of drifting (F-28).
+const val HOP_ABI_VERSION = 2
+
+/** hops:// request callback (D-wrappers), one per queued inbound request during pollServiceRequests. */
+internal fun interface ServiceReqSink : Callback {
+    fun invoke(ctx: Pointer?, from: Pointer?, requestId: Pointer?, service: String?, method: String?, args: Pointer?, argsLen: NativeLong)
+}
+
+/** hops:// response callback (D-wrappers), one per queued inbound response during pollServiceResponses. */
+internal fun interface ServiceRespSink : Callback {
+    fun invoke(ctx: Pointer?, from: Pointer?, forRequestId: Pointer?, status: Short, body: Pointer?, bodyLen: NativeLong)
+}
+
+/** A hops:// request delivered to this node acting as a service. */
+data class HopServiceRequest(val from: ByteArray, val requestId: ByteArray, val service: String, val method: String, val args: ByteArray)
+
+/** A hops:// response delivered to this node acting as a caller. */
+data class HopServiceResponse(val from: ByteArray, val forRequestId: ByteArray, val status: Int, val body: ByteArray)
 
 /** Outbound-drain callback: invoked once per queued packet during `drainOutgoing`. */
 internal fun interface DrainSink : Callback {
@@ -48,10 +82,46 @@ internal fun interface InboxSink : Callback {
     fun invoke(ctx: Pointer?, from: Pointer?, contentType: String?, body: Pointer?, bodyLen: NativeLong, hops: Byte, createdAt: Long)
 }
 
-/** A running Hop node. Owns the libhop handle. */
-class HopNode private constructor(internal val raw: Pointer) {
+/** A running Hop node. Owns the libhop handle.
+ *
+ * F-27: `AutoCloseable` with an idempotent `close()` that frees the native handle exactly once and
+ * nulls it (so a post-free call is a safe no-op, not a use-after-free of a dangling pointer). A
+ * `Cleaner` is registered as a backstop for a dropped-without-close node. Use it with `.use { ... }`.
+ * The C ABI exposes no retain/clone, so `close()` must not race other calls on the same node.
+ */
+class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
+    @Volatile
+    internal var raw: Pointer? = rawPtr
+        private set
+
+    /** The live handle, or an error if this node has been closed. */
+    private val handle: Pointer get() = raw ?: error("HopNode used after close()")
+
+    private val cleanable = cleaner.register(this, FreeAction(rawPtr))
+
+    /** Frees the native node. Idempotent; safe to call more than once. */
+    override fun close() {
+        if (raw != null) {
+            raw = null
+            cleanable.clean() // runs FreeAction exactly once (Cleaner de-dupes)
+        }
+    }
+
+    private class FreeAction(private val ptr: Pointer) : Runnable {
+        private val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        override fun run() { if (done.compareAndSet(false, true)) C.hop_node_free(ptr) }
+    }
+
     companion object {
         internal val C: CHop = Native.load("hop", CHop::class.java)
+        private val cleaner: java.lang.ref.Cleaner = java.lang.ref.Cleaner.create()
+
+        init {
+            // F-28: fail loudly if the loaded libhop's ABI doesn't match what this wrapper was built for.
+            val v = C.hop_abi_version()
+            require(v == HOP_ABI_VERSION) { "libhop ABI mismatch: wrapper expects $HOP_ABI_VERSION, library is $v" }
+        }
+
         fun ephemeral(): HopNode = HopNode(C.hop_node_new() ?: error("hop_node_new returned null"))
 
         /** Open with persistent storage at [dbPath], a saved 32-byte [secret] (empty = fresh), and an
@@ -59,18 +129,24 @@ class HopNode private constructor(internal val raw: Pointer) {
         fun open(dbPath: String, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
             C.hop_node_open(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()))
                 ?.let { HopNode(it) }
+
+        /** Open with SQLCipher encryption at rest, keyed by a raw [key] from the Keystore (F-25). */
+        fun openKeyed(dbPath: String, key: ByteArray, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
+            C.hop_node_open_keyed(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()),
+                                  key, NativeLong(key.size.toLong()))
+                ?.let { HopNode(it) }
     }
 
-    fun address(): ByteArray = ByteArray(32).also { C.hop_node_address(raw, it) }
-    fun tick(nowMs: Long) = C.hop_node_tick(raw, nowMs)
-    fun publishPrekey(): Boolean = C.hop_publish_prekey(raw)
+    fun address(): ByteArray = ByteArray(32).also { C.hop_node_address(handle, it) }
+    fun tick(nowMs: Long) = C.hop_node_tick(handle, nowMs)
+    fun publishPrekey(): Boolean = C.hop_publish_prekey(handle)
 
-    fun linkUp(link: Long, role: HopRole) = C.hop_link_up(raw, link, role.c)
-    fun linkDown(link: Long) = C.hop_link_down(raw, link)
-    fun bytesReceived(link: Long, bytes: ByteArray) = C.hop_bytes_received(raw, link, bytes, NativeLong(bytes.size.toLong()))
+    fun linkUp(link: Long, role: HopRole) = C.hop_link_up(handle, link, role.c)
+    fun linkDown(link: Long) = C.hop_link_down(handle, link)
+    fun bytesReceived(link: Long, bytes: ByteArray) = C.hop_bytes_received(handle, link, bytes, NativeLong(bytes.size.toLong()))
 
     fun drainOutgoing(sink: (Long, ByteArray) -> Unit) {
-        C.hop_drain_outgoing(raw, DrainSink { _, link, bytes, len ->
+        C.hop_drain_outgoing(handle, DrainSink { _, link, bytes, len ->
             sink(link, bytes?.getByteArray(0, len.toInt()) ?: ByteArray(0))
         }, null)
     }
@@ -78,11 +154,11 @@ class HopNode private constructor(internal val raw: Pointer) {
     /** Send an untraceable (§39) HDP datagram. Returns the 32-byte bundle id, or null on error. */
     fun send(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
         val id = ByteArray(32)
-        return if (C.hop_send_message(raw, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id)) id else null
+        return if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id)) id else null
     }
 
     fun pollInbox(sink: (HopMessage) -> Unit) {
-        C.hop_poll_inbox(raw, InboxSink { _, from, ct, body, blen, hops, created ->
+        C.hop_poll_inbox(handle, InboxSink { _, from, ct, body, blen, hops, created ->
             sink(HopMessage(
                 from = from?.getByteArray(0, 32) ?: ByteArray(32),
                 contentType = ct ?: "",
@@ -93,11 +169,71 @@ class HopNode private constructor(internal val raw: Pointer) {
 
     fun delivered(id: ByteArray): Boolean {
         val d = ByteByReference()
-        C.hop_message_status(raw, id, null, d, null, null)
+        C.hop_message_status(handle, id, null, d, null, null)
         return d.value.toInt() != 0
     }
 
-    fun free() = C.hop_node_free(raw)
+    // ---- D-wrappers: identity/status + the hops:// request/response surface (hop.h parity) ----
+
+    /** Whether this node has durable storage (false ⇒ ephemeral fallback; F-26). */
+    fun isPersistent(): Boolean = C.hop_node_is_persistent(handle)
+
+    /** How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade. */
+    fun rehydrateDropped(): Int = C.hop_node_rehydrate_dropped(handle)
+
+    /** Export this node's 32-byte identity secret (persist it in the Keystore). */
+    fun secret(): ByteArray = ByteArray(32).also { C.hop_node_secret(handle, it) }
+
+    /** Set the display name reported via presence / hop.identify. */
+    fun setName(name: String) = C.hop_node_set_name(handle, name)
+
+    /** Whether we hold a forward-secret session with `addr` (content is ratcheted, not static-sealed). */
+    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, addr)
+
+    /** Subscribe to an hps:// topic. */
+    fun subscribe(topic: String) = C.hop_subscribe(handle, topic)
+
+    /** Send a device-addressed (traced) message. Returns the bundle id, or null on error. */
+    fun sendTo(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
+        val id = ByteArray(32)
+        return if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id)) id else null
+    }
+
+    /** Send an hops:// service request. Returns the request id, or null on error. */
+    fun sendServiceRequest(dst: ByteArray, service: String, method: String, args: ByteArray): ByteArray? {
+        val id = ByteArray(32)
+        return if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id)) id else null
+    }
+
+    /** Reply to an hops:// service request. */
+    fun sendServiceResponse(to: ByteArray, forRequestId: ByteArray, status: Int, body: ByteArray): Boolean =
+        C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong()))
+
+    /** Drain inbound hops:// requests addressed to this node (acting as a service). */
+    fun pollServiceRequests(sink: (HopServiceRequest) -> Unit) {
+        C.hop_poll_service_requests(handle, ServiceReqSink { _, from, reqId, service, method, args, alen ->
+            sink(HopServiceRequest(
+                from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
+                service = service ?: "", method = method ?: "",
+                args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
+        }, null)
+    }
+
+    /** Drain inbound hops:// responses to requests this node made. */
+    fun pollServiceResponses(sink: (HopServiceResponse) -> Unit) {
+        C.hop_poll_service_responses(handle, ServiceRespSink { _, from, forId, status, body, blen ->
+            sink(HopServiceResponse(
+                from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                forRequestId = forId?.getByteArray(0, 32) ?: ByteArray(32),
+                status = status.toInt() and 0xffff,
+                body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0)))
+        }, null)
+    }
+
+    /** Deprecated: prefer `close()` / `.use { }`. Kept for source compatibility; now idempotent. */
+    @Deprecated("Use close() or .use { } (AutoCloseable)", ReplaceWith("close()"))
+    fun free() = close()
 }
 
 object HopAddress {

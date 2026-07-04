@@ -23,7 +23,9 @@ repository = "https://github.com/jwaldrip/hop"
 
 [workspace.dependencies]
 hop-core = { path = "core/hop-core" }
-hop-store-sqlite = { path = "core/stores/hop-store-sqlite" }
+# default-features off so each consumer picks plain `bundled` (default) OR encrypted `sqlcipher`
+# explicitly (F-25). The two SQLite bundling backends can't both be active in one build.
+hop-store-sqlite = { path = "core/stores/hop-store-sqlite", default-features = false }
 hop-store-firestore = { path = "core/stores/hop-store-firestore" }
 
 serde = { version = "1", features = ["derive"] }
