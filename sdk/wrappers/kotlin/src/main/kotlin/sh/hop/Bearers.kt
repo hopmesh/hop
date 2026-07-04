@@ -45,8 +45,14 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
         synchronized(lock) { lanes.add(lane); bearers.add(bearer) }
     }
 
-    override fun start() = snapshot().forEach { it.start() }
-    override fun stop() = snapshot().forEach { it.stop() }
+    // F-10: isolate each bearer's start/stop so one throwing (e.g. BLE listen failing when Bluetooth
+    // is off at launch) can't abort the others (LAN + relay) or crash the caller's thread.
+    override fun start() = snapshot().forEach {
+        try { it.start() } catch (e: Throwable) { System.err.println("bearer start failed: ${e.message}") }
+    }
+    override fun stop() = snapshot().forEach {
+        try { it.stop() } catch (e: Throwable) { System.err.println("bearer stop failed: ${e.message}") }
+    }
 
     override fun send(bytes: ByteArray, link: Long) {
         val route = synchronized(lock) { fromGlobal[link] } ?: return

@@ -28,6 +28,7 @@ extension HopBearer {
 final class HopAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        installCrashLogger()  // D-crash: local uncaught-exception log (launch-gate diagnostics)
         let bg = application.applicationState == .background
         let loc = launchOptions?[.location] != nil
         NSLog("HOPLOG COLD LAUNCH background=\(bg) location=\(loc)")
@@ -35,6 +36,21 @@ final class HopAppDelegate: NSObject, UIApplicationDelegate {
         // BLE bearer (state restoration + the wake bridge) reconnects even with no UI on screen.
         HopBearer.shared.start(name: HopBearer.savedName(default: UIDevice.current.name))
         return true
+    }
+
+    /// D-crash: write uncaught Obj-C/NSException crashes (name, reason, call stack) to a file in the
+    /// Documents dir so a `devicectl` pull surfaces the last crash — the pre-distribution stand-in for
+    /// crash reporting. (Swift `fatalError`/signals need a signal handler + MetricKit; that's the
+    /// launch-gate follow-on. This catches the common NSException class.)
+    private func installCrashLogger() {
+        NSSetUncaughtExceptionHandler { exc in
+            let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("hop-crash.log")
+            let text = "UNCAUGHT \(exc.name.rawValue): \(exc.reason ?? "")\n"
+                + exc.callStackSymbols.joined(separator: "\n") + "\n"
+            try? text.data(using: .utf8)?.write(to: path)
+            NSLog("HOPLOG CRASH \(exc.name.rawValue): \(exc.reason ?? "")")
+        }
     }
 }
 

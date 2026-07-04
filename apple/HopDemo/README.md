@@ -11,7 +11,7 @@ needs the devices.
 ## Build the project
 
 ```sh
-./apple/build-xcframework.sh        # → apple/generated/{HopFFI.xcframework, Sources/hop_ffi.swift}
+./apple/build-xcframework.sh        # → apple/generated/{HopFFI.xcframework, Sources/hop.swift}
 cd apple/HopDemo && xcodegen        # → HopDemo.xcodeproj (gitignored; brew install xcodegen)
 open HopDemo.xcodeproj
 ```

@@ -25,11 +25,40 @@ public struct HopStatus {
     public let forwardMs: UInt32   // forward-path latency (ms) the destination reported
 }
 
+/// An hops:// request delivered to this node acting as a service.
+public struct HopServiceRequest {
+    public let from: Data
+    public let requestId: Data
+    public let service: String
+    public let method: String
+    public let args: Data
+}
+
+/// An hops:// response delivered to this node acting as a caller.
+public struct HopServiceResponse {
+    public let from: Data
+    public let forRequestId: Data
+    public let status: UInt16
+    public let body: Data
+}
+
 /// A running Hop node. Owns the underlying `libhop` handle; thread-safe inside (interior mutex).
 public final class HopNode {
+    /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted once on first use so a
+    /// wrapper built against a newer header fails loudly instead of drifting (F-28).
+    public static let expectedABIVersion: UInt32 = 2
+    private static let abiChecked: Bool = {
+        precondition(hop_abi_version() == HopNode.expectedABIVersion,
+                     "libhop ABI mismatch: wrapper expects \(HopNode.expectedABIVersion), library is \(hop_abi_version())")
+        return true
+    }()
+
     private let raw: OpaquePointer   // const HopNode* from libhop
 
-    private init(raw: OpaquePointer) { self.raw = raw }
+    private init(raw: OpaquePointer) {
+        _ = HopNode.abiChecked   // trigger the one-time ABI check
+        self.raw = raw
+    }
 
     /// A fresh identity with ephemeral (in-memory) storage.
     public static func ephemeral() -> HopNode { HopNode(raw: hop_node_new()) }
@@ -48,6 +77,23 @@ public final class HopNode {
                     hop_node_open(db,
                                   s.bindMemory(to: UInt8.self).baseAddress, UInt(s.count),
                                   a.bindMemory(to: UInt8.self).baseAddress, UInt(a.count))
+                }
+            }
+        }
+        return p.map { HopNode(raw: $0) }
+    }
+
+    /// Like `open`, but ENCRYPTS the store at rest (SQLCipher) with a raw `key` from the Keychain (F-25).
+    public static func openKeyed(dbPath: String, key: Data, secret: Data = Data(), appSecret: Data = Data()) -> HopNode? {
+        let p: OpaquePointer? = dbPath.withCString { db in
+            secret.withUnsafeBytes { s in
+                appSecret.withUnsafeBytes { a in
+                    key.withUnsafeBytes { k in
+                        hop_node_open_keyed(db,
+                                            s.bindMemory(to: UInt8.self).baseAddress, UInt(s.count),
+                                            a.bindMemory(to: UInt8.self).baseAddress, UInt(a.count),
+                                            k.bindMemory(to: UInt8.self).baseAddress, UInt(k.count))
+                    }
                 }
             }
         }
@@ -163,6 +209,84 @@ public final class HopNode {
 
     public func isSecured(_ addr: Data) -> Bool {
         addr.withUnsafeBytes { hop_is_secured(raw, $0.bindMemory(to: UInt8.self).baseAddress) }
+    }
+
+    // MARK: persistence signals (D-wrappers / hop.h parity)
+
+    /// False ⇒ the db path was unusable and the node is running ephemerally (state won't survive a
+    /// restart); surface a warning rather than treat the db as ground truth (F-26).
+    public var isPersistent: Bool { hop_node_is_persistent(raw) }
+
+    /// How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade.
+    public var rehydrateDropped: UInt32 { hop_node_rehydrate_dropped(raw) }
+
+    // MARK: hops:// request/response (D-wrappers)
+
+    /// Send an hops:// service request to `dst`. Returns the request id, or nil on error.
+    @discardableResult
+    public func sendServiceRequest(to dst: Data, service: String, method: String, args: Data) -> Data? {
+        var id = Data(count: 32)
+        let ok: Bool = dst.withUnsafeBytes { d in
+            args.withUnsafeBytes { a in
+                id.withUnsafeMutableBytes { o in
+                    service.withCString { s in
+                        method.withCString { m in
+                            hop_send_service_request(raw, d.bindMemory(to: UInt8.self).baseAddress, s, m,
+                                                     a.bindMemory(to: UInt8.self).baseAddress, UInt(a.count),
+                                                     o.bindMemory(to: UInt8.self).baseAddress)
+                        }
+                    }
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Reply to an hops:// service request.
+    @discardableResult
+    public func sendServiceResponse(to: Data, forRequestId: Data, status: UInt16, body: Data) -> Bool {
+        to.withUnsafeBytes { t in
+            forRequestId.withUnsafeBytes { r in
+                body.withUnsafeBytes { b in
+                    hop_send_service_response(raw, t.bindMemory(to: UInt8.self).baseAddress,
+                                              r.bindMemory(to: UInt8.self).baseAddress, status,
+                                              b.bindMemory(to: UInt8.self).baseAddress, UInt(b.count))
+                }
+            }
+        }
+    }
+
+    /// Drain inbound hops:// requests addressed to this node (acting as a service).
+    public func pollServiceRequests(_ sink: (HopServiceRequest) -> Void) {
+        withoutActuallyEscaping(sink) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                hop_poll_service_requests(raw, { rawCtx, from, reqId, service, method, args, alen in
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopServiceRequest) -> Void).self).pointee
+                    cb(HopServiceRequest(from: Data(bytes: from!, count: 32),
+                                         requestId: Data(bytes: reqId!, count: 32),
+                                         service: service != nil ? String(cString: service!) : "",
+                                         method: method != nil ? String(cString: method!) : "",
+                                         args: alen == 0 ? Data() : Data(bytes: args!, count: Int(alen))))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
+    }
+
+    /// Drain inbound hops:// responses to requests this node made.
+    public func pollServiceResponses(_ sink: (HopServiceResponse) -> Void) {
+        withoutActuallyEscaping(sink) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                hop_poll_service_responses(raw, { rawCtx, from, forId, status, body, blen in
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopServiceResponse) -> Void).self).pointee
+                    cb(HopServiceResponse(from: Data(bytes: from!, count: 32),
+                                          forRequestId: Data(bytes: forId!, count: 32),
+                                          status: status,
+                                          body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen))))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
     }
 }
 

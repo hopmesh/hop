@@ -83,6 +83,29 @@ resource "google_cloud_run_v2_service" "relay" {
         }
         cpu_idle = true # bill CPU only while requests/connections are in flight
       }
+
+      # F-17: container-level health probes tied to the driver loop's heartbeat (serve_healthz).
+      # Without these Cloud Run's default TCP check passes for a WEDGED instance forever, and with
+      # one instance per region a wedged instance IS the region. These are internal to Cloud Run —
+      # do NOT add an external uptime check against the region endpoints (DESIGN.md §1436: it wakes
+      # scaled-to-zero instances).
+      startup_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        initial_delay_seconds = 5
+        period_seconds        = 10
+        failure_threshold     = 6
+      }
+      liveness_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        period_seconds    = 30
+        failure_threshold = 3
+      }
     }
 
     volumes {
@@ -90,7 +113,11 @@ resource "google_cloud_run_v2_service" "relay" {
       secret {
         secret = google_secret_manager_secret.relay_identity.secret_id
         items {
-          version = "latest"
+          # F-23: pin an explicit secret version in production (var.relay_identity_version) rather than
+          # "latest". "latest" silently re-keys each region on its next COLD start when a new version is
+          # added, split-braining the fleet and orphaning Firestore partitions/registry entries. Set the
+          # var to the numeric version that was seeded; keep "latest" only for throwaway dev.
+          version = var.relay_identity_version
           path    = "identity"
         }
       }

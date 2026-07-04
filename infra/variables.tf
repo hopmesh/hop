@@ -54,7 +54,11 @@ variable "max_instances_per_region" {
   description = <<-EOT
     Upper bound on Cloud Run instances per region. Pin to 1 until the relay shares
     its directory/store across instances: presence and the bundle hot-path are
-    in-memory per process, so a second instance is a second, disconnected node.
+    in-memory per process, so a second instance is a second, disconnected node
+    (split-brain). D-429: raising this is NOT the fix — it would be worse than the
+    429s. The 429/wake-churn cause is already mitigated by the handoff-only default
+    (mesh_fanout = 0) so regions don't full-mesh-dial each other; the real unlock for
+    a higher ceiling is cross-instance directory/store sharing, a separate project.
   EOT
   type        = number
   default     = 1
@@ -152,4 +156,12 @@ variable "google_dkim_txt" {
   EOT
   type        = string
   default     = ""
+}
+
+# F-23: the relay identity secret VERSION each region mounts. "latest" silently re-keys the fleet on
+# a rotation (Cloud Run resolves it at cold start); pin the numeric version that was seeded for prod.
+variable "relay_identity_version" {
+  description = "Secret Manager version of the relay identity to mount ('latest' for dev; a pinned number for prod). See cloud_run.tf / GAP-ANALYSIS.md F-23."
+  type        = string
+  default     = "latest"
 }

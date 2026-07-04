@@ -118,16 +118,16 @@ struct HopBrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button { controller.goBack() } label: { Image(systemName: "chevron.left") }
+                Button { controller.goBack() } label: { FaIcon(name: "ic_fa_chevron_left", size: 16) }
                     .disabled(!controller.canGoBack)
-                Button { controller.goForward() } label: { Image(systemName: "chevron.right") }
+                Button { controller.goForward() } label: { FaIcon(name: "ic_fa_chevron_right", size: 16) }
                     .disabled(!controller.canGoForward)
                 TextField("hops://example.hopme.sh", text: $address)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled().textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .onSubmit { go() }
-                Button { controller.reload() } label: { Image(systemName: "arrow.clockwise") }
+                Button { controller.reload() } label: { FaIcon(name: "ic_fa_arrows_rotate", size: 16) }
             }
             .padding(8)
             Divider()

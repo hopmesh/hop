@@ -67,10 +67,10 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            chatsTab.tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
-            channelsTab.tabItem { Label("Channels", systemImage: "dot.radiowaves.left.and.right") }
-            webTab.tabItem { Label("Web", systemImage: "globe") }
-            statusTab.tabItem { Label("Status", systemImage: "gearshape") }
+            chatsTab.tabItem { Label("Chats", image: "ic_fa_comments") }
+            channelsTab.tabItem { Label("Channels", image: "ic_fa_tower_broadcast") }
+            webTab.tabItem { Label("Web", image: "ic_fa_globe") }
+            statusTab.tabItem { Label("Status", image: "ic_fa_gear") }
         }
         .onAppear {
             guard !started else { return }
@@ -121,11 +121,11 @@ struct ContentView: View {
             }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { showMyQR = true } label: { Image(systemName: "qrcode") }
+                    Button { showMyQR = true } label: { FaIcon(name: "ic_fa_qrcode", size: 20) }
                         .accessibilityLabel("My QR code")
-                    Button { showScan = true } label: { Image(systemName: "qrcode.viewfinder") }
+                    Button { showScan = true } label: { FaIcon(name: "ic_fa_qrcode", size: 20) }
                         .accessibilityLabel("Scan a contact")
-                    Button { showAddContact = true } label: { Image(systemName: "person.badge.plus") }
+                    Button { showAddContact = true } label: { FaIcon(name: "ic_fa_user_plus", size: 20) }
                         .accessibilityLabel("Add contact")
                 }
             }
@@ -157,7 +157,7 @@ struct ContentView: View {
                     NavigationLink {
                         HopBrowserView(bearer: bearer, start: hopsField.isEmpty ? "example.hopme.sh" : hopsField)
                     } label: {
-                        Label("Open in hops:// browser", systemImage: "globe")
+                        Label("Open in hops:// browser", image: "ic_fa_globe")
                     }
                     ForEach(bearer.hopsResults.sorted(by: { $0.key < $1.key }), id: \.key) { domain, text in
                         VStack(alignment: .leading, spacing: 2) {
@@ -170,7 +170,7 @@ struct ContentView: View {
                     Section("HNS cache") {
                         ForEach(bearer.hnsCache) { rec in
                             HStack {
-                                Image(systemName: rec.address.isEmpty ? "xmark.circle" : "magnifyingglass")
+                                FaIcon(name: rec.address.isEmpty ? "ic_fa_xmark" : "ic_fa_magnifying_glass", size: 15)
                                     .foregroundStyle(rec.address.isEmpty ? .red : .green)
                                 VStack(alignment: .leading) {
                                     Text(rec.domain).font(.callout)
@@ -207,9 +207,9 @@ struct ContentView: View {
                     LabeledContent("Status", value: bearer.status).font(.caption)
                     LabeledContent("Identity", value: bearer.idNote).font(.caption)
                     HStack {
-                        Button { showMyQR = true } label: { Label("My QR", systemImage: "qrcode") }
+                        Button { showMyQR = true } label: { Label("My QR", image: "ic_fa_qrcode") }
                         Spacer()
-                        Button { showScan = true } label: { Label("Scan", systemImage: "qrcode.viewfinder") }
+                        Button { showScan = true } label: { Label("Scan", image: "ic_fa_qrcode") }
                     }.buttonStyle(.bordered).font(.caption)
                 }
 
@@ -250,8 +250,8 @@ struct ContentView: View {
                             let addrs = peersOn(t.id)
                             ForEach(addrs, id: \.self) { addr in
                                 HStack {
-                                    Image(systemName: transportIcon(transportTag(t.id)))
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                    FaIcon(name: transportIcon(transportTag(t.id)), size: 12)
+                                        .foregroundStyle(.secondary)
                                     Text(bearer.displayName(addr))
                                     Spacer()
                                     Text(HopBearer.shortHex(addr))
@@ -283,7 +283,7 @@ struct ContentView: View {
                     Section("Relays (backbone)") {
                         ForEach(bearer.relays) { r in
                             HStack {
-                                Image(systemName: "cloud.fill").foregroundStyle(.blue)
+                                FaIcon(name: "ic_fa_cloud", size: 17).foregroundStyle(.blue)
                                 VStack(alignment: .leading) {
                                     Text(r.name)
                                     Text(HopBearer.shortHex(r.address))
@@ -291,8 +291,8 @@ struct ContentView: View {
                                 }
                                 Spacer()
                                 if bearer.routed.contains(r.address) {
-                                    Image(systemName: "arrow.triangle.branch")
-                                        .font(.caption2).foregroundStyle(.blue).help("learned route")
+                                    FaIcon(name: "ic_fa_code_branch", size: 11)
+                                        .foregroundStyle(.blue).help("learned route")
                                 }
                             }
                         }
@@ -303,7 +303,7 @@ struct ContentView: View {
                     Section("hops:// endpoints") {
                         ForEach(bearer.endpoints) { e in
                             HStack {
-                                Image(systemName: "globe").foregroundStyle(.green)
+                                FaIcon(name: "ic_fa_globe", size: 16).foregroundStyle(.green)
                                 VStack(alignment: .leading) {
                                     Text(e.name)
                                     Text(HopBearer.shortHex(e.address))
@@ -318,7 +318,7 @@ struct ContentView: View {
                     if bearer.queue.isEmpty { Text("empty").foregroundStyle(.secondary) }
                     ForEach(bearer.queue) { row in
                         HStack {
-                            Image(systemName: row.own ? "pin.fill" : "arrow.triangle.swap")
+                            FaIcon(name: row.own ? "ic_fa_thumbtack" : "ic_fa_right_left", size: 13)
                                 .foregroundStyle(row.own ? .orange : .secondary)
                             Text(row.own ? "yours → \(row.to)" : "relay → \(row.to)")
                             Spacer()
@@ -331,7 +331,7 @@ struct ContentView: View {
                         Spacer()
                         if !bearer.queue.isEmpty {
                             Button(role: .destructive) { bearer.clearQueue() } label: {
-                                Label("Clear", systemImage: "trash").labelStyle(.titleAndIcon)
+                                Label("Clear", image: "ic_fa_trash").labelStyle(.titleAndIcon)
                             }
                             .textCase(nil)
                         }
@@ -370,10 +370,10 @@ struct ContentView: View {
                     HStack(spacing: 4) {
                         Text(peer.name)
                         if bearer.secured.contains(peer.address) {
-                            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.green)
+                            FaIcon(name: "ic_fa_lock", size: 11).foregroundStyle(.green)
                         }
                         if bearer.routed.contains(peer.address) {
-                            Image(systemName: "arrow.triangle.branch").font(.caption2)
+                            FaIcon(name: "ic_fa_code_branch", size: 11)
                                 .foregroundStyle(.blue).help("learned route")
                         }
                     }
@@ -392,7 +392,7 @@ struct ContentView: View {
                 if !tags.isEmpty {
                     HStack(spacing: 3) {
                         ForEach(tags.sorted(), id: \.self) { tag in
-                            Image(systemName: transportIcon(tag)).font(.caption2)
+                            FaIcon(name: transportIcon(tag), size: 11)
                                 .foregroundStyle(.secondary).help(tag)
                         }
                     }
@@ -403,15 +403,16 @@ struct ContentView: View {
         }
     }
 
-    /// SF Symbol for a transport tag. "LAN" (local network, shared Wi-Fi) and "P2P" (peer-to-peer
-    /// Wi-Fi — MultipeerConnectivity/AWDL or Android Wi-Fi Direct) get distinct symbols.
+    /// Font Awesome (Light) asset name for a transport tag. "LAN" (local network, shared Wi-Fi)
+    /// and "P2P" (peer-to-peer Wi-Fi — MultipeerConnectivity/AWDL) get distinct glyphs. Rendered
+    /// via FaIcon (template/tintable); bluetooth-b is a brand glyph.
     private func transportIcon(_ tag: String) -> String {
         switch tag {
-        case "BT": return "dot.radiowaves.left.and.right"
-        case "LAN": return "wifi"               // local network over a shared Wi-Fi/router
-        case "P2P": return "personalhotspot"    // peer-to-peer WLAN (AWDL / Wi-Fi Direct), no router
-        case "Relay": return "cloud.fill"
-        default: return "link"
+        case "BT": return "ic_fa_bluetooth_b"
+        case "LAN": return "ic_fa_wifi"          // local network over a shared Wi-Fi/router
+        case "P2P": return "ic_fa_circle_nodes"  // peer-to-peer WLAN (AWDL), no router
+        case "Relay": return "ic_fa_cloud"
+        default: return "ic_fa_circle_nodes"
         }
     }
 
@@ -516,7 +517,7 @@ struct ChatView: View {
                             }
                             if m.failed && !m.incoming {
                                 Button { bearer.retry(m) } label: {
-                                    Label("Not sent · tap to retry", systemImage: "arrow.clockwise")
+                                    Label("Not sent · tap to retry", image: "ic_fa_arrows_rotate")
                                         .font(.caption2)
                                 }
                                 .buttonStyle(.borderless)
@@ -552,7 +553,7 @@ struct ChatView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
                                     .overlay(alignment: .topTrailing) {
                                         Button { attached.remove(at: idx) } label: {
-                                            Image(systemName: "xmark.circle.fill").font(.caption2)
+                                            FaIcon(name: "ic_fa_xmark", size: 14)
                                         }
                                     }
                             }
@@ -562,7 +563,7 @@ struct ChatView: View {
             }
             HStack {
                 PhotosPicker(selection: $photoItems, maxSelectionCount: 8, matching: .images) {
-                    Image(systemName: "photo.on.rectangle").imageScale(.large)
+                    FaIcon(name: "ic_fa_camera", size: 22)
                 }
                 TextField("Message \(peer.name)", text: $draft).textFieldStyle(.roundedBorder)
                 Button("Send") {
@@ -599,10 +600,10 @@ struct ChatView: View {
                 HStack(spacing: 5) {
                     Text(peer.hops <= 1 ? peer.name : "\(peer.name) · \(peer.hops)h").font(.headline)
                     if let kind = bearer.identity(peer.address)?.kind, kind == "relay" {
-                        Image(systemName: "cloud.fill").font(.caption).foregroundStyle(.blue)
+                        FaIcon(name: "ic_fa_cloud", size: 13).foregroundStyle(.blue)
                     }
                     if bearer.secured.contains(peer.address) {
-                        Image(systemName: "lock.fill").font(.caption).foregroundStyle(.green)
+                        FaIcon(name: "ic_fa_lock", size: 13).foregroundStyle(.green)
                     }
                 }
             }
@@ -669,7 +670,7 @@ struct ChannelsListView: View {
                 Section("Invites") {
                     ForEach(bearer.hpsInvites, id: \.path) { inv in
                         HStack {
-                            Image(systemName: "envelope").foregroundStyle(.orange)
+                            FaIcon(name: "ic_fa_envelope", size: 16).foregroundStyle(.orange)
                             VStack(alignment: .leading) {
                                 Text(inv.path).font(.callout)
                                 Text("from \(bearer.displayName(inv.host))")
@@ -692,7 +693,7 @@ struct ChannelsListView: View {
                 ForEach(bearer.hpsTopics) { t in
                     NavigationLink(value: t.id) {
                         HStack {
-                            Image(systemName: t.isChannel ? "bubble.left.and.bubble.right" : "megaphone")
+                            FaIcon(name: t.isChannel ? "ic_fa_comment" : "ic_fa_bullhorn", size: 16)
                                 .foregroundStyle(t.hosting ? .green : .blue)
                             VStack(alignment: .leading) {
                                 Text(t.path).font(.callout)
@@ -716,7 +717,7 @@ struct ChannelsListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { showAdd = true } label: { Image(systemName: "plus") }
+                Button { showAdd = true } label: { FaIcon(name: "ic_fa_plus", size: 18) }
                     .accessibilityLabel("Add channel")
             }
         }
@@ -773,7 +774,7 @@ struct ChannelView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        Button { showInfo = true } label: { Image(systemName: "info.circle") }
+                        Button { showInfo = true } label: { FaIcon(name: "ic_fa_circle_info", size: 18) }
                     }
                 }
                 .sheet(isPresented: $showInfo) { ChannelInfoView(bearer: bearer, topic: t) }
@@ -815,7 +816,7 @@ struct ChannelInfoView: View {
                             Button {
                                 bearer.hpsInvite(topic: topic, to: p.address)
                             } label: {
-                                Label(p.name, systemImage: "person.badge.plus")
+                                Label(p.name, image: "ic_fa_user_plus")
                             }
                         }
                     }
@@ -843,7 +844,7 @@ struct ChannelInfoView: View {
                                     .swipeActions {
                                         Button(role: .destructive) {
                                             bearer.hpsRekey(topic, remove: [who])
-                                        } label: { Label("Remove", systemImage: "person.slash") }
+                                        } label: { Label("Remove", image: "ic_fa_user_slash") }
                                     }
                             }
                         }
@@ -948,5 +949,21 @@ struct HpsAddView: View {
             .onAppear { if mode == 2 { found = bearer.hpsBrowse() } }
             .onChange(of: mode) { _ in if mode == 2 { found = bearer.hpsBrowse() } }
         }
+    }
+}
+
+/// A Font Awesome (Light) icon from the asset catalog, rendered as a tintable template inside a
+/// square `size`×`size` frame with scaledToFit so the whole glyph is letterboxed and NEVER clipped
+/// (FA paths span the full viewBox — the lock shackle sits at the top edge; constraining a single
+/// axis clipped the extremes). Use like an SF Symbol: `FaIcon(name: "ic_fa_lock", size: 12).foregroundStyle(.green)`.
+struct FaIcon: View {
+    let name: String
+    var size: CGFloat = 13
+    var body: some View {
+        Image(name)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
     }
 }

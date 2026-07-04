@@ -168,9 +168,14 @@ Bundle {
 }
 
 Destination =
-  | Device(PubKey)            // Use Case B
-  | InternetEgress            // Use Case A — "any gateway"
+  | Device(PubKey)            // Use Case B — a specific device address
   | AckTo(PubKey, [u8;32])    // ACK routed back to origin for a given bundle id
+  | Broadcast                 // flood to everyone (hps:// publishes, §32; §39 private bundles)
+  // NOTE: `InternetEgress` was REMOVED (commit 5dd64d3). Internet egress is now device-addressed
+  // via a hops:// request to a hop-endpoint (§30), NOT a mesh-visible destination. This enum is
+  // APPEND-ONLY on the wire (postcard encodes variants by index) — removing/reordering renumbers
+  // the rest and breaks decode across every peer + the relay, which is exactly what that removal did.
+  // Bump the bundle wire version on any change (see §13.4 / bundle.rs BUNDLE_VERSION).
 
 SealedPayload depends on kind:
   HttpRequest  { method, url, headers, body, max_resp_bytes }
@@ -343,7 +348,14 @@ A gateway is a normal node plus:
 - Request dedup by bundle ID within a TTL window (§7 caveat).
 - Abuse controls: per-source rate limiting, payload/response size caps, URL policy.
 
-> **Implemented (`hop-gateway`).** `Gateway::fulfill` returns a structured
+> **Status (F-32): `hop-gateway` is ORPHANED.** Internet egress is no longer a mesh-visible
+> `InternetEgress` destination — it is now a device-addressed `hops://` request served by
+> `hop-endpoint` (§30). The `hop-gateway` crate below has NO consumers (no binary, no `use
+> hop_gateway`) and was built around the removed variant; its abuse controls (dedup, rate limit,
+> size caps) should be ported into `hop-endpoint` (see F-19) and the crate deleted or given a real
+> binary + addressing story. The description below is retained for that port, not as shipped behavior.
+>
+> `Gateway::fulfill` returns a structured
 > `FulfillOutcome` (Response / Duplicate / RateLimited / PolicyDenied /
 > RequestTooLarge / NotForUs). TTL-bounded dedup map (pruned to bound memory),
 > per-source sliding-window rate limiting, request-body size cap, and an `Allowlist`
@@ -1154,7 +1166,7 @@ a transport is writing a bearer, not touching the protocol.
 | **BLE GATT + L2CAP** | full peer/relay | **implemented** (iOS + Android, incl. cross-platform); short range; iOS background-limited |
 | **LAN (mDNS/Bonjour + TCP)** | full peer/relay | **implemented** — the cross-platform high-bandwidth path: same Wi-Fi → discover via mDNS (`_hoplan._tcp`, instance name = base58 address), link over plain TCP with the shared 4-byte length framing. Works iOS↔iOS, **iOS↔Android**, Android↔Android. Lower base58 dials, higher accepts (one link per pair) |
 | **Wi-Fi MultipeerConnectivity / AWDL** | full peer/relay (iOS only) | **implemented** on iOS; Apple-only radio, so it never bridges to Android — that's what the LAN/BLE bearers are for |
-| **Wi-Fi Direct (Wi-Fi P2P)** | full peer/relay (Android only) | **implemented** on Android — Android↔Android when there's *no shared network*: DNS-SD-over-P2P discovery (same `_hoplan._tcp` + base58), group formation, then TCP over the p2p interface reusing `LanLink`. Skipped when the peer is already linked via LAN |
+| **Wi-Fi Direct (Wi-Fi P2P)** | ~~Android only~~ | **REMOVED** (commit c059d69). Its per-device pairing/approval dialog violates the passive, no-pairing principle that is a core selling point. Android↔Android with no shared network now falls back to BLE; the LAN bearer (mDNS + TCP) covers the shared-network case |
 | **TCP / WebSocket** | peer↔gateway, backbone | phone↔gateway hop (a phone can't BLE-reach a cloud box, §25); cloud↔cloud backbone (§21) |
 | **Web (browser)** | leaf / gateway client | WebRTC data channels (peer↔peer via signaling), WebSocket (→ gateway); WebBluetooth is central-only with no advertising/background. Browsers can't advertise or run in the background, so the web is a **leaf**, not a relay |
 | **ESP32 (BLE + Wi-Fi)** | **always-on anchor / bridge** | the reliability unlock — see below |
@@ -2363,10 +2375,11 @@ Privacy needs one tag; being *reachable* needs another. They trade differently, 
   is the **transit** identity, for *recognize-as-it-floods-by*. (A static `H(prekey)` tag would be
   O(1) but linkable; full trial-decrypt is unlinkable but an AEAD attempt per node — the ephemeral tag
   is the same privacy, far cheaper.)
-- **Mailbox-tag (per prekey-epoch) — a rotatable pseudonym.** `mailbox = H(recipient's current
-  prekey)`. Any sender can stamp it on a bundle, a relay can *bucket* by it, and the recipient can name
-  it in a beacon ("spray me mailbox M"). It is **not** the address — you can't seal to it or message
-  it, only group by it — and the recipient rotates it by publishing a new prekey epoch. It exists only
+- **Mailbox-tag (per epoch) — a rotatable pseudonym.** `mailbox = H("v2" ‖ recipient address ‖ epoch)`
+  with a daily epoch (F-06). Any sender (who knows the recipient's address for a private send) can stamp
+  it, a relay can *bucket* by it, and the recipient names it in a beacon ("spray me mailbox M"). It is
+  **not** the address — you can't seal to it or message it, only group by it — and it **rotates every
+  epoch**, so a global observer can't link a recipient's mailbox across epochs. It exists only
   because **you cannot solicit a bundle you have not seen**: the ephemeral tag is uncomputable in
   advance, so pulling needs a standing handle. That handle is linkable while it lives (an indexer
   clusters "mailbox M's traffic") — the honest, irreducible price of being reachable while offline.
@@ -2462,10 +2475,18 @@ it leaks `k` bits of destination entropy and adds prefix-level linkability (a re
 their prefix). A mesh dials `k` up only when it grows large enough that flooding hurts.
 
 **Treat every piece of routing/spool state as soft-state with a TTL and a cap, from day one.** Gradients
-decay (above); mailbox-tags rotate per prekey-epoch; held private bundles evict at `lifetime` (§8); each
-node caps its gradient table (signed beacons stop *hijack*; caps + rate-limits stop a Sybil *bloating*
-it with fake mailbox-tags; §35 keying gates relays). Anything that "remembers forever" is a storage and
-DoS liability.
+decay (above); held private bundles evict at `lifetime` (§8); each node caps its gradient table.
+**Mailbox-tags rotate per epoch (F-06):** `mailbox = H("v2" ‖ address ‖ epoch)` with a daily epoch, so a
+global observer can't correlate a recipient's mailbox across epochs. A recipient beacons the current epoch
+plus a one-epoch window (and a relay accepts that window), so a bundle addressed/spooled just before a
+rotation boundary still routes and pulls. Deriving from `(address, epoch)` rather than the prekey decouples
+rotation from the deterministic prekey (sessions/recognition are untouched) and makes a beacon **self-
+verifying at the relay from public info** — the relay recomputes `H(publisher ‖ epoch)` and only lays a
+gradient if it matches, and since a beacon is identity-signed by that address, no node can forge a victim's
+mailbox (F-05). Residual: being pull-reachable via a signed beacon inherently reveals "this address is
+reachable this epoch"; that's the documented cost of pull-reachability (a fully passive recipient sets
+`route_to_me = false` and advertises no mailbox). Caps + rate-limits stop a Sybil *bloating* the table with
+fake mailbox-tags; §35 keying gates relays. Anything that "remembers forever" is a storage and DoS liability.
 
 ### Costs (honest)
 

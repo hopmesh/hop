@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hop — connection icon styles</title>
+<!-- Jason's Font Awesome Pro kit (all styles: solid/regular/light/thin/duotone + sharp + sharp-duotone) -->
+<script src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#13161b; --panel-2:#1a1e25; --line:#262b33;
+    --text:#e7ebf0; --muted:#8b94a3; --accent:#6ea8fe; --green:#3ddc84; --grey:#5b6472;
+    --duo-primary:#e7ebf0; --duo-secondary:#6ea8fe;
+  }
+  [data-theme="light"]{
+    --bg:#f4f6f9; --panel:#ffffff; --panel-2:#f7f9fc; --line:#e4e8ee;
+    --text:#1a1e25; --muted:#69727f; --accent:#2f6fed; --green:#1aa75a; --grey:#aab2bd;
+    --duo-primary:#1a1e25; --duo-secondary:#2f6fed;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  /* Font Awesome duotone two-tone colors */
+  .fa-duotone, .fa-sharp-duotone{--fa-primary-color:var(--duo-primary);--fa-secondary-color:var(--duo-secondary);--fa-secondary-opacity:.45;}
+  header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:14px 24px;
+    display:flex;align-items:center;gap:16px;}
+  header h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.01em}
+  header .sub{color:var(--muted);font-size:13px}
+  header .spacer{flex:1}
+  button{font:inherit;color:var(--text);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  main{max-width:1180px;margin:0 auto;padding:28px 24px 80px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    font-weight:650;margin:38px 0 14px}
+  /* ---- grid: icons × styles ---- */
+  .grid{width:100%;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel)}
+  .grid table{width:100%;border-collapse:collapse}
+  .grid th,.grid td{padding:14px 10px;text-align:center;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}
+  .grid th{background:var(--panel-2);color:var(--muted);font-size:11px;text-transform:uppercase;
+    letter-spacing:.06em;font-weight:600;position:sticky;top:57px;z-index:2}
+  .grid th:first-child,.grid td:first-child{text-align:left;color:var(--muted);font-size:13px;
+    white-space:nowrap;position:sticky;left:0;background:var(--panel);z-index:1}
+  .grid th:first-child{z-index:3;background:var(--panel-2)}
+  .grid tr:last-child td{border-bottom:none}
+  .grid td:last-child,.grid th:last-child{border-right:none}
+  .grid .ico{font-size:22px;color:var(--text);line-height:1}
+  .grid td:first-child .name{color:var(--text);font-weight:500}
+  .grid td:first-child .glyph{color:var(--muted);font-size:11px;font-family:ui-monospace,monospace}
+  /* ---- in-context Hop chat rows ---- */
+  .ctxwrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}
+  .phone{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .phone .cap{padding:11px 16px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px;
+    display:flex;align-items:center;gap:8px;color:var(--muted)}
+  .phone .cap b{color:var(--text);font-weight:650}
+  .row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:none}
+  .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .dot.on{background:var(--green)} .dot.off{background:var(--grey)}
+  .who{flex:1;min-width:0}
+  .who .nm{font-weight:550;font-size:14px}
+  .who .meta{color:var(--muted);font-size:12px;margin-top:1px}
+  .badges{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;white-space:nowrap}
+  .badges .ic{font-size:15px}
+  .badges .lock{color:var(--accent)}
+  .badges .tag{font-size:11px;color:var(--muted)}
+  .legend{color:var(--muted);font-size:13px;margin:6px 0 0}
+  .note{color:var(--muted);font-size:12.5px;margin-top:8px}
+  .pickhint{background:var(--panel-2);border:1px dashed var(--line);border-radius:10px;padding:12px 14px;color:var(--muted);font-size:13px;margin-top:10px}
+</style>
+</head>
+<body data-theme="dark">
+<header>
+  <h1>Hop · connection icons</h1>
+  <span class="sub">Font Awesome 7 Pro — every style, your kit</span>
+  <span class="spacer"></span>
+  <button id="size">Size: 22px</button>
+  <button id="theme">◐ Light/Dark</button>
+</header>
+
+<main>
+  <h2>Every icon × every style</h2>
+  <div class="grid">
+    <table id="grid"></table>
+  </div>
+  <p class="note">Bluetooth is a <b>brand</b> glyph (one style only), so its cell repeats across columns. Duotone/Sharp-Duotone use a two-tone color (primary = text, secondary = accent @ 45%).</p>
+
+  <h2>In context — the Chats / Nearby list</h2>
+  <div class="ctxwrap" id="ctx"></div>
+  <div class="pickhint">Tell me the column you like (e.g. <b>Solid</b>, <b>Duotone</b>, <b>Sharp Solid</b>, <b>Light</b>) and I'll wire that exact style into both apps. You can mix — e.g. Solid for transport, Duotone for the lock.</div>
+</main>
+
+<script>
+// --- icon set (the connection states) ---
+const ICONS = [
+  {label:"Secured",      name:"lock",            uni:"f023"},
+  {label:"Not secured",  name:"lock-open",       uni:"f3c1"},
+  {label:"Bluetooth",    name:"bluetooth-b",     uni:"f294", brands:true},
+  {label:"Wi-Fi / LAN",  name:"wifi",            uni:"f1eb"},
+  {label:"Relay (cloud)",name:"cloud",           uni:"f0c2"},
+  {label:"Mesh / hops",  name:"circle-nodes",    uni:"e4e2"},
+  {label:"Broadcast",    name:"tower-broadcast", uni:"f519"},
+  {label:"Photo",        name:"camera",          uni:"f030"},
+  {label:"Delivered",    name:"circle-check",    uni:"f058"},
+  {label:"Offline dot",  name:"circle",          uni:"f111"},
+];
+// --- FA7 style variants ---
+const STYLES = [
+  {label:"Solid",         cls:"fa-solid"},
+  {label:"Regular",       cls:"fa-regular"},
+  {label:"Light",         cls:"fa-light"},
+  {label:"Thin",          cls:"fa-thin"},
+  {label:"Duotone",       cls:"fa-duotone"},
+  {label:"Sharp Solid",   cls:"fa-sharp fa-solid"},
+  {label:"Sharp Regular", cls:"fa-sharp fa-regular"},
+  {label:"Sharp Light",   cls:"fa-sharp fa-light"},
+  {label:"Sharp Duotone", cls:"fa-sharp-duotone fa-solid"},
+];
+const iEl = (cls,name,brands)=> `<i class="${brands?'fa-brands':cls} fa-${name}"></i>`;
+
+// build the grid
+(function(){
+  const t = document.getElementById('grid');
+  let head = "<thead><tr><th>Icon</th>" + STYLES.map(s=>`<th>${s.label}</th>`).join("") + "</tr></thead>";
+  let body = "<tbody>" + ICONS.map(ic=>{
+    const cells = STYLES.map(s=> `<td><span class="ico">${iEl(s.cls,ic.name,ic.brands)}</span></td>`).join("");
+    return `<tr><td><div class="name">${ic.label}</div><div class="glyph">fa-${ic.name} · U+${ic.uni.toUpperCase()}</div></td>${cells}</tr>`;
+  }).join("") + "</tbody>";
+  t.innerHTML = head + body;
+})();
+
+// in-context cards for a few leading styles
+(function(){
+  const styles = [
+    {label:"Solid",       cls:"fa-solid"},
+    {label:"Duotone",     cls:"fa-duotone"},
+    {label:"Sharp Solid", cls:"fa-sharp fa-solid"},
+    {label:"Light",       cls:"fa-light"},
+  ];
+  const peers = [
+    {nm:"iPhone XR",     meta:"iOS · CLUNwrg1", on:true,  lock:true,  tag:"direct",  ic:"bluetooth-b", brands:true},
+    {nm:"Galaxy Tab A9+",meta:"Android · 7PXgBb",on:true,  lock:true,  tag:"direct",  ic:"wifi"},
+    {nm:"Jillian's iPad",meta:"iOS · 3KRzkz1s", on:true,  lock:true,  tag:"2 hops",  ic:"cloud"},
+    {nm:"BushidoPhone",  meta:"iOS · H6g8Cbg6", on:false, lock:false, tag:"offline", ic:"circle-nodes"},
+  ];
+  const ctx = document.getElementById('ctx');
+  ctx.innerHTML = styles.map(s=>{
+    const rows = peers.map(p=>{
+      const lock = p.lock ? `<i class="ic lock ${s.cls} fa-lock"></i>` : "";
+      const trans = p.brands ? `<i class="ic fa-brands fa-${p.ic}"></i>` : `<i class="ic ${s.cls} fa-${p.ic}"></i>`;
+      return `<div class="row">
+        <span class="dot ${p.on?'on':'off'}"></span>
+        <div class="who"><div class="nm">${p.nm}</div><div class="meta">${p.meta}</div></div>
+        <div class="badges">${lock}${trans}<span class="tag">${p.tag}</span></div>
+      </div>`;
+    }).join("");
+    return `<div class="phone"><div class="cap"><b>${s.label}</b> · Nearby (direct)</div>${rows}</div>`;
+  }).join("");
+})();
+
+// controls
+document.getElementById('theme').onclick = ()=>{
+  const b=document.body; b.dataset.theme = b.dataset.theme==='dark'?'light':'dark';
+};
+let size=22;
+document.getElementById('size').onclick = (e)=>{
+  size = size===22?18:(size===18?28:22);
+  document.querySelectorAll('.grid .ico').forEach(el=>el.style.fontSize=size+'px');
+  e.target.textContent='Size: '+size+'px';
+};
+</script>
+</body>
+</html>

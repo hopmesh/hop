@@ -42,7 +42,8 @@ resource "google_secret_manager_secret_iam_member" "example_identity" {
   member    = "serviceAccount:${google_service_account.relay.email}"
 }
 
-# The endpoint service. Scale-to-zero like the relays; one region is plenty for a demo.
+# The endpoint service. Always-on (min=1); one region is plenty for a demo. (F-39: NOT scale-to-zero
+# like the relays — the endpoint must stay relay-connected to be routable, so min_instance_count=1.)
 resource "google_cloud_run_v2_service" "example" {
   name     = "hop-example"
   location = var.example_region

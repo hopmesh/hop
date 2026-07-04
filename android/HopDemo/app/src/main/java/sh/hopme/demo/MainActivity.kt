@@ -28,7 +28,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
@@ -59,21 +63,18 @@ class MainActivity : ComponentActivity() {
             } else {
                 perms += Manifest.permission.ACCESS_FINE_LOCATION
             }
+            // F-37: Wi-Fi Direct is gone, so we no longer request NEARBY_WIFI_DEVICES (13+) or fine
+            // location on 31-32 (which only Wi-Fi Direct needed — and denying it used to block start).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 perms += Manifest.permission.POST_NOTIFICATIONS
-                perms += Manifest.permission.NEARBY_WIFI_DEVICES   // Wi-Fi Direct discovery (13+)
-            } else {
-                // Wi-Fi Direct service discovery needs fine location through Android 12L.
-                perms += Manifest.permission.ACCESS_FINE_LOCATION
             }
             return perms.distinct().toTypedArray()
         }
 
     private val requestPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            // BLE perms are required; notification + Wi-Fi-nearby perms are best-effort.
-            val optional = setOf(Manifest.permission.POST_NOTIFICATIONS,
-                Manifest.permission.NEARBY_WIFI_DEVICES)
+            // BLE perms are required; the notification perm is best-effort.
+            val optional = setOf(Manifest.permission.POST_NOTIFICATIONS)
             val bleOk = result.filterKeys { it !in optional }.values.all { it }
             if (bleOk) HopService.start(this) // service starts the shared bearer
         }
@@ -128,14 +129,29 @@ private fun platformLabel(p: String): String = when (p) {
     "ios" -> "iOS"; "android" -> "Android"; else -> p
 }
 
-/// A glyph + label per direct transport, mirroring the iOS SF Symbols. "LAN" is a shared-network
-/// Wi-Fi link (mDNS); "P2P" is peer-to-peer Wi-Fi (Wi-Fi Direct / AWDL) with no router.
-private fun transportSymbol(tag: String): String = when (tag) {
-    "BT" -> "🔷 BT"
-    "LAN" -> "🌐 LAN"
-    "P2P" -> "📡 P2P"
-    "Relay" -> "☁️ Relay"
-    else -> tag
+/// Font Awesome (Light) vector per direct transport, mirroring the iOS SF Symbols. "LAN" is a
+/// shared-network Wi-Fi link (mDNS); "P2P" is peer-to-peer Wi-Fi (iOS Multipeer/AWDL); "Relay" is
+/// the cloud backbone. Returns null for an unknown tag (no icon). bluetooth-b is a brand glyph.
+private fun transportIcon(tag: String): Int? = when (tag) {
+    "BT" -> sh.hopme.demo.R.drawable.ic_fa_bluetooth_b
+    "LAN" -> sh.hopme.demo.R.drawable.ic_fa_wifi
+    "P2P" -> sh.hopme.demo.R.drawable.ic_fa_circle_nodes
+    "Relay" -> sh.hopme.demo.R.drawable.ic_fa_cloud
+    else -> null
+}
+
+/// Render a Font Awesome vector icon, tinted, inside a square `size`×`size` box with ContentScale.Fit
+/// so the whole glyph is letterboxed and NEVER clipped (FA paths span the full viewBox — e.g. the lock
+/// shackle sits at y=0; constraining a single axis clipped the extremes). For inline status glyphs.
+@Composable
+private fun FaIcon(res: Int, tint: Color = LocalContentColor.current, size: Dp = 13.dp) {
+    Image(
+        painter = painterResource(res),
+        contentDescription = null,
+        colorFilter = ColorFilter.tint(tint),
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.size(size),
+    )
 }
 
 /// Encode text (our "<base58>|<name>") to a QR bitmap via zxing core.
@@ -217,13 +233,13 @@ fun HopApp(bearer: HopBearer) {
     Scaffold(bottomBar = {
         NavigationBar {
             NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
-                icon = { Text("💬") }, label = { Text("Chats") })
+                icon = { FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_comments, size = 22.dp) }, label = { Text("Chats") })
             NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
-                icon = { Text("📡") }, label = { Text("Channels") })
+                icon = { FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_tower_broadcast, size = 22.dp) }, label = { Text("Channels") })
             NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
-                icon = { Text("🌐") }, label = { Text("Web") })
+                icon = { FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_globe, size = 22.dp) }, label = { Text("Web") })
             NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
-                icon = { Text("⚙️") }, label = { Text("Status") })
+                icon = { FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_gear, size = 22.dp) }, label = { Text("Status") })
         }
     }) { pad ->
         Box(Modifier.padding(pad).imePadding()) {
@@ -327,8 +343,12 @@ fun StatusScreen(bearer: HopBearer) {
             }
         }
         items(bearer.queue) { q ->
-            Text((if (q.own) "📌 yours → " else "↔ relay → ") + "${q.to}  ·  p${q.priority} · ${q.hops}h",
-                style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FaIcon(res = if (q.own) sh.hopme.demo.R.drawable.ic_fa_thumbtack else sh.hopme.demo.R.drawable.ic_fa_right_left, size = 12.dp)
+                Spacer(Modifier.width(6.dp))
+                Text((if (q.own) "yours → " else "relay → ") + "${q.to}  ·  p${q.priority} · ${q.hops}h",
+                    style = MaterialTheme.typography.bodySmall)
+            }
         }
         item {
             Spacer(Modifier.height(16.dp))
@@ -363,7 +383,12 @@ fun ChannelsScreen(bearer: HopBearer) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Channels", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.weight(1f))
-                Button(onClick = { showAdd = true }) { Text("＋ Add") }
+                Button(onClick = { showAdd = true }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_plus, size = 13.dp)
+                        Spacer(Modifier.width(6.dp)); Text("Add")
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -371,7 +396,10 @@ fun ChannelsScreen(bearer: HopBearer) {
             item { Text("Invites", style = MaterialTheme.typography.titleMedium) }
             items(bearer.hpsInvites) { inv ->
                 ListItem(
-                    headlineContent = { Text("✉ " + inv.path) },
+                    headlineContent = { Row(verticalAlignment = Alignment.CenterVertically) {
+                        FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_envelope, size = 13.dp)
+                        Spacer(Modifier.width(6.dp)); Text(inv.path)
+                    } },
                     supportingContent = { Text("from " + bearer.displayName(inv.host)) },
                     trailingContent = {
                         Row {
@@ -384,12 +412,15 @@ fun ChannelsScreen(bearer: HopBearer) {
         }
         item { Spacer(Modifier.height(8.dp)); Text("Channels & services", style = MaterialTheme.typography.titleMedium) }
         if (bearer.hpsTopics.isEmpty()) {
-            item { Text("None yet. Tap ＋ Add to host, subscribe, or browse.", style = MaterialTheme.typography.bodySmall) }
+            item { Text("None yet. Tap + Add to host, subscribe, or browse.", style = MaterialTheme.typography.bodySmall) }
         }
         items(bearer.hpsTopics) { t ->
             val unread = bearer.hpsUnread[t.id] ?: 0
             ListItem(
-                headlineContent = { Text((if (t.channel) "💬 " else "📣 ") + t.path) },
+                headlineContent = { Row(verticalAlignment = Alignment.CenterVertically) {
+                    FaIcon(res = if (t.channel) sh.hopme.demo.R.drawable.ic_fa_comment else sh.hopme.demo.R.drawable.ic_fa_bullhorn, size = 13.dp)
+                    Spacer(Modifier.width(6.dp)); Text(t.path)
+                } },
                 supportingContent = { Text((if (t.hosting) "hosting · " else "subscribed · ") + HopBearer.shortHex(t.host)) },
                 trailingContent = { if (unread > 0) Text("$unread", color = MaterialTheme.colorScheme.error) },
                 modifier = Modifier.clickable { openId = t.id },
@@ -411,9 +442,13 @@ fun ChannelScreen(bearer: HopBearer, topic: HopBearer.HpsTopic, onBack: () -> Un
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Back") }
-            Text((if (topic.channel) "💬 " else "📣 ") + topic.path, style = MaterialTheme.typography.titleLarge)
+            FaIcon(res = if (topic.channel) sh.hopme.demo.R.drawable.ic_fa_comment else sh.hopme.demo.R.drawable.ic_fa_bullhorn, size = 18.dp)
+            Spacer(Modifier.width(6.dp))
+            Text(topic.path, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { showInfo = true }) { Text("ⓘ") }
+            TextButton(onClick = { showInfo = true }) {
+                Icon(painterResource(R.drawable.ic_fa_circle_info), contentDescription = "Info")
+            }
         }
         val msgs = bearer.hpsThreads[topic.id] ?: emptyList<HopBearer.HpsMsg>()
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -585,7 +620,12 @@ fun WebScreen(bearer: HopBearer) {
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = { if (field.isNotBlank()) bearer.openHops(field) }) { Text("Fetch") }
             }
-            TextButton(onClick = { if (field.isNotBlank()) browseUrl = field }) { Text("🌐 Open in browser") }
+            TextButton(onClick = { if (field.isNotBlank()) browseUrl = field }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_globe, size = 14.dp)
+                    Spacer(Modifier.width(6.dp)); Text("Open in browser")
+                }
+            }
             Spacer(Modifier.height(12.dp))
         }
         items(bearer.hopsResults.entries.toList()) { (domain, text) ->
@@ -644,7 +684,6 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
 @Composable
 private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Peer) -> Unit) {
     val locked = bearer.secured.contains(p.address.toList())
-    val transport = bearer.linkTransports[p.address.toList()]?.let { transportSymbol(it) }
     val subline = listOf(HopBearer.shortHex(p.address), platformLabel(p.platform), p.app)
         .filter { it.isNotEmpty() }.joinToString(" · ")
     ListItem(
@@ -652,15 +691,30 @@ private fun PeerRow(bearer: HopBearer, p: HopBearer.Peer, onPick: (HopBearer.Pee
             Box(Modifier.size(8.dp).clip(CircleShape)
                 .background(if (p.active) Color(0xFF34C759) else Color.Gray))
         },
-        headlineContent = { Text(p.name + if (locked) "  🔒" else "") },
+        headlineContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(p.name)
+                if (locked) {
+                    Spacer(Modifier.width(5.dp))
+                    FaIcon(sh.hopme.demo.R.drawable.ic_fa_lock, MaterialTheme.colorScheme.primary, 12.dp)
+                }
+            }
+        },
         supportingContent = { Text(subline) },
         trailingContent = {
             val isLive = bearer.peers.any { it.address.contentEquals(p.address) }
-            Text(
-                if (!isLive) "offline"
-                else (transport?.let { "$it · " } ?: "") + HopBearer.hopsLabel(p.hops),
-                style = MaterialTheme.typography.bodySmall,
-            )
+            if (!isLive) {
+                Text("offline", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val icon = bearer.linkTransports[p.address.toList()]?.let { transportIcon(it) }
+                    if (icon != null) {
+                        FaIcon(icon, MaterialTheme.colorScheme.onSurfaceVariant, 12.dp)
+                        Spacer(Modifier.width(5.dp))
+                    }
+                    Text(HopBearer.hopsLabel(p.hops), style = MaterialTheme.typography.bodySmall)
+                }
+            }
         },
         modifier = Modifier.clickable { onPick(p) },
     )
@@ -685,7 +739,11 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
         val locked = bearer.secured.contains(peer.address.toList())
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Back") }
-            Text(peer.name + if (locked) "  🔒" else "", style = MaterialTheme.typography.titleLarge)
+            Text(peer.name, style = MaterialTheme.typography.titleLarge)
+            if (locked) {
+                Spacer(Modifier.width(6.dp))
+                FaIcon(sh.hopme.demo.R.drawable.ic_fa_lock, MaterialTheme.colorScheme.primary, 16.dp)
+            }
         }
         LazyColumn(Modifier.weight(1f)) {
             items(thread) { m ->
@@ -703,9 +761,20 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                     }
                     if (m.text.isNotEmpty()) Text((if (m.incoming) "‹ " else "› ") + m.text)
                     if (m.failed && !m.incoming) {
-                        Text("⟳ Not sent · tap to retry", color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.clickable { bearer.retry(m, peer) })
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { bearer.retry(m, peer) },
+                        ) {
+                            Icon(
+                                painterResource(R.drawable.ic_fa_arrows_rotate),
+                                contentDescription = "Retry",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Not sent · tap to retry", color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     } else if (!m.incoming && !m.delivered && m.relayed == 0u && !locked) {
                         // Genuinely "Securing": no forward-secret session with THIS recipient yet (no
                         // prekey). Once the session is locked the message HAS been sent — it's awaiting
@@ -732,7 +801,7 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                                 modifier = Modifier.size(48.dp))
                             TextButton(onClick = { attached.removeAt(i) },
                                 contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.align(Alignment.TopEnd)) { Text("✕") }
+                                modifier = Modifier.align(Alignment.TopEnd)) { FaIcon(res = sh.hopme.demo.R.drawable.ic_fa_xmark, size = 12.dp) }
                         }
                     }
                 }
@@ -741,7 +810,9 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = draft, onValueChange = { draft = it },
                 modifier = Modifier.weight(1f), placeholder = { Text("Message ${peer.name}") })
-            TextButton(onClick = { picker.launch("image/*") }) { Text("📷") }
+            TextButton(onClick = { picker.launch("image/*") }) {
+                FaIcon(sh.hopme.demo.R.drawable.ic_fa_camera, MaterialTheme.colorScheme.primary, 20.dp)
+            }
             Button(onClick = {
                 val t = draft.trim()
                 if (attached.isNotEmpty()) {

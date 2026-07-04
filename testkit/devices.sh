@@ -2,7 +2,7 @@
 # Device registry for the Hop cross-system test harness.
 # Each device: id | platform | handle (adb serial / devicectl udid) | transport | display name
 #
-# transport: "ble" = BLE-only (Wi-Fi OFF, set by the operator) ; "full" = BLE + LAN + Wi-Fi Direct.
+# transport: "ble" = BLE-only (Wi-Fi OFF, set by the operator) ; "full" = BLE + LAN. (Wi-Fi Direct was removed.)
 # The operator keeps PIXEL and XR off Wi-Fi (BLE-only); the rest have full connectivity.
 #
 # Addresses are NOT here — they are discovered live into testkit/addrs.env by refresh-addrs.sh
@@ -12,7 +12,7 @@
 BUNDLE=sh.hopme.demo
 
 # id        platform  handle                                  transport  displayname
-# The 4-device unattended fleet: BushidoPhone + Decklan's iPad left the network.
+# The 6-device fleet (BushidoPhone + the second iPad were re-added, commit 91b663a).
 DEVICES=(
   "pixel   android   34241FDH2004KR                          ble        Pixel 7"
   "tab     android   R95YA01J6QZ                             full       Galaxy Tab A9+"

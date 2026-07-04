@@ -39,16 +39,20 @@ resource "google_project_iam_member" "build" {
     "roles/cloudbuild.builds.builder",
     "roles/artifactregistry.writer",
     "roles/logging.logWriter",
-    # Deploy perms for `tofu apply` — replaces the blunt roles/owner. `editor` does the
-    # create/update across run/compute/dns/certmanager/firestore/secrets/artifact-registry;
-    # the rest add the IAM-policy + connection powers `editor` lacks. No billing, org-policy,
-    # or owner-granting (the owner-only powers the apply never needs).
+    # Deploy perms for `tofu apply`. WARNING (F-22): this set is effectively OWNER-EQUIVALENT and the
+    # earlier claim that it grants no owner was FALSE. `roles/resourcemanager.projectIamAdmin` carries
+    # `resourcemanager.projects.setIamPolicy`, which in this in-org project can grant `roles/owner`; and
+    # `roles/secretmanager.admin` includes `versions.access`, so the pipeline can read the relay identity
+    # root seed directly. Combined with `tofu apply -auto-approve` on every push, one bad commit to main
+    # = full project takeover + fleet identity theft. Bounded today (single-maintainer, main-push
+    # required), but before production narrow these: drop projectIamAdmin/secretmanager.admin in favor of
+    # specific bindings, and gate IAM-touching changes behind plan-then-approve.
     "roles/editor",
-    "roles/resourcemanager.projectIamAdmin", # google_project_iam_member bindings
+    "roles/resourcemanager.projectIamAdmin", # google_project_iam_member bindings (⚠ can grant owner)
     "roles/iam.serviceAccountAdmin",         # create/manage the build + relay SAs
     "roles/iam.serviceAccountUser",          # Cloud Run deploy runs services as the relay SA
     "roles/run.admin",                       # run service setIamPolicy (allUsers invoker)
-    "roles/secretmanager.admin",             # secret setIamPolicy
+    "roles/secretmanager.admin",             # secret setIamPolicy (⚠ also grants versions.access)
     "roles/storage.admin",                   # state-bucket setIamPolicy (build_state below)
     "roles/cloudbuild.connectionAdmin",      # google_cloudbuildv2_repository / connection
   ]) : []

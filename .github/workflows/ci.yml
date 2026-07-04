@@ -1,0 +1,101 @@
+name: CI
+
+# The code safety net (F-01). Runs on every push and PR: the full test suite, clippy, formatting,
+# the contract-purity guardrail, and a cbindgen header-drift check so sdk/hop.h can never fall out
+# of sync with cabi.rs. The Cloud Build deploy trigger should require this workflow to pass before
+# it applies to the fleet (a commit that compiles but regresses the wire format must not roll to
+# ~42 regions undetected — see GAP-ANALYSIS.md F-01/F-02).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (but let main runs finish).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust (test · clippy · fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Informational for now — the tree predates rustfmt enforcement, so a failing fmt check
+      # shouldn't block the merge/deploy gate. Flip continue-on-error off after a formatting pass.
+      - name: Format check (informational)
+        run: cargo fmt --all --check
+        continue-on-error: true
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # hop-relayd's cloud path (handoff/spool/want-beacon worker + F-18 cross-region test) is behind
+      # the optional `firestore` feature, which the default workspace test run doesn't enable.
+      - name: Test relayd (firestore feature)
+        run: cargo test -p hop-relayd --features firestore
+
+      # At-rest encryption (F-25) is behind the `sqlcipher` feature (SQLite + SQLCipher, vendored
+      # OpenSSL) which the default workspace run doesn't build. This exercises open_keyed end-to-end.
+      - name: Test store (sqlcipher feature)
+        run: cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
+
+  kotlin-sdk:
+    name: Kotlin SDK tests (BearerManager)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # F-34: radio-free transport-multiplexer tests. Plain JVM module, no Android SDK needed.
+      - name: Test Kotlin SDK
+        working-directory: sdk/wrappers/kotlin
+        run: gradle test --no-daemon
+
+  contract:
+    name: Contract purity + header drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + cbindgen
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo install cbindgen --locked
+
+      - name: Contract purity (no transport symbols in the SDK/contract)
+        run: bash tools/codegen/check-contract-purity.sh
+
+      - name: Header drift (sdk/hop.h matches cabi.rs)
+        run: |
+          cbindgen --config core/hop/cbindgen.toml --crate hop --output /tmp/hop.h core/hop
+          if ! diff -u sdk/hop.h /tmp/hop.h; then
+            echo "::error::sdk/hop.h is out of date. Run core/hop/regen-header.sh and commit the result."
+            exit 1
+          fi
+          echo "sdk/hop.h is in sync with cabi.rs"

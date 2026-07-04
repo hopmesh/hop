@@ -21,14 +21,14 @@ export const drivers = [
   },
   {
     id: 'android', name: 'Android', icon: '<i class="fa-duotone fa-solid fa-robot"></i>',
-    status: 'Available', tagline: 'Kotlin host over the Android BLE + Wi-Fi stack',
+    status: 'Available', tagline: 'Kotlin host over the Android BLE + LAN stack',
     summary:
-      'Embeds hop-core through UniFFI and drives BLE (GATT + L2CAP) plus Wi-Fi/LAN, with a foreground service for sustained background meshing.',
-    bearers: ['BLE — GATT + L2CAP CoC', 'Wi-Fi Direct / LAN'],
+      'Embeds hop-core through UniFFI and drives BLE (GATT + L2CAP) plus LAN, with a foreground service for sustained background meshing.',
+    bearers: ['BLE — GATT + L2CAP CoC', 'LAN — mDNS + TCP'],
     notes: [
       'UniFFI Kotlin bindings — the same core API as iOS.',
       'A foreground service keeps the mesh alive in the background.',
-      'Wi-Fi Direct and LAN bearers add high-bandwidth local transfer where available.',
+      'The LAN bearer (mDNS + TCP) adds high-bandwidth local transfer where available. (Wi-Fi Direct was removed: its per-device approval dialog breaks the passive, no-pairing principle.)',
     ],
     refs: [['BLE bearer', '/protocol/ble/'], ['Any transport', '/protocol/bearers/']],
   },
