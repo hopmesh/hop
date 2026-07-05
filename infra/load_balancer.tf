@@ -31,7 +31,12 @@ resource "google_compute_region_network_endpoint_group" "relay" {
 # relay.hopme.sh (nearest healthy region). timeout_sec is NOT allowed on serverless-NEG
 # backends — the WebSocket lifetime is governed by the Cloud Run service's own request
 # timeout (var.ws_request_timeout_seconds, set in cloud_run.tf).
+# count-gated (not just empty backends) so a relay teardown DESTROYS this whole resource rather than
+# updating it to zero backends: an in-place update-to-empty while the url_map references it and the
+# regional NEGs are being destroyed forms a Terraform destroy-time cycle. When relays are off the
+# url_map defaults to the example backend instead (see default_service below).
 resource "google_compute_backend_service" "relay" {
+  count                 = var.relays_enabled ? 1 : 0
   name                  = "hop-relay-backend"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   protocol              = "HTTP"
@@ -61,9 +66,19 @@ resource "google_compute_backend_service" "relay_region" {
 
 # relay.hopme.sh → nearest region (default); <region>.relay.hopme.sh → that exact region;
 # example.hopme.sh → the hops:// demo endpoint backend (DESIGN.md §30).
+#
+# The ENTIRE relay HTTPS serving chain is count-gated on var.relays_enabled and destroyed as one set
+# when the fleet goes off: the anycast backend, THIS url_map, the https proxy, and the :443 forwarding
+# rules. That avoids a Terraform destroy-time cycle: any of them left as an in-place UPDATE while the
+# per-region backends/NEGs it references are destroyed forms a cycle (a conditional/alternate url_map
+# doesn't help, since `x ? on[0] : off[0]` statically references BOTH). Destroying the whole chain
+# together has no in-place-update-referencing-a-destroyed-resource, so no cycle. Kept alive across the
+# teardown: the anycast IPs, the wildcard cert, DNS, the :80->:443 redirect, and the example service,
+# so re-enabling (relays_enabled = true) restores the fleet on the SAME IP + cert.
 resource "google_compute_url_map" "relay" {
+  count           = var.relays_enabled ? 1 : 0
   name            = "hop-relay-urlmap"
-  default_service = google_compute_backend_service.relay.id
+  default_service = google_compute_backend_service.relay[0].id
 
   dynamic "host_rule" {
     for_each = google_compute_backend_service.relay_region
@@ -148,34 +163,33 @@ resource "google_certificate_manager_certificate_map_entry" "relay" {
 }
 
 resource "google_compute_target_https_proxy" "relay" {
-  # New name (was hop-relay-https-proxy): a target_https_proxy can't be switched from
-  # ssl_certificates to a certificate_map in place (the API 412s mid-transition), so we
-  # create a fresh proxy already on the cert map and let the forwarding rules repoint to
-  # it before the old proxy is destroyed (create_before_destroy).
+  # Part of the count-gated relay HTTPS chain (see the url_map.relay comment): destroyed wholesale on
+  # teardown rather than updated in place, which is what avoids the destroy-time cycle. Name is `-cm`
+  # from the one-time move off ssl_certificates onto the certificate map (that switch 412s in place, so
+  # a fresh proxy was created on the cert map); that migration is done.
+  count   = var.relays_enabled ? 1 : 0
   name    = "hop-relay-https-proxy-cm"
-  url_map = google_compute_url_map.relay.id
+  url_map = google_compute_url_map.relay[0].id
   # The wildcard cert map serves relay.hopme.sh + every <region>.relay.hopme.sh.
   certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.relay.id}"
-
-  lifecycle {
-    create_before_destroy = true
-  }
 }
 
 resource "google_compute_global_forwarding_rule" "https" {
+  count                 = var.relays_enabled ? 1 : 0
   name                  = "hop-relay-https"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   port_range            = "443"
-  target                = google_compute_target_https_proxy.relay.id
+  target                = google_compute_target_https_proxy.relay[0].id
   ip_address            = google_compute_global_address.relay.id
 }
 
 # IPv6 frontends — same proxies, just the v6 anycast address.
 resource "google_compute_global_forwarding_rule" "https_v6" {
+  count                 = var.relays_enabled ? 1 : 0
   name                  = "hop-relay-https-v6"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   port_range            = "443"
-  target                = google_compute_target_https_proxy.relay.id
+  target                = google_compute_target_https_proxy.relay[0].id
   ip_address            = google_compute_global_address.relay_v6.id
 }
 
