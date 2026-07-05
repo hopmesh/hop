@@ -1,8 +1,12 @@
 # Observability + log retention for the relay fleet (GAP-ANALYSIS.md F-16, F-24).
 #
-# NOTE: authored as part of the gap-closing sweep and NOT yet applied. Review before `tofu apply`.
 # Requires the Monitoring + Logging APIs (add to apis.tf if not already enabled). Set
 # TF_VAR_alert_email to receive alerts; leave empty to skip the notification channel + alerts.
+#
+# ALL of this is gated on var.relays_enabled: with the fleet off there are no relay logs to route
+# or alert on. (The build SA now holds roles/logging.admin, added in cloudbuild_trigger.tf, so the
+# log bucket + sink + exclusion apply cleanly when relays_enabled flips back to true; plain editor
+# lacked logging.buckets.create / logging.exclusions.create, which 403'd the first apply.)
 
 # ---- F-16: stop the relay netlog metadata from persisting 30 days in _Default ---------------------
 #
@@ -13,6 +17,7 @@
 # short-retention bucket instead of the 30-day _Default, so at-rest persistence is minimized without
 # killing the live debugging stream (serve_log_stream is a separate, in-memory ring).
 resource "google_logging_project_bucket_config" "relay_short" {
+  count          = var.relays_enabled ? 1 : 0
   project        = var.project_id
   location       = "global"
   bucket_id      = "relay-short-retention"
@@ -21,15 +26,17 @@ resource "google_logging_project_bucket_config" "relay_short" {
 }
 
 resource "google_logging_project_sink" "relay" {
+  count                  = var.relays_enabled ? 1 : 0
   name                   = "relay-to-short-retention"
   project                = var.project_id
-  destination            = "logging.googleapis.com/projects/${var.project_id}/locations/global/buckets/${google_logging_project_bucket_config.relay_short.bucket_id}"
+  destination            = "logging.googleapis.com/projects/${var.project_id}/locations/global/buckets/${google_logging_project_bucket_config.relay_short[0].bucket_id}"
   filter                 = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\""
   unique_writer_identity = true
 }
 
 # Keep the relay logs OUT of the 30-day _Default bucket (they now live in the short bucket above).
 resource "google_logging_project_exclusion" "relay_from_default" {
+  count       = var.relays_enabled ? 1 : 0
   name        = "exclude-relay-from-default"
   project     = var.project_id
   description = "F-16: relay logs are routed to the short-retention bucket; don't also keep them 30d in _Default."
@@ -47,7 +54,7 @@ variable "alert_email" {
 }
 
 resource "google_monitoring_notification_channel" "email" {
-  count        = var.alert_email == "" ? 0 : 1
+  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
   project      = var.project_id
   display_name = "Hop relay alerts"
   type         = "email"
@@ -58,6 +65,7 @@ resource "google_monitoring_notification_channel" "email" {
 
 # Log-based metric counting the relay's own "FAILED" lines (handoff FAILED / spool FAILED / etc).
 resource "google_logging_metric" "relay_failed" {
+  count   = var.relays_enabled ? 1 : 0
   project = var.project_id
   name    = "relay_failed_ops"
   filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\" AND textPayload:\"FAILED\""
@@ -69,14 +77,14 @@ resource "google_logging_metric" "relay_failed" {
 }
 
 resource "google_monitoring_alert_policy" "relay_failed" {
-  count        = var.alert_email == "" ? 0 : 1
+  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
   project      = var.project_id
   display_name = "Relay FAILED ops (handoff/spool/presence)"
   combiner     = "OR"
   conditions {
     display_name = "relay_failed_ops > 0"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.relay_failed.name}\" AND resource.type=\"cloud_run_revision\""
+      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.relay_failed[0].name}\" AND resource.type=\"cloud_run_revision\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "300s"
@@ -91,7 +99,7 @@ resource "google_monitoring_alert_policy" "relay_failed" {
 
 # Cloud Run 5xx / request failures across the relay services (covers 429 wake-churn + crash loops).
 resource "google_monitoring_alert_policy" "relay_5xx" {
-  count        = var.alert_email == "" ? 0 : 1
+  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
   project      = var.project_id
   display_name = "Relay Cloud Run 5xx/429"
   combiner     = "OR"

@@ -55,6 +55,7 @@ resource "google_project_iam_member" "build" {
     "roles/secretmanager.admin",             # secret setIamPolicy (⚠ also grants versions.access)
     "roles/storage.admin",                   # state-bucket setIamPolicy (build_state below)
     "roles/cloudbuild.connectionAdmin",      # google_cloudbuildv2_repository / connection
+    "roles/logging.admin",                   # observability.tf log bucket + sink + exclusion (editor lacks buckets.create)
   ]) : []
   project = var.project_id
   role    = each.value
