@@ -33,6 +33,18 @@ variable "region_allowlist" {
   default     = []
 }
 
+variable "relays_enabled" {
+  description = <<-EOT
+    Master switch for the relay fleet. When false, local.regions is emptied so NO relay Cloud Run
+    services (nor their per-region NEGs / backends / IAM) are deployed and any existing ones are
+    torn down. The anycast LB, wildcard cert, DNS, Firestore, and the example endpoint stay up, so
+    flipping this back to true (and re-applying) restores the fleet on the SAME IP/cert/DNS.
+    Currently false in cloudbuild.trigger.yaml (P2P-only test phase); flip that line to re-enable.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "domain" {
   description = "DNS name clients connect to (anycast across all regions)."
   type        = string

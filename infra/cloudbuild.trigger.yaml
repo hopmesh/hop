@@ -42,6 +42,10 @@ steps:
       - 'TF_VAR_cloud_run_ingress=INGRESS_TRAFFIC_ALL'
       - 'TF_VAR_max_instances_per_region=1'
       - 'TF_VAR_region_allowlist=[]'
+      # Relay fleet OFF for the P2P-only test phase: tears down all regional relay Cloud Run
+      # services + their NEGs/backends/IAM. The LB, wildcard cert, DNS, Firestore, and the example
+      # endpoint stay up, so flipping this to true re-applies the fleet on the SAME anycast IP/cert/DNS.
+      - 'TF_VAR_relays_enabled=false'
       - 'TF_VAR_deploy_image_sha=$SHORT_SHA'
     args:
       - -ec

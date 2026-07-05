@@ -14,5 +14,8 @@ locals {
     toset(data.google_compute_regions.available.names),
     toset(var.excluded_regions),
   )
-  regions = length(var.region_allowlist) > 0 ? toset(var.region_allowlist) : local.all_regions
+  # relays_enabled is the master switch: false empties the region set, so the relay Cloud Run
+  # services (and everything that for_each-es over them: NEGs, region backends, public IAM) are
+  # torn down. The LB frontend / cert / DNS stay, so re-enabling restores the fleet in place.
+  regions = var.relays_enabled ? (length(var.region_allowlist) > 0 ? toset(var.region_allowlist) : local.all_regions) : toset([])
 }
