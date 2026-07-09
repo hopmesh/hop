@@ -73,7 +73,10 @@ impl Backbone {
             .map(|(r, _)| r)
             .collect();
         for region in &targets {
-            self.advert_outbox.entry(region.clone()).or_default().push(advert.clone());
+            self.advert_outbox
+                .entry(region.clone())
+                .or_default()
+                .push(advert.clone());
         }
         targets
     }
@@ -102,8 +105,8 @@ impl Backbone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hop_core::prelude::*;
     use hop_core::discover::AdvertKind;
+    use hop_core::prelude::*;
 
     fn listing(seller: &Identity, service: &str) -> Advert {
         Advert::publish(
@@ -134,9 +137,27 @@ mod tests {
         let sub_c = Identity::generate();
 
         // us-east and eu-west have "market" subscribers; ap-south only "jobs".
-        bb.attach(&"us-east".into(), FABRIC_APP, sub_a.address(), &["market".into()], 0);
-        bb.attach(&"eu-west".into(), FABRIC_APP, sub_b.address(), &["market".into()], 0);
-        bb.attach(&"ap-south".into(), FABRIC_APP, sub_c.address(), &["jobs".into()], 0);
+        bb.attach(
+            &"us-east".into(),
+            FABRIC_APP,
+            sub_a.address(),
+            &["market".into()],
+            0,
+        );
+        bb.attach(
+            &"eu-west".into(),
+            FABRIC_APP,
+            sub_b.address(),
+            &["market".into()],
+            0,
+        );
+        bb.attach(
+            &"ap-south".into(),
+            FABRIC_APP,
+            sub_c.address(),
+            &["jobs".into()],
+            0,
+        );
 
         let mut targets = bb.distribute_advert(listing(&seller, "market"), 1);
         targets.sort();
@@ -144,7 +165,10 @@ mod tests {
 
         assert_eq!(bb.drain_region(&"us-east".into()).len(), 1);
         assert_eq!(bb.drain_region(&"eu-west".into()).len(), 1);
-        assert!(bb.drain_region(&"ap-south".into()).is_empty(), "no market subs there");
+        assert!(
+            bb.drain_region(&"ap-south".into()).is_empty(),
+            "no market subs there"
+        );
     }
 
     #[test]
@@ -152,7 +176,13 @@ mod tests {
         let mut bb = backbone();
         let seller = Identity::generate();
         let sub = Identity::generate();
-        bb.attach(&"us-east".into(), FABRIC_APP, sub.address(), &["market".into()], 0);
+        bb.attach(
+            &"us-east".into(),
+            FABRIC_APP,
+            sub.address(),
+            &["market".into()],
+            0,
+        );
 
         // Nobody anywhere subscribes to "jobs".
         let targets = bb.distribute_advert(listing(&seller, "jobs"), 1);
@@ -171,13 +201,19 @@ mod tests {
             &origin,
             Destination::Device(dst.address()),
             &dst.address(),
-            &Payload::PeerMessage { content_type: "t".into(), body: b"hi".to_vec() },
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"hi".to_vec(),
+            },
             BundleOpts::default(),
         )
         .unwrap();
         assert!(bb.deposit_bundle(b, 0));
 
-        assert_eq!(bb.region_of(&dst.address(), 1, 60_000).as_deref(), Some("eu-west"));
+        assert_eq!(
+            bb.region_of(&dst.address(), 1, 60_000).as_deref(),
+            Some("eu-west")
+        );
         // And it's fetchable from the mailbox by that address.
         assert_eq!(bb.mailbox().fetch(FABRIC_APP, &dst.address(), 1).len(), 1);
     }

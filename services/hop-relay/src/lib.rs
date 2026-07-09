@@ -34,8 +34,9 @@ enum MailKey {
 fn mail_key(dst: &Destination) -> MailKey {
     match dst {
         Destination::Device(a) | Destination::AckTo(a, _) => MailKey::Device(*a),
-        // Broadcasts flood live; they are not parked in a mailbox.
-        Destination::Broadcast => MailKey::Egress,
+        // Broadcasts flood live; they are not parked in a mailbox. Vaccines flood the same way —
+        // they exist to chase down relay copies, so they must never park.
+        Destination::Broadcast | Destination::Vaccine(..) => MailKey::Egress,
     }
 }
 
@@ -54,7 +55,10 @@ pub struct MailboxConfig {
 
 impl Default for MailboxConfig {
     fn default() -> Self {
-        Self { max_total: 100_000, max_per_dest: 1_000 }
+        Self {
+            max_total: 100_000,
+            max_per_dest: 1_000,
+        }
     }
 }
 
@@ -75,7 +79,12 @@ impl Default for Mailbox {
 
 impl Mailbox {
     pub fn new(config: MailboxConfig) -> Self {
-        Self { config, buckets: HashMap::new(), index: HashMap::new(), order: Vec::new() }
+        Self {
+            config,
+            buckets: HashMap::new(),
+            index: HashMap::new(),
+            order: Vec::new(),
+        }
     }
 
     /// Number of bundles currently held.
@@ -98,13 +107,19 @@ impl Mailbox {
             return false; // already held
         }
         let key = (bundle.inner.app, mail_key(&bundle.inner.dst));
-        let expires_at =
-            bundle.inner.created_at.saturating_add(bundle.inner.lifetime_ms as u64);
+        let expires_at = bundle
+            .inner
+            .created_at
+            .saturating_add(bundle.inner.lifetime_ms as u64);
         if expires_at <= now_ms {
             return false; // already dead on arrival — don't park it
         }
 
-        self.buckets.entry(key.clone()).or_default().push(Stored { id, bundle, expires_at });
+        self.buckets.entry(key.clone()).or_default().push(Stored {
+            id,
+            bundle,
+            expires_at,
+        });
         self.index.insert(id, key.clone());
         self.order.push(id);
 
@@ -160,7 +175,10 @@ impl Mailbox {
     }
 
     fn bundles_in(&self, key: &(AppId, MailKey)) -> Vec<Bundle> {
-        self.buckets.get(key).map(|b| b.iter().map(|s| s.bundle.clone()).collect()).unwrap_or_default()
+        self.buckets
+            .get(key)
+            .map(|b| b.iter().map(|s| s.bundle.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn evict(&mut self, id: BundleId) {
@@ -183,9 +201,14 @@ pub enum RelayMsg {
     /// Park a bundle in the mailbox. Boxed — a bundle dwarfs the other variants.
     Deposit(Box<Bundle>),
     /// Request bundles addressed to a device.
-    Fetch { app: AppId, address: PubKeyBytes },
+    Fetch {
+        app: AppId,
+        address: PubKeyBytes,
+    },
     /// Request internet-egress bundles (for a gateway-capable node).
-    FetchEgress { app: AppId },
+    FetchEgress {
+        app: AppId,
+    },
     /// Confirm a bundle was delivered onward; the mailbox may drop it.
     Ack(BundleId),
     /// A batch of bundles in response to a fetch.
@@ -241,8 +264,14 @@ mod tests {
             from,
             Destination::Device(to.address()),
             &to.address(),
-            &Payload::PeerMessage { content_type: "t".into(), body: body.to_vec() },
-            BundleOpts { lifetime_ms, ..Default::default() },
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: body.to_vec(),
+            },
+            BundleOpts {
+                lifetime_ms,
+                ..Default::default()
+            },
         )
         .unwrap()
     }
@@ -300,11 +329,18 @@ mod tests {
     fn per_destination_capacity_evicts_oldest() {
         let origin = Identity::generate();
         let to = Identity::generate();
-        let mut mb = Mailbox::new(MailboxConfig { max_total: 100, max_per_dest: 2 });
+        let mut mb = Mailbox::new(MailboxConfig {
+            max_total: 100,
+            max_per_dest: 2,
+        });
         for i in 0..5u8 {
             mb.deposit(to_device(&origin, &to, &[i], 600_000), 0);
         }
-        assert_eq!(mb.fetch(FABRIC_APP, &to.address(), 1).len(), 2, "bucket capped");
+        assert_eq!(
+            mb.fetch(FABRIC_APP, &to.address(), 1).len(),
+            2,
+            "bucket capped"
+        );
     }
 
     #[test]
@@ -341,20 +377,31 @@ mod tests {
 
         let b = to_device(&origin, &recipient, b"via protocol", 600_000);
         let id = b.id();
-        assert!(matches!(server.handle(RelayMsg::Deposit(Box::new(b)), 0), RelayMsg::Ok));
+        assert!(matches!(
+            server.handle(RelayMsg::Deposit(Box::new(b)), 0),
+            RelayMsg::Ok
+        ));
 
         let resp = server.handle(
-            RelayMsg::Fetch { app: FABRIC_APP, address: recipient.address() },
+            RelayMsg::Fetch {
+                app: FABRIC_APP,
+                address: recipient.address(),
+            },
             1,
         );
-        let RelayMsg::Bundles(bundles) = resp else { panic!("expected bundles") };
+        let RelayMsg::Bundles(bundles) = resp else {
+            panic!("expected bundles")
+        };
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].id(), id);
 
         // Ack removes it from the mailbox.
         assert!(matches!(server.handle(RelayMsg::Ack(id), 2), RelayMsg::Ok));
         let resp = server.handle(
-            RelayMsg::Fetch { app: FABRIC_APP, address: recipient.address() },
+            RelayMsg::Fetch {
+                app: FABRIC_APP,
+                address: recipient.address(),
+            },
             3,
         );
         assert!(matches!(resp, RelayMsg::Bundles(v) if v.is_empty()));

@@ -4,6 +4,9 @@ dist/
 .astro/
 .preview/
 
+# generated at build time by `npm run sync-sim` (copied from ../sim)
+public/sim/
+
 # env / logs
 *.log
 .DS_Store

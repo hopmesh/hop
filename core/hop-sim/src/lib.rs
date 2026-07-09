@@ -118,8 +118,15 @@ impl Sim {
             &self.nodes[src].identity,
             Destination::Device(dst_addr),
             &dst_x,
-            &Payload::PeerMessage { content_type: "application/octet-stream".into(), body },
-            BundleOpts { created_at: at, copies, ..Default::default() },
+            &Payload::PeerMessage {
+                content_type: "application/octet-stream".into(),
+                body,
+            },
+            BundleOpts {
+                created_at: at,
+                copies,
+                ..Default::default()
+            },
         )
         .expect("bundle create");
         let id = bundle.id();
@@ -160,12 +167,21 @@ impl Sim {
     /// Compute aggregate metrics for the completed run.
     pub fn metrics(&self) -> Metrics {
         let delivered = self.delivered_at.len();
-        let delivery_ratio =
-            if self.injected > 0 { delivered as f64 / self.injected as f64 } else { 0.0 };
-        let mean_latency_ms =
-            if delivered > 0 { self.latency_sum_ms as f64 / delivered as f64 } else { 0.0 };
-        let overhead =
-            if delivered > 0 { self.transmissions as f64 / delivered as f64 } else { 0.0 };
+        let delivery_ratio = if self.injected > 0 {
+            delivered as f64 / self.injected as f64
+        } else {
+            0.0
+        };
+        let mean_latency_ms = if delivered > 0 {
+            self.latency_sum_ms as f64 / delivered as f64
+        } else {
+            0.0
+        };
+        let overhead = if delivered > 0 {
+            self.transmissions as f64 / delivered as f64
+        } else {
+            0.0
+        };
         Metrics {
             injected: self.injected,
             delivered,
@@ -238,7 +254,7 @@ fn is_direct(dst: &Destination, addr: &PubKeyBytes) -> bool {
     match dst {
         Destination::Device(d) => d == addr,
         Destination::AckTo(d, _) => d == addr,
-        Destination::Broadcast => false,
+        Destination::Broadcast | Destination::Vaccine(..) => false,
     }
 }
 
@@ -369,7 +385,10 @@ mod tests {
             &sim.nodes[0].identity,
             Destination::Device(dst_addr),
             &dst_x,
-            &Payload::PeerMessage { content_type: "t".into(), body: b"relayed".to_vec() },
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"relayed".to_vec(),
+            },
             BundleOpts::default(),
         )
         .unwrap();
@@ -394,8 +413,14 @@ mod tests {
             &sim.nodes[0].identity,
             Destination::Device(dst_addr),
             &dst_x,
-            &Payload::PeerMessage { content_type: "t".into(), body: b"hi".to_vec() },
-            BundleOpts { copies: 8, ..Default::default() },
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"hi".to_vec(),
+            },
+            BundleOpts {
+                copies: 8,
+                ..Default::default()
+            },
         )
         .unwrap();
         let id = bundle.id();
@@ -451,7 +476,10 @@ mod tests {
         let mut sim = build_scenario(&base_params(), 40, 16);
         sim.run();
         let m = sim.metrics();
-        assert!(m.delivered > 0, "expected some cross-partition delivery via bridges");
+        assert!(
+            m.delivered > 0,
+            "expected some cross-partition delivery via bridges"
+        );
         assert!(m.mean_latency_ms > 0.0);
     }
 

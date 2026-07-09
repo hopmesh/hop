@@ -1,35 +1,34 @@
 ---
-// ScenarioPlayer — an interactive data-flow map. Tab through real situations
-// and watch a message route itself across the mesh.
+// ScenarioPlayer — a live embedded mini simulator. Tab through real situations
+// and watch a real Hop mesh route a message across itself. Every dot in the
+// stage is an actual hop-core node running in the browser, not an animation.
 //
-//   mesh  scenarios: sealed copies spray across independent fixed routes
-//                    (binary spray-and-wait — first copy to arrive wins).
-//   carry scenarios: store-carry-forward. A carrier node physically MOVES;
-//                    links attach/detach as it enters and leaves range; the
-//                    message is picked up, ferried, handed off carrier-to-
-//                    carrier, dropped to wait, and delivered at the far end.
+// The stage is an iframe into /sim/index.html (?mini=1), which auto-plays and
+// loops the selected scenario. Switching tabs sends a postMessage to the sim so
+// it changes scenario without reloading. The full simulator opens in a new tab.
 //
 // Props:
 //   ids — optional array of scenario ids. When given, only those scenarios
-//         show (used on use-case pages to surface the relevant animations).
+//         show (used on use-case pages to surface the relevant situations).
 //         When omitted, every scenario shows (the homepage hero).
 //
-// Styles are global-but-namespaced under `.scenario` so the SVG and tabs that
-// the script injects at runtime are styled (Astro's component-scoped styles
-// only reach markup present at build time, not injected DOM).
+// Styles are global-but-namespaced under `.scenario` so the tabs the script
+// injects at runtime are styled (Astro's component-scoped styles only reach
+// markup present at build time, not injected DOM).
 import { scenarios as ALL } from '../data/scenarios.js';
 const { ids } = Astro.props;
 const SCEN = (ids && ids.length)
   ? ids.map((id) => ALL.find((s) => s.id === id)).filter(Boolean)
   : ALL;
+const first = SCEN[0]?.id || 'p2p';
 ---
 <div class="scenario">
   <div class="sp-tabs" id="sp-tabs" role="tablist"></div>
 
   <div class="sp-player">
     <div class="sp-stage" id="sp-stage">
-      <span class="sp-corner">SCENE</span>
-      <span class="sp-corner r">● live</span>
+      <iframe class="sp-sim" id="sp-sim" src={`/sim/index.html?scenario=${first}&mini=1`}
+        title="Live Hop mesh simulation" loading="lazy" allow="fullscreen"></iframe>
     </div>
     <div class="sp-story">
       <div class="sp-no" id="sp-no"></div>
@@ -46,12 +45,14 @@ const SCEN = (ids && ids.length)
       </div>
       <div class="sp-stat"><span class="sp-chip" id="sp-stat"></span>
         <div class="sp-ctl">
-          <button id="sp-prev" type="button">‹ prev</button>
-          <button id="sp-next" type="button">next ›</button>
-          <span id="sp-auto">auto-cycling</span>
+          <a class="btn btn-primary btn-sm" id="sp-open" href={`/sim/index.html?scenario=${first}`}
+            target="_blank" rel="noopener">Open the full simulator →</a>
         </div>
       </div>
     </div>
+    <p class="sp-real">Your browser is running the <b>real Hop protocol</b>: every node above is the actual
+      hop-core, compiled to WebAssembly, carrying real encrypted messages. Only the devices and their
+      radios are simulated.</p>
   </div>
 </div>
 
@@ -80,50 +81,13 @@ const SCEN = (ids && ids.length)
   /* player */
   .scenario .sp-player{margin-top:22px;border:1px solid var(--sp-line2);border-radius:16px;overflow:hidden;
     background:var(--sp-panel);box-shadow:0 30px 80px var(--sp-shadow);display:grid;grid-template-columns:1.5fr 1fr}
-  .scenario .sp-stage{position:relative;border-right:1px solid var(--sp-line);min-height:440px;
-    background:linear-gradient(0deg,var(--sp-stage1),var(--sp-stage2));
-    background-image:linear-gradient(var(--sp-grid) 1px,transparent 1px),linear-gradient(90deg,var(--sp-grid) 1px,transparent 1px);
-    background-size:34px 34px}
-  .scenario .sp-corner{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:11px;color:var(--sp-faint);letter-spacing:.1em;z-index:2}
-  .scenario .sp-corner.r{left:auto;right:14px;color:var(--green)}
-  .scenario .sp-stage svg{position:absolute;inset:0;width:100%;height:100%}
-  .scenario .sp-badge{position:absolute;transform:translate(-50%,-150%);font-family:var(--mono);font-size:10px;letter-spacing:.03em;
-    padding:3px 7px;border-radius:5px;border:1px solid;white-space:nowrap;pointer-events:none;z-index:3}
-  .scenario .sp-badge.held{color:var(--amber);border-color:var(--sp-held-b);background:var(--sp-held-bg)}
-  .scenario .sp-badge.transit{color:var(--blue);border-color:var(--sp-transit-b);background:var(--sp-transit-bg)}
-  .scenario .sp-badge.deliv{color:var(--green);border-color:var(--sp-abd);background:var(--sp-deliv-bg)}
-  /* in-svg badges (scale + stay pinned to their node) */
-  .scenario .sp-bdg text{font:600 10px var(--mono)}
-  .scenario .sp-bdg rect{stroke-width:1}
-  .scenario .sp-bdg.held rect{fill:var(--sp-held-bg);stroke:var(--sp-held-b)} .scenario .sp-bdg.held text{fill:var(--amber)}
-  .scenario .sp-bdg.transit rect{fill:var(--sp-transit-bg);stroke:var(--sp-transit-b)} .scenario .sp-bdg.transit text{fill:var(--blue)}
-  .scenario .sp-bdg.deliv rect{fill:var(--sp-deliv-bg);stroke:var(--sp-abd)} .scenario .sp-bdg.deliv text{fill:var(--green)}
-
-  /* svg primitives */
-  .scenario .edge{stroke:var(--sp-edge);stroke-width:1.7;fill:none}
-  .scenario .edge.road{stroke:var(--sp-road);stroke-dasharray:2 6;stroke-linecap:round}
-  .scenario .edge.dead{stroke:var(--sp-dead);stroke-dasharray:5 5}
-  .scenario .node{fill:var(--sp-surf);stroke:var(--sp-stroke);stroke-width:1.7}
-  .scenario .node.live{stroke:var(--green)} .scenario .core{fill:var(--green)}
-  .scenario .ring{fill:none;stroke:var(--green);stroke-dasharray:3 4;opacity:.8}
-  .scenario .dev{fill:var(--sp-surf);stroke:var(--sp-stroke);stroke-width:1.7}
-  .scenario .cloud{fill:var(--sp-surf2);stroke:var(--green);stroke-width:1.6}
-  .scenario .cloud.down{stroke:var(--red);stroke-dasharray:5 4}
-  .scenario .glyph{fill:var(--sp-dim);font:600 11px var(--mono)}
-  .scenario .lbl{fill:var(--sp-faint);font:600 10.5px var(--mono);text-anchor:middle}
-  .scenario .lbl.hi{fill:var(--sp-dim)}
-  .scenario .xmark{stroke:var(--red);stroke-width:2}
-  .scenario .pulse{fill:none;stroke:var(--green)}
-  .scenario .pkt{fill:var(--green);filter:drop-shadow(0 0 6px var(--green))}
-  .scenario .pkt.alt{fill:var(--green);filter:none}
-  .scenario .pkt.held{fill:var(--amber);filter:drop-shadow(0 0 5px var(--amber))}
-  .scenario .trail{fill:none;stroke:var(--green);stroke-width:2.5;opacity:.16;stroke-linecap:round;stroke-linejoin:round}
-  /* carry mode */
-  .scenario .carrier{transition:none}
-  .scenario .rangelink{stroke:var(--green);stroke-width:2.2;stroke-dasharray:2 5;stroke-linecap:round;opacity:.95;
-    filter:drop-shadow(0 0 4px var(--green));animation:sp-dash .55s linear infinite}
-  @keyframes sp-dash{to{stroke-dashoffset:-14}}
-  .scenario .carrier .lbl{fill:var(--sp-dim)}
+  .scenario .sp-stage{position:relative;border-right:1px solid var(--sp-line);min-height:440px;background:#0c0f13}
+  .scenario .sp-real{grid-column:1/-1;margin:0;padding:10px 26px;border-top:1px solid var(--sp-line);
+    font-size:12.5px;color:var(--sp-dim);line-height:1.5}
+  .scenario .sp-real b{color:var(--accent)}
+  .scenario .sp-sim{position:absolute;inset:0;width:100%;height:100%;display:block;border:0;background:#0c0f13}
+  .scenario .sp-corner{position:absolute;top:10px;left:12px;font-family:var(--mono);font-size:10.5px;color:#8ea1a9;letter-spacing:.04em;z-index:2;pointer-events:none;background:rgba(10,14,18,.72);border-radius:8px;padding:3px 9px}
+  .scenario .sp-corner b{color:#2bf0a0}
 
   /* narrative */
   .scenario .sp-story{padding:26px 26px 24px;display:flex;flex-direction:column}
@@ -140,10 +104,7 @@ const SCEN = (ids && ids.length)
   .scenario .sp-stat{margin-top:auto;padding-top:20px}
   .scenario .sp-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--green);
     border:1px solid var(--sp-abd);background:var(--sp-afill);border-radius:8px;padding:8px 13px}
-  .scenario .sp-ctl{display:flex;gap:10px;margin-top:16px;align-items:center;font-family:var(--mono);font-size:11.5px;color:var(--sp-faint)}
-  .scenario .sp-ctl button{font-family:var(--mono);font-size:11.5px;color:var(--sp-dim);background:none;border:1px solid var(--sp-line2);border-radius:6px;padding:5px 10px;cursor:pointer}
-  .scenario .sp-ctl button:hover{color:var(--sp-ink);border-color:var(--sp-hover)}
-  .scenario.solo .sp-ctl{display:none}
+  .scenario .sp-ctl{display:flex;gap:10px;margin-top:16px;align-items:center}
 
   /* light theme — flip the panel tokens; accents deepen for contrast on white */
   :root[data-theme="light"] .scenario{
@@ -167,204 +128,25 @@ const SCEN = (ids && ids.length)
 
 <script define:vars={{ SCEN }}>
 (function(){
-  const VB = {w:660, h:440};
   const root = document.querySelector('.scenario');
   if(!root) return;
   const $ = (id) => root.querySelector('#'+id);
+  const sim = $('sp-sim');       // the live mini-sim iframe
+  const open = $('sp-open');     // the "open the full simulator" CTA
 
-  // ---- shared svg helpers ----
-  function lbl(n){ return `<text class="lbl ${n.hi?'hi':''}" x="${n.x}" y="${n.y+ (n.type==='cloud'||n.type==='cloud-down'?34:26)}">${n.label||''}</text>`; }
-  function nodeSVG(n){
-    let s='';
-    switch(n.type){
-      case 'cloud': case 'cloud-down':
-        s+=`<rect class="cloud ${n.type==='cloud-down'?'down':''}" x="${n.x-46}" y="${n.y-17}" width="92" height="34" rx="9"/>`+
-           `<text class="glyph" text-anchor="middle" x="${n.x}" y="${n.y+4}" fill="${n.type==='cloud-down'?'#e0564f':'#cfe8df'}">${n.glyph||'internet'}</text>`;
-        if(n.type==='cloud-down') s+=`<g transform="translate(${n.x+40},${n.y-15})"><line class="xmark" x1="-5" y1="-5" x2="5" y2="5"/><line class="xmark" x1="5" y1="-5" x2="-5" y2="5"/></g>`;
-        break;
-      case 'sensor':
-        s+=`<rect class="dev" x="${n.x-9}" y="${n.y-9}" width="18" height="18" rx="4"/><circle class="core" cx="${n.x}" cy="${n.y}" r="2.6"/>`;
-        break;
-      case 'uplink':
-        s+=`<circle class="ring" cx="${n.x}" cy="${n.y}" r="16"/><circle class="node live" cx="${n.x}" cy="${n.y}" r="10"/><circle class="core" cx="${n.x}" cy="${n.y}" r="3.4"/>`;
-        break;
-      case 'tower-down':
-        s+=`<circle class="node" cx="${n.x}" cy="${n.y}" r="12" stroke="#5b2b2b"/><g transform="translate(${n.x},${n.y})"><line class="xmark" x1="-6" y1="-6" x2="6" y2="6"/><line class="xmark" x1="6" y1="-6" x2="-6" y2="6"/></g>`;
-        break;
-      case 'dest':
-        s+=`<circle class="pulse" cx="${n.x}" cy="${n.y}" r="14"><animate attributeName="r" values="14;30" dur="2.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.5;0" dur="2.2s" repeatCount="indefinite"/></circle><circle class="node live" cx="${n.x}" cy="${n.y}" r="13"/><circle class="core" cx="${n.x}" cy="${n.y}" r="4"/>`;
-        break;
-      case 'you':
-        s+=`<circle class="node live" cx="${n.x}" cy="${n.y}" r="13"/><circle class="core" cx="${n.x}" cy="${n.y}" r="4"/>`;
-        break;
-      default:
-        s+=`<circle class="node" cx="${n.x}" cy="${n.y}" r="11"/><circle class="core" cx="${n.x}" cy="${n.y}" r="3"/>`;
-    }
-    return s+lbl(n);
-  }
-  function edgeSVG(e,N){
-    const a=N[e[0]],b=N[e[1]],cls=e[2]||'';
-    let s=`<line class="edge ${cls}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;
-    if(cls==='dead'){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
-      s+=`<g transform="translate(${mx},${my})"><line class="xmark" x1="-6" y1="-6" x2="6" y2="6"/><line class="xmark" x1="6" y1="-6" x2="-6" y2="6"/></g>`;}
-    return s;
-  }
-  function routePath(route,N){return 'M'+route.map(id=>`${N[id].x},${N[id].y}`).join(' L');}
-  // badges live INSIDE the svg (viewBox space) so they scale and stay pinned to
-  // their node — never drifting onto labels the way %-positioned HTML did.
-  function badgesSVG(s){
-    let b='';(s.badges||[]).forEach(x=>{
-      const w=x.t.length*6.7+18, y=x.y-30;          // float above the point
-      b+=`<g class="sp-bdg ${x.cls}" transform="translate(${x.x},${y})">`+
-         `<rect x="${(-w/2).toFixed(1)}" y="-10" width="${w.toFixed(1)}" height="20" rx="6"/>`+
-         `<text x="0" y="4" text-anchor="middle">${x.t}</text></g>`;
-    });
-    return b;
-  }
-  const stage=$('sp-stage');
-  if(!stage) return;
-
-  // ---- carry-mode geometry ----
-  function dist(ax,ay,bx,by){return Math.hypot(ax-bx,ay-by);}
-  function ptAlong(path,t){
-    const segs=[];let total=0;
-    for(let i=0;i<path.length-1;i++){const d=dist(path[i][0],path[i][1],path[i+1][0],path[i+1][1]);segs.push(d);total+=d;}
-    let dd=t*total;
-    for(let i=0;i<segs.length;i++){
-      if(dd<=segs[i]||i===segs.length-1){const f=segs[i]?dd/segs[i]:0;
-        return [path[i][0]+(path[i+1][0]-path[i][0])*f, path[i][1]+(path[i+1][1]-path[i][1])*f];}
-      dd-=segs[i];
-    }
-    return path[path.length-1].slice();
-  }
-  function carrierSVG(c){
-    return `<circle class="ring" r="13"/><circle class="node live" r="9"/><circle class="core" r="3"/>`+
-           (c.label?`<text class="lbl" y="27" text-anchor="middle">${c.label}</text>`:'');
-  }
-
-  let rafId=null;
-  function stopRAF(){ if(rafId){cancelAnimationFrame(rafId);rafId=null;} }
-
-  function renderCarry(s){
-    const N=s.nodes, src=N[s.src], dst=N[s.dst], range=s.range||110;
-    const LINK_DELAY=380;   // ms a connection visibly forms before the message transfers
-    let svg=`<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
-    if(s.road){ (s.carriers||[]).forEach(c=>{ svg+=`<path class="edge road" d="M${c.path.map(p=>p.join(',')).join(' L')}"/>`; }); }
-    svg+=`<g class="sp-links"></g>`;
-    Object.values(N).forEach(n=>svg+=nodeSVG(n));
-    (s.carriers||[]).forEach((c,ci)=>{ svg+=`<g class="carrier" data-ci="${ci}">${carrierSVG(c)}</g>`; });
-    svg+=`<circle class="pkt" data-msg r="5.5"/></svg>`;
-    // no static badges in carry mode — the moving message dot is the only state indicator
-    stage.innerHTML=`<span class="sp-corner">${s.scene}</span><span class="sp-corner r">● live</span>`+svg;
-
-    const linksEl=stage.querySelector('.sp-links');
-    const msgEl=stage.querySelector('[data-msg]');
-    const carEls=[...stage.querySelectorAll('.carrier')];
-    const NC=(s.carriers||[]).length;
-    const cs=(s.carriers||[]).map(()=>({pos:[src.x,src.y],prev:1e9,dD:1e9,fwd:true}));
-    // message: held at a point, or riding a carrier; `link` = the connection currently forming
-    let st={mode:'held', pos:[src.x,src.y], holder:-1, link:null};
-    const t0=performance.now();
-
-    function msgPos(){ return st.mode==='ride' ? cs[st.holder].pos : st.pos; }
-    function tgtPos(tg){ return tg.kind==='dest' ? [dst.x,dst.y] : cs[tg.i].pos; }
-    // the forward-moving carrier nearest the destination, within range of (px,py)
-    function forwardInRange(px,py,except){
-      let best=-1, bestD=1e9;
-      for(let i=0;i<NC;i++){
-        if(i===except) continue;
-        if(cs[i].fwd && cs[i].dD<bestD && dist(px,py,cs[i].pos[0],cs[i].pos[1])<=range){ bestD=cs[i].dD; best=i; }
-      }
-      return best;
-    }
-
-    function frame(now){
-      const t=(now-t0)/1000;
-      for(let i=0;i<NC;i++){
-        const c=s.carriers[i];
-        const tt=((t/(c.period||7))+(c.phase||0))%1;
-        const p=ptAlong(c.path,tt);
-        cs[i].pos=p;
-        carEls[i].setAttribute('transform',`translate(${p[0].toFixed(1)},${p[1].toFixed(1)})`);
-        const dD=dist(p[0],p[1],dst.x,dst.y);
-        cs[i].fwd = dD < cs[i].prev - 0.04;   // heading toward the destination
-        cs[i].prev=dD; cs[i].dD=dD;
-      }
-
-      if(st.mode==='done'){
-        st.link=null;
-        if(now-st.doneAt>700) st={mode:'held', pos:[src.x,src.y], holder:-1, link:null};
-      } else {
-        const p=msgPos();
-        // who should the message connect to next?
-        let tg=null;
-        if(st.link){
-          tg=st.link.tg;                                     // an in-progress connection runs to completion — don't drop it on a brief range change (fast carriers pass quickly)
-        } else if(st.mode==='ride'){
-          if(dist(p[0],p[1],dst.x,dst.y)<=range) tg={kind:'dest'};         // close enough to deliver
-          else if(!cs[st.holder].fwd){                                     // carrier turned back — hand off to a forward one
-            const f=forwardInRange(p[0],p[1],st.holder); if(f>=0) tg={kind:'car', i:f};
-          }                                                  // else still advancing — just ride, no link
-        } else {                                             // held — board a forward carrier in range
-          const f=forwardInRange(p[0],p[1],-1); if(f>=0) tg={kind:'car', i:f};
-        }
-
-        if(tg){
-          const key = tg.kind==='dest' ? 'dest' : 'c'+tg.i;
-          if(!st.link || st.link.key!==key) st.link={key, tg, since:now};   // a new connection forms
-          if(now-st.link.since >= LINK_DELAY){                              // …held a beat, then transfer
-            if(tg.kind==='dest') st={mode:'done', pos:[dst.x,dst.y], holder:-1, link:null, doneAt:now};
-            else                 st={mode:'ride', holder:tg.i, pos:cs[tg.i].pos.slice(), link:null};
-          }
-        } else {
-          st.link=null;                                      // connection breaks
-          if(st.mode==='ride' && !cs[st.holder].fwd) st={mode:'held', pos:[p[0],p[1]], holder:-1, link:null};
-        }
-      }
-
-      const mp=msgPos(), my=mp[1]-13;   // float the message just above whatever carries it
-      msgEl.setAttribute('cx',mp[0].toFixed(1));
-      msgEl.setAttribute('cy',my.toFixed(1));
-      msgEl.setAttribute('r', st.mode==='done'?7:5.5);
-      msgEl.setAttribute('class', st.mode==='held'?'pkt held':'pkt');   // amber while waiting, green once moving/delivered
-
-      if(st.link){
-        const b=tgtPos(st.link.tg);
-        linksEl.innerHTML=`<line class="rangelink" x1="${mp[0].toFixed(1)}" y1="${my.toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${(b[1]-13).toFixed(1)}"/>`;
-      } else linksEl.innerHTML='';
-
-      rafId=requestAnimationFrame(frame);
-    }
-    rafId=requestAnimationFrame(frame);
-  }
-
-  function renderMesh(s){
-    const N=s.nodes, routes=s.routes||[s.route];
-    let svg=`<svg viewBox="0 0 ${VB.w} ${VB.h}" preserveAspectRatio="xMidYMid meet">`;
-    s.edges.forEach(e=>svg+=edgeSVG(e,N));
-    svg+=`<path class="trail" d="${routePath(routes[0],N)}"/>`;
-    Object.values(N).forEach(n=>svg+=nodeSVG(n));
-    routes.forEach((rt,ri)=>{
-      const p=routePath(rt,N);
-      const d=(s.dur*(1+ri*0.16)).toFixed(2);
-      const begin=(ri*0.55).toFixed(2);
-      const op=ri===0?1:0.5, r=ri===0?5:3.6, cls=ri===0?'pkt':'pkt alt';
-      svg+=`<circle class="${cls}" r="${r}"><animateMotion dur="${d}s" begin="${begin}s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.07;0.9;1" calcMode="linear" path="${p}"/>`+
-           `<animate attributeName="opacity" values="0;${op};${op};${op};0" keyTimes="0;0.07;0.5;0.9;1" dur="${d}s" begin="${begin}s" repeatCount="indefinite"/></circle>`;
-    });
-    svg+=badgesSVG(s)+`</svg>`;
-    stage.innerHTML=`<span class="sp-corner">${s.scene}</span><span class="sp-corner r">● live</span>`+svg;
-  }
-
+  // Update the story copy for scenario i, tell the sim to switch to it (no
+  // reload), and repoint the full-simulator CTA at that scenario.
   function render(i){
     const s=SCEN[i];
-    stopRAF();
-    if(s.kind==='carry') renderCarry(s); else renderMesh(s);
     $('sp-no').textContent='SCENARIO '+('0'+(i+1)).slice(-2)+' / '+('0'+SCEN.length).slice(-2);
     $('sp-title').textContent=s.title;
     $('sp-body').textContent=s.body;
     $('sp-flow').innerHTML=s.flow.join('  →  ');
     $('sp-stat').textContent='✓ '+s.stat;
+    if(open) open.href='/sim/index.html?scenario='+s.id;
+    // Live switch inside the embed. Guard: the iframe may not have loaded yet,
+    // and a cross-origin content window would throw on access.
+    try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'scenario', id:s.id}, '*'); }catch(e){}
     [...root.querySelectorAll('.sp-tab')].forEach((t,k)=>t.setAttribute('aria-selected',k===i));
   }
 
@@ -376,16 +158,14 @@ const SCEN = (ids && ids.length)
       const b=document.createElement('button');
       b.className='sp-tab'; b.type='button'; b.setAttribute('role','tab');
       b.innerHTML=`<i class="${s.fa||'fa-duotone fa-solid fa-circle-nodes'}"></i>${s.tab}`;
-      b.onclick=()=>{cur=i;render(i);stopAuto();};
+      b.onclick=()=>render(i);
       tabsEl.appendChild(b);
     });
   }
 
-  let cur=0, auto;
-  function stopAuto(){clearInterval(auto);const a=$('sp-auto');if(a)a.textContent='paused';}
-  function startAuto(){ if(solo) return; auto=setInterval(()=>{cur=(cur+1)%SCEN.length;render(cur);},7000); }
-  if($('sp-next')) $('sp-next').onclick=()=>{cur=(cur+1)%SCEN.length;render(cur);stopAuto();};
-  if($('sp-prev')) $('sp-prev').onclick=()=>{cur=(cur-1+SCEN.length)%SCEN.length;render(cur);stopAuto();};
-  render(0); startAuto();
+  // The iframe's initial src already carries the first scenario, so render(0)
+  // only needs to sync the copy/CTA (the postMessage is a harmless no-op until
+  // the sim is listening).
+  render(0);
 })();
 </script>

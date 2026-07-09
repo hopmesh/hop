@@ -48,7 +48,11 @@ pub struct RegionRouter {
 impl RegionRouter {
     /// `half_life_ms` controls how fast stale presence/demand fades (e.g. an hour).
     pub fn new(half_life_ms: u64) -> Self {
-        Self { half_life_ms, presence: HashMap::new(), demand: HashMap::new() }
+        Self {
+            half_life_ms,
+            presence: HashMap::new(),
+            demand: HashMap::new(),
+        }
     }
 
     /// Record that `address` was just reachable through `region`.
@@ -63,7 +67,10 @@ impl RegionRouter {
             .entry((app, topic.to_string()))
             .or_default()
             .entry(region.clone())
-            .or_insert(Decaying { last_ms: now_ms, weight: 0.0 });
+            .or_insert(Decaying {
+                last_ms: now_ms,
+                weight: 0.0,
+            });
         entry.weight = entry.value(now_ms, self.half_life_ms) + 1.0;
         entry.last_ms = now_ms;
     }
@@ -138,7 +145,10 @@ mod tests {
     fn addressed_bundle_targets_the_devices_region() {
         let mut r = RegionRouter::new(3_600_000);
         r.observe_presence(addr(1), &"us-east".into(), 0);
-        assert_eq!(r.region_of(&addr(1), 1_000, 60_000).as_deref(), Some("us-east"));
+        assert_eq!(
+            r.region_of(&addr(1), 1_000, 60_000).as_deref(),
+            Some("us-east")
+        );
         // Unknown device → no region (caller falls back to flood).
         assert_eq!(r.region_of(&addr(2), 1_000, 60_000), None);
         // Stale presence beyond ttl → treated as unknown.

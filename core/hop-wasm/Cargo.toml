@@ -1,0 +1,19 @@
+[package]
+name = "hop-wasm"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "wasm-bindgen wrapper over hop-core Node<MemoryStore> — drives many real Hop nodes in the browser swarm simulator."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hop-core = { workspace = true }
+wasm-bindgen = "0.2"
+
+# On wasm32 the crypto RNG (rand_core::OsRng → getrandom 0.2) needs the browser
+# crypto.getRandomValues backend. hop-core's whole tree uses only getrandom 0.2.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

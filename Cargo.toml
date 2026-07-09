@@ -4,6 +4,7 @@ members = [
     "core/hop-core",
     "core/hop",
     "core/hop-sim",
+    "core/hop-wasm",
     "core/stores/hop-store-sqlite",
     "core/stores/hop-store-firestore",
     "services/hop-relay",
