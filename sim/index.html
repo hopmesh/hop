@@ -253,6 +253,14 @@ function apNet(a){ return apRadio(a) && ((a.sat&&satUp) || ispUp); }
 // people live ALONG the routes (frac); carriers move ALONG them (off + mode)
 // every node is a NAMED PERSON with a phone; the emoji is just how they're getting around right now
 const NAMES=['Ana','Ben','Cy','Dana','Eve','Finn','Gus','Hana','Ivy','Jae','Kip','Lux','Mia','Ned','Ola','Pat','Rae','Sol','Tao','Uma','Vic','Wren','Xavi','Yara','Zoe','Bea','Gio','Nia','Rex','Suki'];
+// Deterministic per-person randomness (identical in the harness): id-salted counter hash.
+function djb(id){ let h=5381; for(const c of id) h=(h*33+c.charCodeAt(0))>>>0; return h; }
+function rnd01(salt,n){ return ((((salt+n*2654435761)^(salt<<7))>>>0)%10000)/10000; }
+// A scattered spot around an area's centre (≤15 m) so a dwelling crowd forms a BLE-connected hub
+// without stacking on one pixel.
+function areaSpot(centre, id, visit){ const salt=djb(id);
+  const ang=rnd01(salt,visit*2+1)*6.283, rad=4+rnd01(salt,visit*2+2)*11;
+  return [centre[0]+(rad*Math.sin(ang))/(111320*Math.cos(centre[1]*Math.PI/180)), centre[1]+(rad*Math.cos(ang))/111320]; }
 function cast(){const C=[]; let ni=0;
   // A staged scenario replaces the city cast entirely: its own people, on its own geography.
   if(SCEN && SCEN.stage && SCEN.stage.cast){
@@ -263,6 +271,9 @@ function cast(){const C=[]; let ni=0;
         p.anchored=true; p.place=a.name; p.pos=[a.pos[0]+(d*Math.sin(th))/87800, a.pos[1]+(d*Math.cos(th))/111000];
         if(!a.pub) p.wifiKeys=[a.key]; }
       else if(x.pos){ p.anchored=true; p.pos=x.pos.slice(); }   // fixed position (e.g. a Hop Bridge)
+      else if(x.at){ p.anchored=true; p.area=x.at; p.pos=areaSpot(st.areas[x.at], p.id, 0); }   // stationary at an AREA (scattered)
+      else if(x.wander){ p.wander=x.wander; p.dwell=x.dwell||[30,90]; p.mode=x.mode||'walk'; p.visit=0;
+        p.area=x.wander[0]; p.pos=areaSpot(st.areas[p.area], p.id, 0); p.phase='dwell'; p.dwellUntil=0; }   // swarms between areas
       else { p.route=x.route; if(x.frac!=null) p.frac=x.frac; else { p.mode=x.mode||'walk'; p.off=x.off||0; if(x.seg) p.seg=x.seg; }
         const g=RGEOM[p.route]; p.pos=g?null:(SCEN.stage.routes[p.route]||[[0,0]])[0]; }   // placed properly in placePeople
       if(x.lora) p.lora=x.lora;   // Hop Bridges bonded into a sub-GHz net (an invisible bearer link)
@@ -362,7 +373,7 @@ function reset(){
   towers=(stage?(stage.towers||[]):TOWERS).map(t=>({pos:t.pos.slice(),r:t.r,on:inf.cell===true}));
   aps=(stage?(stage.aps||[]):APS).map(a=>({...a, on:true}));   // Wi-Fi radios on by default (power decides if they run)
   apsDirty=true; apVer++;
-  if(SCEN){ timeScale=SCEN.speed||24; scenScript=(SCEN.script||[]).map(e=>({...e})); scenSends=[]; scenFired=0; scenStartReal=performance.now(); scenLastAck=0; scenOpened=false;
+  if(SCEN){ timeScale=SCEN.speed||24; scenScript=(SCEN.script||[]).map(e=>({...e})); scenSends=[]; scenFired=0; scenStartReal=performance.now(); scenLastAck=0; scenOpened=false; scenChatterNext=0; scenChatterN=0;
     narr='<b>'+esc(SCEN.title)+'</b> '+esc(SCEN.blurb||''); }
   syncToggleUI();
 }
@@ -455,6 +466,21 @@ const IC={ send:'<i class="fa-solid fa-paper-plane"></i>', done:'<i class="fa-so
   env:'<i class="fa-solid fa-envelope"></i>' };
 function step(dt){   // movement + clock only — runs every frame for smooth motion
   simT+=dt;
+  for(const p of people) if(p.wander){
+    // SWARM: dwell at an area (stage, vendors...), then walk straight to the next one on the list.
+    if(p.phase==='moving'){
+      const dm=turf.distance(p.pos,p.target,{units:'meters'}), stepM=SPEED[p.mode]*dt;
+      if(dm<=stepM){ p.pos=p.target.slice(); p.area=p.destArea; p.phase='dwell';
+        p.dwellUntil=simT + p.dwell[0] + rnd01(djb(p.id),p.visit*2+5)*(p.dwell[1]-p.dwell[0]); }
+      else { const f=stepM/dm; p.pos=[p.pos[0]+(p.target[0]-p.pos[0])*f, p.pos[1]+(p.target[1]-p.pos[1])*f]; }
+    } else if(simT>=p.dwellUntil){
+      p.visit++;
+      const opts=p.wander.filter(a2=>a2!==p.area);
+      p.destArea=opts.length?opts[Math.floor(rnd01(djb(p.id),p.visit*2+3)*opts.length)%opts.length]:p.wander[0];
+      p.target=areaSpot(SCEN.stage.areas[p.destArea], p.id, p.visit);
+      p.phase='moving';
+    }
+  }
   for(const p of people) if(p.mode && p.line){
     // a mover patrols its SEGMENT of the route (seg:[loFrac,hiFrac]) — like real relay chains, no single
     // carrier spans the whole way, so messages must hand off carrier-to-carrier in the overlap zones.
@@ -612,6 +638,7 @@ function renderMiniChat(){
 // An event is either { at, send } — fires at `at` sim-seconds — or { after: k, at, send } — a REPLY,
 // firing `at` sim-seconds after script send #k is DELIVERED (multi-turn conversations, real timing).
 let scenSends=[];   // script index → the message object it produced
+let scenChatterNext=0, scenChatterN=0;   // background-chatter clock
 function pumpScenario(){
   if(!SCEN || !workerReady) return;
   let allFired=true;
@@ -630,6 +657,18 @@ function pumpScenario(){
     if(ev.publish){ const m=doPublish(ev.publish.from, ev.publish.path, ev.publish.text);
       scenSends[scenScript.indexOf(ev)]=m;
       if(m && MINI){ focus={src:ev.publish.from, recip:null, bundle:null}; if(worker&&workerReady) worker.postMessage({type:'focus', recip:null}); } }
+  }
+  // background chatter: a slurry of REAL messages between random people (marked auto — the
+  // narrator/chat stay on the story, but the floods and vaccines all render).
+  if(SCEN.chatter){
+    if(scenChatterNext===0) scenChatterNext=simT+SCEN.chatter*0.5;
+    if(simT>=scenChatterNext){
+      scenChatterNext=simT+SCEN.chatter*(0.5+rnd01(1337,++scenChatterN));
+      const pool=people.filter(p=>!p.id.startsWith('relay'));
+      if(pool.length>2){ const a2=pool[Math.floor(rnd01(7331,scenChatterN*2)*pool.length)%pool.length];
+        let b2=pool[Math.floor(rnd01(9973,scenChatterN*2+1)*pool.length)%pool.length];
+        if(b2!==a2) doSend(a2.id, b2.id, TEXTS[scenChatterN%TEXTS.length], true); }
+    }
   }
   if(MINI){
     const scripted=msgs.filter(m=>!m.auto);

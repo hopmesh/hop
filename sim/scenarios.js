@@ -216,6 +216,7 @@ export const SCENARIOS = {
     stage: {
       style: 'topo',
       routes: { khumbu: null },   // baked: Namche Bazaar → Tengboche (9.1 km)
+      channel: { host: 'lead', path: 'party', members: ['lead', 'you', 'h1', 'h2', 'h4'] },
       aps: [],
       cast: [
         { id: 'you',  name: 'You',  route: 'khumbu', frac: 0.05 },
@@ -230,7 +231,7 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'you', to: 'lead', text: 'stopping to filter water — 20 min behind' } },
+      { at: 2, publish: { from: 'you', path: 'party', text: 'stopping to filter water — 20 min behind' } },
       { after: 0, at: 6, send: { from: 'lead', to: 'you', text: 'copy — we hold at the ridge for you' } },
     ],
   },
@@ -276,7 +277,8 @@ export const SCENARIOS = {
     camera: { center: [131.7440, -22.7450], zoom: 11.4 },
     stage: {
       style: 'topo',
-      routes: { tanami: null },   // baked: a 27 km stretch of the track
+      routes: { tanami: null },   // baked: an outback stretch of the track
+      channel: { host: 'lead', path: 'net', members: ['lead', 'rear', 'v1', 'v2', 'v3', 'v4', 'v5'] },
       aps: [],
       cast: [
         { id: 'rear', name: 'Rear', route: 'tanami', frac: 0.02 },
@@ -291,7 +293,7 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'rear', to: 'lead', text: 'convoy check: all units up, moving north-west' } },
+      { at: 2, publish: { from: 'rear', path: 'net', text: 'convoy check: all units up, moving north-west' } },
       { after: 0, at: 5, send: { from: 'lead', to: 'rear', text: 'copy all — next waypoint in 20 clicks' } },
     ],
   },
@@ -301,14 +303,14 @@ export const SCENARIOS = {
     // doesn't have — no SIM on the site phones, and the trailer Wi-Fi only covers the gate. Punches
     // hop worker to worker along the works to the trailer; the confirmation rides back.
     title: 'Clocked in, no SIM needed.',
-    blurb: 'A job site: the punch app on a SIM-less phone still reaches the trailer — the crew is the network.',
+    blurb: 'A job site: the punch app on a SIM-less phone reaches the company’s cloud timesheet through the crew and the trailer’s uplink — device to platform, not chat.',
     speed: 48, maxReal: 300,
     infra: { power: true, cell: false, isp: true },
     stage: {
       routes: { yard: null },   // baked: a real Port Lands street (~800 m) — on land, not the Ship Channel
       aps: [ { pos: [-79.356505, 43.650722], r: 40, name: 'Site trailer', pub: true } ],
       cast: [
-        { id: 'office', name: 'Timesheet', ap: 0 },
+        { id: 'office', name: 'Timesheet API', emoji: 'router', ap: 0 },   // the customer's cloud platform, reached via the trailer's uplink (a system, not a person)
         { id: 'worker', name: 'Marta', route: 'yard', frac: 0.95 },
         { id: 'w1', name: 'Crew', route: 'yard', mode: 'walk', off: 0.1,  seg: [0.0, 0.35] },
         { id: 'w2', name: 'Crew', route: 'yard', mode: 'walk', off: 0.28, seg: [0.22, 0.58] },
@@ -319,23 +321,24 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'worker', to: 'office', text: 'punch in: badge 4211 · 07:58' } },
-      { after: 0, at: 4, send: { from: 'office', to: 'worker', text: 'clocked in at 07:58 — have a safe shift' } },
+      { at: 2, send: { from: 'worker', to: 'office', text: 'PUNCH badge=4211 t=07:58' } },
+      { after: 0, at: 4, send: { from: 'office', to: 'worker', text: 'ACCEPTED punch 07:58 — shift 06:00-14:30' } },
     ],
   },
 
   mine: {
-    // Kiruna, Sweden — the classic underground problem: no radio reaches past the first bend. The
-    // drift is drawn as a schematic tunnel line; the shift itself is the network — a gas alert hops
-    // miner to miner up the drift to the portal office, and the all-clear rides back down.
+    // Kiruna, Sweden — no radio past the first bend, and a gas alert is for EVERYONE: it goes out
+    // as a CHANNEL broadcast on the shift's group, hopping headlamp to headlamp until every member
+    // has it, and control's instruction comes back the same way.
     title: 'No radio underground. The shift is the network.',
-    blurb: 'A mine drift: the gas alert hops headlamp to headlamp up to the portal office, and the answer rides back down.',
-    speed: 48, maxReal: 360,
+    blurb: 'A mine drift: the gas alert broadcasts to the whole shift, headlamp to headlamp, and control’s instruction rides back.',
+    speed: 48, maxReal: 420,
     infra: { power: true, cell: false, isp: true },
     stage: {
       style: 'topo',
-      routes: { drift: [[20.2050,67.8360],[20.1960,67.8385],[20.1870,67.8405],[20.1780,67.8420],[20.1700,67.8440]] },   // schematic drift line (~1.6 km)
-      aps: [ { pos: [20.2050, 67.8360], r: 40, name: 'Portal office', pub: true } ],   // the mine office at the portal, on fiber
+      routes: { drift: [[20.2050,67.8360],[20.1960,67.8385],[20.1870,67.8405],[20.1780,67.8420],[20.1700,67.8440]] },
+      aps: [ { pos: [20.2050, 67.8360], r: 40, name: 'Portal office', pub: true } ],
+      channel: { host: 'office', path: 'shift', members: ['office', 'boss', 'face', 'm1', 'm2', 'm5'] },
       cast: [
         { id: 'office', name: 'Control', ap: 0 },
         { id: 'boss', name: 'Shift boss', route: 'drift', frac: 0.06 },
@@ -350,50 +353,58 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'face', to: 'office', text: 'CH4 at 1.8% at the face — pulling the crew back' } },
-      { after: 0, at: 5, send: { from: 'office', to: 'face', text: 'copy — ventilation ramped, hold at refuge 2 until green' } },
+      { at: 2, publish: { from: 'face', path: 'shift', text: 'CH4 at 1.8% at the face — pulling the crew back' } },
+      { after: 0, at: 6, publish: { from: 'office', path: 'shift', text: 'ventilation ramped — all crews hold at refuge 2 until green' } },
     ],
   },
 
   event: {
-    // A festival ground: the tower is UP — and useless. Everyone attached fine this morning (prekeys
-    // are known), then 100k phones jammed the cell. `congested` severs the backbone after that
-    // pre-event contact, so ONLY the crowd itself carries traffic. The crowd is a DENSE overlapping
-    // chain — devices constantly pass each other, which is what an epidemic needs.
+    // A festival ground, modeled the way one actually MOVES: named areas (main stage, vendor row,
+    // the ops tent, the entrance), a crowd that swarms between them and DWELLS (a stage set, a
+    // food queue), stationary stallholders, staff shuttling ops↔stage↔vendors — plus a constant
+    // slurry of real background messages. The tower is UP and jammed (`congested`): everyone
+    // attached this morning; now nothing moves except through the crowd itself.
     title: 'Full bars. Nothing sends.',
     blurb: 'A big event: the cell network is up but oversubscribed. Payments and meet-ups ride the crowd instead.',
     speed: 48, maxReal: 360,
-    congested: true,
+    congested: true, chatter: 80,
     infra: { power: true, cell: true, isp: true },
     stage: {
       style: 'topo',
-      routes: { fest: [[-2.5915,51.1516],[-2.5875,51.1526],[-2.5835,51.1540],[-2.5800,51.1555]] },
-      towers: [ { pos: [-2.5860, 51.1560], r: 1800 } ],
+      routes: {},
+      areas: {
+        entrance: [-2.5960, 51.1500],
+        vendors:  [-2.5895, 51.1522],
+        stage:    [-2.5845, 51.1538],
+        ops:      [-2.58043, 51.15531],
+      },
+      towers: [ { pos: [-2.5860, 51.1560], r: 1800 } ],   // one saturated macro cell over the site
       aps: [ { pos: [-2.58043, 51.15531], r: 40, name: 'Ops tent', pub: false, sat: true, key: 'ops' } ],
       cast: [
         { id: 'ops',    name: 'Ops', ap: 0, cell: true },
-        { id: 'you',    name: 'Sam', route: 'fest', frac: 0.35, cell: true },
-        { id: 'pos1',   name: 'PoS - Stall 12', emoji: 'router', route: 'fest', frac: 0.5, cell: true },
-        { id: 'friend', name: 'Kai', route: 'fest', frac: 0.62, cell: true },
-        { id: 'c1', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.06, seg: [0.02, 0.2],  cell: true },
-        { id: 'c2', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.18, seg: [0.12, 0.3],  cell: true },
-        { id: 'c3', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.28, seg: [0.22, 0.4],  cell: true },
-        { id: 'c4', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.38, seg: [0.32, 0.5],  cell: true },
-        { id: 'c5', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.48, seg: [0.42, 0.6],  cell: true },
-        { id: 'c6', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.58, seg: [0.52, 0.7],  cell: true },
-        { id: 'c7', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.68, seg: [0.62, 0.8],  cell: true },
-        { id: 'c8', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.78, seg: [0.72, 0.9],  cell: true },
-        { id: 'c9', name: 'Crowd', route: 'fest', mode: 'walk', off: 0.9,  seg: [0.82, 0.99], cell: true },
-        { id: 'st1', name: 'Crowd', route: 'fest', frac: 0.25, cell: true },
-        { id: 'st2', name: 'Crowd', route: 'fest', frac: 0.45, cell: true },
-        { id: 'st3', name: 'Crowd', route: 'fest', frac: 0.65, cell: true },
-        { id: 'st4', name: 'Crowd', route: 'fest', frac: 0.82, cell: true },
+        { id: 'pos1',   name: 'PoS - Stall 12', emoji: 'router', at: 'vendors', cell: true },
+        { id: 'vend1',  name: 'Vendor', at: 'vendors', cell: true },
+        { id: 'sound',  name: 'Sound desk', emoji: 'router', at: 'stage', cell: true },
+        { id: 'front1', name: 'Crowd', at: 'stage', cell: true },
+        { id: 'front2', name: 'Crowd', at: 'stage', cell: true },
+        { id: 'you',    name: 'Sam', wander: ['stage', 'vendors'], cell: true },
+        { id: 'friend', name: 'Kai', wander: ['vendors', 'stage'], cell: true },
+        { id: 'c1', name: 'Crowd', wander: ['stage', 'vendors'], cell: true },
+        { id: 'c2', name: 'Crowd', wander: ['vendors', 'stage', 'entrance'], cell: true },
+        { id: 'c3', name: 'Crowd', wander: ['stage', 'entrance'], cell: true },
+        { id: 'c4', name: 'Crowd', wander: ['stage', 'vendors'], dwell: [60, 140], cell: true },
+        { id: 'c5', name: 'Crowd', wander: ['vendors', 'entrance', 'stage'], cell: true },
+        { id: 'c6', name: 'Crowd', wander: ['stage', 'vendors'], dwell: [50, 120], cell: true },
+        { id: 'staff1', name: 'Staff', wander: ['ops', 'stage', 'vendors'], dwell: [10, 30], mode: 'bike', cell: true },
+        { id: 'staff2', name: 'Staff', wander: ['ops', 'vendors', 'stage'], dwell: [10, 30], mode: 'bike', cell: true },
+        { id: 'staff3', name: 'Staff', wander: ['stage', 'ops'], dwell: [12, 35], mode: 'bike', cell: true },
       ],
     },
     script: [
-      { at: 2, send: { from: 'pos1', to: 'ops', text: 'card batch: 47 sales, £612 — please sync' } },
+      { at: 5, send: { from: 'pos1', to: 'ops', text: 'card batch: 47 sales, £612 — please sync' } },
       { after: 0, at: 5, send: { from: 'ops', to: 'pos1', text: 'batch received — float topped up' } },
-      { at: 10, send: { from: 'you', to: 'friend', text: 'meet left of the sound tower' } },
+      { at: 15, send: { from: 'you', to: 'friend', text: 'meet left of the sound tower' } },
+      { after: 2, at: 8, send: { from: 'friend', to: 'you', text: 'omw — grabbing food first' } },
     ],
   },
 
