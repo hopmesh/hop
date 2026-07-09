@@ -75,8 +75,13 @@ for pair in "${PAIRS[@]}"; do
   echo "[$ROUND] $from->$to ($fs/$ts): delivered=$delivered in ${elapsed}s (rx=$received ack=$ack)"
 done
 
-# Per-device log snapshot for this round's bug hunt.
-for id in "${CORE_IDS[@]}"; do
+# Per-device log snapshot for this round's bug hunt — only the devices actually under test this
+# round (derived from PAIRS, not the full CORE_IDS). A disconnected fleet member (e.g. an offline
+# tab still half-known to adb) makes `adb -s <serial> logcat` BLOCK forever, so touching it here
+# would hang the whole round; scoping to PAIRS keeps the snapshot to reachable devices.
+declare -A _snap_ids
+for pair in "${PAIRS[@]}"; do _snap_ids["${pair%%:*}"]=1; _snap_ids["${pair##*:}"]=1; done
+for id in "${!_snap_ids[@]}"; do
   tk_logcap "$id" "$RESULTS/$ROUND.$id.log" 2>/dev/null
 done
 echo "round $ROUND done -> $OUT"
