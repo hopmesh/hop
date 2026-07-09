@@ -71,6 +71,13 @@ function along(line, km) {                          // point `km` along the line
 }
 const LINES = Object.fromEntries(Object.entries(ROUTES_GEOM).map(([k, c]) => [k, buildLine(c)]));
 
+// swarm helpers — EXACT mirrors of index.html
+function djb(id) { let h = 5381; for (const c of id) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h; }
+function rnd01(salt, n) { return ((((salt + n * 2654435761) ^ (salt << 7)) >>> 0) % 10000) / 10000; }
+function areaSpot(centre, id, visit) { const salt = djb(id);
+  const ang = rnd01(salt, visit * 2 + 1) * 6.283, rad = 4 + rnd01(salt, visit * 2 + 2) * 11;
+  return [centre[0] + (rad * Math.sin(ang)) / (111320 * Math.cos(centre[1] * Math.PI / 180)), centre[1] + (rad * Math.cos(ang)) / 111320]; }
+
 // ---- cast, mirrored from cast() in index.html (stage-aware) ----
 function buildCast(scen) {
   if (scen.stage && scen.stage.cast) {                 // staged scenario: its own cast on its own geography
@@ -83,6 +90,9 @@ function buildCast(scen) {
         p.anchored = true; p.pos = [a.pos[0] + (d * Math.sin(th)) / 87800, a.pos[1] + (d * Math.cos(th)) / 111000];
         if (!a.pub) p.wifiKeys = [a.key]; }
       else if (x.pos) { p.anchored = true; p.pos = x.pos.slice(); }
+      else if (x.at) { p.anchored = true; p.area = x.at; p.pos = areaSpot(st.areas[x.at], p.id, 0); }
+      else if (x.wander) { p.wander = x.wander; p.dwell = x.dwell || [30, 90]; p.mode = x.mode || 'walk'; p.visit = 0;
+        p.area = x.wander[0]; p.pos = areaSpot(st.areas[p.area], p.id, 0); p.phase = 'dwell'; p.dwellUntil = 0; }
       else { p.route = x.route; const g = LINES[x.route]; p.len = g.lenKm;
         if (x.frac != null) { p.frac = x.frac; p.pos = along(g, x.frac * g.lenKm); }
         else { p.mode = x.mode || 'walk'; p.prog = (x.off || 0) * g.lenKm; p.dir = 1; p.pos = along(g, p.prog); if (x.seg) p.seg = x.seg; } }
@@ -172,11 +182,25 @@ function runScenario(id, scen) {
   const evSends = [];   // script index → send record
   const sends = [];     // {bundle, from, to, sentSim, deliveredSim, ackedSim}
   const acked = new Set();
-  let simT = 0;
+  let simT = 0, chatterNext = 0, chatterN = 0;
   while (simT < budgetSim) {
     // browser cadence is never uniform: ±35% tick noise, and ~1.5% of ticks are hidden-tab stalls
     const dtSim = rand ? (rand() < 0.015 ? baseDt * 6 : baseDt * (0.65 + 0.7 * rand())) : baseDt;
     simT += dtSim;
+    for (const p of people) if (p.wander) {   // SWARM: dwell at an area, then walk straight to the next
+      if (p.phase === 'moving') {
+        const dm = hav(p.pos, p.target), stepM = SPEED[p.mode] * dtSim;
+        if (dm <= stepM) { p.pos = p.target.slice(); p.area = p.destArea; p.phase = 'dwell';
+          p.dwellUntil = simT + p.dwell[0] + rnd01(djb(p.id), p.visit * 2 + 5) * (p.dwell[1] - p.dwell[0]); }
+        else { const f = stepM / dm; p.pos = [p.pos[0] + (p.target[0] - p.pos[0]) * f, p.pos[1] + (p.target[1] - p.pos[1]) * f]; }
+      } else if (simT >= p.dwellUntil) {
+        p.visit++;
+        const opts = p.wander.filter(a2 => a2 !== p.area);
+        p.destArea = opts.length ? opts[Math.floor(rnd01(djb(p.id), p.visit * 2 + 3) * opts.length) % opts.length] : p.wander[0];
+        p.target = areaSpot(scen.stage.areas[p.destArea], p.id, p.visit);
+        p.phase = 'moving';
+      }
+    }
     for (const p of people) if (p.mode && p.route) {   // movement: patrol the SEGMENT + linger at ends
       if (p.pauseUntil && simT < p.pauseUntil) continue;
       const lo = (p.seg ? p.seg[0] : 0) * p.len, hi = (p.seg ? p.seg[1] : 1) * p.len;
@@ -185,6 +209,16 @@ function runScenario(id, scen) {
       if (p.prog >= hi) { p.prog = hi; p.dir = -1; p.bounces = (p.bounces || 0) + 1; p.pauseUntil = simT + 4 + (((p.bounces * 2654435761 + p.dwellSalt * 131) >>> 0) % 23); }
       else if (p.prog <= lo) { p.prog = lo; p.dir = 1; p.bounces = (p.bounces || 0) + 1; p.pauseUntil = simT + 4 + (((p.bounces * 2654435761 + p.dwellSalt * 131) >>> 0) % 23); }
       p.pos = along(LINES[p.route], p.prog);
+    }
+    if (scen.chatter) {
+      if (chatterNext === 0) chatterNext = simT + scen.chatter * 0.5;
+      if (simT >= chatterNext) {
+        chatterNext = simT + scen.chatter * (0.5 + rnd01(1337, ++chatterN));
+        const pool = people;
+        if (pool.length > 2) { const a2 = pool[Math.floor(rnd01(7331, chatterN * 2) * pool.length) % pool.length];
+          const b2 = pool[Math.floor(rnd01(9973, chatterN * 2 + 1) * pool.length) % pool.length];
+          if (b2 !== a2) { try { mesh.send(a2.id, b2.id, 'chatter ' + chatterN); } catch (_) {} } }
+      }
     }
     script.forEach((ev, i) => {
       if (ev._fired) return;
