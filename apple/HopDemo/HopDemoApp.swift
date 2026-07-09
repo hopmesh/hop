@@ -151,14 +151,24 @@ struct HopDemoApp: App {
     /// `xcrun devicectl ... --environment-variables`). The marker text may contain spaces (only the
     /// first two `|` are structural). Fires ~3s after launch so BLE links can form first.
     static func runAutomationEnv() {
-        guard let spec = ProcessInfo.processInfo.environment["HOP_AUTO"] else { return }
+        let spec = ProcessInfo.processInfo.environment["HOP_AUTO"] ?? ""
+        HopBearer.autoEnvSeen = spec   // breadcrumb: prove the env reached the app even if the send is a no-op
         let parts = spec.components(separatedBy: "|")
         guard parts.count >= 3, parts[0] == "send" else { return }
         let to = parts[1]
         let text = parts[2...].joined(separator: "|")   // rejoin any stray pipes into the marker text
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            HopBearer.shared.sendTo(addressBase58: to, text: text)
+        // Stage C moved node-open off the main thread, so the node isn't guaranteed ready at a fixed
+        // delay after cold launch. Retry the send on a backoff until it's accepted (self-address known)
+        // instead of a single fire-and-forget that can land before the node exists.
+        func attempt(_ n: Int) {
+            guard n < 12 else { return }
+            if HopBearer.shared.isReady {
+                HopBearer.shared.sendTo(addressBase58: to, text: text)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { attempt(n + 1) }
+            }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { attempt(0) }
     }
 }
 

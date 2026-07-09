@@ -12,9 +12,16 @@ export const meta = {
   ],
 }
 
-const ROUNDS = (args && args.rounds) || 24
-const RESULTS = (args && args.results) || 'testkit/results'
-const MAXWAIT = (args && args.maxwait) || 30
+// NOTE: the harness `args` global does not always thread through a scriptPath launch, so these
+// defaults are set to the current cutover-verification run (the reachable pixel/xr/jpad trio, a
+// bounded 2-round fg/fg + fg/bg pass, a 75s wait so iOS cold-launch sends aren't false-failed).
+// Any args that DO arrive still override. Widen ROUNDS / clear PAIRS for a full-fleet soak.
+const ROUNDS = (args && args.rounds) || 2
+const RESULTS = (args && args.results) || 'testkit/results/cutover'
+const MAXWAIT = (args && args.maxwait) || 75
+// Ordered-pair override so the soak runs only over the devices actually connected. When empty,
+// run-round.sh fans out over every ordered pair of its CORE_IDS (the full fleet).
+const PAIRS = (args && args.pairs) || 'pixel:xr xr:pixel pixel:jpad jpad:pixel xr:jpad jpad:xr'
 const PROFILES = ['fgfg', 'fgbg', 'bgfg', 'bgbg'] // sender_state/receiver_state, cycled per round
 
 const BUG = {
@@ -54,7 +61,7 @@ for (let r = 1; r <= ROUNDS; r++) {
   // The runner is a deterministic bash script; the agent just executes it and returns the JSONL.
   await agent(
     `Run exactly this and wait for it to finish (it drives ~20 real device sends, may take several minutes):\n` +
-    `  TK_MAXWAIT=${MAXWAIT} bash testkit/run-round.sh ${r} ${RESULTS} ${profile}\n` +
+    `  TK_MAXWAIT=${MAXWAIT} bash testkit/run-round.sh ${r} ${RESULTS} ${profile} ${PAIRS ? `'${PAIRS}'` : ''}\n` +
     `Then output the contents of ${RESULTS}/${r}.jsonl verbatim (cat it). That file + the per-device ` +
     `logs ${RESULTS}/${r}.<id>.log are what the bug hunters read next. If the script errors, report the error.`,
     { label: `round${r}:${profile}`, phase: 'Drive' }

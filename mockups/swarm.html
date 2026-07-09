@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hop — live mesh swarm</title>
+<title>Hop · live mesh swarm</title>
 <style>
   :root{
     --bg:#07090b; --panel:#0e1215; --panel-2:#12171b; --line:#1b2227; --line-2:#283139;
@@ -29,17 +29,23 @@
   .toggle.net[aria-pressed="true"]{border-color:var(--amber)} .toggle.net[aria-pressed="true"] .sw{background:var(--amber);box-shadow:0 0 8px var(--amber)}
   .btn{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);border:1px solid var(--line-2);background:none;border-radius:8px;padding:8px 13px;cursor:pointer}
   .btn:hover{color:var(--ink);border-color:#3a4248}
+  #scenarios{margin-bottom:2px}
+  .scen{font-family:var(--mono);font-size:12px;color:var(--ink-dim);border:1px solid var(--line);background:none;
+    border-radius:999px;padding:7px 13px;cursor:pointer;transition:.14s}
+  .scen:hover{color:var(--ink);border-color:#3a4248}
+  .scen[aria-pressed="true"]{color:#04130c;background:var(--green);border-color:var(--green);font-weight:600}
   .spacer{flex:1}
   .count{font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
 
   .stage-wrap{position:relative;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;background:var(--panel);box-shadow:0 30px 80px #00000050}
-  canvas{display:block;width:100%;height:560px;cursor:crosshair}
-  .legend{position:absolute;left:14px;bottom:12px;display:flex;gap:16px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);pointer-events:none}
+  canvas{display:block;width:100%;height:600px;cursor:crosshair}
+  .legend{position:absolute;left:14px;bottom:12px;display:flex;gap:16px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);pointer-events:none;
+    background:#0a0e11cc;border:1px solid #1b222799;border-radius:8px;padding:7px 12px;backdrop-filter:blur(6px)}
   .legend span{display:flex;align-items:center;gap:6px}
   .legend i{width:14px;height:2px;display:inline-block;border-radius:2px}
   .hint{position:absolute;left:14px;top:12px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);pointer-events:none}
 
-  .inspect{position:absolute;right:14px;top:14px;width:248px;background:#0c1014ee;border:1px solid var(--line-2);
+  .inspect{position:absolute;right:14px;top:14px;width:252px;background:#0c1014ee;border:1px solid var(--line-2);
     border-radius:12px;padding:14px;font-size:13px;backdrop-filter:blur(8px);opacity:0;transform:translateY(-6px);
     transition:.16s;pointer-events:none}
   .inspect.on{opacity:1;transform:none}
@@ -56,28 +62,36 @@
 <div class="wrap">
   <div class="kick">Live mesh · phase 1 simulation</div>
   <h1>A swarm that finds a way.</h1>
-  <p class="sub">Every dot is a device wandering through Wi-Fi zones and around buildings. Links form
-     and break as they move — <span style="color:var(--green)">Bluetooth</span> in range,
-     <span style="color:var(--blue)">Wi-Fi</span> on a shared network, the
-     <span style="color:var(--amber)">internet relay</span> bridging the rest. Click any device to see
-     what it can reach right now; toggle the relays to watch the mesh stand on its own.</p>
+  <p class="sub">A city at night, seen from above. Every dot is a device: people on the sidewalks,
+     cars keeping their lane. Watch messages travel hop by hop: <span style="color:var(--green)">BLE</span>
+     down the street canyon, <span style="color:var(--blue)">Wi-Fi</span> through the café's router,
+     and up over the <span style="color:var(--amber)">internet backbone</span> when a zone has an
+     uplink. Range breathes with the environment (indoors, foliage, walls), and a fresh link needs a
+     moment to secure before it can carry. When no path exists, the message rides in someone's pocket
+     until one opens. Click a device, then another, to send your own. And pick a scenario: the
+     oversubscribed stadium, the basement speakeasy, the disaster, the festival valley, the town with
+     one satellite uplink, the neighborhood where nobody has a data plan. Same physics, same mesh:
+     the infrastructure changes, the messages still arrive.</p>
+
+  <div class="controls" id="scenarios"></div>
 
   <div class="controls">
-    <button class="toggle ble" id="t-ble" aria-pressed="true"><span class="sw"></span> Bluetooth</button>
+    <button class="toggle ble" id="t-ble" aria-pressed="true"><span class="sw"></span> BLE</button>
     <button class="toggle wifi" id="t-wifi" aria-pressed="true"><span class="sw"></span> Wi-Fi / LAN</button>
     <button class="toggle net" id="t-net" aria-pressed="true"><span class="sw"></span> Internet relays</button>
-    <button class="btn" id="regen">↻ new swarm</button>
+    <button class="btn" id="regen">↻ regenerate</button>
     <span class="spacer"></span>
     <span class="count" id="count"></span>
   </div>
 
   <div class="stage-wrap">
     <canvas id="c"></canvas>
-    <div class="hint">click a device · drag nothing · it's alive</div>
+    <div class="hint">click a device · click another to send · watch it hop</div>
     <div class="legend">
-      <span><i style="background:var(--green)"></i> Bluetooth</span>
+      <span><i style="background:var(--green)"></i> BLE</span>
       <span><i style="background:var(--blue)"></i> Wi-Fi / LAN</span>
-      <span><i style="background:var(--amber)"></i> internet relay</span>
+      <span><i style="background:var(--amber)"></i> internet backbone</span>
+      <span><i style="background:#f4fffa"></i> message</span>
     </div>
     <div class="inspect" id="inspect"></div>
   </div>
@@ -85,108 +99,618 @@
 <div class="ribbon">SWARM · PHASE 1</div>
 
 <script>
-(function(){
-  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-  let W=0, H=0, DPR=Math.min(window.devicePixelRatio||1, 2);
-  const opt = { ble:true, wifi:true, net:true };
-  const BLE_R = 92;            // bluetooth range (px)
-  let devices=[], zones=[], buildings=[], relays=[], selected=null;
+/* ============================================================================
+   Sim core: DOM-free on purpose. The world (streets with real widths, city
+   blocks with varied building fabric, Wi-Fi zones, relays), routing (Dijkstra
+   over the street graph) and movement (lane-keeping cars, sidewalk walkers)
+   all live here, so the Node harness (swarm.test.js) can drive thousands of
+   ticks and assert the invariants that matter: every device is always ON the
+   street network and never inside a building, even at its rendered offset.
+   The DOM block below only paints and handles clicks.
+   ========================================================================== */
+const SWARM = (function(){
+  // ---- tunables (px at the current view size) -------------------------------
+  const AVENUE_W = 20, STREET_W = 12;   // road widths (an avenue each way, rest streets)
+  const SIDEWALK = 11;                  // sidewalk band between curb and building face
 
-  // ---- world setup (coords in 0..1, scaled to canvas) ----
-  function buildWorld(){
-    zones = [
-      { x:.05, y:.10, w:.26, h:.34, label:'Café Wi-Fi', online:true },
-      { x:.68, y:.07, w:.27, h:.30, label:'Office LAN',  online:true },
-      { x:.40, y:.62, w:.30, h:.32, label:'Home Wi-Fi',  online:false },
-    ];
-    buildings = [
-      { x:.40, y:.10, w:.16, h:.20 },
-      { x:.10, y:.62, w:.16, h:.22 },
-      { x:.78, y:.55, w:.15, h:.26 },
-    ];
-    relays = [ {x:.28,y:.50}, {x:.74,y:.46} ];
-    const N = 50;
-    devices = [];
-    for(let i=0;i<N;i++){
-      const d={
-        id:i, x:Math.random(), y:Math.random(), tx:0, ty:0,
-        state:'dwell', dwell:0.3+Math.random()*2.5,        // start idle, staggered
-        speed:0.020+Math.random()*0.022,                   // slow, human walking pace
-        zoneTarget:false,
-        ble: Math.random()<0.92,                           // a few have BLE off
-        r: 4.5+Math.random()*1.4,
-      };
-      d.tx=d.x; d.ty=d.y; devices.push(d);
+  // ---- radio model -----------------------------------------------------------
+  // Range is not a constant: it breathes with the environment. BLE_R is the
+  // best case (open street, line of sight). A device dwelling at a venue is
+  // effectively indoors (walls, bodies); foliage across the path attenuates;
+  // buildings block BLE outright (the street-canyon story). Wi-Fi is an AP
+  // with a coverage radius that falls off through its own walls and is
+  // shadowed by NEIGHBORING buildings. And a link that just formed cannot
+  // carry anything yet: contact must SOAK (discovery + connect + secure)
+  // before packets flow, so two devices brushing past each other exchange
+  // nothing.
+  const BLE_R = 110;                    // px, open-street line-of-sight best case
+  const ENV_VENUE = 0.55;               // dwelling at a cafe/office/home: indoor attenuation
+  const ENV_PARK_PATH = 0.7;            // the path crosses tree cover
+  const WIFI_WALL = 0.6;                // AP shadowed by a neighboring building
+  const SOAK_BLE = 0.9;                 // s of continuous contact before a BLE link carries
+  const SOAK_WIFI = 0.35;               // s to associate with an AP
+  const SOAK_NET = 0.6;                 // s in a zone before its uplink is usable
+
+  const view = { W: 1124, H: 600 };     // updated by the DOM layer
+  const BAND_Y = 18;                    // the off-map internet backbone band (px from the top)
+
+  // ---- scenarios: the use cases, as presets over the same physics ------------
+  // Same engine everywhere; what changes is geography, population, which Wi-Fi
+  // islands exist, whether anything has an uplink, and how hostile the RF
+  // environment is. That IS the product story: the mesh is the constant.
+  const SCENARIOS = {
+    downtown: {
+      name:'Downtown', tagline:'a night in the city · wifi islands + one backbone',
+      grid:{V:7,Hn:5,x0:0.05,x1:0.95,y0:0.065,y1:0.935}, n:52, veh:10, zoneBias:0.6,
+      park:0.11, empty:0, net:true, bleR:110, envVenue:0.55,
+      zones:[ {label:'Café Wi-Fi', online:true}, {label:'Office LAN', online:true}, {label:'Home Wi-Fi', online:false} ],
+    },
+    noplan: {
+      name:'No data plan', tagline:'wifi at home, nothing on the go · the mesh carries between islands',
+      grid:{V:7,Hn:5,x0:0.05,x1:0.95,y0:0.065,y1:0.935}, n:56, veh:8, zoneBias:0.66,
+      park:0.11, empty:0, net:true, bleR:110, envVenue:0.55,
+      zones:[ {label:'Home Wi-Fi', online:true}, {label:'Library Wi-Fi', online:true} ],
+    },
+    remote: {
+      name:'Remote town', tagline:'one satellite uplink for the whole town · everything else walks',
+      grid:{V:4,Hn:3,x0:0.08,x1:0.92,y0:0.10,y1:0.90}, n:26, veh:6, zoneBias:0.55,
+      park:0.22, empty:0.25, net:true, bleR:120, envVenue:0.6,
+      zones:[ {label:'Town uplink · satellite', online:true} ],
+    },
+    disaster: {
+      name:'Disaster', tagline:'towers dark, backbone unreachable · messages move pocket to pocket',
+      grid:{V:7,Hn:5,x0:0.05,x1:0.95,y0:0.065,y1:0.935}, n:44, veh:6, zoneBias:0.5,
+      park:0.11, empty:0.06, net:false, bleR:110, envVenue:0.55,
+      zones:[ {label:'Shelter Wi-Fi · no internet', online:false}, {label:'Clinic LAN · no internet', online:false} ],
+    },
+    speakeasy: {
+      name:'Speakeasy', tagline:'three floors down, zero bars · the room is the network',
+      grid:{V:3,Hn:2,x0:0.24,x1:0.76,y0:0.16,y1:0.84}, n:24, veh:0, zoneBias:0.88,
+      park:0, empty:0, net:false, bleR:78, envVenue:0.42,
+      zones:[ {label:'The basement bar · no signal', online:false} ],
+    },
+    stadium: {
+      name:'Stadium', tagline:'the tower is up and useless · oversubscribed, the mesh is neither',
+      grid:{V:5,Hn:4,x0:0.10,x1:0.90,y0:0.09,y1:0.91}, n:96, veh:4, zoneBias:0.72,
+      park:0.08, empty:0, net:true, bleR:84, envVenue:0.5,
+      zones:[ {label:'Stadium Wi-Fi · congested', online:true, congested:true}, {label:'Concourse cell · congested', online:true, congested:true} ],
+    },
+    festival: {
+      name:'Festival', tagline:'a mountain valley, no coverage for miles · sixty thousand radios anyway',
+      grid:{V:5,Hn:3,x0:0.06,x1:0.94,y0:0.10,y1:0.90}, n:72, veh:5, zoneBias:0.78,
+      park:0.30, empty:0.30, net:false, bleR:126, envVenue:0.6,
+      zones:[ {label:'Main stage · no internet', online:false}, {label:'Camp Wi-Fi · no internet', online:false} ],
+    },
+  };
+  let scenario = SCENARIOS.downtown;
+
+  // vs/hs: vertical / horizontal streets, each { pos (normalized), w (px) }
+  const world = { vs:[], hs:[], nodes:[], adj:[], blocks:[], buildings:[], parks:[], zones:[] };
+  let devices = [];
+  const messages = [];                  // live + just-delivered message journeys
+  const msgStats = { delivered:0, hops:[] };
+  let spawnAcc = 0, nextSpawn = 1.2, msgSeq = 0;
+  let edges = [], adjCache = [];        // this tick's link graph (ages + readiness applied)
+  const linkAge = new Map();            // 'i:j' -> seconds of continuous contact
+
+  // px helpers: normalized (0..1) coords are stored, math happens in px so
+  // speeds and setbacks look identical on both axes of the wide canvas.
+  const P  = (n)=>({ x:n.x*view.W, y:n.y*view.H });
+  const nx = (px)=>px/view.W, ny = (px)=>px/view.H;
+  const distPx = (a,b)=>{ const A=P(a),B=P(b); return Math.hypot(A.x-B.x, A.y-B.y); };
+  const rand = (a,b)=>a+Math.random()*(b-a);
+  const pick = (arr)=>arr[(Math.random()*arr.length)|0];
+
+  // ---- world generation ------------------------------------------------------
+  function jittered(n, lo, hi){
+    const gap=(hi-lo)/(n-1), out=[];
+    for(let i=0;i<n;i++) out.push(lo + i*gap + ((i===0||i===n-1)?0:rand(-1,1)*gap*0.22));
+    return out;
+  }
+
+  function buildWorld(scenKey){
+    if(scenKey && SCENARIOS[scenKey]) scenario=SCENARIOS[scenKey];
+    const g=scenario.grid;
+    const V=g.V, Hn=g.Hn;
+    world.V=V; world.Hn=Hn;                       // single source for the id math
+    const avV=1+((Math.random()*(V-2))|0), avH=1+((Math.random()*(Hn-2))|0);  // which are avenues
+    world.vs = jittered(V, g.x0, g.x1).map((p,i)=>({ pos:p, w: i===avV?AVENUE_W:STREET_W }));
+    world.hs = jittered(Hn, g.y0, g.y1).map((p,j)=>({ pos:p, w: j===avH?AVENUE_W:STREET_W }));
+
+    // street graph: a node per intersection, edges along each street
+    world.nodes=[]; world.adj=[];
+    const id=(i,j)=>j*V+i;
+    for(let j=0;j<Hn;j++) for(let i=0;i<V;i++) world.nodes.push({ x:world.vs[i].pos, y:world.hs[j].pos, i, j });
+    world.adj = world.nodes.map(()=>[]);
+    for(let j=0;j<Hn;j++) for(let i=0;i<V;i++){
+      if(i+1<V){ world.adj[id(i,j)].push(id(i+1,j)); world.adj[id(i+1,j)].push(id(i,j)); }
+      if(j+1<Hn){ world.adj[id(i,j)].push(id(i,j+1)); world.adj[id(i,j+1)].push(id(i,j)); }
+    }
+
+    // blocks: the cells between streets. Each gets a FABRIC (courtyard block,
+    // row buildings, subdivided lots, or a park), stored as fractions of the
+    // block envelope so layout() can recompute exact px setbacks on resize.
+    world.blocks=[];
+    for(let j=0;j<Hn-1;j++) for(let i=0;i<V-1;i++){
+      const b={ i, j, frac:[], park:false, trees:[] };
+      world.blocks.push(b);
+      const env=envelope(b);
+      const ew=env.w*view.W, eh=env.h*view.H;
+      if(ew<30||eh<30) continue;
+      const roll=Math.random();
+      if(roll<scenario.park){                         // park / plaza / open field
+        b.park=true;
+        const nT=6+((Math.random()*8)|0);
+        for(let t=0;t<nT;t++) b.trees.push({ fx:rand(0.08,0.92), fy:rand(0.1,0.9), r:rand(2.6,5.4) });
+        continue;
+      }
+      if(roll<scenario.park+scenario.empty) continue; // bare ground (festival field, cleared lot)
+      let rects;
+      const r2=Math.random();
+      if(r2<0.42 && ew>110 && eh>84) rects=fabricCourtyard(ew,eh);
+      else if(r2<0.68)               rects=fabricRows(ew,eh);
+      else                           rects=fabricLots(ew,eh);
+      b.frac = rects.map(r=>({ fx:r.x/ew, fy:r.y/eh, fw:r.w/ew, fh:r.h/eh,
+                               tone:(Math.random()*4)|0, vents:1+((Math.random()*3)|0) }));
+    }
+
+    // Wi-Fi zones come from the scenario: which islands exist, whether they
+    // have an uplink, and whether that uplink is drowning (congested).
+    // (Internet relays are deliberately NOT on the map: they are cloud
+    // infrastructure with no street address. Online zones uplink to the
+    // abstract backbone band above the city instead.)
+    const zBlocks = pickSpreadBlocks(scenario.zones.length);
+    world.zones = zBlocks.slice(0,scenario.zones.length).map((b,k)=>({ bi:b.i, bj:b.j, x:0,y:0,w:0,h:0, congested:false, ...scenario.zones[k] }));
+
+    layout();
+    spawnDevices();
+    messages.length=0; msgStats.delivered=0; msgStats.hops.length=0; spawnAcc=0;
+  }
+
+  // fabric generators work in the envelope's local px space -------------------
+  function fabricCourtyard(w,h){
+    // perimeter strips around a courtyard, with a gateway gap cut into one
+    // side. The cut orientation follows WHICH side it is (top/bottom strips
+    // get a vertical slice, left/right a horizontal one), and a side too
+    // short to cut cleanly is left whole; aspect-ratio guessing on squat
+    // blocks used to reverse the rand() range and delete a whole wall.
+    const d=rand(20,Math.min(34,w/3.2,h/3.2)), g=8;      // strip depth, gateway gap
+    const side=(Math.random()*4)|0;
+    const out=[];
+    const top   ={x:0,y:0,w:w,h:d}, bottom={x:0,y:h-d,w:w,h:d};
+    const left  ={x:0,y:d+g/2,w:d,h:h-2*d-g}, right={x:w-d,y:d+g/2,w:d,h:h-2*d-g};
+    [top,bottom,left,right].forEach((r,k)=>{
+      if(k===side){
+        const gw=rand(10,16);
+        if(k<2 && r.w>2*d+gw+8){                        // top/bottom: vertical slice
+          const gx=rand(r.x+d, r.x+r.w-d-gw);
+          out.push({x:r.x,y:r.y,w:gx-r.x,h:r.h},{x:gx+gw,y:r.y,w:r.x+r.w-gx-gw,h:r.h});
+        } else if(k>=2 && r.h>gw+20){                   // left/right: horizontal slice
+          const gy=rand(r.y+8, r.y+r.h-8-gw);
+          out.push({x:r.x,y:r.y,w:r.w,h:gy-r.y},{x:r.x,y:gy+gw,w:r.w,h:r.y+r.h-gy-gw});
+        } else out.push(r);                             // too short to cut: keep whole
+      } else out.push(r);
+    });
+    return out.filter(r=>r.w>7&&r.h>7);
+  }
+  function fabricRows(w,h){
+    const across = w>=h;                                 // rows across the longer axis
+    const n=2+((Math.random()*3)|0), gap=6;
+    const out=[];
+    for(let k=0;k<n;k++){
+      if(across){ const rw=(w-(n-1)*gap)/n; out.push({x:k*(rw+gap),y:0,w:rw,h:h*rand(0.82,1)}); }
+      else      { const rh=(h-(n-1)*gap)/n; out.push({x:0,y:k*(rh+gap),w:w*rand(0.82,1),h:rh}); }
+    }
+    return out.filter(r=>r.w>7&&r.h>7);
+  }
+  function fabricLots(w,h,depth=2){
+    if(w<26||h<26) return [];
+    if(depth===0 || Math.max(w,h)<86 || Math.random()<0.22) return [{x:0,y:0,w,h}];
+    const gap=6, t=rand(0.36,0.64);
+    if(w>=h){
+      const w1=w*t-gap/2, w2=w*(1-t)-gap/2;
+      return [ ...fabricLots(w1,h,depth-1),
+               ...fabricLots(w2,h,depth-1).map(r=>({...r,x:r.x+w*t+gap/2})) ];
+    }
+    const h1=h*t-gap/2, h2=h*(1-t)-gap/2;
+    return [ ...fabricLots(w,h1,depth-1),
+             ...fabricLots(w,h2,depth-1).map(r=>({...r,y:r.y+h*t+gap/2})) ];
+  }
+
+  // a block's building envelope: inset from each surrounding street centerline
+  // by THAT street's half-width plus the sidewalk, at the current view size
+  function envelope(b){
+    const l=world.vs[b.i], r=world.vs[b.i+1], t=world.hs[b.j], m=world.hs[b.j+1];
+    const x0=l.pos+nx(l.w/2+SIDEWALK), x1=r.pos-nx(r.w/2+SIDEWALK);
+    const y0=t.pos+ny(t.w/2+SIDEWALK), y1=m.pos-ny(m.w/2+SIDEWALK);
+    return { x:x0, y:y0, w:x1-x0, h:y1-y0 };
+  }
+
+  // (re)compute everything px-derived from the current view: building rects,
+  // park bounds, zone aprons. Runs on build AND every resize, so buildings
+  // never drift into the fixed-px-width roads.
+  function layout(){
+    world.buildings=[]; world.parks=[];
+    world.blocks.forEach((b,bIdx)=>{
+      const env=envelope(b);
+      if(env.w<=0||env.h<=0) return;
+      if(b.park){ world.parks.push({ ...env, trees:b.trees }); return; }
+      b.frac.forEach(f=>world.buildings.push({
+        x:env.x+f.fx*env.w, y:env.y+f.fy*env.h, w:f.fw*env.w, h:f.fh*env.h,
+        tone:f.tone, vents:f.vents, blk:bIdx,
+      }));
+    });
+    world.zones.forEach(z=>{
+      const l=world.vs[z.bi], r=world.vs[z.bi+1], t=world.hs[z.bj], m=world.hs[z.bj+1];
+      // kept as the label-chip anchor (membership itself is the AP radius below)
+      z.x=l.pos-nx(l.w/2+SIDEWALK); z.y=t.pos-ny(t.w/2+SIDEWALK);
+      z.w=(r.pos-l.pos)+nx(l.w/2+r.w/2+2*SIDEWALK); z.h=(m.pos-t.pos)+ny(t.w/2+m.w/2+2*SIDEWALK);
+      z.ax=(l.pos+r.pos)/2; z.ay=(t.pos+m.pos)/2;   // the AP (the router in the block)
+      z.blk=z.bj*(world.V-1)+z.bi;                   // which block the AP lives in
+      // coverage: the block plus its sidewalk ring, radio-style falloff rather
+      // than a rectangle. Sized so the block's own corners stay covered.
+      const bw=(r.pos-l.pos)*view.W, bh=(m.pos-t.pos)*view.H;
+      z.wifiR = 0.62*Math.max(bw,bh)+30;
+    });
+  }
+
+  // Wi-Fi coverage test: within the AP radius, shadowed by NEIGHBORING blocks'
+  // buildings (an AP shines through its own walls; the building across the
+  // street casts a shadow)
+  function zoneCovers(zi, p){
+    const z=world.zones[zi];
+    const ap={x:z.ax*view.W, y:z.ay*view.H};
+    const d=Math.hypot(p.x-ap.x, p.y-ap.y);
+    if(d>z.wifiR) return false;
+    if(d>z.wifiR*WIFI_WALL){
+      for(const b of world.buildings){
+        if(b.blk!==z.blk && segHitsRect(ap,p,b)) return false;
+      }
+    }
+    return true;
+  }
+
+  function pickSpreadBlocks(k){
+    const c=(b)=>{ const e=envelope(b); return { x:e.x+e.w/2, y:e.y+e.h/2 }; };
+    // prefer blocks with buildings; fall back to any block (tiny canvases can
+    // have no built blocks at all), and never loop waiting for uniqueness the
+    // pool cannot provide
+    const cands=world.blocks.filter(b=>!b.park && b.frac.length);
+    const pool = cands.length>=k ? cands : world.blocks;
+    if(!pool.length) return [];
+    if(pool.length<=k) return pool.slice(0,k);
+    let best=null, bestScore=-1;
+    for(let t=0;t<90;t++){
+      const picks=[]; const used=new Set();
+      for(let n=0;n<60 && picks.length<k;n++){ const b=pick(pool); const key=b.i+','+b.j;
+        if(!used.has(key)){ used.add(key); picks.push(b); } }
+      if(picks.length<k) continue;
+      let score=1e9;
+      for(let a=0;a<k;a++) for(let b=a+1;b<k;b++) score=Math.min(score, distPx(c(picks[a]),c(picks[b])));
+      if(score>bestScore){ bestScore=score; best=picks; }
+    }
+    return best || pool.slice(0,k);
+  }
+
+  // half-width (px) of the street carrying the edge between adjacent nodes a,b
+  function roadHalf(a,b){
+    const A=world.nodes[a], B=world.nodes[b];
+    return (A.j===B.j ? world.hs[A.j].w : world.vs[A.i].w)/2;
+  }
+
+  // ---- routing: Dijkstra over the street graph -------------------------------
+  function dijkstra(src){
+    const n=world.nodes.length;
+    const dist=new Array(n).fill(Infinity), prev=new Array(n).fill(-1), done=new Array(n).fill(false);
+    dist[src]=0;
+    for(let it=0;it<n;it++){
+      let u=-1, du=Infinity;
+      for(let v=0;v<n;v++) if(!done[v]&&dist[v]<du){du=dist[v];u=v;}
+      if(u<0) break;
+      done[u]=true;
+      for(const v of world.adj[u]){
+        const w=distPx(world.nodes[u], world.nodes[v]);
+        if(dist[u]+w<dist[v]){ dist[v]=dist[u]+w; prev[v]=u; }
+      }
+    }
+    return {dist, prev};
+  }
+  const pathNodes=(prev,dest)=>{ const out=[]; for(let v=dest;v>=0;v=prev[v]) out.unshift(v); return out; };
+
+  // ---- devices ----------------------------------------------------------------
+  // A device's LOGIC position is always on the centerline segment between two
+  // adjacent graph nodes (d.at={a,b,t} while dwelling). Rendering applies a
+  // lateral offset: walkers to their personal sidewalk side, cars to the
+  // right-hand lane of their heading. renderPos() lives here so the tests can
+  // assert the drawn position also clears every building.
+  function edgePoint(a,b,t){
+    const A=world.nodes[a], B=world.nodes[b];
+    return { x:A.x+(B.x-A.x)*t, y:A.y+(B.y-A.y)*t };
+  }
+
+  function spawnDevices(){
+    devices=[];
+    for(let i=0;i<scenario.n;i++){
+      const vehicle=i<scenario.veh;
+      const a=(Math.random()*world.nodes.length)|0;
+      const b=pick(world.adj[a]);
+      const t=Math.random()*0.9;
+      const p=edgePoint(a,b,t);
+      // heading follows the spawn edge, so the first paint already has walkers
+      // on their sidewalk and cars aligned with (not broadside across) the road
+      const A=P(world.nodes[a]), B=P(world.nodes[b]);
+      const len=Math.hypot(B.x-A.x,B.y-A.y)||1, ehx=(B.x-A.x)/len, ehy=(B.y-A.y)/len;
+      devices.push({
+        id:i, kind: vehicle?'vehicle':'walker',
+        x:p.x, y:p.y, at:{a,b,t},
+        path:[], seg:{a,b},                       // seg: the edge being walked right now
+        state:'dwell', dwell:rand(0.3,2.8), pause:0, yieldAt:0,
+        speed: vehicle ? rand(95,140) : rand(26,41),          // px/s
+        side: Math.random()<0.5?-1:1,             // walker's personal sidewalk side
+        wobble: rand(0,2.2),                      // walker's distance from the curb
+        offT:0, ox:0, oy:0,                       // lateral offset: target scalar + eased WORLD vector
+        hx:ehx, hy:ehy, dhx:ehx, dhy:ehy,         // heading + eased display heading
+        zoneTarget:false, lastZone:-1, zoneAge:0,
+        ble: Math.random()<0.92,
+        r: vehicle ? 5.2 : rand(3.4,4.4),
+        trail:[], trailAcc:0,
+      });
+      seedOffset(devices[i]);
     }
   }
 
-  // People move with intent: pick somewhere to go (often a café/office/home),
-  // walk there, then linger before moving on.
+  // lateral offset target for the CURRENT segment: walkers sit on the sidewalk
+  // band of this street (past the curb), cars in the right-hand lane
+  function offsetTarget(d){
+    const half=roadHalf(d.seg.a, d.seg.b);
+    if(d.kind==='vehicle') return half*0.48;      // sign comes from heading (right-hand traffic)
+    return d.side*(half+3+d.wobble);              // curb + a little personal distance
+  }
+  function seedOffset(d){
+    d.offT=offsetTarget(d);
+    d.ox=(-d.hy)*d.offT; d.oy=(d.hx)*d.offT;
+  }
+
+  // the drawn position: logic center plus the eased lateral offset vector.
+  // The vector lives in WORLD space (not the heading frame), so a heading flip
+  // or a 90-degree corner eases the dot smoothly instead of mirroring it
+  // across the road in one frame.
+  function renderPos(d){
+    const c=P(d);
+    return { x:c.x + d.ox, y:c.y + d.oy };
+  }
+
   function pickTarget(d){
-    if(Math.random()<0.6 && zones.length){
-      const z=zones[(Math.random()*zones.length)|0];
-      d.tx=z.x+0.06+Math.random()*Math.max(0.04,z.w-0.12);
-      d.ty=z.y+0.06+Math.random()*Math.max(0.04,z.h-0.12);
-      d.zoneTarget=true;
+    const V=world.V, id=(i,j)=>j*V+i;
+    let dest, zone=false;
+    if(d.kind==='walker' && Math.random()<scenario.zoneBias && world.zones.length){
+      const z=pick(world.zones);
+      dest=pick([id(z.bi,z.bj), id(z.bi+1,z.bj), id(z.bi,z.bj+1), id(z.bi+1,z.bj+1)]);
+      zone=true;
     } else {
-      d.tx=0.04+Math.random()*0.92; d.ty=0.05+Math.random()*0.9; d.zoneTarget=false;
+      let best=-1, bd=-1;                          // cars roam far
+      for(let k=0;k<3;k++){ const c=(Math.random()*world.nodes.length)|0;
+        const dd=distPx(world.nodes[c], d); if(dd>bd){bd=dd;best=c;} }
+      dest=best;
     }
+
+    // route from whichever end of the current edge is cheaper overall
+    const {a,b}=d.at;
+    const da=dijkstra(a), db=dijkstra(b);
+    const use = (distPx(d,world.nodes[a])+da.dist[dest]) <= (distPx(d,world.nodes[b])+db.dist[dest])
+      ? {start:a, run:da} : {start:b, run:db};
+    const nodes=pathNodes(use.run.prev, dest);
+    if(nodes[0]!==use.start) nodes.unshift(use.start);
+
+    const wps=nodes.map(n=>({x:world.nodes[n].x, y:world.nodes[n].y, node:n}));
+
+    // final stop partway along a street off the destination, kept on the zone
+    // block's perimeter when we're "going to the café"
+    let nbrs=world.adj[dest];
+    if(zone){
+      const z=world.zones.find(z=>[id(z.bi,z.bj),id(z.bi+1,z.bj),id(z.bi,z.bj+1),id(z.bi+1,z.bj+1)].includes(dest));
+      if(z){ const cs=[id(z.bi,z.bj),id(z.bi+1,z.bj),id(z.bi,z.bj+1),id(z.bi+1,z.bj+1)];
+             const per=nbrs.filter(n=>cs.includes(n)); if(per.length) nbrs=per; }
+    }
+    const nb=pick(nbrs);
+    const t=rand(0.18,0.82);
+    const fin=edgePoint(dest,nb,t);
+    wps.push({x:fin.x, y:fin.y, node:-1});
+
+    // the first segment runs along the device's current edge toward use.start
+    d.seg = {a:d.at.a, b:d.at.b};
+    d.path=wps;
+    d.zoneTarget=zone;
+    d.pending={dest, nb, t};
+    d.state='move';
+    d.offT=offsetTarget(d);
+    d.yieldAt = (d.kind==='vehicle' && Math.random()<0.32) ? 14 : 0;
   }
 
-  function resize(){
-    const r = cv.getBoundingClientRect();
-    W=r.width; H=r.height;
-    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  function update(dt, opt={ble:true,wifi:true,net:true}){
+    const k=Math.min(1, dt*6);
+    devices.forEach(d=>{
+      // ease the lateral offset VECTOR toward this segment's target, then
+      // hard-clamp its magnitude to the current street so the drawn dot can
+      // never leave the sidewalk band, even while easing around a corner or
+      // between streets of different widths
+      const tx=(-d.hy)*d.offT, ty=(d.hx)*d.offT;
+      d.ox+=(tx-d.ox)*k; d.oy+=(ty-d.oy)*k;
+      const half=roadHalf(d.seg.a, d.seg.b);
+      const lim = d.kind==='vehicle' ? half*0.5 : half+SIDEWALK-d.r-1.5;
+      const m=Math.hypot(d.ox,d.oy);
+      if(m>lim && m>0){ d.ox*=lim/m; d.oy*=lim/m; }
+      // display heading (car rotation) eases the same way
+      d.dhx+=(d.hx-d.dhx)*k; d.dhy+=(d.hy-d.dhy)*k;
+
+      if(d.state==='dwell'){ d.dwell-=dt; if(d.dwell<=0) pickTarget(d); }
+      else if(d.pause>0){ d.pause-=dt; }
+      else {
+        let remaining=d.speed*dt;
+        while(remaining>0 && d.path.length){
+          const next=d.path[0];
+          const A={x:d.x*view.W, y:d.y*view.H}, B={x:next.x*view.W, y:next.y*view.H};
+          const seg=Math.hypot(B.x-A.x, B.y-A.y);
+          if(seg>0.0001){ d.hx=(B.x-A.x)/seg; d.hy=(B.y-A.y)/seg; }
+          // yield BEFORE the crossing: stop at the stop line, not in the box.
+          // Already inside the stop distance when the decision arms (short
+          // first segments)? Then just drive through.
+          if(d.yieldAt>0 && next.node>=0){
+            if(seg<=d.yieldAt){ d.yieldAt=0; }
+            else if(seg-remaining<=d.yieldAt){
+              const f=(seg-d.yieldAt)/seg;
+              d.x+=(next.x-d.x)*f; d.y+=(next.y-d.y)*f;
+              d.pause=rand(0.25,0.8); d.yieldAt=0;
+              break;
+            }
+          }
+          if(seg<=remaining){
+            d.x=next.x; d.y=next.y; remaining-=seg;
+            const passed=d.path.shift();
+            if(!d.path.length){
+              d.at={ a:d.pending.dest, b:d.pending.nb, t:d.pending.t };
+              d.seg={ a:d.pending.dest, b:d.pending.nb };
+              d.state='dwell';
+              d.dwell = d.zoneTarget ? rand(3,11)
+                      : d.kind==='vehicle' ? rand(0.6,2)
+                      : rand(0.8,3.4);
+            } else {
+              // entered an intersection: the new segment is passed -> next
+              const nn=d.path[0];
+              if(passed.node>=0 && nn){
+                d.seg = { a:passed.node, b: nn.node>=0 ? nn.node : d.pending.nb };
+                d.offT=offsetTarget(d);
+                d.yieldAt = (d.kind==='vehicle' && nn.node>=0 && Math.random()<0.32) ? 14 : 0;
+              }
+            }
+          } else {
+            const f=remaining/seg;
+            d.x+=(next.x-d.x)*f; d.y+=(next.y-d.y)*f;
+            remaining=0;
+          }
+        }
+      }
+
+      // breadcrumb trail: sampled in EVERY state (normalized coords, so a
+      // resize rescales old crumbs instead of stranding them), and collapses
+      // onto the dwell point within a second of stopping
+      d.trailAcc+=dt;
+      if(d.trailAcc>0.09){
+        d.trailAcc=0;
+        const p=renderPos(d);
+        d.trail.push({ x:p.x/view.W, y:p.y/view.H });
+        if(d.trail.length>7) d.trail.shift();
+      }
+    });
+
+    // zone dwell ages (Wi-Fi association / uplink soak)
+    devices.forEach(d=>{
+      const z=zoneOf(d);
+      if(z!==d.lastZone){ d.lastZone=z; d.zoneAge=0; }
+      else d.zoneAge+=dt;
+    });
+
+    // ONE link graph per tick, with contact ages + readiness, shared by the
+    // renderer, the inspector and the message router
+    edges=ageEdges(computeEdges(opt), dt);
+    adjCache=adjacency(edges, opt);
+
+    updateMessages(dt);
   }
 
-  const px=(d)=>({x:d.x*W, y:d.y*H});
-  const rectAbs=(z)=>({x:z.x*W, y:z.y*H, w:z.w*W, h:z.h*H});
-  function inRect(p, z){ const a=rectAbs(z); return p.x>=a.x&&p.x<=a.x+a.w&&p.y>=a.y&&p.y<=a.y+a.h; }
-  function zoneOf(d){ const p=px(d); for(let i=0;i<zones.length;i++) if(inRect(p,zones[i])) return i; return -1; }
-  function hasNet(d){ const z=zoneOf(d); return z>=0 && zones[z].online; }
-
-  // segment (a,b) intersects axis-aligned rect? (Cohen–Sutherland-ish via edge tests)
-  function segHitsRect(a,b,z){
-    const r=rectAbs(z);
-    // quick reject
-    if(Math.max(a.x,b.x)<r.x||Math.min(a.x,b.x)>r.x+r.w||Math.max(a.y,b.y)<r.y||Math.min(a.y,b.y)>r.y+r.h) return false;
-    const edges=[[r.x,r.y,r.x+r.w,r.y],[r.x+r.w,r.y,r.x+r.w,r.y+r.h],[r.x+r.w,r.y+r.h,r.x,r.y+r.h],[r.x,r.y+r.h,r.x,r.y]];
-    for(const e of edges){ if(segSeg(a.x,a.y,b.x,b.y,e[0],e[1],e[2],e[3])) return true; }
-    // fully inside counts as hit too
-    return inRect(a,z)||inRect(b,z);
+  // ---- link physics ------------------------------------------------------------
+  function rectAbs(z){ return { x:z.x*view.W, y:z.y*view.H, w:z.w*view.W, h:z.h*view.H }; }
+  function inRect(p,z){ const a=rectAbs(z); return p.x>=a.x&&p.x<=a.x+a.w&&p.y>=a.y&&p.y<=a.y+a.h; }
+  // membership + radio physics are evaluated where the device is DRAWN (the
+  // person on the sidewalk), so what you see is what is simulated
+  const devPos=(d)=>(d.ox!==undefined ? renderPos(d) : P(d));
+  function zoneOf(d){
+    const p=devPos(d);
+    let best=-1, bd=Infinity;
+    for(let i=0;i<world.zones.length;i++){
+      if(!zoneCovers(i,p)) continue;
+      const z=world.zones[i];
+      const dd=Math.hypot(p.x-z.ax*view.W, p.y-z.ay*view.H);
+      if(dd<bd){ bd=dd; best=i; }
+    }
+    return best;
   }
+  function hasNet(d){ const z=zoneOf(d); return scenario.net && z>=0 && world.zones[z].online && !world.zones[z].congested; }
+
+  // the environment a device is in right now, as a range multiplier: dwelling
+  // at a venue is effectively indoors; standing under park trees attenuates
+  function envFactor(d){
+    if(d.state==='dwell' && zoneOf(d)>=0) return scenario.envVenue;
+    const p=devPos(d);
+    for(const pk of world.parks) if(inRect(p,pk)) return 0.8;
+    return 1;
+  }
+  // best-case pair range for BLE given both ends' environments
+  function pairRange(a,b){ return scenario.bleR*Math.sqrt(envFactor(a)*envFactor(b)); }
+
   function segSeg(x1,y1,x2,y2,x3,y3,x4,y4){
-    const d=(x2-x1)*(y4-y3)-(y2-y1)*(x4-x3); if(d===0) return false;
-    const t=((x3-x1)*(y4-y3)-(y3-y1)*(x4-x3))/d, u=((x3-x1)*(y2-y1)-(y3-y1)*(x2-x1))/d;
+    const den=(x2-x1)*(y4-y3)-(y2-y1)*(x4-x3); if(den===0) return false;
+    const t=((x3-x1)*(y4-y3)-(y3-y1)*(x4-x3))/den, u=((x3-x1)*(y2-y1)-(y3-y1)*(x2-x1))/den;
     return t>=0&&t<=1&&u>=0&&u<=1;
   }
-  function bleClear(a,b){ for(const bld of buildings) if(segHitsRect(a,b,bld)) return false; return true; }
+  function segHitsRect(a,b,z){
+    const r=rectAbs(z);
+    if(Math.max(a.x,b.x)<r.x||Math.min(a.x,b.x)>r.x+r.w||Math.max(a.y,b.y)<r.y||Math.min(a.y,b.y)>r.y+r.h) return false;
+    const e=[[r.x,r.y,r.x+r.w,r.y],[r.x+r.w,r.y,r.x+r.w,r.y+r.h],[r.x+r.w,r.y+r.h,r.x,r.y+r.h],[r.x,r.y+r.h,r.x,r.y]];
+    for(const s of e){ if(segSeg(a.x,a.y,b.x,b.y,s[0],s[1],s[2],s[3])) return true; }
+    return inRect(a,z)||inRect(b,z);
+  }
+  function bleClear(a,b){ for(const bld of world.buildings) if(segHitsRect(a,b,bld)) return false; return true; }
 
-  // ---- compute the current edge set (respecting toggles) ----
-  function computeEdges(){
+  function computeEdges(opt){
     const E=[]; const n=devices.length;
+    const pos=devices.map(devPos), zn=devices.map(zoneOf), env=devices.map(envFactor);
     for(let i=0;i<n;i++){
-      const di=devices[i], pi=px(di), zi=zoneOf(di);
+      const di=devices[i], pi=pos[i], zi=zn[i];
       for(let j=i+1;j<n;j++){
-        const dj=devices[j], pj=px(dj);
-        // Wi-Fi: same zone (any distance within the zone)
-        if(opt.wifi && zi>=0 && zi===zoneOf(dj)){ E.push({i,j,kind:'wifi'}); continue; }
-        // BLE: in range + line of sight (not through a building)
+        const dj=devices[j], pj=pos[j];
+        if(opt.wifi && zi>=0 && zi===zn[j]){ E.push({i,j,kind:'wifi'}); continue; }
         if(opt.ble && di.ble && dj.ble){
           const dx=pi.x-pj.x, dy=pi.y-pj.y;
-          if(dx*dx+dy*dy < BLE_R*BLE_R && bleClear(pi,pj)){ E.push({i,j,kind:'ble'}); }
+          // environment shapes the budget: venue walls/bodies on either end,
+          // and foliage if the path crosses a park; buildings block outright
+          let range=scenario.bleR*Math.sqrt(env[i]*env[j]);
+          if(dx*dx+dy*dy > range*range) continue;
+          let clear=true, park=false;
+          for(const bld of world.buildings){ if(segHitsRect(pi,pj,bld)){ clear=false; break; } }
+          if(!clear) continue;
+          for(const pk of world.parks){ if(segHitsRect(pi,pj,pk)){ park=true; break; } }
+          if(park){ range*=ENV_PARK_PATH; if(dx*dx+dy*dy > range*range) continue; }
+          E.push({i,j,kind:'ble'});
         }
       }
     }
     return E;
   }
 
-  // adjacency incl. the relay hub (all net devices ~1 hop via backbone)
-  function adjacency(E){
+  // stamp continuous-contact ages onto this tick's edges and mark which links
+  // have SOAKED long enough to actually carry data
+  function ageEdges(E, dt){
+    const next=new Map();
+    for(const e of E){
+      const key=e.i+':'+e.j;
+      const age=(linkAge.get(key)||0)+dt;
+      next.set(key, age);
+      e.age=age;
+      e.ready = age >= (e.kind==='ble'?SOAK_BLE:SOAK_WIFI);
+    }
+    linkAge.clear();
+    next.forEach((v,k)=>linkAge.set(k,v));
+    return E;
+  }
+  function adjacency(E, opt){
     const adj=Array.from({length:devices.length},()=>[]);
-    for(const e of E){ adj[e.i].push(e.j); adj[e.j].push(e.i); }
-    if(opt.net){
-      const netIdx=devices.map((d,i)=>hasNet(d)?i:-1).filter(i=>i>=0);
+    // only SOAKED links carry (a synthetic E without ages counts as ready)
+    for(const e of E){ if(e.ready===false) continue; adj[e.i].push(e.j); adj[e.j].push(e.i); }
+    // the internet path RIDES zone Wi-Fi, so killing the Wi-Fi radio kills it;
+    // an uplink needs the device settled in its zone (association + auth)
+    if(opt.net && opt.wifi){
+      const netIdx=devices.map((d,i)=>hasNet(d)&&(d.zoneAge===undefined||d.zoneAge>=SOAK_NET)?i:-1).filter(i=>i>=0);
       for(let a=0;a<netIdx.length;a++) for(let b=a+1;b<netIdx.length;b++){ adj[netIdx[a]].push(netIdx[b]); adj[netIdx[b]].push(netIdx[a]); }
     }
     return adj;
@@ -197,129 +721,540 @@
     return seen;
   }
 
-  // ---- render ----
-  function draw(){
-    update();
-    ctx.clearRect(0,0,W,H);
+  // ---- messages: the point of the whole demo ----------------------------------
+  // A message is store-carry-forward, the way Hop actually works: it HOPS along
+  // whatever links exist right now, one device to the next, and when no path to
+  // its recipient exists it RIDES in the current holder's pocket until the
+  // holder's movement (or someone else's) opens one. Wi-Fi legs travel through
+  // the zone's AP; internet legs rise to the off-map backbone band and come
+  // back down at the destination zone. Per-hop forwarding: the route is
+  // re-decided at every hop from the graph as it is in that instant.
+  const HOP_SPEED = 300;                     // px/s a hop pulse travels
+  const MAX_LIVE_MSGS = 4;
 
-    // zones (wifi areas)
-    zones.forEach(z=>{
-      const a=rectAbs(z);
-      ctx.fillStyle = z.online ? '#0d1a2410' : '#10151310';
-      ctx.strokeStyle = z.online ? '#243a5266' : '#283139';
-      ctx.lineWidth=1; roundRect(a.x,a.y,a.w,a.h,12); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = z.online ? '#5b7da8' : '#5d6a66';
-      ctx.font='11px '+mono(); ctx.fillText((z.online?'⌁ ':'')+z.label, a.x+10, a.y+18);
-    });
-    // buildings (BLE blockers)
-    buildings.forEach(b=>{
-      const a=rectAbs(b);
-      ctx.fillStyle='#05070888'; ctx.strokeStyle='#2b2230'; ctx.lineWidth=1;
-      roundRect(a.x,a.y,a.w,a.h,6); ctx.fill(); ctx.stroke();
-      ctx.fillStyle='#4a3b3b'; ctx.font='10px '+mono(); ctx.fillText('building', a.x+8, a.y+16);
-    });
+  function apPoint(zi){ const z=world.zones[zi]; return { x:z.ax*view.W, y:z.ay*view.H }; }
 
-    const E=computeEdges();
-    const adj=adjacency(E);
-    const reach = selected!=null ? reachFrom(selected, adj) : null;
+  // the polyline a hop pulse follows, from LIVE positions (devices keep moving)
+  function msgLegPoints(leg){
+    const pu=renderPos(devices[leg.u]), pv=renderPos(devices[leg.v]);
+    if(leg.kind==='wifi'){
+      const zi=zoneOf(devices[leg.u]);
+      return zi>=0 ? [pu, apPoint(zi), pv] : [pu, pv];
+    }
+    if(leg.kind==='net'){
+      const zu=zoneOf(devices[leg.u]), zv=zoneOf(devices[leg.v]);
+      if(zu>=0&&zv>=0){
+        const au=apPoint(zu), av=apPoint(zv);
+        return [pu, au, {x:au.x,y:BAND_Y}, {x:av.x,y:BAND_Y}, av, pv];
+      }
+      return [pu, pv];
+    }
+    return [pu, pv];                          // ble: straight down the street
+  }
+  const polyLen=(pts)=>{ let l=0; for(let i=1;i<pts.length;i++) l+=Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y); return l; };
+  function pointAt(pts, d){
+    for(let i=1;i<pts.length;i++){
+      const seg=Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
+      if(d<=seg || i===pts.length-1){
+        const f=seg>0?Math.max(0,Math.min(1,d/seg)):1;
+        return { x:pts[i-1].x+(pts[i].x-pts[i-1].x)*f, y:pts[i-1].y+(pts[i].y-pts[i-1].y)*f };
+      }
+      d-=seg;
+    }
+    return { ...pts[pts.length-1] };
+  }
 
-    // relays + backbone links
-    if(opt.net){
-      const rp=relays.map(r=>({x:r.x*W,y:r.y*H}));
-      ctx.strokeStyle='#ffb43a55'; ctx.lineWidth=1.4; ctx.setLineDash([5,5]);
-      // relay-to-relay
-      for(let a=0;a<rp.length;a++) for(let b=a+1;b<rp.length;b++){ line(rp[a],rp[b]); }
-      // net device -> nearest relay
-      devices.forEach((d,i)=>{ if(!hasNet(d)) return; const p=px(d); let nr=rp[0],best=1e9;
-        rp.forEach(r=>{const dx=p.x-r.x,dy=p.y-r.y,dd=dx*dx+dy*dy; if(dd<best){best=dd;nr=r;}});
-        ctx.globalAlpha = reach && !reach.has(i) ? 0.18 : 0.6; line(p,nr); });
-      ctx.globalAlpha=1; ctx.setLineDash([]);
-      rp.forEach(r=>{ glowDot(r.x,r.y,7,'#ffb43a'); ctx.fillStyle='#7a5a1e'; ctx.font='10px '+mono(); ctx.fillText('relay', r.x-14, r.y-12); });
+  function sendMessage(from, to){
+    if(from===to || !devices[from] || !devices[to]) return null;
+    const m={ id:msgSeq++, from, to, holder:from, state:'riding', replan:0,
+              leg:null, progress:0, pos:renderPos(devices[from]),
+              trail:[], trailAcc:0, hops:0, age:0, doneT:0 };
+    messages.push(m);
+    return m;
+  }
+
+  // shortest-hop next step over THIS tick's soaked link graph, or null (ride)
+  function planNextHop(m){
+    const kind={}; edges.forEach(e=>{ if(e.ready===false) return; kind[e.i+':'+e.j]=e.kind; kind[e.j+':'+e.i]=e.kind; });
+    const adj=adjCache;
+    const parent=new Array(devices.length).fill(-1);
+    const seen=new Set([m.holder]); const q=[m.holder];
+    while(q.length){
+      const u=q.shift();
+      if(u===m.to) break;
+      for(const v of adj[u]) if(!seen.has(v)){ seen.add(v); parent[v]=u; q.push(v); }
+    }
+    if(!seen.has(m.to)) return null;
+    let v=m.to;
+    while(parent[v]!==m.holder && parent[v]!==-1) v=parent[v];
+    if(parent[v]!==m.holder) return null;
+    return { u:m.holder, v, kind: kind[m.holder+':'+v] || 'net' };
+  }
+
+  function updateMessages(dt){
+    // ambient traffic keeps the map story-telling on its own
+    spawnAcc+=dt;
+    if(spawnAcc>=nextSpawn && devices.length){
+      spawnAcc=0; nextSpawn=rand(1.6,3.4);
+      if(messages.filter(m=>m.state!=='done').length<MAX_LIVE_MSGS){
+        const senders=devices.filter(d=>d.ble);
+        if(senders.length>2){
+          const a=pick(senders).id;
+          let b=-1, bd=-1;
+          for(let k=0;k<3;k++){ const c=pick(senders).id;
+            if(c===a) continue;
+            const dd=distPx(devices[a], devices[c]); if(dd>bd){bd=dd;b=c;} }
+          if(b>=0) sendMessage(a,b);
+        }
+      }
     }
 
-    // links
-    E.forEach(e=>{
-      const a=px(devices[e.i]), b=px(devices[e.j]);
-      const dim = reach && !(reach.has(e.i)&&reach.has(e.j));
-      ctx.globalAlpha = dim?0.10:0.55;
-      ctx.strokeStyle = e.kind==='wifi' ? '#74b6ff' : '#2bf0a0';
-      ctx.lineWidth = e.kind==='wifi'?1.4:1.1; line(a,b);
+    for(const m of messages){
+      m.age+=dt;
+      if(m.state==='done'){ m.doneT-=dt; continue; }
+      if(m.age>75){ m.state='done'; m.doneT=0; continue; }   // rider never met a path
+
+      if(m.state==='riding'){
+        m.pos=renderPos(devices[m.holder]);
+        m.replan-=dt;
+        if(m.replan<=0){
+          m.replan=0.45;
+          const leg=planNextHop(m);
+          if(leg){ m.leg=leg; m.progress=0; m.state='hopping'; }
+        }
+      } else if(m.state==='hopping'){
+        const pts=msgLegPoints(m.leg);
+        const len=polyLen(pts);
+        m.progress+=dt*HOP_SPEED;
+        if(m.progress>=len){
+          m.holder=m.leg.v; m.hops++; m.leg=null;
+          m.pos=renderPos(devices[m.holder]);
+          if(m.holder===m.to){
+            m.state='done'; m.doneT=2.2;
+            msgStats.delivered++; msgStats.hops.push(m.hops);
+            if(msgStats.hops.length>40) msgStats.hops.shift();
+          } else {
+            m.state='riding'; m.replan=0.08;   // the store-and-forward beat
+          }
+        } else {
+          m.pos=pointAt(pts, m.progress);
+        }
+      }
+
+      m.trailAcc+=dt;
+      if(m.trailAcc>0.03){
+        m.trailAcc=0;
+        m.trail.push({ x:m.pos.x/view.W, y:m.pos.y/view.H, t:m.age });
+        if(m.trail.length>240) m.trail.shift();
+      }
+    }
+    for(let i=messages.length-1;i>=0;i--) if(messages[i].state==='done'&&messages[i].doneT<=0) messages.splice(i,1);
+  }
+
+  return {
+    SIDEWALK, BLE_R, BAND_Y, SOAK_BLE, SOAK_WIFI, SOAK_NET, view, world,
+    get devices(){ return devices; },
+    get messages(){ return messages; },
+    get edges(){ return edges; },
+    get adj(){ return adjCache; },
+    msgStats, sendMessage, msgLegPoints, zoneCovers, envFactor, pairRange,
+    SCENARIOS, get scenario(){ return scenario; },
+    setView(w,h){
+      view.W=w; view.H=h;
+      if(world.blocks.length) layout();
+      // street widths are fixed px while positions are normalized, so a
+      // resize moves the (px) stop lines: release yielding cars rather than
+      // leave them stranded inside a rescaled junction box
+      devices.forEach(d=>{ d.pause=0; });
+    },
+    buildWorld, update, dijkstra, edgePoint, renderPos, roadHalf,
+    P, rectAbs, inRect, zoneOf, hasNet, computeEdges, adjacency, reachFrom, bleClear,
+  };
+})();
+if (typeof window!=='undefined') window.SWARM = SWARM;
+if (typeof module!=='undefined' && module.exports) module.exports = SWARM;
+
+/* ============================================================================
+   Paint + interaction (browser only). The static city (ground, sidewalks,
+   crosswalks, streetlights, shaded buildings, parks, zone glows) renders ONCE
+   into an offscreen layer; each frame draws that image, then the live mesh.
+   ========================================================================== */
+if (typeof document!=='undefined') (function(){
+  const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+  let DPR=Math.min(window.devicePixelRatio||1, 2);
+  const opt={ ble:true, wifi:true, net:true };
+  let selected=null;
+  const S=SWARM, world=S.world;
+
+  const MONO=getComputedStyle(document.body).getPropertyValue('--mono');
+  const city=document.createElement('canvas');
+  const cx=city.getContext('2d');
+
+  function resize(){
+    DPR=Math.min(window.devicePixelRatio||1, 2);   // re-read: the window may have moved displays
+    const r=cv.getBoundingClientRect();
+    S.setView(r.width, r.height);
+    cv.width=r.width*DPR; cv.height=r.height*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+    city.width=r.width*DPR; city.height=r.height*DPR;
+    if(world.blocks.length) renderCity();
+  }
+
+  const line=(c,a,b)=>{ c.beginPath(); c.moveTo(a.x,a.y); c.lineTo(b.x,b.y); c.stroke(); };
+  function rr(c,x,y,w,h,r){ r=Math.max(0,Math.min(r,w/2,h/2)); c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+
+  // ---- the static night city --------------------------------------------------
+  const TONES=[ ['#101720','#1c2836'], ['#131a1f','#212c33'], ['#151a24','#242c3e'], ['#11181b','#1e2a2d'] ];
+
+  function renderCity(){
+    const {W,H}=S.view;
+    cx.setTransform(DPR,0,0,DPR,0,0);
+    cx.clearRect(0,0,W,H);
+
+    // ground
+    const g=cx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#080b0e'); g.addColorStop(1,'#06080a');
+    cx.fillStyle=g; cx.fillRect(0,0,W,H);
+
+    const vx0=world.vs[0].pos*W, vx1=world.vs[world.vs.length-1].pos*W;
+    const hy0=world.hs[0].pos*H, hy1=world.hs[world.hs.length-1].pos*H;
+
+    // sidewalk aprons, then asphalt, per street (avenues are wider)
+    world.hs.forEach(s=>{ const y=s.pos*H;
+      cx.fillStyle='#0c1013'; cx.fillRect(vx0-(s.w/2+S.SIDEWALK), y-s.w/2-S.SIDEWALK, vx1-vx0+s.w+2*S.SIDEWALK, s.w+2*S.SIDEWALK); });
+    world.vs.forEach(s=>{ const x=s.pos*W;
+      cx.fillStyle='#0c1013'; cx.fillRect(x-s.w/2-S.SIDEWALK, hy0-(s.w/2+S.SIDEWALK), s.w+2*S.SIDEWALK, hy1-hy0+s.w+2*S.SIDEWALK); });
+    world.hs.forEach(s=>{ const y=s.pos*H;
+      cx.fillStyle='#12171d'; cx.fillRect(vx0-s.w/2, y-s.w/2, vx1-vx0+s.w, s.w); });
+    world.vs.forEach(s=>{ const x=s.pos*W;
+      cx.fillStyle='#12171d'; cx.fillRect(x-s.w/2, hy0-s.w/2, s.w, hy1-hy0+s.w); });
+
+    // curbs
+    cx.strokeStyle='#1d252c'; cx.lineWidth=1;
+    world.hs.forEach(s=>{ const y=s.pos*H;
+      line(cx,{x:vx0,y:y-s.w/2},{x:vx1,y:y-s.w/2}); line(cx,{x:vx0,y:y+s.w/2},{x:vx1,y:y+s.w/2}); });
+    world.vs.forEach(s=>{ const x=s.pos*W;
+      line(cx,{x:x-s.w/2,y:hy0},{x:x-s.w/2,y:hy1}); line(cx,{x:x+s.w/2,y:hy0},{x:x+s.w/2,y:hy1}); });
+
+    // lane dashes (a double line for avenues)
+    cx.setLineDash([5,9]); cx.lineWidth=1;
+    world.hs.forEach(s=>{ const y=s.pos*H; cx.strokeStyle=s.w>14?'#2a333c':'#222a31';
+      if(s.w>14){ line(cx,{x:vx0,y:y-1.4},{x:vx1,y:y-1.4}); line(cx,{x:vx0,y:y+1.4},{x:vx1,y:y+1.4}); }
+      else line(cx,{x:vx0,y},{x:vx1,y}); });
+    world.vs.forEach(s=>{ const x=s.pos*W; cx.strokeStyle=s.w>14?'#2a333c':'#222a31';
+      if(s.w>14){ line(cx,{x:x-1.4,y:hy0},{x:x-1.4,y:hy1}); line(cx,{x:x+1.4,y:hy0},{x:x+1.4,y:hy1}); }
+      else line(cx,{x,y:hy0},{x,y:hy1}); });
+    cx.setLineDash([]);
+
+    // crosswalks: short ladders on each arm of every intersection
+    cx.fillStyle='#e8f0ee14';
+    world.vs.forEach(v=>world.hs.forEach(h=>{
+      const x=v.pos*W, y=h.pos*H, vh=v.w/2, hh=h.w/2;
+      for(let k=-1;k<=1;k++){
+        cx.fillRect(x-vh-9, y+k*3.2-1.1, 5, 2.2); cx.fillRect(x+vh+4, y+k*3.2-1.1, 5, 2.2);
+        cx.fillRect(x+k*3.2-1.1, y-hh-9, 2.2, 5); cx.fillRect(x+k*3.2-1.1, y+hh+4, 2.2, 5);
+      }
+    }));
+
+    // streetlights: a warm point at a corner of most intersections
+    world.vs.forEach((v,i)=>world.hs.forEach((h,j)=>{
+      if((i*7+j*13)%3===0) return;
+      const x=v.pos*W+(v.w/2+4)*((i+j)%2?1:-1), y=h.pos*H+(h.w/2+4)*(j%2?1:-1);
+      const rg=cx.createRadialGradient(x,y,0,x,y,13);
+      rg.addColorStop(0,'#ffb43a30'); rg.addColorStop(1,'#ffb43a00');
+      cx.fillStyle=rg; cx.beginPath(); cx.arc(x,y,13,0,7); cx.fill();
+      cx.fillStyle='#ffc76a'; cx.beginPath(); cx.arc(x,y,1.3,0,7); cx.fill();
+    }));
+
+    // zone glows: a soft district halo under the buildings
+    world.zones.forEach(z=>{
+      const a=S.rectAbs(z);
+      cx.save();
+      cx.shadowColor='rgba(116,182,255,0.35)'; cx.shadowBlur=26;
+      cx.fillStyle='rgba(116,182,255,0.055)';
+      rr(cx,a.x,a.y,a.w,a.h,10); cx.fill();
+      cx.restore();
+      cx.strokeStyle=`rgba(116,182,255,${z.online?0.32:0.18})`; cx.lineWidth=1;
+      cx.setLineDash(z.online?[]:[4,5]);
+      rr(cx,a.x,a.y,a.w,a.h,10); cx.stroke();
+      cx.setLineDash([]);
     });
-    ctx.globalAlpha=1;
+
+    // parks: lawn, a diagonal path, trees
+    world.parks.forEach(p=>{
+      const a=S.rectAbs(p);
+      cx.fillStyle='#0b1410'; rr(cx,a.x,a.y,a.w,a.h,8); cx.fill();
+      cx.strokeStyle='#14201a'; cx.lineWidth=1; rr(cx,a.x,a.y,a.w,a.h,8); cx.stroke();
+      cx.strokeStyle='#10171c'; cx.lineWidth=3;
+      line(cx,{x:a.x+a.w*0.12,y:a.y+a.h*0.85},{x:a.x+a.w*0.88,y:a.y+a.h*0.15});
+      p.trees.forEach(t=>{
+        const tx=a.x+t.fx*a.w, ty=a.y+t.fy*a.h;
+        cx.fillStyle='#0e1f15'; cx.beginPath(); cx.arc(tx,ty,t.r,0,7); cx.fill();
+        cx.fillStyle='#16301f'; cx.beginPath(); cx.arc(tx-t.r*0.25,ty-t.r*0.25,t.r*0.55,0,7); cx.fill();
+      });
+    });
+
+    // buildings: drop shadow, roof plate, lit top-left edge, roof furniture
+    world.buildings.forEach(b=>{
+      const a=S.rectAbs(b);
+      const [base,edge]=TONES[b.tone];
+      cx.fillStyle='#03040688';
+      rr(cx,a.x+2.5,a.y+3.5,a.w,a.h,3); cx.fill();
+      cx.fillStyle=base; rr(cx,a.x,a.y,a.w,a.h,3); cx.fill();
+      cx.strokeStyle=edge; cx.lineWidth=1;
+      cx.beginPath(); cx.moveTo(a.x+1,a.y+a.h-2); cx.lineTo(a.x+1,a.y+1); cx.lineTo(a.x+a.w-2,a.y+1); cx.stroke();
+      cx.strokeStyle='#00000055';
+      cx.beginPath(); cx.moveTo(a.x+a.w-1,a.y+2); cx.lineTo(a.x+a.w-1,a.y+a.h-1); cx.lineTo(a.x+2,a.y+a.h-1); cx.stroke();
+      if(a.w>26&&a.h>22){ cx.strokeStyle='#ffffff08'; rr(cx,a.x+4,a.y+4,a.w-8,a.h-8,2); cx.stroke(); }
+      if(a.w>18&&a.h>16){
+        cx.fillStyle='#0a0e13';
+        for(let v=0;v<b.vents;v++){
+          const vx=a.x+6+((v*47)%Math.max(1,a.w-12)), vy=a.y+6+((v*31)%Math.max(1,a.h-12));
+          cx.fillRect(vx,vy,3.5,3.5);
+        }
+      }
+    });
+
+    // zone label chips above everything static. The hint caption occupies the
+    // canvas's top-left band, so a chip that would land there drops INSIDE its
+    // zone's top edge instead of colliding with the caption.
+    cx.font='10.5px '+MONO;
+    world.zones.forEach(z=>{
+      const a=S.rectAbs(z);
+      const label=(z.online?'⌁ ':'')+z.label;
+      const tw=cx.measureText(label).width;
+      const lx=Math.max(6,Math.min(a.x+8,W-tw-18));
+      let ly=a.y-8;
+      if(ly<30) ly=a.y+18;                     // dodge the hint caption band
+      cx.fillStyle='#0a0e11e8'; rr(cx,lx-6,ly-9,tw+12,17,8); cx.fill();
+      cx.strokeStyle=z.online?'#2c4a6a':'#283139'; cx.lineWidth=1; rr(cx,lx-6,ly-9,tw+12,17,8); cx.stroke();
+      cx.fillStyle=z.online?'#8db4e2':'#7c8a86'; cx.fillText(label,lx,ly+3.5);
+    });
+
+    // vignette
+    const vg=cx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.42,W/2,H/2,Math.max(W,H)*0.74);
+    vg.addColorStop(0,'#00000000'); vg.addColorStop(1,'#04060888');
+    cx.fillStyle=vg; cx.fillRect(0,0,W,H);
+  }
+
+  // ---- the live mesh -----------------------------------------------------------
+  const countEl=document.getElementById('count'), inspectEl=document.getElementById('inspect');
+  let lastCount='', lastInspect='', lastTs=0, pulse=0;
+
+  function draw(ts){
+    const dt = lastTs ? Math.min((ts-lastTs)/1000, 1/20) : 1/60;
+    lastTs=ts; pulse+=dt;
+    S.update(dt, opt);
+    const {W,H}=S.view;
+
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(city,0,0,W,H);
+
+    // one link graph per tick, computed by the sim (ages + soak included)
+    const E=S.edges;
+    const reach = selected!=null ? S.reachFrom(selected, S.adj) : null;
+
+    // the internet is NOT a place on the map: it is the backbone band above
+    // the city. Online zones with the relays up raise a faint uplink to it;
+    // a CONGESTED uplink (stadium) draws choked-red: present and useless.
+    if(opt.net && S.scenario.net){
+      const y=S.BAND_Y;
+      ctx.strokeStyle='#ffb43a38'; ctx.lineWidth=1.2; ctx.setLineDash([7,7]);
+      line(ctx,{x:26,y},{x:W-26,y});
+      ctx.setLineDash([]);
+      ctx.fillStyle='#8a6a30'; ctx.font='9.5px '+MONO;
+      ctx.fillText('internet backbone', 26, y-5);
+      if(opt.wifi){
+        ctx.lineWidth=1;
+        world.zones.forEach(z=>{
+          if(!z.online) return;
+          const ap={x:z.ax*W, y:z.ay*H};
+          if(z.congested){
+            ctx.setLineDash([2,3]); ctx.strokeStyle='#e0564f4a';
+            line(ctx,ap,{x:ap.x,y});
+            ctx.fillStyle='#a04a44'; ctx.font='9px '+MONO;
+            ctx.fillText('congested', ap.x+6, (ap.y+y)/2);
+          } else {
+            ctx.setLineDash([2,7]); ctx.strokeStyle='#ffb43a20';
+            line(ctx,ap,{x:ap.x,y});
+          }
+        });
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Wi-Fi renders hub-and-spoke through the zone's AP (that is where the
+    // signal actually goes). A device still associating (zone soak) gets a
+    // dashed spoke. BLE renders point-to-point; links still securing draw
+    // dashed and dim until their contact has soaked.
+    let spokes=0;
+    if(opt.wifi){
+      world.zones.forEach((z,zi)=>{
+        const ap={x:z.ax*W, y:z.ay*H};
+        S.devices.forEach((d,i)=>{
+          if(S.zoneOf(d)!==zi) return;
+          const dim = reach && !reach.has(i);
+          const ready = d.zoneAge>=S.SOAK_WIFI;
+          ctx.setLineDash(ready?[]:[2,4]);
+          ctx.strokeStyle=`rgba(116,182,255,${dim?0.06:(ready?0.30:0.14)})`; ctx.lineWidth=1.1;
+          line(ctx,S.renderPos(d),ap); spokes++;
+        });
+        ctx.setLineDash([]);
+        // the AP glyph: a small router square glowing on its block
+        ctx.save(); ctx.shadowColor='#74b6ff'; ctx.shadowBlur=10;
+        ctx.fillStyle='#74b6ff'; ctx.fillRect(ap.x-3,ap.y-3,6,6); ctx.restore();
+        ctx.fillStyle='#0a0e11'; ctx.fillRect(ap.x-1.2,ap.y-1.2,2.4,2.4);
+      });
+    }
+    const bleE=E.filter(e=>e.kind==='ble');
+    for(const passN of [0,1]){
+      bleE.forEach(e=>{
+        const a=S.renderPos(S.devices[e.i]), b=S.renderPos(S.devices[e.j]);
+        const dim = reach && !(reach.has(e.i)&&reach.has(e.j));
+        if(!e.ready){
+          if(passN===1){ ctx.setLineDash([2,5]); ctx.strokeStyle=`rgba(43,240,160,${dim?0.05:0.18})`; ctx.lineWidth=1; line(ctx,a,b); ctx.setLineDash([]); }
+          return;
+        }
+        if(passN===0){ ctx.strokeStyle=`rgba(43,240,160,${dim?0.02:0.07})`; ctx.lineWidth=3.4; }
+        else         { ctx.strokeStyle=`rgba(43,240,160,${dim?0.06:0.38})`; ctx.lineWidth=1.0; }
+        line(ctx,a,b);
+      });
+    }
+
+    // breadcrumb trails (stored normalized; scale to the live view)
+    S.devices.forEach((d,i)=>{
+      if(d.trail.length<2) return;
+      const dim = reach && !reach.has(i);
+      ctx.strokeStyle=d.kind==='vehicle'?'#9fd4c4':'#cfe8df'; ctx.lineWidth=1;
+      for(let k=1;k<d.trail.length;k++){
+        ctx.globalAlpha=(dim?0.02:0.05)*k;
+        line(ctx,{x:d.trail[k-1].x*W,y:d.trail[k-1].y*H},{x:d.trail[k].x*W,y:d.trail[k].y*H});
+      }
+      ctx.globalAlpha=1;
+    });
 
     // devices
-    devices.forEach((d,i)=>{
-      const p=px(d), net=hasNet(d), z=zoneOf(d);
+    S.devices.forEach((d,i)=>{
+      const p=S.renderPos(d);
+      const net=S.hasNet(d), z=S.zoneOf(d);
       const dim = reach && !reach.has(i);
       ctx.globalAlpha = dim?0.3:1;
-      // wifi ring
-      if(z>=0){ ctx.beginPath(); ctx.arc(p.x,p.y,d.r+4,0,7); ctx.strokeStyle=net?'#ffb43a':'#74b6ff'; ctx.lineWidth=1.4; ctx.stroke(); }
-      // body
-      ctx.beginPath(); ctx.arc(p.x,p.y,d.r,0,7);
-      ctx.fillStyle = i===selected ? '#fff' : (d.ble ? '#cfe8df' : '#6b7672');
-      ctx.fill();
+      if(z>=0 && opt.wifi){ ctx.beginPath(); ctx.arc(p.x,p.y,d.r+4,0,7); ctx.strokeStyle=(net&&opt.net)?'#ffb43a':'#74b6ff'; ctx.lineWidth=1.3; ctx.stroke(); }
+      const bleOn = d.ble && opt.ble;
+      const fill = i===selected ? '#fff' : (bleOn ? '#d6efe6' : '#6b7672');
+      if(d.kind==='vehicle'){
+        ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(Math.atan2(d.dhy,d.dhx));
+        ctx.shadowColor='#000'; ctx.shadowBlur=3;
+        rr(ctx,-6.4,-3.4,12.8,6.8,2.4); ctx.fillStyle=fill; ctx.fill();
+        ctx.shadowBlur=0;
+        ctx.fillStyle='#10161a'; ctx.fillRect(-2.6,-2.5,4.4,5);
+        ctx.fillStyle='#fff6d8'; ctx.fillRect(5.0,-2.6,1.3,1.7); ctx.fillRect(5.0,0.9,1.3,1.7);
+        ctx.restore();
+      } else {
+        ctx.save(); ctx.shadowColor=bleOn?'#2bf0a066':'#00000000'; ctx.shadowBlur=bleOn?6:0;
+        ctx.beginPath(); ctx.arc(p.x,p.y,d.r,0,7); ctx.fillStyle=fill; ctx.fill(); ctx.restore();
+      }
       if(i===selected){ ctx.beginPath(); ctx.arc(p.x,p.y,d.r+8,0,7); ctx.strokeStyle='#2bf0a0'; ctx.lineWidth=1.6; ctx.stroke(); }
       ctx.globalAlpha=1;
     });
 
-    document.getElementById('count').textContent =
-      devices.length+' devices · '+E.length+' live links'+(opt.net?' · relays on':' · relays off');
+    // messages: the star of the show. The traveled path lingers and fades,
+    // the pulse hops link to link, a carried message breathes on its holder,
+    // and delivery flashes at the recipient.
+    S.messages.forEach(m=>{
+      if(m.trail.length>1){
+        ctx.lineWidth=1.6; ctx.lineJoin='round';
+        for(let k=1;k<m.trail.length;k++){
+          const seen=m.age-m.trail[k].t;
+          const a=Math.max(0, 0.55-seen*0.09);
+          if(a<=0.01) continue;
+          ctx.strokeStyle=`rgba(234,255,244,${a})`;
+          line(ctx,{x:m.trail[k-1].x*W,y:m.trail[k-1].y*H},{x:m.trail[k].x*W,y:m.trail[k].y*H});
+        }
+      }
+      if(m.state==='done'){
+        const to=S.renderPos(S.devices[m.to]);
+        const f=Math.max(0,m.doneT/2.2);
+        ctx.beginPath(); ctx.arc(to.x,to.y,(1-f)*20+5,0,7);
+        ctx.strokeStyle=`rgba(43,240,160,${f*0.8})`; ctx.lineWidth=1.6; ctx.stroke();
+        return;
+      }
+      ctx.save(); ctx.shadowColor='#eafff4'; ctx.shadowBlur=12;
+      ctx.fillStyle='#f4fffa';
+      const rr2 = m.state==='riding' ? 2.4+Math.sin(pulse*5+m.id)*0.7 : 3.1;
+      ctx.beginPath(); ctx.arc(m.pos.x,m.pos.y,rr2,0,7); ctx.fill(); ctx.restore();
+      if(m.state==='riding'){
+        const hp=S.renderPos(S.devices[m.holder]);
+        ctx.beginPath(); ctx.arc(hp.x,hp.y,S.devices[m.holder].r+5.5,0,7);
+        ctx.strokeStyle=`rgba(234,255,244,${0.25+0.15*Math.sin(pulse*5+m.id)})`; ctx.lineWidth=1.1; ctx.stroke();
+      }
+    });
 
-    if(selected!=null && reach) updateInspect(selected, E, reach);
+    const med = S.msgStats.hops.length ? [...S.msgStats.hops].sort((a,b)=>a-b)[S.msgStats.hops.length>>1] : 0;
+    const countStr=S.devices.length+' devices · '+(bleE.length+spokes)+' links · '
+      +S.msgStats.delivered+' delivered'+(med?(' · ~'+med+' hops'):'')
+      +(opt.net?'':' · relays off');
+    if(countStr!==lastCount){ countEl.textContent=countStr; lastCount=countStr; }
+    if(selected!=null && reach) updateInspect(selected,E,reach);
     requestAnimationFrame(draw);
   }
 
-  function update(){
-    const dt=1/60;
-    devices.forEach(d=>{
-      if(d.state==='dwell'){ d.dwell-=dt; if(d.dwell<=0){ pickTarget(d); d.state='move'; } return; }
-      const dx=d.tx-d.x, dy=d.ty-d.y, dist=Math.hypot(dx,dy);
-      if(dist<0.012){                                   // arrived → linger
-        d.state='dwell';
-        d.dwell = d.zoneTarget ? 3+Math.random()*8 : 0.8+Math.random()*2.6;
-        return;
-      }
-      const step=Math.min(d.speed*dt, dist);
-      d.x+=dx/dist*step; d.y+=dy/dist*step;
-    });
-  }
-
-  // ---- inspector ----
-  function updateInspect(i, E, reach){
-    const d=devices[i], z=zoneOf(d), net=hasNet(d);
+  function updateInspect(i,E,reach){
+    // every row respects its transport toggle, so the card always agrees with
+    // the canvas (radio present but globally toggled off reads as off)
+    const d=S.devices[i], z=opt.wifi?S.zoneOf(d):-1, net=opt.wifi&&opt.net&&S.hasNet(d);
     let ble=0, wifi=0;
     E.forEach(e=>{ if(e.i===i||e.j===i){ if(e.kind==='ble')ble++; else wifi++; } });
-    const el=document.getElementById('inspect');
-    el.classList.add('on');
-    el.innerHTML =
-      `<div class="id">device #${String(i).padStart(2,'0')}</div>`+
-      `<div class="row"><span>Bluetooth</span>${d.ble?'<b class="v-green">on</b>':'<b class="v-off">off</b>'}</div>`+
-      `<div class="row"><span>Wi-Fi / LAN</span>${z>=0?`<b class="v-blue">${zones[z].label}</b>`:'<b class="v-off">—</b>'}</div>`+
+    const html =
+      `<div class="id">device #${String(i).padStart(2,'0')}${d.kind==='vehicle'?' · in a car':''}</div>`+
+      `<div class="row"><span>BLE</span>${(d.ble&&opt.ble)?'<b class="v-green">on</b>':'<b class="v-off">off</b>'}</div>`+
+      `<div class="row"><span>Wi-Fi / LAN</span>${z>=0?`<b class="v-blue">${world.zones[z].label}</b>`:'<b class="v-off">none</b>'}</div>`+
       `<div class="row"><span>Internet</span>${net?'<b class="v-amber">reachable</b>':'<b class="v-off">no</b>'}</div>`+
       `<div class="row"><span>direct links</span><b>${ble} BLE · ${wifi} Wi-Fi</b></div>`+
-      `<div class="reach">reaches <b>${reach.size}</b> of ${devices.length} devices right now<br><span style="color:var(--ink-faint)">(its connected mesh, this instant)</span></div>`;
+      `<div class="reach">reaches <b>${reach.size-1}</b> of ${S.devices.length-1} other devices right now<br><span style="color:var(--ink-faint)">(its connected mesh, this instant)</span></div>`;
+    inspectEl.classList.add('on');
+    if(html!==lastInspect){ inspectEl.innerHTML=html; lastInspect=html; }
   }
 
-  // helpers
-  function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
-  function line(a,b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
-  function glowDot(x,y,r,c){ ctx.save(); ctx.shadowColor=c; ctx.shadowBlur=10; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fillStyle=c; ctx.fill(); ctx.restore(); ctx.fillStyle='#04130c'; ctx.beginPath(); ctx.arc(x,y,2.4,0,7); ctx.fill(); }
-  function mono(){ return getComputedStyle(document.body).getPropertyValue('--mono'); }
-
-  // interaction
-  cv.addEventListener('click', (e)=>{
+  cv.addEventListener('click',(e)=>{
     const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
     let best=null, bd=18*18;
-    devices.forEach((d,i)=>{ const p=px(d); const dd=(p.x-mx)**2+(p.y-my)**2; if(dd<bd){bd=dd;best=i;} });
+    S.devices.forEach((d,i)=>{ const p=S.renderPos(d); const dd=(p.x-mx)**2+(p.y-my)**2; if(dd<bd){bd=dd;best=i;} });
+    // a device selected + a DIFFERENT device clicked = send a message and
+    // watch it hop; otherwise toggle selection
+    if(selected!=null && best!=null && best!==selected){
+      S.sendMessage(selected, best);
+      return;
+    }
     selected = best===selected ? null : best;
-    if(selected==null) document.getElementById('inspect').classList.remove('on');
+    if(selected==null){ inspectEl.classList.remove('on'); lastInspect=''; }
   });
   function toggle(id,key){ const b=document.getElementById(id); b.onclick=()=>{ opt[key]=!opt[key]; b.setAttribute('aria-pressed',opt[key]); }; }
   toggle('t-ble','ble'); toggle('t-wifi','wifi'); toggle('t-net','net');
-  document.getElementById('regen').onclick=()=>{ selected=null; document.getElementById('inspect').classList.remove('on'); buildWorld(); };
+
+  // scenario chips: each use case is a preset over the same physics
+  const hintEl=document.querySelector('.hint');
+  const scenRow=document.getElementById('scenarios');
+  function setScenario(key){
+    selected=null; inspectEl.classList.remove('on'); lastInspect='';
+    S.buildWorld(key); renderCity();
+    hintEl.textContent=S.scenario.tagline+' · click a device, click another to send';
+    [...scenRow.children].forEach(b=>b.setAttribute('aria-pressed', b.dataset.key===key));
+    try{ history.replaceState(null,'','#'+key); }catch(e){}
+  }
+  Object.entries(S.SCENARIOS).forEach(([key,sc])=>{
+    const b=document.createElement('button');
+    b.className='scen'; b.dataset.key=key; b.textContent=sc.name;
+    b.setAttribute('aria-pressed', key==='downtown');
+    b.onclick=()=>setScenario(key);
+    scenRow.appendChild(b);
+  });
+  document.getElementById('regen').onclick=()=>{ selected=null; inspectEl.classList.remove('on'); lastInspect=''; SWARM.buildWorld(); renderCity(); };
 
   window.addEventListener('resize', resize);
-  buildWorld(); resize(); requestAnimationFrame(draw);
+  resize();
+  const hashKey=(location.hash||'').slice(1);
+  setScenario(S.SCENARIOS[hashKey] ? hashKey : 'downtown');
+  requestAnimationFrame(draw);
 })();
 </script>
 </body>
