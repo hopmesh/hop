@@ -5,7 +5,10 @@
   "private": true,
   "description": "Marketing site for Hop — static, built with Astro.",
   "scripts": {
+    "sync-sim": "rm -rf public/sim && mkdir -p public/sim && cp -R ../sim/. public/sim/ && rm -rf public/sim/sqlite-wasm",
+    "predev": "npm run sync-sim",
     "dev": "astro dev",
+    "prebuild": "npm run sync-sim",
     "build": "astro build",
     "preview": "astro preview"
   },

@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script>if(location.search.indexOf('mini')>-1)document.documentElement.classList.add('mini')</script><!-- mini is mini from the FIRST frame — never flash the full HUD then hide it -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hop — how messages find a way</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+<script src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
+<style>
+  :root{--g:#2bf0a0;--bg:#0c0f13;--line:#212a33;--warn:#ff6b6b}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body,#map{height:100%;width:100%}
+  body{font-family:'Poppins',system-ui,sans-serif;background:var(--bg);color:#e8eef0;overflow:hidden}
+  #map{position:absolute;inset:0}
+  .pane{background:rgba(18,23,30,.95);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px)}
+  #head{position:absolute;top:16px;left:16px;z-index:5;padding:14px 16px;width:290px}
+  #head .logo{height:40px;width:auto;color:var(--g);display:block;margin:0 0 12px}
+  #head h1{font-size:17px;font-weight:700}#head h1 b{color:var(--g)}
+  #head p{font-size:12.5px;color:#9fb0b8;margin-top:4px;line-height:1.45}
+  #narr{position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:6;padding:13px 22px;max-width:640px;width:calc(100% - 660px);min-width:420px;text-align:center;font-size:15px;line-height:1.4;transition:border-color .3s}
+  #narr.win{border-color:var(--g)}#narr b{color:var(--g)}
+  #narr .stat{display:block;margin-top:5px;font-size:12px;color:#9fb0b8;font-weight:400}
+  #dock{position:absolute;left:16px;right:16px;bottom:16px;z-index:6;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;pointer-events:none}
+  #dock>*{pointer-events:auto}
+  #botleft{display:flex;flex-direction:column;gap:8px;align-items:flex-start;max-width:min(440px,46%)}
+  #ctl{padding:12px 14px;display:flex;flex-wrap:wrap;gap:11px;align-items:center}
+  .big{font:inherit;font-size:15px;font-weight:600;background:var(--g);color:#04140d;border:none;border-radius:12px;padding:11px 18px;cursor:pointer}
+  .big:hover{filter:brightness(1.07)}
+  .toggle{font:inherit;font-size:13px;background:#1c242d;color:#e8eef0;border:1px solid var(--line);border-radius:20px;padding:6px 12px;cursor:pointer}
+  .toggle.on{background:var(--g);color:#04140d;border-color:var(--g);font-weight:600}
+  .seg{display:flex;align-items:center;gap:6px;font-size:12.5px;color:#c3ced4}
+  #ctl .sp{display:flex;align-items:center;gap:6px;font-size:12px;color:#7d8f96}
+  input[type=range]{width:78px;accent-color:var(--g)}
+  #legend{padding:9px 12px;font-size:11px;color:#9fb0b8;line-height:1.7}
+  #legend .sw{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  #legend .ln{display:inline-block;width:15px;border-top:3px solid;margin-right:6px;vertical-align:middle}
+  #legend b{color:#e8eef0;font-weight:600}
+  #queue{position:absolute;top:16px;right:16px;z-index:5;width:240px;max-height:calc(100vh - 40px);padding:10px 12px;display:flex;flex-direction:column}
+  #queue h3{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#7d8f96;margin:2px 2px 8px;flex:none}
+  #qfilter{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex:none}
+  .chip{font:inherit;font-size:10.5px;padding:3px 8px;border-radius:12px;background:#1c242d;color:#9fb0b8;border:1px solid var(--line);cursor:pointer}
+  .chip.on{background:var(--g);color:#04140d;border-color:var(--g);font-weight:600}
+  #qmetrics{display:flex;gap:6px;margin:0 2px 8px;flex:none}
+  #qmetrics .card{flex:1;background:#141b21;border:1px solid #232d36;border-radius:7px;padding:6px 8px}
+  #qmetrics .card .v{font-size:15px;font-weight:600;color:#e6edf1;line-height:1.1}
+  #qmetrics .card .k{font-size:8.5px;text-transform:uppercase;letter-spacing:.06em;color:#9aacb4;margin-top:3px}
+  #qlist{flex:1 1 auto;overflow-y:auto;min-height:44px}
+  #qlist::-webkit-scrollbar{width:6px}#qlist::-webkit-scrollbar-thumb{background:#2a3540;border-radius:3px}
+  .qrow{display:flex;flex-direction:column;gap:2px;font-size:12px;padding:6px 8px;border-radius:9px;margin-bottom:4px;background:#151b22;cursor:pointer}
+  .qrow:hover{background:#1a222b}
+  .qrow.sel{outline:1px solid var(--g)}
+  #inspect .ir.tog{cursor:pointer}
+  #inspect .ir.tog:hover{background:#1a222b;margin:0 -6px;padding-left:6px;padding-right:6px;border-radius:6px}
+  .qrow .top{display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .qrow .dots i{width:9px;height:9px;border-radius:50%;flex:none}
+  .qrow .st{margin-left:auto;font-size:11px;color:#9fb0b8}
+  .qrow .dur{font-size:10.5px;color:#8ea1a9;padding-left:15px;font-variant-numeric:tabular-nums}
+  #inspect{position:absolute;bottom:70px;right:16px;z-index:6;width:238px;padding:12px 14px;display:none}
+  #inspect h2{font-size:14px;font-weight:700;display:flex;align-items:center;gap:7px}
+  #inspect .close{margin-left:auto;cursor:pointer;color:#7d8f96;font-size:15px}
+  #inspect .ir{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-top:1px solid var(--line)}
+  #inspect .ir:first-of-type{border-top:none}
+  #inspect .ir span{color:#9fb0b8}
+  .qrow .dots{display:inline-flex;gap:3px;flex:none}
+  .qrow .mnm{overflow:hidden;text-overflow:ellipsis;font-weight:600}
+  .qrow .mtext{font-size:11px;color:#c3ced4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compose{position:absolute;left:50%;bottom:84px;transform:translateX(-50%);z-index:9;width:344px;padding:16px;display:none}
+  #compose h2{font-size:15px;font-weight:700;display:flex;align-items:center;margin-bottom:11px}
+  #compose .crow{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:13px}
+  #compose label{color:#9fb0b8;width:36px}
+  #compose select,#compose textarea{font:inherit;font-size:13px;background:#12181f;color:#e8eef0;border:1px solid var(--line);border-radius:9px;padding:8px 10px;width:100%}
+  #compose textarea{resize:none;margin-bottom:10px;line-height:1.4}
+  #compose #cSend{width:100%;font-size:14px;padding:10px}
+  #compose h2 .close, #convo .close{margin-left:auto;cursor:pointer;color:#7d8f96;font-size:16px}
+  #mem{align-self:flex-start;font:11px ui-monospace,monospace;color:#8ea1a9;background:rgba(10,14,18,.7);border:1px solid var(--line);border-radius:8px;padding:4px 8px;display:none}
+  #appop{position:absolute;left:50%;bottom:84px;transform:translateX(-50%);z-index:10;width:250px;padding:14px 16px;display:none}
+  /* mini mode (the homepage embed): map + a slim bar only — every panel hidden, page scroll untouched */
+  html.mini #head,html.mini #queue,html.mini #dock,html.mini #mem,html.mini #inspect,html.mini #compose,html.mini #appop,html.mini #convo{display:none!important}
+  /* mini top row: the parent's LIVE pill owns the top-left; the narrator takes the top-right */
+  html.mini #narr{top:10px;left:auto;right:10px;transform:none;text-align:left;padding:7px 12px;font-size:12px;min-width:0;width:auto;max-width:54%}
+  html.mini #narr .stat{font-size:10px;margin-top:3px}
+  #minibar{position:absolute;left:10px;right:10px;bottom:10px;z-index:9;display:flex;justify-content:space-between;align-items:center;gap:10px;
+    background:rgba(18,23,30,.92);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:12px;color:#c3ced4}
+  #minibar #mLive{flex:none;font:600 10px ui-monospace,monospace;color:var(--g);letter-spacing:.06em;border:1px solid rgba(43,240,160,.35);border-radius:8px;padding:2px 7px}
+  #minibar #mTitle{font-weight:600;color:#e8eef0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #minibar #mTimer{font-variant-numeric:tabular-nums;color:#9fe8f2;white-space:nowrap;flex:none}
+  #minibar #mTimer b{color:#2bf0a0;font-weight:600}
+  #minibar a{color:var(--g);text-decoration:none;font-weight:600;white-space:nowrap;flex:none}
+  #minibar a:hover{text-decoration:underline}
+  html.mini .maplibregl-ctrl-bottom-right{bottom:48px}   /* keep attribution clear of the minibar */
+  /* mini chat: the scripted conversation as a slim thread — per-device truth on every outgoing bubble */
+  #minichat{position:absolute;left:10px;bottom:54px;z-index:9;width:min(300px,44%);display:flex;flex-direction:column;gap:5px;pointer-events:none}
+  #minichat .mb{max-width:92%;padding:5px 9px;border-radius:11px;font-size:11.5px;line-height:1.3;color:#eafff5;word-break:break-word;background:#1f6f52;align-self:flex-end;border-bottom-right-radius:4px;box-shadow:0 1px 6px rgba(0,0,0,.35)}
+  #minichat .mb.them{background:#232b34;color:#e8eef0;align-self:flex-start;border-bottom-right-radius:11px;border-bottom-left-radius:4px}
+  #minichat .mb .mw{display:block;font-size:9px;font-weight:600;color:#9fe8f2;margin-bottom:1px;text-transform:uppercase;letter-spacing:.05em}
+  #minichat .mb .ms{display:block;font-size:9.5px;opacity:.75;margin-top:2px;text-align:right}
+  #minichat .mb.them .ms{text-align:left}
+  #appop h2{font-size:14px;margin:0 0 4px;color:#e8eef0;display:flex;justify-content:space-between;align-items:center;font-weight:600}
+  #appop .aprow{display:flex;justify-content:space-between;align-items:center;margin:9px 0 0;font-size:12.5px;color:#b6c4cc}
+  #appop .aphint{font-size:10.5px;color:#7d8f96;margin-top:10px;line-height:1.45}
+  #appop .toggle[disabled]{opacity:.4;pointer-events:none}
+  #convo{position:absolute;left:16px;right:16px;top:0;bottom:0;z-index:8;display:none;align-items:center;justify-content:space-between;pointer-events:none}
+  .cvwin{pointer-events:auto;background:rgba(18,23,30,.97);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px);width:248px;height:min(560px,74vh);display:flex;flex-direction:column;padding:11px 12px}
+  .cvwin .chd{display:flex;align-items:center;gap:7px;margin-bottom:9px;flex:none}
+  .cvwin .who{font-size:13px;font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cvwin .who small{font-weight:400;color:#8ea1a9}
+  .cvlist{flex:1 1 auto;overflow-y:auto;min-height:60px;display:flex;flex-direction:column;gap:6px;padding:2px}
+  .cvlist::-webkit-scrollbar{width:6px}.cvlist::-webkit-scrollbar-thumb{background:#2a3540;border-radius:3px}
+  .bub{max-width:84%;padding:6px 9px;border-radius:13px;font-size:12px;line-height:1.35;word-break:break-word}
+  .bub.me{align-self:flex-end;background:#1f6f52;color:#eafff5;border-bottom-right-radius:4px}
+  .bub.them{align-self:flex-start;background:#20272f;color:#e8eef0;border-bottom-left-radius:4px}
+  .bub .meta{font-size:9.5px;opacity:.7;margin-top:3px}
+  .cvsend{display:flex;gap:6px;margin-top:8px;flex:none}
+  .cvsend input{flex:1;min-width:0;font:inherit;font-size:12.5px;background:#12181f;color:#e8eef0;border:1px solid var(--line);border-radius:16px;padding:7px 11px}
+  .cvsend button{font:inherit;font-size:13px;font-weight:600;background:var(--g);color:#04140d;border:none;border-radius:16px;padding:7px 13px;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="head" class="pane">
+  <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="-2.12 20.61 1204.23 690.77" fill="currentColor" aria-label="Hop" style="fill-rule:evenodd;clip-rule:evenodd"><g transform="matrix(1,0,0,1,-19.227994,3.747665)"><path d="M416.56,468.717C412.151,473.335 407.566,478.031 402.8,482.8C367.342,518.28 268.8,551.2 289,442C294.934,409.923 332.3,350.2 333.2,327.9C333.2,327.9 338.5,304.7 310.3,313.3C252.2,339.8 208.049,453.938 205.79,459.898C197.595,446.947 183.142,438.34 166.695,438.34C162.095,438.34 157.65,439.013 153.455,440.267C156.72,422.845 176,336 176,336C169.495,337.435 136.913,354.242 119.302,360.251C119.536,358.369 119.656,356.452 119.656,354.507C119.656,343.735 115.965,333.82 109.779,325.957C139.245,314.586 187.45,286.769 189,285.8C189,285.8 235.8,83.7 303,49C319.8,38.6 340.7,41.3 355,52C390.1,80.1 364.102,144.847 356,160C315.58,235.59 279.4,265 230.5,301.5C227,305 213,359.8 213,362C213,362 232.913,323.114 268.3,292.5C317.652,249.805 382,240 386,312C388.079,349.423 328.8,440.2 337,464C341.532,477.154 360.33,470.1 367.8,464.9C375.146,459.786 383.744,451.986 392.919,442.465C395.359,439.932 405.543,428.811 406.534,427.335C414.689,441.016 428.634,447.19 445.704,447.19C456.618,447.19 466.663,443.44 474.62,437.16C476.236,444.438 481.092,462.239 491,467C545.624,493.247 582.3,410.2 585,406C598.1,408.1 615.8,407.8 630,406C625.3,425.9 601,490.1 532.3,514.2C446.658,534.246 429.924,467.403 427.334,457.212C423.864,460.991 420.275,464.826 416.56,468.717ZM331.3,83C328.405,80.65 326.493,80.139 323.579,81.354C284.918,97.468 245.07,242.21 246,245C248.559,242.437 302.352,201.017 331.333,128.485C342.081,101.586 335.141,86.119 331.3,83Z"/></g><g transform="matrix(1,0,0,1,596.572006,275.147665)"><path d="M520.277,-9.874C519.832,-9.284 491.097,129.212 490.1,133.5C487.2,130.6 480.6,103.7 453.1,84.5C357.2,191.9 284.688,186.395 283.6,188.1C242.2,253 177.2,266.8 150.3,219.5C144.7,201.4 147.7,193.7 147.9,192.2C155.058,138.517 240.8,150.7 253.1,151.5C271.5,112 270.6,73.3 270.6,73.3C270.5,26.1 236.645,34.463 225.1,37.5C194.434,45.566 148.1,104.5 148.1,104.5C146.4,114.1 107.244,371.094 45.1,402.5C0.714,424.932 -17.9,395.7 -22,379.7C-41.507,303.573 99.5,109.7 100,109.1C103.1,104.9 103.7,101.6 104.2,96.5C104.2,96.5 106.4,66.5 107.1,62.5C94.6,72.3 80.118,98.83 24.6,119.4C-3.2,129.7 -61.29,128.521 -82.8,85.5C-83.4,84.3 -107,45.4 -76.3,7C-55.5,-14.3 -24.6,-17.9 0,0C34.263,24.931 27.1,76.1 27.1,79.5C48.945,72.877 70.009,53.161 83.337,34.743C91.31,49.119 106.643,58.858 124.232,58.858C144.254,58.858 161.352,46.239 168,28.527C187.104,-2.065 278.718,-40.674 310.1,23.5C334.6,73.6 306.1,142.6 305.1,146.5C361.9,132.9 421.9,63.8 424.1,61.5C421,58.3 422.8,42.2 375.1,28.5C379.785,26.407 519.522,-9.576 520.277,-9.874ZM-53.8,36.5C-64.379,80.345 -25.1,87.7 -18.8,88.5C-15.8,86.4 -15.7,85.4 -15,81.7C-14.8,80.1 -7.3,34 -32.8,25.5C-38.508,23.597 -52.009,29.078 -53.8,36.5ZM90.1,186.5C89.9,187 89.6,187.5 89.4,188C86.7,192.9 0.4,330 13.5,372.9C15.2,375.7 20.807,382.831 30.1,374.5C53.3,353.7 77.4,275.5 92.1,187.5C91.8,187.4 91.8,187.4 90.1,186.5ZM184.5,191.9C177.9,200 185.4,207.8 189.2,209.4C196.9,211.6 204.1,209.6 211,205.9C218,201.5 228.4,194.7 231.1,186.5C227.5,182.9 193.378,181.004 184.5,191.9Z"/></g><g transform="matrix(1,0,0,1,515.772006,268.747665)"><path d="M-92.875,88.864C-73.925,32.757 -11.9,-4.9 1,0C0.1,0.8 -22.838,16.435 -21.9,55.262C-21.562,69.279 -38.192,64.956 -51.197,108.408C-59.67,96.501 -73.583,88.729 -89.296,88.729C-90.5,88.729 -91.693,88.775 -92.875,88.864Z"/></g><g transform="matrix(1.267053,0,0,1.267053,-8.174181,-60.194283)"><circle cx="49.226" cy="330.253" r="24.253"/></g><g transform="matrix(1.267053,0,0,1.267053,85.094946,69.868862)"><circle cx="49.226" cy="330.253" r="24.253"/></g><g transform="matrix(1.267053,0,0,1.267053,364.103977,-14.241525)"><circle cx="49.226" cy="330.253" r="24.253"/></g><g transform="matrix(1.267053,0,0,1.267053,658.432173,-131.173152)"><circle cx="49.226" cy="330.253" r="24.253"/></g><g transform="matrix(1.267053,0,0,1.267053,1083.429534,-177.904658)"><circle cx="49.226" cy="330.253" r="24.253"/></g></svg>
+  <h1>The network that <b>finds a way</b></h1>
+  <p>A text with <b style="color:#e8eef0">no cell service and no Wi-Fi</b>, delivered anyway — carried phone to phone across the city.</p>
+  <p style="margin-top:8px;font-size:11px;color:#8ea1a9;line-height:1.5">This browser is running the <b style="color:var(--g)">real Hop protocol</b>: every node is the actual hop-core, compiled to WebAssembly, carrying real encrypted messages. Only the devices and their radios are simulated.</p>
+</div>
+<div id="narr" class="pane"><div id="narrMsg">Loading the city…</div><div id="narrStat" class="stat"></div></div>
+<!-- bottom dock: flex row so the left stack (stats + legend) and the controls never overlap as content changes -->
+<div id="dock">
+  <div id="botleft">
+    <div id="mem"></div>
+    <div id="legend" class="pane">
+      <div><span class="sw" style="background:var(--warn)"></span><b>sender</b> · <span class="sw" style="background:var(--g)"></span><b>recipient</b> · <span class="sw" style="background:#8aa0aa"></span>people &amp; carriers</div>
+      <div><span class="ln" style="border-color:#ffd93d;opacity:.4"></span>a bundle relaying &nbsp; <span class="ln" style="border-color:#ffd93d"></span>delivered path — each bundle its own color</div>
+      <div><i class="fa-solid fa-wifi"></i> Wi-Fi AP — <span style="color:#9fe8f2">teal = internet</span>, <span style="color:#e3c48a">amber = Wi-Fi only</span> · <i class="fa-solid fa-lock"></i> private · <span style="color:#7d8f96;font-style:italic">click to toggle power/internet</span></div>
+    </div>
+  </div>
+  <div id="ctl" class="pane">
+    <button id="go" class="big"><i class="fa-solid fa-paper-plane"></i> Send a message</button>
+    <button id="auto" class="toggle">Auto-send</button>
+    <div class="seg">Grid power <button id="power" class="toggle on">UP</button></div>
+    <div class="seg">Cell network <button id="cell" class="toggle">DOWN</button></div>
+    <div class="seg">Internet (ISP) <button id="isp" class="toggle on">UP</button></div>
+    <div class="sp">speed <input type="range" id="speed" min="1" max="90" value="24"></div>
+  </div>
+</div>
+<div id="queue" class="pane"><h3>Messages</h3>
+  <div id="qmetrics"></div>
+  <div id="qfilter">
+    <button class="chip on" data-q="all">All</button>
+    <button class="chip" data-q="relaying">In transit</button>
+    <button class="chip" data-q="delivered">Delivered</button>
+  </div>
+  <div id="qlist"></div></div>
+<div id="inspect" class="pane"><h2><span id="iName"></span><span class="close" id="iClose"><i class="fa-solid fa-xmark"></i></span></h2><div id="iBody"></div>
+  <button class="big" id="iCompose" style="width:100%;font-size:12.5px;padding:9px;margin-top:11px"><i class="fa-solid fa-envelope"></i> Send a message as this person</button></div>
+<div id="compose" class="pane">
+  <h2><i class="fa-solid fa-envelope"></i> Compose<span class="close" id="cClose"><i class="fa-solid fa-xmark"></i></span></h2>
+  <div class="crow"><label>From</label><b id="cFrom"></b></div>
+  <div class="crow"><label>To</label><select id="cTo"></select></div>
+  <textarea id="cText" rows="3" placeholder="Type a message… (long ones split into multiple bundles)"></textarea>
+  <button class="big" id="cSend">Send it</button>
+  <div id="cHint" class="dur" style="text-align:center;margin-top:6px"></div>
+</div>
+<div id="convo">
+  <div class="cvwin">
+    <div class="chd"><span class="who" id="cvWhoA"></span><span class="close" id="cvClose"><i class="fa-solid fa-xmark"></i></span></div>
+    <div class="cvlist" id="cvlistA"></div>
+    <div class="cvsend"><input id="cvTextA" placeholder="Message…" maxlength="120"><button id="cvGoA">Send</button></div>
+  </div>
+  <div class="cvwin">
+    <div class="chd"><span class="who" id="cvWhoB"></span><span class="close" id="cvCloseB"><i class="fa-solid fa-xmark"></i></span></div>
+    <div class="cvlist" id="cvlistB"></div>
+    <div class="cvsend"><input id="cvTextB" placeholder="Message…" maxlength="120"><button id="cvGoB">Send</button></div>
+  </div>
+</div>
+<div id="appop" class="pane"></div>
+
+<script type="module">
+// The mesh — every real hop-core node — runs in sim-worker.js on a Web Worker thread.
+// This main thread only moves people, draws the map, and messages the worker.
+import { SCENARIOS } from './scenarios.js';
+// ?scenario=<id> loads a real-world scenario (infra + scripted sends + camera); &mini=1 is the compact
+// embed the homepage uses (HUD hidden, auto-loop, link out to the full simulator).
+const QP=new URLSearchParams(location.search);
+const MINI=QP.has('mini');
+let scenarioId=(QP.get('scenario') in SCENARIOS)?QP.get('scenario'):null;
+let SCEN=scenarioId?SCENARIOS[scenarioId]:null;
+let scenScript=[], scenFired=0, scenStartReal=0, scenLastAck=0, scenOpened=false;
+// ---------- config ----------
+const SPEED={walk:1.5,drive:8,bike:4.5};
+const PALETTE=['#ffd93d','#5ac8fa','#f5a623','#c77dff','#4ade80','#f472b6','#38bdf8','#fb923c','#a3e635','#e879f9'];
+// a real message is text; if it's longer than one bundle it's split into several bundles, each riding on its own
+const BUNDLE_CHARS=30;
+const TEXTS=['hey, you around?','running late — 10 min','call me when you get this','did you grab the keys?',
+  'meeting moved to 3pm','on my way','can you pick up milk?','happy birthday!!!','power is out on our block, everyone ok over there? text back when you can',
+  'wifi is down at the office again, can you tell the team we will push standup and I will send notes after','made it home safe','see you at the ferry building','the trail was gorgeous today'];
+function splitBundles(text){ const n=Math.max(1,Math.ceil(text.length/BUNDLE_CHARS)),out=[]; for(let i=0;i<n;i++) out.push(text.slice(i*BUNDLE_CHARS,(i+1)*BUNDLE_CHARS)); return out; }
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// full cross-town carrier routes (fetched once each; buses ferry them end to end)
+const ROUTES={
+  geary:[[-122.4470,37.7845],[-122.3945,37.7905]], mission:[[-122.4225,37.7575],[-122.3960,37.7915]],
+  vanness:[[-122.4210,37.7680],[-122.4235,37.8020]], market:[[-122.4200,37.7770],[-122.3945,37.7925]],
+  northsouth:[[-122.4090,37.8010],[-122.3980,37.7770]],
+};
+const RKEYS=Object.keys(ROUTES);
+// SF-style cellular grid — overlapping macro + small cells give near-blanket coverage like the real city.
+// Disable a tower (click it) or the whole network to carve out dead zones. radius in meters.
+const TOWERS=[
+  {pos:[-122.4001,37.7936], r:850},   // Financial District
+  {pos:[-122.4045,37.7855], r:820},   // Yerba Buena / SoMa north
+  {pos:[-122.3958,37.7952], r:820},   // Embarcadero / Ferry
+  {pos:[-122.3945,37.7828], r:850},   // Rincon Hill
+  {pos:[-122.4130,37.7925], r:950},   // Nob Hill
+  {pos:[-122.4180,37.8005], r:950},   // Russian Hill
+  {pos:[-122.4235,37.7815], r:1050},  // Van Ness / Civic Center
+  {pos:[-122.4300,37.7908], r:1100},  // Pacific Heights
+  {pos:[-122.4270,37.7695], r:1100},  // Hayes Valley / Duboce
+  {pos:[-122.4130,37.7625], r:1100},  // Mission
+  {pos:[-122.4030,37.7660], r:1050},  // Potrero / SoMa south
+  {pos:[-122.4430,37.7850], r:1200},  // Richmond / western
+  {pos:[-122.4452,37.7640], r:1650},  // Twin Peaks macro (high ground)
+];
+// Wi-Fi access points. POWER (radio on/off) and CONNECTIVITY (internet backhaul) are independent — a
+// device can be Wi-Fi-connected but NOT internet-connected. PUBLIC = anyone joins; PRIVATE = only a
+// device holding its key. Devices on the SAME AP mesh locally (LAN) even with no internet; a device
+// reaches the backbone only through a working tower OR a *connected* AP.
+const APS=[   // in the GAPS between towers. Radii are realistic Wi-Fi ranges (tens of metres). `sat:true`
+              // = a Starlink dish → internet independent of the terrestrial ISP (survives an ISP outage).
+  // Positions sit ON the street grid (snapped to route geometry) — real cafés/plazas/homes face the
+  // street, and it means foot + vehicle traffic actually passes through the coverage.
+  {pos:[-122.3975,37.7902],   r:35, name:'FiDi Café',     pub:true,  sat:true, bat:true },   // Starlink + battery → survives EVERYTHING
+  {pos:[-122.394416,37.792435],r:42, name:'Ferry Plaza',   pub:true },
+  {pos:[-122.421766,37.795856],r:40, name:'Nob Hill Park',  pub:true },
+  {pos:[-122.4002,37.7812],   r:40, name:'SoMa Office',    pub:false, bat:true, key:'office'},   // battery → radio survives a power cut (but ISP-dependent)
+  {pos:[-122.419341,37.775964],r:22, name:'Civic Home',     pub:false, key:'home1' },
+  {pos:[-122.419568,37.763818],r:26, name:'Mission Home',   pub:false, sat:true, key:'home2' },   // Starlink → internet survives an ISP outage (but grid-powered)
+];
+let aps=[];   // runtime copies with mutable {on, net}
+// DISASTER COMPONENTS — independent things that fail (toggle each to build a scenario):
+let ispUp=true;    // terrestrial ISP backhaul (fiber/cable). Down → APs lose internet UNLESS satellite.
+let powerUp=true;  // grid power. Down → AP radios AND cell towers die (they need grid power); only battery phones mesh.
+let satUp=true;    // the satellite constellation (scenario-only knob: 'collapse' takes even Starlink away).
+// An AP's radio is up if it has its own switch on AND (grid power OR its own battery backup). A `bat:true`
+// AP keeps its radio alive through a power outage; combine with `sat` for an endpoint that survives BOTH.
+function apRadio(a){ return !!(a && a.on && (powerUp || a.bat)); }
+// Internet at an AP = radio up AND a working backhaul: the terrestrial ISP, OR its own SATELLITE dish
+// (Starlink) — independent of the ISP, so it survives an ISP outage (but still needs grid power).
+function apNet(a){ return apRadio(a) && ((a.sat&&satUp) || ispUp); }
+// people live ALONG the routes (frac); carriers move ALONG them (off + mode)
+// every node is a NAMED PERSON with a phone; the emoji is just how they're getting around right now
+const NAMES=['Ana','Ben','Cy','Dana','Eve','Finn','Gus','Hana','Ivy','Jae','Kip','Lux','Mia','Ned','Ola','Pat','Rae','Sol','Tao','Uma','Vic','Wren','Xavi','Yara','Zoe','Bea','Gio','Nia','Rex','Suki'];
+function cast(){const C=[]; let ni=0;
+  // A staged scenario replaces the city cast entirely: its own people, on its own geography.
+  if(SCEN && SCEN.stage && SCEN.stage.cast){
+    const st=SCEN.stage;
+    st.cast.forEach((x,i)=>{ const plat=i%2?'ios':'android';
+      const p={ id:x.id, name:x.name, emoji:x.emoji||'🧑', platform:plat, bt:true, wifiP2P:(plat==='ios'), cell:x.cell===true, wifiKeys:[] };
+      if(x.ap!=null){ const a=st.aps[x.ap]; const d=Math.min(a.r*0.45,20), th=x.ap*1.9;   // anchored at a stage AP
+        p.anchored=true; p.place=a.name; p.pos=[a.pos[0]+(d*Math.sin(th))/87800, a.pos[1]+(d*Math.cos(th))/111000];
+        if(!a.pub) p.wifiKeys=[a.key]; }
+      else if(x.pos){ p.anchored=true; p.pos=x.pos.slice(); }   // fixed position (e.g. a Hop Bridge)
+      else { p.route=x.route; if(x.frac!=null) p.frac=x.frac; else { p.mode=x.mode||'walk'; p.off=x.off||0; if(x.seg) p.seg=x.seg; }
+        const g=RGEOM[p.route]; p.pos=g?null:(SCEN.stage.routes[p.route]||[[0,0]])[0]; }   // placed properly in placePeople
+      if(x.lora) p.lora=x.lora;   // Hop Bridges bonded into a sub-GHz net (an invisible bearer link)
+      C.push(p); });
+    return C;
+  }
+  RKEYS.forEach(rt=>{
+    C.push({id:rt+'A',name:NAMES[ni++%NAMES.length],emoji:'🧑',route:rt,frac:0.08,end:'a'});
+    C.push({id:rt+'B',name:NAMES[ni++%NAMES.length],emoji:'🧑',route:rt,frac:0.92,end:'b'});
+    C.push({id:rt+'bus',name:NAMES[ni++%NAMES.length],emoji:'🚌',route:rt,mode:'drive',off:0.00});
+    C.push({id:rt+'car',name:NAMES[ni++%NAMES.length],emoji:'🚗',route:rt,mode:'drive',off:0.50});
+  });   // 4 real nodes per route (20 total) — each is a heavy wasm node, so we keep the count in check
+  C.forEach((p,i)=>{ p.platform=i%2?'ios':'android'; p.bt=true; p.wifiP2P=(p.platform==='ios'); p.cell=(i%3!==0); // ~66% carry a SIM (fewer relay links)
+    p.wifiKeys=[['office','home1','home2'][i%3]];   // each device knows ONE private network (its home/office)
+    p.pos=ROUTES[p.route][p.frac>0.5?1:0].slice(); }); // provisional until geometry loads
+  // "At a place" people — working at the coffee shop, in the office, on their home network. Each stays
+  // put ON its AP's Wi-Fi (no route/mode → step() leaves them alone), which is what makes the small,
+  // realistic AP coverage actually connect someone. cell:false → their only link to the world is Wi-Fi,
+  // so a connected AP puts them on the backbone and a no-internet AP leaves them mesh-only.
+  APS.forEach((a,ai)=>{ const plat=ai%2?'ios':'android';
+    // sit them INSIDE the coverage but OFF the AP marker (a short offset, capped so tiny APs still cover them)
+    const d=Math.min(a.r*0.45, 20), th=ai*1.9;   // metres from the AP centre, varied bearing so none stack
+    const pos=[a.pos[0]+(d*Math.sin(th))/87800, a.pos[1]+(d*Math.cos(th))/111000];
+    C.push({ id:'at'+ai, name:NAMES[ni++%NAMES.length], emoji:'🧑', anchored:true, place:a.name,
+      pos, platform:plat, bt:true, wifiP2P:(plat==='ios'), cell:false, wifiKeys:a.pub?[]:[a.key] }); });
+  // Scenario extras: additional REAL nodes the loaded scenario adds (walkers on a route, another
+  // convoy vehicle...). Appended last so the base cast's index-derived caps never shift.
+  if(SCEN && SCEN.extras) for(const x of SCEN.extras)
+    C.push({ id:x.id, name:x.name, emoji:x.emoji||'🧑', route:x.route, mode:x.mode||'walk', off:x.off||0,
+      platform:'android', bt:true, wifiP2P:false, cell:false, wifiKeys:[] });
+  return C;}
+// a phone has cell/relay only if it has a SIM AND is inside a WORKING tower's coverage.
+// (The link logic — Wi-Fi P2P / Bluetooth / relay-star — lives in the worker; here we only need hasCell
+//  for the signal badge + to tell the worker each node's cell status.)
+function hasCell(p){ return p.cell && powerUp && towers.some(t=>t.on && turf.distance(p.pos,t.pos,{units:'meters'})<=t.r); }   // towers need grid power
+// The nearest powered AP in range this device may JOIN — public, or private with a matching key.
+function apOf(p){ let best=null,bd=Infinity;
+  for(const a of aps){ if(!apRadio(a)) continue; if(!a.pub && !(p.wifiKeys&&p.wifiKeys.includes(a.key))) continue;
+    const d=turf.distance(p.pos,a.pos,{units:'meters'}); if(d<=a.r && d<bd){ bd=d; best=a; } }
+  return best; }
+// Reaches the backbone/relay = a working tower OR a *connected* AP whose ISP is up (Wi-Fi ≠ internet).
+function hasInternet(p){ if(hasCell(p)) return true; const a=(p._ap!==undefined)?p._ap:apOf(p); return apNet(a); }
+// The status badge a device shows: connected to a Wi-Fi NETWORK (AP) → wifi; else cell signal → signal;
+// else no infrastructure at all (mesh-only) → signal-slash. Distinct from Wi-Fi P2P (device-to-device).
+function deviceBadge(p){ const a=(p._ap!==undefined)?p._ap:apOf(p); if(a) return 'wifi'; if(hasCell(p)) return 'signal'; return 'signal-slash'; }
+
+// ---------- routing ----------
+function dec6(s){let i=0,lat=0,lon=0,o=[];while(i<s.length){let sh=0,r=0,b;
+  do{b=s.charCodeAt(i++)-63;r|=(b&0x1f)<<sh;sh+=5}while(b>=0x20);lat+=(r&1)?~(r>>1):(r>>1);
+  sh=0;r=0;do{b=s.charCodeAt(i++)-63;r|=(b&0x1f)<<sh;sh+=5}while(b>=0x20);lon+=(r&1)?~(r>>1):(r>>1);o.push([lon/1e6,lat/1e6]);}return o;}
+async function fetchRoute(wp){try{
+  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),9000);
+  const res=await fetch('https://valhalla1.openstreetmap.de/route',{method:'POST',headers:{'Content-Type':'application/json'},signal:ac.signal,
+    body:JSON.stringify({locations:wp.map(([lon,lat])=>({lon,lat})),costing:'pedestrian',directions_options:{units:'kilometers'}})});
+  clearTimeout(to); if(!res.ok)throw 0; const j=await res.json(),c=[];for(const leg of j.trip.legs)c.push(...dec6(leg.shape));return c.length>1?c:wp;
+  }catch(e){return wp;}}
+let RGEOM={};
+let BAKED=null;
+// Baked geometry first (fast, deterministic, no external API on the homepage); a stage's own raw
+// waypoint lines (e.g. ski runs) next; live Valhalla fetch as the fallback for city 2-point specs.
+async function ensureRoutes(){
+  if(!BAKED){ try{ BAKED=await (await fetch('./routes.json')).json(); }catch(_){ BAKED={}; } }
+  const specs = (SCEN&&SCEN.stage&&SCEN.stage.routes) ? SCEN.stage.routes : ROUTES;
+  await Promise.all(Object.keys(specs).map(async name=>{
+    if(RGEOM[name]) return;
+    const spec=specs[name];
+    const c = BAKED[name] || (Array.isArray(spec)&&spec.length>2 ? spec : await fetchRoute(spec||[[0,0],[0,0]]));
+    const line=turf.lineString(c); RGEOM[name]={line,len:turf.length(line,{units:'kilometers'})};
+  }));
+  placePeople();
+}
+const loadRoutes=ensureRoutes;
+// Position the (possibly fresh, post-reset) cast on the already-loaded street geometry.
+function placePeople(){
+  for(const p of people){ const g=RGEOM[p.route]; if(!g)continue; p.line=g.line; p.len=g.len;
+    if(p.frac!=null){ p.pos=turf.along(p.line,p.frac*p.len,{units:'kilometers'}).geometry.coordinates; }
+    else { p.prog=(p.off||0)*p.len; p.dir=1; p.pos=turf.along(p.line,p.prog,{units:'kilometers'}).geometry.coordinates; } }
+}
+
+// ---------- state ----------
+// The real hop-core mesh runs in the WORKER (sim-worker.js). Here: movement, the map, and a light
+// `msgs` UI list matched to real deliveries. `workerLegs` is the latest relay web the worker posted.
+let people, msgs, seq, focus, narr='Booting real Hop nodes…', simT=0, timeScale=24,
+    autoOn=false, playing=true, delivered=0, towers=[], qFilter='all', composeFrom=null;
+let worker=null, workerReady=false, workerBusy=false, workerLegs=[], towersDirty=true, apsDirty=true, lastQ=0, storageBackend='', workerMem=0, lastWorld=0, workerWasm=0, dbRowsN=0, sqliteWasm=0, lastNarr='', lastStat='';
+const RELAY_ID='relay', RELAY_POS=[-122.3905,37.7735];   // the backbone, drawn off in the SE corner
+const bColor=new Map();                                    // real bundle hex -> color
+function reset(){
+  people=cast(); msgs=[]; seq=0; focus=null; delivered=0; simT=0; bColor.clear(); bundles.clear(); towersDirty=true;
+  gradientArrows=[]; pulses.clear(); lastNarr=''; lastStat='';
+  // infra: the loaded scenario's components, or the free-play default (cell DOWN, everything else up)
+  const inf=SCEN?SCEN.infra:{power:true,cell:false,isp:true};
+  powerUp=inf.power!==false; ispUp=inf.isp!==false; satUp=inf.sat!==false;
+  // A staged scenario brings its own infrastructure: no city towers in the Khumbu; its own APs (or none),
+  // and its own towers if the story needs a cell grid (e.g. a city where only the SENDER lacks a plan).
+  const stage=SCEN&&SCEN.stage;
+  towers=(stage?(stage.towers||[]):TOWERS).map(t=>({pos:t.pos.slice(),r:t.r,on:inf.cell===true}));
+  aps=(stage?(stage.aps||[]):APS).map(a=>({...a, on:true}));   // Wi-Fi radios on by default (power decides if they run)
+  apsDirty=true; apVer++;
+  if(SCEN){ timeScale=SCEN.speed||24; scenScript=(SCEN.script||[]).map(e=>({...e})); scenSends=[]; scenFired=0; scenStartReal=performance.now(); scenLastAck=0; scenOpened=false;
+    narr='<b>'+esc(SCEN.title)+'</b> '+esc(SCEN.blurb||''); }
+  syncToggleUI();
+}
+// Keep the control buttons honest with the actual component state (scenario loads set these directly).
+function syncToggleUI(){
+  const set=(id,up,upTxt,downTxt)=>{ const b=$(id); if(b){ b.textContent=up?upTxt:downTxt; b.classList.toggle('on',up); } };
+  set('power',powerUp,'UP','DOWN'); set('isp',ispUp,'UP','DOWN'); set('cell',towers.some(t=>t.on),'up','DOWN');
+  const a=$('auto'); if(a) a.classList.toggle('on',autoOn);
+  const sp=$('speed'); if(sp) sp.value=timeScale;
+}
+const byId=id=>people.find(p=>p.id===id);
+const posOf=id=> id===RELAY_ID?RELAY_POS:(byId(id)&&byId(id).pos);
+function colorOfBundle(h){ if(!bColor.has(h)) bColor.set(h, PALETTE[bColor.size % PALETTE.length]); return bColor.get(h); }
+function msgColor(m){ return PALETTE[(m.id-1)%PALETTE.length]; }
+function pickPair(){ let s,r,t=0; const st=people; do{ s=st[(Math.random()*st.length)|0]; r=st[(Math.random()*st.length)|0]; t++; }
+  while((s===r||turf.distance(s.pos,r.pos,{units:'meters'})<500)&&t<120); return [s.id,r.id]; }
+function doSend(from,to,text,auto){ if(!workerReady) return null; const id=++seq;
+  worker.postMessage({type:'send', from, to, text, mid:id});
+  const m={id,from,to,text,auto:!!auto,sentAt:simT,delivered:false,deliveredAt:null,ackedAt:null,bundle:null,peers:0,path:null}; msgs.push(m);
+  if(!auto){   // background auto-traffic stays OUT of the narrator (it flickered) — only YOUR sends narrate
+    narr=IC.send+' <b>'+byId(from).name+'</b> → <b>'+byId(to).name+'</b>: "'+esc(text.slice(0,44))+(text.length>44?'…':'')+'" — a real bundle, finding a way…';
+    $('go').innerHTML=IC.retry+' Send another'; }
+  return m; }
+function send(){ const [s,r]=pickPair(); doSend(s,r,TEXTS[(Math.random()*TEXTS.length)|0], true); }   // auto = background traffic
+// Post to a group channel (hps://): ONE message, every member receives it — real fan-out.
+function doPublish(from, path, text){ if(!workerReady) return null; const id=++seq;
+  worker.postMessage({type:'publish', from, path, text, mid:id});
+  const members=(SCEN&&SCEN.stage&&SCEN.stage.channel&&SCEN.stage.channel.members)||[];
+  const m={id,from,to:null,kind:'pub',path,text,recips:members.filter(x=>x!==from).length,got:0,auto:false,
+    sentAt:simT,delivered:false,deliveredAt:null,ackedAt:null,bundle:null,peers:0}; msgs.push(m);
+  narr=IC.send+' <b>'+esc(byId(from)?byId(from).name:from)+'</b> → <b>#'+esc(path)+'</b>: "'+esc(text.slice(0,44))+(text.length>44?'…':'')+'" — one post, every member.';
+  return m; }
+// message the worker with current node positions + cell status; it advances the real nodes
+function postTick(){ if(workerBusy) return; workerBusy=true; const state={};
+  for(const p of people){ if(!p.pos) continue; p._ap=apOf(p); const cell=hasCell(p);   // cache AP + cell ONCE per tick
+    p._badge = p._ap ? 'wifi' : (cell ? 'signal' : 'signal-slash');   // cached so the render never recomputes turf per frame
+    state[p.id]={p:p.pos, c:cell||apNet(p._ap), ap:p._ap?(p._ap.net||p._ap.name):null}; }   // c = reaches relay; ap = LAN group (multi-AP nets share `net`)
+  worker.postMessage({type:'tick', nowMs:Math.round(simT*1000), state}); }
+function onWorker(e){ const m=e.data;
+  if(m.type==='storage'){ storageBackend=m.backend; if(m.backend!=='opfs-sqlite') console.warn('hop-sim: storage fell back to '+m.backend+' —', m.error); else console.log('hop-sim: bundles on SQLite/OPFS (disk)'); return; }
+  if(m.type==='mem'){ workerMem=m.used; workerWasm=m.wasm||0; sqliteWasm=m.sqlite||0; dbRowsN=m.dbRows||0; return; }
+  if(m.type==='sent'){ const msg=msgs.find(x=>x.id===m.mid); if(msg) msg.bundle=m.bundle; return; }   // this message's real bundle id (from send)
+  if(m.type==='ready'){ workerReady=true;
+    narr=SCEN ? '<b>'+esc(SCEN.title)+'</b> '+esc(SCEN.blurb||'')
+              : 'A whole city of people — each a <b>real Hop node</b> running in a background thread. Tap <b>Send a message</b>, or click a person to send <b>as them</b>, and watch a real text get <b>carried across town</b>.'; }
+  else if(m.type==='frame'){ workerBusy=false;
+    gradientArrows=m.gradient||[];   // the §39 routing tree toward the focused recipient
+    { const t=performance.now(); for(const id of (m.beacons||[])) pulses.set(id,t); }   // ripple beaconing nodes
+    for(const h of (m.hps||[])){ const pm=msgs.find(x=>x.kind==='pub' && x.path===h.path && x.text===h.text);
+      if(pm){ pm.got++; if(pm.got>=pm.recips && !pm.delivered){ pm.delivered=true; pm.deliveredAt=simT; pm.ackedAt=simT;   // all members have it
+        if(!pm.auto) narr=IC.done+' <b>#'+esc(h.path)+'</b>: all '+pm.recips+' members received it.'; } } }
+    // accumulate the flood: every real transfer into its bundle's leg set (persists through transit)
+    for(const lg of m.legs){ if(lg.from===RELAY_ID||lg.to===RELAY_ID) continue;
+      let b=bundles.get(lg.bundle); if(!b){ b={color:colorOfBundle(lg.bundle),legs:new Map(),lastSeen:simT,deliveredAt:null,path:null,from:null,to:null,holders:new Set(),dropped:new Map()}; bundles.set(lg.bundle,b); }
+      b.legs.set(lg.from+'>'+lg.to, simT); b.lastSeen=simT; }
+    for(const d of m.dels){ let b=bundles.get(d.bundle); if(!b){ b={color:colorOfBundle(d.bundle),legs:new Map(),lastSeen:simT,deliveredAt:null,path:null,from:null,to:null,holders:new Set(),dropped:new Map()}; bundles.set(d.bundle,b); }
+      b.deliveredAt=simT; b.path=d.path||[]; b.from=d.from; b.to=d.to;
+      const msg=msgs.find(x=>!x.delivered && x.from===d.from && x.to===d.to && x.text===d.text);
+      if(msg){ msg.delivered=true; msg.deliveredAt=simT; msg.bundle=d.bundle; delivered++;   // recipient RECEIVED it (only they know yet)
+        if(!msg.auto) narr=IC.done+' <b>'+byId(msg.to).name+'</b> got <b>'+byId(msg.from).name+'</b>’s message: "'+esc(msg.text.slice(0,40))+(msg.text.length>40?'…':'')+'" — carried by real Hop nodes.'; } }
+    // the SENDER learns delivery only when its ACK returns (real signal from hop-core, not omniscient).
+    for(const hex of (m.acks||[])){ const msg=msgs.find(x=>x.bundle===hex); if(msg && msg.ackedAt==null) msg.ackedAt=simT; }
+    // real send status (distinct peers we've handed each of OUR messages to) — the "Sent · N" of hop debug.
+    for(const hex in (m.status||{})){ const msg=msgs.find(x=>x.bundle===hex); if(msg) msg.peers=m.status[hex].peers; }
+    // REAL holder state from the stores. Detect DROPS (a device that had a copy and purged it — by ack, or
+    // by TTL) so the hops into it can FADE out over FADE_DECAY instead of blinking off.
+    for(const [k,b] of bundles){ const nh=new Set((((m.holders||{})[k])||[]).filter(id=>id!==RELAY_ID));
+      for(const n of b.holders) if(!nh.has(n) && !b.dropped.has(n)) b.dropped.set(n, simT);   // just purged → start its fade
+      for(const n of nh) if(b.dropped.has(n)) b.dropped.delete(n);                            // re-acquired → cancel fade
+      b.holders=nh; }
+    // gone once nothing is held AND every dropped hop has finished fading.
+    for(const [k,b] of bundles){ if(b.holders.size===0){ let fading=false; for(const t of b.dropped.values()) if(simT-t<FADE_DECAY) fading=true;
+      if(!fading && simT-b.lastSeen>2) bundles.delete(k); } }
+    // viz memory: with the core on its real 24h TTL, relay copies rarely clear within a session, so
+    // holders rarely empty and these accumulate. Cap the DRAWN set to the most-recent bundles — the
+    // core still holds everything on disk; this only bounds what we render on the map.
+    while(bundles.size>50){ const k=bundles.keys().next().value; bundles.delete(k); }
+    if(bColor.size>1500) bColor.clear(); if(msgs.length>80) msgs.splice(0, msgs.length-80); } }
+const FADE_DECAY=20;   // sim-sec a hop takes to fade out after its device purges (drops) the copy
+const bundles=new Map();   // bundle hex -> { color, legs:Map(edge->at), lastSeen, deliveredAt, path, from, to }
+let gradientArrows=[];     // §39 P4 routing tree toward the focused recipient: [{from,to,hops}]
+const pulses=new Map();    // nodeId -> real-time a §39 recv-beacon was last emitted (expanding-ring viz)
+const PULSE_LIFE=1400;     // ms a beacon ripple lives on screen
+let apVer=0, apPopIdx=-1;  // AP layer version (forces deck re-color on toggle) + open AP popover index
+// Font Awesome icon snippets for HTML/innerHTML contexts (map markers use the deck atlas instead).
+const IC={ send:'<i class="fa-solid fa-paper-plane"></i>', done:'<i class="fa-solid fa-circle-check"></i>',
+  ack:'<i class="fa-solid fa-check-double"></i>', sent:'<i class="fa-solid fa-check"></i>',
+  wait:'<i class="fa-solid fa-hourglass-half"></i>', retry:'<i class="fa-solid fa-rotate-right"></i>',
+  lock:'<i class="fa-solid fa-lock"></i>', wifi:'<i class="fa-solid fa-wifi"></i>', tower:'<i class="fa-solid fa-tower-cell"></i>',
+  env:'<i class="fa-solid fa-envelope"></i>' };
+function step(dt){   // movement + clock only — runs every frame for smooth motion
+  simT+=dt;
+  for(const p of people) if(p.mode && p.line){
+    // a mover patrols its SEGMENT of the route (seg:[loFrac,hiFrac]) — like real relay chains, no single
+    // carrier spans the whole way, so messages must hand off carrier-to-carrier in the overlap zones.
+    // At each end they LINGER a little (people pause, turn around, chat) — deterministic per bounce.
+    if(p.pauseUntil && simT<p.pauseUntil) continue;
+    const lo=p.seg?p.seg[0]*p.len:0, hi=p.seg?p.seg[1]*p.len:p.len;
+    p.prog+=p.dir*(SPEED[p.mode]/1000)*dt;
+    if(p.dwellSalt==null){ let h=5381; for(const c of p.id) h=(h*33+c.charCodeAt(0))>>>0; p.dwellSalt=h%97; }
+    if(p.prog>=hi){ p.prog=hi; p.dir=-1; p.bounces=(p.bounces||0)+1; p.pauseUntil=simT+4+(((p.bounces*2654435761+p.dwellSalt*131)>>>0)%23); }
+    else if(p.prog<=lo){ p.prog=lo; p.dir=1; p.bounces=(p.bounces||0)+1; p.pauseUntil=simT+4+(((p.bounces*2654435761+p.dwellSalt*131)>>>0)%23); }
+    p.pos=turf.along(p.line,p.prog,{units:'kilometers'}).geometry.coordinates; }
+}
+
+// ---------- map ----------
+// Basemap per stage: the city plays on dark-matter; wilderness scenarios (a trek in the Khumbu, the
+// Tanami Track...) play on a TOPO map — terrain where the story actually happens.
+const MAP_STYLES={
+  dark:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  topo:{version:8,sources:{otm:{type:'raster',tiles:['https://a.tile.opentopomap.org/{z}/{x}/{y}.png','https://b.tile.opentopomap.org/{z}/{x}/{y}.png','https://c.tile.opentopomap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:16,attribution:'© OpenStreetMap · SRTM | style © OpenTopoMap (CC-BY-SA)'}},layers:[{id:'otm',type:'raster',source:'otm'}]},
+};
+const styleOf=s=> (s&&s.stage&&s.stage.style)||'dark';
+let curStyle=styleOf(SCEN);
+const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle],center:[-122.4095,37.7845],zoom:12.9,attributionControl:{compact:true}});
+const EMPTY={type:'FeatureCollection',features:[]};
+function emojiImg(e,s){const c=document.createElement('canvas');c.width=c.height=s;const x=c.getContext('2d');x.font=(s*0.78)+'px "Apple Color Emoji", sans-serif';x.textAlign='center';x.textBaseline='middle';x.fillText(e,s/2,s*0.54);return x.getImageData(0,0,s,s);}
+// signal-bars badge: green bars = has cell, grey bars + red slash = no signal (no SIM, no tower, or towers down)
+function sigImg(on){ const s=44,c=document.createElement('canvas');c.width=c.height=s;const x=c.getContext('2d');
+  const base=33; for(let i=0;i<4;i++){ const h=7+i*7; x.fillStyle=on?'#2bf0a0':'#5a6672'; x.beginPath(); x.roundRect?x.roundRect(5+i*9,base-h,6,h,1.5):x.rect(5+i*9,base-h,6,h); x.fill(); }
+  if(!on){ x.strokeStyle='#ff5252'; x.lineWidth=4.5; x.lineCap='round'; x.beginPath(); x.moveTo(7,9); x.lineTo(38,37); x.stroke(); }
+  return x.getImageData(0,0,s,s); }
+// Basemap chrome (tower images/sources/layers). Re-run after every setStyle — a style swap clears them.
+async function addMapChrome(){
+  if(!map.hasImage('📡')) map.addImage('📡', await faMapImg('tower-cell',54,'#8fb2bd'), {pixelRatio:2});   // FA cell-tower icon
+  if(!map.getSource('towercov')){
+    map.addSource('towercov',{type:'geojson',data:EMPTY});
+    map.addLayer({id:'towercov',type:'fill',source:'towercov',paint:{'fill-color':['case',['get','on'],'#2bf0a0','#ff6b6b'],'fill-opacity':['case',['get','on'],0.045,0.06]}});
+    map.addLayer({id:'towercov-ln',type:'line',source:'towercov',paint:{'line-color':['case',['get','on'],'#2bf0a0','#ff6b6b'],'line-opacity':0.22,'line-dasharray':[3,3]}});
+    // legs + people are rendered by a deck.gl overlay (see initDeck) — GPU buffers, efficient on frequent
+    // updates, no symbol re-tessellation. MapLibre keeps only the basemap + tower coverage + tower icons.
+    map.addSource('towers',{type:'geojson',data:EMPTY});
+    map.addLayer({id:'towers',type:'symbol',source:'towers',layout:{'icon-image':'📡','icon-size':0.55,'icon-allow-overlap':true,'icon-ignore-placement':true},paint:{'icon-opacity':['case',['get','on'],1,0.3]}});
+  }
+  towersDirty=true;
+}
+map.on('load', async ()=>{ try{
+  reset();
+  await addMapChrome();
+  map.on('click','towers',e=>{ const i=e.features[0].properties.idx; towers[i].on=!towers[i].on; towersDirty=true;
+    narr = towers.some(t=>t.on) ? IC.tower+' Toggled a cell tower.' : '<i class="fa-solid fa-ban"></i> <b>All towers down.</b> No cell signal anywhere — pure mesh.'; });
+  map.on('mouseenter','towers',()=>map.getCanvas().style.cursor='pointer'); map.on('mouseleave','towers',()=>map.getCanvas().style.cursor='');
+  await loadRoutes();     // real street geometry positions everyone
+  await initDeck();       // deck.gl overlay for people + lines (awaits the FA icon atlas)
+  applyCamera();
+  if(MINI) enterMini();
+  startWorker();
+  requestAnimationFrame(loop);
+  document.title='OK';
+}catch(err){ document.title='ERR '+(err&&err.message); console.error(err); } });
+
+// Boot (or re-boot) the real mesh in the worker for the CURRENT cast — scenario switches re-run this.
+function startWorker(){
+  if(worker){ try{ worker.terminate(); }catch(_){} }
+  workerReady=false; workerBusy=false;
+  worker=new Worker('./sim-worker.js', {type:'module'});   // the real mesh runs off-thread
+  worker.onmessage=onWorker;
+  worker.onerror=(ev)=>{ document.title='ERR worker: '+(ev.message||ev.filename||ev); };
+  worker.postMessage({type:'init', useOpfs:location.search.includes('opfs'),
+    congested:!!(SCEN&&SCEN.congested),   // an oversubscribed cell net: attached this morning, jammed now
+    channel:(SCEN&&SCEN.stage&&SCEN.stage.channel)||null,   // group channel: host+members set up before warmup
+    nodes:people.map(p=>({id:p.id,platform:p.platform,bt:p.bt,wifiP2P:p.wifiP2P,lora:p.lora||null}))});
+}
+
+// Frame the scenario. Staged scenarios FIT their whole stage (both ends of a 27 km convoy track,
+// every AP, every decor line) so nothing plays off-screen at any iframe size; city scenarios use
+// their hand-framed camera.
+function applyCamera(){
+  if(SCEN && SCEN.stage){
+    let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    const ext=c=>{ if(!c) return; if(c[0]<minX)minX=c[0]; if(c[0]>maxX)maxX=c[0]; if(c[1]<minY)minY=c[1]; if(c[1]>maxY)maxY=c[1]; };
+    for(const p of people) ext(p.pos);
+    for(const name in (SCEN.stage.routes||{})){ const g=RGEOM[name]; if(g) for(const c of g.line.geometry.coordinates) ext(c); }
+    for(const a of aps) ext(a.pos);
+    for(const d of (SCEN.stage.decor||[])){ ext(d.from); ext(d.to); }
+    if(minX<1e9){
+      // pad for what actually covers the map: mini = the narrator (top-right) + chat strip
+      // (bottom-left) + minibar; full = the header panel (left) + the queue (right).
+      const pad = MINI ? {top:110,bottom:190,left:80,right:80} : {top:90,bottom:90,left:340,right:290};
+      const el=map.getContainer(), w=el.clientWidth, h=el.clientHeight;   // clamp: oversized padding throws
+      if(pad.left+pad.right>w*0.8){ const k=w*0.8/(pad.left+pad.right); pad.left*=k; pad.right*=k; }
+      if(pad.top+pad.bottom>h*0.8){ const k=h*0.8/(pad.top+pad.bottom); pad.top*=k; pad.bottom*=k; }
+      map.fitBounds([[minX,minY],[maxX,maxY]],{padding:pad,duration:0,maxZoom:15}); return; }
+  }
+  if(SCEN&&SCEN.camera) map.jumpTo({center:SCEN.camera.center, zoom:SCEN.camera.zoom});
+}
+
+// Switch to (or restart) a scenario without reloading: fresh cast, fresh mesh, scenario infra +
+// camera — and the right BASEMAP (city scenarios on dark streets, wilderness ones on topo terrain).
+let switching=false;
+async function switchScenario(id){
+  if(!(id in SCENARIOS) || switching) return;
+  switching=true;
+  try{
+    scenarioId=id; SCEN=SCENARIOS[id];
+    const wantStyle=styleOf(SCEN);
+    if(wantStyle!==curStyle){ curStyle=wantStyle;
+      map.setStyle(MAP_STYLES[wantStyle]);
+      await new Promise(r=>map.once('styledata',r));
+      await addMapChrome(); }   // setStyle clears sources/layers/images — restore the tower chrome
+    closeConvo(); reset();
+    await ensureRoutes();
+    applyCamera();
+    if(MINI) $('mTitle').textContent=SCEN.title;
+    const full=$('mFull'); if(full) full.href='./index.html?scenario='+encodeURIComponent(id);
+    startWorker();
+  } finally { switching=false; }
+}
+// The homepage switches the embedded mini player between scenarios without an iframe reload.
+window.addEventListener('message', e=>{ const d=e.data; if(d && d.type==='scenario') switchScenario(d.id); });
+
+// Mini mode (the homepage embed): hide the HUD, keep the map + a slim bar; the page scroll stays usable.
+function enterMini(){
+  document.body.classList.add('mini');
+  map.scrollZoom.disable();
+  const bar=document.createElement('div'); bar.id='minibar';
+  bar.innerHTML='<span id="mLive">● LIVE</span><span id="mTitle">'+(SCEN?esc(SCEN.title):'Hop — live mesh')+'</span>'
+    +'<a id="mFull" href="./index.html'+(scenarioId?'?scenario='+encodeURIComponent(scenarioId):'')+'" target="_blank" rel="noopener">Open the full simulator <i class="fa-solid fa-arrow-up-right-from-square"></i></a>';
+  document.body.appendChild(bar);
+  const chat=document.createElement('div'); chat.id='minichat'; document.body.appendChild(chat);
+}
+// The scripted conversation as a slim thread. Every bubble carries ITS SENDER's truth: waiting →
+// sent · N peers → double-check only when that sender's own ACK returns. A real dual-device view, condensed.
+let lastChatHTML='';
+function renderMiniChat(){
+  const el=$('minichat'); if(!el) return;
+  const th=msgs.filter(m=>!m.auto).slice(-4);
+  const html=th.map(m=>{
+    const mine = focus && m.from===focus.src;   // scripted sender's side renders right/green
+    // each bubble shows only what ITS SENDER can know: sent · N + a live clock, then 'delivered' ONLY
+    // once the ACK is home (the ACK really does carry the forward delivery time — that's how the
+    // sender learns it). Never the recipient's receipt directly.
+    const st = m.kind==='pub'
+             ? (m.got>=m.recips ? IC.ack+' all '+m.recips+' received in '+fmtT(m.deliveredAt-m.sentAt)
+                                : IC.sent+' '+m.got+'/'+m.recips+' received · '+fmtT(simT-m.sentAt))
+             : m.ackedAt!=null ? IC.ack+' delivered in '+fmtT(m.deliveredAt-m.sentAt)+' · ack '+fmtT(m.ackedAt-m.sentAt)
+             : m.peers>0      ? IC.sent+' sent · '+m.peers+' · '+fmtT(simT-m.sentAt)
+             :                  IC.wait+' '+fmtT(simT-m.sentAt);
+    return '<div class="mb'+(mine?'':' them')+'"><span class="mw">'+esc(byId(m.from)?byId(m.from).name:m.from)+(m.kind==='pub'?' → #'+esc(m.path):'')+'</span>'
+      +esc(m.text)+'<span class="ms">'+st+'</span></div>';
+  }).join('');
+  if(html!==lastChatHTML){ el.innerHTML=html; lastChatHTML=html; }
+}
+
+// Fire the scenario's scripted events; in mini, loop the run once it completes (every scripted send
+// ACKed → restart a few real seconds later; a stuck run restarts at maxReal).
+// An event is either { at, send } — fires at `at` sim-seconds — or { after: k, at, send } — a REPLY,
+// firing `at` sim-seconds after script send #k is DELIVERED (multi-turn conversations, real timing).
+let scenSends=[];   // script index → the message object it produced
+function pumpScenario(){
+  if(!SCEN || !workerReady) return;
+  let allFired=true;
+  for(const ev of scenScript){
+    if(ev._fired) continue;
+    let due=false;
+    if(ev.after!=null){ const dep=scenSends[ev.after]; due=!!(dep && dep.delivered && simT>=dep.deliveredAt+(ev.at||0)); }
+    else due = simT>=ev.at;
+    if(!due){ allFired=false; continue; }
+    ev._fired=true;
+    if(ev.narr) narr=esc(ev.narr);
+    if(ev.send){ const m=doSend(ev.send.from, ev.send.to, ev.send.text);
+      scenSends[scenScript.indexOf(ev)]=m;
+      if(m){ if(MINI){ focus={src:ev.send.from, recip:ev.send.to, bundle:null}; if(worker&&workerReady) worker.postMessage({type:'focus', recip:ev.send.to}); }
+             else if(!scenOpened){ scenOpened=true; openConvo(ev.send.from, ev.send.to); } } }
+    if(ev.publish){ const m=doPublish(ev.publish.from, ev.publish.path, ev.publish.text);
+      scenSends[scenScript.indexOf(ev)]=m;
+      if(m && MINI){ focus={src:ev.publish.from, recip:null, bundle:null}; if(worker&&workerReady) worker.postMessage({type:'focus', recip:null}); } }
+  }
+  if(MINI){
+    const scripted=msgs.filter(m=>!m.auto);
+    const done=allFired && scripted.length>0 && scripted.every(m=>m.ackedAt!=null);
+    if(done && !scenLastAck) scenLastAck=performance.now();
+    const overtime=performance.now()-scenStartReal > (SCEN.maxReal||120)*1000;
+    // The run completed (or timed out): REPLAY = a real replay — fresh mesh, fresh sessions, fresh
+    // network state (re-running the script on a mesh that still holds the last run's sessions and
+    // bundles would make the second pass artificially instant).
+    if((scenLastAck && performance.now()-scenLastAck>6000) || overtime) switchScenario(scenarioId);
+  }
+}
+
+// ---- deck.gl overlay: people + lines on GPU-managed buffers (no MapLibre symbol re-tessellation) ----
+let deckOverlay=null, iconAtlas=null, iconMapping=null, dWithRelay=null, deckTick=0;
+const ATLAS_EMOJI=['🧑','🚌','🚗','router','signal','wifi','signal-slash','tri'];   // full marker set — scenario switches may bring any of them
+// Map markers: rasterize Font Awesome (free solid) SVGs into the deck.gl icon atlas — crisp line-art,
+// tintable via getColor. Falls back to the emoji glyph if a fetch fails, so the map always renders.
+// (HTML UI icons use the Pro kit loaded in <head>.)
+const FA_ICON={ '🧑':'person', '🚌':'bus', '🚗':'car-side', router:'router', signal:'signal', wifi:'wifi', 'signal-slash':'signal-slash' };
+const FA_SVG_BASE='https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/svgs/solid/';
+// Some icons (router, signal-slash) are FA Pro — not in the free CDN. Render them from the loaded Pro
+// kit: drop an <i> in, let the kit convert it to <svg>, read it back, recolor currentColor→white.
+async function faKitSvg(name){ if(!window.FontAwesome) return null;
+  const wrap=document.createElement('div'); wrap.style.cssText='position:absolute;left:-9999px;top:-9999px'; wrap.innerHTML='<i class="fa-solid fa-'+name+'"></i>'; document.body.appendChild(wrap);
+  try{ if(FontAwesome.dom&&FontAwesome.dom.i2svg) await FontAwesome.dom.i2svg({node:wrap}); }catch(_){}
+  let svg=wrap.querySelector('svg'), tries=0; while(!svg&&tries++<20){ await new Promise(r=>setTimeout(r,25)); svg=wrap.querySelector('svg'); }
+  const out=svg?svg.outerHTML.replace(/currentColor/g,'#ffffff'):null; wrap.remove(); return out; }
+const faCache={};
+// Pro icons (404 in the free CDN) → a FREE stand-in that always resolves, so we never fall through to
+// rendering the icon NAME as text (that was the stray "al-s" = "signal-slash").
+const FA_FALLBACK={ router:'network-wired', 'signal-slash':'ban' };
+async function faFree(name){ try{ const r=await fetch(FA_SVG_BASE+name+'.svg'); if(r.ok) return (await r.text()).replace('<svg','<svg fill="#ffffff"'); }catch(_){} return null; }
+async function faSvgText(name){
+  const free=await faFree(name); if(free) return free;                 // 1) free CDN
+  try{ const s=await faKitSvg(name); if(s) return s; }catch(_){}       // 2) Pro kit (router, signal-slash)
+  if(FA_FALLBACK[name]){ const fb=await faFree(FA_FALLBACK[name]); if(fb) return fb; }   // 3) free stand-in
+  return null; }
+async function faImg(name){ if(name in faCache) return faCache[name];
+  const svg=await faSvgText(name); if(!svg) return faCache[name]=null;
+  try{ const img=new Image();
+    await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg); });
+    return faCache[name]=img;
+  }catch(_){ return faCache[name]=null; } }
+// A router glyph drawn directly (fa-router is FA Pro / 404 in the free CDN, so the fetch was unreliable):
+// a body with two antennas + status LEDs, white so deck getColor tints it. Guaranteed to render.
+function drawRouter(ctx,x0,s){ ctx.save(); ctx.translate(x0,0); ctx.strokeStyle='#fff'; ctx.fillStyle='#fff'; ctx.lineJoin='round'; ctx.lineCap='round';
+  const w=s*0.6,h=s*0.2,bx=s*0.2,by=s*0.58,r=s*0.045; ctx.lineWidth=s*0.058;
+  ctx.beginPath(); ctx.moveTo(bx+r,by); ctx.lineTo(bx+w-r,by); ctx.arcTo(bx+w,by,bx+w,by+r,r); ctx.lineTo(bx+w,by+h-r); ctx.arcTo(bx+w,by+h,bx+w-r,by+h,r); ctx.lineTo(bx+r,by+h); ctx.arcTo(bx,by+h,bx,by+h-r,r); ctx.lineTo(bx,by+r); ctx.arcTo(bx,by,bx+r,by,r); ctx.closePath(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx+w*0.28,by); ctx.lineTo(bx+w*0.15,by-s*0.26); ctx.moveTo(bx+w*0.72,by); ctx.lineTo(bx+w*0.85,by-s*0.26); ctx.stroke();
+  ctx.beginPath(); ctx.arc(bx+w*0.15,by-s*0.28,s*0.033,0,7); ctx.arc(bx+w*0.85,by-s*0.28,s*0.033,0,7); ctx.fill();
+  ctx.beginPath(); ctx.arc(bx+w*0.2,by+h*0.5,s*0.03,0,7); ctx.arc(bx+w*0.33,by+h*0.5,s*0.03,0,7); ctx.fill();
+  ctx.restore(); }
+async function buildIconAtlas(){
+  for(let i=0;i<40 && !window.FontAwesome;i++) await new Promise(r=>setTimeout(r,50));   // let the Pro kit load
+  const s=64, cv=document.createElement('canvas'); cv.width=s*ATLAS_EMOJI.length; cv.height=s;
+  const ctx=cv.getContext('2d'); iconMapping={};
+  for(let i=0;i<ATLAS_EMOJI.length;i++){ const e=ATLAS_EMOJI[i], nm=FA_ICON[e];
+    iconMapping[e]={x:i*s,y:0,width:s,height:s,mask:true};
+    if(e==='router'){ drawRouter(ctx,i*s,s); continue; }   // guaranteed router glyph — never wifi, never a fetch
+    if(e==='tri'){ const x=ctx; x.save(); x.translate(i*s,0); x.fillStyle='#fff';   // north-pointing arrowhead for gradient direction
+      x.beginPath(); x.moveTo(s/2,s*0.18); x.lineTo(s*0.8,s*0.82); x.lineTo(s/2,s*0.64); x.lineTo(s*0.2,s*0.82); x.closePath(); x.fill(); x.restore(); continue; }
+    let img=null; try{ img=nm?await faImg(nm):null; }catch(_){}
+    if(img){ const pad=s*0.16; ctx.drawImage(img, i*s+pad, pad, s-2*pad, s-2*pad); }
+    else if(e.length<=2){ ctx.font=Math.round(s*0.78)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#fff'; ctx.fillText(e,i*s+s/2,s/2+2); iconMapping[e].mask=false; }
+    /* else: an FA-name key that failed to resolve → leave the cell TRANSPARENT (never draw the key as text) */ }
+  iconAtlas=cv.toDataURL('image/png'); }
+// Rasterize an FA icon to a COLORED ImageData for a MapLibre symbol image (which can't tint a plain
+// icon). Draw the white glyph, then composite the fill through it. Emoji fallback on fetch failure.
+async function faMapImg(name,size,color){ const img=await faImg(name); const cv=document.createElement('canvas'); cv.width=cv.height=size; const x=cv.getContext('2d');
+  if(img){ const p=size*0.14; x.drawImage(img,p,p,size-2*p,size-2*p); x.globalCompositeOperation='source-in'; x.fillStyle=color; x.fillRect(0,0,size,size); }
+  else { x.font=(size*0.78)+'px "Apple Color Emoji",sans-serif'; x.textAlign='center'; x.textBaseline='middle'; x.fillText('📡',size/2,size*0.54); }
+  return x.getImageData(0,0,size,size); }
+// Bake the IC.* icon <i> tags into inline SVG ONCE (via the kit), so re-rendering a list row every
+// 150ms doesn't re-insert an <i> and make the kit re-convert it — that re-convert was the row "blink".
+async function faUiSvg(cls){ if(!window.FontAwesome) return null;
+  const wrap=document.createElement('div'); wrap.style.cssText='position:absolute;left:-9999px;top:-9999px'; wrap.innerHTML='<i class="'+cls+'"></i>'; document.body.appendChild(wrap);
+  try{ if(FontAwesome.dom&&FontAwesome.dom.i2svg) await FontAwesome.dom.i2svg({node:wrap}); }catch(_){}
+  let svg=wrap.querySelector('svg'), t=0; while(!svg&&t++<20){ await new Promise(r=>setTimeout(r,25)); svg=wrap.querySelector('svg'); }
+  const out=svg?svg.outerHTML:null; wrap.remove(); return out; }
+async function prerenderIcons(){ for(const k in IC){ const m=IC[k].match(/<i class="([^"]+)">/); if(!m) continue; const svg=await faUiSvg(m[1]); if(svg) IC[k]=svg; } }
+async function initDeck(){ await buildIconAtlas(); await prerenderIcons();
+  dWithRelay=people;   // the relay is the cloud backbone, not a geographic place — no marker for it
+  deckOverlay=new deck.MapboxOverlay({layers:[]}); map.addControl(deckOverlay); }
+const DOT={sender:[255,107,107],recip:[43,240,160],'':[138,160,170]};
+function roleOf(p){ return focus? (focus.src===p.id?'sender':focus.recip===p.id?'recip':'') : ''; }
+function hexRGB(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+function pick(info){ const o=info.object; if(o&&o.id&&o.id!==RELAY_ID) inspect(o.id); }
+function deckLayers(){ deckTick++;
+  const ppl=people.filter(p=>p.pos), roleVer=focus?focus.src+'|'+focus.recip:'';
+  const onAps=aps.filter(apRadio);   // only radio-up (powered) APs are drawn — a power outage kills them
+  return [
+    // Wi-Fi AP coverage (real metres) — teal = has internet, amber = Wi-Fi only (no backhaul). Behind all.
+    new deck.ScatterplotLayer({id:'apcov', data:onAps, getPosition:a=>a.pos, radiusUnits:'meters', getRadius:a=>a.r, filled:true, getFillColor:a=>apNet(a)?[55,200,220,12]:[224,169,78,13], stroked:true, lineWidthUnits:'pixels', getLineWidth:1, getLineColor:a=>apNet(a)?[70,205,225,70]:[224,169,78,72], updateTriggers:{getFillColor:apVer,getLineColor:apVer,getRadius:apVer}}),
+    // Scenario decorations — e.g. the Hop Bridge's LoRa span: drawn (amber, labeled) but NOT simulated;
+    // it's an honest preview of a future bearer, not a working link.
+    new deck.LineLayer({id:'decor', data:(SCEN&&SCEN.stage&&SCEN.stage.decor)||[], getSourcePosition:d=>d.from, getTargetPosition:d=>d.to, getColor:[228,180,110,150], getWidth:2, widthUnits:'pixels'}),
+    new deck.TextLayer({id:'decorlbl', data:((SCEN&&SCEN.stage&&SCEN.stage.decor)||[]).filter(d=>d.label), getText:d=>d.label, getPosition:d=>[(d.from[0]+d.to[0])/2,(d.from[1]+d.to[1])/2], getColor:[227,196,138,235], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,-10], fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}}),
+    // §39 P4 routing tree toward the focused recipient — each relay's next hop toward them. Drawn UNDER
+    // the flood so you see the directed gradient the private bundle steers along (converging on the recipient).
+    new deck.LineLayer({id:'gradient', data:gradData(), getSourcePosition:d=>d.s, getTargetPosition:d=>d.t, getColor:[80,200,255,110], getWidth:1.5, widthUnits:'pixels', widthMinPixels:1}),
+    // direction arrowheads on the gradient tree — each relay's NEXT HOP toward the focused recipient
+    new deck.IconLayer({id:'gradarrow', data:gradData(), iconAtlas, iconMapping, getIcon:()=>'tri',
+      getPosition:d=>[d.s[0]+(d.t[0]-d.s[0])*0.55, d.s[1]+(d.t[1]-d.s[1])*0.55], sizeUnits:'pixels', getSize:11,
+      getColor:[80,200,255,190],
+      getAngle:d=>{ const dx=(d.t[0]-d.s[0])*Math.cos(d.s[1]*Math.PI/180), dy=d.t[1]-d.s[1];
+        return -Math.atan2(dx,dy)*180/Math.PI; },
+      updateTriggers:{getPosition:deckTick,getAngle:deckTick}}),
+    new deck.LineLayer({id:'legs', data:legData(), getSourcePosition:d=>d.s, getTargetPosition:d=>d.t, getColor:d=>d.c, getWidth:d=>d.w, widthUnits:'pixels', widthMinPixels:1}),
+    // §39 recv-beacons rippling out — each node advertising its reachability (what lays the gradient tree)
+    new deck.ScatterplotLayer({id:'beacons', data:pulseData(), getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:d=>d.r, filled:false, stroked:true, lineWidthUnits:'pixels', getLineWidth:1, getLineColor:d=>[90,205,255,d.a], updateTriggers:{getRadius:deckTick,getLineColor:deckTick}}),
+    new deck.ScatterplotLayer({id:'rings', data:ppl, getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:11, filled:false, stroked:true, lineWidthUnits:'pixels', getLineWidth:p=>roleOf(p)?2.5:0, getLineColor:p=>DOT[roleOf(p)], updateTriggers:{getLineWidth:roleVer,getLineColor:roleVer}}),
+    new deck.ScatterplotLayer({id:'dots', data:ppl, getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:4.5, getFillColor:p=>DOT[roleOf(p)], stroked:true, lineWidthUnits:'pixels', getLineWidth:1.2, getLineColor:[12,15,19], updateTriggers:{getFillColor:roleVer}, pickable:true, onClick:pick}),
+    new deck.IconLayer({id:'emoji', data:dWithRelay, iconAtlas, iconMapping, getIcon:d=>d.emoji, getPosition:d=>d.pos, sizeUnits:'pixels', getSize:20, getColor:d=>{ const r=roleOf(d); return r?DOT[r]:[206,217,223]; }, updateTriggers:{getPosition:deckTick,getColor:roleVer}, pickable:true, onClick:pick}),
+    new deck.IconLayer({id:'sig', data:ppl, iconAtlas, iconMapping, getIcon:d=>d._badge||'signal-slash', getPosition:d=>d.pos, sizeUnits:'pixels', getSize:9, getColor:d=>{ const b=d._badge; return b==='wifi'?[120,215,235]:b==='signal'?[43,240,160]:[152,120,120]; }, getPixelOffset:[13,-12], updateTriggers:{getIcon:deckTick,getColor:deckTick}}),
+    new deck.IconLayer({id:'apicon', data:onAps, iconAtlas, iconMapping, getIcon:()=>'router', getPosition:a=>a.pos, sizeUnits:'pixels', getSize:18, getColor:a=>apNet(a)?[120,215,235]:[228,180,110], pickable:true, onClick:info=>{ if(info.object) apClick(aps.indexOf(info.object)); }, updateTriggers:{getPosition:apVer,getColor:apVer}}),
+    new deck.TextLayer({id:'aplabel', data:onAps, getText:a=>a.name+(a.pub?'':' - private')+(a.sat?' - starlink':'')+(a.bat?' - battery':'')+(apNet(a)?'':' - no net'), getPosition:a=>a.pos, getColor:a=>apNet(a)?[159,232,242,225]:[227,196,138,225], sizeUnits:'pixels', getSize:10.5, getPixelOffset:[0,14], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}, updateTriggers:{getText:apVer,getColor:apVer}}),
+    // mini declutter: once a conversation is in focus, only the participants keep name labels
+    new deck.TextLayer({id:'labels', data:dWithRelay, getText:d=> (MINI&&focus&&d.id!==focus.src&&d.id!==focus.recip)?'':d.name, getPosition:d=>d.pos, getColor:[195,206,212], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,15], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}, updateTriggers:{getPosition:deckTick,getText:roleVer}}),
+  ]; }
+function fcTowerCov(){ return {type:'FeatureCollection',features:towers.map(t=>{ const c=turf.circle(t.pos,t.r/1000,{units:'kilometers',steps:56}); c.properties={on:t.on&&powerUp}; return c; })}; }
+function fcTowers(){ return {type:'FeatureCollection',features:towers.map((t,i)=>({type:'Feature',geometry:{type:'Point',coordinates:t.pos},properties:{idx:i,on:t.on&&powerUp}}))}; }
+function gradData(){   // the focused recipient's gradient tree as node-to-node segments (next hop toward them)
+  const out=[]; for(const a of gradientArrows){ if(a.from===RELAY_ID||a.to===RELAY_ID) continue;   // the relay is the cloud, not a place — don't draw arrows to its corner
+    const A=posOf(a.from), B=posOf(a.to); if(A&&B) out.push({s:A,t:B}); } return out;
+}
+function pulseData(){   // expanding beacon rings: each node that recently emitted a §39 recv-beacon
+  const now=performance.now(), out=[];
+  for(const [id,t0] of pulses){ const age=now-t0; if(age>PULSE_LIFE){ pulses.delete(id); continue; }
+    const p=byId(id); if(!p||!p.pos) continue; const f=age/PULSE_LIFE;
+    out.push({pos:p.pos, r:5+f*22, a:Math.round(70*(1-f))}); }
+  return out;
+}
+function legData(){   // deck.gl LineLayer rows: {s:[lng,lat], t:[lng,lat], c:[r,g,b,a], w}
+  const out=[];
+  // a selected conversation dims every OTHER path — highlight all bundles of messages between the two.
+  let focSet=null;
+  if(focus && (focus.src||focus.recip)){ focSet=new Set();
+    for(const m of msgs) if(m.bundle && (((m.from===focus.src&&m.to===focus.recip)||(m.from===focus.recip&&m.to===focus.src)) || (m.kind==='pub'&&m.from===focus.src))) focSet.add(m.bundle); }
+  const anyFoc = focSet && [...focSet].some(h=>bundles.has(h));   // only dim if the focused convo has drawn lines
+  for(const [hex,b] of bundles){
+    if(anyFoc && !focSet.has(hex)) continue;   // focused a conversation → show ONLY its message's relay lines
+    const held=b.holders, drop=b.dropped, rgb=hexRGB(b.color);
+    const dim = 1;
+    // a device's copy is at full strength while held, then fades to 0 over FADE_DECAY once it purges
+    // (the sender on its ack; relays when the bundle finally expires by TTL).
+    const opOf = to => held.has(to) ? 1 : (drop.has(to) ? Math.max(0, 1-(simT-drop.get(to))/FADE_DECAY) : 0);
+    // the FLOOD — each hop A→B tracks its RECEIVER's copy: solid while B holds it, fading as B lets it go.
+    for(const edge of b.legs.keys()){ const i=edge.indexOf('>'); const to=edge.slice(i+1); const o=opOf(to); if(o<=0.02) continue;
+      const A=posOf(edge.slice(0,i)),B=posOf(to); if(!A||!B) continue;
+      out.push({s:A,t:B,c:[rgb[0],rgb[1],rgb[2],Math.round(255*0.32*o*dim)],w:1.4}); }
+    // the delivered ROUTE — solid while any copy survives, fading out with the last ones to be purged.
+    if(b.deliveredAt!=null){ let pop = held.size ? 1 : 0; if(!pop) for(const t of drop.values()) pop=Math.max(pop, Math.max(0, 1-(simT-t)/FADE_DECAY));
+      if(pop>0.02){ const phys=(b.path||[]).filter(([a,c])=> a!==RELAY_ID && c!==RELAY_ID);
+        for(const [a,c] of phys){ const A=posOf(a),B=posOf(c); if(!A||!B) continue;   // physical hops only; a cloud/backbone delivery draws no line
+          out.push({s:A,t:B,c:[rgb[0],rgb[1],rgb[2],Math.round(255*0.9*pop*dim)],w:3}); } } }
+  }
+  return out;
+}
+function fmtT(sec){ sec=Math.max(0,Math.round(sec)); const h=(sec/3600)|0,m=((sec%3600)/60)|0,s=sec%60; return (h?h+'h':'')+((h||m)?m+'m':'')+s+'s'; }
+function renderQueue(){
+  const statusOf=m=>m.delivered?'delivered':'relaying';
+  const rank=m=>m.delivered?1:0;   // in transit on top · delivered sinks to bottom
+  const rows=msgs.filter(m=> !(m.ackedAt!=null && simT-m.ackedAt>12) )   // stays until the SENDER's ACK is home (then a short grace)
+    .filter(m=>qFilter==='all'||statusOf(m)===qFilter)
+    .sort((a,b)=>{ const ra=rank(a),rb=rank(b); if(ra!==rb)return ra-rb; return ra===1?(b.deliveredAt-a.deliveredAt):(b.id-a.id); }).slice(0,120);
+  $('qlist').innerHTML = rows.length ? rows.map(m=>{
+    const acked = m.ackedAt!=null;   // sender confirmed via returning ACK (real, from hop-core)
+    // sender's real knowledge only (like the debug app): peers-sent + sent-time, and 'delivered' ONLY
+    // once its ACK is home — never the omniscient 'recipient got it' the sender can't actually know.
+    const st = acked?'<span style="color:#2bf0a0">'+IC.ack+'</span>':(m.peers>0?'<span style="color:#2bf0a0">'+IC.sent+'</span>':IC.wait);
+    const peers = `${m.peers||0} peer${(m.peers||0)===1?'':'s'}`;
+    const dur = acked ? `sent to ${peers} · delivered · ack home ${fmtT(m.ackedAt-m.sentAt)}`
+              : (m.peers>0 ? `sent to ${peers} · ${fmtT(simT-m.sentAt)} ago`
+              : `sending… · ${fmtT(simT-m.sentAt)} ago`);
+    const sel=(focus&&focus.src===m.from&&focus.recip===m.to)?' sel':'';
+    return `<div class="qrow${sel}" data-s="${m.from}" data-r="${m.to}" data-b="${m.bundle||''}"><div class="top"><span class="dots"><i style="background:${m.bundle?colorOfBundle(m.bundle):msgColor(m)}"></i></span><span class="mnm">${esc(byId(m.from).name)} → ${m.kind==='pub'?('#'+esc(m.path)):esc(byId(m.to).name)}</span><span class="st">${st}</span></div><div class="mtext">“${esc(m.text)}”</div><div class="dur">${dur}</div></div>`;
+  }).join('') : (workerReady?'<div class="dur" style="padding:4px">no messages yet</div>':'<div class="dur" style="padding:4px">booting real nodes…</div>');
+}
+function render(){
+  const rt=performance.now();
+  if(rt-lastWorld>15 && deckOverlay){ lastWorld=rt; deckOverlay.setProps({layers:deckLayers()}); }   // ~60fps deck.gl overlay update (smooth marker motion; badge is cached so this is affordable)
+  if(towersDirty){ const s1=map.getSource('towercov'), s2=map.getSource('towers');   // sources vanish briefly during a basemap swap
+    if(s1&&s2){ s1.setData(fcTowerCov()); s2.setData(fcTowers()); towersDirty=false; } }
+  if(rt-lastQ>150){ lastQ=rt; renderQueue(); if(convoA!=null) renderConvo(false);   // sidebar/narr don't need 60fps
+    if(MINI) renderMiniChat();   // each bubble carries its own clock (carrying → delivered-in → ack)
+    const done=msgs.filter(m=>m.delivered), ackd=msgs.filter(m=>m.ackedAt!=null);   // avg delivery (A→B) + ack round-trip
+    const avgD=done.length?done.reduce((s,m)=>s+(m.deliveredAt-m.sentAt),0)/done.length:null;
+    const avgA=ackd.length?ackd.reduce((s,m)=>s+(m.ackedAt-m.sentAt),0)/ackd.length:null;
+    $('qmetrics').innerHTML=`<div class="card"><div class="v">${avgD!=null?fmtT(avgD):'—'}</div><div class="k">avg delivery</div></div><div class="card"><div class="v">${avgA!=null?fmtT(avgA):'—'}</div><div class="k">avg ack home</div></div>`;
+    const inflight=msgs.filter(m=>!m.delivered).length;
+    // Only rewrite the narrator message when it CHANGES — re-setting innerHTML every 150ms re-created the
+    // FA icon each time and the kit re-converted it, blinking the whole banner (the "glitchy" flip).
+    if(narr!==lastNarr){ $('narrMsg').innerHTML=narr; $('narr').classList.toggle('win', narr.indexOf('fa-circle-check')>=0); lastNarr=narr; }
+    const statTxt=seq>0?`${inflight} in transit · ${delivered} delivered — real Hop nodes${storageBackend==='opfs-sqlite'?' · SQLite/OPFS':storageBackend==='memory'?' · in-memory':''}`:'';
+    if(statTxt!==lastStat){ $('narrStat').textContent=statTxt; lastStat=statTxt; }   // plain text, no icon → no re-parse
+    const pm=performance.memory, mm=$('mem'); const mb=b=>Math.round(b/1048576); mm.style.display='block';
+    mm.textContent=`${pm?`heap ${mb(pm.usedJSHeapSize)}`:''} · wasm ${mb(workerWasm)} MB${storageBackend==='opfs-sqlite'?` · sqlite ${mb(sqliteWasm)} MB`:''} · ${dbRowsN.toLocaleString()} msg copies in mesh · viz ${bundles.size}`; }
+}
+let last=performance.now(), lastTick=0, lastAutoReal=0;
+function loop(now){ const dt=Math.min((now-last)/1000,0.1); last=now;
+  if(playing){ step(dt*timeScale);
+    pumpScenario();   // scripted scenario events fire on the sim clock (and mini loops the run)
+    if(workerReady && !workerBusy && now-lastTick>100){ lastTick=now; postTick(); }   // feed the worker positions (backpressured)
+    if(workerReady && autoOn && now-lastAutoReal>3000 && msgs.filter(m=>!m.delivered).length<6){ lastAutoReal=now; send(); } }
+  render(); requestAnimationFrame(loop); }
+
+// ---------- ui ----------
+const $=id=>document.getElementById(id);
+let selId=null;
+function inspect(id){ const p=byId(id); if(!p)return; selId=id;
+  const on=v=>v?'<b style="color:#2bf0a0">on</b>':'<b style="color:#7d8f96">off</b>', yes=v=>v?'<b style="color:#2bf0a0">yes</b>':'<b style="color:#7d8f96">no</b>';
+  $('iName').innerHTML='<i class="fa-solid fa-'+({'🧑':'person','🚌':'bus','🚗':'car-side'}[p.emoji]||'person')+'"></i> '+esc(p.name);
+  $('iBody').innerHTML=
+    '<div class="ir"><span>Platform</span><b>'+(p.platform==='ios'?'iPhone · iOS':'Android')+'</b></div>'+
+    '<div class="ir tog" data-f="bt"><span>Bluetooth</span>'+on(p.bt)+'</div>'+
+    (p.platform==='android'
+      ? '<div class="ir"><span>Wi-Fi P2P</span><b style="color:#7d8f96">n/a on Android</b></div>'
+      : '<div class="ir tog" data-f="wifiP2P"><span>Wi-Fi P2P</span>'+on(p.wifiP2P)+'</div>')+
+    '<div class="ir tog" data-f="cell"><span>Cell / SIM</span>'+yes(p.cell)+'</div>'+
+    '<div class="ir"><span>Cell signal</span>'+(hasCell(p)?'<b style="color:#2bf0a0">yes</b>':'<b style="color:#ff6b6b">no signal</b>')+'</div>'+
+    (()=>{ const ap=(p._ap!==undefined)?p._ap:apOf(p);   // Wi-Fi NETWORK (an AP), distinct from Wi-Fi P2P above
+      return '<div class="ir"><span>Wi-Fi network</span>'+(ap
+        ? '<b style="color:'+(apNet(ap)?'#2bf0a0':'#e3c48a')+'">'+esc(ap.name)+(apNet(ap)?'':' · no internet')+'</b>'
+        : '<b style="color:#7d8f96">not connected</b>')+'</div>'; })()+
+    (()=>{ const priv=aps.filter(a=>!a.pub && p.wifiKeys&&p.wifiKeys.includes(a.key)).map(a=>a.name);
+      return '<div class="ir"><span>Known networks</span><b style="color:#9fb0b8;font-weight:500;font-size:11px">'+esc('Public'+(priv.length?' · '+priv.join(', '):''))+'</b></div>'; })();
+  $('iCompose').innerHTML=IC.env+' Send a message as '+esc(p.name);
+  $('inspect').style.display='block'; }
+$('iBody').onclick=e=>{ const r=e.target.closest('.tog'); if(!r||selId==null)return; const p=byId(selId); p[r.dataset.f]=!p[r.dataset.f];
+  if(worker) worker.postMessage({type:'caps', id:selId, field:r.dataset.f, value:p[r.dataset.f]}); inspect(selId); };
+$('iClose').onclick=()=>$('inspect').style.display='none';
+$('iCompose').onclick=()=>{ if(selId!=null) openCompose(selId); };
+function openCompose(fromId){ composeFrom=fromId; $('cFrom').textContent=byId(fromId).name;
+  $('cTo').innerHTML=people.filter(p=>p.id!==fromId).map(p=>`<option value="${p.id}">${esc(p.name)} ${p.emoji}</option>`).join('');
+  $('cText').value=''; $('cHint').textContent=''; $('inspect').style.display='none'; $('compose').style.display='block'; $('cText').focus(); }
+$('cClose').onclick=()=>$('compose').style.display='none';
+$('cSend').onclick=()=>{ const text=$('cText').value.trim(); if(!text){ $('cHint').textContent='type something first'; return; }
+  if(composeFrom==null) return; const M=doSend(composeFrom,$('cTo').value,text); $('compose').style.display='none';
+  if(M) openConvo(M.from, M.to); };   // auto-open the two-phone view for the message you just sent
+// Open a conversation on a TAP: snapshot the row's data on pointerdown (the queue re-renders every
+// 150ms, so by pointerup the row DOM may be gone — capturing on down makes it reliable), open on
+// pointerup only if the pointer barely moved (so scrolling the list doesn't open one).
+let qDown=null;
+$('qlist').addEventListener('pointerdown', e=>{ const r=e.target.closest('.qrow'); qDown = (r&&r.dataset.s) ? {s:r.dataset.s, r:r.dataset.r, b:r.dataset.b||null, x:e.clientX, y:e.clientY} : null; });
+$('qlist').addEventListener('pointerup', e=>{ if(!qDown) return; const dx=e.clientX-qDown.x, dy=e.clientY-qDown.y; if(dx*dx+dy*dy < 64) openConvo(qDown.s, qDown.r, qDown.b); qDown=null; });
+let convoA=null, convoB=null;
+function openConvo(a,b,bundle){ convoA=a; convoB=b; focus={src:a,recip:b,bundle:bundle||null}; if(worker&&workerReady) worker.postMessage({type:'focus', recip:b}); $('queue').style.display='none'; $('convo').style.display='flex'; renderConvo(true); }
+function closeConvo(){ convoA=convoB=null; focus=null; gradientArrows=[]; if(worker&&workerReady) worker.postMessage({type:'focus', recip:null}); $('convo').style.display='none'; $('queue').style.display='flex'; }
+// Wi-Fi AP controls: independent POWER (radio) and INTERNET (backhaul) toggles.
+function apClick(idx){ apPopIdx=idx; renderAppop(); }
+function renderAppop(){ const el=$('appop'); if(apPopIdx<0||!aps[apPopIdx]){ el.style.display='none'; return; }
+  const a=aps[apPopIdx];
+  el.innerHTML=`<h2>${a.pub?'':IC.lock+' '}${esc(a.name)}<span class="close" id="apClose"><i class="fa-solid fa-xmark"></i></span></h2>`
+    +`<div class="aprow"><span>Wi-Fi radio</span><button class="toggle${a.on?' on':''}" data-t="power">${a.on?'ON':'OFF'}</button></div>`
+    +`<div class="aprow"><span>Power</span><b style="color:${apRadio(a)?'#2bf0a0':'#ff6b6b'}">${a.bat?'battery backup':(powerUp?'grid':'grid — DOWN')}</b></div>`
+    +`<div class="aprow"><span>Internet</span><b style="color:${apNet(a)?'#2bf0a0':'#ff6b6b'}">${a.sat?'Starlink (satellite)':(ispUp?'via ISP':'ISP down')}</b></div>`
+    +`<div class="aphint">${a.pub?'<b style="color:#9fe8f2">Public</b> — anyone joins. ':'<b style="color:#e3c48a">Private</b> — key-holders only. '}`
+    +`${!a.on?'Radio switched off.':!apRadio(a)?'Dark — no power (no battery backup).':apNet(a)?(a.sat&&a.bat?'<b style="color:#2bf0a0">Resilient relay endpoint</b> — Starlink + battery survive both a power AND an ISP outage.':'Devices here reach the cloud.'):'Wi-Fi only — local mesh, no internet.'}</div>`;
+  el.style.display='block';
+  $('apClose').onclick=()=>{ apPopIdx=-1; renderAppop(); };
+  el.querySelectorAll('button[data-t]').forEach(b=>b.onclick=()=>{ const a=aps[apPopIdx];
+    if(b.dataset.t==='power'){ a.on=!a.on; } else if(a.on){ a.net=!a.net; }
+    apVer++; apsDirty=true; renderAppop(); });
+}
+function renderPane(listId, me, other, toBottom){ const el=$(listId), atBottom = el.scrollHeight-el.scrollTop-el.clientHeight < 24;
+  // a message only shows on a device once it's actually THERE: the sender always sees it; the recipient
+  // only after it's delivered. While it's still carrying it hasn't arrived, so the recipient's side is empty.
+  const thread = msgs.filter(m=> ((m.from===me&&m.to===other)||(m.from===other&&m.to===me)) && (m.from===me || m.delivered)).sort((x,y)=>x.id-y.id);
+  el.innerHTML = thread.length ? thread.map(m=>{ const mine=m.from===me;
+    // per-DEVICE truth: the sender only knows delivery once its ACK returns; the recipient simply has it.
+    let st, lbl;
+    if(mine){   // sender's real status, like hop debug — never "delivered" until ITS ack is home
+      if(m.ackedAt!=null){ st=IC.ack; lbl='delivered · ack home '+fmtT(m.ackedAt-m.sentAt); }
+      else if(m.peers>0){ st=IC.sent; lbl='sent to '+m.peers+(m.peers===1?' peer':' peers')+' · '+fmtT(simT-m.sentAt)+' ago'; }
+      else { st=IC.wait; lbl='sending… · '+fmtT(simT-m.sentAt)+' ago'; } }
+    else { st=IC.sent; lbl='received · '+fmtT(m.deliveredAt-m.sentAt)+' in transit'; }   // the recipient computes this from the bundle's sent-at
+    return `<div class="bub ${mine?'me':'them'}">${esc(m.text)}<div class="meta">${st} ${lbl}</div></div>`; }).join('')
+    : '<div class="dur" style="padding:10px;text-align:center">No messages yet.</div>';
+  if(toBottom||atBottom) el.scrollTop=el.scrollHeight; }
+function renderConvo(toBottom){ if(convoA==null) return;
+  $('cvWhoA').innerHTML = esc(byId(convoA).name)+' <small>↔ '+esc(byId(convoB).name)+'</small>';
+  $('cvWhoB').innerHTML = esc(byId(convoB).name)+' <small>↔ '+esc(byId(convoA).name)+'</small>';
+  renderPane('cvlistA', convoA, convoB, toBottom); renderPane('cvlistB', convoB, convoA, toBottom); }
+$('cvClose').onclick=closeConvo; $('cvCloseB').onclick=closeConvo;
+function convoSend(inputId, me, other){ const t=$(inputId).value.trim(); if(!t||convoA==null) return; doSend(me, other, t); $(inputId).value=''; renderConvo(true); }
+$('cvGoA').onclick=()=>convoSend('cvTextA', convoA, convoB);
+$('cvGoB').onclick=()=>convoSend('cvTextB', convoB, convoA);
+$('cvTextA').onkeydown=e=>{ if(e.key==='Enter') $('cvGoA').onclick(); };
+$('cvTextB').onkeydown=e=>{ if(e.key==='Enter') $('cvGoB').onclick(); };
+$('qfilter').onclick=e=>{ const c=e.target.closest('.chip'); if(!c)return; qFilter=c.dataset.q; for(const el of $('qfilter').children) el.classList.toggle('on', el===c); };
+$('go').onclick=()=>send();
+$('auto').onclick=e=>{ autoOn=!autoOn; e.target.classList.toggle('on',autoOn); if(autoOn&&msgs.length===0) send(); };
+$('cell').onclick=e=>{ const anyOn=towers.some(t=>t.on); towers.forEach(t=>t.on=!anyOn); towersDirty=true; const up=!anyOn; e.target.textContent=up?'up':'DOWN'; e.target.classList.toggle('on',up);
+  narr=up?IC.tower+' Cell network restored.':'<i class="fa-solid fa-ban"></i> <b>Cell network down.</b> Towers offline — pure phone-to-phone mesh now.'; };
+$('isp').onclick=e=>{ ispUp=!ispUp; apVer++; apsDirty=true; e.target.textContent=ispUp?'UP':'DOWN'; e.target.classList.toggle('on',ispUp);   // disaster: kills internet for ALL APs at once (radios stay up)
+  narr=ispUp?'<i class="fa-solid fa-earth-americas"></i> ISP restored — the APs are back on the internet.':'<i class="fa-solid fa-triangle-exclamation"></i> <b>ISP outage.</b> Terrestrial APs lost their backhaul — only Starlink APs still reach the cloud. Wi-Fi works locally.'; };
+$('power').onclick=e=>{ powerUp=!powerUp; apVer++; apsDirty=true; towersDirty=true; e.target.textContent=powerUp?'UP':'DOWN'; e.target.classList.toggle('on',powerUp);   // grid: kills tower + AP radios (except battery-backed)
+  narr=powerUp?'<i class="fa-solid fa-bolt"></i> Grid power restored.':'<i class="fa-solid fa-plug-circle-xmark"></i> <b>Power outage.</b> Cell towers and grid-powered Wi-Fi go dark — only battery devices, and battery-backed APs, keep meshing.'; };
+$('speed').oninput=e=>timeScale=+e.target.value;
+</script>
+</body>
+</html>
