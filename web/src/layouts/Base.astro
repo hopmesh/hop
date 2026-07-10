@@ -5,8 +5,8 @@ import Footer from '../components/Footer.astro';
 
 // Base page shell. Props: title, description (meta), and path (for active nav).
 const {
-  title = 'Hop — the network that finds a way',
-  description = 'Hop is a delay-tolerant mesh network for intermittently-connected devices. End-to-end encrypted messages relay device to device — over BLE, Wi-Fi, and the internet — until they reach the person you’re trying to reach.',
+  title = 'Hop, the network that finds a way',
+  description = 'Hop is a delay-tolerant mesh network for intermittently-connected devices. End-to-end encrypted messages relay device to device, over BLE, Wi-Fi, and the internet, until they reach the person you’re trying to reach.',
   path = '',
   ogImage = '/og.png',
 } = Astro.props;
@@ -17,7 +17,7 @@ const ogImageUrl = new URL(ogImage, Astro.site);
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    {/* Set theme before paint — stored choice, else OS pref, else dark. */}
+    {/* Set theme before paint, stored choice, else OS pref, else dark. */}
     <script is:inline>
       (function () {
         try {
@@ -40,17 +40,17 @@ const ogImageUrl = new URL(ogImage, Astro.site);
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <meta name="theme-color" content="#07090b" />
-    {/* Brand typeface — Poppins (geometric, friendly, pairs with the cursive mark) */}
+    {/* Brand typeface, Poppins (geometric, friendly, pairs with the cursive mark) */}
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,600&display=swap" />
-    {/* Icons — Font Awesome Pro kit */}
+    {/* Icons, Font Awesome Pro kit */}
     <script is:inline src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
 
-    {/* Open Graph — social / link unfurls */}
+    {/* Open Graph, social / link unfurls */}
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Hop" />
     <meta property="og:url" content={canonical} />
@@ -59,7 +59,7 @@ const ogImageUrl = new URL(ogImage, Astro.site);
     <meta property="og:image" content={ogImageUrl} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Hop — the network that finds a way" />
+    <meta property="og:image:alt" content="Hop, the network that finds a way" />
 
     {/* Twitter / X large-image card */}
     <meta name="twitter:card" content="summary_large_image" />
@@ -67,7 +67,7 @@ const ogImageUrl = new URL(ogImage, Astro.site);
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
 
-    {/* Structured data — Organization + the SDK as a SoftwareApplication */}
+    {/* Structured data, Organization + the SDK as a SoftwareApplication */}
     <script type="application/ld+json" is:inline set:html={JSON.stringify({
       '@context': 'https://schema.org',
       '@graph': [
@@ -84,7 +84,7 @@ const ogImageUrl = new URL(ogImage, Astro.site);
           name: 'Hop',
           url: 'https://hopme.sh/',
           logo: 'https://hopme.sh/apple-touch-icon.png',
-          description: 'Hop is a delay-tolerant mesh network — end-to-end encrypted, store-and-forward messages that find a way device to device over BLE, Wi-Fi, and the internet.',
+          description: 'Hop is a delay-tolerant mesh network, end-to-end encrypted, store-and-forward messages that find a way device to device over BLE, Wi-Fi, and the internet.',
         },
         {
           '@type': 'SoftwareApplication',
@@ -94,7 +94,7 @@ const ogImageUrl = new URL(ogImage, Astro.site);
           url: 'https://hopme.sh/',
           publisher: { '@id': 'https://hopme.sh/#org' },
           offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
-          description: 'Embed the Hop delay-tolerant mesh transport in your app — sealed, store-and-forward datagrams that relay device to device over BLE, Wi-Fi, and the internet.',
+          description: 'Embed the Hop delay-tolerant mesh transport in your app, sealed, store-and-forward datagrams that relay device to device over BLE, Wi-Fi, and the internet.',
         },
       ],
     })} />

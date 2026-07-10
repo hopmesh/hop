@@ -21,42 +21,18 @@ import { createRequire } from 'module';
 import { makeMesh } from './mesh.js';
 import { makeMapBridge } from './store-bridge.js';
 import { SCENARIOS } from './scenarios.js';
+// SINGLE source of truth for transport + geography constants and the pure helpers. sim-worker.js
+// imports the SAME module, so the worker and this validator can no longer drift. index.html still
+// inlines its own copies (one monolithic file); driftCheck() below greps them out and fails if they
+// diverge from these values — so all three copies stay pinned.
+import { RANGE, SOAK, RELAY_ID, SPEED, RKEYS, TOWERS, APS, djb, rnd01, areaSpot, hav } from './sim-constants.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { WasmNode } = require(join(here, '../core/hop-wasm/pkg-node/hop_wasm.js'));
 const ROUTES_GEOM = JSON.parse(readFileSync(join(here, 'routes.json'), 'utf8'));
 
-// ---- constants mirrored from sim/index.html ----
-const RKEYS = ['geary', 'mission', 'vanness', 'market', 'northsouth'];
-const SPEED = { walk: 1.5, drive: 8, bike: 4.5 };            // m/s of sim time
-const TOWERS = [
-  { pos: [-122.4001, 37.7936], r: 850 }, { pos: [-122.4045, 37.7855], r: 820 },
-  { pos: [-122.3958, 37.7952], r: 820 }, { pos: [-122.3945, 37.7828], r: 850 },
-  { pos: [-122.4130, 37.7925], r: 950 }, { pos: [-122.4180, 37.8005], r: 950 },
-  { pos: [-122.4235, 37.7815], r: 1050 }, { pos: [-122.4300, 37.7908], r: 1100 },
-  { pos: [-122.4270, 37.7695], r: 1100 }, { pos: [-122.4130, 37.7625], r: 1100 },
-  { pos: [-122.4030, 37.7660], r: 1050 }, { pos: [-122.4430, 37.7850], r: 1200 },
-  { pos: [-122.4452, 37.7640], r: 1650 },
-];
-const APS = [
-  { pos: [-122.3975, 37.7902], r: 35, name: 'FiDi Café', pub: true, sat: true, bat: true },
-  { pos: [-122.394416, 37.792435], r: 42, name: 'Ferry Plaza', pub: true },
-  { pos: [-122.421766, 37.795856], r: 40, name: 'Nob Hill Park', pub: true },
-  { pos: [-122.4002, 37.7812], r: 40, name: 'SoMa Office', pub: false, bat: true, key: 'office' },
-  { pos: [-122.419341, 37.775964], r: 22, name: 'Civic Home', pub: false, key: 'home1' },
-  { pos: [-122.419568, 37.763818], r: 26, name: 'Mission Home', pub: false, sat: true, key: 'home2' },
-];
-// ---- constants mirrored from sim/sim-worker.js ----
-const RANGE = { ble: 35, wifi: 90 };
-const SOAK = { ble: 4000, wifi: 8000, ap: 2000, relay: 3000, lora: 1500 };
-const RELAY_ID = 'relay';
-
 // ---- geometry ----
-const R = 6371000, D2R = Math.PI / 180;
-function hav(a, b) { const dLa = (b[1] - a[1]) * D2R, dLo = (b[0] - a[0]) * D2R;
-  const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[1] * D2R) * Math.cos(b[1] * D2R) * Math.sin(dLo / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(h)); }
 function buildLine(coords) {                        // cumulative-distance polyline for along-line lookup
   const cum = [0]; for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + hav(coords[i - 1], coords[i]));
   return { coords, cum, lenKm: cum[cum.length - 1] / 1000 };
@@ -71,12 +47,7 @@ function along(line, km) {                          // point `km` along the line
 }
 const LINES = Object.fromEntries(Object.entries(ROUTES_GEOM).map(([k, c]) => [k, buildLine(c)]));
 
-// swarm helpers — EXACT mirrors of index.html
-function djb(id) { let h = 5381; for (const c of id) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h; }
-function rnd01(salt, n) { return ((((salt + n * 2654435761) ^ (salt << 7)) >>> 0) % 10000) / 10000; }
-function areaSpot(centre, id, visit) { const salt = djb(id);
-  const ang = rnd01(salt, visit * 2 + 1) * 6.283, rad = 4 + rnd01(salt, visit * 2 + 2) * 11;
-  return [centre[0] + (rad * Math.sin(ang)) / (111320 * Math.cos(centre[1] * Math.PI / 180)), centre[1] + (rad * Math.cos(ang)) / 111320]; }
+// djb / rnd01 / areaSpot / hav are imported from sim-constants.js (shared with sim-worker.js).
 
 // ---- cast, mirrored from cast() in index.html (stage-aware) ----
 function buildCast(scen) {
@@ -286,6 +257,48 @@ const JITTER = (() => { const a = argv.find(x => x.startsWith('--jitter=')); ret
 function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0;
   let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+// ---- drift check: index.html inlines its own copies of these constants/helpers (one monolithic file
+// that can't easily import ES modules mid-render). Assert those inlined copies still MATCH the shared
+// sim-constants.js this validator runs against — otherwise the checker could pass while the deployed
+// site uses different ranges/soaks/geometry (exactly the silent divergence this checker exists to catch).
+function driftCheck() {
+  const html = readFileSync(join(here, 'index.html'), 'utf8');
+  const norm = s => s.replace(/\s+/g, '');   // whitespace-insensitive literal match
+  const H = norm(html);
+  const problems = [];
+  const need = (label, snippet) => { if (!H.includes(norm(snippet))) problems.push(label); };
+
+  // SPEED object (m/s of sim time)
+  need('SPEED', `const SPEED={walk:${SPEED.walk},drive:${SPEED.drive},bike:${SPEED.bike}};`);
+  // RKEYS is derived from ROUTES in index.html; assert the route set matches ours.
+  for (const k of RKEYS) need(`ROUTE:${k}`, `${k}:[[`);
+  // TOWERS: count + a representative first/last coordinate + radius.
+  need('TOWERS.count', `r:${TOWERS[TOWERS.length - 1].r}}`);
+  need('TOWERS.first', `pos:[${TOWERS[0].pos[0]},${TOWERS[0].pos[1]}],r:${TOWERS[0].r}`);
+  // APS: names + the pub/key flags that the link model keys off.
+  for (const a of APS) {
+    need(`AP:${a.name}`, `name:'${a.name}'`);
+    if (a.key) need(`AP.key:${a.name}`, `key:'${a.key}'`);
+  }
+  // pure helpers — the exact expressions the harness re-uses.
+  need('djb', `let h=5381; for(const c of id) h=(h*33+c.charCodeAt(0))>>>0;`);
+  need('rnd01', `((((salt+n*2654435761)^(salt<<7))>>>0)%10000)/10000`);
+  need('areaSpot', `rad=4+rnd01(salt,visit*2+2)*11`);
+
+  // sim-worker.js must now IMPORT the transport constants (not redefine them), so its copy can't drift.
+  const worker = readFileSync(join(here, 'sim-worker.js'), 'utf8');
+  if (!/from ['"]\.\/sim-constants\.js['"]/.test(worker)) problems.push('worker: not importing sim-constants.js');
+  if (/const\s+RANGE\s*=/.test(worker) || /const\s+SOAK\s*=/.test(worker)) problems.push('worker: still defines its own RANGE/SOAK');
+
+  return problems;
+}
+const drift = driftCheck();
+if (drift.length) {
+  console.log(`❌ DRIFT: sim/index.html (or sim-worker.js) no longer matches sim/sim-constants.js — ${drift.join(', ')}`);
+  console.log('   Update the inlined copies in index.html (or re-import in sim-worker.js) to match sim-constants.js.');
+  process.exit(1);
+}
+
 const only = argv.filter(x => !x.startsWith('--'));
 // comingSoon stages verify too — their scripts only exercise what IS real (e.g. lora's local BLE hop).
 const entries = Object.entries(SCENARIOS).filter(([k]) => !only.length || only.includes(k));

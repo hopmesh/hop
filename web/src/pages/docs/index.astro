@@ -3,7 +3,7 @@ import DocsLayout from '../../layouts/DocsLayout.astro';
 import { drivers } from '../../data/drivers.js';
 ---
 <DocsLayout
-  title="Docs — build on Hop"
+  title="Docs, build on Hop"
   description="Hop documentation. How the layers fit, a quickstart, and the per-platform drivers (iOS, Android, macOS, ESP32, Linux) that embed hop-core and drive the radios."
 >
   <div class="eyebrow">Docs</div>
@@ -12,7 +12,7 @@ import { drivers } from '../../data/drivers.js';
      <a href="/docs/quickstart/">Quickstart</a>, then pick the driver for your platform.</p>
 
   <h2>How Hop is layered</h2>
-  <p><code>hop-core</code> is a pure Rust core: it seals, addresses, holds, and routes datagrams — but it
+  <p><code>hop-core</code> is a pure Rust core: it seals, addresses, holds, and routes datagrams, but it
      has no bearer system of its own. It only moves bytes. A <strong>driver</strong> is the per-platform
      host that embeds the core and implements the bearer trait (<code>send_frame</code> /
      <code>recv_frame</code> / <code>peer_events</code>): it owns discovery, connections, background
@@ -35,6 +35,10 @@ import { drivers } from '../../data/drivers.js';
       </a>
     ))}
   </div>
+
+  <h2>Background reading</h2>
+  <p>Why a delay-tolerant mesh can't just run TCP/TLS end to end:
+     <a href="/learn/tcp-tls-delay-tolerance.html">TCP, TLS, and delay tolerance</a>, an interactive primer.</p>
 
   <h2>Start building</h2>
   <p><a href="/docs/quickstart/">Quickstart →</a></p>

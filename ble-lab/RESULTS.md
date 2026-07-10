@@ -1,4 +1,11 @@
-# Hop BLE — Clean-Room Validation Results (2026-06-27)
+# Hop BLE, Clean-Room Validation Results (2026-06-27)
+
+> **ble-lab charter.** This is the clean-room repro rig for the open advertiser / link-formation
+> wedges and the iOS L2CAP ~30s teardown (bug #2 below), not a second production bearer stack. It
+> deliberately mirrors the folded-back production bearers but can drift from them; treat production
+> `bearers/` as the source of truth. Wi-Fi Direct was removed here (commit c059d69) to match
+> production, so the rig now carries only BLE and LAN. Bug #2 (iOS L2CAP teardown) is still open and
+> should be tracked in the main issue ledger, not only here.
 
 ## TL;DR
 

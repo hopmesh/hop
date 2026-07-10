@@ -4,8 +4,9 @@
 import Foundation
 import Hop
 
-let a = HopNode.ephemeral()
-let b = HopNode.ephemeral()
+guard let a = HopNode.ephemeral(), let b = HopNode.ephemeral() else {
+    print("FAIL: ephemeral() returned nil"); exit(1)
+}
 
 var now: UInt64 = 1_700_000_000_000
 a.tick(nowMs: now); b.tick(nowMs: now)

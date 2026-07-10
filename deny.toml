@@ -1,0 +1,80 @@
+# cargo-deny configuration for the Hop workspace supply-chain gate.
+#
+# Run locally with:
+#   cargo install cargo-deny
+#   cargo deny check
+#
+# In CI this runs as its own job (see .github/workflows/ci.yml once wired) so an
+# advisory, a banned/duplicate dependency, or a disallowed source can block a merge
+# before it reaches the Cloud Build deploy trigger. Uses the current cargo-deny
+# schema (advisories/licenses without the removed *-severity fields).
+
+[graph]
+# Check the full dependency graph regardless of target so the wasm, host, and
+# service builds are all covered by one pass.
+all-features = false
+
+[advisories]
+# RustSec advisory DB. `deny` unmaintained/yanked so supply-chain rot is visible.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+unmaintained = "workspace"
+# No blanket ignores. Add a specific "RUSTSEC-YYYY-NNNN" here ONLY with a comment
+# explaining why the advisory does not apply to Hop and who signed off.
+ignore = []
+
+[licenses]
+# Hop itself ships under FSL-1.1-ALv2 (see LICENSE.md), which is NOT an SPDX
+# identifier, so the workspace crates are covered by `license-file` in Cargo.toml
+# rather than a `license` field. This list governs THIRD-PARTY dependency licenses,
+# which must be permissive so they can travel inside the shipped binaries and the
+# per-bearer packages.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+]
+# A crate missing usable license metadata falls below this and fails the check,
+# which is what we want (unknown terms should not ship).
+confidence-threshold = 0.9
+
+# The workspace crates carry no SPDX `license` field (they use FSL via
+# license-file), so clarify them here to keep them out of the "unlicensed" bucket.
+# These are first-party crates governed by the repo LICENSE.md.
+[[licenses.clarify]]
+crate = "hop-core"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = []
+
+[[licenses.clarify]]
+crate = "hop"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = []
+
+[bans]
+# Warn on duplicate versions of the same crate so tree bloat and skew stay visible;
+# deny wildcard version requirements in first-party crates.
+multiple-versions = "warn"
+wildcards = "deny"
+# Keep the crypto and store backends single-sourced. Add a specific ban here (with a
+# comment) if a dependency reintroduces something we removed on purpose.
+deny = []
+# The two SQLite bundling backends (bundled vs sqlcipher) cannot both be active in one
+# build; that is enforced by feature wiring in Cargo.toml, not here.
+skip = []
+
+[sources]
+# Only crates.io and the first-party git repo are allowed sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

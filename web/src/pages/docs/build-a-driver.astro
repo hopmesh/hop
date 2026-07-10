@@ -8,7 +8,7 @@ const s = (x) => `<span style="color:${S}">${x}</span>`;
 
 const traitCode =
 `${c('// hop-core is bearerless. A Bearer just moves opaque frames between peers and')}
-${c('// reports who is reachable — the core seals, addresses, fragments, retransmits,')}
+${c('// reports who is reachable, the core seals, addresses, fragments, retransmits,')}
 ${c('// dedups, and delivers on top of it.')}
 ${k('pub trait')} ${t('Bearer')}: Send + Sync {
     ${c('// Max bytes per frame. The core fragments bundles to fit and reassembles them.')}
@@ -24,7 +24,7 @@ ${k('pub trait')} ${t('Bearer')}: Send + Sync {
 const eventsCode =
 `${c('// inside your bearer, as the transport discovers peers and receives bytes:')}
 core.peer_up(peer_id);              ${c('// a peer became reachable')}
-core.recv_frame(peer_id, &bytes);   ${c('// an inbound frame arrived — hand it to the core')}
+core.recv_frame(peer_id, &bytes);   ${c('// an inbound frame arrived, hand it to the core')}
 core.peer_down(peer_id);            ${c('// the peer went away')}`;
 
 const registerCode =
@@ -36,7 +36,7 @@ ${k('let')} node = ${t('HopNode')}::builder(secret)
 
 const swiftCode =
 `${c('// On iOS/Android the driver implements the same interface in the host language')}
-${c('// (a UniFFI foreign trait) and hands it to the core — e.g. driving CoreBluetooth:')}
+${c('// (a UniFFI foreign trait) and hands it to the core, e.g. driving CoreBluetooth:')}
 ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
     ${k('func')} mtu() -> ${t('UInt32')} { ${s('244')} }
     ${k('func')} sendFrame(peer: ${t('PeerId')}, frame: ${t('Data')}) ${k('throws')} { ${c('/* L2CAP / GATT write */')} }
@@ -44,15 +44,14 @@ ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
 }`;
 ---
 <DocsLayout
-  title="Build a driver — Hop docs"
-  description="hop-core is bearerless. Implement the Bearer trait for your platform or transport and register it with a HopNode — in Rust, or in a host language via UniFFI."
+  title="Build a driver, Hop docs"
+  description="hop-core is bearerless. Implement the Bearer trait for your platform or transport and register it with a HopNode, in Rust, or in a host language via UniFFI."
 >
   <div class="eyebrow"><a href="/docs/" style="color:var(--accent)">Docs</a> · Drivers</div>
   <h1>Build a driver</h1>
-  <p class="lede">hop-core has no bearer system of its own — it only moves bytes. A <strong>driver</strong>
+  <p class="lede">hop-core has no bearer system of its own, it only moves bytes. A <strong>driver</strong>
      gives it bearers: it implements a small trait for one transport or platform and registers it with the
-     node. Everything else — sealing, addressing, routing, fragmentation, retransmit, dedup, delivery —
-     stays in the core.</p>
+     node. Everything else, sealing, addressing, routing, fragmentation, retransmit, dedup, delivery, stays in the core.</p>
 
   <h2>What the core does vs. what your driver does</h2>
   <div class="grid-2" style="margin-top:14px;">
@@ -68,7 +67,7 @@ ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
     <div class="card">
       <h3>Your driver owns</h3>
       <ul class="checks" style="margin-top:10px;">
-        <li>Discovery — who's reachable right now</li>
+        <li>Discovery, who's reachable right now</li>
         <li>Connections &amp; moving raw frames</li>
         <li>Background operation &amp; power for the platform</li>
         <li>Reporting the MTU it can carry</li>
@@ -82,13 +81,12 @@ ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
   <pre class="code-block sm" set:html={traitCode}></pre>
 
   <h2>Report what's happening</h2>
-  <p>Your transport drives the core through the handle from <code>attach</code> — surface peers as they
+  <p>Your transport drives the core through the handle from <code>attach</code>, surface peers as they
      come and go, and hand every inbound frame straight in. The core does the rest.</p>
   <pre class="code-block sm" set:html={eventsCode}></pre>
 
   <h2>Register it on the node</h2>
-  <p>Add one bearer or several. A node with more than one bearer relays across all of them at once —
-     that's how BLE, Wi-Fi/LAN, and the internet relay coexist on the same node.</p>
+  <p>Add one bearer or several. A node with more than one bearer relays across all of them at once, that's how BLE, Wi-Fi/LAN, and the internet relay coexist on the same node.</p>
   <pre class="code-block sm" set:html={registerCode}></pre>
 
   <h2>From a host language</h2>
@@ -96,7 +94,7 @@ ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
      <a href="/docs/drivers/esp32/">ESP32</a>) implement the trait in Rust. On
      <a href="/docs/drivers/ios/">iOS</a> and <a href="/docs/drivers/android/">Android</a>, the
      driver implements the <em>same</em> interface in Swift or Kotlin as a UniFFI foreign trait and
-     hands it to the core — so the platform code that drives CoreBluetooth or the Android BLE stack
+     hands it to the core, so the platform code that drives CoreBluetooth or the Android BLE stack
      plugs in exactly where a Rust bearer would.</p>
   <pre class="code-block sm" set:html={swiftCode}></pre>
 
@@ -104,11 +102,11 @@ ${k('final class')} ${t('CoreBluetoothBearer')}: ${t('Bearer')} {
   <ul class="checks">
     <li>Implement <code>mtu()</code>, <code>send_frame()</code>, and <code>attach()</code>.</li>
     <li>On discovery/connect, call <code>peer_up</code> / <code>peer_down</code>.</li>
-    <li>On every inbound frame, call <code>recv_frame</code> — never reassemble yourself.</li>
-    <li>Register the bearer(s) on the node builder; don't route or retransmit — the core does.</li>
+    <li>On every inbound frame, call <code>recv_frame</code>, never reassemble yourself.</li>
+    <li>Register the bearer(s) on the node builder; don't route or retransmit, the core does.</li>
   </ul>
 
-  <p class="note mt-m">Illustrative — the shape of the interface, not the exact signatures; the real
+  <p class="note mt-m">Illustrative, the shape of the interface, not the exact signatures; the real
      trait ships with the SDK. Bringing an unusual transport or platform?
      <a href="/early-access/">Tell us</a>.</p>
 

@@ -1,5 +1,5 @@
 ---
-// ProtocolDiagram — a small, on-brand diagram of how one protocol layer works.
+// ProtocolDiagram, a small, on-brand diagram of how one protocol layer works.
 // Rendered at build time from a `viz` spec (see data/protocol.js). Static SVG
 // with SMIL animation, so there's no client JS.
 const { viz } = Astro.props;
@@ -119,7 +119,7 @@ if (viz.svg) {
 </figure>
 
 <style is:global>
-  /* Panel palette — semantic tokens so the diagram flips cleanly light/dark.
+  /* Panel palette, semantic tokens so the diagram flips cleanly light/dark.
      Accent hues (green/amber/blue/red) and surfaces are all tokenized; the
      light values live in the [data-theme="light"] block at the bottom. */
   .pdiagram{ --green:#2bf0a0; --amber:#ffb43a; --blue:#74b6ff; --red:#e0564f;
@@ -203,7 +203,7 @@ if (viz.svg) {
   .pdiagram .pd-msg-p{ fill:var(--pd-plain); font:600 12px var(--mono); }
   .pdiagram .pd-msg-c{ fill:var(--pd-faint); font:600 12px var(--mono); letter-spacing:1px; }
 
-  /* light theme — flip the panel tokens; accents deepen for contrast on white */
+  /* light theme, flip the panel tokens; accents deepen for contrast on white */
   :root[data-theme="light"] .pdiagram{
     --green:#10a877; --amber:#c2851b; --blue:#2f7fe0; --red:#cf4a43;
     --pd-ink:#44536e; --pd-faint:#6f7c93;

@@ -1,26 +1,26 @@
 ---
-// Multi-language code sample with a tab toggle — same call, three platforms.
+// Multi-language code sample with a tab toggle, same call, three platforms.
 const C = 'var(--tok-comment)', K = 'var(--tok-kw)', S = 'var(--tok-str)';
-const rust = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+const rust = `<span style="color:${C}">// open a node from your 32-byte secret, storage is managed for you</span>
 <span style="color:${K}">let</span> node = HopNode::open(secret)?;
 
-<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+<span style="color:${C}">// reach a device by its address (its public key), sealed, store-and-forward</span>
 node.send(peer, Payload::message(<span style="color:${S}">"on my way"</span>))?;
 
 <span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>
 <span style="color:${K}">for</span> msg <span style="color:${K}">in</span> node.receive()? { handle(msg.open()?); }`;
-const swift = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+const swift = `<span style="color:${C}">// open a node from your 32-byte secret, storage is managed for you</span>
 <span style="color:${K}">let</span> node = <span style="color:${K}">try</span> HopNode(secret: secret)
 
-<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+<span style="color:${C}">// reach a device by its address (its public key), sealed, store-and-forward</span>
 <span style="color:${K}">try</span> node.send(to: peer, payload: .message(<span style="color:${S}">"on my way"</span>))
 
 <span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>
 <span style="color:${K}">for</span> msg <span style="color:${K}">in</span> <span style="color:${K}">try</span> node.receive() { handle(<span style="color:${K}">try</span> msg.open()) }`;
-const kotlin = `<span style="color:${C}">// open a node from your 32-byte secret — storage is managed for you</span>
+const kotlin = `<span style="color:${C}">// open a node from your 32-byte secret, storage is managed for you</span>
 <span style="color:${K}">val</span> node = HopNode.open(secret)
 
-<span style="color:${C}">// reach a device by its address (its public key) — sealed, store-and-forward</span>
+<span style="color:${C}">// reach a device by its address (its public key), sealed, store-and-forward</span>
 node.send(peer, Payload.message(<span style="color:${S}">"on my way"</span>))
 
 <span style="color:${C}">// drain the inbox: sealed bundles addressed to you</span>

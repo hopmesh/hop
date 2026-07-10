@@ -3,12 +3,14 @@
   "type": "module",
   "version": "0.1.0",
   "private": true,
-  "description": "Marketing site for Hop — static, built with Astro.",
+  "description": "Marketing site for Hop, static, built with Astro.",
   "scripts": {
-    "sync-sim": "rm -rf public/sim && mkdir -p public/sim && cp -R ../sim/. public/sim/ && rm -rf public/sim/sqlite-wasm",
-    "predev": "npm run sync-sim",
+    "sync-sim": "rm -rf public/sim && mkdir -p public/sim && cp -R ../sim/. public/sim/",
+    "sync-learn": "rm -rf public/learn && mkdir -p public/learn && cp -R ../learn/. public/learn/",
+    "sync": "npm run sync-sim && npm run sync-learn",
+    "predev": "npm run sync",
     "dev": "astro dev",
-    "prebuild": "npm run sync-sim",
+    "prebuild": "npm run sync",
     "build": "astro build",
     "preview": "astro preview"
   },

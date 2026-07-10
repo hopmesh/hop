@@ -69,7 +69,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site).href;
       {c.scenarios && c.scenarios.length > 0 && (
         <div style="margin-top:40px;">
           <div class="eyebrow" style="margin-bottom:6px;">See it move</div>
-          <h2 style="font-size:clamp(22px,3vw,30px);margin-bottom:4px;">How it routes — live.</h2>
+          <h2 style="font-size:clamp(22px,3vw,30px);margin-bottom:4px;">How it routes, live.</h2>
           <p style="max-width:60ch;">The same animations from the homepage, for {c.title.replace(/&amp;/g, '&')}. Tab through the situations and watch a sealed message find a way across the mesh.</p>
           <div style="margin-top:18px;"><ScenarioPlayer ids={c.scenarios} /></div>
         </div>

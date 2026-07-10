@@ -1,0 +1,61 @@
+# Dependabot supply-chain updates for the Hop repo.
+#
+# Covers every dependency ecosystem the workspace actually uses: the Cargo
+# workspace (Rust), the Astro marketing site (npm), the Kotlin SDK wrapper +
+# Android modules (Gradle), and the GitHub Actions workflows themselves. Grouped
+# updates keep PR volume low; cargo-deny (deny.toml) is the gate that actually
+# blocks a bad advisory from merging.
+version: 2
+updates:
+  # Rust workspace (single virtual manifest at the repo root).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+
+  # Marketing site (Astro / npm).
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      web-dependencies:
+        patterns:
+          - "*"
+
+  # Kotlin SDK wrapper (Gradle).
+  - package-ecosystem: gradle
+    directory: "/sdk/wrappers/kotlin"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Android bearer modules (Gradle).
+  - package-ecosystem: gradle
+    directory: "/bearers/android"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Android demo app (Gradle).
+  - package-ecosystem: gradle
+    directory: "/android/HopDemo"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The CI/pages workflows themselves (action pin drift).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

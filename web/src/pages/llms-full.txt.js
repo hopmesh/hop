@@ -1,4 +1,4 @@
-// /llms-full.txt — the expanded LLM/agent brief, generated at build time from the
+// /llms-full.txt, the expanded LLM/agent brief, generated at build time from the
 // same data the site renders, so it never drifts. Companion to the curated
 // public/llms.txt. Plain-text markdown, served at https://hopme.sh/llms-full.txt
 import { cases } from '../data/use-cases.js';
@@ -10,15 +10,15 @@ const strip = (s) =>
 
 export async function GET() {
   const L = [];
-  L.push('# Hop — full reference for language models', '');
+  L.push('# Hop, full reference for language models', '');
   L.push(
-    '> Hop is a delay-tolerant mesh network: end-to-end encrypted, store-and-forward datagrams that hop device to device — over BLE, Wi-Fi, and the internet — until they reach the person or service you meant. Held, never dropped. The single transport layer offline-capable apps build on.'
+    '> Hop is a delay-tolerant mesh network: end-to-end encrypted, store-and-forward datagrams that hop device to device, over BLE, Wi-Fi, and the internet, until they reach the person or service you meant. Held, never dropped. The single transport layer offline-capable apps build on.'
   );
   L.push('', 'Short version: https://hopme.sh/llms.txt', '');
 
   L.push('## What you build (use cases)', '');
   for (const c of cases) {
-    L.push(`### ${strip(c.title)} — https://hopme.sh/use-cases/${c.id}/`);
+    L.push(`### ${strip(c.title)}, https://hopme.sh/use-cases/${c.id}/`);
     L.push(strip(c.tagline));
     for (const p of c.body) L.push(strip(p));
     L.push('');
@@ -28,7 +28,7 @@ export async function GET() {
   for (const g of groups) {
     L.push(`### ${g}`, '');
     for (const l of layers.filter((x) => x.group === g)) {
-      L.push(`#### ${strip(l.name)} — https://hopme.sh/protocol/${l.id}/`);
+      L.push(`#### ${strip(l.name)}, https://hopme.sh/protocol/${l.id}/`);
       L.push(strip(l.tagline));
       if (l.how) for (const h of l.how) L.push('- ' + strip(h));
       if (l.dev) L.push('For developers: ' + strip(l.dev));
@@ -39,11 +39,11 @@ export async function GET() {
 
   L.push('## Drivers (per-platform hosts that drive the radios)', '');
   L.push(
-    'hop-core has no bearer system; it only moves bytes. A driver embeds the core and implements the bearer trait (send_frame / recv_frame / peer_events) for one platform — owning discovery, connections, background operation, and power.',
+    'hop-core has no bearer system; it only moves bytes. A driver embeds the core and implements the bearer trait (send_frame / recv_frame / peer_events) for one platform, owning discovery, connections, background operation, and power.',
     ''
   );
   for (const h of drivers) {
-    L.push(`### ${strip(h.name)} (${h.status}) — https://hopme.sh/docs/drivers/${h.id}/`);
+    L.push(`### ${strip(h.name)} (${h.status}), https://hopme.sh/docs/drivers/${h.id}/`);
     L.push(strip(h.tagline));
     L.push(strip(h.summary));
     L.push('Bearers: ' + h.bearers.map(strip).join('; '));

@@ -9,24 +9,15 @@
     <!-- Pre-Android-12 fallbacks (API 29-30). -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <!-- Fine location: BLE caps at 30 (neverForLocation), but Wi-Fi Direct service discovery
-         (:bearer-wifidirect) needs it through Android 12L (API 32); 13+ uses NEARBY_WIFI_DEVICES below. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <!-- Fine location: legacy BLE scanning on Android 11 and below (API <= 30) needed it; the
+         BLE permissions above are neverForLocation on 31+. Kept for pre-31 scan compatibility. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <!-- LAN bearer (:bearer-lan): NSD discovery + TCP sockets on the local network. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <!-- Wi-Fi Direct bearer (:bearer-wifidirect): Wi-Fi P2P discovery + group + TCP, no router needed.
-         Match the prod hop-driver manifest's Wi-Fi Direct perms. -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <!-- Android 13+ Wi-Fi P2P discovery permission (fine location, capped at 32 above, covers <=12L). -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
-    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
 
     <!-- Keep both BLE planes alive in the background via a foreground service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

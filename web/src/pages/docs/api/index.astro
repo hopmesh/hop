@@ -3,16 +3,17 @@ import DocsLayout from '../../../layouts/DocsLayout.astro';
 import { apiLangs, apiFlows } from '../../../data/api-reference.js';
 ---
 <DocsLayout
-  title="Interface reference — Hop docs"
-  description="One interface, every language. The same Hop flows in Rust, Swift, Kotlin, and Java — nearly identical, because the driver does the platform work behind the scenes."
+  title="Interface reference · Hop docs"
+  description="One interface, every language. The same Hop flows in Rust, Swift, Kotlin, and Java, nearly identical, because the driver does the platform work behind the scenes."
 >
   <div class="eyebrow">Reference</div>
   <h1>Interface reference</h1>
   <p class="lede">One interface, every language. The driver handles discovery, connections,
-     background, and power behind the scenes — so the code you write is nearly the same whichever
+     background, and power behind the scenes, so the code you write is nearly the same whichever
      language you're in. Pick yours; every example below switches with you.</p>
-  <p class="note">Generated from the UniFFI interface (one Rust definition → all bindings), so these
-     track the real API. Java rides the JVM binding; Objective-C bridges from the Swift binding;
+  <p class="note">Hand-maintained during early access. These samples are kept in sync with the real
+     API by hand today; the intent is to generate them from the C ABI (sdk/hop.h) and its language
+     wrappers per release. Java rides the JVM binding; Objective-C bridges from the Swift binding;
      Python lands as its binding does.</p>
 
   <div class="apiref" data-apilang="rust">
@@ -36,7 +37,7 @@ import { apiLangs, apiFlows } from '../../../data/api-reference.js';
   </div>
 
   <h2>Where this goes next</h2>
-  <p>This is the shared, flow-level interface — the part that's the same everywhere. The full
+  <p>This is the shared, flow-level interface, the part that's the same everywhere. The full
      per-language reference (rustdoc, Swift DocC, Kotlin/Java Dokka) is generated per release from the
      same interface and linked here as it lands. Building on a platform that isn't here yet?
      <a href="/early-access/">Tell us</a>.</p>

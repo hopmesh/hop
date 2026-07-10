@@ -15,7 +15,9 @@ settings:
     SWIFT_VERSION: "5.0"
 packages:
   HopDriver:
-    path: ../HopDriver
+    # HopDriver moved to drivers/apple/HopDriver in the app cutover; project.yml was stale (the
+    # committed .xcodeproj had the right ref, so xcodegen never re-ran until the apple CI job).
+    path: ../../drivers/apple/HopDriver
 targets:
   HopDemo:
     type: application

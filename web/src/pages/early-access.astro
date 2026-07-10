@@ -2,15 +2,15 @@
 import Base from '../layouts/Base.astro';
 ---
 <Base
-  title="Early access — register interest in Hop"
-  description="Hop is in early access. Tell us what you're building and we'll get you in — SDK, hosted backbone, the long-range Hop Bridge, or a partnership."
+  title="Early access, register interest in Hop"
+  description="Hop is in early access. Tell us what you're building and we'll get you in, SDK, hosted backbone, the long-range Hop Bridge, or a partnership."
   path="/early-access"
 >
   <section class="hero" style="padding-bottom:24px;">
     <div class="wrap">
       <div class="eyebrow">Early access</div>
       <h1>Get on the <span style="color:var(--accent)">list.</span></h1>
-      <p class="lede">We're not open to everyone yet — we're onboarding teams in early access. Tell us
+      <p class="lede">We're not open to everyone yet, we're onboarding teams in early access. Tell us
          what you're building and we'll reach out as access opens up.</p>
     </div>
   </section>
@@ -34,9 +34,9 @@ import Base from '../layouts/Base.astro';
           <div class="field">
             <label for="lf-interest">Primary interest</label>
             <select id="lf-interest" name="interest">
-              <option>SDK — building an app</option>
+              <option>SDK, building an app</option>
               <option>Hosted cloud backbone</option>
-              <option>Hop Bridge — long-range hardware</option>
+              <option>Hop Bridge, long-range hardware</option>
               <option>Public safety &amp; defense</option>
               <option>Partnership or other</option>
             </select>
@@ -48,7 +48,7 @@ import Base from '../layouts/Base.astro';
           <input type="hidden" name="access_key" value="fbe3defc-91cc-4129-9670-c18ebdce20d7" />
           <input type="hidden" name="subject" value="Hop early-access interest" />
           <input type="hidden" name="from_name" value="Hop early access" />
-          {/* honeypot — bots tick this; humans never see it (Web3Forms rejects if set) */}
+          {/* honeypot, bots tick this; humans never see it (Web3Forms rejects if set) */}
           <input type="checkbox" name="botcheck" class="lf-hp" tabindex="-1" aria-hidden="true" />
           <button class="btn btn-primary" type="submit" id="lf-submit">Request early access →</button>
           <p class="lead-note" id="lf-status" role="status" aria-live="polite"></p>
@@ -62,7 +62,7 @@ import Base from '../layouts/Base.astro';
 
 <script is:inline>
   (function () {
-    // Web3Forms — submissions POST here with the public access_key field above and are
+    // Web3Forms, submissions POST here with the public access_key field above and are
     // emailed to the address configured on the Web3Forms account. (If ever cleared, the
     // form falls back to composing an email to hello@hopme.sh so the button still works.)
     var FORM_ENDPOINT = 'https://api.web3forms.com/submit';
@@ -84,7 +84,7 @@ import Base from '../layouts/Base.astro';
       }
 
       if (!FORM_ENDPOINT) {
-        // No backend wired yet — fall back to an email compose.
+        // No backend wired yet, fall back to an email compose.
         var body = 'Name: ' + (data.get('name') || '') +
           '\nCompany: ' + (data.get('company') || '') +
           '\nInterest: ' + (data.get('interest') || '') +
@@ -103,7 +103,7 @@ import Base from '../layouts/Base.astro';
           if (r.ok) {
             f.style.display = 'none';
             status.className = 'lead-note ok';
-            status.textContent = "Thanks — you're on the list. We'll be in touch as access opens.";
+            status.textContent = "Thanks, you're on the list. We'll be in touch as access opens.";
           } else {
             throw new Error('bad status');
           }
@@ -111,7 +111,7 @@ import Base from '../layouts/Base.astro';
         .catch(function () {
           submit.disabled = false;
           status.className = 'lead-note err';
-          status.textContent = "Something went wrong — please email hello@hopme.sh and we'll add you.";
+          status.textContent = "Something went wrong, please email hello@hopme.sh and we'll add you.";
         });
     });
   })();

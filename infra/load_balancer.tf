@@ -33,8 +33,9 @@ resource "google_compute_region_network_endpoint_group" "relay" {
 # timeout (var.ws_request_timeout_seconds, set in cloud_run.tf).
 # count-gated (not just empty backends) so a relay teardown DESTROYS this whole resource rather than
 # updating it to zero backends: an in-place update-to-empty while the url_map references it and the
-# regional NEGs are being destroyed forms a Terraform destroy-time cycle. When relays are off the
-# url_map defaults to the example backend instead (see default_service below).
+# regional NEGs are being destroyed forms a Terraform destroy-time cycle. When relays are off this
+# whole on-state chain is destroyed; the separate OFF-STATE chain below (url_map.off + its proxy +
+# forwarding rules, gated on !relays_enabled) then serves example.hopme.sh on the same anycast IP.
 resource "google_compute_backend_service" "relay" {
   count                 = var.relays_enabled ? 1 : 0
   name                  = "hop-relay-backend"
@@ -73,8 +74,10 @@ resource "google_compute_backend_service" "relay_region" {
 # per-region backends/NEGs it references are destroyed forms a cycle (a conditional/alternate url_map
 # doesn't help, since `x ? on[0] : off[0]` statically references BOTH). Destroying the whole chain
 # together has no in-place-update-referencing-a-destroyed-resource, so no cycle. Kept alive across the
-# teardown: the anycast IPs, the wildcard cert, DNS, the :80->:443 redirect, and the example service,
-# so re-enabling (relays_enabled = true) restores the fleet on the SAME IP + cert.
+# teardown: the anycast IPs, the wildcard cert, DNS, the :80->:443 redirect, and the example service.
+# In the off state the separate OFF-STATE chain (url_map.off, below) takes over :443 to keep
+# example.hopme.sh reachable (infra-06); re-enabling (relays_enabled = true) restores the fleet on the
+# SAME IP + cert and hands :443 back to this chain.
 resource "google_compute_url_map" "relay" {
   count           = var.relays_enabled ? 1 : 0
   name            = "hop-relay-urlmap"
@@ -105,6 +108,61 @@ resource "google_compute_url_map" "relay" {
     name            = "example"
     default_service = google_compute_backend_service.example.id
   }
+}
+
+# --- OFF-STATE serving chain (relays_enabled = false) --------------------------------
+# infra-06: when the relay fleet is off, the ENTIRE on-state HTTPS chain above (url_map.relay, the
+# https proxy, and both :443 forwarding rules) is destroyed. The example host_rule lives INSIDE
+# url_map.relay, so example.hopme.sh would go dark on the anycast IP even though the example Cloud Run
+# service (example.tf) keeps running (min_instances = 1, always-allocated CPU) and billing. This
+# parallel chain, count-gated on the INVERSE of relays_enabled, keeps a :443 listener whose default
+# (and only) backend is the example service, so example.hopme.sh stays reachable in the off state.
+#
+# It reuses the SAME anycast IPs and the SAME wildcard cert map, so re-enabling the fleet just swaps
+# which chain owns the :443 forwarding rules (this one is destroyed as the on-state one is created).
+# Exactly one of the two chains exists at any time, so there is never a forwarding-rule/IP collision.
+# Like the on-state chain, the whole off-state set is count-gated (not updated in place) to avoid a
+# Terraform destroy-time cycle when flipping relays_enabled.
+resource "google_compute_url_map" "off" {
+  count           = var.relays_enabled ? 0 : 1
+  name            = "hop-off-urlmap"
+  default_service = google_compute_backend_service.example.id
+
+  # Keep example.hopme.sh explicit too (in addition to being the default), so the intent is legible.
+  host_rule {
+    hosts        = [local.example_domain]
+    path_matcher = "example"
+  }
+
+  path_matcher {
+    name            = "example"
+    default_service = google_compute_backend_service.example.id
+  }
+}
+
+resource "google_compute_target_https_proxy" "off" {
+  count           = var.relays_enabled ? 0 : 1
+  name            = "hop-off-https-proxy"
+  url_map         = google_compute_url_map.off[0].id
+  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.relay.id}"
+}
+
+resource "google_compute_global_forwarding_rule" "off_https" {
+  count                 = var.relays_enabled ? 0 : 1
+  name                  = "hop-off-https"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  port_range            = "443"
+  target                = google_compute_target_https_proxy.off[0].id
+  ip_address            = google_compute_global_address.relay.id
+}
+
+resource "google_compute_global_forwarding_rule" "off_https_v6" {
+  count                 = var.relays_enabled ? 0 : 1
+  name                  = "hop-off-https-v6"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  port_range            = "443"
+  target                = google_compute_target_https_proxy.off[0].id
+  ip_address            = google_compute_global_address.relay_v6.id
 }
 
 # The original single-domain managed cert. No longer attached to the proxy (the cert map

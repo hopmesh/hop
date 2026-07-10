@@ -24,14 +24,12 @@ android {
 
 dependencies {
     // The bearer layer as a core lib + one lib per transport (NO master lib), mirroring apple/HopBearers:
-    //   :bearer-core — the Bearer/LinkSink contract, BearerManager registry, nodeId + log helpers
-    //   :bearer-ble         — the dual-role L2CAP BLE transport   (depends on :bearer-core)
-    //   :bearer-lan         — the NSD + TCP LAN transport         (depends on :bearer-core)
-    //   :bearer-wifidirect  — the Wi-Fi P2P transport (Android-only, depends on :bearer-core)
+    //   :bearer-core, the Bearer/LinkSink contract, BearerManager registry, nodeId + log helpers
+    //   :bearer-ble         the dual-role L2CAP BLE transport   (depends on :bearer-core)
+    //   :bearer-lan         the NSD + TCP LAN transport         (depends on :bearer-core)
     // The app supplies only the clean-room ProofSink consumer and picks which bearers to register.
     implementation(project(":bearer-core"))
     implementation(project(":bearer-ble"))
     implementation(project(":bearer-lan"))
-    implementation(project(":bearer-wifidirect"))
-    // Intentionally zero third-party deps: the proof-of-pipe core is pure platform BLE + LAN + Wi-Fi P2P.
+    // Intentionally zero third-party deps: the proof-of-pipe core is pure platform BLE + LAN.
 }

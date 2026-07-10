@@ -33,6 +33,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # web-05 / simwasm-02: rebuild the sim wasm FROM SOURCE (core/hop-wasm at HEAD) before the Astro
+      # build, so what deploys to hopme.sh always matches the shipping core. The committed sim/pkg is a
+      # convenience for local builds without a wasm toolchain; the public site is built from source.
+      - name: Install Rust + wasm32 target
+        working-directory: .
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        working-directory: .
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Build sim wasm (browser + node) from core/hop-wasm
+        working-directory: .
+        run: bash sim/build-wasm.sh
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -45,6 +62,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # prebuild runs `npm run sync`, which copies the freshly-built ../sim (incl. sim/pkg) into public/.
       - name: Build
         run: npm run build
 

@@ -13,6 +13,16 @@ terraform {
       version = "~> 3.4"
     }
   }
+
+  # infra-15: remote state in the same GCS bucket as the relay-fleet module, under a distinct prefix
+  # so the two isolated root modules never share state. This state binds the append-only Stripe meters
+  # and the price IDs the reconciler contract depends on (see meters.tf); keeping it local meant whoever
+  # ran the apply held the only, unreconstructable copy. GCS is versioned (rollback) and has native
+  # state locking. The bucket pre-exists (created out-of-band, same as the relay-fleet backend).
+  backend "gcs" {
+    bucket = "hop-mesh-tfstate"
+    prefix = "billing"
+  }
 }
 
 provider "stripe" {

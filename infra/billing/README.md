@@ -28,11 +28,26 @@ Terraform defines the **catalog only**. At runtime (DESIGN.md §37):
 
 Meter `event_name`s are the integration contract — keep them stable.
 
+## State (remote, GCS)
+
+State lives in `gs://hop-mesh-tfstate` under prefix `billing` (see `providers.tf`), separate from the
+relay-fleet state (prefix `relay-fleet`). This is deliberate (infra-15): the meters are **append-only
+and undeletable**, so the state that binds them to their price/event IDs must not live only on one
+operator's laptop. GCS is versioned (rollback) and locks natively.
+
+If you applied this module **before** the backend was added (local `terraform.tfstate`), migrate once:
+
+```sh
+terraform -chdir=infra/billing init -migrate-state   # copies local state up to gs://hop-mesh-tfstate/billing
+```
+
+Answer "yes" when prompted. After that the local `terraform.tfstate` is a stale copy; delete it.
+
 ## Apply
 
 ```sh
 export STRIPE_API_KEY='rk_live_...'        # restricted key: Products/Prices/Meters write
-terraform -chdir=infra/billing init
+terraform -chdir=infra/billing init        # uses the GCS backend above
 terraform -chdir=infra/billing plan
 terraform -chdir=infra/billing apply
 ```

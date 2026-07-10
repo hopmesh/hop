@@ -33,8 +33,11 @@ let bearerA = LoopbackBearer(isDialer: nodeIdGreater(aId, bId), peerId: aId)
 let bearerB = LoopbackBearer(isDialer: nodeIdGreater(bId, aId), peerId: bId)
 bearerA.partner = bearerB; bearerB.partner = bearerA
 
-let rtA = HopRuntime(node: .ephemeral())
-let rtB = HopRuntime(node: .ephemeral())
+guard let nodeA = HopNode.ephemeral(), let nodeB = HopNode.ephemeral() else {
+    print("FAIL: ephemeral() returned nil"); exit(1)
+}
+let rtA = HopRuntime(node: nodeA)
+let rtB = HopRuntime(node: nodeB)
 
 var now: UInt64 = 1_700_000_000_000
 rtA.tick(nowMs: now); rtB.tick(nowMs: now)

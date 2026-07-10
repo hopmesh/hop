@@ -2,7 +2,7 @@
 import Base from '../layouts/Base.astro';
 ---
 <Base
-  title="Privacy — Hop"
+  title="Privacy, Hop"
   description="How Hop handles data: end-to-end encrypted content the network can't read, pseudonymous key-based identities, and billing metered on volume, never content."
   path=""
 >
@@ -11,7 +11,7 @@ import Base from '../layouts/Base.astro';
       <div class="eyebrow">Privacy</div>
       <h1>Encrypted by <span class="grad">default.</span></h1>
       <p class="lede">Hop is built so the network carries your messages without being able to
-         read them. This is how that works in practice — and what we do and don't hold.</p>
+         read them. This is how that works in practice, and what we do and don't hold.</p>
     </div>
   </section>
 
@@ -22,16 +22,16 @@ import Base from '../layouts/Base.astro';
 
       <h2>Content is end-to-end encrypted</h2>
       <p>Every message payload is encrypted to the destination's key (X25519 + ChaCha20-Poly1305)
-         before it leaves your device. Relays — including our hosted backbone — carry ciphertext
+         before it leaves your device. Relays, including our hosted backbone, carry ciphertext
          they cannot read. Only the recipient can open it. We never see, store, or process the
          contents of your messages.</p>
 
       <h2>Identities are keys, not accounts</h2>
       <p>A node is an Ed25519 keypair; its public key is its address. There is no required account,
          phone number, or email at the protocol layer. Human-readable names and contacts are an
-         application concern, kept by the app — not part of the network.</p>
+         application concern, kept by the app, not part of the network.</p>
       <ul>
-        <li>The library never owns your keys — your app holds the secret and decides where it lives.</li>
+        <li>The library never owns your keys, your app holds the secret and decides where it lives.</li>
         <li>Addresses are pseudonymous public keys, shown as short fingerprints.</li>
       </ul>
 
@@ -42,7 +42,7 @@ import Base from '../layouts/Base.astro';
          relays what it's given; it does not decrypt it.</p>
 
       <h2>What we measure for billing</h2>
-      <p>Billing is metered on the sealed envelope — <strong>counts and bytes, never content</strong>:
+      <p>Billing is metered on the sealed envelope, <strong>counts and bytes, never content</strong>:
          active devices, data carried, internet egress, and mailbox storage. Active-device counts use
          pseudonymous addresses, deduplicated within a billing period and not linked to any personal
          identity. We never open a payload to meter it.</p>
@@ -54,14 +54,14 @@ import Base from '../layouts/Base.astro';
 
       <h2>What we don't do</h2>
       <ul>
-        <li>We don't read, mine, or sell message content — we can't; it's sealed to you.</li>
+        <li>We don't read, mine, or sell message content, we can't; it's sealed to you.</li>
         <li>We don't build a who-talks-to-whom social graph as a product.</li>
         <li>We don't require personal accounts to use the protocol.</li>
       </ul>
 
       <h2>Self-hosting</h2>
       <p>You can run the SDK fully peer-to-peer with no backbone at all, or operate your own private
-         backbone — in which case the data never touches our infrastructure and these backbone
+         backbone, in which case the data never touches our infrastructure and these backbone
          practices are yours to set.</p>
 
       <h2>Contact</h2>

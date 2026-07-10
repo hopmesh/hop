@@ -1,6 +1,7 @@
 # Terraform
 .terraform/
-.terraform.lock.hcl
+# NOTE (infra-11): the provider lock is COMMITTED so the Stripe provider version is pinned
+# and reproducible between CI validate and any local apply. Do not re-add it here.
 *.tfstate
 *.tfstate.*
 crash.log

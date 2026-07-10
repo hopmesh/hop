@@ -28,5 +28,10 @@ let package = Package(
         .target(name: "Hop", dependencies: ["CHop", "HopContract"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),
         .executableTarget(name: "RuntimeSmoke", dependencies: ["Hop", "HopContract"]),
+        // core-ffi-09: pure-Swift multiplexer tests (no libhop) — the LinkId-mint/route/dedup logic
+        // every iOS bearer routes through. Runs in a macOS CI job without the xcframework.
+        .testTarget(name: "HopContractTests", dependencies: ["HopContract"]),
+        // Full-stack HopRuntime + BearerManager + node (needs libhop via the xcframework in-tree).
+        .testTarget(name: "HopRuntimeTests", dependencies: ["Hop", "HopContract"]),
     ]
 )

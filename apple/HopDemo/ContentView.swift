@@ -794,6 +794,17 @@ struct ChannelInfoView: View {
     let topic: HopBearer.HpsTopic
     @Environment(\.dismiss) private var dismiss
 
+    // apple-10: reach/pending/members are snapshotted OFF the render path (fetched async on the core
+    // queue via `hpsHostSnapshot`) and held here, so the body never does a synchronous core-queue read
+    // that would block the main thread behind the packet drain.
+    @State private var snapshot = HopBearer.HpsHostSnapshot()
+
+    /// Re-fetch the host snapshot off-thread. Called on appear and after each mutating action.
+    private func refreshSnapshot() {
+        guard topic.hosting else { return }
+        bearer.hpsHostSnapshot(topic) { snapshot = $0 }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -806,7 +817,7 @@ struct ChannelInfoView: View {
 
                 if topic.hosting {
                     Section("Reach") {
-                        LabeledContent("Members", value: "\(bearer.hpsReach(topic))")
+                        LabeledContent("Members", value: "\(snapshot.reach)")
                     }
                     // Invite a contact (host-initiated; consent-based).
                     Section("Invite a contact") {
@@ -821,35 +832,33 @@ struct ChannelInfoView: View {
                         }
                     }
                     // Pending join requests (RequestToJoin).
-                    let pending = bearer.hpsPending(topic)
-                    if !pending.isEmpty {
+                    if !snapshot.pending.isEmpty {
                         Section("Join requests") {
-                            ForEach(pending, id: \.self) { who in
+                            ForEach(snapshot.pending, id: \.self) { who in
                                 HStack {
                                     Text(bearer.displayName(who))
                                     Spacer()
-                                    Button("Approve") { bearer.hpsApprove(topic, who) }.buttonStyle(.borderless)
-                                    Button(role: .destructive) { bearer.hpsDeny(topic, who) } label: { Text("Deny") }
+                                    Button("Approve") { bearer.hpsApprove(topic, who); refreshSnapshot() }.buttonStyle(.borderless)
+                                    Button(role: .destructive) { bearer.hpsDeny(topic, who); refreshSnapshot() } label: { Text("Deny") }
                                         .buttonStyle(.borderless)
                                 }
                             }
                         }
                     }
                     // Members + remove-and-rekey (revocation).
-                    let members = bearer.hpsMembers(topic)
-                    if !members.isEmpty {
+                    if !snapshot.members.isEmpty {
                         Section("Members (swipe to remove + rekey)") {
-                            ForEach(members, id: \.self) { who in
+                            ForEach(snapshot.members, id: \.self) { who in
                                 Text(bearer.displayName(who))
                                     .swipeActions {
                                         Button(role: .destructive) {
-                                            bearer.hpsRekey(topic, remove: [who])
+                                            bearer.hpsRekey(topic, remove: [who]); refreshSnapshot()
                                         } label: { Label("Remove", image: "ic_fa_user_slash") }
                                     }
                             }
                         }
                         Section {
-                            Button("Rotate keys (no removal)") { bearer.hpsRekey(topic) }
+                            Button("Rotate keys (no removal)") { bearer.hpsRekey(topic); refreshSnapshot() }
                         }
                     }
                 } else {
@@ -863,6 +872,7 @@ struct ChannelInfoView: View {
             .navigationTitle(topic.path)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .onAppear { refreshSnapshot() }
         }
     }
 }

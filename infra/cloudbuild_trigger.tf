@@ -25,13 +25,41 @@ resource "google_cloudbuildv2_repository" "hop" {
 
 # The build + deploy identity. The trigger runs as this SA; it builds + pushes images
 # AND runs `tofu apply`, so it needs Artifact Registry write + build logs PLUS the
-# broad deploy perms (it manages the whole infra/ module incl. IAM, Cloud Run, LB,
-# DNS, Firestore, secrets) PLUS read/write on the GCS state bucket. roles/owner mirrors
-# what the retired Spacelift SA held — tighten to a least-privilege custom role later.
+# deploy perms (it manages the whole infra/ module incl. IAM, Cloud Run, LB, DNS,
+# Firestore, secret containers) PLUS read/write on the GCS state bucket. infra-02: the
+# seed-reading grant (secretmanager.admin) has been removed in favor of the scoped custom
+# role below; projectIamAdmin is the one remaining broad grant, documented on the binding.
 resource "google_service_account" "build" {
   count        = local.build_enabled ? 1 : 0
   account_id   = "hop-cloudbuild"
   display_name = "Hop Cloud Build (build + tofu apply)"
+}
+
+# infra-02: a custom role for the secret-management this module actually does, so the build SA does
+# NOT hold `roles/secretmanager.admin` (which carries `secretmanager.versions.access` = the ability to
+# read the relay identity ROOT SEED). The module only ever: creates the secret CONTAINER
+# (secrets.tf, no version), sets secret IAM policy (secret_iam_member in iam.tf + example.tf), and
+# reads secret METADATA via a data source (example.tf, `secrets.get`, not the version bytes). None of
+# that needs versions.access. This closes the "one bad main commit exfiltrates the fleet seed" vector
+# while leaving `tofu apply` fully functional. Seeding a version is still done out-of-band by a human
+# (see secrets.tf), never by this pipeline.
+resource "google_project_iam_custom_role" "build_secrets" {
+  count       = local.build_enabled ? 1 : 0
+  role_id     = "hopCloudBuildSecrets"
+  title       = "Hop Cloud Build - secret container + IAM (no versions.access)"
+  description = "Manage secret containers and their IAM bindings without the ability to read secret version bytes (infra-02)."
+  permissions = [
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.list",
+    "secretmanager.secrets.update",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
+    # version metadata only (enable/disable/list) - NOT versions.access, which reads the bytes.
+    "secretmanager.versions.get",
+    "secretmanager.versions.list",
+  ]
 }
 
 resource "google_project_iam_member" "build" {
@@ -39,23 +67,26 @@ resource "google_project_iam_member" "build" {
     "roles/cloudbuild.builds.builder",
     "roles/artifactregistry.writer",
     "roles/logging.logWriter",
-    # Deploy perms for `tofu apply`. WARNING (F-22): this set is effectively OWNER-EQUIVALENT and the
-    # earlier claim that it grants no owner was FALSE. `roles/resourcemanager.projectIamAdmin` carries
-    # `resourcemanager.projects.setIamPolicy`, which in this in-org project can grant `roles/owner`; and
-    # `roles/secretmanager.admin` includes `versions.access`, so the pipeline can read the relay identity
-    # root seed directly. Combined with `tofu apply -auto-approve` on every push, one bad commit to main
-    # = full project takeover + fleet identity theft. Bounded today (single-maintainer, main-push
-    # required), but before production narrow these: drop projectIamAdmin/secretmanager.admin in favor of
-    # specific bindings, and gate IAM-touching changes behind plan-then-approve.
+    # Deploy perms for `tofu apply`. The pipeline manages the whole infra/ module (IAM bindings, Cloud
+    # Run, LB, DNS, Firestore, secret containers) so it is a high-privilege identity by necessity.
+    # infra-02 status:
+    #   - secretmanager.admin: REMOVED. Replaced by the custom role above (secret containers + IAM,
+    #     no versions.access), so the pipeline can no longer read the relay identity seed. [CLOSED]
+    #   - projectIamAdmin: RETAINED. The module applies google_project_iam_member bindings (relay SA
+    #     roles, this SA's own roles), which requires resourcemanager.projects.setIamPolicy; there is
+    #     no resource-scoped substitute for project-level IAM. This still carries the theoretical
+    #     "grant self owner" path, so it is the residual broad grant. Mitigation before production:
+    #     gate IAM-touching TF changes behind plan-then-approve instead of -auto-approve on every push
+    #     (bounded today by single-maintainer + required main-push + the CI deploy gate). [DOCUMENTED]
     "roles/editor",
-    "roles/resourcemanager.projectIamAdmin", # google_project_iam_member bindings (⚠ can grant owner)
-    "roles/iam.serviceAccountAdmin",         # create/manage the build + relay SAs
-    "roles/iam.serviceAccountUser",          # Cloud Run deploy runs services as the relay SA
-    "roles/run.admin",                       # run service setIamPolicy (allUsers invoker)
-    "roles/secretmanager.admin",             # secret setIamPolicy (⚠ also grants versions.access)
-    "roles/storage.admin",                   # state-bucket setIamPolicy (build_state below)
-    "roles/cloudbuild.connectionAdmin",      # google_cloudbuildv2_repository / connection
-    "roles/logging.admin",                   # observability.tf log bucket + sink + exclusion (editor lacks buckets.create)
+    "roles/resourcemanager.projectIamAdmin",            # google_project_iam_member bindings (⚠ residual: can grant owner; see note)
+    "roles/iam.serviceAccountAdmin",                    # create/manage the build + relay SAs
+    "roles/iam.serviceAccountUser",                     # Cloud Run deploy runs services as the relay SA
+    "roles/run.admin",                                  # run service setIamPolicy (allUsers invoker)
+    "roles/storage.admin",                              # state-bucket setIamPolicy (build_state below)
+    "roles/cloudbuild.connectionAdmin",                 # google_cloudbuildv2_repository / connection
+    "roles/logging.admin",                              # observability.tf log bucket + sink + exclusion (editor lacks buckets.create)
+    google_project_iam_custom_role.build_secrets[0].id, # secret containers + IAM, NO versions.access (infra-02)
   ]) : []
   project = var.project_id
   role    = each.value

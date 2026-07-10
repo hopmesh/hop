@@ -43,11 +43,11 @@ else
 fi
 
 echo "▸ cross-compiling release staticlibs (iOS device + sim, macOS arm64 + x86_64)"
-cargo build -p "$CRATE" --release --target aarch64-apple-ios "${FEAT[@]}"
-cargo build -p "$CRATE" --release --target aarch64-apple-ios-sim "${FEAT[@]}"
-cargo build -p "$CRATE" --release --target x86_64-apple-ios "${FEAT[@]}"
-cargo build -p "$CRATE" --release --target aarch64-apple-darwin "${FEAT[@]}"
-cargo build -p "$CRATE" --release --target x86_64-apple-darwin "${FEAT[@]}"
+cargo build -p "$CRATE" --release --target aarch64-apple-ios ${FEAT[@]+"${FEAT[@]}"}
+cargo build -p "$CRATE" --release --target aarch64-apple-ios-sim ${FEAT[@]+"${FEAT[@]}"}
+cargo build -p "$CRATE" --release --target x86_64-apple-ios ${FEAT[@]+"${FEAT[@]}"}
+cargo build -p "$CRATE" --release --target aarch64-apple-darwin ${FEAT[@]+"${FEAT[@]}"}
+cargo build -p "$CRATE" --release --target x86_64-apple-darwin ${FEAT[@]+"${FEAT[@]}"}
 
 # Fat simulator slice so the framework runs on Apple Silicon and Intel Macs.
 SIM_FAT="$T/sim-universal"; mkdir -p "$SIM_FAT"

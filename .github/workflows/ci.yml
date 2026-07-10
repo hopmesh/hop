@@ -1,10 +1,25 @@
 name: CI
 
-# The code safety net (F-01). Runs on every push and PR: the full test suite, clippy, formatting,
-# the contract-purity guardrail, and a cbindgen header-drift check so sdk/hop.h can never fall out
-# of sync with cabi.rs. The Cloud Build deploy trigger should require this workflow to pass before
-# it applies to the fleet (a commit that compiles but regresses the wire format must not roll to
-# ~42 regions undetected — see GAP-ANALYSIS.md F-01/F-02).
+# The code safety net (F-01). Runs on every push and PR across all four product surfaces:
+#   - rust        : full test suite, clippy, formatting, plus firestore/sqlcipher feature runs.
+#   - kotlin-sdk  : the transport-multiplexer JVM tests (via the gradle wrapper).
+#   - android     : the Android bearer + driver modules, incl. the :bearer-ble dial-backoff
+#                   regression (quality-net-01 / android-08 / infra-03).
+#   - apple       : swift-build of the four SwiftPM bearer packages + HopDriver, and a build-only
+#                   xcodebuild of the HopDemo app (no signing) (quality-net-02 / infra-04).
+#   - wasm        : wasm32 build of hop-wasm + the swarm sim invariant tests (simwasm-01 / infra-05).
+#   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check,
+#                   builds the Astro site, and link-checks web/dist (web-04 / quality-net-05 / infra-12).
+#   - contract    : contract-purity guardrail, cbindgen header-drift, the ABI-version consistency guard
+#                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
+#                   pinned so an upstream release can't churn the gate.
+#   - infra       : tofu fmt/validate + a read-only plan on infra/** (infra-10), so a TF error is
+#                   caught pre-merge instead of mid-apply against prod state.
+#
+# DEPLOY GATE (infra-01 / quality-net-09): the Cloud Build trigger (infra/cloudbuild.trigger.yaml)
+# gates its `tofu apply` on this workflow. GitHub branch protection on `main` must ALSO require the
+# "CI / ..." checks so a red commit can't land in the first place. Branch protection cannot be set
+# from repo files; see infra/README.md ("Deploy gate + branch protection") for the required settings.
 
 on:
   push:
@@ -20,6 +35,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # cbindgen is pinned so an upstream release can't churn the header-drift gate (infra-13). This is
+  # the version that produced the committed sdk/hop.h. When bumping, regenerate the header with the
+  # same cbindgen version (core/hop/regen-header.sh) in the same PR so the drift check stays green.
+  CBINDGEN_VERSION: "0.29.4"
 
 jobs:
   rust:
@@ -41,11 +60,10 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # Informational for now — the tree predates rustfmt enforcement, so a failing fmt check
-      # shouldn't block the merge/deploy gate. Flip continue-on-error off after a formatting pass.
-      - name: Format check (informational)
+      # quality-net-14: hard gate. A repo-wide `cargo fmt --all` pass has landed, so formatting drift
+      # now fails the build instead of accumulating silently. Run `cargo fmt --all` before pushing.
+      - name: Format check
         run: cargo fmt --all --check
-        continue-on-error: true
 
       - name: Clippy (warnings are errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -72,24 +90,268 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # infra-14: this module has no gradle wrapper, so pin gradle via the setup action instead
+      # of relying on whatever version the runner image happens to ship (which drifts over time).
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
       # F-34: radio-free transport-multiplexer tests. Plain JVM module, no Android SDK needed.
       - name: Test Kotlin SDK
         working-directory: sdk/wrappers/kotlin
         run: gradle test --no-daemon
 
-  contract:
-    name: Contract purity + header drift
+  android:
+    name: Android bearers + driver (JVM unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The Android SDK + the AGP/platform packages the bearer + driver modules compile against.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-android-${{ runner.os }}-
+      # :hop-driver compiles against the UniFFI Kotlin bindings (uniffi.hop.*), which are GITIGNORED
+      # generated output (drivers/android/hop-driver reads ../../../android/HopDemo/generated/kotlin).
+      # Generate them from the host libhop cdylib before gradle - the same bindings android/build-aar.sh
+      # produces - so the driver resolves addressBase58 etc. The jniLibs (.so per ABI) are NOT needed for
+      # JVM unit tests; an empty dir keeps AGP's srcDir happy.
+      - name: Generate the UniFFI Kotlin bindings
+        run: |
+          cargo build -p hop
+          cargo run -p hop --features cli --bin uniffi-bindgen -- \
+            generate --library target/debug/libhop.so --language kotlin \
+            --out-dir android/HopDemo/generated/kotlin
+          mkdir -p android/HopDemo/generated/jniLibs
+      # quality-net-01 / android-08 / infra-03: build the whole bearers/android gradle project
+      # (:hop-sdk, :bearer-ble, :bearer-lan, :bearer-relay, :hop-driver) and run its JVM unit tests,
+      # including :bearer-ble:testDebugUnitTest which is the dial-backoff (R7) regression. Uses the
+      # committed gradle wrapper (gradlew) so the build is reproducible.
+      - name: Test Android bearers + driver
+        working-directory: bearers/android
+        run: ./gradlew :bearer-ble:testDebugUnitTest test --no-daemon --stacktrace
+
+  apple:
+    name: Apple bearers + driver + app (build-only)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # The default Xcode on macos-14 is 15.4, but `xcodegen` (latest from brew) emits the newest
+      # project format (objectVersion 77 = Xcode 16), which Xcode 15.4's xcodebuild cannot open
+      # ("future Xcode project file format"). Select the latest-stable Xcode so xcodebuild matches
+      # what xcodegen generates.
+      - name: Select the latest-stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-apple-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-apple-${{ runner.os }}-
+
+      # quality-net-02 / infra-04: the SwiftPM stack (Hop SDK wrapper, four bearer packages,
+      # HopDriver) links libhop via two gitignored xcframeworks. Build them first from the Rust
+      # core (the same scripts a developer runs), then swift-build each package and build-only the
+      # app. HOP_SQLCIPHER=0 skips the vendored-OpenSSL cross-compile: this job is a compile gate,
+      # not an at-rest-encryption test (the rust job already exercises sqlcipher).
+      - name: Build the libhop + HopFFI xcframeworks
+        env:
+          HOP_SQLCIPHER: "0"
+        run: |
+          bash sdk/wrappers/Hop/build-xcframework.sh
+          bash apple/build-xcframework.sh
+
+      # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
+      # runs the BearerManager multiplexer + full HopRuntime deliver/ACK tests (core-ffi-09); the BLE
+      # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
+      # (sec-priv-02). `swift test` also builds, so these subsume the build-only step for those packages.
+      - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
+        working-directory: sdk/wrappers/Hop
+        run: swift test
+
+      - name: Build the three bearer packages
+        run: |
+          for pkg in HopBearerBle HopBearerLan HopBearerRelay; do
+            echo "== swift build $pkg =="
+            swift build --package-path "bearers/apple/$pkg"
+          done
+
+      - name: Test the BLE bearer (dedup tiebreaker)
+        working-directory: bearers/apple/HopBearerBle
+        run: swift test
+
+      - name: Test HopDriver (Keychain identity store)
+        working-directory: drivers/apple/HopDriver
+        run: swift test
+
+      # Build-only xcodebuild of the demo app: generate the project (XcodeGen), then build for the
+      # simulator with signing disabled. This catches Swift/ABI breakage in the app half of the
+      # product that a package-level swift build cannot (SwiftUI + Info.plist wiring).
+      - name: Build HopDemo (no signing)
+        working-directory: apple/HopDemo
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild \
+            -project HopDemo.xcodeproj \
+            -scheme HopDemo \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+  wasm:
+    name: WASM sim (wasm32 build + swarm invariants)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust + cbindgen
+      - name: Install Rust + wasm32 target
         run: |
           rustup toolchain install stable --profile minimal
-          cargo install cbindgen --locked
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-wasm-${{ runner.os }}-
+
+      # simwasm-01 / infra-05 / quality-net-04: hop-wasm is only ever compiled for the host target
+      # in the rust job. Build it for the real browser target so a wasm32-only break (getrandom
+      # backend, JsStore bridge) is caught pre-merge.
+      - name: Build hop-wasm for wasm32
+        run: cargo build -p hop-wasm --target wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The DOM-free swarm sim core has an invariant test harness (street-graph connectivity,
+      # building setbacks, on-street placement over thousands of ticks across regenerated worlds).
+      # Node-only, no build step, no pkg dependency.
+      - name: Run swarm sim invariant tests
+        run: node mockups/swarm.test.js
+
+      # Freshness note: the wasm32 build above proves the sim's SOURCE still compiles for the browser
+      # target. The recipe-based drift guard (simwasm-02) now lives in the `web` job below, which
+      # rebuilds sim/pkg from core via tools/build-sim-wasm.sh and fails if the committed JS/typings
+      # drift. A byte-for-byte .wasm diff stays out of scope (wasm-opt output varies by toolchain).
+
+  web:
+    name: Web + sim (Astro build · scenario-check · link check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # web-04 / quality-net-05 / infra-12: the marketing site + the homepage sim had NO PR-time gate;
+      # a broken Astro build, a dead internal link, or a sim-scenario regression only surfaced as a
+      # failed post-merge Pages deploy (site silently stale). This job runs the same build + the sim's
+      # own end-to-end validator BEFORE merge. No deploy here (that stays in pages.yml on main).
+
+      - name: Install Rust + wasm32 target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-web-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-web-${{ runner.os }}-
+
+      # web-05 / simwasm-02: build the sim wasm FROM SOURCE (core/hop-wasm at HEAD) via the checked-in
+      # recipe rather than trust the hand-committed sim/pkg artifact. build-wasm.sh produces both the
+      # committed sim/pkg (--target web) and core/hop-wasm/pkg-node/ (--target nodejs, gitignored) that
+      # scenario-check requires. See sim/PKG-PROVENANCE.md for why sim/pkg is committed.
+      - name: Build sim wasm (node + web) from core/hop-wasm
+        run: bash sim/build-wasm.sh
+
+      # web-05 drift guard: fail if the committed sim/pkg no longer matches a fresh build, so the site
+      # can't ship a stale "your browser is running the real Hop protocol" artifact. check-pkg-fresh.sh
+      # compares the deterministic wasm-bindgen interface (JS glue + typings), not the optimized .wasm
+      # bytes (which vary by toolchain).
+      - name: Guard sim/pkg against drift from core
+        run: bash sim/check-pkg-fresh.sh
+
+      # simwasm-02: the sim's end-to-end validator (every homepage scenario actually completes: each
+      # scripted send delivers AND its ACK returns within budget). Runs against the pkg-node just built.
+      - name: Sim scenario-check (all scenarios complete)
+        run: node sim/scenario-check.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      # The Astro build (prebuild syncs sim/ + learn/ into public/). A broken build fails here.
+      - name: Build the marketing site (astro build)
+        working-directory: web
+        run: npm run build
+
+      # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
+      - name: Internal link check (web/dist)
+        run: node tools/check-web-links.mjs web/dist
+
+  contract:
+    name: Contract purity + header drift + C smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + cbindgen (pinned)
+        run: |
+          rustup toolchain install stable --profile minimal
+          # infra-13: pin cbindgen so an upstream release can't change the emitted header format
+          # and break (or mask) the drift check for every PR at once.
+          cargo install cbindgen --locked --version "$CBINDGEN_VERSION"
 
       - name: Contract purity (no transport symbols in the SDK/contract)
         run: bash tools/codegen/check-contract-purity.sh
+
+      # core-ffi-08: HOP_ABI_VERSION must agree across cabi.rs, both hop.h headers, and the Swift +
+      # Kotlin wrappers. A one-sided bump makes the wrappers' load-time assertion check the wrong
+      # number, so the ABI-drift safety net (F-28) silently stops working. Fails on any disagreement.
+      - name: ABI version consistency (cabi.rs ↔ headers ↔ Swift/Kotlin)
+        run: bash tools/codegen/check-abi-version.sh
 
       - name: Header drift (sdk/hop.h matches cabi.rs)
         run: |
@@ -99,3 +361,60 @@ jobs:
             exit 1
           fi
           echo "sdk/hop.h is in sync with cabi.rs"
+
+      # core-ffi-01 / core-ffi-04: compile + run the pure-C smoke against the C ABI. This is the
+      # only end-to-end exercise of hop.h from a non-Rust consumer in CI (the ESP32 + Swift/Kotlin
+      # smokes need hardware/macOS); it drives a real §39 send -> deliver + ACK from clang.
+      - name: C-ABI smoke (smoke.c end-to-end)
+        run: bash core/hop/examples/smoke.sh
+
+  infra:
+    name: Terraform (fmt · validate · plan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # infra-10: run the same OpenTofu version that writes the state (pinned in
+      # cloudbuild.trigger.yaml), so fmt/validate/plan here match the prod apply.
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.12.3"
+
+      # Formatting + static validation catch syntax errors and a re-introduced destroy-cycle before
+      # they reach the prod apply. `-backend=false` inits providers WITHOUT touching the GCS state
+      # bucket, so this job needs no cloud credentials and is safe on forks/PRs.
+      - name: tofu fmt (check)
+        working-directory: infra
+        run: tofu fmt -check -recursive
+
+      - name: tofu init (no backend)
+        working-directory: infra
+        run: tofu init -backend=false -input=false
+
+      - name: tofu validate
+        working-directory: infra
+        run: tofu validate
+
+      # A real read-only plan against prod state requires the deploy SA's credentials, which are not
+      # available to CI (and must not be, per infra-02). That plan runs inside the Cloud Build trigger
+      # right before apply. Here we assert the config is well-formed and internally consistent; the
+      # billing root module gets the same fmt/validate treatment.
+      - name: tofu validate (billing module)
+        working-directory: infra/billing
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate
+
+  docs-tokens:
+    name: Docs token guard (banned copy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # First prove the guard itself still flags what it should and ignores legit API identifiers /
+      # removal notes, then run it against the tree.
+      - name: Self-test the docs token guard
+        run: bash tools/docs-token-guard.test.sh
+      # docs-drift-02: fail on em-dash/en-dash and removed-API / mispositioned terms in docs + site
+      # copy (InternetEgress, Wi-Fi Direct, bare "Bluetooth"), scoped to avoid legit API identifiers.
+      - name: Run docs token guard
+        run: bash tools/docs-token-guard.sh

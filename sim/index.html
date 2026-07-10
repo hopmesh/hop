@@ -5,10 +5,24 @@
 <script>if(location.search.indexOf('mini')>-1)document.documentElement.classList.add('mini')</script><!-- mini is mini from the FIRST frame — never flash the full HUD then hide it -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hop — how messages find a way</title>
-<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
-<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+<!-- Third-party runtime deps are SRI-pinned (integrity=): a tampered/compromised CDN response is
+     rejected by the browser instead of executing on the homepage hero. crossorigin="anonymous" is
+     required for SRI to apply. Bump the version AND the hash together (regenerate with
+     `openssl dgst -sha384 -binary <file> | openssl base64 -A`).
+     NOT pinnable (documented supply-chain/availability residue for web-06):
+       - kit.fontawesome.com below is a dynamic loader script (its bytes change per config), so it
+         can't carry a fixed hash; the icon SVGs it fetches are non-executed data.
+       - the map basemaps (basemaps.cartocdn.com, tile.opentopomap.org), the FA SVGs on jsdelivr,
+         and the Valhalla routing POST are data endpoints, not executed JS — SRI doesn't apply. They
+         remain availability/usage-policy dependencies of the demo. -->
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet"
+      integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="anonymous">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+        integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"
+        integrity="sha384-V2sTNoSKrI8N2u8kNbpZ2kJh54vI+OABRWz1t5/4m+fJuVeIoIkmILoRhQ/XRqrS" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"
+        integrity="sha384-tEG529toczQRv/bqd2PyHy5vTO49FMjQri0c1oB44gSkYiNouZz8L9yNTVx0YGl+" crossorigin="anonymous"></script>
 <script src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
 <style>
   :root{--g:#2bf0a0;--bg:#0c0f13;--line:#212a33;--warn:#ff6b6b}
@@ -117,6 +131,27 @@
   .cvsend{display:flex;gap:6px;margin-top:8px;flex:none}
   .cvsend input{flex:1;min-width:0;font:inherit;font-size:12.5px;background:#12181f;color:#e8eef0;border:1px solid var(--line);border-radius:16px;padding:7px 11px}
   .cvsend button{font:inherit;font-size:13px;font-weight:600;background:var(--g);color:#04140d;border:none;border-radius:16px;padding:7px 13px;cursor:pointer}
+
+  /* ---- LIGHT THEME (web-12) ----
+     The sim lives inside a theme-aware site; in light mode it must flip cleanly, not sit as a dark
+     HUD in a white card. The green signal accent (--g) is kept in both themes (it's the brand + the
+     "delivered" color the legend/pins depend on). Panels, lines, and text invert; the basemap swaps
+     to CARTO Positron via MAP_STYLES.light. Placed last so it overrides the dark defaults above. */
+  html[data-theme="light"]{--bg:#eef2f4;--line:#c7d2d8;--warn:#d63b3b}
+  html[data-theme="light"] body{color:#16202a}
+  html[data-theme="light"] .pane{background:rgba(255,255,255,.94);border-color:var(--line);box-shadow:0 8px 28px -14px rgba(20,40,60,.35)}
+  html[data-theme="light"] #head h1,html[data-theme="light"] #inspect h2,html[data-theme="light"] #compose h2{color:#16202a}
+  html[data-theme="light"] #head p,html[data-theme="light"] #narr .stat,html[data-theme="light"] #legend,html[data-theme="light"] #qmetrics .card .k{color:#5a6a74}
+  html[data-theme="light"] #legend b{color:#16202a}
+  html[data-theme="light"] .toggle{background:#eef2f4;color:#16202a;border-color:var(--line)}
+  html[data-theme="light"] .chip{background:#eef2f4;color:#5a6a74;border-color:var(--line)}
+  html[data-theme="light"] #qmetrics .card{background:#f4f7f8;border-color:#dbe3e7}
+  html[data-theme="light"] #qmetrics .card .v{color:#16202a}
+  html[data-theme="light"] .qrow{background:#f2f5f6}
+  html[data-theme="light"] .qrow:hover{background:#e9eef0}
+  html[data-theme="light"] #mem{color:#5a6a74;background:rgba(255,255,255,.8);border-color:var(--line)}
+  /* keep the green primary buttons readable; only the neutral chrome inverts */
+  html[data-theme="light"] .maplibregl-ctrl-attrib{background:rgba(255,255,255,.75)!important}
 </style>
 </head>
 <body>
@@ -499,9 +534,19 @@ function step(dt){   // movement + clock only — runs every frame for smooth mo
 // Tanami Track...) play on a TOPO map — terrain where the story actually happens.
 const MAP_STYLES={
   dark:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  // Light city basemap (CARTO Positron) — the theme-aware pair of dark-matter, so the embedded sim
+  // flips cleanly with the site's light/dark toggle (web-12) instead of being a dark map in a white card.
+  light:'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
   topo:{version:8,sources:{otm:{type:'raster',tiles:['https://a.tile.opentopomap.org/{z}/{x}/{y}.png','https://b.tile.opentopomap.org/{z}/{x}/{y}.png','https://c.tile.opentopomap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:16,attribution:'© OpenStreetMap · SRTM | style © OpenTopoMap (CC-BY-SA)'}},layers:[{id:'otm',type:'raster',source:'otm'}]},
 };
-const styleOf=s=> (s&&s.stage&&s.stage.style)||'dark';
+// The site theme drives the CITY basemap (dark-matter ⇄ positron). ?theme=light|dark seeds it, and a
+// {type:'theme'} postMessage from the embedding page flips it live. Wilderness stages pin their own
+// style (topo), which is terrain and stays the same in both themes.
+const THEME=(()=>{ const t=QP.get('theme'); return (t==='light'||t==='dark')?t:'dark'; })();
+document.documentElement.dataset.theme=THEME;
+// Resolve a scenario's basemap key, honoring the current theme for the default city map.
+const styleOf=s=>{ const st=(s&&s.stage&&s.stage.style); if(st) return st;   // stage pins its own terrain
+  return document.documentElement.dataset.theme==='light'?'light':'dark'; };
 let curStyle=styleOf(SCEN);
 const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle],center:[-122.4095,37.7845],zoom:12.9,attributionControl:{compact:true}});
 const EMPTY={type:'FeatureCollection',features:[]};
@@ -584,11 +629,7 @@ async function switchScenario(id){
   switching=true;
   try{
     scenarioId=id; SCEN=SCENARIOS[id];
-    const wantStyle=styleOf(SCEN);
-    if(wantStyle!==curStyle){ curStyle=wantStyle;
-      map.setStyle(MAP_STYLES[wantStyle]);
-      await new Promise(r=>map.once('styledata',r));
-      await addMapChrome(); }   // setStyle clears sources/layers/images — restore the tower chrome
+    await applyBasemap();
     closeConvo(); reset();
     await ensureRoutes();
     applyCamera();
@@ -597,8 +638,25 @@ async function switchScenario(id){
     startWorker();
   } finally { switching=false; }
 }
-// The homepage switches the embedded mini player between scenarios without an iframe reload.
-window.addEventListener('message', e=>{ const d=e.data; if(d && d.type==='scenario') switchScenario(d.id); });
+// Swap the basemap to match the current scenario + theme. setStyle clears sources/layers/images, so
+// restore the tower chrome afterward. No-op when the wanted style is already active.
+async function applyBasemap(){
+  const wantStyle=styleOf(SCEN);
+  if(wantStyle===curStyle) return;
+  curStyle=wantStyle;
+  map.setStyle(MAP_STYLES[wantStyle]);
+  await new Promise(r=>map.once('styledata',r));
+  await addMapChrome();
+}
+// The homepage switches the embedded mini player between scenarios without an iframe reload, and flips
+// the sim's theme (light/dark basemap + HUD) in lockstep with the site's theme toggle.
+window.addEventListener('message', e=>{ const d=e.data; if(!d) return;
+  if(d.type==='scenario') switchScenario(d.id);
+  else if(d.type==='theme' && (d.theme==='light'||d.theme==='dark')){
+    document.documentElement.dataset.theme=d.theme;
+    applyBasemap();   // flips the default city map dark-matter ⇄ positron (topo stages are pinned)
+  }
+});
 
 // Mini mode (the homepage embed): hide the HUD, keep the map + a slim bar; the page scroll stays usable.
 function enterMini(){

@@ -1,9 +1,9 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
 
-const cargo = `# Cargo.toml — embed the core
+const cargo = `# Cargo.toml, embed the core
 [dependencies]
-hop-core = "0.1"   # early access — request access`;
+hop-core = "0.1"   # early access, request access`;
 
 const rust = `<span style="color:var(--tok-comment)">// open a node from your 32-byte secret (you own key storage)</span>
 <span style="color:var(--tok-kw)">let</span> node = HopNode::open(secret)?;
@@ -14,20 +14,20 @@ node.send(
     Payload::message(<span style="color:var(--tok-str)">"on my way"</span>),
 )?;
 
-<span style="color:var(--tok-comment)">// reach the internet from offline — any gateway fulfills it</span>
-node.send(Destination::InternetEgress, Payload::http_get(<span style="color:var(--tok-str)">"hops://example.com/status"</span>))?;
+<span style="color:var(--tok-comment)">// reach the internet from offline: a hops:// request to an endpoint node's key</span>
+node.send_service_request(endpoint, <span style="color:var(--tok-str)">"http"</span>, <span style="color:var(--tok-str)">"get"</span>, <span style="color:var(--tok-str)">b"hops://example.com/status"</span>)?;
 
 <span style="color:var(--tok-comment)">// drain inbox: sealed bundles addressed to you</span>
 <span style="color:var(--tok-kw)">for</span> msg <span style="color:var(--tok-kw)">in</span> node.receive()? { handle(msg.open()?); }`;
 ---
 <DocsLayout
-  title="Quickstart — embed Hop"
+  title="Quickstart, embed Hop"
   description="Embed hop-core in your app: add the dependency, open a node from a secret, send to a device or the internet, drain your inbox. iOS & Android via UniFFI."
 >
   <div class="eyebrow">Getting started</div>
   <h1>Quickstart</h1>
   <p class="lede">Hop is a Rust core you embed. Add the dependency, hand it a secret, and address
-     bundles — it handles relaying, retransmit, dedup, and delivery. This is the shape; the full
+     bundles, it handles relaying, retransmit, dedup, and delivery. This is the shape; the full
      API and the iOS/Android bindings come with the SDK.</p>
 
   <div class="steps" style="margin-top:28px;">
@@ -43,14 +43,14 @@ node.send(Destination::InternetEgress, Payload::http_get(<span style="color:var(
       <div class="n">2</div>
       <div>
         <h3>Open a node from a secret</h3>
-        <p>The library never owns identity — you hand it a 32-byte Ed25519 seed and keep it wherever you choose (Keychain, Keystore, iCloud). The secret <em>is</em> the address.</p>
+        <p>The library never owns identity, you hand it a 32-byte Ed25519 seed and keep it wherever you choose (Keychain, Keystore, iCloud). The secret <em>is</em> the address.</p>
       </div>
     </div>
     <div class="step">
       <div class="n">3</div>
       <div>
-        <h3>Send — to a device, or the internet</h3>
-        <p>Address a sealed payload to another device's key, or to <code>InternetEgress</code>. You don't pick a route; Hop carries it.</p>
+        <h3>Send, to a device, or the internet</h3>
+        <p>Address a sealed payload to another device's key, or send a <code>hops://</code> request to an endpoint node's key. You don't pick a route; Hop carries it.</p>
       </div>
     </div>
     <div class="step">
@@ -65,7 +65,7 @@ node.send(Destination::InternetEgress, Payload::http_get(<span style="color:var(
   <div class="card code-card" style="padding:0; overflow:hidden; margin-top:26px;">
     <pre class="code-block" set:html={rust}></pre>
   </div>
-  <p class="note mt-m">Illustrative — the full API across <code>hop-core</code> and the FFI bindings comes with early access.</p>
+  <p class="note mt-m">Illustrative, the full API across <code>hop-core</code> and the FFI bindings comes with early access.</p>
 
   <h2>Pick your platform</h2>
   <p>The core only moves bytes; a per-platform <a href="/docs/">driver</a> runs the radios. Start with

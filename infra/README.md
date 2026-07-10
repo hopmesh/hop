@@ -1,4 +1,4 @@
-# infra — Hop relay fleet (path B)
+# infra: Hop relay fleet (path B)
 
 Terraform for the scale-to-zero, multi-region cloud backbone (DESIGN.md §19, §21).
 
@@ -6,7 +6,7 @@ Terraform for the scale-to-zero, multi-region cloud backbone (DESIGN.md §19, §
 
 One **global external Application Load Balancer** (single anycast IP + one DNS name)
 in front of a **Cloud Run relay in each region**. Premium-tier routing sends every
-device to its nearest healthy region — the "one DNS, many nodes, closest
+device to its nearest healthy region: the "one DNS, many nodes, closest
 entrance/exit, lowest latency" model.
 
 All regions share **one identity** (Secret Manager) and **one Firestore store**, so
@@ -22,6 +22,29 @@ device ──wss──▶ relay.hopme.sh (anycast) ──▶ nearest Cloud Run r
 device ◀──wss── nearest Cloud Run region ◀────────┘
 ```
 
+## Deploy gate + branch protection
+
+Deploy is GitOps: a push to `main` triggers the Cloud Build run in
+`cloudbuild.trigger.yaml`, which builds + pushes the images and then runs
+`tofu apply` against the fleet. Two layers keep a bad commit off the fleet:
+
+1. **Runtime gate (in code).** The trigger's `require-ci` step blocks `apply` until
+   the GitHub CI workflow (`.github/workflows/ci.yml`) reports success for that exact
+   commit: tests, clippy, wire-format/header-drift guardrail, the Android/Apple/WASM
+   compile gates, and the Terraform `fmt`/`validate`/`plan`. It fails closed, so if CI
+   fails, never ran, or is unreachable, the fleet stays on the previous good commit
+   (infra-01 / quality-net-09). CI validates infra, but the authoritative prod plan
+   runs inside this trigger, right before apply, with the deploy SA's credentials.
+
+2. **Intent gate (repo settings, not code).** No file can turn on branch protection,
+   so it must be set once in GitHub `Settings -> Branches` for `main`:
+   - Require a pull request before merging.
+   - Require status checks to pass, selecting every `CI / ...` check
+     (Rust, Kotlin SDK, Android, Apple, WASM, Web + sim, Contract, Terraform, Docs token guard).
+   - Require branches to be up to date before merging.
+   This stops a red commit from reaching `main` at all; layer 1 is the backstop if it
+   somehow does.
+
 ## Files
 
 | File | Purpose |
@@ -33,7 +56,7 @@ device ◀──wss── nearest Cloud Run region ◀────────�
 | `iam.tf` | Cloud Run runtime SA (least privilege) |
 | `cloud_run.tf` | Per-region relay service, min=0, LB-only ingress |
 | `load_balancer.tf` | Global LB: NEGs, backend, URL map, managed cert, IP, :80→:443 |
-| `dns.tf` | Optional Cloud DNS record (off by default — DNS is external) |
+| `dns.tf` | Optional Cloud DNS record (off by default, DNS is external) |
 | `outputs.tf` | LB IP, the A record to add, the `wss://` endpoint |
 
 ## First deploy
@@ -75,7 +98,7 @@ wired in `cloud_run.tf` to match that interface.
 
 ## Note on path A
 
-The live single-VM relay (`136.112.28.210:9443`, raw TCP) is **not** managed here —
+The live single-VM relay (`136.112.28.210:9443`, raw TCP) is **not** managed here:
 it was created directly for validation. This module is the durable, scalable
 replacement. Decommission the VM once the fleet is serving traffic.
 ```

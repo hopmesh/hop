@@ -1,19 +1,35 @@
-# GitOps build + deploy — one Cloud Build run on every push to main (no GitHub
-# Actions, no Spacelift). It builds + pushes both images, then runs `tofu apply`
-# with the just-built $SHORT_SHA so Cloud Run rolls to exactly this commit. State
-# lives in GCS (gs://hop-mesh-tfstate, see infra/versions.tf) — OpenTofu, no
-# HashiCorp/Spacelift SaaS. Because the push steps complete BEFORE apply (waitFor),
-# the tag always exists when Cloud Run pulls it — the old before_apply image-wait
-# hook is gone.
+# GitOps build + deploy: one Cloud Build run on every push to main (no GitHub
+# Actions for deploy, no Spacelift). It builds + pushes both images, WAITS for the
+# GitHub CI workflow on this exact commit to be green, then runs `tofu apply` with
+# the just-built $SHORT_SHA so Cloud Run rolls to exactly this commit. State lives in
+# GCS (gs://hop-mesh-tfstate, see infra/versions.tf): OpenTofu, no HashiCorp/Spacelift
+# SaaS. Because the push steps complete BEFORE apply (waitFor), the tag always exists
+# when Cloud Run pulls it.
+#
+# DEPLOY GATE (infra-01 / quality-net-09): the `require-ci` step below blocks `apply`
+# until GitHub CI (.github/workflows/ci.yml) reports success for $COMMIT_SHA. A commit
+# that fails tests, clippy, the wire-format/header-drift guardrail, or the Terraform
+# validate/plan can no longer roll to the fleet. This is the RUNTIME half; the intent
+# half (branch protection so a red commit can't reach main at all) must be set in the
+# GitHub repo settings, which no file can do: see infra/README.md ("Deploy gate").
 substitutions:
   _AR: us-central1-docker.pkg.dev/hop-mesh/hop
   _TOFU: ghcr.io/opentofu/opentofu:1.12.3 # must be >= the version that wrote the state
+  # The GitHub repo whose CI status gates the apply, and the required check-run names.
+  # (These are the `name:` fields of the jobs in .github/workflows/ci.yml.)
+  _GH_REPO: hopmesh/hop
 steps:
+  # infra-07: both image builds start immediately (waitFor ['-']) so the two cold full-workspace Rust
+  # release builds run in PARALLEL rather than serially. Cloud Build's default (no waitFor) makes a step
+  # wait for ALL prior steps, which chained these two back-to-back inside the total timeout; the biggest
+  # apply (re-enabling ~42 regional services in the same run) is exactly when that serial cost hurts.
   - name: gcr.io/cloud-builders/docker
     id: build-relayd
+    waitFor: ['-']
     args: [build, -f, services/hop-relayd/Dockerfile, -t, '${_AR}/hop-relayd:$SHORT_SHA', -t, '${_AR}/hop-relayd:latest', .]
   - name: gcr.io/cloud-builders/docker
     id: build-example
+    waitFor: ['-']
     args: [build, -f, services/hop-endpoint/Dockerfile, -t, '${_AR}/hop-example:$SHORT_SHA', -t, '${_AR}/hop-example:latest', .]
   # Push explicitly (not via `images:`) so the tags exist in Artifact Registry
   # before the apply step pulls them into Cloud Run.
@@ -25,16 +41,67 @@ steps:
     id: push-example
     waitFor: [build-example]
     args: [push, --all-tags, '${_AR}/hop-example']
+  # DEPLOY GATE (infra-01 / quality-net-09): block apply until GitHub CI is green for THIS commit.
+  # Polls the GitHub check-runs API for $COMMIT_SHA and requires every check-run to have concluded
+  # `success` (and at least one to exist). Fails closed: if CI is still running it keeps waiting up
+  # to the budget, and if CI failed / never ran / the API is unreachable it exits non-zero, which
+  # aborts the build before `apply` and leaves the fleet on the previous good commit.
+  #
+  # Auth: hopmesh/hop is public, so the check-runs API is polled unauthenticated (subject to the
+  # lower rate limit, which one poll-every-20s run stays well under). If the repo is made private,
+  # export a GITHUB token as $GH_TOKEN here (mount a Secret Manager secret via availableSecrets +
+  # secretEnv) and the step will send it automatically.
+  - name: gcr.io/cloud-builders/curl
+    id: require-ci
+    waitFor: ['-']  # start immediately, in parallel with the image builds
+    entrypoint: bash
+    args:
+      - -ec
+      - |
+        api="https://api.github.com/repos/${_GH_REPO}/commits/$COMMIT_SHA/check-runs?per_page=100"
+        auth=()
+        [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+        deadline=$(( $(date +%s) + 1500 ))   # wait up to 25 min for CI to finish
+        while :; do
+          body=$(curl -sS "${auth[@]}" -H "Accept: application/vnd.github+json" "$api") || {
+            echo "::error:: could not reach GitHub check-runs API"; exit 1; }
+          total=$(printf '%s' "$body" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("total_count",0))')
+          if [ "$total" = "0" ]; then
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error:: no CI check-runs for $COMMIT_SHA after the wait budget; refusing to deploy"; exit 1
+            fi
+            echo "no CI check-runs yet for $COMMIT_SHA; waiting..."; sleep 20; continue
+          fi
+          # Summarize conclusions across all check-runs.
+          read -r pending failed <<EOF
+        $(printf '%s' "$body" | python3 -c '
+        import sys,json
+        runs=json.load(sys.stdin).get("check_runs",[])
+        pending=sum(1 for r in runs if r.get("status")!="completed")
+        failed=sum(1 for r in runs if r.get("status")=="completed" and r.get("conclusion") not in ("success","neutral","skipped"))
+        print(pending,failed)')
+        EOF
+          if [ "$failed" -gt 0 ]; then
+            echo "::error:: GitHub CI has $failed failed check-run(s) for $COMMIT_SHA; refusing to deploy"; exit 1
+          fi
+          if [ "$pending" -eq 0 ]; then
+            echo "GitHub CI is green for $COMMIT_SHA ($total check-runs); proceeding to apply"; break
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error:: GitHub CI still has $pending pending check-run(s) after the wait budget; refusing to deploy"; exit 1
+          fi
+          echo "CI in progress ($pending pending); waiting..."; sleep 20
+        done
   # Apply the fleet. Runs as the build trigger's service account (needs deploy +
-  # state-bucket perms — see infra/cloudbuild_trigger.tf). deploy_image_sha pins the
-  # relay + example images to this commit.
+  # state-bucket perms, see infra/cloudbuild_trigger.tf). deploy_image_sha pins the
+  # relay + example images to this commit. Gated on require-ci above.
   - name: '${_TOFU}'
     id: apply
-    waitFor: [push-relayd, push-example]
+    waitFor: [push-relayd, push-example, require-ci]
     dir: infra
     entrypoint: sh
     # The fleet's non-default vars, supplied as TF_VAR_* env (terraform.tfvars is
-    # gitignored — these mirror what the retired Spacelift stack injected). Auth is
+    # gitignored: these mirror what the retired Spacelift stack injected). Auth is
     # the build's own service account via ADC (no GOOGLE_APPLICATION_CREDENTIALS).
     env:
       - 'TF_VAR_project_id=hop-mesh'
@@ -57,4 +124,10 @@ options:
   # Required when the build runs as a user-specified service account (no default
   # Cloud Build logs bucket).
   logging: CLOUD_LOGGING_ONLY
-timeout: 1800s
+# infra-07: 3600s (was 1800s). The two now-parallel Rust release builds + the require-ci wait (up to
+# 1500s) + the apply that, when relays_enabled flips back to true, creates ~42 Cloud Run services +
+# NEGs + the whole LB chain, must all fit in one budget. 30 min was a plausible timeout on the exact
+# re-enable run that matters most. The Dockerfiles have no cargo/layer cache, so every build is cold;
+# adding cargo-chef `--cache-from` layer caching to services/*/Dockerfile is the next lever if this
+# still runs long (kept out of this change: it touches services/, a different subtree).
+timeout: 3600s

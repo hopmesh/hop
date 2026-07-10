@@ -138,13 +138,22 @@ struct HopDemoApp: App {
 
     /// Handle `hopdemo://send?to=<base58addr>&text=<marker>`: parse the address + marker text and
     /// drive a send through the bearer's `sendTo` automation hook. Authorized internal testing only.
+    ///
+    /// apple-05: this is a silent send-as-user primitive. In a RELEASE build any co-installed app could
+    /// open the URL and cause our identity to message an arbitrary address (spam / deanonymization canary)
+    /// with zero user consent. So the handler compiles to a no-op outside DEBUG; the harness (which runs
+    /// DEBUG builds) keeps its automation, and shipped builds ignore the scheme entirely.
     static func handleAutomationURL(_ url: URL) {
+        #if DEBUG
         guard url.scheme == "hopdemo", url.host == "send",
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         let items = comps.queryItems ?? []
         guard let to = items.first(where: { $0.name == "to" })?.value,
               let text = items.first(where: { $0.name == "text" })?.value else { return }
         HopBearer.shared.sendTo(addressBase58: to, text: text)
+        #else
+        _ = url   // release: ignore the automation scheme (apple-05)
+        #endif
     }
 
     /// Cold-launch send driven by `HOP_AUTO=send|<base58addr>|<marker text>` (set via

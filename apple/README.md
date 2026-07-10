@@ -1,8 +1,9 @@
 # Hop on Apple platforms
 
-`hop-ffi` exposes the Hop node loop to Swift via [UniFFI](https://mozilla.github.io/uniffi-rs/).
+The `hop` crate (libhop) exposes the node via the C ABI (`sdk/hop.h`); the
+[UniFFI](https://mozilla.github.io/uniffi-rs/) bindings are the optional Swift sugar.
 The Rust core is the source of truth; this layer is a thin generated binding plus
-the native BLE bearer (TODO — see below).
+the native BLE bearer (TODO, see below).
 
 ## Build
 

@@ -1,5 +1,5 @@
 ---
-// ScenarioPlayer — a live embedded mini simulator. Tab through real situations
+// ScenarioPlayer, a live embedded mini simulator. Tab through real situations
 // and watch a real Hop mesh route a message across itself. Every dot in the
 // stage is an actual hop-core node running in the browser, not an animation.
 //
@@ -8,7 +8,7 @@
 // it changes scenario without reloading. The full simulator opens in a new tab.
 //
 // Props:
-//   ids — optional array of scenario ids. When given, only those scenarios
+//   ids, optional array of scenario ids. When given, only those scenarios
 //         show (used on use-case pages to surface the relevant situations).
 //         When omitted, every scenario shows (the homepage hero).
 //
@@ -28,6 +28,7 @@ const first = SCEN[0]?.id || 'p2p';
   <div class="sp-player">
     <div class="sp-stage" id="sp-stage">
       <iframe class="sp-sim" id="sp-sim" src={`/sim/index.html?scenario=${first}&mini=1`}
+        data-sim-base={`/sim/index.html?scenario=${first}&mini=1`}
         title="Live Hop mesh simulation" loading="lazy" allow="fullscreen"></iframe>
     </div>
     <div class="sp-story">
@@ -36,7 +37,7 @@ const first = SCEN[0]?.id || 'p2p';
       <p class="sp-body" id="sp-body"></p>
       <div class="sp-flow" id="sp-flow"></div>
       <div class="sp-mpath"><b>More than one path, always.</b> Hop sprays copies across
-        independent routes — the first to arrive delivers, and a dead link just means another copy wins.</div>
+        independent routes, the first to arrive delivers, and a dead link just means another copy wins.</div>
       <div class="sp-legend">
         <span><i style="background:var(--green)"></i> delivered</span>
         <span><i style="background:var(--blue)"></i> in transit</span>
@@ -106,7 +107,7 @@ const first = SCEN[0]?.id || 'p2p';
     border:1px solid var(--sp-abd);background:var(--sp-afill);border-radius:8px;padding:8px 13px}
   .scenario .sp-ctl{display:flex;gap:10px;margin-top:16px;align-items:center}
 
-  /* light theme — flip the panel tokens; accents deepen for contrast on white */
+  /* light theme, flip the panel tokens; accents deepen for contrast on white */
   :root[data-theme="light"] .scenario{
     --green:#10a877; --green-deep:#0c8f63; --amber:#c2851b; --blue:#2f7fe0; --red:#cf4a43;
     --sp-panel:#ffffff; --sp-soft:#f4f7fc; --sp-line:#e7edf5; --sp-line2:#dce4ee;
@@ -134,6 +135,20 @@ const first = SCEN[0]?.id || 'p2p';
   const sim = $('sp-sim');       // the live mini-sim iframe
   const open = $('sp-open');     // the "open the full simulator" CTA
 
+  // Keep the embedded sim's theme in lockstep with the site. The sim reads ?theme= at boot and also
+  // accepts a {type:'theme'} postMessage for a live flip (dark-matter ⇄ positron basemap + HUD).
+  const curTheme = () => document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  // Seed the iframe's src with the theme active at first paint (avoids a boot flash of the wrong map).
+  if(sim){
+    const base = sim.getAttribute('data-sim-base') || sim.getAttribute('src') || '';
+    sim.setAttribute('src', base + '&theme=' + curTheme());
+  }
+  const pushTheme = () => { try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'theme', theme:curTheme()}, '*'); }catch(e){} };
+  // The Header toggle mutates <html data-theme>; observe it and forward the new theme into the iframe.
+  new MutationObserver(pushTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
+  // Also push once the iframe has loaded, in case the toggle fired before it was listening.
+  if(sim) sim.addEventListener('load', pushTheme);
+
   // Update the story copy for scenario i, tell the sim to switch to it (no
   // reload), and repoint the full-simulator CTA at that scenario.
   function render(i){
@@ -143,7 +158,7 @@ const first = SCEN[0]?.id || 'p2p';
     $('sp-body').textContent=s.body;
     $('sp-flow').innerHTML=s.flow.join('  →  ');
     $('sp-stat').textContent='✓ '+s.stat;
-    if(open) open.href='/sim/index.html?scenario='+s.id;
+    if(open) open.href='/sim/index.html?scenario='+s.id+'&theme='+curTheme();
     // Live switch inside the embed. Guard: the iframe may not have loaded yet,
     // and a cross-origin content window would throw on access.
     try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'scenario', id:s.id}, '*'); }catch(e){}
