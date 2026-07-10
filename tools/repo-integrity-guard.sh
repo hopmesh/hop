@@ -12,12 +12,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Tracked files that must always carry content (paths relative to repo root). LICENSE.md is the
-# repo license; core/LICENSE.md is packaged by the core crates via [workspace.package]
-# license-file = "LICENSE.md" resolved per-crate. The rest are load-bearing docs / the C ABI header.
+# Tracked files that must always carry content (paths relative to repo root). LICENSE.md is the repo
+# license; `cargo metadata` confirms every crate's license-file inherits [workspace.package]
+# license-file = "LICENSE.md" resolved against the WORKSPACE ROOT (all crates point at ../../LICENSE.md
+# or ../../../LICENSE.md), so the single root file is what ships in every published crate. The rest are
+# load-bearing docs / the C ABI header.
 CRITICAL=(
   "LICENSE.md"
-  "core/LICENSE.md"
   "README.md"
   "DESIGN.md"
   "MECHANISMS.md"
