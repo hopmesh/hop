@@ -21,7 +21,9 @@ enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
  *  any libhop-internal buffer), so the wrapper's own state can't be corrupted through them. They are,
  *  however, still mutable arrays a downstream caller could scribble on and thereby corrupt a value it
  *  passed around. Treat them as read-only; use [fromCopy] / [bodyCopy] when handing the bytes to code
- *  that might mutate them (a `data class` can't return defensive copies from its generated accessors). */
+ *  that might mutate them (a `data class` can't return defensive copies from its generated accessors).
+ *  equals/hashCode are content-based (value semantics); as with any value carrying a mutable array, do
+ *  not mutate a field and then rely on it as a HashMap/HashSet key. */
 data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: Byte, val createdAt: Long) {
     /** A defensive copy of the sender address (mutate this freely without affecting the message). */
     fun fromCopy(): ByteArray = from.copyOf()
@@ -107,8 +109,15 @@ internal fun interface ServiceRespSink : Callback {
 
 /** A hops:// request delivered to this node acting as a service.
  *  Ownership: the ByteArray fields are owned, freshly-allocated snapshots (see [HopMessage]); treat
- *  them as read-only and `.copyOf()` before handing to code that might mutate them. */
+ *  them as read-only and use the `*Copy()` accessors before handing the bytes to code that might
+ *  mutate them. equals/hashCode are content-based (value semantics); as with any value carrying a
+ *  mutable array, do not mutate a field and then rely on it as a HashMap/HashSet key. */
 data class HopServiceRequest(val from: ByteArray, val requestId: ByteArray, val service: String, val method: String, val args: ByteArray) {
+    /** Defensive copies (mutate freely without affecting the request). */
+    fun fromCopy(): ByteArray = from.copyOf()
+    fun requestIdCopy(): ByteArray = requestId.copyOf()
+    fun argsCopy(): ByteArray = args.copyOf()
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is HopServiceRequest) return false
@@ -127,8 +136,15 @@ data class HopServiceRequest(val from: ByteArray, val requestId: ByteArray, val 
 
 /** A hops:// response delivered to this node acting as a caller.
  *  Ownership: the ByteArray fields are owned, freshly-allocated snapshots (see [HopMessage]); treat
- *  them as read-only and `.copyOf()` before handing to code that might mutate them. */
+ *  them as read-only and use the `*Copy()` accessors before handing the bytes to code that might
+ *  mutate them. equals/hashCode are content-based (value semantics); as with any value carrying a
+ *  mutable array, do not mutate a field and then rely on it as a HashMap/HashSet key. */
 data class HopServiceResponse(val from: ByteArray, val forRequestId: ByteArray, val status: Int, val body: ByteArray) {
+    /** Defensive copies (mutate freely without affecting the response). */
+    fun fromCopy(): ByteArray = from.copyOf()
+    fun forRequestIdCopy(): ByteArray = forRequestId.copyOf()
+    fun bodyCopy(): ByteArray = body.copyOf()
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is HopServiceResponse) return false

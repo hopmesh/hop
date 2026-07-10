@@ -191,43 +191,11 @@ resource "google_monitoring_alert_policy" "relay_restart_loop" {
   depends_on = [google_project_service.this] # infra-r2-04
 }
 
-# Count ANY relay log line, so its ABSENCE is detectable. A live relay's driver loop and netlog emit
-# steadily; total silence means a hung/wedged region (the LAST_TICK stall that a 503 alone can't page
-# once the instance stops answering probes too).
-resource "google_logging_metric" "relay_heartbeat" {
-  count   = var.relays_enabled ? 1 : 0
-  project = var.project_id
-  name    = "relay_log_lines"
-  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\""
-  metric_descriptor {
-    metric_kind = "DELTA"
-    value_type  = "INT64"
-    unit        = "1"
-  }
-
-  depends_on = [google_project_service.this] # infra-r2-04
-}
-
-# Silent-region alert: no relay log lines for 15 min. condition_absent pages when the metric stops
-# reporting entirely (a wedged/hung region), which neither the FAILED-ops nor the request-count alert
-# can see. Tuned longer than the tick cadence so a brief idle window does not false-page.
-resource "google_monitoring_alert_policy" "relay_silent" {
-  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
-  project      = var.project_id
-  display_name = "Relay silent (no logs / stalled driver)"
-  combiner     = "OR"
-  conditions {
-    display_name = "no relay_log_lines for 15m"
-    condition_absent {
-      filter   = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.relay_heartbeat[0].name}\" AND resource.type=\"cloud_run_revision\""
-      duration = "900s"
-      aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_DELTA"
-      }
-    }
-  }
-  notification_channels = [google_monitoring_notification_channel.email[0].id]
-
-  depends_on = [google_project_service.this] # infra-r2-04
-}
+# NOTE (infra-r5): a "silent region" alert (condition_absent on relay log lines) was removed here. It
+# is fundamentally incompatible with the scale-to-zero deployment: an idle region runs ZERO instances
+# and so emits ZERO logs, which is the NORMAL steady state, not a failure. condition_absent therefore
+# pages on every scaled-to-zero region. A genuinely wedged instance (driver loop stalled but process
+# up) is already handled without paging: LAST_TICK stops advancing, /healthz returns 503, and Cloud
+# Run restarts the instance. The crash/restart-loop alert above covers a region that restarts
+# repeatedly. There is no log-absence signal that distinguishes normal idle from wedged under
+# scale-to-zero, so we do not alert on it.
