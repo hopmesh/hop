@@ -171,9 +171,11 @@ Destination =                 // discriminant order is LOCKED; append-only (see 
   | Device(PubKey)            // Use Case B, a specific device address
   | AckTo(PubKey, [u8;32])    // ACK routed back to origin for a given bundle id
   | Broadcast                 // flood to everyone (hps:// publishes, §32; §39 private bundles)
-  | Vaccine([u8;32], [u8;32]) // §39 delivery vaccine: floods (delivered id, recognition token);
-                              //   a relay holding that id verifies the token against its stored tag
-                              //   and drops its copy (epidemic recovery on delivery). See §39.
+  | Vaccine([u8;32])         // §39 delivery vaccine (sec-priv-07): floods ONLY the recognition token,
+                              //   NO plaintext delivered id. A holder recovers which held bundle it
+                              //   clears by testing token->tag over its held private bundles and drops
+                              //   it (epidemic recovery). Omitting the id hides the delivery event from
+                              //   any observer that didn't capture the original flood. See §39.
   // NOTE: `InternetEgress` was REMOVED (commit 5dd64d3). Internet egress is now device-addressed
   // via a hops:// request to a hop-endpoint (§30), NOT a mesh-visible destination. This enum is
   // APPEND-ONLY on the wire (postcard encodes variants by index), removing/reordering renumbers
@@ -194,8 +196,9 @@ The bundle `id` derivation depends on the destination class. A normal bundle use
 `compute_id = BLAKE3(src ‖ ephemeral_pub ‖ nonce ‖ ciphertext)` (bundle.rs). A §39 private
 bundle drops `src` and domain-separates: `BLAKE3("hop private bundle id v1" ‖ ephemeral_pub ‖
 nonce ‖ ciphertext)`. A `Vaccine` is deterministic and self-verifying:
-`BLAKE3("hop vaccine id v1" ‖ delivered_id ‖ token)`, so all vaccines for one delivery dedup to a
-single flood and a tampered token yields a different id.
+`BLAKE3("hop vaccine id v2" ‖ token)` (sec-priv-07: no delivered id in the pre-image), so all
+vaccines for one delivery still dedup to a single flood (the token is unique per delivered bundle)
+and a tampered token yields a different id.
 
 Bundles are immutable once created and signed, except the mutable forwarding
 envelope (`hop_limit`, `custody`) which is **not** covered by `sig`, relays may
@@ -2485,6 +2488,21 @@ by the ~`N/2^k` nodes in that anonymity set, so private routing is exactly "grad
 it leaks `k` bits of destination entropy and adds prefix-level linkability (a recipient's messages share
 their prefix). A mesh dials `k` up only when it grows large enough that flooding hurts.
 
+**Realized (sec-priv-04):** routing, spooling, and want-beacon matching now ALL key on the tag's
+`MAILBOX_ROUTE_PREFIX_BYTES`-byte prefix (16 bits by default), never the full 16-byte tag. The full tag
+still travels in the beacon (so the relay authenticates it against the publisher's signed address, F-05)
+and in the private header (so an in-window sender/recipient agree on the exact tag), but no routing
+*decision* uses more than the prefix. This is what defeats an **address-knower**: the full mailbox-tag
+is a public deterministic function of a broadly-known address, so anyone holding the address can compute
+it every epoch; if routing keyed on the full tag they could uniquely confirm a target's private traffic,
+and epoch rotation would do nothing against them. Keying on the prefix instead gives them only an
+*anonymity set* (every address, known or not, that collides on the prefix) rather than a unique match.
+Because a prefix bucket can now cover several distinct recipients on different next-hops, a gradient
+bucket holds a bounded SET of next-hops and a matching private bundle rides all of them (never the
+decoy's link); the wrong recipient in the set just fails the per-message recognition tag and drops its
+copy, so a collision never starves a recipient. Delivery is unaffected: the final "is this mine?" test is
+the per-message-ephemeral recognition tag, which stays unique and unlinkable.
+
 **Treat every piece of routing/spool state as soft-state with a TTL and a cap, from day one.** Gradients
 decay (above); held private bundles evict at `lifetime` (§8); each node caps its gradient table.
 **Mailbox-tags rotate per epoch (F-06):** `mailbox = H("v2" ‖ address ‖ epoch)` with a daily epoch, so a
@@ -2510,9 +2528,13 @@ The model trades targeted routing for privacy, and the bill is real:
   protocol's control plane (low-rate, prefix-scoped, soft-state).
 - **Latency / eventual confirmation.** The dormant path is minutes-to-hours, and the ACK is itself a
   private bundle making the same round-trip, so "delivered" is eventual too. Consistent with §1/§8.
-- **The linkability floor (fundamental).** Reachable-while-offline-across-regions requires the standing
-  mailbox-tag, so an indexer can cluster a pseudonym. Pure unlinkability is local-only. Rotation bounds
-  the window at the cost of a hand-off. You cannot have global reachability *and* zero linkability.
+- **The linkability floor (fundamental).** Reachable-while-offline-across-regions requires a standing
+  routing handle, so an indexer can cluster a pseudonym. sec-priv-04 shrinks that handle from the full
+  per-address tag to a `k`-bit prefix, so both a passive indexer AND an address-knower cluster only an
+  *anonymity set* of ~`N/2^k` addresses, not a unique identity; epoch rotation bounds the cross-epoch
+  window on top. But the set is not empty: pure unlinkability stays local-only (a fully passive recipient
+  that sets `route_to_me = false` and beacons nothing). You cannot have global reachability *and* zero
+  linkability; you can have global reachability with prefix-set linkability, which is what this ships.
 - **Mobility → flood.** Move faster than your beacon refresh and gradients go stale; you degrade to
   flood (the safety net), less efficient but still delivered.
 
@@ -2559,13 +2581,24 @@ never a global push.
 
 A private bundle can be sprayed to several holders, so once the recipient has it, its remaining copies
 are dead weight. The recipient (or the delivering relay on its behalf) floods a `Destination::Vaccine`
-carrying `(delivered_id, recognition_token)`. The token is the recipient's revealed DH from the
-recognition tag: `recognition_tag_from_shared(token, id)` reproduces the tag a holder stored, so a
-holder can confirm it really holds that bundle before dropping it, yet the token identifies no one (CDH:
-only the recipient could produce it, and it reveals nothing about which node did). The vaccine id is
-deterministic (`BLAKE3("hop vaccine id v1" ‖ delivered_id ‖ token)`), so every vaccine for one delivery
-dedups to a single flood, it self-verifies (a tampered token yields a different id and is rejected), and
-it carries no src/dst/sig. This is the §6/§7 anti-packet, specialized for the private path.
+carrying **only the recognition_token** (sec-priv-07: NO plaintext delivered id). The token is the
+recipient's revealed DH from the recognition tag: a holder recovers which of its held private bundles the
+vaccine clears by testing `recognition_tag_from_shared(token, held_id) == held_tag` over the bundles it
+holds, then drops the match. The token identifies no one (CDH: only the recipient could produce it, and
+it reveals nothing about which node did). The vaccine id is deterministic (`BLAKE3("hop vaccine id v2" ‖
+token)`), so every vaccine for one delivery dedups to a single flood, it self-verifies (a tampered token
+yields a different id and is rejected), and it carries no src/dst/sig. This is the §6/§7 anti-packet,
+specialized for the private path.
+
+**Why token-only (sec-priv-07):** the old wire flooded the plaintext `delivered_id`, which named the
+exact bundle to *anyone*, including an observer that never saw the original flood (a late joiner, a
+global relay log). Dropping the id means such a non-capturing observer learns nothing but an opaque
+32-byte token with no bundle to bind it to. Residual (documented, intrinsic): an observer that *did*
+capture the specific flood already holds that bundle's public `(id, tag)`, and the recognition function
+is public, so it can still confirm delivery via the revealed token. Closing that too would require the
+recognition tag itself to be non-publicly-reopenable, which would break the recipient's own "is this
+mine?" test; for a self-verifying epidemic anti-packet this is the floor. It leaks a delivery *event*,
+never identity.
 
 **Status: SHIPPED (P1-P5, fleet-verified).** New wire pieces: the private header variant (ephemeral
 tag + `g^e`, optional mailbox-tag, optional `k`-bit hint; no src/dst/sig), the ephemeral-tag and

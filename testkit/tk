@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single bash entrypoint for the Hop test harness — call as `./testkit/tk <cmd> <args>`.
+# Single bash entrypoint for the Hop test harness: call as `./testkit/tk <cmd> <args>`.
 # Runs under bash regardless of the caller's shell (zsh doesn't word-split like bash).
 #
 #   tk ids                          list device ids
@@ -8,6 +8,8 @@
 #   tk refresh                      rebuild addrs.env from live devices
 #   tk send <from-id> <to-addr> <marker>
 #   tk sendto <from-id> <to-id> <marker>     (resolves to-id -> addr from addrs.env)
+#     iOS sends default to the hopdemo:// URL scheme (devicectl --payload-url); set TK_IOS_SEND=env
+#     to force the legacy cold-launch HOP_AUTO env path instead (quality-net-12).
 #   tk verify <to-id> <marker>      -> count received (>0 = got it)
 #   tk delivered <from-id> <marker> -> true/false (end-to-end ack on sender)
 #   tk fg <id> | tk bg <id>         foreground / background the app
@@ -42,5 +44,5 @@ case "$cmd" in
   name)       dev_name "$@";;
   platform)   dev_platform "$@";;
   transport)  dev_transport "$@";;
-  *) echo "unknown cmd: '$cmd' — see header of $0" >&2; exit 2;;
+  *) echo "unknown cmd: '$cmd' (see header of $0)" >&2; exit 2;;
 esac

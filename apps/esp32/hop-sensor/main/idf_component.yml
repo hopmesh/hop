@@ -1,0 +1,4 @@
+# ESP-IDF component manifest for the hop-sensor app component (core-ffi-03).
+# The app depends on a recent ESP-IDF; libhop is a local (in-tree) component, not a registry package.
+dependencies:
+  idf: ">=5.0"
