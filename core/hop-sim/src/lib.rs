@@ -258,7 +258,12 @@ impl Sim {
 
     fn exchange(&mut self, from: usize, to: usize, now: u64) {
         let to_addr = self.nodes[to].address();
-        let ids = self.nodes[from].store.have().ids;
+        // sim-wasm-r2-03: `have()` returns HashMap keys in per-process-random order, and with
+        // multiple bundles in a store the spray/dedup order here becomes nondeterministic. Sort the
+        // ids so a single scenario replays bit-for-bit identically across runs (and so the
+        // spray>=direct invariant tests hold under any store iteration order, not by luck).
+        let mut ids = self.nodes[from].store.have().ids;
+        ids.sort_unstable();
 
         for id in ids {
             if self.nodes[to].store.seen(&id) {
@@ -684,6 +689,137 @@ mod tests {
             "spray L=16 delivered {} < direct L=1 delivered {}",
             ms.delivered,
             md.delivered
+        );
+    }
+
+    // sim-wasm-r2-01: exercise the wire-v3 k-bit mailbox-route / anonymity-set behavior at the sim
+    // layer. The routing/spool/want-beacon key is only the 2-byte prefix of a recipient's mailbox-tag
+    // (`crypto::mailbox_route`), so two DIFFERENT recipients can land in the SAME routing bucket. The
+    // privacy claim (sec-priv-04) is that a colliding pair is an anonymity SET, not a mix-up: each
+    // recipient still recognizes ONLY its own bundle (the per-message-ephemeral recognition tag
+    // separates them) and neither is starved by the other's presence in the bucket.
+
+    /// The routing bucket a recipient's private traffic falls into at `epoch` (the value relays key
+    /// gradient/spool/want-beacon on). Two recipients with the same value collide in routing.
+    fn route_bucket(addr: &PubKeyBytes, epoch: u64) -> hop_core::crypto::MailboxRoute {
+        hop_core::crypto::mailbox_route(&hop_core::crypto::mailbox_tag(addr, epoch))
+    }
+
+    /// Grind fresh identities until two share a mailbox-route bucket at epoch 0 (a ~1/2^16 event, so
+    /// a few hundred tries on average; capped so the test can never hang). Returns the colliding pair.
+    fn grind_colliding_pair() -> (Identity, Identity) {
+        use std::collections::HashMap;
+        let mut seen: HashMap<hop_core::crypto::MailboxRoute, Identity> = HashMap::new();
+        for _ in 0..2_000_000 {
+            let id = Identity::generate();
+            let bucket = route_bucket(&id.address(), 0);
+            if let Some(prev) = seen.remove(&bucket) {
+                // Guard: they must genuinely be distinct identities in the SAME bucket.
+                assert_ne!(prev.address(), id.address());
+                assert_eq!(
+                    route_bucket(&prev.address(), 0),
+                    route_bucket(&id.address(), 0)
+                );
+                return (prev, id);
+            }
+            seen.insert(bucket, id);
+        }
+        panic!("failed to grind a mailbox-route collision within the cap");
+    }
+
+    /// Replace a sim node's identity (and its derived spk secret) with a specific one, so a test can
+    /// place chosen (e.g. bucket-colliding) recipients at known indices.
+    fn set_node_identity(sim: &mut Sim, idx: usize, identity: Identity) {
+        let spk_secret = identity.derive_prekey().secret_bytes();
+        sim.nodes[idx].spk_secret = spk_secret;
+        sim.nodes[idx].identity = identity;
+    }
+
+    #[test]
+    fn colliding_mailbox_prefixes_both_recipients_deliver_and_never_cross() {
+        // Two recipients whose mailbox-route prefixes COLLIDE (same routing bucket). A private send to
+        // each must be recognized by ONLY that recipient, and BOTH must deliver. This is the core
+        // anonymity-set guarantee: a shared bucket is a set, not a leak or a starve.
+        let (a, b) = grind_colliding_pair();
+        assert_eq!(
+            route_bucket(&a.address(), 0),
+            route_bucket(&b.address(), 0),
+            "precondition: the ground pair collides in the routing bucket"
+        );
+
+        // nodes: 0 = sender, 1 = pure relay, 2 = recipient A, 3 = recipient B (colliding with A).
+        let mut sim = Sim::new(4);
+        set_node_identity(&mut sim, 2, a);
+        set_node_identity(&mut sim, 3, b);
+
+        let id_a = sim.schedule_private_message(0, 0, 2, 8, b"for A".to_vec());
+        let id_b = sim.schedule_private_message(0, 0, 3, 8, b"for B".to_vec());
+        // A shared relay carries BOTH (same bucket), then hands off to each recipient.
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 });
+        sim.contacts.push(Contact { at: 20, a: 1, b: 2 });
+        sim.contacts.push(Contact { at: 30, a: 1, b: 3 });
+        sim.run();
+
+        // Both recipients delivered, exactly their own bundle, despite sharing a routing bucket.
+        assert_eq!(
+            sim.delivered.get(&2).map(|v| v.as_slice()),
+            Some(&[id_a][..]),
+            "recipient A must deliver exactly its own private bundle"
+        );
+        assert_eq!(
+            sim.delivered.get(&3).map(|v| v.as_slice()),
+            Some(&[id_b][..]),
+            "recipient B must deliver exactly its own private bundle"
+        );
+        assert!(sim.delivered_at.contains_key(&id_a) && sim.delivered_at.contains_key(&id_b));
+
+        // No cross-recognition: A holds B's flooding bundle but does NOT recognize it as its own
+        // (and vice versa). The 2-byte prefix collision does not make one recipient claim the other's.
+        if let Some(other) = sim.nodes[2].store.get(&id_b) {
+            assert!(
+                !other.recognized_by(&sim.nodes[2].spk_secret),
+                "A must not recognize B's bundle just because they share a routing bucket"
+            );
+        }
+        if let Some(other) = sim.nodes[3].store.get(&id_a) {
+            assert!(
+                !other.recognized_by(&sim.nodes[3].spk_secret),
+                "B must not recognize A's bundle just because they share a routing bucket"
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_bucket_does_not_starve_a_legitimate_recipient() {
+        // Adversarial self-check for a starve: with a bucket-colliding recipient present, a legitimate
+        // recipient in that SAME bucket must still receive its own message (prefix routing that "prefers"
+        // one recipient and drops the other's traffic would black-hole a message). Both share a relay AND
+        // a bucket; both must deliver, order-independent.
+        let (a, b) = grind_colliding_pair();
+        let mut sim = Sim::new(4);
+        set_node_identity(&mut sim, 2, a);
+        set_node_identity(&mut sim, 3, b);
+
+        // Interleave the sends and hand the relay to B FIRST, then A, to prove neither ordering starves.
+        let id_a = sim.schedule_private_message(0, 0, 2, 8, b"A payload".to_vec());
+        let id_b = sim.schedule_private_message(1, 0, 3, 8, b"B payload".to_vec());
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 });
+        sim.contacts.push(Contact { at: 20, a: 1, b: 3 }); // B first
+        sim.contacts.push(Contact { at: 30, a: 1, b: 2 }); // then A
+        sim.run();
+
+        assert!(
+            sim.delivered_at.contains_key(&id_a),
+            "recipient A starved in a shared bucket"
+        );
+        assert!(
+            sim.delivered_at.contains_key(&id_b),
+            "recipient B starved in a shared bucket"
+        );
+        assert_eq!(
+            sim.metrics().delivered,
+            2,
+            "both colliding-bucket recipients must deliver"
         );
     }
 }

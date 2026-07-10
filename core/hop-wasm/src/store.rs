@@ -1,8 +1,8 @@
-//! `JsStore` — a hop-core [`Store`] backed by a host-provided **synchronous** JS bridge.
+//! `JsStore`, a hop-core [`Store`] backed by a host-provided **synchronous** JS bridge.
 //!
 //! This is hop's pluggable storage used exactly as intended (DESIGN.md §25: the host owns storage).
 //! A browser deployment backs the bridge with SQLite on an OPFS sync-access VFS in a Worker, so held
-//! bundles live on disk instead of wasm linear memory — the thing that OOMs a many-node tab. The core
+//! bundles live on disk instead of wasm linear memory, the thing that OOMs a many-node tab. The core
 //! keeps its real behavior: real per-bundle TTL, real dedup, real `prune`. Nothing is faked here.
 //!
 //! It mirrors `hop-store-sqlite`'s two-table model: a `seen` dedup index (id → expiry) plus a `bundles`

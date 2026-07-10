@@ -949,15 +949,15 @@ struct HpsAddView: View {
                                 }.buttonStyle(.borderless)
                             }
                         }
-                        Button("Refresh") { found = bearer.hpsBrowse() }
+                        Button("Refresh") { bearer.hpsBrowse { found = $0 } }
                     }
                 }
             }
             .navigationTitle("Add channel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            .onAppear { if mode == 2 { found = bearer.hpsBrowse() } }
-            .onChange(of: mode) { _ in if mode == 2 { found = bearer.hpsBrowse() } }
+            .onAppear { if mode == 2 { bearer.hpsBrowse { found = $0 } } }
+            .onChange(of: mode) { _ in if mode == 2 { bearer.hpsBrowse { found = $0 } } }
         }
     }
 }

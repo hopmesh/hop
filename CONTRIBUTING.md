@@ -11,8 +11,8 @@ libhop C-ABI contract, `docs/libhop-architecture.md`.
   `core/stores/`.
 - `sdk/` - `hop.h` (the C ABI, the ONE contract every non-Rust client binds) and the
   Swift (`sdk/wrappers/Hop`) and Kotlin (`sdk/wrappers/kotlin`) wrappers.
-- `bearers/` - per-transport packages (BLE, LAN, relay, multipeer), one isolated
-  package per bearer.
+- `bearers/` - per-transport packages (BLE, LAN, relay), one isolated
+  package per bearer. Apple Multipeer (Wi-Fi P2P) is a live transport but stays in-driver, not a package.
 - `drivers/` - the per-platform host layer.
 - `services/` - the relay (`hop-relayd`), gateway, endpoint, and example origin.
 - `infra/` - OpenTofu for the cloud relay fleet (see `docs/runbooks/`).

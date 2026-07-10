@@ -17,11 +17,11 @@ export function makeMesh(WasmNode, bridgeFor) {
     pairLink: new Map(),   // "a|b" -> linkId
     soaking: new Map(),    // "a|b" -> sim-ms they came in range (link forms only after the transport's soak)
     linkSeq: 1,
-    legs: [],              // { from, to, bundle, at }  (recent real bundle transfers — the live relay web)
+    legs: [],              // { from, to, bundle, at }  (recent real bundle transfers, the live relay web)
     parent: new Map(),     // bundle hex -> Map(toId -> fromId): who handed each bundle to whom
     deliveries: [],        // { to, from, bundle, text, path, at }  (path = the legs it actually took)
     delivered: new Set(),  // bundle hexes that reached their destination
-    msgBundles: new Set(), // bundle hexes that are actual user messages (from send) — the only ones we visualize
+    msgBundles: new Set(), // bundle hexes that are actual user messages (from send), the only ones we visualize
     senderAcks: [],        // bundle hexes the SENDER just confirmed delivered (via a returning ACK)
     beaconEvents: [],      // node ids that emitted a §39 recv-beacon this frame (for the ripple viz)
     hpsDeliveries: [],     // channel posts received: { to, path, text, from, at }
@@ -44,7 +44,7 @@ export function makeMesh(WasmNode, bridgeFor) {
       const hostAddr = this.addrOf(hostId);
       for (const mid of memberIds) if (mid !== hostId) this.nodes.get(mid).node.channel_subscribe(hostAddr, path);
     },
-    // ONE post, every member receives it — the real fan-out.
+    // ONE post, every member receives it, the real fan-out.
     publish(fromId, path, text) {
       const bid = this.nodes.get(fromId).node.channel_publish(path, _enc(text));
       const hex = _hex(bid); this.msgBundles.add(hex);
@@ -59,7 +59,7 @@ export function makeMesh(WasmNode, bridgeFor) {
 
     // Advance one bearer frame. `ids` = node ids to consider; `inRange(a,b)` = can they link now.
     tick(now, ids, linkInfo) {
-      // 1) form / drop links as people move in and out of range — with a per-transport SOAK: a pair must
+      // 1) form / drop links as people move in and out of range, with a per-transport SOAK: a pair must
       //    stay in range for `soak` ms before the link is usable (BLE/Wi-Fi take real seconds to connect),
       //    so a fast passer-by may never link. linkInfo(a,b) → soak ms if connectable, else -1.
       for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
@@ -77,7 +77,7 @@ export function makeMesh(WasmNode, bridgeFor) {
             }
           }
         } else {
-          this.soaking.delete(key);   // out of range — reset the dwell timer
+          this.soaking.delete(key);   // out of range, reset the dwell timer
           if (have) {
             const lid = this.pairLink.get(key);
             this.nodes.get(a).node.disconnected(lid);
@@ -86,9 +86,9 @@ export function makeMesh(WasmNode, bridgeFor) {
           }
         }
       }
-      // 2) advance every node's clock — the core prunes its own store on tick, per each bundle's real TTL.
+      // 2) advance every node's clock, the core prunes its own store on tick, per each bundle's real TTL.
       //    (hop-core already auto-publishes §39 recv-beacons here via route_to_me, so gradients form and
-      //    routing is directed — no explicit beacon needed.)
+      //    routing is directed, no explicit beacon needed.)
       for (const { node } of this.nodes.values()) node.tick(now);
       // 3) pump: bytes a node wants to send go to the peer on that link
       for (const [id, { node }] of this.nodes) {
@@ -103,7 +103,7 @@ export function makeMesh(WasmNode, bridgeFor) {
         for (const t of node.drain_transfers()) {
           const lk = this.links.get(t.link); if (!lk) continue;
           const peer = lk.a === id ? lk.b : lk.a, bundle = _hex(t.bundle);
-          if (!this.msgBundles.has(bundle)) continue;   // skip ACK/gossip/control bundles — only visualize real messages
+          if (!this.msgBundles.has(bundle)) continue;   // skip ACK/gossip/control bundles, only visualize real messages
           this.legs.push({ from: id, to: peer, bundle, at: now });
           let pm = this.parent.get(bundle); if (!pm) { pm = new Map(); this.parent.set(bundle, pm); }
           if (!pm.has(peer)) pm.set(peer, id);   // 'peer' first received this bundle from 'id'
@@ -122,11 +122,11 @@ export function makeMesh(WasmNode, bridgeFor) {
           this.deliveries.push({ to: id, from: this.addrToId.get(_hex(d.from)), bundle, text: _dec(d.body), path, hops: d.hops, at: now });
         }
       }
-      // 6) sends WE (the sender) just confirmed delivered, via a returning ACK — the sender's ONLY
+      // 6) sends WE (the sender) just confirmed delivered, via a returning ACK, the sender's ONLY
       //    signal of delivery (it never hears from the recipient directly).
       for (const [, { node }] of this.nodes) { const d = node.drain_delivered();
         for (let i = 0; i + 32 <= d.length; i += 32) { let h = ''; for (let j = i; j < i + 32; j++) h += d[j].toString(16).padStart(2, '0'); this.senderAcks.push(h); } }
-      // 7) §39 recv-beacons emitted this frame — pulse those nodes in the viz (their reachability advert)
+      // 7) §39 recv-beacons emitted this frame, pulse those nodes in the viz (their reachability advert)
       for (const [id, { node }] of this.nodes) if (node.drain_beaconed()) this.beaconEvents.push(id);
       // 8) channel posts that arrived (group fan-out)
       for (const [id, { node }] of this.nodes)
@@ -169,7 +169,7 @@ export function makeMesh(WasmNode, bridgeFor) {
       return arrows;
     },
 
-    // Send status per originated message bundle: { hex: { peers, delivered } } — from each node's tx.
+    // Send status per originated message bundle: { hex: { peers, delivered } }, from each node's tx.
     statusMap() {
       const s = {};
       for (const { node } of this.nodes.values()) {

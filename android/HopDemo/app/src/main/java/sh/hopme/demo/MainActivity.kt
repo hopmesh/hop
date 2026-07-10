@@ -118,6 +118,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // android-r2-02: persist this app's relay choice to the ONE shared pref BEFORE building the
+        // config, so an OS-driven START_STICKY service restart (which builds HopConfig.default with no
+        // activity) resolves the SAME value instead of falling back to a different literal. Both paths
+        // now read HopConfig.relaysEnabled(this); the singleton is configure-once, so this removes the
+        // "which path minted it first" nondeterminism.
+        HopConfig.persistRelaysEnabled(this, true)   // this build opts the relay ON
         // Configure the driver from the app's sources (identity, storage, backbone, presentation),
         // then hand off; the foreground service keeps the same shared instance running.
         val config = HopConfig(
@@ -126,7 +132,7 @@ class MainActivity : ComponentActivity() {
             appSecret = HopBearer.APP_SECRET,
             deviceName = HopConfig.deviceName(this),
             relayUrl = HopBearer.DEFAULT_RELAY,
-            relaysEnabled = true,   // cloud relay re-enabled (wss://relay.hopme.sh via the shared RelayBearer)
+            relaysEnabled = HopConfig.relaysEnabled(this),   // single source of truth (android-r2-02)
             notificationIcon = android.R.drawable.ic_dialog_email,
             // android-01: MUST match the sticky-service path (HopConfig.default sets this too). Without
             // it the activity opens hop.db PLAINTEXT while a START_STICKY service restart opens it keyed,
@@ -163,8 +169,13 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Test/automation hook: `hopdemo://send?to=<base58>&text=<marker>` drives a send with NO UI taps,
-     *  exercising the same bearer.send path the UI button uses. */
+     *  exercising the same bearer.send path the UI button uses.
+     *
+     *  android-r2-03: this is a silent send-as-user primitive. It is a NO-OP outside a debug build so a
+     *  release APK never acts on the scheme (the exported filter is also debug-only via the manifest
+     *  overlay). Mirrors iOS `handleAutomationURL` (`#if DEBUG`). */
     private fun handleAutomationIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG) return   // release: ignore the automation scheme (android-r2-03)
         val d = intent?.data ?: return
         if (d.scheme == "hopdemo" && d.host == "send") {
             val to = d.getQueryParameter("to"); val text = d.getQueryParameter("text")

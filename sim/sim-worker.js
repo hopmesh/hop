@@ -8,7 +8,7 @@
 import initWasm, { WasmNode } from './pkg/hop_wasm.js';
 import { makeMesh } from './mesh.js';
 import { makeMapBridge, makeSqliteBridge } from './store-bridge.js';
-// RANGE/SOAK/RELAY_ID + hav are the SINGLE source of truth in sim-constants.js — the headless
+// RANGE/SOAK/RELAY_ID + hav are the SINGLE source of truth in sim-constants.js, the headless
 // validator (scenario-check.mjs) imports the same module, so the two can't drift.
 import { RANGE, SOAK, RELAY_ID, hav } from './sim-constants.js';
 
@@ -17,9 +17,9 @@ let caps = {};            // id -> { platform, bt, wifiP2P }
 let st = {};              // id -> { p:[lng,lat], c:hasCell }  (updated every tick from the main thread)
 let lastHolders = 0, holderCache = {}, statusCache = {}, gradientCache = [], focusRecip = null, lastMem = 0;   // throttles + which recipient's gradient tree to expose
 let lastTickNow = 0;   // previous tick's sim clock, for sub-tick slicing at high time compression
-let congested = false;   // scenario: the cell net is up but oversubscribed — the backbone is unusable
+let congested = false;   // scenario: the cell net is up but oversubscribed, the backbone is unusable
 let wasmMem = null, simDb = null, sqliteMod = null;   // for the memory diagnostic
-// Total bundles held across the whole mesh — the real store size, backend-agnostic (SQLite COUNT, or
+// Total bundles held across the whole mesh, the real store size, backend-agnostic (SQLite COUNT, or
 // summed from each node's in-memory store). Drops as the vaccine + TTL purge delivered messages.
 function dbRows() {
   if (!mesh) return 0;
@@ -42,7 +42,7 @@ function linkInfo(a, b) {
     if (ca.wifiP2P && cb.wifiP2P && ca.platform === cb.platform && d <= RANGE.wifi) return SOAK.wifi;
   }
   if (A && B && A.ap && A.ap === B.ap) return SOAK.ap;   // same Wi-Fi NETWORK (LAN mesh; multi-AP nets share a name), internet or not
-  if (ca && cb && ca.lora && ca.lora === cb.lora) return SOAK.lora;   // Hop Bridges bonded by a sub-GHz LoRa net — just another bearer link to the core
+  if (ca && cb && ca.lora && ca.lora === cb.lora) return SOAK.lora;   // Hop Bridges bonded by a sub-GHz LoRa net, just another bearer link to the core
   return -1;
 }
 function seedFor(i) { const s = new Uint8Array(32); s[0] = (i + 1) & 0xff; s[1] = ((i + 1) >> 8) & 0xff; s[2] = 0xa5; s[3] = 0x5a; return s; }
@@ -53,9 +53,9 @@ function seedFor(i) { const s = new Uint8Array(32); s[0] = (i + 1) & 0xff; s[1] 
 async function makeBridgeFactory() {
   try {
     // Race OPFS setup against a timeout: the SAHPool VFS takes an EXCLUSIVE lock, so another (stale) tab
-    // holding it makes installOpfsSAHPoolVfs block forever — which would hang "booting real nodes". If it
+    // holding it makes installOpfsSAHPoolVfs block forever, which would hang "booting real nodes". If it
     // doesn't come up quickly, fall back to in-memory so the sim always boots.
-    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('OPFS init timed out — another tab may hold the store; close extra tabs')), 4000));
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('OPFS init timed out, another tab may hold the store; close extra tabs')), 4000));
     const setup = (async () => {
       const { default: sqlite3InitModule } = await import('./sqlite-wasm/sqlite3.mjs');
       const sqlite3 = await sqlite3InitModule(); sqliteMod = sqlite3;
@@ -83,7 +83,7 @@ onmessage = async (e) => {
     congested = !!m.congested;
     const out = await initWasm(); wasmMem = out && out.memory;   // hop-core nodes' wasm linear memory
     // Storage: in-memory by default (reliable, and a valid host Store just like MemoryStore). OPFS/SQLite
-    // is opt-in via ?opfs — it's disk-backed but finicky across tabs (exclusive access-handle locks).
+    // is opt-in via ?opfs, it's disk-backed but finicky across tabs (exclusive access-handle locks).
     let bridgeFor;
     if (m.useOpfs) { bridgeFor = await makeBridgeFactory(); }
     else { postMessage({ type: 'storage', backend: 'memory' }); bridgeFor = () => makeMapBridge(); }
@@ -93,7 +93,7 @@ onmessage = async (e) => {
     mesh.add(RELAY_ID, seedFor(900));
     if (m.channel) mesh.setupChannel(m.channel.host, m.channel.path, m.channel.members);   // key handshakes ride the warmup
     // warm up: connect everyone to the relay so every prekey gossips, then clear the warmup traffic.
-    // Warmup: instant relay links gossip prekeys — legitimate pre-event/pre-disaster contact (under
+    // Warmup: instant relay links gossip prekeys, legitimate pre-event/pre-disaster contact (under
     // congestion, everyone attached fine BEFORE the crowd peaked; the jam hits afterwards, and the
     // congested relay is severed for the whole run below).
     const ids = Object.keys(caps), warmIn = (a, b) => (a === RELAY_ID || b === RELAY_ID) ? 0 : -1;
@@ -104,7 +104,7 @@ onmessage = async (e) => {
     if (!mesh) return;
     st = m.state;
     // SUB-TICK: at high time compression one snapshot spans many sim-seconds, so a passing contact
-    // would be sampled once or twice and the connection SOAK could never mature — links wouldn't form
+    // would be sampled once or twice and the connection SOAK could never mature, links wouldn't form
     // at exactly the speeds where carries matter. Slice the jump into ≤2.5 sim-s steps (capped, so a
     // hidden-tab catch-up can't cause a tick storm); positions hold at the latest snapshot, which is
     // the same continuous-contact assumption a real BLE scanner makes between scans.
@@ -116,7 +116,7 @@ onmessage = async (e) => {
     lastTickNow = target;
     const dels = mesh.deliveries.splice(0);   // take + clear the new deliveries
     if (mesh.legs.length > 900) mesh.legs.splice(0, mesh.legs.length - 900);
-    // holderMap scans every node's held set (a store query) — throttle it off the per-frame path.
+    // holderMap scans every node's held set (a store query), throttle it off the per-frame path.
     const nowReal = performance.now();
     if (nowReal - lastHolders > 700) { lastHolders = nowReal; holderCache = mesh.holderMap(); statusCache = mesh.statusMap(); gradientCache = focusRecip ? mesh.gradientTo(focusRecip) : []; }
     postMessage({ type: 'frame', legs: mesh.legs.slice(), dels, holders: holderCache, status: statusCache, gradient: gradientCache, acks: mesh.senderAcks.splice(0), beacons: mesh.beaconEvents.splice(0), hps: mesh.hpsDeliveries.splice(0) });

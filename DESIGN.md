@@ -460,7 +460,7 @@ hop/
 │      ├─ hop-store-sqlite/    # persistent Store backend (rusqlite/SQLCipher), §13.2
 │      └─ hop-store-firestore/ # backbone mailbox store
 ├─ sdk/                  # hop.h (the C ABI) + language wrappers (Swift/Kotlin)
-├─ bearers/             # one isolated package per bearer (BLE, LAN, Multipeer, relay), per platform
+├─ bearers/             # one isolated package per bearer (BLE, LAN, relay), per platform; Apple Multipeer/Wi-Fi P2P stays in-driver
 ├─ drivers/             # per-platform host driver (radios + lifecycle) over the C ABI
 ├─ services/            # hop-endpoint (hops:// origin ingress), hop-gateway, hop-relay(d)
 ├─ apple/               # iOS app + smoke tests

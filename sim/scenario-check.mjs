@@ -1,9 +1,9 @@
-// Headless validation that every scenario in scenarios.js ACTUALLY COMPLETES — each scripted send
+// Headless validation that every scenario in scenarios.js ACTUALLY COMPLETES, each scripted send
 // delivers AND its ACK returns to the sender within the scenario's mini-loop budget (maxReal), under
 // that scenario's infra. A homepage scenario that can't complete would be a fake demo.
 //
 // Replicates the app's model exactly (constants + rules mirrored from sim/index.html and
-// sim-worker.js — keep in sync if those change):
+// sim-worker.js, keep in sync if those change):
 //   cast (route people + anchored + extras), movement (routes.json polylines, bounce),
 //   hasCell/apOf/apRadio/apNet with power/isp/sat components, linkInfo (RANGE + SOAK, relay star),
 //   the worker's 45-tick relay warmup (prekey gossip), and the app's tick cadence
@@ -13,7 +13,7 @@
 //   --appboot     fire every non-reply send on the FIRST tick (the app's clock races ahead during
 //                 worker boot, so initial sends all land at once at worker-ready)
 //   --jitter=N    seeded per-tick timing noise (±35%) + occasional hidden-tab stalls (6x gaps,
-//                 sub-tick cap mirrored) — the browser's real cadence is never uniform
+//                 sub-tick cap mirrored), the browser's real cadence is never uniform
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -24,7 +24,7 @@ import { SCENARIOS } from './scenarios.js';
 // SINGLE source of truth for transport + geography constants and the pure helpers. sim-worker.js
 // imports the SAME module, so the worker and this validator can no longer drift. index.html still
 // inlines its own copies (one monolithic file); driftCheck() below greps them out and fails if they
-// diverge from these values — so all three copies stay pinned.
+// diverge from these values, so all three copies stay pinned.
 import { RANGE, SOAK, RELAY_ID, SPEED, RKEYS, TOWERS, APS, djb, rnd01, areaSpot, hav } from './sim-constants.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,7 @@ function runScenario(id, scen) {
     const ch = scen.stage.channel; mesh.setupChannel(ch.host, ch.path, ch.members);
   }
   // worker-identical warmup: 45 ticks of instant relay links so prekeys gossip (pre-disaster contact;
-  // under congestion everyone attached BEFORE the crowd peaked — the jam severs the relay below).
+  // under congestion everyone attached BEFORE the crowd peaked, the jam severs the relay below).
   const warmIn = (a, b) => (a === RELAY_ID || b === RELAY_ID) ? 0 : -1;
   let t = 0; for (let k = 0; k < 45; k++) { t += 100; mesh.tick(t, ids, warmIn); }
 
@@ -147,7 +147,7 @@ function runScenario(id, scen) {
   // app cadence: one mesh.tick per ~100ms real → dt = 0.1 × speed sim-seconds
   const speed = scen.speed || 24, baseDt = 0.1 * speed, budgetSim = (scen.maxReal || 120) * speed;
   const rand = JITTER != null ? mulberry32(JITTER * 7919 + id.length) : null;
-  // FULL script array (send + narr events) — `after: k` fires `at` sim-s after script event k's
+  // FULL script array (send + narr events), `after: k` fires `at` sim-s after script event k's
   // send is DELIVERED (multi-turn replies), exactly like pumpScenario in the app.
   const script = (scen.script || []).map(e => ({ ...e }));
   const evSends = [];   // script index → send record
@@ -215,7 +215,7 @@ function runScenario(id, scen) {
     { const target = Math.round(simT * 1000), from = Math.round((simT - dtSim) * 1000);
       const n = Math.min(8, Math.max(1, Math.ceil((target - from) / 2500)));
       for (let i = 1; i <= n; i++) mesh.tick(Math.round(from + (target - from) * i / n), ids, linkInfo); }
-    // match deliveries like the APP does — by (from, to, text), not bundle id: a DEFERRED send
+    // match deliveries like the APP does, by (from, to, text), not bundle id: a DEFERRED send
     // (recipient's prekey not yet gossiped, real hop-core behavior) is re-created with a different
     // wire id when it flushes, but the ack still comes home under the display id.
     for (const d of mesh.deliveries) {
@@ -259,7 +259,7 @@ function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 // ---- drift check: index.html inlines its own copies of these constants/helpers (one monolithic file
 // that can't easily import ES modules mid-render). Assert those inlined copies still MATCH the shared
-// sim-constants.js this validator runs against — otherwise the checker could pass while the deployed
+// sim-constants.js this validator runs against, otherwise the checker could pass while the deployed
 // site uses different ranges/soaks/geometry (exactly the silent divergence this checker exists to catch).
 function driftCheck() {
   const html = readFileSync(join(here, 'index.html'), 'utf8');
@@ -280,7 +280,7 @@ function driftCheck() {
     need(`AP:${a.name}`, `name:'${a.name}'`);
     if (a.key) need(`AP.key:${a.name}`, `key:'${a.key}'`);
   }
-  // pure helpers — the exact expressions the harness re-uses.
+  // pure helpers, the exact expressions the harness re-uses.
   need('djb', `let h=5381; for(const c of id) h=(h*33+c.charCodeAt(0))>>>0;`);
   need('rnd01', `((((salt+n*2654435761)^(salt<<7))>>>0)%10000)/10000`);
   need('areaSpot', `rad=4+rnd01(salt,visit*2+2)*11`);
@@ -294,13 +294,13 @@ function driftCheck() {
 }
 const drift = driftCheck();
 if (drift.length) {
-  console.log(`❌ DRIFT: sim/index.html (or sim-worker.js) no longer matches sim/sim-constants.js — ${drift.join(', ')}`);
+  console.log(`❌ DRIFT: sim/index.html (or sim-worker.js) no longer matches sim/sim-constants.js, ${drift.join(', ')}`);
   console.log('   Update the inlined copies in index.html (or re-import in sim-worker.js) to match sim-constants.js.');
   process.exit(1);
 }
 
 const only = argv.filter(x => !x.startsWith('--'));
-// comingSoon stages verify too — their scripts only exercise what IS real (e.g. lora's local BLE hop).
+// comingSoon stages verify too, their scripts only exercise what IS real (e.g. lora's local BLE hop).
 const entries = Object.entries(SCENARIOS).filter(([k]) => !only.length || only.includes(k));
 let fail = 0;
 for (const [id, scen] of entries) {
@@ -310,11 +310,11 @@ for (const [id, scen] of entries) {
   const cpu = ((Date.now() - t0) / 1000).toFixed(1);
   if (r.ok) {
     const det = r.sends.map(s => `${s.from}→${s.to} ${s.hops!=null?s.hops+'h ':''}deliver ${s.deliveredReal}s ack ${s.ackedReal}s`).join(' · ');
-    console.log(`✅ ${id.padEnd(11)} completes in ${String(r.usedReal).padStart(5)}s real (budget ${r.budgetReal}s) — ${det}  [cpu ${cpu}s]`);
+    console.log(`✅ ${id.padEnd(11)} completes in ${String(r.usedReal).padStart(5)}s real (budget ${r.budgetReal}s), ${det}  [cpu ${cpu}s]`);
   } else {
     fail++;
-    const det = r.error || r.sends.map(s => `${s.from}→${s.to} ${s.hops!=null?s.hops+'h ':''}deliver ${s.deliveredReal ?? '—'} ack ${s.ackedReal ?? '—'}`).join(' · ');
-    console.log(`❌ ${id.padEnd(11)} DID NOT complete within ${r.budgetReal ?? '?'}s real — ${det}  [cpu ${cpu}s]`);
+    const det = r.error || r.sends.map(s => `${s.from}→${s.to} ${s.hops!=null?s.hops+'h ':''}deliver ${s.deliveredReal ?? ', '} ack ${s.ackedReal ?? ', '}`).join(' · ');
+    console.log(`❌ ${id.padEnd(11)} DID NOT complete within ${r.budgetReal ?? '?'}s real, ${det}  [cpu ${cpu}s]`);
   }
 }
 console.log(fail ? `\n${fail}/${entries.length} scenarios FAILED` : `\nall ${entries.length} scenarios complete ✓`);

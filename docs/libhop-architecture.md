@@ -2,7 +2,8 @@
 
 Status: **MERGED to `main` and deployed; the cutover is DONE.** The C-ABI rewrite, the tree
 migration (`crates/` -> `core/` + `services/` + `examples/`), the `hop-ffi -> hop` crate rename, and
-BOTH app cutovers all shipped. The four isolated bearer packages exist per platform, and both shipping
+BOTH app cutovers all shipped. Three isolated bearer packages exist per platform (BLE, LAN, relay;
+Apple Multipeer / Wi-Fi P2P is a live transport but stays in-driver, not an extracted package), and both shipping
 apps now run the north-star `drivers/` packages (the legacy in-driver transports were pruned and the
 iOS facade `CLLocationManager` monitor was deleted, emission moved into the shared BLE bearer). The
 only thing left is **on-device Stage-D verification** (iOS Xcode app build + real BLE link-formation
@@ -53,17 +54,17 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Layer | Where | Proof |
 |---|---|---|
 | C ABI | `core/hop/src/cabi.rs` → `sdk/hop.h` | `examples/smoke.c`: real §39 send→deliver+ACK, base58, **hops:// round-trip** |
-| Swift SDK | `sdk/wrappers/swift` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
+| Swift SDK | `sdk/wrappers/Hop` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
 | Kotlin SDK | `sdk/wrappers/kotlin` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
-| Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}` | each an independent SwiftPM package, `swift build` clean |
-| Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + all 4 bearers; whole stack `swift build`s together |
+| Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Relay}` | each an independent SwiftPM package, `swift build` clean (Multipeer / Wi-Fi P2P stays in-driver, not a package) |
+| Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + the three bearer packages + the in-driver Multipeer transport; whole stack `swift build`s together |
 | Bearers (Android) | `bearers/android/bearer-{ble,lan,relay}` | each an independent Gradle module on `sh.hop`; all `compileDebugKotlin` clean (AGP 8.5/Kotlin 1.9/gradle 8.9) |
-| Driver (Android) | `drivers/android/hop-driver` | thin glue composing the node + all 4 bearers; `compileDebugKotlin` clean |
+| Driver (Android) | `drivers/android/hop-driver` | thin glue composing the node + the three bearer packages; `compileDebugKotlin` clean |
 | Tree | `core/` `services/` `examples/` `sdk/` `bearers/` `drivers/` | north-star layout (`git mv` done), Cargo + Dockerfiles + Cloud Build updated, all green |
 
 Run it all: `core/hop/examples/smoke.sh`, `sdk/wrappers/Hop/smoke.sh`,
-`sdk/wrappers/kotlin/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (177 workspace tests green).
+`sdk/wrappers/kotlin/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (the full workspace suite is green; run it for the current count rather than trusting a hand-maintained number here).
 
 **Renames done:** the SDK package is `sdk/wrappers/Hop` (clean `package: "Hop"` id), the cdylib/staticlib
 is **`libhop`** (`[lib] name = "hop"`; C ABI / SDK / ESP32 link `-lhop`), AND the crate itself is now
@@ -71,7 +72,7 @@ is **`libhop`** (`[lib] name = "hop"`; C ABI / SDK / ESP32 link `-lhop`), AND th
 The apps import `uniffi.hop.*`; the build produces `libhop.so` / `hop.kt` / `hop.swift`.
 
 **The Swift bearer stack is functionally proven**: `RuntimeSmoke` registers a `Bearer` with
-`HopRuntime` and runs the real protocol, the four real radios conform to the same `Bearer` protocol,
+`HopRuntime` and runs the real protocol, the real radios conform to the same `Bearer` protocol,
 so they behave identically once wired to hardware.
 
 **The complete SDK→bearers→driver stack is built + compile-verified on BOTH platforms**, that's the
@@ -81,7 +82,8 @@ whole architecture. What's left is wiring the two *shipping apps* to it.
 
 Both shipping apps now drive the node via UniFFI **through the new isolated bearer architecture**:
 
-- **Apple**, `drivers/apple/HopDriver` depends on `bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}` +
+- **Apple**, `drivers/apple/HopDriver` depends on `bearers/apple/HopBearer{Ble,Lan,Relay}` (the three
+  extracted packages; Multipeer / Wi-Fi P2P remains an in-driver transport) +
   `HopContract` (pure Swift, no libhop, so no double-link of the Rust core with UniFFI's xcframework).
   `swift build` of HopDriver + hopmac + relaymac is clean; the app consumes it unchanged. The SDK was
   split into `HopContract` (libhop-free bearer kit) + `Hop` (libhop node) to enable this.

@@ -4,7 +4,6 @@
 target
 apple
 android
-site
 web
 .github
 infra/.terraform

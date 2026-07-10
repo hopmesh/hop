@@ -2,7 +2,7 @@
 /* eslint-disable */
 
 /**
- * A channel (hps://) post that arrived for this node — group messaging (§32).
+ * A channel (hps://) post that arrived for this node, group messaging (§32).
  */
 export class ChannelMsg {
     private constructor();
@@ -11,7 +11,7 @@ export class ChannelMsg {
     readonly body: Uint8Array;
     readonly path: string;
     /**
-     * The POSTING member's address — every post is verified against its writer (§32).
+     * The POSTING member's address, every post is verified against its writer (§32).
      */
     readonly sender: Uint8Array;
 }
@@ -25,14 +25,14 @@ export class Delivered {
     [Symbol.dispose](): void;
     readonly body: Uint8Array;
     /**
-     * The delivered bundle's id — matches the ids from `drain_transfers`, so the sim can
+     * The delivered bundle's id, matches the ids from `drain_transfers`, so the sim can
      * solid-color exactly the path that arrived.
      */
     readonly bundle: Uint8Array;
     readonly content_type: string;
     readonly from: Uint8Array;
     /**
-     * How many relay hops the bundle took to arrive (`env.hops` on the wire) — the real count.
+     * How many relay hops the bundle took to arrive (`env.hops` on the wire), the real count.
      */
     readonly hops: number;
 }
@@ -49,7 +49,7 @@ export class OutPacket {
 }
 
 /**
- * One real bundle crossing one link this frame — lets the visualizer color the hop by bundle.
+ * One real bundle crossing one link this frame, lets the visualizer color the hop by bundle.
  */
 export class Transfer {
     private constructor();
@@ -70,7 +70,7 @@ export class WasmNode {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Post to a channel we're a member of — ONE message, every member receives it (real fan-out).
+     * Post to a channel we're a member of, ONE message, every member receives it (real fan-out).
      * Returns the broadcast bundle's id so the sim can trace its flood.
      */
     channel_publish(path: string, body: Uint8Array): Uint8Array;
@@ -96,17 +96,17 @@ export class WasmNode {
     drain_beaconed(): boolean;
     /**
      * Ids of our own sends confirmed delivered (by a returning ACK) since the last call, flat 32-byte
-     * ids. The sender only learns delivery this way — a per-device UI shows "delivered" off this.
+     * ids. The sender only learns delivery this way, a per-device UI shows "delivered" off this.
      */
     drain_delivered(): Uint8Array;
     /**
-     * The `(link, bundle_id, is_final_delivery)` transfers this node made since the last call —
+     * The `(link, bundle_id, is_final_delivery)` transfers this node made since the last call,
      * one per real bundle handed over a link. Color legs by `bundle`, solid when `delivered`.
      */
     drain_transfers(): Transfer[];
     /**
      * Which mailbox-tags this node currently holds a gradient toward, and the inbound link to forward
-     * down for each — flat `[16-byte tag][u32 LE link][u8 hops]` records. Lets the sim draw the
+     * down for each, flat `[16-byte tag][u32 LE link][u8 hops]` records. Lets the sim draw the
      * distributed routing tree (each device holds a slice) + which way a private bundle would steer.
      */
     gradient(): Uint8Array;
@@ -129,13 +129,13 @@ export class WasmNode {
      */
     knows_prekey(addr: Uint8Array): boolean;
     /**
-     * This node's current §39 mailbox-tag (16 bytes) — the key a relay's gradient points toward, so
+     * This node's current §39 mailbox-tag (16 bytes), the key a relay's gradient points toward, so
      * the sim can find the routing tree steering a private bundle to this recipient.
      */
     mailbox_tag(): Uint8Array;
     /**
      * Build a node from a 32-byte identity seed (deterministic address across reloads) and a host
-     * storage `bridge` (SQLite/OPFS in the Worker, a Map in Node tests) — bundles live there, not
+     * storage `bridge` (SQLite/OPFS in the Worker, a Map in Node tests), bundles live there, not
      * in wasm memory, so a many-node tab doesn't OOM while the core runs unchanged.
      */
     constructor(secret: Uint8Array, bridge: any);
@@ -149,7 +149,7 @@ export class WasmNode {
      */
     publish_prekey(): void;
     /**
-     * Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag — turning
+     * Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag, turning
      * blind flood into directed route-toward (§39 P4). Re-publish before the 90s soft-state TTL lapses.
      */
     publish_recv_beacon(): void;
@@ -168,7 +168,7 @@ export class WasmNode {
      */
     send(dst: Uint8Array, body: Uint8Array): Uint8Array;
     /**
-     * Send via the opt-in TRACED path (cleartext src/dst, directed routing) — no prekey needed.
+     * Send via the opt-in TRACED path (cleartext src/dst, directed routing), no prekey needed.
      */
     send_traced(dst: Uint8Array, body: Uint8Array): void;
     /**
@@ -177,7 +177,7 @@ export class WasmNode {
      */
     sends_status(): Uint8Array;
     /**
-     * Set the lifetime (ms) stamped on messages/ACKs this node sends — the sender's real per-bundle
+     * Set the lifetime (ms) stamped on messages/ACKs this node sends, the sender's real per-bundle
      * TTL choice. The store prunes on it, so relay copies of delivered messages expire on schedule.
      */
     set_default_lifetime_ms(ms: number): void;
@@ -194,7 +194,7 @@ export class WasmNode {
      */
     tick(now_ms: number): void;
     /**
-     * This node's 32-byte public address — use it as a `dst` for `send`.
+     * This node's 32-byte public address, use it as a `dst` for `send`.
      */
     readonly address: Uint8Array;
 }
