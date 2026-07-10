@@ -922,7 +922,10 @@ version = "0.0.1"
 name = "hop-gateway"
 version = "0.0.1"
 dependencies = [
+ "bs58",
  "hop-core",
+ "reqwest",
+ "tungstenite",
 ]
 
 [[package]]

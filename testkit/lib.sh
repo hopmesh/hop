@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hop test harness primitives. Uniform send/verify/fg-bg/log across Android (adb) and iOS (devicectl).
-#   Android send : hopdemo://send deep link (am start)         — fires bearer.sendTo, no UI taps
-#   iOS send     : HOP_AUTO launch env (devicectl)             — app sends ~3s after (re)launch
+#   Android send : hopdemo://send deep link (am start)         : fires bearer.sendTo, no UI taps
+#   iOS send     : hopdemo://send via devicectl --payload-url  : onOpenURL -> sendTo (env fallback)
 #   Verify rx    : Android files/messages.json ; iOS Documents/automation.json (.rx)
 #   Verify ack   : sender side delivered=true (END-TO-END crypto proof the dest received it)
 #   bg/fg        : Android KEYCODE_HOME / monkey ; iOS launch Settings / launch app
@@ -64,6 +64,15 @@ tk_pull_automation() {      # tk_pull_automation <id>
 }
 
 # --- drive a send ------------------------------------------------------------
+# iOS send strategy (quality-net-12): PREFER the hopdemo:// URL scheme over --payload-url. It opens the
+# URL on the app WITHOUT a terminate/cold-relaunch, driving the SAME onOpenURL -> HopBearer.sendTo path
+# the Android deep link uses. This is the fix for the iPad-origin gap: the HOP_AUTO launch-env path
+# force-relaunches and its env injection did not reliably reach every iOS fleet member (bush/ipad), so
+# iPad-origin scenarios were untestable. --payload-url is a first-class devicectl flag ("A URL to pass
+# to the application for it to open"), so this is a real, supported trigger. We fall back to the
+# cold-launch env path only if the URL launch fails, preserving the previous behavior.
+#
+# TK_IOS_SEND=env forces the legacy env path (useful to test cold-launch send specifically).
 tk_send() {                 # tk_send <from-id> <to-addr> <marker>
   local id="$1" to="$2" mark="$3" plat handle
   plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
@@ -72,18 +81,36 @@ tk_send() {                 # tk_send <from-id> <to-addr> <marker>
     # Android coalesces VIEW intents fired back-to-back (LAUNCH_MULTIPLE) and silently drops
     # one when sends are <~100ms apart. Settle between consecutive sends so each registers.
     sleep 0.7
+  elif [ "${TK_IOS_SEND:-url}" = url ]; then
+    # URL-scheme trigger: activate the app and hand it hopdemo://send (onOpenURL -> sendTo). Works on a
+    # running app (no terminate), so an iPad already in the fleet can originate a send.
+    dctlx device process launch --device "$handle" --activate \
+      --payload-url "hopdemo://send?to=$to&text=$mark" "$BUNDLE" >/dev/null 2>&1 \
+    || dctlx device process launch --device "$handle" --terminate-existing \
+      --environment-variables "{\"HOP_AUTO\":\"send|$to|$mark\"}" "$BUNDLE" >/dev/null 2>&1
+    sleep 0.7
   else
-    # cold relaunch with the send command in the env; the app fires it ~3s post-launch.
+    # Legacy path (TK_IOS_SEND=env): cold relaunch with the send command in the env; app fires ~3s later.
     dctlx device process launch --device "$handle" --terminate-existing \
       --environment-variables "{\"HOP_AUTO\":\"send|$to|$mark\"}" "$BUNDLE" >/dev/null 2>&1
   fi
 }
 
 # --- verify receipt on the RECEIVER -----------------------------------------
+# quality-net-06: Android's files/messages.json is a DEBOUNCED export that lags in-memory delivery by
+# >90s, so polling it alone false-negatives a real delivery inside the poll window. The driver now
+# logs "HOPAUTO received ... text=<marker>" to logcat the instant a message lands, so we consult
+# logcat FIRST (immediate, authoritative) and fall back to the json only if logcat has no hit (e.g.
+# the buffer was cleared). iOS is unchanged (automation.json is its only signal here).
 tk_verify() {               # tk_verify <to-id> <marker>  -> prints count (>0 = received)
-  local id="$1" mark="$2" plat handle
+  local id="$1" mark="$2" plat handle n
   plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
   if [ "$plat" = android ]; then
+    # 1) logcat HOPAUTO received line (no export lag). Count distinct receipts of this marker.
+    n=$(adbx -s "$handle" logcat -d -s HOPLOG 2>/dev/null \
+      | grep -F "HOPAUTO received" | grep -Fc -- "text=$mark" 2>/dev/null || echo 0)
+    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then echo "$n"; return; fi
+    # 2) fall back to the (lagging) json mirror.
     adbx -s "$handle" shell run-as "$BUNDLE" cat files/messages.json 2>/dev/null \
       | python3 -c "import json,sys
 try:
@@ -100,10 +127,17 @@ except: print(0)" 2>/dev/null || echo 0
 }
 
 # --- verify END-TO-END delivery ack on the SENDER ---------------------------
+# quality-net-06: same lag applies to the sender's delivered=true flag in messages.json. The driver
+# now logs "HOPAUTO delivered ... text=<marker>" the instant the node reports the end-to-end ACK, so
+# trust that signal first (it is the crypto delivery proof, unlagged) and fall back to the json.
 tk_delivered() {            # tk_delivered <from-id> <marker>  -> "true"/"false"
   local id="$1" mark="$2" plat handle
   plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
   if [ "$plat" = android ]; then
+    # 1) logcat HOPAUTO delivered line (the unlagged end-to-end ACK signal).
+    if adbx -s "$handle" logcat -d -s HOPLOG 2>/dev/null \
+      | grep -F "HOPAUTO delivered" | grep -Fq -- "text=$mark"; then echo true; return; fi
+    # 2) fall back to the (lagging) json mirror's delivered=true flag.
     adbx -s "$handle" shell run-as "$BUNDLE" cat files/messages.json 2>/dev/null \
       | python3 -c "import json,sys
 try:

@@ -1,0 +1,9 @@
+# Staged by build-libhop-esp.sh (cross-compiled per chip; do not commit).
+components/libhop/lib/libhop.a
+components/libhop/include/hop.h
+# ESP-IDF build output.
+/build/
+sdkconfig
+sdkconfig.old
+# host demo binary
+/hop-sensor

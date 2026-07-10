@@ -1,4 +1,4 @@
-// hop-soak — looping cross-device P2P send soak with per-round adversarial bug hunt.
+// hop-soak: looping cross-device P2P send soak with per-round adversarial bug hunt.
 // Run via the Workflow tool:  Workflow({ scriptPath: "testkit/soak.workflow.js", args: { rounds: 24 } })
 // Drives the fg/bg permutation matrix across all 5 devices (testkit/run-round.sh), then spawns
 // parallel critic agents to hunt bugs in each round's results + per-device logs. Accumulates a
@@ -46,10 +46,27 @@ const BUG = {
   },
 }
 
+// quality-net-07: source the Android device serials from devices.sh instead of hardcoding them (they
+// silently rotted when the registry changed). Parse the DEVICES rows for android handles.
+function androidSerials() {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const txt = fs.readFileSync(path.join(__dirname, 'devices.sh'), 'utf8')
+    const out = []
+    for (const line of txt.split('\n')) {
+      const m = line.match(/^\s*"(\w+)\s+android\s+(\S+)\s+/)
+      if (m) out.push(`${m[1]}=${m[2]}`)
+    }
+    return out.join(' ')
+  } catch { return '' }
+}
+const ANDROID_SERIALS = androidSerials()
+
 const LENSES = [
-  { key: 'delivery', prompt: `DELIVERY lens. Read ${RESULTS}/<ROUND>.jsonl. Each line: from,to,fromState,toState,marker,delivered(bool),received(int),ackOnSender,latencyS,fromNode,toNode. Flag: any delivered=false (non-delivery — CRITICAL for fg/fg direct pairs, high otherwise); latencyS > 10 on a direct/foreground pair (slow); received=0 but ackOnSender=true mismatches (verification gap); pairs that NEVER deliver across the run. Correlate failures with transport (xr+pixel are BLE-only; others full) and with fg/bg state. A backgrounded receiver that never gets the message is a real bug; a backgrounded sender that can't drain is a real bug.` },
-  { key: 'flood-health', prompt: `FLOOD/RADIO lens. Read the per-device logs ${RESULTS}/<ROUND>.<id>.log (android only). Look at LINKFLOW lines "tx=.. rx=.. txpkts[hs=.. data=.. frag=..]". A HEALTHY link's data-pkt count and tx grow SLOWLY (a few/sec at most, idle). Flag: data-pkt count climbing >20/sec or tx climbing >5KB/sec sustained on idle links (the gossip flood regressing); hs count climbing (re-handshake loop); link-id churn in NODESTATE (e.g. id2..id20 — BLE link flapping). Report the byte/pkt RATES you observe per link, and whether they are bounded or climbing.` },
-  { key: 'crash-stuck', prompt: `CRASH/STUCK lens. Scan the per-device logs ${RESULTS}/<ROUND>.<id>.log AND pull fresh logcat if needed (adb -s <serial> logcat -d | grep -iE "FATAL|ANR|watchdog|0x8BADF00D|cpu_resource|exception|crash|Securing"). Device serials: pixel=34241FDH2004KR tab=R95YA01J6QZ. Flag: app crashes/restarts, ANRs/watchdog kills, unhandled exceptions, OOM, and any peer stuck "Securing"/unidentified for the whole round. iOS crash/health is best-effort (no logcat) — note if iOS receipt (automation.json) is stale/missing, which can indicate an iOS-side stall.` },
+  { key: 'delivery', prompt: `DELIVERY lens. Read ${RESULTS}/<ROUND>.jsonl. Each line: from,to,fromState,toState,marker,delivered(bool),received(int),ackOnSender,latencyS,fromNode,toNode. Flag: any delivered=false (non-delivery, CRITICAL for fg/fg direct pairs, high otherwise); latencyS > 10 on a direct/foreground pair (slow); received=0 but ackOnSender=true mismatches (verification gap); pairs that NEVER deliver across the run. Correlate failures with transport (xr+pixel are BLE-only; others full) and with fg/bg state. A backgrounded receiver that never gets the message is a real bug; a backgrounded sender that can't drain is a real bug.` },
+  { key: 'flood-health', prompt: `FLOOD/RADIO lens. Read the per-device logs ${RESULTS}/<ROUND>.<id>.log (android only). The driver emits one LINKFLOW line per bearer link every ~5s, grammar:\n  LINKFLOW link=<g> xport=<T> tx=<bytes> rx=<bytes> txpkts[hs=<n> data=<n> frag=<n>] rxpkts=<n>\nThese counters are CUMULATIVE per link (they reset only on linkDown / relink), so to get a RATE compare the same link=<g> across two timestamps ~5s apart and divide the delta by the elapsed seconds. A HEALTHY idle link's data-pkt and tx deltas are small (a few pkts / a few hundred bytes per 5s). Flag: data-pkt delta climbing >20/sec or tx delta >5KB/sec sustained on an idle link (the gossip flood regressing); hs delta climbing (a re-handshake loop); link-id churn in NODESTATE (e.g. id2..id20, BLE link flapping). Report the per-link byte/pkt RATES you observe and whether they are bounded or climbing.\nIMPORTANT (tolerance): if a log has NO LINKFLOW lines (e.g. a device had no bearer links up this round, or its logcat buffer was cleared before capture), that is NOT a bug by itself, report it as info "no LINKFLOW data this round for <id>" and judge flood health from NODESTATE (upLinks/pend) and delivery latencies instead. Never invent a flood finding from absent instrumentation.` },
+  { key: 'crash-stuck', prompt: `CRASH/STUCK lens. Scan the per-device logs ${RESULTS}/<ROUND>.<id>.log AND pull fresh logcat if needed (adb -s <serial> logcat -d | grep -iE "FATAL|ANR|watchdog|0x8BADF00D|cpu_resource|exception|crash|Securing"). Android device serials (from testkit/devices.sh): ${ANDROID_SERIALS || '(none parsed: read testkit/devices.sh)'}. Flag: app crashes/restarts, ANRs/watchdog kills, unhandled exceptions, OOM, and any peer stuck "Securing"/unidentified for the whole round. iOS crash/health is best-effort (no logcat); note if iOS receipt (automation.json) is stale/missing, which can indicate an iOS-side stall.` },
 ]
 
 const seen = new Set()

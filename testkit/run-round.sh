@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-round.sh — one round of cross-device P2P send scenarios with fg/bg permutations.
+# run-round.sh: one round of cross-device P2P send scenarios with fg/bg permutations.
 # Drives every ordered device pair, verifies receipt + end-to-end ack, measures latency,
 # snapshots per-device node state, and emits one JSON line per scenario to results/<round>.jsonl.
 #
@@ -20,7 +20,11 @@ OUT="$RESULTS/$ROUND.jsonl"; : > "$OUT"
 MAXWAIT="${TK_MAXWAIT:-60}"     # seconds to wait for delivery before recording a timeout
 POLL="${TK_POLL:-2}"
 
-CORE_IDS=(pixel tab xr jpad)
+# quality-net-12: every iOS fleet member can now ORIGINATE a send via the hopdemo:// URL scheme
+# (tk_send -> devicectl --payload-url), so the iPads (jpad and the second iPad `ipad`, plus BushidoPhone
+# `bush`) are first-class members of the automated matrix, not just receivers. Override with the
+# TK_CORE_IDS env or the <pairs> arg to scope to whatever is physically connected this run.
+CORE_IDS=(${TK_CORE_IDS:-pixel tab xr jpad ipad bush})
 # Build the ordered-pair list unless overridden.
 PAIRS=()
 if [ -n "$PAIRS_IN" ]; then
@@ -75,7 +79,7 @@ for pair in "${PAIRS[@]}"; do
   echo "[$ROUND] $from->$to ($fs/$ts): delivered=$delivered in ${elapsed}s (rx=$received ack=$ack)"
 done
 
-# Per-device log snapshot for this round's bug hunt — only the devices actually under test this
+# Per-device log snapshot for this round's bug hunt: only the devices actually under test this
 # round (derived from PAIRS, not the full CORE_IDS). A disconnected fleet member (e.g. an offline
 # tab still half-known to adb) makes `adb -s <serial> logcat` BLOCK forever, so touching it here
 # would hang the whole round; scoping to PAIRS keeps the snapshot to reachable devices.
