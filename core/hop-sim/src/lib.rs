@@ -10,6 +10,15 @@
 //!   trace and a cross-partition message workload ([`build_scenario`]);
 //! - a discrete-event [`Sim`] that replays contacts and injections in time order,
 //!   performing real binary spray-and-wait, and reports [`Metrics`].
+//!
+//! Both routing paths are exercised (choose via [`Path`] / [`build_scenario_path`]):
+//! - **Traced** (`Destination::Device`): the opt-in directed path, delivered by a direct handoff to
+//!   the cleartext destination.
+//! - **Private** (§39, `Destination::Broadcast` + recognition tag): the *default* path real users
+//!   take. It carries no cleartext destination and floods; the recipient "receives" it by
+//!   recognizing its tag ([`Bundle::recognized_by`]). Measuring delivery ratio / latency / overhead
+//!   on this path (not just the traced one) is what keeps copy-budget and TTL tuning honest for the
+//!   mainline path.
 
 use std::collections::HashMap;
 
@@ -20,19 +29,31 @@ pub struct SimNode {
     pub identity: Identity,
     pub store: MemoryStore,
     pub router: SprayAndWait,
+    /// Deterministic signed-prekey secret (epoch 0), so this node can recognize §39 private
+    /// bundles addressed to it (`Bundle::recognized_by`) — the private path's "is this mine?".
+    spk_secret: [u8; 32],
 }
 
 impl SimNode {
     pub fn new() -> Self {
+        let identity = Identity::generate();
+        let spk_secret = identity.derive_prekey().secret_bytes();
         Self {
-            identity: Identity::generate(),
+            identity,
             store: MemoryStore::new(),
             router: SprayAndWait::new(),
+            spk_secret,
         }
     }
 
     pub fn address(&self) -> PubKeyBytes {
         self.identity.address()
+    }
+
+    /// This node's signed-prekey public (SPK) — the key a sender needs to mint a private (§39)
+    /// bundle only this node can recognize.
+    pub fn spk_public(&self) -> XPubKeyBytes {
+        self.identity.derive_prekey().public
     }
 }
 
@@ -80,6 +101,9 @@ pub struct Sim {
     /// First-delivery time per delivered message id.
     delivered_at: HashMap<BundleId, u64>,
     latency_sum_ms: u128,
+    /// Intended recipient node index per §39 private bundle id (Broadcast dst carries no cleartext
+    /// destination, so the sim tracks it out-of-band to score recognition-based delivery).
+    private_dst: HashMap<BundleId, usize>,
 }
 
 impl Sim {
@@ -93,6 +117,7 @@ impl Sim {
             transmissions: 0,
             delivered_at: HashMap::new(),
             latency_sum_ms: 0,
+            private_dst: HashMap::new(),
         }
     }
 
@@ -131,6 +156,45 @@ impl Sim {
         .expect("bundle create");
         let id = bundle.id();
         self.injected += 1;
+        self.pending.push((at, src, bundle));
+        id
+    }
+
+    /// Schedule a §39 **private** (untraceable) message from `src` to `dst`. Unlike
+    /// [`Sim::schedule_message`] (the opt-in traced `Destination::Device` path), this mints a
+    /// `Destination::Broadcast` bundle carrying a recognition tag only `dst` can recompute
+    /// (`Bundle::create_private`). It floods like any private bundle; `dst` "receives" it when it
+    /// recognizes the tag, no cleartext destination on the wire. This is the path real users take
+    /// by default, so its delivery-ratio / latency / overhead are what actually matter.
+    pub fn schedule_private_message(
+        &mut self,
+        at: u64,
+        src: usize,
+        dst: usize,
+        copies: u16,
+        body: Vec<u8>,
+    ) -> BundleId {
+        let dst_addr = self.nodes[dst].address();
+        let dst_spk = self.nodes[dst].spk_public();
+        let bundle = Bundle::create_private(
+            &dst_addr,
+            &dst_spk,
+            &Payload::PeerMessage {
+                content_type: "application/octet-stream".into(),
+                body,
+            },
+            None,
+            BundleOpts {
+                created_at: at,
+                copies,
+                ..Default::default()
+            },
+        )
+        .expect("private bundle create");
+        let id = bundle.id();
+        self.injected += 1;
+        // Record the intended recipient so run() can detect recognition-based delivery.
+        self.private_dst.insert(id, dst);
         self.pending.push((at, src, bundle));
         id
     }
@@ -242,7 +306,26 @@ impl Sim {
                         continue;
                     }
                     self.transmissions += 1;
+                    let created = copy.inner.created_at;
+                    let is_private = copy.is_private();
                     self.nodes[to].store.put(copy, now);
+                    // §39 private path: a Broadcast bundle has no cleartext destination, so delivery
+                    // is recognition-based — the receiving node checks "is this mine?" against its
+                    // signed-prekey secret. If `to` is the intended recipient and recognizes the tag,
+                    // this spray hop delivered it (record first-delivery time exactly once).
+                    if is_private && self.private_dst.get(&id) == Some(&to) {
+                        if let Some(bundle) = self.nodes[to].store.get(&id) {
+                            if bundle.recognized_by(&self.nodes[to].spk_secret) {
+                                self.delivered.entry(to).or_default().push(id);
+                                if let std::collections::hash_map::Entry::Vacant(e) =
+                                    self.delivered_at.entry(id)
+                                {
+                                    e.insert(now);
+                                    self.latency_sum_ms += now.saturating_sub(created) as u128;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -312,9 +395,24 @@ fn partition_of(node: usize, partitions: usize) -> usize {
     node % partitions.max(1)
 }
 
+/// Which routing path the generated workload exercises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Path {
+    /// Opt-in traced path: `Destination::Device`, cleartext src/dst, directed handoff.
+    Traced,
+    /// Default §39 private path: `Destination::Broadcast` + recognition tag, floods, no cleartext dst.
+    Private,
+}
+
 /// Build a [`Sim`] with a generated contact trace and a cross-partition message
-/// workload of `messages` bundles, each with copy budget `copies`.
+/// workload of `messages` bundles, each with copy budget `copies`, over the traced path.
 pub fn build_scenario(p: &ScenarioParams, messages: usize, copies: u16) -> Sim {
+    build_scenario_path(p, messages, copies, Path::Traced)
+}
+
+/// Like [`build_scenario`] but selects the routing [`Path`] — so the same seeded contact trace and
+/// workload can be measured on the traced path AND the default private (§39) path.
+pub fn build_scenario_path(p: &ScenarioParams, messages: usize, copies: u16, path: Path) -> Sim {
     let mut sim = Sim::new(p.nodes);
     let mut rng = Rng::new(p.seed);
     let parts = p.partitions.max(1);
@@ -364,7 +462,14 @@ pub fn build_scenario(p: &ScenarioParams, messages: usize, copies: u16) -> Sim {
         if dst == src {
             continue;
         }
-        sim.schedule_message(at, src, dst, copies, vec![0u8; 32]);
+        match path {
+            Path::Traced => {
+                sim.schedule_message(at, src, dst, copies, vec![0u8; 32]);
+            }
+            Path::Private => {
+                sim.schedule_private_message(at, src, dst, copies, vec![0u8; 32]);
+            }
+        }
     }
 
     sim
@@ -481,6 +586,85 @@ mod tests {
             "expected some cross-partition delivery via bridges"
         );
         assert!(m.mean_latency_ms > 0.0);
+    }
+
+    #[test]
+    fn private_two_hop_delivery_by_recognition() {
+        // The §39 default path: 0 -> 1 -> 2, dst = node 2, but the bundle floods (Broadcast) and 2
+        // "receives" it only by recognizing its own tag. 0 and 2 never meet directly.
+        let mut sim = Sim::new(3);
+        // Give node 1 (a pure relay) a big copy budget on injection so it sprays onward to 2.
+        let id = sim.schedule_private_message(0, 0, 2, 8, b"untraceable".to_vec());
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 });
+        sim.contacts.push(Contact { at: 20, a: 1, b: 2 });
+        sim.run();
+
+        // Delivered to node 2 by recognition, and the wire never named node 2 as the destination.
+        assert_eq!(sim.delivered.get(&2).map(|v| v.len()), Some(1));
+        assert!(sim.delivered_at.contains_key(&id));
+        // The relay (node 1) holds the flooding bundle but does NOT recognize it as its own.
+        assert!(sim.nodes[1].store.get(&id).is_some());
+        assert!(!sim.nodes[1]
+            .store
+            .get(&id)
+            .unwrap()
+            .recognized_by(&sim.nodes[1].spk_secret));
+        // The bundle carries no cleartext destination address.
+        assert!(sim.nodes[2].store.get(&id).unwrap().is_private());
+    }
+
+    #[test]
+    fn private_wrong_recipient_never_recognizes() {
+        // A private bundle addressed to node 2 must NOT be counted delivered just because it floods
+        // to node 1 — recognition is what gates delivery on the §39 path.
+        let mut sim = Sim::new(3);
+        sim.schedule_private_message(0, 0, 2, 8, b"mine only".to_vec());
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 }); // reaches a non-recipient relay
+        sim.run();
+        assert_eq!(
+            sim.delivered.get(&1),
+            None,
+            "a non-recipient must not 'deliver'"
+        );
+        assert_eq!(sim.metrics().delivered, 0);
+    }
+
+    #[test]
+    fn private_path_delivers_over_bridges() {
+        // Broaden the §39 coverage to the generated cross-partition workload: the DEFAULT private
+        // path must move real messages across partitions via bridge contacts, just like the traced
+        // path. This is the path history shows can diverge from the traced one (the §39 regression).
+        let mut sim = build_scenario_path(&base_params(), 40, 16, Path::Private);
+        sim.run();
+        let m = sim.metrics();
+        assert!(m.injected > 0);
+        assert!(
+            m.delivered > 0,
+            "expected some cross-partition private delivery via bridges"
+        );
+        assert!(m.mean_latency_ms > 0.0);
+        // Every private delivery must be tagged private on the wire (no cleartext Device dst).
+        for (dst, ids) in &sim.delivered {
+            for id in ids {
+                let b = sim.nodes[*dst]
+                    .store
+                    .get(id)
+                    .expect("held delivered bundle");
+                assert!(b.is_private(), "delivered private bundle must stay private");
+            }
+        }
+    }
+
+    #[test]
+    fn private_partitions_without_bridges_block_delivery() {
+        // Symmetric to the traced check: with no bridging contacts, no private message arrives.
+        let mut p = base_params();
+        p.bridge_fraction = 0.0;
+        let mut sim = build_scenario_path(&p, 40, 16, Path::Private);
+        sim.run();
+        let m = sim.metrics();
+        assert!(m.injected > 0);
+        assert_eq!(m.delivered, 0);
     }
 
     #[test]

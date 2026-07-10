@@ -15,7 +15,14 @@ echo "▸ ensuring Apple Rust targets"
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
                   aarch64-apple-darwin x86_64-apple-darwin >/dev/null
 
-core/hop/regen-header.sh >/dev/null   # hop.h current
+# Regenerate hop.h from cabi.rs when cbindgen is available (a dev machine). CI's apple job does not
+# install cbindgen, and the committed hop.h is already guaranteed in sync by the `contract` job's
+# header-drift check, so fall back to the committed header rather than aborting under `set -e`.
+if command -v cbindgen >/dev/null 2>&1; then
+  core/hop/regen-header.sh >/dev/null   # hop.h current
+else
+  echo "▸ cbindgen not installed; using the committed hop.h (kept in sync by the contract CI job)"
+fi
 
 echo "▸ cross-compiling libhop.a (release) for each slice"
 for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin; do

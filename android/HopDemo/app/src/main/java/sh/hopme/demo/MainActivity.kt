@@ -51,6 +51,13 @@ import java.util.concurrent.TimeUnit
 class MainActivity : ComponentActivity() {
     private lateinit var bearer: HopBearer
 
+    /** Whether the required BLE permissions have been granted. Drives the gate below so a denial shows
+     *  a recovery screen (android-10) instead of a silent, permanently-"starting…" dead-end. */
+    private val bleGranted = mutableStateOf(false)
+    /** True once the user has denied at least once and the OS will no longer show the system dialog
+     *  ("Don't ask again" / permanent denial), leaving App Settings as the only recovery. */
+    private val mustUseSettings = mutableStateOf(false)
+
     private val permissions: Array<String>
         get() {
             val perms = mutableListOf<String>()
@@ -71,13 +78,43 @@ class MainActivity : ComponentActivity() {
             return perms.distinct().toTypedArray()
         }
 
+    /** The subset of [permissions] that are hard-required for the mesh (BLE); POST_NOTIFICATIONS is
+     *  best-effort and never blocks start. */
+    private val requiredPermissions: Array<String>
+        get() = permissions.filter { it != Manifest.permission.POST_NOTIFICATIONS }.toTypedArray()
+
+    private fun requiredGranted(): Boolean = requiredPermissions.all {
+        checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
     private val requestPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             // BLE perms are required; the notification perm is best-effort.
             val optional = setOf(Manifest.permission.POST_NOTIFICATIONS)
             val bleOk = result.filterKeys { it !in optional }.values.all { it }
-            if (bleOk) HopService.start(this) // service starts the shared bearer
+            bleGranted.value = bleOk
+            if (bleOk) {
+                mustUseSettings.value = false
+                HopService.start(this) // service starts the shared bearer
+            } else {
+                // A denial that no longer shows the system dialog (shouldShowRationale == false AFTER a
+                // request means "Don't ask again") can only be recovered from App Settings.
+                mustUseSettings.value = requiredPermissions.none { shouldShowRequestPermissionRationale(it) }
+            }
         }
+
+    /** Ask for permissions again (the in-app "Grant" button on the denied screen). */
+    private fun requestPermissionsNow() = requestPerms.launch(permissions)
+
+    /** Deep-link to this app's system settings so a permanently-denied user can toggle permissions. */
+    private fun openAppSettings() {
+        startActivity(
+            Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", packageName, null),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,14 +128,31 @@ class MainActivity : ComponentActivity() {
             relayUrl = HopBearer.DEFAULT_RELAY,
             relaysEnabled = true,   // cloud relay re-enabled (wss://relay.hopme.sh via the shared RelayBearer)
             notificationIcon = android.R.drawable.ic_dialog_email,
+            // android-01: MUST match the sticky-service path (HopConfig.default sets this too). Without
+            // it the activity opens hop.db PLAINTEXT while a START_STICKY service restart opens it keyed,
+            // which used to quarantine-wipe all node state; SQLCipher-at-rest (F-25) also stayed OFF.
+            dbKey = HopBearer.dbKey(this),
         )
         bearer = HopBearer.shared(this, config)
         // Edge-to-edge so Compose actually receives IME (keyboard) insets: Compose does NOT reliably
         // react to windowSoftInputMode=adjustResize on its own, so screens apply imePadding/
         // safeDrawingPadding to lift content above the keyboard + system bars.
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
-        setContent { MaterialTheme { HopApp(bearer) } }
-        requestPerms.launch(permissions)
+        bleGranted.value = requiredGranted()
+        setContent {
+            MaterialTheme {
+                if (bleGranted.value) {
+                    HopApp(bearer)
+                } else {
+                    PermissionGate(
+                        mustUseSettings = mustUseSettings.value,
+                        onGrant = { requestPermissionsNow() },
+                        onOpenSettings = { openAppSettings() },
+                    )
+                }
+            }
+        }
+        if (bleGranted.value) HopService.start(this) else requestPerms.launch(permissions)
         handleAutomationIntent(intent)
     }
 
@@ -121,8 +175,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); bearer.setForeground(true) }
+    override fun onResume() {
+        super.onResume()
+        bearer.setForeground(true)
+        // android-10: a user who granted permission from App Settings (or elsewhere) recovers without an
+        // app relaunch: re-check on resume and start the service the moment the grant appears.
+        val nowGranted = requiredGranted()
+        if (nowGranted && !bleGranted.value) {
+            bleGranted.value = true
+            mustUseSettings.value = false
+            HopService.start(this)
+        } else {
+            bleGranted.value = nowGranted
+        }
+    }
     override fun onPause() { super.onPause(); bearer.setForeground(false) }
+}
+
+/** The permission-denied recovery screen (android-10). Explains why Hop needs nearby-device access and
+ *  offers either an in-app re-request (system dialog still available) or a deep-link to App Settings
+ *  (once the OS will no longer show the dialog). Replaces the old silent, stuck-on-"starting…" dead-end. */
+@androidx.compose.runtime.Composable
+private fun PermissionGate(
+    mustUseSettings: Boolean,
+    onGrant: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("Nearby-device access needed", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Hop forms its mesh over Bluetooth LE to nearby phones. Without the nearby-devices " +
+                    "(Bluetooth) permission it can't scan, advertise, or relay, so nothing will send " +
+                    "or arrive.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(24.dp))
+            if (mustUseSettings) {
+                Text(
+                    "You've denied it permanently. Turn it on in App Settings under Permissions → " +
+                        "Nearby devices, then return here.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onOpenSettings) { Text("Open App Settings") }
+            } else {
+                Button(onClick = onGrant) { Text("Grant permission") }
+            }
+        }
+    }
 }
 
 private fun platformLabel(p: String): String = when (p) {

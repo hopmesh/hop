@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Library module: namespace is declared in build.gradle.kts. The Wi-Fi Direct permissions the P2P
-     APIs need (ACCESS_FINE_LOCATION / NEARBY_WIFI_DEVICES / CHANGE_WIFI_STATE / ACCESS_WIFI_STATE) stay
-     in the consuming app's manifest — they are NOT declared here. -->
-<manifest />

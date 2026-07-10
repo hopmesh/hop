@@ -8,13 +8,10 @@
 import initWasm, { WasmNode } from './pkg/hop_wasm.js';
 import { makeMesh } from './mesh.js';
 import { makeMapBridge, makeSqliteBridge } from './store-bridge.js';
+// RANGE/SOAK/RELAY_ID + hav are the SINGLE source of truth in sim-constants.js — the headless
+// validator (scenario-check.mjs) imports the same module, so the two can't drift.
+import { RANGE, SOAK, RELAY_ID, hav } from './sim-constants.js';
 
-const RANGE = { ble: 35, wifi: 90 };   // realistic: BLE phone-to-phone ~10-35m; Wi-Fi Direct ~50-100m
-// SOAK = dwell time (sim-ms ≈ simulated real seconds) a pair must stay in range before the link is usable.
-// Real connection setup: BLE discovery+GATT ~4s, Wi-Fi Direct group negotiation ~8s, AP association ~2s,
-// cell/relay attach ~3s. A fast passer-by that doesn't dwell this long never links (physically honest).
-const SOAK = { ble: 4000, wifi: 8000, ap: 2000, relay: 3000, lora: 1500 };
-const RELAY_ID = 'relay';
 let mesh = null;
 let caps = {};            // id -> { platform, bt, wifiP2P }
 let st = {};              // id -> { p:[lng,lat], c:hasCell }  (updated every tick from the main thread)
@@ -35,9 +32,6 @@ function dbRows() {
 }
 function sqliteBytes() { try { return sqliteMod ? sqliteMod.wasm.heap8u().byteLength : 0; } catch (_) { return 0; } }
 
-function hav(a, b) { const t = Math.PI / 180, dLa = (b[1] - a[1]) * t, dLo = (b[0] - a[0]) * t;
-  const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[1] * t) * Math.cos(b[1] * t) * Math.sin(dLo / 2) ** 2;
-  return 6371000 * 2 * Math.asin(Math.sqrt(h)); }
 // linkInfo(a,b): the connection SOAK (ms) for the best available transport, or -1 if they can't connect.
 function linkInfo(a, b) {
   if (a === RELAY_ID) return (!congested && st[b] && st[b].c) ? SOAK.relay : -1;   // backbone: cell OR a connected AP

@@ -4,15 +4,15 @@ import Base from '../layouts/Base.astro';
 const faqs = [
   {
     q: "Is Hop real-time?",
-    a: "No — and that's the point. Hop is delay-tolerant: messages are eventually delivered, with a lifetime measured in hours to days, not milliseconds. It's built for the moments a live connection doesn't exist. When a path happens to be live, delivery is quick; when it isn't, the message waits and keeps seeking a way.",
+    a: "No, and that's the point. Hop is delay-tolerant: messages are eventually delivered, with a lifetime measured in hours to days, not milliseconds. It's built for the moments a live connection doesn't exist. When a path happens to be live, delivery is quick; when it isn't, the message waits and keeps seeking a way.",
   },
   {
     q: "Can the relays read my messages?",
-    a: "No. Every payload is end-to-end encrypted (X25519 + ChaCha20-Poly1305) — sealed to the destination's key. Relays carry ciphertext they cannot read; they only see the routing envelope. Only the recipient can open it.",
+    a: "No. Every payload is end-to-end encrypted (X25519 + ChaCha20-Poly1305), sealed to the destination's key. Relays carry ciphertext they cannot read; they only see the routing envelope. Only the recipient can open it.",
   },
   {
     q: "Does it need the internet?",
-    a: "Not for device-to-device. Two phones reach each other directly — over BLE and other local radios — with no tower or server. The internet is only used — when available — to bridge distant peer-to-peer islands or to fulfill requests to the public web.",
+    a: "Not for device-to-device. Two phones reach each other directly, over BLE and other local radios, with no tower or server. The internet is only used, when available, to bridge distant peer-to-peer islands or to fulfill requests to the public web.",
   },
   {
     q: "How big can a message be?",
@@ -24,36 +24,36 @@ const faqs = [
   },
   {
     q: "Is delivery guaranteed?",
-    a: "Hop is at-least-once with idempotency — redundant copies that an acknowledgement later cancels. Exactly-once is impossible over a lossy, partitioned network, so messages carry stable ids and recipients dedup. In practice: it gets there, and it isn't delivered twice.",
+    a: "Hop is at-least-once with idempotency, redundant copies that an acknowledgement later cancels. Exactly-once is impossible over a lossy, partitioned network, so messages carry stable ids and recipients dedup. In practice: it gets there, and it isn't delivered twice.",
   },
   {
     q: "Do I have to use the cloud backbone?",
-    a: "No. The SDK works fully peer-to-peer on its own, over the device's local radios (BLE and Wi-Fi/LAN). The hosted backbone is optional — it absorbs carry-and-forward and bridges messages across the world when any node touches the internet. You can also run your own private backbone.",
+    a: "No. The SDK works fully peer-to-peer on its own, over the device's local radios (BLE and Wi-Fi/LAN). The hosted backbone is optional, it absorbs carry-and-forward and bridges messages across the world when any node touches the internet. You can also run your own private backbone.",
   },
   {
     q: "What about battery?",
-    a: "Hop is designed for background operation — periodic beaconing to stay discoverable, OS wake mechanisms on BLE events, and best-effort background refresh, with cadence the OS tunes from usage. It leans on always-on nodes (a plugged-in device, a relay) as rendezvous rather than keeping radios hot.",
+    a: "Hop is designed for background operation, periodic beaconing to stay discoverable, OS wake mechanisms on BLE events, and best-effort background refresh, with cadence the OS tunes from usage. It leans on always-on nodes (a plugged-in device, a relay) as rendezvous rather than keeping radios hot.",
   },
   {
     q: "How private is it?",
-    a: "Payloads are confidential by default — end-to-end encrypted, and identities are public keys, not phone numbers or accounts. In v1 we encrypt content but do not fully hide who-talks-to-whom from on-path relays (metadata privacy at the Briar level is future work). Billing meters counts and bytes on the envelope, never content.",
+    a: "Payloads are confidential by default, end-to-end encrypted, and identities are public keys, not phone numbers or accounts. Delivery is untraceable-by-default: a private bundle carries no cleartext recipient. It's addressed with a per-message recognition tag only the intended recipient can match, and offline mail is parked under a rotating mailbox tag, so an on-path relay stores and forwards ciphertext it can't attribute to a pair of identities. An observer can still see envelope size and timing, and a relay learns which node pulled a given mailbox, so this narrows the metadata surface, it doesn't erase it. Billing meters counts and bytes on the envelope, never content.",
   },
   {
     q: "What transports does it use?",
-    a: "Many — the network that finds a way finds more than one. BLE is the primary local bearer because it's passive: devices discover and relay through each other in the background, with no pairing, no taps, no setup. That's a deliberate trade-off — lower throughput in exchange for always-on, invisible meshing. Alongside it, Wi-Fi/LAN carries high-bandwidth local transfers and the internet relay bridges across the world. The bearer is a pluggable trait, so the same sealed bundles ride whatever's available.",
+    a: "Many, the network that finds a way finds more than one. BLE is the primary local bearer because it's passive: devices discover and relay through each other in the background, with no pairing, no taps, no setup. That's a deliberate trade-off, lower throughput in exchange for always-on, invisible meshing. Alongside it, Wi-Fi/LAN carries high-bandwidth local transfers and the internet relay bridges across the world. The bearer is a pluggable trait, so the same sealed bundles ride whatever's available.",
   },
   {
     q: "What platforms does it run on?",
-    a: "A pure-Rust core (deterministic, fully testable without a radio) with native iOS and Android bindings via UniFFI. The bearer is pluggable — BLE and Wi-Fi/LAN today, with room for Wi-Fi Aware, MultipeerConnectivity, long-range sub-GHz radios, and others.",
+    a: "A pure-Rust core (deterministic, fully testable without a radio) with native iOS and Android bindings via UniFFI. The bearer is pluggable, BLE and Wi-Fi/LAN today, with room for Wi-Fi Aware, MultipeerConnectivity, long-range sub-GHz radios, and others.",
   },
   {
     q: "Is it open source? How do you make money?",
-    a: "The SDK is source-available under FSL-1.1-ALv2 (and converts to Apache 2.0 after two years). The library is free — the device does the work. We monetize the hosted cloud backbone (usage-based) and commercial licensing, never the protocol itself.",
+    a: "The SDK is source-available under FSL-1.1-ALv2 (and converts to Apache 2.0 after two years). The library is free, the device does the work. We monetize the hosted cloud backbone (usage-based) and commercial licensing, never the protocol itself.",
   },
 ];
 ---
 <Base
-  title="Hop FAQ — how delay-tolerant mesh works"
+  title="Hop FAQ, how delay-tolerant mesh works"
   description="Answers on latency, privacy, message size, offline delivery, battery, platforms, and how Hop is licensed."
   path=""
 >

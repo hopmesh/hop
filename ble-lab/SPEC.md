@@ -1,4 +1,9 @@
-# HOP BLE LAB — Canonical Dual-Role BLE Transport (Proof of Pipe)
+# HOP BLE LAB, Canonical Dual-Role BLE Transport (Proof of Pipe)
+
+> **Charter.** ble-lab is the clean-room repro rig for advertiser / link-formation wedges and the
+> iOS L2CAP teardown, not a production bearer. It carries only BLE and LAN; Wi-Fi Direct was removed
+> (commit c059d69) to match production. Production `bearers/` is the source of truth when the two
+> diverge.
 
 > **Status:** buildable specification. No further decisions required. Hardened against an adversarial
 > review (R1–R11); resolutions catalogued in **Appendix C**.

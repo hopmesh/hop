@@ -63,3 +63,9 @@ bearers/android/local.properties
 
 # Android driver build
 drivers/android/**/build/
+
+# ---- WASM sim ----
+# nodejs wasm-pack build for sim/scenario-check.mjs (build artifact; recipe: sim/build-wasm.sh).
+# sim/pkg/ (the browser --target web build) stays committed so the Astro site builds without a wasm
+# toolchain, but CI rebuilds it from source and fails on drift (web-05 / simwasm-02; sim/check-pkg-fresh.sh).
+core/hop-wasm/pkg-node/

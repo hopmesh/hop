@@ -2,8 +2,8 @@
 import Base from '../layouts/Base.astro';
 ---
 <Base
-  title="Hop Bridge — extend the mesh for miles"
-  description="The Hop Bridge: a small, weatherproof ESP32 device that carries the Hop mesh over a long-range 900 MHz radio — linking local peer-to-peer clusters kilometres apart, off-grid. Multi-firmware: LoRa and other sub-GHz waveforms on the same chip. In development; pilot program open."
+  title="Hop Bridge, extend the mesh for miles"
+  description="The Hop Bridge: a small, weatherproof ESP32 device that carries the Hop mesh over a long-range 900 MHz radio, linking local peer-to-peer clusters kilometres apart, off-grid. Multi-firmware: LoRa and other sub-GHz waveforms on the same chip. In development; pilot program open."
   path="/lora"
 >
   <!-- hero -->
@@ -14,7 +14,7 @@ import Base from '../layouts/Base.astro';
           <div class="eyebrow">Hardware · long-range bridge</div>
           <h1>Stretch the mesh <span style="color:var(--accent)">for miles.</span></h1>
           <p class="lede" style="margin-top:18px;">
-            BLE reaches across a room. The <strong>Hop Bridge</strong> reaches across a valley — a
+            BLE reaches across a room. The <strong>Hop Bridge</strong> reaches across a valley, a
             small, weatherproof device that carries the Hop mesh over a long-range <strong>900 MHz</strong>
             radio, linking local peer-to-peer clusters kilometres apart with no tower and no internet.
           </p>
@@ -29,7 +29,7 @@ import Base from '../layouts/Base.astro';
           </div>
         </div>
         <div>
-          <img src="/lora-bridge.jpg" alt="The Hop Bridge — a small matte-charcoal weatherproof device with a short antenna and a green status light"
+          <img src="/lora-bridge.jpg" alt="The Hop Bridge, a small matte-charcoal weatherproof device with a short antenna and a green status light"
                width="1280" height="853" loading="eager"
                style="width:100%; border-radius:var(--radius); border:1px solid var(--line); box-shadow:0 24px 60px #00000028;" />
         </div>
@@ -44,12 +44,12 @@ import Base from '../layouts/Base.astro';
         <div class="eyebrow">What it is</div>
         <h2>A bridge between near and far.</h2>
         <p class="lede">Drop one bridge at the edge of each local cluster. Between them it speaks a
-           long-range 900 MHz radio — low-power, line-of-sight — so a sealed Hop message hops out of
+           long-range 900 MHz radio, low-power, line-of-sight, so a sealed Hop message hops out of
            one peer-to-peer crowd, across open ground, and into the next. The protocol above never
            changes; only the distance does.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div><h3>Kilometres, not metres</h3><p>The 900 MHz radio carries small, sealed Hop bundles line-of-sight across open terrain — orders of magnitude past the reach of BLE or Wi-Fi.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div><h3>Kilometres, not metres</h3><p>The 900 MHz radio carries small, sealed Hop bundles line-of-sight across open terrain, orders of magnitude past the reach of BLE or Wi-Fi.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-microchip"></i></div><h3>Built on ESP32</h3><p>An ESP32 joins the local mesh over BLE on one side and drives the 900 MHz radio module on the other. Commodity parts, open design.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-lock"></i></div><h3>Carries, never reads</h3><p>The bridge relays ciphertext like any Hop relay. It extends range without becoming something to trust.</p></div>
       </div>
@@ -64,21 +64,20 @@ import Base from '../layouts/Base.astro';
           <div class="eyebrow">One radio, many waveforms</div>
           <h2>It doesn't have to be LoRa.</h2>
           <p class="lede">The 900 MHz radio is <strong>multi-firmware</strong>. LoRa is the obvious
-             first waveform — proven, long-range, license-free in the sub-GHz ISM bands — but it's not
+             first waveform, proven, long-range, license-free in the sub-GHz ISM bands, but it's not
              the only one. Other robust sub-GHz modulations run on the very same chipset.</p>
           <p>Pick the waveform that fits the job: maximum range, higher throughput, or whatever your
-             region's spectrum rules allow. Same hardware, same sealed Hop bundles riding across it —
-             flash the firmware that suits the deployment. The network that finds a way finds the
+             region's spectrum rules allow. Same hardware, same sealed Hop bundles riding across it, flash the firmware that suits the deployment. The network that finds a way finds the
              waveform too.</p>
         </div>
         <div>
           <div class="card">
             <div class="kicker">On the 900 MHz side</div>
             <ul class="checks" style="margin-top:14px;">
-              <li><b>LoRa</b> — longest range, lowest data rate; the default.</li>
-              <li><b>(G)FSK &amp; other sub-GHz modes</b> — more throughput where range allows.</li>
+              <li><b>LoRa</b>, longest range, lowest data rate; the default.</li>
+              <li><b>(G)FSK &amp; other sub-GHz modes</b>, more throughput where range allows.</li>
               <li>License-free <b>sub-GHz ISM</b> bands (region-dependent).</li>
-              <li>Swappable firmware — one device, re-tuned to the deployment.</li>
+              <li>Swappable firmware, one device, re-tuned to the deployment.</li>
             </ul>
           </div>
         </div>
@@ -104,8 +103,8 @@ import Base from '../layouts/Base.astro';
       <div class="grid-3">
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-wheat-awn"></i></div><h3>Agriculture</h3><p>Sensors and crews spread across fields and orchards, kilometres from the nearest building.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-campground"></i></div><h3>Parks &amp; trails</h3><p>Ranger stations, trailheads, and remote huts stitched into one network without laying cable.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-tower-broadcast"></i></div><h3>Disaster &amp; response</h3><p>Drop bridges to re-connect neighbourhoods when towers are gone — coverage that arrives in a backpack.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-anchor"></i></div><h3>Maritime &amp; marina</h3><p>Boats, docks, and shore spread beyond a phone's reach — long-range links that don't need a satellite plan.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-tower-broadcast"></i></div><h3>Disaster &amp; response</h3><p>Drop bridges to re-connect neighbourhoods when towers are gone, coverage that arrives in a backpack.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-anchor"></i></div><h3>Maritime &amp; marina</h3><p>Boats, docks, and shore spread beyond a phone's reach, long-range links that don't need a satellite plan.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-industry"></i></div><h3>Sites &amp; yards</h3><p>Mines, ports, and industrial campuses where wiring every corner is impractical.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-shield-halved"></i></div><h3>Field operations</h3><p>Teams working past coverage who need their own network to come with them. <a class="link-go" href="/public-safety-defense/">Public safety &amp; defense →</a></p></div>
       </div>
@@ -120,21 +119,21 @@ import Base from '../layouts/Base.astro';
           <div class="kicker">How it works</div>
           <ul class="checks" style="margin-top:16px;">
             <li>Two bridges sit at the edges of separate peer-to-peer clusters and link over the 900 MHz radio.</li>
-            <li>Sealed Hop bundles cross the long-range link unchanged — fragmented to the radio's frame size and reassembled on the far side.</li>
-            <li>The bearer is the only thing that changes; everything above — <a href="/protocol/hdp/">hdp</a>, messaging, sync, <a href="/protocol/hops/">hops://</a> — runs exactly as it does over BLE or Wi-Fi.</li>
+            <li>Sealed Hop bundles cross the long-range link unchanged, fragmented to the radio's frame size and reassembled on the far side.</li>
+            <li>The bearer is the only thing that changes; everything above, <a href="/protocol/hdp/">hdp</a>, messaging, sync, <a href="/protocol/hops/">hops://</a>, runs exactly as it does over BLE or Wi-Fi.</li>
           </ul>
         </div>
         <div>
           <div class="kicker">At a glance</div>
           <div class="card" style="margin-top:16px;">
             <ul class="checks" style="margin-top:0;">
-              <li>Bearer — BLE ↔ 900 MHz (LoRa + other sub-GHz firmware)</li>
-              <li>Compute — ESP32</li>
-              <li>Power — solar panel or USB-C</li>
-              <li>Enclosure — weatherproof, pole-mountable</li>
-              <li>Role — extends the mesh; carries sealed traffic only</li>
+              <li>Bearer, BLE ↔ 900 MHz (LoRa + other sub-GHz firmware)</li>
+              <li>Compute, ESP32</li>
+              <li>Power, solar panel or USB-C</li>
+              <li>Enclosure, weatherproof, pole-mountable</li>
+              <li>Role, extends the mesh; carries sealed traffic only</li>
             </ul>
-            <p class="note" style="margin-top:16px;">Target specs — the bridge is in development. Numbers and form factor will firm up through the pilot.</p>
+            <p class="note" style="margin-top:16px;">Target specs, the bridge is in development. Numbers and form factor will firm up through the pilot.</p>
           </div>
         </div>
       </div>
@@ -146,7 +145,7 @@ import Base from '../layouts/Base.astro';
     <div class="wrap">
       <h2>Help us range-test the mesh.</h2>
       <p>The Hop Bridge is in development and we're opening a pilot program. If you've got distance to
-         cover — a farm, a park, a response plan, a campus — tell us the scenario and we'll fit a unit to it.</p>
+         cover, a farm, a park, a response plan, a campus, tell us the scenario and we'll fit a unit to it.</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="/early-access/">Join the pilot</a>
         <a class="btn btn-ghost" href="/business/">For business</a>

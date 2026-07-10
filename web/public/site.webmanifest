@@ -1,7 +1,7 @@
 {
   "name": "Hop",
   "short_name": "Hop",
-  "description": "Delay-tolerant mesh networking — the network that finds a way.",
+  "description": "Delay-tolerant mesh networking, the network that finds a way.",
   "icons": [
     { "src": "/favicon-32.png", "sizes": "32x32", "type": "image/png" },
     { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },

@@ -11,10 +11,11 @@ node.send(
     Payload::message(<span style="color:var(--tok-str)">"on my way"</span>),
 )?;
 
-<span style="color:var(--tok-comment)">// reach the internet from offline — any gateway fulfills it</span>
-node.send(
-    Destination::InternetEgress,
-    Payload::http_get(<span style="color:var(--tok-str)">"hops://example.com/status"</span>),
+<span style="color:var(--tok-comment)">// reach the internet from offline: a hops:// request to an endpoint node's key</span>
+node.send_service_request(
+    endpoint,
+    <span style="color:var(--tok-str)">"http"</span>, <span style="color:var(--tok-str)">"get"</span>,
+    <span style="color:var(--tok-str)">b"hops://example.com/status"</span>,
 )?;
 
 <span style="color:var(--tok-comment)">// drain inbox: sealed bundles addressed to you</span>
@@ -23,7 +24,7 @@ node.send(
 }`;
 ---
 <Base
-  title="Hop for developers — embed the mesh"
+  title="Hop for developers, embed the mesh"
   description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with end-to-end encrypted messaging, HTTP-over-mesh (hops://), pub/sub, and DNSSEC-backed naming (HNS). Free and source-available."
   path="/developers"
 >
@@ -34,8 +35,8 @@ node.send(
       <h1>Put your app <span class="grad">on the mesh.</span></h1>
       <p class="lede">
         Hop is a pure-Rust core you embed in your iOS and Android app. It carries
-        end-to-end encrypted, store-and-forward messages device to device — across BLE, Wi-Fi, and
-        the public internet when it's there — so your app keeps working when the network doesn't. One
+        end-to-end encrypted, store-and-forward messages device to device, across BLE, Wi-Fi, and
+        the public internet when it's there, so your app keeps working when the network doesn't. One
         library, two addressing modes: reach the internet, or reach a device.
       </p>
       <div class="hero-cta">
@@ -45,7 +46,7 @@ node.send(
       <div class="hero-meta">
         <span class="tag"><b>Rust core</b> · deterministic, fully testable without a radio</span>
         <span class="tag"><b>UniFFI</b> · native iOS &amp; Android bindings</span>
-        <span class="tag"><b>Pluggable bearer</b> · BLE today, more later</span>
+        <span class="tag"><b>Pluggable bearer</b> · BLE, Wi-Fi/LAN, internet relay</span>
       </div>
     </div>
   </section>
@@ -57,21 +58,20 @@ node.send(
         <div class="eyebrow">One core, two modes</div>
         <h2>Reach the internet, or reach a device.</h2>
         <p>Both are the same machinery with a different destination. You don't pick a
-           transport or plan a route — you address a bundle and Hop carries it.</p>
+           transport or plan a route, you address a bundle and Hop carries it.</p>
       </div>
       <div class="grid-2">
         <div class="card">
           <div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div>
           <h3>Internet egress</h3>
           <p>A device with no connection emits a sealed HTTP request. Any gateway node
-             fulfills it and relays the sealed response back to your device's key —
-             eventual, but guaranteed.</p>
+             fulfills it and relays the sealed response back to your device's key, eventual, but guaranteed.</p>
         </div>
         <div class="card">
           <div class="ic"><i class="fa-duotone fa-solid fa-paper-plane"></i></div>
           <h3>Device to device</h3>
           <p>Send a sealed message to another device's public key. The bundle hops
-             until the destination receives it — confidential the whole way, even
+             until the destination receives it, confidential the whole way, even
              across relays you don't trust.</p>
         </div>
       </div>
@@ -85,14 +85,14 @@ node.send(
         <div class="eyebrow">The protocol stack</div>
         <h2>Three named layers, lowest to highest.</h2>
         <p>Everything rides on one sealed datagram. The higher layers rebuild the
-           guarantees you expect — reliability, ordering, HTTP, pub/sub — at the
+           guarantees you expect, reliability, ordering, HTTP, pub/sub, at the
            endpoints, where they need no live circuit in the middle.</p>
       </div>
       <div class="stack-rows">
         <a class="srow" href="/protocol/hdp/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">hdp://</div>
           <div class="body">
-            <h3>Hop Datagram Protocol — the substrate <span class="link-go" style="font-size:13px;">→</span></h3>
+            <h3>Hop Datagram Protocol, the substrate <span class="link-go" style="font-size:13px;">→</span></h3>
             <p>Hop's UDP: a connectionless, end-to-end encrypted, addressed datagram that's
                store-and-forwarded across the mesh. Held when there's no onward path,
                never dropped. All Hop traffic rides on <code>hdp</code>.</p>
@@ -101,17 +101,17 @@ node.send(
         <a class="srow" href="/protocol/hops/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">hops://</div>
           <div class="body">
-            <h3>HTTP over the mesh — origin-run, no man-in-the-middle <span class="link-go" style="font-size:13px;">→</span></h3>
+            <h3>HTTP over the mesh, origin-run, no man-in-the-middle <span class="link-go" style="font-size:13px;">→</span></h3>
             <p>The same request/response semantics as HTTP, carried as sealed
                datagrams. An operator runs a <code>hop-endpoint</code> for their own
-               domain — it <em>is</em> the origin, never an open proxy — so there's no
+               domain, it <em>is</em> the origin, never an open proxy, so there's no
                third party in the middle.</p>
           </div>
         </a>
         <a class="srow" href="/protocol/hps/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">hps://</div>
           <div class="body">
-            <h3>Hop Pub/Sub — services &amp; channels <span class="link-go" style="font-size:13px;">→</span></h3>
+            <h3>Hop Pub/Sub, services &amp; channels <span class="link-go" style="font-size:13px;">→</span></h3>
             <p>Topic-based broadcast and discovery over the same fabric, region-aware
                so a topic never ships to a region with no subscribers.</p>
           </div>
@@ -119,10 +119,10 @@ node.send(
         <a class="srow" href="/protocol/hns/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">HNS</div>
           <div class="body">
-            <h3>Hop Name System — delay-tolerant, trustless <span class="link-go" style="font-size:13px;">→</span></h3>
+            <h3>Hop Name System, delay-tolerant, trustless <span class="link-go" style="font-size:13px;">→</span></h3>
             <p>Resolve <code>hops://example.com</code> to an address via a DNSSEC-signed
                TXT record. No central resolver: a query walks the mesh until a node can
-               answer, and the client verifies the DNSSEC chain itself — any node may
+               answer, and the client verifies the DNSSEC chain itself, any node may
                resolve, none can lie.</p>
           </div>
         </a>
@@ -135,21 +135,20 @@ node.send(
     <div class="wrap">
       <div class="section-head">
         <div class="eyebrow">Messages of any size</div>
-        <h2>A sentence or a 5&nbsp;MB image — the same call.</h2>
+        <h2>A sentence or a 5&nbsp;MB image, the same call.</h2>
         <p>Hop isn't limited to tiny messages. A payload that fits travels as one sealed
            bundle; anything larger is transparently split into ordered, individually-sealed
-           <strong>chunks</strong> and reassembled into the original on the far side — id,
+           <strong>chunks</strong> and reassembled into the original on the far side, id,
            order, acks, and dedup all preserved. The size cap is a sliding window, not a
            ceiling, so even video streams through.</p>
       </div>
       <div class="grid-3">
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-envelope"></i></div><h3>One bundle</h3><p>A small message is a single sealed datagram — stored, forwarded, delivered as one unit.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-envelope"></i></div><h3>One bundle</h3><p>A small message is a single sealed datagram, stored, forwarded, delivered as one unit.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-puzzle-piece"></i></div><h3>Carrier chunks</h3><p>A large payload (a file, an image, an HTTP response) auto-splits into ordered sealed chunks and reassembles into the original bundle.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-film"></i></div><h3>Live streams</h3><p>Open-ended data (SSE, media) rides progressive stream chunks — in order, deduped, and resumable after a gap.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-film"></i></div><h3>Live streams</h3><p>Open-ended data (SSE, media) rides progressive stream chunks, in order, deduped, and resumable after a gap.</p></div>
       </div>
       <p class="note mt-m">Below all of this, each bundle is fragmented into link frames sized
-         to whatever bearer it crosses (BLE MTU, L2CAP CoC) and reassembled at the next hop —
-         so the wire never limits how big a message can be.</p>
+         to whatever bearer it crosses (BLE MTU, L2CAP CoC) and reassembled at the next hop, so the wire never limits how big a message can be.</p>
     </div>
   </section>
 
@@ -159,12 +158,12 @@ node.send(
       <div class="section-head">
         <div class="eyebrow">What's in the box</div>
         <h2>Batteries, minus the identity storage.</h2>
-        <p>The library never owns your keys — you hand it a 32-byte secret and it does
+        <p>The library never owns your keys, you hand it a 32-byte secret and it does
            the rest. Everything below the radio is pure Rust and unit-testable.</p>
       </div>
       <div class="grid-3">
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-lock"></i></div><h3>Encrypted by default</h3><p>X25519 + ChaCha20-Poly1305 sealed payloads; Ed25519-signed headers; Noise XX links between peers.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div><h3>Key = address</h3><p>One Ed25519 keypair is identity, address, and seal. Import a seed, export a seed — storage is yours.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div><h3>Key = address</h3><p>One Ed25519 keypair is identity, address, and seal. Import a seed, export a seed, storage is yours.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-water"></i></div><h3>Spray-and-wait routing</h3><p>A small copy budget fans across independent paths in parallel; first arrival wins. No flooding.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-box"></i></div><h3>Durable store</h3><p>Persistent forward queue with dedup and custody transfer, bounded by bundle lifetime.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div><h3>BLE bearer</h3><p>GATT for control, L2CAP CoC for bulk, with fragmentation and reassembly handled for you.</p></div>
@@ -181,9 +180,9 @@ node.send(
           <div class="eyebrow">The mental model</div>
           <h2>Address a bundle. Let it find a way.</h2>
           <p class="mt-s">You construct a node from a secret, address a sealed payload
-             to a device key or to the internet, and Hop handles the rest — fragmentation,
+             to a device key or to the internet, and Hop handles the rest, fragmentation,
              relaying, retransmit, dedup, and delivery acknowledgement.</p>
-          <p class="mt-s muted">Illustrative shape — the real API spans <code>hop-core</code> and
+          <p class="mt-s muted">Illustrative shape, the real API spans <code>hop-core</code> and
              the native FFI bindings.</p>
         </div>
         <div class="card code-card" style="padding:0; overflow:hidden;">

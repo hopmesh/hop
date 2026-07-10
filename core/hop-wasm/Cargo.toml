@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "wasm-bindgen wrapper over hop-core Node<MemoryStore> — drives many real Hop nodes in the browser swarm simulator."
+description = "wasm-bindgen wrapper over a real hop-core Node<JsStore> (host-owned storage via a StoreBridge) — drives many real Hop nodes in the browser swarm simulator."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

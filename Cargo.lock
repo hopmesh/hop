@@ -926,15 +926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hop-relay"
-version = "0.0.1"
-dependencies = [
- "hop-core",
- "postcard",
- "serde",
-]
-
-[[package]]
 name = "hop-relayd"
 version = "0.0.1"
 dependencies = [
@@ -973,6 +964,7 @@ version = "0.0.1"
 dependencies = [
  "hop-core",
  "rusqlite",
+ "zeroize",
 ]
 
 [[package]]

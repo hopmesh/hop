@@ -17,7 +17,6 @@ import sh.hopme.bearers.BearerManager
 import sh.hopme.bearers.randomNodeId
 import sh.hopme.bearers.ble.BleBearer
 import sh.hopme.bearers.lan.LanBearer
-import sh.hopme.bearers.wifidirect.WifiDirectBearer
 
 // Foreground service that hosts BOTH BLE planes for the whole session and rebuilds them on an
 // adapter bounce WITHOUT re-rolling myId (SPEC §6 / §9 R11).
@@ -52,9 +51,6 @@ class BleService : Service() {
             // into one global LinkId space behind the single ProofSink.
             m.register(BleBearer(applicationContext, myId))
             m.register(LanBearer(applicationContext, myId))
-            // Wi-Fi Direct (Android-only): peer-to-peer Wi-Fi when there's no shared router. Same nodeId,
-            // same global LinkId space, same ProofSink — one more radio behind the uniform Bearer contract.
-            m.register(WifiDirectBearer(applicationContext, myId))
             proof.bearer = m   // proof pings route out through the manager (uniform Bearer)
             m.sink = proof     // links from every registered bearer surface here, one id space
             m.start()

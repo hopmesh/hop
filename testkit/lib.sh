@@ -11,15 +11,32 @@
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/devices.sh"
 [ -f "$HERE/addrs.env" ] && source "$HERE/addrs.env"
-WORK="${TK_WORK:-/private/tmp/claude-501/-Users-jwaldrip-dev-src-github-com-jwaldrip-hop/915be02f-7056-41be-8a89-10b9f9faacbd/scratchpad/tk}"
+# quality-net-10: scratch dir defaults under the OS temp dir (portable), not a hardcoded absolute path
+# into one machine's session scratch. Override with TK_WORK.
+WORK="${TK_WORK:-${TMPDIR:-/tmp}/hop-testkit}"
 mkdir -p "$WORK"
+
+# quality-net-11: portability. The device wrappers below bound each call with a timeout so a dead
+# device can't hang the harness. `timeout` is GNU coreutils; on macOS it may only be present as
+# `gtimeout` (brew coreutils), and some minimal environments lack both - fall back to running the
+# command directly (unbounded) with a warning rather than failing to source. Also requires bash >= 4
+# for associative arrays; check + warn.
+if command -v timeout >/dev/null 2>&1; then _TO() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then _TO() { gtimeout "$@"; }
+else
+  echo "testkit: WARNING no 'timeout'/'gtimeout' found - device calls run UNBOUNDED (a dead device can hang)." >&2
+  _TO() { shift; "$@"; } # drop the duration arg, run directly
+fi
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "testkit: WARNING bash >= 4 recommended (found ${BASH_VERSION:-unknown}); some features may not work." >&2
+fi
 
 # Every device call goes through these so a dead / half-attached device can't hang the harness:
 # raw `adb -s <serial>` BLOCKS forever waiting for an offline-but-known device, and `devicectl`
 # can stall on an unavailable UDID. Bounding each call turns a hang into a fast, skippable failure.
 DEV_TO="${TK_DEV_TIMEOUT:-25}"
-adbx()  { timeout "$DEV_TO" adb "$@"; }
-dctlx() { timeout "$DEV_TO" xcrun devicectl "$@"; }
+adbx()  { _TO "$DEV_TO" adb "$@"; }
+dctlx() { _TO "$DEV_TO" xcrun devicectl "$@"; }
 
 # --- self address ------------------------------------------------------------
 tk_self_addr() {            # tk_self_addr <id>  -> base58 address (or empty)

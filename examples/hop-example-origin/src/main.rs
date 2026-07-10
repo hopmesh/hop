@@ -62,7 +62,11 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
         return None;
     }
     // "GET /path HTTP/1.1"
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .to_string();
     let mut scheme = "hops".to_string(); // default: assume mesh unless the endpoint says https
     let mut line = String::new();
     loop {
@@ -101,7 +105,11 @@ fn route(path: &str, scheme: &str) -> (&'static str, &'static str, String) {
             "text/plain; charset=utf-8",
             format!(
                 "example.hopme.sh — you asked for: {other}\nThis reached the origin over {}.\n",
-                if hops { "hops:// (the mesh)" } else { "standard https://" }
+                if hops {
+                    "hops:// (the mesh)"
+                } else {
+                    "standard https://"
+                }
             ),
         ),
     }

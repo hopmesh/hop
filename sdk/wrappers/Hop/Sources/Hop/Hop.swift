@@ -61,11 +61,20 @@ public final class HopNode {
     }
 
     /// A fresh identity with ephemeral (in-memory) storage.
-    public static func ephemeral() -> HopNode { HopNode(raw: hop_node_new()) }
+    ///
+    /// Returns nil only if the C constructor caught a panic and handed back NULL (F-26); the host
+    /// can surface that as a recoverable failure instead of trapping. On a healthy build this never
+    /// fails, but the wrapper honors the ABI's NULL-on-panic contract rather than force-unwrapping.
+    public static func ephemeral() -> HopNode? { hop_node_new().map { HopNode(raw: $0) } }
 
     /// Restore from a saved 32-byte identity `secret` (empty = fresh) with ephemeral storage.
-    public static func with(secret: Data) -> HopNode {
-        HopNode(raw: secret.withUnsafeBytes { hop_node_with_secret($0.bindMemory(to: UInt8.self).baseAddress, UInt($0.count)) })
+    ///
+    /// Returns nil only on the ABI's NULL-on-panic path (F-26), mirroring `open`/`openKeyed`.
+    public static func with(secret: Data) -> HopNode? {
+        let p: OpaquePointer? = secret.withUnsafeBytes {
+            hop_node_with_secret($0.bindMemory(to: UInt8.self).baseAddress, UInt($0.count))
+        }
+        return p.map { HopNode(raw: $0) }
     }
 
     /// Open with persistent storage at `dbPath`, a saved identity `secret` (empty = fresh), and an
@@ -129,7 +138,9 @@ public final class HopNode {
     // MARK: bearer seam (the part a Bearer drives)
 
     public func linkUp(_ link: UInt64, role: HopRole) {
-        hop_link_up(raw, link, role == .dialer ? HopLinkRole_Dialer : HopLinkRole_Acceptor)
+        // core-ffi-05: hop_link_up takes the role as a plain uint32_t (the HopLinkRole discriminant),
+        // so pass the enum's rawValue rather than the HopLinkRole enum value itself.
+        hop_link_up(raw, link, (role == .dialer ? HopLinkRole_Dialer : HopLinkRole_Acceptor).rawValue)
     }
     public func linkDown(_ link: UInt64) { hop_link_down(raw, link) }
 

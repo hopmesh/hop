@@ -7,7 +7,6 @@ members = [
     "core/hop-wasm",
     "core/stores/hop-store-sqlite",
     "core/stores/hop-store-firestore",
-    "services/hop-relay",
     "services/hop-relayd",
     "services/hop-gateway",
     "services/hop-endpoint",

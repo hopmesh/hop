@@ -18,6 +18,18 @@ enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
 /** A decrypted message delivered to this node. */
 data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: Byte, val createdAt: Long)
 
+/** Delivery status of a message we sent. Mirrors Swift `HopStatus` (hop_message_status out-params). */
+data class HopStatus(
+    /** Distinct peers handed a copy. */
+    val relayed: Int,
+    /** Destination confirmed. */
+    val delivered: Boolean,
+    /** Forward-path length the destination reported. */
+    val forwardHops: Byte,
+    /** Forward-path latency (ms) the destination reported. */
+    val forwardMs: Int,
+)
+
 /** The raw JNA binding — one function per `hop_*` symbol. Internal; callers use [HopNode]. */
 internal interface CHop : Library {
     fun hop_node_new(): Pointer?
@@ -124,6 +136,12 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
 
         fun ephemeral(): HopNode = HopNode(C.hop_node_new() ?: error("hop_node_new returned null"))
 
+        /** Restore from a saved 32-byte identity [secret] (empty = fresh) with ephemeral (in-memory)
+         *  storage. Mirrors Swift `HopNode.with(secret:)`. */
+        fun withSecret(secret: ByteArray): HopNode =
+            HopNode(C.hop_node_with_secret(secret, NativeLong(secret.size.toLong()))
+                ?: error("hop_node_with_secret returned null"))
+
         /** Open with persistent storage at [dbPath], a saved 32-byte [secret] (empty = fresh), and an
          *  [appSecret] (empty = open fabric). Null only on a NULL/invalid path. */
         fun open(dbPath: String, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
@@ -167,10 +185,22 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
         }, null)
     }
 
-    fun delivered(id: ByteArray): Boolean {
-        val d = ByteByReference()
-        C.hop_message_status(handle, id, null, d, null, null)
-        return d.value.toInt() != 0
+    fun delivered(id: ByteArray): Boolean = status(id).delivered
+
+    /** Full delivery status of a message we sent (relayed-count / delivered / forward hops+latency).
+     *  Mirrors Swift `status(of:)`; reads every hop_message_status out-param, not just `delivered`. */
+    fun status(id: ByteArray): HopStatus {
+        val relayed = IntByReference()
+        val delivered = ByteByReference()
+        val hops = ByteByReference()
+        val ms = IntByReference()
+        C.hop_message_status(handle, id, relayed, delivered, hops, ms)
+        return HopStatus(
+            relayed = relayed.value,
+            delivered = delivered.value.toInt() != 0,
+            forwardHops = hops.value,
+            forwardMs = ms.value,
+        )
     }
 
     // ---- D-wrappers: identity/status + the hops:// request/response surface (hop.h parity) ----

@@ -156,7 +156,7 @@ impl Store for JsStore {
 }
 
 /// Decode the flat `[u32 LE keylen][key][u32 LE vallen][val]...` encoding from `kvList`.
-fn decode_kv_pairs(flat: &[u8]) -> Vec<(String, Vec<u8>)> {
+pub(crate) fn decode_kv_pairs(flat: &[u8]) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i + 4 <= flat.len() {

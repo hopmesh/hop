@@ -220,13 +220,7 @@ impl WasmNode {
     /// Per-message send status, flat-encoded as repeated [32-byte id][u16 LE peers][u8 delivered].
     /// Mirrors the debug app's Sending / Sent·N / Delivered.
     pub fn sends_status(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        for (id, peers, delivered) in self.node.sends_status() {
-            out.extend_from_slice(&id);
-            out.extend_from_slice(&peers.to_le_bytes());
-            out.push(delivered as u8);
-        }
-        out
+        encode_sends_status(self.node.sends_status())
     }
 
     /// Which bundles this node currently holds, as a flat concatenation of 32-byte ids (display ids,
@@ -262,13 +256,7 @@ impl WasmNode {
     /// down for each — flat `[16-byte tag][u32 LE link][u8 hops]` records. Lets the sim draw the
     /// distributed routing tree (each device holds a slice) + which way a private bundle would steer.
     pub fn gradient(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        for (tag, link, hops) in self.node.recv_gradient_view() {
-            out.extend_from_slice(&tag);
-            out.extend_from_slice(&(link as u32).to_le_bytes());
-            out.push(hops);
-        }
-        out
+        encode_gradient(self.node.recv_gradient_view())
     }
 
     /// This node's current §39 mailbox-tag (16 bytes) — the key a relay's gradient points toward, so
@@ -396,5 +384,201 @@ impl WasmNode {
             }
         }
         out
+    }
+}
+
+// ---- Flat binary codecs shared with the JS decoders in sim/mesh.js ----
+//
+// These are the exact byte layouts the JS visualizer parses back. They are factored out of the
+// `#[wasm_bindgen]` methods so they can be unit-tested on the host (the wasm methods are just thin
+// wrappers). A one-byte layout drift here silently corrupts the sim's gradient arrows / send status,
+// so the round-trip tests below pin the record widths and field order that mesh.js:161-166,177-180
+// assume.
+
+/// Encode `(BundleId, peers, delivered)` records as repeated `[32-byte id][u16 LE peers][u8 delivered]`
+/// (35 bytes each). Decoded in JS at sim/mesh.js:177-180.
+pub(crate) fn encode_sends_status(rows: Vec<([u8; 32], u16, bool)>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rows.len() * 35);
+    for (id, peers, delivered) in rows {
+        out.extend_from_slice(&id);
+        out.extend_from_slice(&peers.to_le_bytes());
+        out.push(delivered as u8);
+    }
+    out
+}
+
+/// Encode `(tag, link, hops)` records as repeated `[16-byte tag][u32 LE link][u8 hops]` (21 bytes each).
+/// `link` is a `u64` LinkId narrowed to `u32` (sim link ids stay small). Decoded in JS at
+/// sim/mesh.js:161-166.
+pub(crate) fn encode_gradient(rows: Vec<([u8; 16], u64, u8)>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rows.len() * 21);
+    for (tag, link, hops) in rows {
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(&(link as u32).to_le_bytes());
+        out.push(hops);
+    }
+    out
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::store::decode_kv_pairs;
+    use super::{encode_gradient, encode_sends_status};
+
+    // Reference JS decoders re-implemented in Rust, matching sim/mesh.js byte-for-byte, so a layout
+    // drift on the encoder side fails the round-trip here instead of only in the browser.
+
+    fn js_decode_sends_status(flat: &[u8]) -> Vec<([u8; 32], u16, bool)> {
+        // mirrors mesh.js statusMap(): i += 35; id=[0..32]; peers = d[32]|d[33]<<8; delivered=!!d[34]
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 35 <= flat.len() {
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&flat[i..i + 32]);
+            let peers = (flat[i + 32] as u16) | ((flat[i + 33] as u16) << 8);
+            let delivered = flat[i + 34] != 0;
+            out.push((id, peers, delivered));
+            i += 35;
+        }
+        out
+    }
+
+    fn js_decode_gradient(flat: &[u8]) -> Vec<([u8; 16], u32, u8)> {
+        // mirrors mesh.js gradientTo(): i += 21; tag=[0..16]; link = 4 LE bytes at 16; hops = byte 20
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 21 <= flat.len() {
+            let mut tag = [0u8; 16];
+            tag.copy_from_slice(&flat[i..i + 16]);
+            let link = (flat[i + 16] as u32)
+                | ((flat[i + 17] as u32) << 8)
+                | ((flat[i + 18] as u32) << 16)
+                | ((flat[i + 19] as u32) << 24);
+            let hops = flat[i + 20];
+            out.push((tag, link, hops));
+            i += 21;
+        }
+        out
+    }
+
+    #[test]
+    fn sends_status_record_is_35_bytes() {
+        let flat = encode_sends_status(vec![([1u8; 32], 0, false)]);
+        assert_eq!(
+            flat.len(),
+            35,
+            "one send-status record must be exactly 35 bytes"
+        );
+    }
+
+    #[test]
+    fn sends_status_round_trip() {
+        let rows = vec![
+            ([0u8; 32], 0u16, false),
+            ([7u8; 32], 1u16, true),
+            (
+                {
+                    let mut a = [0u8; 32];
+                    a[0] = 0xde;
+                    a[31] = 0xad;
+                    a
+                },
+                0xBEEFu16,
+                true,
+            ),
+            ([255u8; 32], u16::MAX, false),
+        ];
+        let flat = encode_sends_status(rows.clone());
+        assert_eq!(flat.len(), rows.len() * 35);
+        assert_eq!(js_decode_sends_status(&flat), rows);
+    }
+
+    #[test]
+    fn sends_status_peers_little_endian() {
+        // peers=0x0102 must serialize as [0x02, 0x01] right after the 32-byte id.
+        let flat = encode_sends_status(vec![([0u8; 32], 0x0102, false)]);
+        assert_eq!(flat[32], 0x02);
+        assert_eq!(flat[33], 0x01);
+    }
+
+    #[test]
+    fn gradient_record_is_21_bytes() {
+        let flat = encode_gradient(vec![([2u8; 16], 5, 3)]);
+        assert_eq!(
+            flat.len(),
+            21,
+            "one gradient record must be exactly 21 bytes"
+        );
+    }
+
+    #[test]
+    fn gradient_round_trip() {
+        let rows = vec![
+            ([0u8; 16], 0u64, 0u8),
+            ([9u8; 16], 42u64, 7u8),
+            (
+                {
+                    let mut t = [0u8; 16];
+                    t[0] = 0xab;
+                    t[15] = 0xcd;
+                    t
+                },
+                0x0102_0304u64,
+                255u8,
+            ),
+        ];
+        let flat = encode_gradient(rows.clone());
+        assert_eq!(flat.len(), rows.len() * 21);
+        let decoded = js_decode_gradient(&flat);
+        for (i, (tag, link, hops)) in rows.iter().enumerate() {
+            assert_eq!(&decoded[i].0, tag);
+            assert_eq!(decoded[i].1 as u64, *link);
+            assert_eq!(decoded[i].2, *hops);
+        }
+    }
+
+    #[test]
+    fn gradient_link_little_endian_narrows_u64_to_u32() {
+        // A LinkId (u64) is narrowed to u32 LE; JS reads the low 4 bytes.
+        let flat = encode_gradient(vec![([0u8; 16], 0x0000_0001_0203_0405, 1)]);
+        // low 32 bits = 0x02030405 → LE bytes [05,04,03,02] at offset 16.
+        assert_eq!(&flat[16..20], &[0x05, 0x04, 0x03, 0x02]);
+    }
+
+    #[test]
+    fn kv_pairs_round_trip() {
+        // The encoder side lives in JS (store-bridge.js kvList); here we pin the decoder against a
+        // hand-built buffer matching the documented [u32 LE keylen][key][u32 LE vallen][val] layout.
+        fn enc(pairs: &[(&str, &[u8])]) -> Vec<u8> {
+            let mut out = Vec::new();
+            for (k, v) in pairs {
+                out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+                out.extend_from_slice(k.as_bytes());
+                out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                out.extend_from_slice(v);
+            }
+            out
+        }
+        let pairs: &[(&str, &[u8])] = &[
+            ("session/abc", &[1, 2, 3]),
+            ("hps/room", &[]),
+            ("prekey", &[0xff; 40]),
+        ];
+        let flat = enc(pairs);
+        let decoded = decode_kv_pairs(&flat);
+        assert_eq!(decoded.len(), pairs.len());
+        for (i, (k, v)) in pairs.iter().enumerate() {
+            assert_eq!(decoded[i].0, *k);
+            assert_eq!(decoded[i].1.as_slice(), *v);
+        }
+    }
+
+    #[test]
+    fn kv_pairs_empty_and_truncated_are_safe() {
+        assert!(decode_kv_pairs(&[]).is_empty());
+        // A truncated buffer (klen claims more than is present) must stop cleanly, not panic.
+        let mut bad = 100u32.to_le_bytes().to_vec();
+        bad.extend_from_slice(b"short");
+        assert!(decode_kv_pairs(&bad).is_empty());
     }
 }

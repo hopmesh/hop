@@ -1,9 +1,9 @@
-/* Hop — marketing site design system.
+/* Hop, marketing site design system.
    Hand-authored static CSS, no build step. Shared across all pages. */
 
 /* ---------- tokens ---------- */
 :root {
-  /* surface — near-black, faint green cast (the "Signal" palette) */
+  /* surface, near-black, faint green cast (the "Signal" palette) */
   --bg:        #07090b;
   --bg-soft:   #0c0f12;
   --panel:     #0e1215;
@@ -16,15 +16,15 @@
   --ink-dim:   #92a09b;
   --ink-mut:   #5d6a66;
 
-  /* accent — signal-green primary, status colors carried by the diagrams */
+  /* accent, signal-green primary, status colors carried by the diagrams */
   --accent:    #2bf0a0;   /* signal green */
   --accent-2:  #12c585;   /* deeper green */
   --accent-3:  #74b6ff;   /* in-transit blue */
   --accent-ink:#04130c;
   --held:      #ffb43a;   /* held / waiting */
-  --logo:      #2bf0a0;   /* brand mark — green; flips deeper on light */
+  --logo:      #2bf0a0;   /* brand mark, green; flips deeper on light */
 
-  /* code blocks — tokenized so they flip with the theme (dark default) */
+  /* code blocks, tokenized so they flip with the theme (dark default) */
   --code-bg:#0b1018; --code-fg:#c7d2e6;
   --tok-comment:#6f7c98; --tok-kw:#9d8cff; --tok-str:#38e0b0; --tok-type:#74b6ff;
 
@@ -149,7 +149,7 @@ code {
 .scene:hover img { transform: scale(1.045); }
 .scene .ov { position: absolute; inset: 0; padding: 22px; display: flex; flex-direction: column; justify-content: flex-end;
   background: linear-gradient(0deg, #07090bf2 6%, #07090b66 42%, #07090b14 100%); }
-/* image-overlay text is always light — the gradient over the photo is dark in both themes */
+/* image-overlay text is always light, the gradient over the photo is dark in both themes */
 .scene .ov .k { font: 600 11.5px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
 .scene .ov h3 { margin-top: 9px; font-size: 20px; color: #f4f8f6; }
 .scene .ov p { margin-top: 5px; font-size: 13.5px; color: #cdd8d3; max-width: 34ch; }
@@ -164,7 +164,7 @@ code {
 .fullband-ov .wrap { padding-top: clamp(64px, 9vw, 128px); padding-bottom: clamp(64px, 9vw, 128px); }
 .fullband-ov h2 { margin-top: 12px; max-width: 20ch; font-size: clamp(26px, 4vw, 42px); color: #f3f7f5; }
 .fullband-ov p { margin-top: 16px; max-width: 48ch; font-size: clamp(15px, 1.4vw, 18px); color: #c6d2cd; }
-/* light theme — flip to a bright overlay with dark text so it reads on a white page */
+/* light theme, flip to a bright overlay with dark text so it reads on a white page */
 :root[data-theme="light"] .fullband-ov { background:
   linear-gradient(90deg, #fffffff7 0%, #ffffffe0 42%, #ffffff8c 72%, #ffffff24 100%); }
 :root[data-theme="light"] .fullband-ov h2 { color: var(--ink); }
@@ -195,7 +195,7 @@ code {
   background: var(--panel-2); border: 1px solid var(--line);
 }
 .ic i, .ic svg { color: var(--accent); }
-/* Font Awesome duotone — brand colors (primary solid green, secondary faint green) */
+/* Font Awesome duotone, brand colors (primary solid green, secondary faint green) */
 :root { --fa-primary-color: var(--accent); --fa-secondary-color: var(--accent); --fa-primary-opacity: 1; --fa-secondary-opacity: 0.38; }
 .card h3 { margin-bottom: 8px; }
 .card p { font-size: 14.5px; }
@@ -290,7 +290,7 @@ code {
   .site-nav > .btn { display: none; }
   .brand { font-size: 18px; }
 
-  /* The hop graph goes vertical on mobile — a horizontal 5-node chain can't
+  /* The hop graph goes vertical on mobile, a horizontal 5-node chain can't
      fit, and wrapping breaks the connectors. Stack nodes, arrows point down,
      connector aligned under the glyph centers (glyph is 52px wide → 26px in). */
   .flow { flex-direction: column; align-items: flex-start; gap: 0; padding: 24px 18px; }
@@ -308,7 +308,7 @@ code {
 .checks li::before { content: "→"; position: absolute; left: 0; color: var(--accent-2); }
 
 /* ============================================================
-   Theming — light / dark. The dark palette lives in :root (above)
+   Theming, light / dark. The dark palette lives in :root (above)
    and applies by default; light overrides it under [data-theme="light"].
    A pre-paint inline script sets data-theme from localStorage / OS pref.
    ============================================================ */
@@ -331,7 +331,7 @@ code {
   --accent-ink:#ffffff;   /* white text on the accent button */
 
   --logo:#0c8f63;   /* deeper green for the mark on white */
-  /* light code theme — soft surface, dark text, readable syntax colors */
+  /* light code theme, soft surface, dark text, readable syntax colors */
   --code-bg:#f3f5fb; --code-fg:#2b3340;
   --tok-comment:#8a93a3; --tok-kw:#7c3aed; --tok-str:#0f8a4d; --tok-type:#1f6feb;
 }
@@ -360,7 +360,7 @@ code {
 :root[data-theme="light"] .theme-toggle .t-light { display: inline; }
 :root[data-theme="light"] .theme-toggle .t-dark { display: none; }
 
-/* code block — always dark so syntax colors hold in both themes */
+/* code block, always dark so syntax colors hold in both themes */
 .code-block {
   margin: 0; padding: 22px; overflow-x: auto;
   font: 13px/1.7 var(--mono); color: var(--code-fg);
@@ -417,7 +417,7 @@ code {
 .lrow .waisttag { margin-left: auto; font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
 @media (max-width: 620px) { .lrow .waisttag { margin-left: 0; } }
 
-/* status pill (docs) — green dot = available, amber = in development */
+/* status pill (docs), green dot = available, amber = in development */
 .status { display: inline-flex; align-items: center; gap: 7px; font: 600 10.5px/1 var(--mono);
   letter-spacing: .1em; text-transform: uppercase; color: var(--ink-dim);
   border: 1px solid var(--line); background: var(--bg-soft); padding: 6px 11px; border-radius: 999px; }
@@ -486,7 +486,7 @@ code {
   .docs-main { padding: 24px 0 56px; }
 }
 
-/* unified interface reference — one global language switch drives every snippet */
+/* unified interface reference, one global language switch drives every snippet */
 .apiref { margin-top: 22px; }
 .apilangs { display: flex; gap: 6px; flex-wrap: wrap; position: sticky; top: 70px; z-index: 5;
   padding: 10px 0; background: var(--bg); border-bottom: 1px solid var(--line-soft); }

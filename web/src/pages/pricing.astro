@@ -2,7 +2,7 @@
 import Base from '../layouts/Base.astro';
 ---
 <Base
-  title="Hop pricing — free SDK, free backbone tier, usage-based scale"
+  title="Hop pricing, free SDK, free backbone tier, usage-based scale"
   description="The Hop SDK is free and source-available. The hosted backbone starts free, then scales with usage. Enterprise adds commercial licensing, private fleets, and support."
   path="/pricing"
 >
@@ -12,7 +12,7 @@ import Base from '../layouts/Base.astro';
       <div class="eyebrow">Pricing</div>
       <h1>Free to build. <span class="grad">Pay for the cloud.</span></h1>
       <p class="lede">
-        The SDK is free and source-available — the device does the work. The hosted
+        The SDK is free and source-available, the device does the work. The hosted
         backbone starts free too, then scales with what you actually use. No charge for
         an idle mesh.
       </p>
@@ -30,7 +30,7 @@ import Base from '../layouts/Base.astro';
           <ul>
             <li>Full <code>hop-core</code> SDK, iOS &amp; Android</li>
             <li>Up to 1,000 monthly active devices</li>
-            <li>Messages of any size — device-to-device &amp; egress</li>
+            <li>Messages of any size, device-to-device &amp; egress</li>
             <li>Included data carried, mailbox &amp; egress</li>
             <li>Durable mailbox, capped retention</li>
             <li>Community support</li>
@@ -83,17 +83,17 @@ import Base from '../layouts/Base.astro';
       <div class="section-head">
         <div class="eyebrow">What you actually pay for</div>
         <h2>Priced on reach. Metered on what scales.</h2>
-        <p>You pay for active devices — your app's actual reach. Messages of any size come
+        <p>You pay for active devices, your app's actual reach. Messages of any size come
            included and generous. Large ones split into <strong>chunks</strong> and
-           reassemble for the recipient, so usage tracks the data actually carried — a photo
+           reassemble for the recipient, so usage tracks the data actually carried, a photo
            simply counts as more chunks than a chat line, never a flat per-message surprise.
            We meter overage only on what genuinely scales with cost, always on the sealed
-           envelope — volume, never content.</p>
+           envelope, volume, never content.</p>
       </div>
       <div class="grid-3">
-        <div class="card lit"><div class="ic"><i class="fa-duotone fa-solid fa-mobile-screen-button"></i></div><h3>Active devices</h3><p>The headline metric — your monthly reach. Predictable, with a generous data allowance included per device.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-puzzle-piece"></i></div><h3>Data carried</h3><p>The sum of all chunks the backbone stores and forwards for you — so a 5&nbsp;MB image is billed as the many chunks it is, not as one cheap "message."</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-globe"></i></div><h3>Egress &amp; storage</h3><p>Internet egress and durable mailbox retention — both byte-based, metered only past your allowance.</p></div>
+        <div class="card lit"><div class="ic"><i class="fa-duotone fa-solid fa-mobile-screen-button"></i></div><h3>Active devices</h3><p>The headline metric, your monthly reach. Predictable, with a generous data allowance included per device.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-puzzle-piece"></i></div><h3>Data carried</h3><p>The sum of all chunks the backbone stores and forwards for you, so a 5&nbsp;MB image is billed as the many chunks it is, not as one cheap "message."</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-globe"></i></div><h3>Egress &amp; storage</h3><p>Internet egress and durable mailbox retention, both byte-based, metered only past your allowance.</p></div>
       </div>
     </div>
   </section>
@@ -104,22 +104,23 @@ import Base from '../layouts/Base.astro';
       <div class="grid-2" style="align-items:center; gap:40px;">
         <div>
           <div class="eyebrow">Why a key, even on Free</div>
-          <h2>Keys identify you — they don't gate the door open.</h2>
+          <h2>Keys identify you, they don't gate the door open.</h2>
           <p class="mt-s">Every connection to the hosted backbone carries a signed access
-             key, including the free tier. The key isn't a paywall — it's how the backbone
+             key, including the free tier. The key isn't a paywall, it's how the backbone
              knows which tenant to meter, which limits to apply, and which traffic to
              trust.</p>
-          <p class="mt-s">Unkeyed traffic is rejected at the edge — it can't reach a relay
-             and can't even wake one. That protects your fleet from abuse and keeps a
-             scale-to-zero backbone affordable for everyone on it.</p>
+          <p class="mt-s">The design: unkeyed traffic is rejected at the edge, so it can't reach a relay
+             or wake one. That protects your fleet from abuse and keeps a
+             scale-to-zero backbone affordable for everyone on it. Key enforcement lands with the hosted
+             backbone at general availability; the open SDK runs peer-to-peer without it.</p>
         </div>
         <div class="card">
           <div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div>
           <h3>Signed, metered, revocable</h3>
           <p>A short-lived, signed credential issued per app or tenant, verified
-             statelessly at the entrance. Free or paid, every byte is attributed — and a
+             statelessly at the entrance. Free or paid, every byte is attributed, and a
              lost key expires on its own.</p>
-          <p class="mt-s muted">Self-hosting the open SDK? You set your own policy — keys are
+          <p class="mt-s muted">Self-hosting the open SDK? You set your own policy, keys are
              a property of the hosted backbone, not the protocol.</p>
         </div>
       </div>
