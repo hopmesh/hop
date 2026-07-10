@@ -38,6 +38,12 @@ DEV_TO="${TK_DEV_TIMEOUT:-25}"
 adbx()  { _TO "$DEV_TO" adb "$@"; }
 dctlx() { _TO "$DEV_TO" xcrun devicectl "$@"; }
 
+# Settle delay between consecutive sends. Android coalesces VIEW intents fired <~100ms apart and
+# silently drops one, so tk_send sleeps this long after each send so each intent registers. Default
+# 0.7s (unchanged behavior); a soak can tune it (e.g. TK_SEND_SETTLE=0.3 to push send rate, or higher
+# to be gentler on a slow device) without editing the harness.
+SEND_SETTLE="${TK_SEND_SETTLE:-0.7}"
+
 # --- self address ------------------------------------------------------------
 tk_self_addr() {            # tk_self_addr <id>  -> base58 address (or empty)
   local id="$1" plat handle
@@ -80,15 +86,21 @@ tk_send() {                 # tk_send <from-id> <to-addr> <marker>
     adbx -s "$handle" shell "am start -a android.intent.action.VIEW -d 'hopdemo://send?to=$to&text=$mark'" >/dev/null 2>&1
     # Android coalesces VIEW intents fired back-to-back (LAUNCH_MULTIPLE) and silently drops
     # one when sends are <~100ms apart. Settle between consecutive sends so each registers.
-    sleep 0.7
+    # Delay is TK_SEND_SETTLE (default 0.7s); soaks can tune it.
+    sleep "$SEND_SETTLE"
   elif [ "${TK_IOS_SEND:-url}" = url ]; then
     # URL-scheme trigger: activate the app and hand it hopdemo://send (onOpenURL -> sendTo). Works on a
-    # running app (no terminate), so an iPad already in the fleet can originate a send.
-    dctlx device process launch --device "$handle" --activate \
-      --payload-url "hopdemo://send?to=$to&text=$mark" "$BUNDLE" >/dev/null 2>&1 \
-    || dctlx device process launch --device "$handle" --terminate-existing \
-      --environment-variables "{\"HOP_AUTO\":\"send|$to|$mark\"}" "$BUNDLE" >/dev/null 2>&1
-    sleep 0.7
+    # running app (no terminate), so an iPad already in the fleet can originate a send. If the URL
+    # launch fails, fall back to the legacy cold-relaunch env path (and log it, so a silent iOS send
+    # failure is visible rather than looking like a delivered-but-lost message).
+    if ! dctlx device process launch --device "$handle" --activate \
+      --payload-url "hopdemo://send?to=$to&text=$mark" "$BUNDLE" >/dev/null 2>&1; then
+      echo "testkit: tk_send $id: URL-scheme launch failed, falling back to HOP_AUTO env cold-relaunch (mark=$mark)" >&2
+      dctlx device process launch --device "$handle" --terminate-existing \
+        --environment-variables "{\"HOP_AUTO\":\"send|$to|$mark\"}" "$BUNDLE" >/dev/null 2>&1 \
+      || echo "testkit: tk_send $id: env fallback ALSO failed; iOS send likely did not fire (mark=$mark)" >&2
+    fi
+    sleep "$SEND_SETTLE"
   else
     # Legacy path (TK_IOS_SEND=env): cold relaunch with the send command in the env; app fires ~3s later.
     dctlx device process launch --device "$handle" --terminate-existing \

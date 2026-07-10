@@ -15,10 +15,37 @@ import com.sun.jna.ptr.IntByReference
 /** Which side opened a bearer link (the Noise role). */
 enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
 
-/** A decrypted message delivered to this node. */
-data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: Byte, val createdAt: Long)
+/** A decrypted message delivered to this node.
+ *
+ *  Ownership: [from] and [body] are freshly-allocated snapshots owned by this value (never aliased to
+ *  any libhop-internal buffer), so the wrapper's own state can't be corrupted through them. They are,
+ *  however, still mutable arrays a downstream caller could scribble on and thereby corrupt a value it
+ *  passed around. Treat them as read-only; use [fromCopy] / [bodyCopy] when handing the bytes to code
+ *  that might mutate them (a `data class` can't return defensive copies from its generated accessors). */
+data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: Byte, val createdAt: Long) {
+    /** A defensive copy of the sender address (mutate this freely without affecting the message). */
+    fun fromCopy(): ByteArray = from.copyOf()
+    /** A defensive copy of the body bytes (mutate this freely without affecting the message). */
+    fun bodyCopy(): ByteArray = body.copyOf()
 
-/** Delivery status of a message we sent. Mirrors Swift `HopStatus` (hop_message_status out-params). */
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopMessage) return false
+        return from.contentEquals(other.from) && contentType == other.contentType &&
+            body.contentEquals(other.body) && hops == other.hops && createdAt == other.createdAt
+    }
+    override fun hashCode(): Int {
+        var r = from.contentHashCode()
+        r = 31 * r + contentType.hashCode()
+        r = 31 * r + body.contentHashCode()
+        r = 31 * r + hops
+        r = 31 * r + createdAt.hashCode()
+        return r
+    }
+}
+
+/** Delivery status of a message we sent. Mirrors Swift `HopStatus` (hop_message_status out-params).
+ *  All fields are immutable primitives (no mutable ByteArray), so there is no shared-state hazard here. */
 data class HopStatus(
     /** Distinct peers handed a copy. */
     val relayed: Int,
@@ -78,11 +105,44 @@ internal fun interface ServiceRespSink : Callback {
     fun invoke(ctx: Pointer?, from: Pointer?, forRequestId: Pointer?, status: Short, body: Pointer?, bodyLen: NativeLong)
 }
 
-/** A hops:// request delivered to this node acting as a service. */
-data class HopServiceRequest(val from: ByteArray, val requestId: ByteArray, val service: String, val method: String, val args: ByteArray)
+/** A hops:// request delivered to this node acting as a service.
+ *  Ownership: the ByteArray fields are owned, freshly-allocated snapshots (see [HopMessage]); treat
+ *  them as read-only and `.copyOf()` before handing to code that might mutate them. */
+data class HopServiceRequest(val from: ByteArray, val requestId: ByteArray, val service: String, val method: String, val args: ByteArray) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopServiceRequest) return false
+        return from.contentEquals(other.from) && requestId.contentEquals(other.requestId) &&
+            service == other.service && method == other.method && args.contentEquals(other.args)
+    }
+    override fun hashCode(): Int {
+        var r = from.contentHashCode()
+        r = 31 * r + requestId.contentHashCode()
+        r = 31 * r + service.hashCode()
+        r = 31 * r + method.hashCode()
+        r = 31 * r + args.contentHashCode()
+        return r
+    }
+}
 
-/** A hops:// response delivered to this node acting as a caller. */
-data class HopServiceResponse(val from: ByteArray, val forRequestId: ByteArray, val status: Int, val body: ByteArray)
+/** A hops:// response delivered to this node acting as a caller.
+ *  Ownership: the ByteArray fields are owned, freshly-allocated snapshots (see [HopMessage]); treat
+ *  them as read-only and `.copyOf()` before handing to code that might mutate them. */
+data class HopServiceResponse(val from: ByteArray, val forRequestId: ByteArray, val status: Int, val body: ByteArray) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopServiceResponse) return false
+        return from.contentEquals(other.from) && forRequestId.contentEquals(other.forRequestId) &&
+            status == other.status && body.contentEquals(other.body)
+    }
+    override fun hashCode(): Int {
+        var r = from.contentHashCode()
+        r = 31 * r + forRequestId.contentHashCode()
+        r = 31 * r + status
+        r = 31 * r + body.contentHashCode()
+        return r
+    }
+}
 
 /** Outbound-drain callback: invoked once per queued packet during `drainOutgoing`. */
 internal fun interface DrainSink : Callback {
@@ -267,13 +327,25 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
 }
 
 object HopAddress {
+    /** A Hop address is exactly this many bytes; the C ABI reads exactly this from the pointer. */
+    const val ADDRESS_LEN = 32
+
+    /** Encode a [ADDRESS_LEN]-byte address as base58.
+     *
+     *  The C `hop_address_to_base58` ALWAYS reads exactly 32 bytes from the pointer regardless of the
+     *  Kotlin array's length. A shorter array would read out of bounds in native code; a longer one
+     *  would be silently truncated to its first 32 bytes. So validate the length here and fail loudly
+     *  (IllegalArgumentException) instead of handing native code a mis-sized buffer. The 64-byte output
+     *  buffer is always enough for a 32-byte address (base58 of 32 bytes is at most ~44 chars). */
     fun base58(addr: ByteArray): String {
+        require(addr.size == ADDRESS_LEN) { "Hop address must be $ADDRESS_LEN bytes, got ${addr.size}" }
         val out = ByteArray(64)
         val n = HopNode.C.hop_address_to_base58(addr, out, NativeLong(out.size.toLong())).toInt()
         return if (n > 0) String(out, 0, n, Charsets.US_ASCII) else ""
     }
+    /** Decode a base58 address string, or null if it isn't exactly a 32-byte address. */
     fun fromBase58(text: String): ByteArray? {
-        val out = ByteArray(32)
+        val out = ByteArray(ADDRESS_LEN)
         return if (HopNode.C.hop_address_from_base58(text, out)) out else null
     }
 }
