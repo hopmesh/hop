@@ -117,7 +117,15 @@ resource "google_cloud_run_v2_service" "example" {
       secret {
         secret = data.google_secret_manager_secret.example_identity.secret_id
         items {
-          version = "latest"
+          # PINNED to version 1 (the single version created by the seeding recipe above), NOT "latest".
+          # The endpoint's published address (local.example_endpoint_address, in DNS + the HNS TXT
+          # record) is derived from THIS seed, so the seed must never silently change. With "latest",
+          # anyone adding a new secret version would swap the identity out from under the mount on the
+          # next revision, making the endpoint unreachable at its published address. Pinning the version
+          # makes the identity, and therefore the published address, immutable across deploys. If the
+          # identity is ever intentionally rotated, bump both this version and
+          # local.example_endpoint_address together.
+          version = "1"
           path    = "identity"
         }
       }

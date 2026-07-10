@@ -17,6 +17,13 @@ substitutions:
   _TOFU: ghcr.io/opentofu/opentofu:1.12.3 # must be >= the version that wrote the state
   # The GitHub repo whose CI status gates the apply.
   _GH_REPO: hopmesh/hop
+  # The aggregate anycast name the smoke test probes after a relay-enabled apply. Must match
+  # infra/variables.tf `domain` (default relay.hopme.sh); the smoke step hits https://$_DOMAIN/healthz.
+  _DOMAIN: relay.hopme.sh
+  # Single source of truth for whether the fleet is on. Consumed by BOTH the apply step
+  # (TF_VAR_relays_enabled) and the post-apply smoke step (which no-ops when this is false).
+  # Flip this one line to true to re-enable the fleet (P2P-only test phase keeps it false).
+  _RELAYS_ENABLED: 'false'
   # infra-r2-02 / infra-r2-07 / infra-r2-08: the EXACT set of CI check-runs the deploy gate REQUIRES,
   # one per line. These are the `name:` fields of the jobs in .github/workflows/ci.yml. The gate now
   # asserts EVERY name here concluded `success` for the commit (not merely "no failures among whatever
@@ -143,14 +150,55 @@ steps:
       - 'TF_VAR_region_allowlist=[]'
       # Relay fleet OFF for the P2P-only test phase: tears down all regional relay Cloud Run
       # services + their NEGs/backends/IAM. The LB, wildcard cert, DNS, Firestore, and the example
-      # endpoint stay up, so flipping this to true re-applies the fleet on the SAME anycast IP/cert/DNS.
-      - 'TF_VAR_relays_enabled=false'
+      # endpoint stay up, so flipping _RELAYS_ENABLED (above) to true re-applies the fleet on the SAME
+      # anycast IP/cert/DNS. One switch drives both the apply and the post-apply smoke test.
+      - 'TF_VAR_relays_enabled=${_RELAYS_ENABLED}'
       - 'TF_VAR_deploy_image_sha=$SHORT_SHA'
     args:
       - -ec
       - |
         tofu init -input=false
         tofu apply -input=false -auto-approve
+  # POST-DEPLOY SMOKE TEST (infra: relay re-enable). When the fleet is enabled, prove the relay
+  # actually came up before this build is allowed to go green: poll the AGGREGATE anycast health
+  # endpoint (https://$_DOMAIN/healthz) and fail the build if it never answers healthy. When the
+  # fleet is disabled (_RELAYS_ENABLED != true) there is nothing to bring up, so this is a clean
+  # no-op that prints a skip line and exits 0 (the push-to-main = deploy flow is unchanged).
+  #
+  # Why the aggregate name and not a per-region endpoint: cloud_run.tf and services/hop-relayd
+  # forbid EXTERNAL uptime checks against <region>.relay.hopme.sh because a repeated probe wakes
+  # scaled-to-zero instances (DESIGN.md §1436). This is NOT that: it is ONE post-deploy probe of the
+  # single anycast name a real client dials, which the LB routes to the nearest healthy region. It
+  # wakes at most one region once, exactly as a first client connect would, and does not run
+  # continuously. serve_healthz returns 200 "ok" (or "ok degraded: ...") only when the driver loop
+  # ticked recently, and 503 when a region is wedged, so a 200 here is real liveness, not a bare TCP
+  # accept. Cold start after a full re-enable can take a moment (cert/instance warm-up), so retry on
+  # a bounded budget before failing closed.
+  - name: gcr.io/cloud-builders/gcloud
+    id: smoke-relay
+    waitFor: [apply]
+    entrypoint: bash
+    args:
+      - -ec
+      - |
+        if [ "${_RELAYS_ENABLED}" != "true" ]; then
+          echo "relays disabled (_RELAYS_ENABLED=${_RELAYS_ENABLED}); skipping relay smoke test"; exit 0
+        fi
+        url="https://${_DOMAIN}/healthz"
+        deadline=$(( $(date +%s) + 300 ))   # up to 5 min for cert/instance warm-up on a cold re-enable
+        attempt=0
+        while :; do
+          attempt=$((attempt + 1))
+          code=$(curl -sS -o /tmp/healthz.body -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo 000)
+          body=$(cat /tmp/healthz.body 2>/dev/null || true)
+          if [ "$code" = "200" ]; then
+            echo "relay smoke OK: $url -> $code ($body) after $attempt attempt(s)"; exit 0
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error:: relay smoke FAILED: $url did not return healthy within the budget (last code=$code body=$body); the fleet did not come up"; exit 1
+          fi
+          echo "waiting on relay health: $url -> $code ($body); retrying"; sleep 10
+        done
 options:
   machineType: E2_HIGHCPU_8
   # Required when the build runs as a user-specified service account (no default

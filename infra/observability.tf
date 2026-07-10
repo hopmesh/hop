@@ -135,3 +135,99 @@ resource "google_monitoring_alert_policy" "relay_5xx" {
 
   depends_on = [google_project_service.this] # infra-r2-04
 }
+
+# ---- F-24 (cont.): the remaining silent failure modes ---------------------------------------------
+#
+# The two alerts above catch FAILED ops (Firestore/handoff/spool) and Cloud Run 4xx/5xx. Three silent
+# modes were still uninstrumented:
+#   (a) a WEDGED driver loop: serve_healthz returns 503 when LAST_TICK is stale, the liveness probe
+#       then RESTARTS the instance, but with one instance per region a wedged instance IS the region
+#       until it recovers. Nothing paged an operator.
+#   (b) a CRASH/RESTART loop: a panic (bad env, store/backbone init failure) makes the container
+#       exit and Cloud Run restart it repeatedly. The startup banner just reprinted forever, unnoticed.
+#   (c) a SILENT region: an instance that emits no logs at all (deadlocked/hung short of a 503) looks
+#       identical to an idle scaled-to-zero region on the request metric.
+# These add log-based metrics + alerts for (b) and (c). (a) is covered because a wedged loop that keeps
+# restarting shows up as (b), and one that stays down shows up as (c)'s log-absence.
+
+# Count the relay's own startup banner ("hop-relayd: address ...", printed once per process start) and
+# panics. Under normal operation a region prints the banner once; several in a short window means the
+# container keeps exiting and restarting (crash loop).
+resource "google_logging_metric" "relay_restart" {
+  count   = var.relays_enabled ? 1 : 0
+  project = var.project_id
+  name    = "relay_restarts"
+  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\" AND (textPayload:\"hop-relayd: address\" OR textPayload:\"panicked at\")"
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+
+  depends_on = [google_project_service.this] # infra-r2-04
+}
+
+# Crash/restart-loop alert: more than a couple of process starts in 10 min is not normal steady state.
+resource "google_monitoring_alert_policy" "relay_restart_loop" {
+  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
+  project      = var.project_id
+  display_name = "Relay crash/restart loop"
+  combiner     = "OR"
+  conditions {
+    display_name = "relay_restarts > 3 in 10m"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.relay_restart[0].name}\" AND resource.type=\"cloud_run_revision\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 3
+      duration        = "0s"
+      aggregations {
+        alignment_period   = "600s"
+        per_series_aligner = "ALIGN_DELTA"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email[0].id]
+
+  depends_on = [google_project_service.this] # infra-r2-04
+}
+
+# Count ANY relay log line, so its ABSENCE is detectable. A live relay's driver loop and netlog emit
+# steadily; total silence means a hung/wedged region (the LAST_TICK stall that a 503 alone can't page
+# once the instance stops answering probes too).
+resource "google_logging_metric" "relay_heartbeat" {
+  count   = var.relays_enabled ? 1 : 0
+  project = var.project_id
+  name    = "relay_log_lines"
+  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\""
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+
+  depends_on = [google_project_service.this] # infra-r2-04
+}
+
+# Silent-region alert: no relay log lines for 15 min. condition_absent pages when the metric stops
+# reporting entirely (a wedged/hung region), which neither the FAILED-ops nor the request-count alert
+# can see. Tuned longer than the tick cadence so a brief idle window does not false-page.
+resource "google_monitoring_alert_policy" "relay_silent" {
+  count        = (var.relays_enabled && var.alert_email != "") ? 1 : 0
+  project      = var.project_id
+  display_name = "Relay silent (no logs / stalled driver)"
+  combiner     = "OR"
+  conditions {
+    display_name = "no relay_log_lines for 15m"
+    condition_absent {
+      filter   = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.relay_heartbeat[0].name}\" AND resource.type=\"cloud_run_revision\""
+      duration = "900s"
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_DELTA"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email[0].id]
+
+  depends_on = [google_project_service.this] # infra-r2-04
+}

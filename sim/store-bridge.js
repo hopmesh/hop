@@ -11,6 +11,7 @@
 //   get(id) -> Uint8Array|undefined    held bundle bytes
 //   remove(id) -> Uint8Array|undefined drop held data (keep dedup entry); return removed bytes
 //   seen(id) -> bool                    seen and not yet expired
+//   seenExpiry(id) -> number|undefined  the seen row's receiver-anchored expires_at (epoch-ms)
 //   contains(id) -> bool                currently held
 //   have() -> Uint8Array                all held ids, concatenated 32-byte chunks
 //   prune(nowMs)                        drop held + dedup entries whose window closed
@@ -44,6 +45,7 @@ export function makeMapBridge() {
     get(id) { return held.get(_hex(id)); },
     remove(id) { const h = _hex(id); const d = held.get(h); held.delete(h); return d; },
     seen(id) { return seen.has(_hex(id)); },
+    seenExpiry(id) { return seen.get(_hex(id)); },
     contains(id) { return held.has(_hex(id)); },
     have() { const out = new Uint8Array(held.size * 32); let o = 0; for (const h of held.keys()) { out.set(_idBytes(h), o); o += 32; } return out; },
     prune(nowMs) { for (const [h, e] of seen) if (e <= nowMs) { seen.delete(h); held.delete(h); } },
@@ -78,6 +80,7 @@ export function makeSqliteBridge(db, ns) {
     get(id) { const r = one(`SELECT data FROM bundles WHERE ns=? AND id=?`, [ns, id.slice()]); return r ? new Uint8Array(r[0]) : undefined; },
     remove(id) { const idc = id.slice(); const r = one(`SELECT data FROM bundles WHERE ns=? AND id=?`, [ns, idc]); db.exec({ sql: `DELETE FROM bundles WHERE ns=? AND id=?`, bind: [ns, idc] }); return r ? new Uint8Array(r[0]) : undefined; },
     seen(id) { return !!one(`SELECT 1 FROM seen WHERE ns=? AND id=?`, [ns, id.slice()]); },
+    seenExpiry(id) { const r = one(`SELECT expires_at FROM seen WHERE ns=? AND id=?`, [ns, id.slice()]); return r ? r[0] : undefined; },
     contains(id) { return !!one(`SELECT 1 FROM bundles WHERE ns=? AND id=?`, [ns, id.slice()]); },
     have() { const rows = []; db.exec({ sql: `SELECT id FROM bundles WHERE ns=?`, bind: [ns], rowMode: 'array', callback: r => rows.push(new Uint8Array(r[0])) });
              const out = new Uint8Array(rows.length * 32); let o = 0; for (const r of rows) { out.set(r, o); o += 32; } return out; },

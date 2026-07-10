@@ -56,6 +56,14 @@ privacy/identity roadmap.
 - **Custodian**, the node currently responsible for retransmitting a bundle until
   it is handed off (custody transfer) or expires.
 
+**Radio terminology.** This doc says **BLE** (the low-energy radio, passive and no-pairing)
+for the phone bearer and everywhere the wording is our own. That is a deliberate convention,
+not an accident: `hop-core` itself carries no radio terminology at all (it is bearer-agnostic,
+§26), and the term for the radio in prose is always "BLE", never the bare marketing word. Real
+platform API identifiers stay exactly as their SDKs spell them (`CoreBluetooth` on iOS,
+`BluetoothLeScanner` on Android, `WebBluetooth` in browsers); those are code, not prose, so
+they are kept verbatim rather than reworded.
+
 We assume nodes are **mobile, intermittently connected, and partially trusted**:
 relays forward for strangers but must not be able to read or forge payloads.
 

@@ -37,6 +37,12 @@ extern "C" {
     /// Still deduping this id (seen and not expired)?
     #[wasm_bindgen(method)]
     fn seen(this: &StoreBridge, id: &[u8]) -> bool;
+    /// The receiver-anchored dedup expiry (epoch-ms) stamped for `id` at `put` time, or undefined if
+    /// not tracked. This is the `expires_at` column of the `seen` row (stores-r3-01): a wasm relay's
+    /// handoff/spool re-mirror anchors Firestore's `expireAt` to this receiver-clock deadline, never
+    /// the sender's advisory `created_at`.
+    #[wasm_bindgen(method, js_name = seenExpiry)]
+    fn seen_expiry(this: &StoreBridge, id: &[u8]) -> Option<f64>;
     /// Currently holding this id (not just seen)?
     #[wasm_bindgen(method)]
     fn contains(this: &StoreBridge, id: &[u8]) -> bool;
@@ -71,6 +77,7 @@ pub(crate) trait Bridge {
     fn get(&self, id: &[u8]) -> Option<Vec<u8>>;
     fn remove(&self, id: &[u8]) -> Option<Vec<u8>>;
     fn seen(&self, id: &[u8]) -> bool;
+    fn seen_expiry(&self, id: &[u8]) -> Option<f64>;
     fn contains(&self, id: &[u8]) -> bool;
     fn have(&self) -> Vec<u8>;
     fn prune(&self, now_ms: f64);
@@ -93,6 +100,9 @@ impl Bridge for StoreBridge {
     }
     fn seen(&self, id: &[u8]) -> bool {
         StoreBridge::seen(self, id)
+    }
+    fn seen_expiry(&self, id: &[u8]) -> Option<f64> {
+        StoreBridge::seen_expiry(self, id)
     }
     fn contains(&self, id: &[u8]) -> bool {
         StoreBridge::contains(self, id)
@@ -158,6 +168,13 @@ impl<B: Bridge> Store for JsStore<B> {
 
     fn seen(&self, id: &BundleId) -> bool {
         self.bridge.seen(id)
+    }
+
+    fn seen_expiry(&self, id: &BundleId) -> Option<u64> {
+        // Surface the same receiver-anchored deadline the sqlite/memory stores expose (stores-r3-01)
+        // so a wasm relay's handoff/spool re-mirror anchors its durable expiry to the receiver clock,
+        // not the sender's advisory created_at. The bridge carries it as a JS number (epoch-ms).
+        self.bridge.seen_expiry(id).map(|e| e as u64)
     }
 
     fn contains(&self, id: &BundleId) -> bool {
@@ -292,6 +309,11 @@ mod tests {
         }
         fn seen(&self, id: &[u8]) -> bool {
             self.inner.borrow().seen.contains_key(id)
+        }
+        fn seen_expiry(&self, id: &[u8]) -> Option<f64> {
+            // The `seen` map is id -> expiry ms, exactly the `expires_at` column the real bridge
+            // reads back. Return it as a JS number, or None if the id isn't tracked.
+            self.inner.borrow().seen.get(id).map(|&e| e as f64)
         }
         fn contains(&self, id: &[u8]) -> bool {
             self.inner.borrow().bundles.contains_key(id)
@@ -500,6 +522,82 @@ mod tests {
         assert!(
             !s.seen(&id),
             "seen window must be clamped to MAX_SEEN_LIFETIME_MS, not ~49 days"
+        );
+    }
+
+    #[test]
+    fn seen_expiry_round_trips_the_receiver_anchored_deadline_through_the_bridge() {
+        use hop_core::bundle::{Bundle, BundleOpts, Destination, Payload};
+        // stores-r3-01: JsStore must expose the SAME receiver-anchored dedup deadline (the clamped
+        // now+lifetime stamped at put time) the sqlite/memory stores do. Before this was implemented,
+        // JsStore fell back to the trait default (None) and a wasm relay's handoff/spool re-mirror
+        // could not anchor its durable expiry to the receiver clock. Prove it round-trips through the
+        // bridge, is clamped, and is dropped once the id leaves the dedup set.
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let mk = |lifetime_ms: u32| {
+            Bundle::create(
+                &alice,
+                Destination::Device(bob.address()),
+                &bob.address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: b"x".to_vec(),
+                },
+                BundleOpts {
+                    lifetime_ms,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let mut s = store();
+
+        // Unknown id: None (the trait default that used to leak for EVERY id).
+        let missing: hop_core::bundle::BundleId = [9u8; 32];
+        assert_eq!(
+            s.seen_expiry(&missing),
+            None,
+            "an untracked id has no dedup deadline"
+        );
+
+        // A normal put stamps expiry at now + lifetime (receiver clock), surfaced verbatim.
+        let b = mk(10_000);
+        let id = b.id();
+        assert!(s.put(b, 1_000));
+        assert_eq!(
+            s.seen_expiry(&id),
+            Some(11_000),
+            "seen_expiry is the receiver-anchored now+lifetime, not the sender's created_at"
+        );
+
+        // remove keeps the dedup row, so the deadline still resolves (a re-mirror after handoff must
+        // still know the real expiry).
+        s.remove(&id);
+        assert!(!s.contains(&id));
+        assert_eq!(
+            s.seen_expiry(&id),
+            Some(11_000),
+            "the deadline survives remove, since the seen row lingers for late-duplicate rejection"
+        );
+
+        // A hostile ~49-day lifetime is clamped to the one-week window (F-07), and seen_expiry
+        // reflects the CLAMPED deadline (not the attacker's 49 days).
+        let b2 = mk(u32::MAX);
+        let id2 = b2.id();
+        assert!(s.put(b2, 0));
+        assert_eq!(
+            s.seen_expiry(&id2),
+            Some(MAX_SEEN_LIFETIME_MS),
+            "seen_expiry reports the clamped deadline, mirroring the sqlite/memory clamp"
+        );
+
+        // Once pruned past expiry, the deadline is gone.
+        s.prune(11_001);
+        assert_eq!(
+            s.seen_expiry(&id),
+            None,
+            "a pruned id no longer reports a dedup deadline"
         );
     }
 
