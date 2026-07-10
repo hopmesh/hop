@@ -1,6 +1,7 @@
 // /llms-full.txt, the expanded LLM/agent brief, generated at build time from the
 // same data the site renders, so it never drifts. Companion to the curated
-// public/llms.txt. Plain-text markdown, served at https://hopme.sh/llms-full.txt
+// /llms.txt (also a generated route now, src/pages/llms.txt.js, so its per-page URLs
+// derive from the same data). Plain-text markdown, served at https://hopme.sh/llms-full.txt
 import { cases } from '../data/use-cases.js';
 import { layers, groups } from '../data/protocol.js';
 import { drivers } from '../data/drivers.js';

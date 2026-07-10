@@ -1,14 +1,17 @@
-# Copy to terraform.tfvars (gitignored) or set these as Spacelift stack variables.
+# Copy to terraform.tfvars (gitignored) for a LOCAL `tofu apply`. The GitOps deploy path (a push to
+# main -> Cloud Build -> tofu apply, see cloudbuild.trigger.yaml) does NOT read this file: it injects
+# the same values as TF_VAR_* env vars. terraform.tfvars is only for a hand-run apply from your machine.
 
 project_id = "hop-mesh"
 
 # Build & push first, then paste the immutable tag here (see infra/README.md).
 relay_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest"
 
-# Trim or extend to the continents you want entrances in.
-regions = ["us-central1", "europe-west1", "asia-southeast1"]
+# infra-r2-05: pin the deploy to a curated region set. Empty (the default) = all available regions
+# minus excluded_regions (needs ~43-region Cloud Run quota). The variable is `region_allowlist`.
+region_allowlist = ["us-central1", "europe-west1", "asia-southeast1"]
 
 domain = "relay.hopme.sh"
 
-# Leave false until hopme.sh DNS is delegated to Cloud DNS.
-manage_dns = false
+# hopme.sh DNS is always managed by this module (see dns.tf); delegate the registrar's nameservers to
+# the `name_servers` output. There is no manage_dns toggle (it was a no-op; removed in infra-r2-03).

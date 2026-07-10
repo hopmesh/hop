@@ -1,0 +1,46 @@
+name: Branch protection audit
+
+# quality-net-r2-03: the deploy gate's INTENT half - that `main` actually requires the CI checks so a
+# red commit can't land - lives in GitHub repo settings (branch protection), which no repo file can
+# set. That single external config, if missing or drifted (a renamed job), silently turns the whole
+# pre-merge gate into advisory. This job re-derives the required check set from ci.yml and asserts the
+# live branch-protection rule on `main` requires EXACTLY that set, so drift is caught IN-REPO (a failing
+# scheduled run) instead of being trusted forever.
+#
+# Needs a token that can read branch protection (admin:repo). The default GITHUB_TOKEN can read
+# protection on many repos; if it 403s, set a repo/org secret BRANCH_PROTECTION_TOKEN (a PAT or app
+# token with the `administration:read` permission on hopmesh/hop) and this job uses it.
+
+on:
+  schedule:
+    - cron: "17 13 * * 1" # Mondays, 13:17 UTC
+  workflow_dispatch:
+  # Also run when the gate's inputs change, so a job rename is caught immediately (not just weekly).
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/branch-protection-audit.yml"
+      - "infra/cloudbuild.trigger.yaml"
+      - "tools/check-required-checks.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # First: the in-repo pair (ci.yml <-> _REQUIRED_CHECKS) must already agree. If this fails, the
+      # audit below would compare against a self-inconsistent expectation.
+      - name: Required-check allowlist is in sync (in-repo)
+        run: bash tools/check-required-checks.sh
+
+      # Then: assert the LIVE branch protection on main requires exactly the ci.yml job names.
+      - name: Assert main branch protection requires the CI checks
+        env:
+          GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash tools/check-branch-protection.sh

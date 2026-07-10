@@ -33,7 +33,8 @@ easiest deanonymization vector in the system.
 - The crash: exception type, a symbolicated stack trace with only Hop and system
   frames (application frames are fine; ARGUMENTS and locals are NOT).
 - Coarse environment: OS name + major version, device model class (not serial),
-  app version + build, `HOP_ABI_VERSION`, `HOP_WIRE_VERSION`.
+  app version + build, `HOP_ABI_VERSION`, `BUNDLE_VERSION` (the wire version, from
+  `core/hop-core/src/bundle.rs`).
 - Coarse state flags: which bearers were enabled (BLE / LAN / relay) as booleans,
   whether the relay was reachable, foreground vs background. Booleans and enums
   only, never addresses or counts that fingerprint.

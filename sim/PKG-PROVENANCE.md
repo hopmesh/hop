@@ -29,13 +29,21 @@ changes.
 
 ## Rebuild + drift check
 
-- **Rebuild:** `sim/build-wasm.sh` — regenerates both `sim/pkg` (web) and
+- **Rebuild:** `sim/build-wasm.sh`, regenerates both `sim/pkg` (web) and
   `core/hop-wasm/pkg-node` (nodejs) from source. Commit the resulting `sim/pkg`.
-- **Freshness check:** `sim/check-pkg-fresh.sh` — rebuilds into a temp dir and fails if the committed
+- **Freshness check:** `sim/check-pkg-fresh.sh`, rebuilds into a temp dir and fails if the committed
   `sim/pkg` interface (`hop_wasm.d.ts` / `hop_wasm.js`) has drifted from a fresh build. Run it before
   committing a core change, and wire it into CI (the pages or ci workflow) so a stale `sim/pkg` fails
   the build. It compares the deterministic wasm-bindgen interface, not the optimized `.wasm` bytes
   (which vary run-to-run under `wasm-opt`), so it flags real API/protocol-surface drift without false
   positives from non-reproducible binary output.
+- **Wire-version stamp (sim-wasm-r2-02):** the interface diff alone is blind to a *same-API* wire bump,
+  a `BUNDLE_VERSION` change that keeps the same JS method surface produces an identical `.d.ts`/`.js`,
+  so the committed `.wasm` could silently speak an older wire while the interface check passes. To close
+  that hole, `build-wasm.sh` writes `sim/pkg/.wire-version` = the source `BUNDLE_VERSION` it built
+  against, and `check-pkg-fresh.sh` fails if that stamp is missing or does not equal the current
+  `core/hop-core/src/bundle.rs` `BUNDLE_VERSION`. So a wire bump trips the guard even with an unchanged
+  API. (The public site is always safe regardless, CI rebuilds `sim/pkg` from source before deploy; the
+  stamp protects a developer running `sim/` locally against the committed pkg.)
 
 Both scripts require `rustup target add wasm32-unknown-unknown` and `wasm-pack`.

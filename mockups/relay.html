@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hop — Relay (Direction C)</title>
+<title>Hop, Relay (Direction C)</title>
 <style>
   :root{
     --bg:#0b0c10; --bg-2:#101218; --board:#0f1116; --board-2:#15181f; --line:#21242d; --line-2:#2c3038;
@@ -131,7 +131,7 @@
   <section class="hero">
     <span class="kick"><span class="dot"></span> delay-tolerant mesh transport</span>
     <h1>Every message is in transit.</h1>
-    <p class="lede">Hop carries sealed datagrams device to device — held at relays when there's no
+    <p class="lede">Hop carries sealed datagrams device to device, held at relays when there's no
       path, delivered the moment one opens. Departures never cancel. They wait for weather.</p>
     <div class="hero-cta">
       <a class="btn btn-amber" href="#">Quickstart →</a>
@@ -145,7 +145,7 @@
         <span class="flip"><span class="pill transit a">● IN TRANSIT</span><span class="pill deliv b">✓ DELIVERED</span></span></div>
       <div class="brow"><span class="to">k:91c0…haans</span><span class="via">backbone-eu</span><span class="hops">2</span>
         <span class="pill deliv">✓ DELIVERED</span></div>
-      <div class="brow"><span class="to">k:24be…okafor</span><span class="via">— offline —</span><span class="hops">·</span>
+      <div class="brow"><span class="to">k:24be…okafor</span><span class="via">, offline, </span><span class="hops">·</span>
         <span class="pill held">◷ HELD</span></div>
       <div class="brow"><span class="to">k:08dd…sanchez</span><span class="via">camp-3 · lora</span><span class="hops">6</span>
         <span class="pill transit">● IN TRANSIT</span></div>
@@ -160,8 +160,8 @@
     <p class="sub">A message doesn't need a live path the instant you send it. Hop holds it, moves it
       as devices meet, and delivers when a route appears.</p>
     <div class="steps">
-      <div class="step"><div class="n">→ SEAL</div><h3>Sealed &amp; addressed</h3><p>Encrypted to a key. Every relay carries it blind — confidential even across untrusted infrastructure.</p></div>
-      <div class="step"><div class="n">→ HOP</div><h3>Carried by any bearer</h3><p>Bluetooth, LoRa, Wi-Fi, the internet. The bearer changes; the datagram above it doesn't.</p></div>
+      <div class="step"><div class="n">→ SEAL</div><h3>Sealed &amp; addressed</h3><p>Encrypted to a key. Every relay carries it blind, confidential even across untrusted infrastructure.</p></div>
+      <div class="step"><div class="n">→ HOP</div><h3>Carried by any bearer</h3><p>BLE, LoRa, Wi-Fi, the internet. The bearer changes; the datagram above it doesn't.</p></div>
       <div class="step"><div class="n">→ HOLD</div><h3>Held, never dropped</h3><p>No path? A relay keeps it; the backbone holds for offline recipients. Eventual, but guaranteed.</p></div>
     </div>
   </div>
@@ -172,7 +172,7 @@
     <span class="eyebrow">The narrow waist</span>
     <h2>One layer. Every offline app.</h2>
     <p class="sub">Most offline products rebuild the same transport and weld it to a single app. Hop is
-      that layer, done once — a sealed, store-and-forward datagram. Many bearers below, many apps above.</p>
+      that layer, done once, a sealed, store-and-forward datagram. Many bearers below, many apps above.</p>
     <div class="stack">
       <div class="lrow"><div class="lv">Apps</div><div class="chips">
         <a class="chip" href="#">Messaging</a><a class="chip" href="#">Data sync</a><a class="chip" href="#">File transfer</a><a class="chip" href="#">Offline web</a><a class="chip" href="#">Telemetry</a></div></div>

@@ -56,10 +56,17 @@ Deploy is GitOps: a push to `main` triggers the Cloud Build run in
 | `iam.tf` | Cloud Run runtime SA (least privilege) |
 | `cloud_run.tf` | Per-region relay service, min=0, LB-only ingress |
 | `load_balancer.tf` | Global LB: NEGs, backend, URL map, managed cert, IP, :80→:443 |
-| `dns.tf` | Optional Cloud DNS record (off by default, DNS is external) |
-| `outputs.tf` | LB IP, the A record to add, the `wss://` endpoint |
+| `dns.tf` | Cloud DNS zone + relay/wildcard records for hopme.sh (always managed here) |
+| `outputs.tf` | LB IPs, the `name_servers` to delegate, the `wss://` endpoint |
 
-## First deploy
+## Deploy
+
+The normal path is **GitOps**: push to `main`, and the Cloud Build trigger
+(`cloudbuild.trigger.yaml`) builds + pushes the images, waits for CI to go green
+(the runtime gate above), then runs `tofu apply`. There is no Spacelift and no
+manual apply in the normal flow.
+
+For a one-off **local** apply from your machine (e.g. bootstrapping):
 
 1. **Seed the identity once** (32 random bytes; rerunning rotates the relay address):
    ```sh
@@ -68,33 +75,23 @@ Deploy is GitOps: a push to `main` triggers the Cloud Build run in
 2. **Build & push** the image, then **apply**:
    ```sh
    make auth
-   make apply                    # builds linux/amd64, pushes, terraform apply
+   make apply                    # builds linux/amd64, pushes, tofu apply
    ```
-   Or with Spacelift: push the image in CI, set `relay_image` as a stack var, let
-   the stack apply.
-3. **Add DNS by hand** (hopme.sh DNS is off-GCP). `terraform output dns_setup`
-   prints the record:
+3. **Delegate DNS.** hopme.sh DNS is managed by this module (`dns.tf`): the zone
+   and all records (relay/wildcard/pages/mail) are created here. Point the
+   registrar's nameservers at the `name_servers` output:
+   ```sh
+   tofu output name_servers
    ```
-   A  relay.hopme.sh  ->  <anycast IP>
-   ```
-   The managed TLS cert goes ACTIVE a few minutes after the record resolves.
+   Once delegation propagates, the managed TLS cert goes ACTIVE within minutes and
+   `wss://relay.hopme.sh/` resolves.
 4. Point a device's **Cloud relay** field at `wss://relay.hopme.sh/`.
 
-Once hopme.sh is delegated to Cloud DNS, set `manage_dns = true` and step 3 is
-automated.
-
-## Pending code dependency
-
-The image runs `hop-relayd --ws … --identity-file …`. The current daemon only has
-the raw-TCP bearer (`--listen`) used by the path-A VM. Before this fleet serves
-traffic, hop-relayd needs:
-
-- a **WebSocket bearer** listening on `$PORT` (Noise XX over WS frames), and
-- `--identity-file` (load the 32-byte seed from the mounted secret) and reading
-  `--firestore` for the durable store.
-
-The Cloud Run env (`HOP_FIRESTORE_PROJECT`, `HOP_IDENTITY_FILE`, `PORT`) is already
-wired in `cloud_run.tf` to match that interface.
+The relay image already runs the **WebSocket bearer** (`--ws 0.0.0.0:8080`, Noise XX
+over WS frames) on `$PORT`, loads its identity from the mounted secret
+(`--identity-file`), and uses Firestore for the durable store (`--firestore`); the
+Cloud Run env (`HOP_FIRESTORE_PROJECT`, `HOP_IDENTITY_FILE`, `PORT`) is wired in
+`cloud_run.tf` to match.
 
 ## Note on path A
 

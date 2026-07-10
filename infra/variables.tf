@@ -116,20 +116,18 @@ variable "ws_request_timeout_seconds" {
   default     = 3600
 }
 
-variable "manage_dns" {
-  description = "If true, create/manage a Cloud DNS zone for the domain. Leave false while hopme.sh DNS lives elsewhere — then add the A record by hand to the LB IP."
-  type        = bool
-  default     = false
-}
-
+# infra-r2-03: hopme.sh DNS is ALWAYS managed in this module (dns.tf creates the zone + records with
+# no gate; pages_dns.tf, mail_dns.tf, and example.tf all reference the zone unconditionally). The old
+# `manage_dns` toggle was a no-op - it never gated anything - so it was removed to stop implying DNS
+# could stay external. Delegate hopme.sh to the `name_servers` output to hand DNS to this zone.
 variable "dns_zone_name" {
-  description = "Cloud DNS managed-zone resource name (only used when manage_dns = true)."
+  description = "Cloud DNS managed-zone resource name for hopme.sh (DNS is always managed here; see dns.tf)."
   type        = string
   default     = "hopme-sh"
 }
 
 variable "dns_zone_dns_name" {
-  description = "The zone apex with trailing dot (only used when manage_dns = true), e.g. hopme.sh."
+  description = "The hopme.sh zone apex with trailing dot, e.g. hopme.sh. (DNS is always managed here; see dns.tf)."
   type        = string
   default     = "hopme.sh."
 }

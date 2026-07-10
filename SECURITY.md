@@ -15,8 +15,8 @@ upgrade to the latest tag or `main` to receive fixes.
 | any earlier tag      | No (upgrade)       |
 
 The wire format is versioned independently of the crate version. See
-`HOP_WIRE_VERSION` (core) and `HOP_ABI_VERSION` (`sdk/hop.h`); the CI wire-stability
-test pins both so a security fix cannot silently break interop.
+`BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`) and `HOP_ABI_VERSION` (`sdk/hop.h`);
+the CI wire-stability test pins both so a security fix cannot silently break interop.
 
 ## Reporting a vulnerability
 
@@ -73,13 +73,19 @@ These are documented tradeoffs the team has accepted for the current test phase.
 They are tracked and will be closed before a production release. They are listed
 here so a reporter does not spend effort on already-known items:
 
-- Client identity secrets and the SQLCipher at-rest key are currently derived from a
-  device identifier rather than held in the platform Keychain / Android Keystore /
-  Secure Enclave. A process that learns the device id can recompute them. Hardware-held
-  key storage and an exportable-encrypted-identity flow are designed in
-  `docs/identity-backup-restore-design.md` and pending client work.
-- Signed-prekey rotation is designed but not yet implemented; the recognition SPK is
-  currently as long-lived as the identity.
+- Hardware-held key storage (DONE, not an open risk). Client identity secrets and the
+  SQLCipher at-rest key are now a random 32-byte secret generated once and wrapped by a
+  non-exportable platform key: iOS Keychain / Secure Enclave
+  (`drivers/apple/HopDriver/Sources/HopDriver/Keychain.swift`) and the Android Keystore,
+  StrongBox when available (`drivers/android/hop-driver/.../KeystoreSecret.kt`, consumed by
+  `HopBearer.deviceSeed`/`dbKey`). They are no longer derived from a device identifier, so a
+  process that learns the device id cannot recompute them. One residual, tracked separately:
+  a legacy install that predates this change migrates its old ANDROID_ID-derived value in as
+  the stored secret so the address is preserved, so a device that was compromised before the
+  migration is not retroactively healed.
+- Signed-prekey rotation (DONE, not an open risk). The recognition SPK now rotates per
+  epoch (`node.rs rotate_prekey_if_due`, wired into the node tick), retaining a bounded
+  window of prior epoch secrets so in-flight sessions still open while old secrets age out.
 - The relay fleet is deployed-off for a P2P-only test phase. Server-side hardening
   items (connection caps, per-source shedding, rate-limiter keying behind the load
   balancer) are tracked in the services runbooks.

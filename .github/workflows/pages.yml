@@ -50,11 +50,26 @@ jobs:
         working-directory: .
         run: bash sim/build-wasm.sh
 
+      # infra-r2-01: gate the PUBLISH on the same guards the CI `web` job runs, so hopme.sh can't ship
+      # a stale/broken sim or a dead internal link even though pages.yml rebuilds independently on the
+      # main push. These run BEFORE upload, so a failure blocks the deploy job (needs: build).
+
+      # sim/pkg must still match a fresh build from core (no stale committed artifact on the live site).
+      - name: Guard sim/pkg against drift from core
+        working-directory: .
+        run: bash sim/check-pkg-fresh.sh
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      # Every homepage scenario must actually complete (each scripted send delivers AND its ACK returns).
+      # After setup-node so it runs on the pinned Node 20, against the pkg-node just built above.
+      - name: Sim scenario-check (all scenarios complete)
+        working-directory: .
+        run: node sim/scenario-check.mjs
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -65,6 +80,12 @@ jobs:
       # prebuild runs `npm run sync`, which copies the freshly-built ../sim (incl. sim/pkg) into public/.
       - name: Build
         run: npm run build
+
+      # infra-r2-01: dead-internal-link gate over the built site, same as the CI `web` job. Blocks the
+      # publish on a broken link instead of shipping it live.
+      - name: Internal link check (web/dist)
+        working-directory: .
+        run: node tools/check-web-links.mjs web/dist
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

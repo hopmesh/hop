@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- android-r2-03: DEBUG-ONLY automation deep link. This overlay is merged only into the debug
+         variant, so `hopdemo://send?to=<base58>&text=<marker>` (the headless-harness send hook) is
+         exported ONLY in debug builds. A release APK has no BROWSABLE/exported filter for it, so no
+         co-installed app or web page can drive an authenticated send. Mirrors iOS apple-05 (its
+         handler is `#if DEBUG`). MainActivity.handleAutomationIntent is also gated on BuildConfig.DEBUG,
+         so even a stray VIEW intent in a release build is a no-op. -->
+    <application>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hopdemo" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

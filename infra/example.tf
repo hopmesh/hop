@@ -82,6 +82,19 @@ resource "google_cloud_run_v2_service" "example" {
         name  = "HOP_IDENTITY_FILE"
         value = "/etc/hop/identity"
       }
+      # services-r2-01: actually ACTIVATE the coded graceful-degrade path. When the relay fleet is
+      # torn down (var.relays_enabled = false) the always-on (min=1) example instance would otherwise
+      # dial the default wss://relay.hopme.sh/ forever, logging "mesh-unreachable" + burning a
+      # reconnect every 60s. The endpoint reads HOP_NO_RELAY=1 (services-11) to skip the dead relay
+      # and just serve its origin over HTTP. Gated on the SAME var so it flips back to relay-dialing
+      # (env absent -> default dial) the moment the fleet is re-enabled (no container arg change).
+      dynamic "env" {
+        for_each = var.relays_enabled ? [] : [1]
+        content {
+          name  = "HOP_NO_RELAY"
+          value = "1"
+        }
+      }
       volume_mounts {
         name       = "identity"
         mount_path = "/etc/hop"

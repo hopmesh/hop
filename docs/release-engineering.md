@@ -12,8 +12,9 @@ Two versions travel independently and MUST NOT be conflated:
    Semantic-versioning-shaped, currently `0.0.x` (pre-1.0). Bumping this is a
    product release. All workspace crates inherit it via `version.workspace = true`.
 2. Wire / ABI versions: the interop contract, versioned SEPARATELY from the product.
-   - `HOP_WIRE_VERSION` (core): the on-the-wire bundle/frame format. A change here
-     is a protocol break and needs the wire-stability test updated deliberately.
+   - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
+     format. A change here is a protocol break and needs the wire-stability test
+     updated deliberately.
    - `HOP_ABI_VERSION` (`sdk/hop.h`, currently `2`): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
@@ -76,7 +77,8 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
   release URL and its checksum (`swift package compute-checksum`). The checksum is
   the integrity gate; sign the release artifact and, for a notarized distribution,
   codesign + notarize the framework before zipping.
-- The four per-bearer SwiftPM packages (`bearers/apple/HopBearer{Ble,Lan,Multipeer,Relay}`)
+- The three per-bearer SwiftPM packages (`bearers/apple/HopBearer{Ble,Lan,Relay}`; Multipeer /
+  Wi-Fi P2P is an in-driver transport, not an extracted package)
   and the SDK wrapper are pitched as independently publishable. Each needs a LICENSE
   file so the FSL-1.1-ALv2 terms travel with the package (see the license note
   below).

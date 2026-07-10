@@ -10,6 +10,8 @@ locals {
     "secretmanager.googleapis.com",      # relay identity seed
     "cloudbuild.googleapis.com",         # build the image in-cloud (no local docker)
     "dns.googleapis.com",                # public DNS zone for hopme.sh
+    "monitoring.googleapis.com",         # infra-r2-04: observability.tf alert policies + notification channel
+    "logging.googleapis.com",            # infra-r2-04: observability.tf log bucket/sink/exclusion/metric
   ]
 }
 

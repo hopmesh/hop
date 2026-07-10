@@ -1,6 +1,7 @@
 // hop-soak: looping cross-device P2P send soak with per-round adversarial bug hunt.
 // Run via the Workflow tool:  Workflow({ scriptPath: "testkit/soak.workflow.js", args: { rounds: 24 } })
-// Drives the fg/bg permutation matrix across all 5 devices (testkit/run-round.sh), then spawns
+// Drives the fg/bg permutation matrix across the full device fleet (testkit/run-round.sh derives the
+// live device list from testkit/devices.sh, so this is device-count-agnostic), then spawns
 // parallel critic agents to hunt bugs in each round's results + per-device logs. Accumulates a
 // deduped bug ledger. Runs ~rounds rounds (≈ an hour); stop early with TaskStop.
 export const meta = {

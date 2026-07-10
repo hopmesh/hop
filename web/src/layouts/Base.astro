@@ -39,11 +39,13 @@ const ogImageUrl = new URL(ogImage, Astro.site);
     <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#07090b" />
-    {/* Brand typeface, Poppins (geometric, friendly, pairs with the cursive mark) */}
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,600&display=swap" />
+    <meta name="theme-color" content="#07090b" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    {/* Brand typeface, Poppins (geometric, friendly, pairs with the cursive mark).
+        web-r2-04: self-hosted under /public/fonts (CSS + woff2), so there is no
+        unpinned third-party stylesheet on the site and no runtime dependency on
+        fonts.googleapis.com / fonts.gstatic.com. Regenerate with tools if the weights change. */}
+    <link rel="stylesheet" href="/fonts/poppins.css" />
     {/* Icons, Font Awesome Pro kit */}
     <script is:inline src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
     <title>{title}</title>

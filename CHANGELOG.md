@@ -2,8 +2,9 @@
 
 All notable changes to Hop are recorded here. The format follows Keep a Changelog,
 newest first. Hop is pre-1.0 and versioned per `[workspace.package] version` in the
-root `Cargo.toml`; the wire (`HOP_WIRE_VERSION`) and ABI (`HOP_ABI_VERSION`)
-versions are tracked separately (see `docs/release-engineering.md`).
+root `Cargo.toml`; the wire (`BUNDLE_VERSION` in `core/hop-core/src/bundle.rs`) and
+ABI (`HOP_ABI_VERSION`) versions are tracked separately (see
+`docs/release-engineering.md`).
 
 ## [Unreleased]
 

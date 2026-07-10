@@ -1,6 +1,6 @@
 // Real-world scenarios, played by the REAL hop-core mesh on the city map.
 //
-// Ids match web/src/data/scenarios.js — the homepage mini player and the full simulator load the
+// Ids match web/src/data/scenarios.js, the homepage mini player and the full simulator load the
 // same scenario by id (sim/index.html?scenario=<id>[&mini=1]). Every scenario is mechanically
 // honest: the infra toggles set which real components are up, the script sends real messages
 // between real nodes, and delivery happens (or doesn't) by the same rules as always. The only
@@ -17,13 +17,13 @@
 //           extras?, script:[{at, send:{from,to,text}} | {at, narr}], maxReal }
 //   at       sim-seconds since the scenario started
 //   maxReal  REAL seconds before a mini loop restarts even if the run didn't complete
-//            (a completed run — every scripted send ACKed — restarts a few seconds after the ack)
+//            (a completed run, every scripted send ACKed, restarts a few seconds after the ack)
 
 export const SCENARIOS = {
   p2p: {
-    // San Francisco — the flagship city (also the free-play map): a downtown block meshes on its own.
+    // San Francisco, the flagship city (also the free-play map): a downtown block meshes on its own.
     title: 'A neighborhood that talks to itself.',
-    blurb: 'No tower, no plan — messages thread between whoever’s nearby.',
+    blurb: 'No tower, no plan, messages thread between whoever’s nearby.',
     speed: 32, maxReal: 150,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [-122.3985, 37.7895], zoom: 14.2 },
@@ -34,9 +34,9 @@ export const SCENARIOS = {
   },
 
   disaster: {
-    // Istanbul, Fatih — earthquake country; the fault runs right past the city.
+    // Istanbul, Fatih, earthquake country; the fault runs right past the city.
     title: 'The tower is gone. The phones aren’t.',
-    blurb: 'Istanbul after a quake: cell and internet down — the mesh carries word to the command post’s satellite uplink, and the answer rides back.',
+    blurb: 'Istanbul after a quake: cell and internet down, the mesh carries word to the command post’s satellite uplink, and the answer rides back.',
     speed: 90, maxReal: 360,
     infra: { power: true, cell: false, isp: false },
     stage: {
@@ -56,13 +56,13 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'you', to: 'post', text: 'trapped near Beyazıt — building is cracked, we are 4' } },
-      { after: 0, at: 8, send: { from: 'post', to: 'you', text: 'crews dispatched to you — stay where you are' } },
+      { at: 2, send: { from: 'you', to: 'post', text: 'trapped near Beyazıt, building is cracked, we are 4' } },
+      { after: 0, at: 8, send: { from: 'post', to: 'you', text: 'crews dispatched to you, stay where you are' } },
     ],
   },
 
   iot: {
-    // Dutch polder farmland — a sensor GRID meshes across the field, sensor to sensor, until the
+    // Dutch polder farmland, a sensor GRID meshes across the field, sensor to sensor, until the
     // reading reaches the field edge; cars on the polder road carry it to the agronomist. No cell,
     // no LoRaWAN subscription, no field gateway: the road itself is the backhaul.
     title: 'Sensors where there’s no cell at all.',
@@ -74,7 +74,7 @@ export const SCENARIOS = {
       routes: { polder: null },   // baked: a Flevoland polder road, 10.3 km
       aps: [],
       cast: [
-        // the field chain — ~29 m spacing, BLE reaches the next sensor; s1 sits at the road's edge
+        // the field chain, ~29 m spacing, BLE reaches the next sensor; s1 sits at the road's edge
         { id: 's1', name: 'Soil 1', emoji: 'router', pos: [5.50874, 52.52844] },
         { id: 's2', name: 'Soil 2', emoji: 'router', pos: [5.50862, 52.52819] },
         { id: 's3', name: 'Soil 3', emoji: 'router', pos: [5.50850, 52.52794] },
@@ -89,15 +89,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2,  send: { from: 's6', to: 'agro', text: 'soil probe 6: moisture 19%, dropping — irrigate block C' } },
+      { at: 2,  send: { from: 's6', to: 'agro', text: 'soil probe 6: moisture 19%, dropping, irrigate block C' } },
       { at: 60, send: { from: 's6', to: 'agro', text: 'soil probe 6: moisture 18%, dropping' } },
     ],
   },
 
   offgrid: {
-    // Rural Karnataka, India — where this literally happened (DakNet ran buses as the network).
+    // Rural Karnataka, India, where this literally happened (DakNet ran buses as the network).
     title: 'Between towns, there’s only the road.',
-    blurb: 'Rural India: no link between villages — the clinic record rides the bus until it reaches the town that’s online.',
+    blurb: 'Rural India: no link between villages, the clinic record rides the bus until it reaches the town that’s online.',
     speed: 90, maxReal: 300,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [77.5040, 13.2590], zoom: 12.3 },
@@ -120,14 +120,14 @@ export const SCENARIOS = {
     },
     script: [
       { at: 2, send: { from: 'clinic', to: 'townie', text: 'clinic record: patient stable, needs transport' } },
-      { after: 0, at: 8, send: { from: 'townie', to: 'clinic', text: 'received — ambulance booked for tomorrow morning' } },
+      { after: 0, at: 8, send: { from: 'townie', to: 'clinic', text: 'received, ambulance booked for tomorrow morning' } },
     ],
   },
 
   traveler: {
-    // Nepal hill villages — a footpath between Ghandruk and Landruk; messages walk with people.
+    // Nepal hill villages, a footpath between Ghandruk and Landruk; messages walk with people.
     title: 'A message hitchhikes on a passerby.',
-    blurb: 'Nepal foothills: neither village is connected — the message rides whoever is already walking the trail.',
+    blurb: 'Nepal foothills: neither village is connected, the message rides whoever is already walking the trail.',
     speed: 90, maxReal: 480,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [83.8165, 28.3700], zoom: 13.4 },
@@ -147,15 +147,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'townA', to: 'townB', text: 'trail is clear past the ridge — see you tonight' } },
-      { after: 0, at: 6, send: { from: 'townB', to: 'townA', text: 'good news — dal bhat will be waiting' } },
+      { at: 2, send: { from: 'townA', to: 'townB', text: 'trail is clear past the ridge, see you tonight' } },
+      { after: 0, at: 6, send: { from: 'townB', to: 'townA', text: 'good news, dal bhat will be waiting' } },
     ],
   },
 
   nodata: {
-    // Manila — prepaid-data country: running out of load is an everyday event, the mesh isn't.
+    // Manila, prepaid-data country: running out of load is an everyday event, the mesh isn't.
     title: 'No plan? Borrow a path, not a phone.',
-    blurb: 'Manila: a phone with no load still texts — sealed hops ride a neighbor’s connection, and the reply rides one back.',
+    blurb: 'Manila: a phone with no load still texts, sealed hops ride a neighbor’s connection, and the reply rides one back.',
     speed: 48, maxReal: 300,
     infra: { power: true, cell: true, isp: true },
     stage: {
@@ -173,15 +173,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'you', to: 'friend', text: 'walang load pero nakakatext pa rin — see you at 6?' } },
+      { at: 2, send: { from: 'you', to: 'friend', text: 'walang load pero nakakatext pa rin, see you at 6?' } },
       { after: 0, at: 6, send: { from: 'friend', to: 'you', text: 'got it! topping you up later. 6 works' } },
     ],
   },
 
   blackout: {
-    // San Juan, Puerto Rico — hurricane blackouts took the whole grid AND the internet down for months.
+    // San Juan, Puerto Rico, hurricane blackouts took the whole grid AND the internet down for months.
     title: 'The internet gets cut. Talk anyway.',
-    blurb: 'San Juan after the storm: grid down, internet down — local messages keep flowing, and word gets out through the one generator-powered uplink.',
+    blurb: 'San Juan after the storm: grid down, internet down, local messages keep flowing, and word gets out through the one generator-powered uplink.',
     speed: 90, maxReal: 360,
     infra: { power: false, cell: false, isp: false },
     stage: {
@@ -201,13 +201,13 @@ export const SCENARIOS = {
     },
     script: [
       { at: 2, send: { from: 'you', to: 'friend', text: 'you all OK over there?' } },
-      { after: 0, at: 5, send: { from: 'friend', to: 'you', text: 'safe. water’s out though — you?' } },
+      { after: 0, at: 5, send: { from: 'friend', to: 'you', text: 'safe. water’s out though, you?' } },
       { after: 1, at: 6, send: { from: 'you', to: 'hotel', text: 'please tell the mainland we’re all OK on Calle Loíza' } },
     ],
   },
 
   expedition: {
-    // The Khumbu trek, Nepal — Namche Bazaar to Tengboche; a party strung along a real trail.
+    // The Khumbu trek, Nepal, Namche Bazaar to Tengboche; a party strung along a real trail.
     title: 'No bars for miles. Tell the group anyway.',
     blurb: 'The Khumbu trail: word passes hiker to hiker up the line until it reaches the lead.',
     speed: 120, maxReal: 480,
@@ -231,15 +231,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, publish: { from: 'you', path: 'party', text: 'stopping to filter water — 20 min behind' } },
-      { after: 0, at: 6, send: { from: 'lead', to: 'you', text: 'copy — we hold at the ridge for you' } },
+      { at: 2, publish: { from: 'you', path: 'party', text: 'stopping to filter water, 20 min behind' } },
+      { after: 0, at: 6, send: { from: 'lead', to: 'you', text: 'copy, we hold at the ridge for you' } },
     ],
   },
 
   ski: {
-    // Heavenly (Tahoe) back side — resorts really do have dead bowls; the message rides the crowd.
+    // Heavenly (Tahoe) back side, resorts really do have dead bowls; the message rides the crowd.
     title: 'Find your crew across the mountain.',
-    blurb: 'No coverage in the back bowls — the message rides skiers down to your crew at the lodge.',
+    blurb: 'No coverage in the back bowls, the message rides skiers down to your crew at the lodge.',
     speed: 60, maxReal: 360,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [-119.9150, 38.9280], zoom: 13.6 },
@@ -263,15 +263,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, publish: { from: 'you', path: 'crew', text: 'last run — meet at the mid-lodge' } },
+      { at: 2, publish: { from: 'you', path: 'crew', text: 'last run, meet at the mid-lodge' } },
       { after: 0, at: 5, send: { from: 'crew', to: 'you', text: 'saving you a seat by the fire' } },
     ],
   },
 
   convoy: {
-    // The Tanami Track, Australian outback — hundreds of km with no backhaul; units relay forward.
+    // The Tanami Track, Australian outback, hundreds of km with no backhaul; units relay forward.
     title: 'Keep the picture on the move.',
-    blurb: 'The Tanami Track: no backhaul for hours — status hops vehicle to vehicle up to the lead.',
+    blurb: 'The Tanami Track: no backhaul for hours, status hops vehicle to vehicle up to the lead.',
     speed: 48, maxReal: 780,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [131.7440, -22.7450], zoom: 11.4 },
@@ -284,7 +284,7 @@ export const SCENARIOS = {
         { id: 'rear', name: 'Rear', route: 'tanami', frac: 0.02 },
         { id: 'lead', name: 'Lead', route: 'tanami', frac: 0.98 },
         // UNEQUAL patrol spans: equal spans + equal speed phase-lock into a parade that never
-        // meets (found the hard way) — distinct periods make every pair drift through its overlap.
+        // meets (found the hard way), distinct periods make every pair drift through its overlap.
         { id: 'v1', name: 'Unit 1', emoji: '🚗', route: 'tanami', mode: 'bike', off: 0.15, seg: [0.0, 0.30] },
         { id: 'v2', name: 'Unit 2', emoji: '🚗', route: 'tanami', mode: 'bike', off: 0.35, seg: [0.20, 0.58] },
         { id: 'v3', name: 'Unit 3', emoji: '🚗', route: 'tanami', mode: 'bike', off: 0.55, seg: [0.44, 0.76] },
@@ -294,20 +294,20 @@ export const SCENARIOS = {
     },
     script: [
       { at: 2, publish: { from: 'rear', path: 'net', text: 'convoy check: all units up, moving north-west' } },
-      { after: 0, at: 5, send: { from: 'lead', to: 'rear', text: 'copy all — next waypoint in 20 clicks' } },
+      { after: 0, at: 5, send: { from: 'lead', to: 'rear', text: 'copy all, next waypoint in 20 clicks' } },
     ],
   },
 
   clockin: {
     // A big job site (Toronto Port Lands): the company's new punch app needs a connection the crew
-    // doesn't have — no SIM on the site phones, and the trailer Wi-Fi only covers the gate. Punches
+    // doesn't have, no SIM on the site phones, and the trailer Wi-Fi only covers the gate. Punches
     // hop worker to worker along the works to the trailer; the confirmation rides back.
     title: 'Clocked in, no SIM needed.',
-    blurb: 'A job site: the punch app on a SIM-less phone reaches the company’s cloud timesheet through the crew and the trailer’s uplink — device to platform, not chat.',
+    blurb: 'A job site: the punch app on a SIM-less phone reaches the company’s cloud timesheet through the crew and the trailer’s uplink, device to platform, not chat.',
     speed: 48, maxReal: 300,
     infra: { power: true, cell: false, isp: true },
     stage: {
-      routes: { yard: null },   // baked: a real Port Lands street (~800 m) — on land, not the Ship Channel
+      routes: { yard: null },   // baked: a real Port Lands street (~800 m), on land, not the Ship Channel
       aps: [ { pos: [-79.356505, 43.650722], r: 40, name: 'Site trailer', pub: true } ],
       cast: [
         { id: 'office', name: 'Timesheet API', emoji: 'router', ap: 0 },   // the customer's cloud platform, reached via the trailer's uplink (a system, not a person)
@@ -322,12 +322,12 @@ export const SCENARIOS = {
     },
     script: [
       { at: 2, send: { from: 'worker', to: 'office', text: 'PUNCH badge=4211 t=07:58' } },
-      { after: 0, at: 4, send: { from: 'office', to: 'worker', text: 'ACCEPTED punch 07:58 — shift 06:00-14:30' } },
+      { after: 0, at: 4, send: { from: 'office', to: 'worker', text: 'ACCEPTED punch 07:58, shift 06:00-14:30' } },
     ],
   },
 
   mine: {
-    // Kiruna, Sweden — no radio past the first bend, and a gas alert is for EVERYONE: it goes out
+    // Kiruna, Sweden, no radio past the first bend, and a gas alert is for EVERYONE: it goes out
     // as a CHANNEL broadcast on the shift's group, hopping headlamp to headlamp until every member
     // has it, and control's instruction comes back the same way.
     title: 'No radio underground. The shift is the network.',
@@ -353,15 +353,15 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, publish: { from: 'face', path: 'shift', text: 'CH4 at 1.8% at the face — pulling the crew back' } },
-      { after: 0, at: 6, publish: { from: 'office', path: 'shift', text: 'ventilation ramped — all crews hold at refuge 2 until green' } },
+      { at: 2, publish: { from: 'face', path: 'shift', text: 'CH4 at 1.8% at the face, pulling the crew back' } },
+      { after: 0, at: 6, publish: { from: 'office', path: 'shift', text: 'ventilation ramped, all crews hold at refuge 2 until green' } },
     ],
   },
 
   event: {
     // A festival ground, modeled the way one actually MOVES: named areas (main stage, vendor row,
     // the ops tent, the entrance), a crowd that swarms between them and DWELLS (a stage set, a
-    // food queue), stationary stallholders, staff shuttling ops↔stage↔vendors — plus a constant
+    // food queue), stationary stallholders, staff shuttling ops↔stage↔vendors, plus a constant
     // slurry of real background messages. The tower is UP and jammed (`congested`): everyone
     // attached this morning; now nothing moves except through the crowd itself.
     title: 'Full bars. Nothing sends.',
@@ -401,20 +401,20 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 5, send: { from: 'pos1', to: 'ops', text: 'card batch: 47 sales, £612 — please sync' } },
-      { after: 0, at: 5, send: { from: 'ops', to: 'pos1', text: 'batch received — float topped up' } },
+      { at: 5, send: { from: 'pos1', to: 'ops', text: 'card batch: 47 sales, £612, please sync' } },
+      { after: 0, at: 5, send: { from: 'ops', to: 'pos1', text: 'batch received, float topped up' } },
       { at: 15, send: { from: 'you', to: 'friend', text: 'meet left of the sound tower' } },
-      { after: 2, at: 8, send: { from: 'friend', to: 'you', text: 'omw — grabbing food first' } },
+      { after: 2, at: 8, send: { from: 'friend', to: 'you', text: 'omw, grabbing food first' } },
     ],
   },
 
   lora: {
-    // FUTURE BEARER (in development): the Hop Bridge — an ESP32 that speaks BLE to nearby phones and
+    // FUTURE BEARER (in development): the Hop Bridge, an ESP32 that speaks BLE to nearby phones and
     // sub-GHz LoRa across the valley. The bridges are REAL hop nodes here; their 900 MHz span is
-    // modeled as a bearer link (bearers are opaque to the core — hop can't tell LoRa from BLE).
+    // modeled as a bearer link (bearers are opaque to the core, hop can't tell LoRa from BLE).
     comingSoon: true, minHops: 3,
     title: 'Across the valley on 900 MHz.',
-    blurb: 'Hop Bridge (in development): phones reach it over BLE, and it spans the valley on LoRa — the same protocol on a new radio.',
+    blurb: 'Hop Bridge (in development): phones reach it over BLE, and it spans the valley on LoRa, the same protocol on a new radio.',
     speed: 24, maxReal: 120,
     infra: { power: true, cell: false, isp: false },
     camera: { center: [-122.6830, 38.0690], zoom: 12.6 },
@@ -431,15 +431,15 @@ export const SCENARIOS = {
       decor: [ { from: [-122.7003, 38.0617], to: [-122.6664, 38.0758], label: 'LoRa - 900 MHz - future bearer (modeled)' } ],
     },
     script: [
-      { at: 2, send: { from: 'ranchA', to: 'ranchB', text: 'fence is down in the north paddock — can you check your side?' } },
-      { after: 0, at: 6, send: { from: 'ranchB', to: 'ranchA', text: 'on it — cattle are all on my side, gate held' } },
+      { at: 2, send: { from: 'ranchA', to: 'ranchB', text: 'fence is down in the north paddock, can you check your side?' } },
+      { after: 0, at: 6, send: { from: 'ranchB', to: 'ranchA', text: 'on it, cattle are all on my side, gate held' } },
     ],
   },
 
   collapse: {
-    // Port-au-Prince — the 2010 earthquake took out virtually all communications at once.
+    // Port-au-Prince, the 2010 earthquake took out virtually all communications at once.
     title: 'No tower, no satellite. Talk anyway.',
-    blurb: 'Port-au-Prince: everything is down — power, cell, internet, satellite. The mesh turns inward, delivers, and carries the answer back.',
+    blurb: 'Port-au-Prince: everything is down, power, cell, internet, satellite. The mesh turns inward, delivers, and carries the answer back.',
     speed: 60, maxReal: 240,
     infra: { power: false, cell: false, isp: false, sat: false },
     stage: {
@@ -455,8 +455,8 @@ export const SCENARIOS = {
       ],
     },
     script: [
-      { at: 2, send: { from: 'you', to: 'lead', text: 'two trapped, west stairwell — need hands' } },
-      { after: 0, at: 6, send: { from: 'lead', to: 'you', text: 'team en route — keep talking to them' } },
+      { at: 2, send: { from: 'you', to: 'lead', text: 'two trapped, west stairwell, need hands' } },
+      { after: 0, at: 6, send: { from: 'lead', to: 'you', text: 'team en route, keep talking to them' } },
     ],
   },
 };

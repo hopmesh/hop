@@ -2,11 +2,11 @@
 //
 // The core calls these methods synchronously; each returns/accepts raw bytes. Two backends share the
 // identical interface so the same JsStore runs everywhere:
-//   • makeMapBridge()  — in-memory (JS heap). Proves the architecture + runs in Node for validation.
-//   • makeOpfsBridge() — SQLite on an OPFS sync-access VFS (browser Worker only). Real disk storage,
+//   • makeMapBridge(), in-memory (JS heap). Proves the architecture + runs in Node for validation.
+//   • makeOpfsBridge(), SQLite on an OPFS sync-access VFS (browser Worker only). Real disk storage,
 //                        so held bundles leave the wasm heap and a many-node tab stops OOMing.
 //
-// Contract (mirrors hop-store-sqlite's two-table model — a `seen` dedup index + a `bundles` data set):
+// Contract (mirrors hop-store-sqlite's two-table model, a `seen` dedup index + a `bundles` data set):
 //   put(id, data, expiresAt) -> bool   insert unless already seen (dedup); false if duplicate
 //   get(id) -> Uint8Array|undefined    held bundle bytes
 //   remove(id) -> Uint8Array|undefined drop held data (keep dedup entry); return removed bytes
@@ -34,7 +34,7 @@ function _encodeKv(pairs) {
   return out;
 }
 
-// In-memory backend — one Map set per node.
+// In-memory backend, one Map set per node.
 export function makeMapBridge() {
   const seen = new Map();   // idHex -> expiresAt
   const held = new Map();   // idHex -> Uint8Array
@@ -55,7 +55,7 @@ export function makeMapBridge() {
   };
 }
 
-// SQLite/OPFS backend — one DB (an in-memory-mirrored, disk-persisted OPFS file) per node. `db` is an
+// SQLite/OPFS backend, one DB (an in-memory-mirrored, disk-persisted OPFS file) per node. `db` is an
 // open @sqlite.org/sqlite-wasm database (opfs VFS) with the schema already created. Held bundles live
 // on disk, so wasm memory stays flat regardless of how many bundles the mesh floods.
 // One shared SQLite DB for the whole mesh, every row namespaced by node id `ns`. A single DB means a

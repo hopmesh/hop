@@ -1,7 +1,10 @@
 # Observability + log retention for the relay fleet (GAP-ANALYSIS.md F-16, F-24).
 #
-# Requires the Monitoring + Logging APIs (add to apis.tf if not already enabled). Set
-# TF_VAR_alert_email to receive alerts; leave empty to skip the notification channel + alerts.
+# infra-r2-04: the Monitoring + Logging APIs are enabled in apis.tf (monitoring.googleapis.com,
+# logging.googleapis.com), and every resource below carries depends_on = [google_project_service.this]
+# so a cold-project apply enables the APIs before creating alert policies / log buckets (otherwise the
+# first apply 403s "Monitoring API has not been used"). Set TF_VAR_alert_email to receive alerts;
+# leave empty to skip the notification channel + alerts.
 #
 # ALL of this is gated on var.relays_enabled: with the fleet off there are no relay logs to route
 # or alert on. (The build SA now holds roles/logging.admin, added in cloudbuild_trigger.tf, so the
@@ -23,6 +26,8 @@ resource "google_logging_project_bucket_config" "relay_short" {
   bucket_id      = "relay-short-retention"
   retention_days = 3
   description    = "Short-retention sink for relay logs (F-16): minimizes at-rest metadata exposure."
+
+  depends_on = [google_project_service.this] # infra-r2-04: logging API enabled first
 }
 
 resource "google_logging_project_sink" "relay" {
@@ -32,6 +37,8 @@ resource "google_logging_project_sink" "relay" {
   destination            = "logging.googleapis.com/projects/${var.project_id}/locations/global/buckets/${google_logging_project_bucket_config.relay_short[0].bucket_id}"
   filter                 = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\""
   unique_writer_identity = true
+
+  depends_on = [google_project_service.this] # infra-r2-04
 }
 
 # Keep the relay logs OUT of the 30-day _Default bucket (they now live in the short bucket above).
@@ -41,6 +48,8 @@ resource "google_logging_project_exclusion" "relay_from_default" {
   project     = var.project_id
   description = "F-16: relay logs are routed to the short-retention bucket; don't also keep them 30d in _Default."
   filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"relay\""
+
+  depends_on = [google_project_service.this] # infra-r2-04
 }
 
 # ---- F-24: alerting on the failure modes that are currently invisible ------------------------------
@@ -61,6 +70,8 @@ resource "google_monitoring_notification_channel" "email" {
   labels = {
     email_address = var.alert_email
   }
+
+  depends_on = [google_project_service.this] # infra-r2-04: monitoring API enabled first
 }
 
 # Log-based metric counting the relay's own "FAILED" lines (handoff FAILED / spool FAILED / etc).
@@ -74,6 +85,8 @@ resource "google_logging_metric" "relay_failed" {
     value_type  = "INT64"
     unit        = "1"
   }
+
+  depends_on = [google_project_service.this] # infra-r2-04
 }
 
 resource "google_monitoring_alert_policy" "relay_failed" {
@@ -95,6 +108,8 @@ resource "google_monitoring_alert_policy" "relay_failed" {
     }
   }
   notification_channels = [google_monitoring_notification_channel.email[0].id]
+
+  depends_on = [google_project_service.this] # infra-r2-04
 }
 
 # Cloud Run 5xx / request failures across the relay services (covers 429 wake-churn + crash loops).
@@ -117,4 +132,6 @@ resource "google_monitoring_alert_policy" "relay_5xx" {
     }
   }
   notification_channels = [google_monitoring_notification_channel.email[0].id]
+
+  depends_on = [google_project_service.this] # infra-r2-04
 }

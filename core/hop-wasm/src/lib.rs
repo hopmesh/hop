@@ -1,7 +1,7 @@
 //! Browser wrapper over the **real** `hop-core` node.
 //!
-//! Each `WasmNode` is a genuine `Node<JsStore>` — the same store-and-forward, crypto, and
-//! spray-and-wait routing that runs on device — over a host-provided persistent store (SQLite/OPFS
+//! Each `WasmNode` is a genuine `Node<JsStore>`, the same store-and-forward, crypto, and
+//! spray-and-wait routing that runs on device, over a host-provided persistent store (SQLite/OPFS
 //! in the Worker; see [`store`]). JavaScript owns the "bearer": it decides which nodes are in range,
 //! calls [`WasmNode::connected`], pumps [`WasmNode::drain`] → peer [`WasmNode::receive`] each frame,
 //! and reads delivered messages via [`WasmNode::inbox`]. An actual mesh of real Hop instances.
@@ -32,7 +32,7 @@ impl OutPacket {
     }
 }
 
-/// One real bundle crossing one link this frame — lets the visualizer color the hop by bundle.
+/// One real bundle crossing one link this frame, lets the visualizer color the hop by bundle.
 #[wasm_bindgen]
 pub struct Transfer {
     link: u32,
@@ -79,20 +79,20 @@ impl Delivered {
     pub fn body(&self) -> Vec<u8> {
         self.body.clone()
     }
-    /// The delivered bundle's id — matches the ids from `drain_transfers`, so the sim can
+    /// The delivered bundle's id, matches the ids from `drain_transfers`, so the sim can
     /// solid-color exactly the path that arrived.
     #[wasm_bindgen(getter)]
     pub fn bundle(&self) -> Vec<u8> {
         self.bundle.clone()
     }
-    /// How many relay hops the bundle took to arrive (`env.hops` on the wire) — the real count.
+    /// How many relay hops the bundle took to arrive (`env.hops` on the wire), the real count.
     #[wasm_bindgen(getter)]
     pub fn hops(&self) -> u8 {
         self.hops
     }
 }
 
-/// A channel (hps://) post that arrived for this node — group messaging (§32).
+/// A channel (hps://) post that arrived for this node, group messaging (§32).
 #[wasm_bindgen]
 pub struct ChannelMsg {
     path: String,
@@ -109,7 +109,7 @@ impl ChannelMsg {
     pub fn body(&self) -> Vec<u8> {
         self.body.clone()
     }
-    /// The POSTING member's address — every post is verified against its writer (§32).
+    /// The POSTING member's address, every post is verified against its writer (§32).
     #[wasm_bindgen(getter)]
     pub fn sender(&self) -> Vec<u8> {
         self.sender.clone()
@@ -126,7 +126,7 @@ pub struct WasmNode {
 #[wasm_bindgen]
 impl WasmNode {
     /// Build a node from a 32-byte identity seed (deterministic address across reloads) and a host
-    /// storage `bridge` (SQLite/OPFS in the Worker, a Map in Node tests) — bundles live there, not
+    /// storage `bridge` (SQLite/OPFS in the Worker, a Map in Node tests), bundles live there, not
     /// in wasm memory, so a many-node tab doesn't OOM while the core runs unchanged.
     #[wasm_bindgen(constructor)]
     pub fn new(secret: &[u8], bridge: StoreBridge) -> WasmNode {
@@ -138,7 +138,7 @@ impl WasmNode {
         WasmNode { node, addr }
     }
 
-    /// This node's 32-byte public address — use it as a `dst` for `send`.
+    /// This node's 32-byte public address, use it as a `dst` for `send`.
     #[wasm_bindgen(getter)]
     pub fn address(&self) -> Vec<u8> {
         self.addr.clone()
@@ -187,7 +187,7 @@ impl WasmNode {
         self.node.set_observe(on);
     }
 
-    /// The `(link, bundle_id, is_final_delivery)` transfers this node made since the last call —
+    /// The `(link, bundle_id, is_final_delivery)` transfers this node made since the last call,
     /// one per real bundle handed over a link. Color legs by `bundle`, solid when `delivered`.
     pub fn drain_transfers(&mut self) -> Vec<Transfer> {
         self.node
@@ -202,7 +202,7 @@ impl WasmNode {
     }
 
     /// Ids of our own sends confirmed delivered (by a returning ACK) since the last call, flat 32-byte
-    /// ids. The sender only learns delivery this way — a per-device UI shows "delivered" off this.
+    /// ids. The sender only learns delivery this way, a per-device UI shows "delivered" off this.
     pub fn drain_delivered(&mut self) -> Vec<u8> {
         self.node
             .drain_delivered()
@@ -211,7 +211,7 @@ impl WasmNode {
             .collect()
     }
 
-    /// Set the lifetime (ms) stamped on messages/ACKs this node sends — the sender's real per-bundle
+    /// Set the lifetime (ms) stamped on messages/ACKs this node sends, the sender's real per-bundle
     /// TTL choice. The store prunes on it, so relay copies of delivered messages expire on schedule.
     pub fn set_default_lifetime_ms(&mut self, ms: f64) {
         self.node.set_default_lifetime_ms(ms as u32);
@@ -243,7 +243,7 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag — turning
+    /// Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag, turning
     /// blind flood into directed route-toward (§39 P4). Re-publish before the 90s soft-state TTL lapses.
     pub fn publish_recv_beacon(&mut self) -> Result<(), JsValue> {
         self.node
@@ -253,13 +253,13 @@ impl WasmNode {
     }
 
     /// Which mailbox-tags this node currently holds a gradient toward, and the inbound link to forward
-    /// down for each — flat `[16-byte tag][u32 LE link][u8 hops]` records. Lets the sim draw the
+    /// down for each, flat `[16-byte tag][u32 LE link][u8 hops]` records. Lets the sim draw the
     /// distributed routing tree (each device holds a slice) + which way a private bundle would steer.
     pub fn gradient(&self) -> Vec<u8> {
         encode_gradient(self.node.recv_gradient_view())
     }
 
-    /// This node's current §39 mailbox-tag (16 bytes) — the key a relay's gradient points toward, so
+    /// This node's current §39 mailbox-tag (16 bytes), the key a relay's gradient points toward, so
     /// the sim can find the routing tree steering a private bundle to this recipient.
     pub fn mailbox_tag(&self) -> Vec<u8> {
         self.node.current_mailbox_tag().to_vec()
@@ -305,7 +305,7 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Post to a channel we're a member of — ONE message, every member receives it (real fan-out).
+    /// Post to a channel we're a member of, ONE message, every member receives it (real fan-out).
     /// Returns the broadcast bundle's id so the sim can trace its flood.
     pub fn channel_publish(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>, JsValue> {
         self.node
@@ -339,7 +339,7 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Send via the opt-in TRACED path (cleartext src/dst, directed routing) — no prekey needed.
+    /// Send via the opt-in TRACED path (cleartext src/dst, directed routing), no prekey needed.
     pub fn send_traced(&mut self, dst: &[u8], body: &[u8]) -> Result<(), JsValue> {
         let d: PubKeyBytes = dst
             .try_into()

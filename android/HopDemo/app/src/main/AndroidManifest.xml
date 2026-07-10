@@ -8,9 +8,13 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- android-r2-01/-04: no auto-backup. The mirrors are gated out of release now, but keeping
+         backup off means even the encrypted hop.db + any debug-build data are never uploaded to
+         Google's backup transport off-device. -->
     <application
         android:name=".HopApp"
         android:label="Hop Debug"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
@@ -23,13 +27,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Test/automation deep link: hopdemo://send?to=<base58>&text=<marker> (drives a send, no UI taps) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="hopdemo" />
-            </intent-filter>
+            <!-- android-r2-03: the exported hopdemo:// automation deep link (a silent send-as-user
+                 primitive any app/webpage could drive) is declared ONLY in the debug manifest overlay
+                 (src/debug/AndroidManifest.xml), so a release APK does not export it at all. -->
         </activity>
     </application>
 </manifest>

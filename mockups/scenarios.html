@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hop — Scenarios (data-flow stories)</title>
+<title>Hop, Scenarios (data-flow stories)</title>
 <style>
   :root{
     --bg:#07090b; --bg-soft:#0c0f12; --panel:#0e1215; --panel-2:#12171b; --line:#1b2227; --line-2:#283139;
@@ -132,9 +132,9 @@
   <section class="intro">
     <span class="kick"><span class="dot"></span> where the network isn't</span>
     <h1>See the data find a way.</h1>
-    <p class="lede">Same protocol, every situation the cell network can't serve — some reaching the
+    <p class="lede">Same protocol, every situation the cell network can't serve, some reaching the
       internet, some pure peer-to-peer with no uplink at all. Pick one and watch a message route
-      itself — hopping, waiting, arriving — across the gap.</p>
+      itself, hopping, waiting, arriving, across the gap.</p>
   </section>
 
   <div class="tabs" id="tabs" role="tablist"></div>
@@ -150,7 +150,7 @@
       <h2 id="st-title"></h2>
       <p class="body" id="st-body"></p>
       <div class="flow" id="st-flow"></div>
-      <div class="mpath"><b>More than one path, always.</b> Hop sprays copies across independent routes — the first to arrive delivers, and a dead link just means another copy wins.</div>
+      <div class="mpath"><b>More than one path, always.</b> Hop sprays copies across independent routes, the first to arrive delivers, and a dead link just means another copy wins.</div>
       <div class="legend">
         <span><i style="background:var(--green)"></i> delivered</span>
         <span><i style="background:var(--blue)"></i> in transit</span>
@@ -168,7 +168,7 @@
   <div class="wrap">
     <span class="eyebrow">Why one protocol covers all of it</span>
     <h3 class="bh">The narrow waist for intermittent networks.</h3>
-    <p class="sub">Disaster, off-grid sensors, a region cut off, a phone with no plan — they're the same
+    <p class="sub">Disaster, off-grid sensors, a region cut off, a phone with no plan, they're the same
       problem: no reliable path, right now. Hop is one sealed, store-and-forward datagram that holds,
       hops, and forwards until there is one. Build the app; the transport is done.</p>
   </div>
@@ -232,13 +232,13 @@ function edgeSVG(e,N){
 function routePath(route,N){return 'M'+route.map(id=>`${N[id].x},${N[id].y}`).join(' L');}
 
 // scenarios ---------------------------------------------------------
-// each scenario carries MULTIPLE routes — copies fan out across independent
+// each scenario carries MULTIPLE routes, copies fan out across independent
 // paths (binary spray-and-wait); the first to arrive delivers.
 const SCEN = [
  {
    tab:'P2P messaging', ic:'💬', scene:'NEIGHBORHOOD · PURE PEER-TO-PEER', dur:4.8,
    title:'A neighborhood that talks to itself.',
-   body:'No tower, no plan — a block, a village, a campus runs its own mesh. Messages thread between whoever’s nearby. Send one person or the whole area; copies fan out across every path at once and the first to arrive delivers.',
+   body:'No tower, no plan, a block, a village, a campus runs its own mesh. Messages thread between whoever’s nearby. Send one person or the whole area; copies fan out across every path at once and the first to arrive delivers.',
    flow:['<span class="a">you</span>','neighbors','neighbors','your contact'],
    stat:'whole-area comms · many paths · no infrastructure',
    nodes:{
@@ -258,7 +258,7 @@ const SCEN = [
  {
    tab:'Disaster', ic:'🛟', scene:'EARTHQUAKE · TOWER DOWN', dur:4.4,
    title:'The tower is gone. The phones aren\'t.',
-   body:'A quake knocks out the cell site. Phones in the blast radius can’t reach anyone — except each other. Copies of the message take every responder path at once until one reaches the handset with a satellite uplink, and the command post.',
+   body:'A quake knocks out the cell site. Phones in the blast radius can’t reach anyone, except each other. Copies of the message take every responder path at once until one reaches the handset with a satellite uplink, and the command post.',
    flow:['<span class="a">trapped phone</span>','responders (BLE)','satellite uplink','command post'],
    stat:'delivered · redundant paths · no infrastructure',
    nodes:{
@@ -277,7 +277,7 @@ const SCEN = [
  {
    tab:'Remote IoT', ic:'📡', scene:'SENSORS PAST COVERAGE', dur:4.0,
    title:'Sensors where there’s no cell at all.',
-   body:'Monitoring kit on the pipeline sits far past coverage. Each reading hops across the sensor mesh to whichever gateway it can reach, which bridges home the moment a maintenance truck — or any passing uplink — comes into range.',
+   body:'Monitoring kit on the pipeline sits far past coverage. Each reading hops across the sensor mesh to whichever gateway it can reach, which bridges home the moment a maintenance truck, or any passing uplink, comes into range.',
    flow:['<span class="a">field sensor</span>','sensor mesh','gateway','passing uplink','cloud'],
    stat:'redundant gateways · bridged on contact',
    nodes:{
@@ -296,7 +296,7 @@ const SCEN = [
  {
    tab:'Off-grid towns', ic:'🌍', scene:'RURAL · DATA RIDES THE ROAD', dur:7.0,
    title:'Between towns, there’s only the road.',
-   body:'No link runs between the villages — just the daily traffic. A clinic record from Town A rides whichever route moves first — the bus through Town B, the truck through the village — and syncs the instant it reaches a town that’s online.',
+   body:'No link runs between the villages, just the daily traffic. A clinic record from Town A rides whichever route moves first, the bus through Town B, the truck through the village, and syncs the instant it reaches a town that’s online.',
    flow:['<span class="a">Town A · clinic</span>','road → Town B / village','Town C (online)','cloud'],
    stat:'2 roads · carried by traffic · eventual',
    nodes:{
@@ -313,7 +313,7 @@ const SCEN = [
  {
    tab:'No data plan', ic:'📵', scene:'NO SIM · BORROW A PATH', dur:3.6,
    title:'No plan? Borrow a path, not a phone.',
-   body:'A handset with no SIM or no data still sends. The sealed message hops over Bluetooth to whichever nearby phone has a connection — each carries it blind — and on to a hop-endpoint that terminates the request, fulfills it on the internet, and relays the sealed response back. Only the endpoint can read the egress traffic; the phones in the middle never can.',
+   body:'A handset with no SIM or no data still sends. The sealed message hops over BLE to whichever nearby phone has a connection, each carries it blind, and on to a hop-endpoint that terminates the request, fulfills it on the internet, and relays the sealed response back. Only the endpoint can read the egress traffic; the phones in the middle never can.',
    flow:['<span class="a">your phone · no data</span>','nearby phones (relay, blind)','hop-endpoint · decrypts &amp; forwards','internet'],
    stat:'egress via hop-endpoint · relays never see your traffic',
    nodes:{
@@ -330,7 +330,7 @@ const SCEN = [
  {
    tab:'Blackout', ic:'🌑', scene:'REGIONAL INTERNET CUT', dur:4.8,
    title:'The internet gets cut. Talk anyway.',
-   body:'When connectivity drops for a whole region, local messages keep flowing across the mesh on every available path — and anything bound for the outside waits for, and finds, a link still standing at the edge.',
+   body:'When connectivity drops for a whole region, local messages keep flowing across the mesh on every available path, and anything bound for the outside waits for, and finds, a link still standing at the edge.',
    flow:['<span class="a">you</span>','local mesh (stays up)','edge link','outside world'],
    stat:'local stays up · many paths · routes out at the edge',
    nodes:{
@@ -349,7 +349,7 @@ const SCEN = [
  {
    tab:'Expedition', ic:'🥾', scene:'BACKCOUNTRY · PEER-TO-PEER, NO UPLINK', dur:4.8,
    title:'No bars for miles. Tell the group anyway.',
-   body:'A trekking party strung along the ridge has no signal, and nowhere to get one. “Stopping to filter water — 20 min behind” fans out phone to phone up the line, over the high traverse and the low trail at once, until it reaches the lead. No tower, no internet — just the people in between.',
+   body:'A trekking party strung along the ridge has no signal, and nowhere to get one. “Stopping to filter water, 20 min behind” fans out phone to phone up the line, over the high traverse and the low trail at once, until it reaches the lead. No tower, no internet, just the people in between.',
    flow:['<span class="a">you · mid-pack</span>','hikers ahead','hikers ahead','the lead'],
    stat:'reached the lead · parallel paths · zero infrastructure',
    nodes:{
@@ -367,7 +367,7 @@ const SCEN = [
  {
    tab:'Ski resort', ic:'🎿', scene:'MOUNTAIN · PEER-TO-PEER', dur:4.8,
    title:'Find your crew across the mountain.',
-   body:'Coverage on the back bowls is a rumor. “Last run — meet at the mid-lodge” spreads across other skiers on the lift line and the slopes, taking more than one way down, until it lands with your group. Nobody pings a tower; the message rides the crowd.',
+   body:'Coverage on the back bowls is a rumor. “Last run, meet at the mid-lodge” spreads across other skiers on the lift line and the slopes, taking more than one way down, until it lands with your group. Nobody pings a tower; the message rides the crowd.',
    flow:['<span class="a">you · summit</span>','skiers on the slope','lift line','your crew'],
    stat:'crew found · multiple paths · no cell',
    nodes:{
@@ -385,7 +385,7 @@ const SCEN = [
  {
    tab:'Convoy', ic:'🚙', scene:'MOVING TEAM · NO BACKHAUL', dur:4.8,
    title:'Keep the picture on the move.',
-   body:'A team on the move with no backhaul to lean on — a convoy strung along a track, a crew spread across terrain. Position and status hop vehicle to vehicle, taking more than one path, so the lead keeps the full picture even as units drop in and out of range.',
+   body:'A team on the move with no backhaul to lean on, a convoy strung along a track, a crew spread across terrain. Position and status hop vehicle to vehicle, taking more than one path, so the lead keeps the full picture even as units drop in and out of range.',
    flow:['<span class="a">your unit</span>','vehicles ahead','vehicles ahead','the lead'],
    stat:'shared picture on the move · no backhaul · redundant paths',
    nodes:{
@@ -403,7 +403,7 @@ const SCEN = [
  {
    tab:'Disaster · no uplink', ic:'🆘', scene:'COLLAPSE · NO UPLINK AT ALL', dur:4.4,
    title:'No tower, no satellite. Talk anyway.',
-   body:'Total blackout — no cell, no satellite, no internet anywhere. Inside the cordon, survivors and responders still coordinate: “two trapped, west stairwell” meshes phone to phone, across every responder in range, to the on-site incident lead. When nothing reaches out, the network turns inward.',
+   body:'Total blackout, no cell, no satellite, no internet anywhere. Inside the cordon, survivors and responders still coordinate: “two trapped, west stairwell” meshes phone to phone, across every responder in range, to the on-site incident lead. When nothing reaches out, the network turns inward.',
    flow:['<span class="a">survivor</span>','responders (BLE)','responders','incident lead · on-site'],
    stat:'coordinated on-site · redundant paths · no uplink',
    nodes:{
@@ -430,7 +430,7 @@ function render(i){
   // highlight the primary route under the nodes
   svg+=`<path class="trail" d="${routePath(routes[0],N)}"/>`;
   Object.values(N).forEach(n=>svg+=nodeSVG(n));
-  // one packet per route — copies racing independent paths (spray-and-wait)
+  // one packet per route, copies racing independent paths (spray-and-wait)
   routes.forEach((rt,ri)=>{
     const p=routePath(rt,N);
     const d=(s.dur*(1+ri*0.16)).toFixed(2);       // alternates run a touch slower

@@ -15,7 +15,22 @@ android {
         versionName = "0.1.0"
     }
 
-    buildFeatures { compose = true }
+    // android-r2-04: a hardened release variant. R8 minify + resource shrink, ProGuard rules that keep
+    // only what UniFFI/JNA/OkHttp/Compose reflect on, and (via the merged manifest, below) no backup and
+    // no exported automation deep link. BuildConfig.DEBUG is false here, so the driver's automation +
+    // plaintext-mirror + verbose-log surfaces (android-r2-01/-03/-05) compile out of a release build.
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+    }
+
+    buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 
     compileOptions {

@@ -143,7 +143,8 @@ const first = SCEN[0]?.id || 'p2p';
     const base = sim.getAttribute('data-sim-base') || sim.getAttribute('src') || '';
     sim.setAttribute('src', base + '&theme=' + curTheme());
   }
-  const pushTheme = () => { try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'theme', theme:curTheme()}, '*'); }catch(e){} };
+  // web-r2-05: target the concrete same-origin sim frame, never '*', so the message is scoped to our own origin.
+  const pushTheme = () => { try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'theme', theme:curTheme()}, location.origin); }catch(e){} };
   // The Header toggle mutates <html data-theme>; observe it and forward the new theme into the iframe.
   new MutationObserver(pushTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
   // Also push once the iframe has loaded, in case the toggle fired before it was listening.
@@ -161,7 +162,7 @@ const first = SCEN[0]?.id || 'p2p';
     if(open) open.href='/sim/index.html?scenario='+s.id+'&theme='+curTheme();
     // Live switch inside the embed. Guard: the iframe may not have loaded yet,
     // and a cross-origin content window would throw on access.
-    try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'scenario', id:s.id}, '*'); }catch(e){}
+    try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'scenario', id:s.id}, location.origin); }catch(e){}
     [...root.querySelectorAll('.sp-tab')].forEach((t,k)=>t.setAttribute('aria-selected',k===i));
   }
 

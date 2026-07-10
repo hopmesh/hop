@@ -81,6 +81,15 @@ jobs:
       - name: Test store (sqlcipher feature)
         run: cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 
+      # quality-net-r2-01 / core-ffi-r2-03: the embedded/no_std-adjacent C-ABI build (core-ffi-03,
+      # the whole ESP32 story) is `cargo build -p hop --no-default-features --features minimal`, which
+      # DROPS UniFFI + the SQLite store and heavily re-gates lib.rs (#[cfg(feature = "minimal")]). The
+      # default workspace test run only builds the full (bundled) surface, so a compile break on the
+      # minimal path lands silently. Compile it here on every push so the config can't rot. `--locked`
+      # keeps it from silently resolving a different dep set than Cargo.lock pins.
+      - name: Build minimal C-ABI (embedded feature, host smoke)
+        run: cargo build -p hop --no-default-features --features minimal --locked
+
   kotlin-sdk:
     name: Kotlin SDK tests (BearerManager)
     runs-on: ubuntu-latest
@@ -368,6 +377,19 @@ jobs:
       - name: C-ABI smoke (smoke.c end-to-end)
         run: bash core/hop/examples/smoke.sh
 
+      # quality-net-r2-06: the "libhop is a first-class client from embedded C" claim (apps/esp32/
+      # hop-sensor/main.c) had NO compile check at all. The on-device ESP-IDF build needs hardware, but
+      # the host-runnable example binds ONLY sdk/hop.h, so compile + run it here against the generated
+      # header (identical to core/hop/include/hop.h, enforced by the header-drift step above). This
+      # guards the embedded C example against ABI drift on every push (compounds quality-net-r2-01's
+      # minimal build check: that proves libhop compiles for embedded; this proves the C consumer still
+      # binds it). smoke.sh already built target/debug/libhop above.
+      - name: ESP32 host example compiles + runs against sdk/hop.h
+        run: |
+          clang apps/esp32/hop-sensor/main.c -I sdk -L target/debug -lhop \
+            -Wl,-rpath,target/debug -o /tmp/hop-sensor-host
+          /tmp/hop-sensor-host
+
   infra:
     name: Terraform (fmt · validate · plan)
     runs-on: ubuntu-latest
@@ -404,6 +426,20 @@ jobs:
         run: |
           tofu init -backend=false -input=false
           tofu validate
+
+      # infra-r2-02 / infra-r2-07 / infra-r2-08: the runtime deploy gate (require-ci in
+      # cloudbuild.trigger.yaml) only runs on Cloud Build, never in CI. Unit-test its verdict logic
+      # here so a regression (all-skipped passing, a missing required job passing, an unrelated Pages
+      # failure blocking) is caught pre-merge.
+      - name: Deploy-gate verdict tests (require-ci)
+        working-directory: ${{ github.workspace }}
+        run: bash tools/require-ci-gate.test.sh
+
+      # infra-r2-02: keep the deploy gate's required-check allowlist in sync with the actual CI job
+      # names, so a renamed/added/dropped job forces a matching allowlist edit in the same PR.
+      - name: Required-check allowlist is in sync
+        working-directory: ${{ github.workspace }}
+        run: bash tools/check-required-checks.sh
 
   docs-tokens:
     name: Docs token guard (banned copy)

@@ -15,9 +15,31 @@
 substitutions:
   _AR: us-central1-docker.pkg.dev/hop-mesh/hop
   _TOFU: ghcr.io/opentofu/opentofu:1.12.3 # must be >= the version that wrote the state
-  # The GitHub repo whose CI status gates the apply, and the required check-run names.
-  # (These are the `name:` fields of the jobs in .github/workflows/ci.yml.)
+  # The GitHub repo whose CI status gates the apply.
   _GH_REPO: hopmesh/hop
+  # infra-r2-02 / infra-r2-07 / infra-r2-08: the EXACT set of CI check-runs the deploy gate REQUIRES,
+  # one per line. These are the `name:` fields of the jobs in .github/workflows/ci.yml. The gate now
+  # asserts EVERY name here concluded `success` for the commit (not merely "no failures among whatever
+  # check-runs happened to exist"). Consequences:
+  #   - infra-r2-02: a removed/renamed/dropped CI job (typo, YAML error) makes its required name MISSING,
+  #     which now fails the gate instead of silently passing on an incomplete matrix.
+  #   - infra-r2-07: Pages (pages.yml) check-runs are NOT in this list, so a Pages-only failure on a
+  #     web/sim commit no longer blocks the unrelated relay apply.
+  #   - infra-r2-08: an all-skipped/neutral matrix no longer counts as green; each required name must
+  #     conclude `success` specifically.
+  # KEEP IN SYNC with ci.yml job names AND infra/README.md ("Deploy gate + branch protection") AND the
+  # branch-protection audit (.github/workflows/branch-protection-audit.yml). The purity of this list is
+  # itself asserted in CI (tools/check-required-checks.sh).
+  _REQUIRED_CHECKS: |
+    Rust (test · clippy · fmt)
+    Kotlin SDK tests (BearerManager)
+    Android bearers + driver (JVM unit tests)
+    Apple bearers + driver + app (build-only)
+    WASM sim (wasm32 build + swarm invariants)
+    Web + sim (Astro build · scenario-check · link check)
+    Contract purity + header drift + C smoke
+    Terraform (fmt · validate · plan)
+    Docs token guard (banned copy)
 steps:
   # infra-07: both image builds start immediately (waitFor ['-']) so the two cold full-workspace Rust
   # release builds run in PARALLEL rather than serially. Cloud Build's default (no waitFor) makes a step
@@ -42,10 +64,17 @@ steps:
     waitFor: [build-example]
     args: [push, --all-tags, '${_AR}/hop-example']
   # DEPLOY GATE (infra-01 / quality-net-09): block apply until GitHub CI is green for THIS commit.
-  # Polls the GitHub check-runs API for $COMMIT_SHA and requires every check-run to have concluded
-  # `success` (and at least one to exist). Fails closed: if CI is still running it keeps waiting up
-  # to the budget, and if CI failed / never ran / the API is unreachable it exits non-zero, which
-  # aborts the build before `apply` and leaves the fleet on the previous good commit.
+  # Polls the GitHub check-runs API for $COMMIT_SHA and requires EVERY check-run named in
+  # $_REQUIRED_CHECKS to have concluded `success`. Fails closed: if a required check is still running
+  # it keeps waiting up to the budget; if a required check FAILED, or is MISSING after the budget, or
+  # the API is unreachable, it exits non-zero, which aborts the build before `apply` and leaves the
+  # fleet on the previous good commit.
+  #
+  # infra-r2-02: the gate now proves "all required checks ran and passed", not merely "no failures
+  # among whatever check-runs happened to exist" - a dropped/renamed job makes its name MISSING and
+  # (after the wait) fails the gate. infra-r2-07: check-runs NOT in the allowlist (e.g. the Pages
+  # deploy on a web/sim commit) are ignored, so they neither block nor gate the relay apply.
+  # infra-r2-08: an all-skipped/neutral matrix no longer passes - each required name must be `success`.
   #
   # Auth: hopmesh/hop is public, so the check-runs API is polled unauthenticated (subject to the
   # lower rate limit, which one poll-every-20s run stays well under). If the repo is made private,
@@ -55,6 +84,8 @@ steps:
     id: require-ci
     waitFor: ['-']  # start immediately, in parallel with the image builds
     entrypoint: bash
+    env:
+      - 'REQUIRED_CHECKS=${_REQUIRED_CHECKS}'
     args:
       - -ec
       - |
@@ -65,32 +96,22 @@ steps:
         while :; do
           body=$(curl -sS "${auth[@]}" -H "Accept: application/vnd.github+json" "$api") || {
             echo "::error:: could not reach GitHub check-runs API"; exit 1; }
-          total=$(printf '%s' "$body" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("total_count",0))')
-          if [ "$total" = "0" ]; then
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error:: no CI check-runs for $COMMIT_SHA after the wait budget; refusing to deploy"; exit 1
-            fi
-            echo "no CI check-runs yet for $COMMIT_SHA; waiting..."; sleep 20; continue
-          fi
-          # Summarize conclusions across all check-runs.
-          read -r pending failed <<EOF
-        $(printf '%s' "$body" | python3 -c '
-        import sys,json
-        runs=json.load(sys.stdin).get("check_runs",[])
-        pending=sum(1 for r in runs if r.get("status")!="completed")
-        failed=sum(1 for r in runs if r.get("status")=="completed" and r.get("conclusion") not in ("success","neutral","skipped"))
-        print(pending,failed)')
-        EOF
-          if [ "$failed" -gt 0 ]; then
-            echo "::error:: GitHub CI has $failed failed check-run(s) for $COMMIT_SHA; refusing to deploy"; exit 1
-          fi
-          if [ "$pending" -eq 0 ]; then
-            echo "GitHub CI is green for $COMMIT_SHA ($total check-runs); proceeding to apply"; break
-          fi
-          if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "::error:: GitHub CI still has $pending pending check-run(s) after the wait budget; refusing to deploy"; exit 1
-          fi
-          echo "CI in progress ($pending pending); waiting..."; sleep 20
+          # Evaluate the commit's check-runs against the REQUIRED allowlist. tools/require-ci-verdict.py
+          # is the single source of truth (also unit-tested by tools/require-ci-gate.test.sh in CI):
+          #   exit 0 -> every required check concluded success: proceed to apply
+          #   exit 2 -> at least one required check is still pending/missing: keep waiting
+          #   exit 1 -> a required check FAILED: refuse to deploy now (no point waiting)
+          verdict=$(printf '%s' "$body" | REQUIRED="$REQUIRED_CHECKS" python3 tools/require-ci-verdict.py) && rc=0 || rc=$?
+          case "$rc" in
+            0) echo "GitHub CI is green for $COMMIT_SHA: $verdict; proceeding to apply"; break ;;
+            1) echo "::error:: GitHub CI: $verdict for $COMMIT_SHA; refusing to deploy"; exit 1 ;;
+            2)
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error:: required CI checks not green after the wait budget: $verdict; refusing to deploy"; exit 1
+              fi
+              echo "waiting on required CI: $verdict"; sleep 20 ;;
+            *) echo "::error:: unexpected verdict rc=$rc ($verdict)"; exit 1 ;;
+          esac
         done
   # Apply the fleet. Runs as the build trigger's service account (needs deploy +
   # state-bucket perms, see infra/cloudbuild_trigger.tf). deploy_image_sha pins the

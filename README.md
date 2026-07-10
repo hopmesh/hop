@@ -14,7 +14,7 @@ This README is the entrypoint. For the full protocol and threat model, read
 |------|------|------------|
 | Core | `core/` | The Rust protocol core (`hop-core`), the C-ABI crate (`hop`, generates `sdk/hop.h`), the routing sim (`hop-sim`), the wasm build (`hop-wasm`), and store backends (`core/stores/`). |
 | SDK | `sdk/` | `hop.h` (the C ABI every non-Rust client binds) plus the Swift and Kotlin wrappers. |
-| Bearers | `bearers/` | One isolated package per transport (BLE, LAN, relay, multipeer). |
+| Bearers | `bearers/` | One isolated package per transport (BLE, LAN, relay). Apple Multipeer (Wi-Fi P2P) is a live transport but stays in-driver, not an extracted package. |
 | Drivers | `drivers/` | The per-platform host layer. |
 | Services | `services/` | The relay (`hop-relayd`), gateway, endpoint, and example origin. |
 | Infra | `infra/` | OpenTofu for the cloud relay fleet. See `docs/runbooks/`. |
