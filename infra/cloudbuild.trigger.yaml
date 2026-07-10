@@ -80,7 +80,14 @@ steps:
   # lower rate limit, which one poll-every-20s run stays well under). If the repo is made private,
   # export a GITHUB token as $GH_TOKEN here (mount a Secret Manager secret via availableSecrets +
   # secretEnv) and the step will send it automatically.
-  - name: gcr.io/cloud-builders/curl
+  # infra-r3-01: use the gcloud builder, NOT gcr.io/cloud-builders/curl, for this step. The gate needs
+  # BOTH curl (poll the API) and python3 (tools/require-ci-verdict.py). The curl builder is a minimal
+  # image with no documented python3, so a base-image refresh could drop python3 and break the gate at
+  # rc=127 -> '*)' -> exit 1 (fails closed, refuses to deploy, but permanently wedges GitOps deploys
+  # once relays_enabled flips back on). The gcloud builder ships both curl and a python3 interpreter, so
+  # the gate's two dependencies come from one documented image. A `command -v python3` precheck below
+  # still emits a clear, actionable error rather than a bare 127 if either tool is ever missing.
+  - name: gcr.io/cloud-builders/gcloud
     id: require-ci
     waitFor: ['-']  # start immediately, in parallel with the image builds
     entrypoint: bash
@@ -89,6 +96,10 @@ steps:
     args:
       - -ec
       - |
+        command -v python3 >/dev/null 2>&1 || {
+          echo "::error:: python3 not found in the require-ci builder image; the deploy gate cannot evaluate CI status"; exit 1; }
+        command -v curl >/dev/null 2>&1 || {
+          echo "::error:: curl not found in the require-ci builder image; the deploy gate cannot poll the check-runs API"; exit 1; }
         api="https://api.github.com/repos/${_GH_REPO}/commits/$COMMIT_SHA/check-runs?per_page=100"
         auth=()
         [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")

@@ -26,7 +26,17 @@ import os
 
 def evaluate(body_text, required):
     required = [n.strip() for n in required if n.strip()]
-    runs = json.loads(body_text).get("check_runs", [])
+    # infra-r3-02: a GitHub 200-with-garbage response (an HTML rate-limit/abuse page, a truncated body)
+    # must NOT hard-fail the whole build. curl already caught non-200s upstream (`curl -sS || exit 1`),
+    # so only a 200 whose body is not the expected JSON reaches here. Treat that as a transient blip:
+    # return rc=2 (WAIT) so the trigger's poll loop retries within the 25-min budget instead of aborting
+    # the deploy for that commit. Still fails CLOSED at the deadline (rc=2 -> the loop exits 1 when the
+    # budget runs out), so a persistently malformed upstream never ships a deploy either.
+    try:
+        parsed = json.loads(body_text)
+    except (ValueError, TypeError):
+        return 2, "WAIT non-JSON API response (transient upstream blip); retrying"
+    runs = parsed.get("check_runs", []) if isinstance(parsed, dict) else []
     # For a re-run job GitHub returns multiple check-runs with the same name; keep the most recent by
     # started_at so a passing re-run supersedes an earlier failure.
     latest = {}

@@ -189,7 +189,12 @@ SealedPayload depends on kind:
   HttpRequest  { method, url, headers, body, max_resp_bytes }
   HttpResponse { status, headers, body, for_bundle_id }
   PeerMessage  { content_type, body }
-  Ack          { for_bundle_id, status }
+  Ack          { for_bundle_id, status, delivery_hops, delivery_ms, proof: Option<[u8;32]> }
+                              // `proof` (v4, core-protocol-r2-04): recipient-only CDH token on a
+                              // PRIVATE ACK = recognition_shared(recipient_spk_secret, orig.ephemeral).
+                              // The sender flips to Delivered iff recognition_tag_from_shared(proof,
+                              // for_bundle_id) == orig.private.tag. None on the identity-signed traced
+                              // ACK path. This trailing field is the v3->v4 wire bump (§39).
 ```
 
 The bundle `id` derivation depends on the destination class. A normal bundle uses
@@ -2490,18 +2495,40 @@ their prefix). A mesh dials `k` up only when it grows large enough that flooding
 
 **Realized (sec-priv-04):** routing, spooling, and want-beacon matching now ALL key on the tag's
 `MAILBOX_ROUTE_PREFIX_BYTES`-byte prefix (16 bits by default), never the full 16-byte tag. The full tag
-still travels in the beacon (so the relay authenticates it against the publisher's signed address, F-05)
-and in the private header (so an in-window sender/recipient agree on the exact tag), but no routing
+still travels in the beacon (so the relay authenticates it against the publisher's signed address, F-05),
+but the **private header carries ONLY the routing prefix** (`crypto::MailboxRoute`, the leading
+`MAILBOX_ROUTE_PREFIX_BYTES` of `H(address ‖ epoch)`), never the full 16-byte tag (core-protocol-r2-02).
+The recipient never reads a target mailbox-tag off the header; it recomputes the per-message *recognition*
+tag locally from its own prekey and the header's ephemeral. Carrying the full tag verbatim would let a
+bundle-capturing address-knower recompute the target's tag and uniquely re-link the recipient off the
+header, so only the prefix rides the wire, exposing at most the same anonymity-set membership the routing
+layer already does. No routing
 *decision* uses more than the prefix. This is what defeats an **address-knower**: the full mailbox-tag
 is a public deterministic function of a broadly-known address, so anyone holding the address can compute
 it every epoch; if routing keyed on the full tag they could uniquely confirm a target's private traffic,
 and epoch rotation would do nothing against them. Keying on the prefix instead gives them only an
 *anonymity set* (every address, known or not, that collides on the prefix) rather than a unique match.
 Because a prefix bucket can now cover several distinct recipients on different next-hops, a gradient
-bucket holds a bounded SET of next-hops and a matching private bundle rides all of them (never the
-decoy's link); the wrong recipient in the set just fails the per-message recognition tag and drops its
-copy, so a collision never starves a recipient. Delivery is unaffected: the final "is this mine?" test is
-the per-message-ephemeral recognition tag, which stays unique and unlinkable.
+bucket holds a bounded SET of next-hops and a matching private bundle rides all of them (never a
+non-next-hop leaf); the wrong recipient in the set just fails the per-message recognition tag and drops
+its copy. Delivery is decided by the final "is this mine?" test, the per-message-ephemeral recognition
+tag, which stays unique and unlinkable.
+
+**Collision recovery is spool-backed, and that spool needs a carrier running the reload loop
+(security-privacy-r3-02).** One collision case does NOT self-heal on the directed path alone: an ACTIVE
+recipient B1 that beacons a prefix, colliding with a PASSIVE recipient B2 that shares the prefix but
+never beacons. B2's bundle is steered only down B1's link (B1 drops it on the recognition check), and B2
+is a leaf in no gradient, so the directed path never reaches it. The recovery is the durable want-beacon
+SPOOL: the carrier holding the bundle keeps it spoolable by mailbox-prefix (`spoolable_private_bundles`),
+and when B2 later beacons, the carrier reloads the spool and re-ingests it so P4 steers the reloaded copy
+to B2 (worked scenario 3 below). We deliberately do NOT flood the bundle to leaf links "just in case",
+because a node cannot tell a passive RECIPIENT leaf from a passive DECOY leaf without opening the seal,
+so flooding would leak exactly the traffic P4 hides. The consequence: recovery requires SOME node in the
+partition to run the spool-reload loop. `hop-relayd` always does; a relay-served partition therefore
+never black-holes B2. Those spool APIs are transport-agnostic, so a pure-P2P carrier can run the same
+loop, but a pure-P2P partition with NO node running it (e.g. the relays-deployed-off P2P-test phase)
+cannot recover B2 off-relay until a carrier does. Closing that fully is a driver task (run the
+spool-reload loop on P2P carriers), not a wire or core-routing change.
 
 **Treat every piece of routing/spool state as soft-state with a TTL and a cap, from day one.** Gradients
 decay (above); held private bundles evict at `lifetime` (§8); each node caps its gradient table.
@@ -2535,6 +2562,20 @@ The model trades targeted routing for privacy, and the bill is real:
   window on top. But the set is not empty: pure unlinkability stays local-only (a fully passive recipient
   that sets `route_to_me = false` and beacons nothing). You cannot have global reachability *and* zero
   linkability; you can have global reachability with prefix-set linkability, which is what this ships.
+  - **Honest scope at small N (security-privacy-r3-01 / r2-03).** The `~N/2^k` anonymity-set argument is a
+    *large-N* argument, and `k = MAILBOX_ROUTE_PREFIX_BYTES` (16 bits) is a **compile-time constant, NOT
+    adaptive to observed N**. Below ~`2^k` (~65k) reachable addresses in the observed region, a target's
+    prefix bucket is almost always occupied by the target ALONE, so against an **address-knower** who
+    computes the target's route and watches that bucket in a region, the "anonymity set" is effectively a
+    set of one: seeing the bucket active is, with near-certainty, a per-address reachability disclosure
+    ("this specific target is reachable here this epoch"). At the current fleet scale (single-digit to a
+    few hundred devices) the fixed 2-byte prefix therefore provides **no meaningful sender/recipient
+    anonymity against an address-knower**; its only role at that scale is to keep routing buckets from
+    being unique KEYS on the wire (so a *passive* indexer without the address still can't derive it). The
+    real fix is to widen `k` adaptively as observed reachable-N grows (so `~N/2^k` stays >= a target set
+    size). That is **wire-affecting** (the private header carries this prefix, so its width is part of the
+    format) and is deliberately deferred + tracked as future work, not shipped in this hardening pass.
+    Mirrored at `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES` so the caveat lives with the constant too.
 - **Mobility → flood.** Move faster than your beacon refresh and gradients go stale; you degrade to
   flood (the safety net), less efficient but still delivered.
 
@@ -2600,8 +2641,24 @@ recognition tag itself to be non-publicly-reopenable, which would break the reci
 mine?" test; for a self-verifying epidemic anti-packet this is the floor. It leaks a delivery *event*,
 never identity.
 
+**Private delivery-ACK proof (core-protocol-r2-04, the v3->v4 wire driver):** the private `Payload::Ack`
+now carries a recipient-only `proof: Option<[u8; 32]>`. On a private ACK the proof is
+`recognition_shared(recipient_spk_secret, original.ephemeral)`, the SAME CDH value the delivery vaccine
+reveals, so ONLY the bundle's true recipient (who holds the SPK secret) can produce it. The sender, still
+holding the original private bundle, accepts the ACK as Delivered iff
+`recognition_tag_from_shared(proof, for_bundle_id) == original.private.tag`. This closes an ACK-forgery
+hole: a private bundle is sealed to the sender's *public* address and its recognition tag keys on the
+sender's *published* SPK public, so before the proof anyone who learned the sender's address and guessed
+an in-flight `for_bundle_id` could flood a bare private ACK and forge a Delivered. The proof is `None` on
+the identity-signed **traced** ACK path (there the Ed25519 signature already authenticates the acker).
+Because `Ack` rides inside the seal and this appends a trailing `Option` field, it is a genuine
+struct-layout change: `BUNDLE_VERSION` bumped 3->4 and the version gate rejects a mixed v3/v4 fleet
+rather than let a v3 unproven ACK be silently trusted, or a v4 proof be misparsed by a v3 sender.
+
 **Status: SHIPPED (P1-P5, fleet-verified).** New wire pieces: the private header variant (ephemeral
-tag + `g^e`, optional mailbox-tag, optional `k`-bit hint; no src/dst/sig), the ephemeral-tag and
+recognition tag + `g^e`, plus the optional 2-byte mailbox **routing prefix** `MailboxRoute`; no
+src/dst/sig and no separate `k`-bit hint field, since the prefix *is* the gradient hint), the recipient-
+only CDH `proof` on the private `Payload::Ack` (v4), the ephemeral-tag and
 mailbox-tag KDFs, the **signed beacon** + reverse-path token + per-node gradient table (soft state),
 the blind regional spool, and the want-beacon pull path: a recipient floods a signed
 `AdvertKind::RecvBeacon` a few hops; a node that newly accepts it queues that mailbox-tag, and the

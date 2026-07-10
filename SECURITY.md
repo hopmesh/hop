@@ -60,7 +60,12 @@ metadata-privacy sections, "§39", on untraceable-by-default delivery) and in
 - End-to-end content is always forward-secret (Double-Ratchet). A send without a
   ratchet is an error, never a static-seal fallback.
 - The default delivery path is metadata-private ("§39"): the network does not learn
-  who is talking to whom from routing alone. Mailbox tags rotate per epoch.
+  who is talking to whom from routing alone. Mailbox tags rotate per epoch. The private
+  header carries only the 2-byte routing prefix (not the full mailbox-tag), so a
+  bundle-capturing address-knower gets at most anonymity-set membership, never a unique
+  re-linking of a recipient (core-protocol-r2-02).
+- A private delivery ACK carries a recipient-only CDH proof, so an attacker who learns a
+  sender's address cannot forge a Delivered receipt (core-protocol-r2-04).
 - Bearers (BLE, LAN, relay, and others) are transports only. Compromise of a bearer
   or the relay fleet must not break content confidentiality or integrity; it can, by
   construction, observe coarse traffic timing and the metadata a given bearer exposes.
@@ -89,5 +94,11 @@ here so a reporter does not spend effort on already-known items:
 - The relay fleet is deployed-off for a P2P-only test phase. Server-side hardening
   items (connection caps, per-source shedding, rate-limiter keying behind the load
   balancer) are tracked in the services runbooks.
+- The marketing site and the sim frame load the Font Awesome Pro kit from
+  `kit.fontawesome.com` as an unpinned external script (web-06 / web-r3-02). The kit URL
+  is a dynamic loader whose bytes change per config, so an `integrity=` subresource hash
+  cannot be applied; a compromise of that host could run arbitrary JS on the public site.
+  This is the last unpinned executable third-party script (web fonts were self-hosted).
+  Accepted for the pre-production phase; the fix is to self-host the used FA subset.
 
 If you find something outside this list, we want to hear about it.

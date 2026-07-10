@@ -27,6 +27,58 @@ vm.createContext(sandbox);
 vm.runInContext(script, sandbox);
 const S = sandbox.module.exports;
 
+// sim-wasm-r3-03: the sim uses unseeded Math.random(), so worlds are nondeterministic. The sparse
+// scenarios (remote, disaster) legitimately fail to deliver in 45s, so we can't gate on delivery, but a
+// total black-hole (no message EVER hops) is a real regression we want to catch. A raw progress assert
+// on an unseeded world would flake (a rare random world can strand its sender for the whole window). To
+// get a deterministic liveness gate, we drive these two scenarios under a SEEDED RNG so the world is
+// reproducible: a healthy build always shows store-carry progress at these seeds, and a code regression
+// that kills hopping (e.g. planNextHop always null) trips them every time. mulberry32, tiny + seeded.
+function seedRandom(seed) {
+  let a = seed >>> 0;
+  const prev = Math.random;
+  Math.random = function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return () => { Math.random = prev; };
+}
+// Liveness seeds for the sparse scenarios. The mulberry32 PRNG is pure integer math (bit-identical on
+// every platform), but the seeded randoms flow through float ops (Math.hypot / trig) during world-gen,
+// and those differ in the last ULP between macOS and Linux. In a sparse world one such flip can decide
+// whether two nodes start in BLE range, cascading into a totally different (sometimes black-hole) world.
+// So a SINGLE fixed seed is reproducible on one platform but not across platforms: seed 12345/disaster
+// progresses on macOS yet black-holes on Linux CI. The gate's real intent (per below) is to catch a
+// dead-hopping regression, which black-holes EVERY seed on EVERY platform. So we require progress under
+// AT LEAST ONE of several seeds: a healthy build progresses on ~all of them (locally 38/40 disaster,
+// 40/40 remote), so all-N-black-holes is ~0 for a healthy build on any platform, while dead hopping is
+// 0/N everywhere and still trips. The first entry is the primary seed the main physics loop runs under.
+const LIVENESS_SEEDS = {
+  remote: [12345, 23456, 34567, 45678, 56789, 67890],
+  disaster: [12345, 23456, 34567, 45678, 56789, 67890],
+};
+
+// Run a sparse scenario under one seed and report whether any message made store-carry progress
+// (entered a hopping leg, took a hop, or completed) within the 45s window. No physics asserts here:
+// those run in the seeded main loop below. Used by the multi-seed liveness gate to stay robust to
+// per-platform float drift without weakening dead-hopping detection.
+function probeStoreCarryProgress(key, seed) {
+  const restore = seedRandom(seed);
+  S.setView(1124, 600);
+  S.buildWorld(key);
+  let saw = false;
+  for (let t = 0; t < 60 * 45 && !saw; t++) {
+    S.update(1 / 60);
+    for (const m of S.messages) {
+      if (m.state === 'hopping' || m.hops >= 1 || m.state === 'done') { saw = true; break; }
+    }
+  }
+  restore();
+  return saw;
+}
+
 let checks = 0, failures = 0;
 function assert(cond, msg) {
   checks++;
@@ -271,6 +323,8 @@ for (let w = 0; w < VIEWS.length; w++) {
 // the disaster zone - where store-carry can legitimately take minutes and a fixed
 // 45s window is not guaranteed) real deliveries happen
 for (const key of Object.keys(S.SCENARIOS)) {
+  // Seed the sparse scenarios so their liveness gate below is deterministic (not flaky).
+  const restoreRng = (key in LIVENESS_SEEDS) ? seedRandom(LIVENESS_SEEDS[key][0]) : null;
   S.setView(1124, 600);
   S.buildWorld(key);
   const sc = S.SCENARIOS[key];
@@ -280,8 +334,18 @@ for (const key of Object.keys(S.SCENARIOS)) {
   assert(S.devices.length === sc.n, `${tag}: population ${S.devices.length} != ${sc.n}`);
   assert(S.world.zones.length <= sc.zones.length, `${tag}: too many zones`);
   assertSetbacks(tag);
+  // sim-wasm-r3-03: for the sparse/degraded scenarios (remote, disaster) we do NOT gate on delivery in
+  // the fixed 45s window, but we DO assert a weaker liveness invariant so a total black-hole still trips:
+  // over the window at least one message must make forward progress (enter a hopping leg or accumulate a
+  // store-carry hop). A regression that made these scenarios silently never move a single message would
+  // otherwise pass unnoticed.
+  let sawProgress = false;
   for (let t = 0; t < 60 * 45; t++) {
     S.update(1 / 60);
+    // liveness sampling runs EVERY tick (a hop can complete on any tick, not just t%5==0)
+    for (const m of S.messages) {
+      if (m.state === 'hopping' || m.hops >= 1 || m.state === 'done') sawProgress = true;
+    }
     if (t % 5) continue;                       // sample: full physics already proven above
     for (const d of S.devices) {
       if (distToStreets(S.P(d)) > 1) { assert(false, `${tag} t=${t}: device ${d.id} off-street`); break; }
@@ -307,7 +371,21 @@ for (const key of Object.keys(S.SCENARIOS)) {
   // The well-connected scenarios must deliver within the window; the sparse/degraded ones (remote,
   // disaster) are demos of store-carry over a broken mesh, where 0 deliveries in a fixed 45s is a
   // legitimate (marginal) outcome, so we do not gate on them.
-  if (key !== 'remote' && key !== 'disaster') assert(S.msgStats.delivered >= 1, `${tag}: expected deliveries in 45s (got ${S.msgStats.delivered})`);
+  if (key !== 'remote' && key !== 'disaster') {
+    assert(S.msgStats.delivered >= 1, `${tag}: expected deliveries in 45s (got ${S.msgStats.delivered})`);
+  } else {
+    // weaker liveness for the sparse/degraded demos: store-carry must at least MOVE a message, even if
+    // none completes in 45s. A total black-hole (nothing ever hops) trips this. sawProgress already holds
+    // the primary-seed result from the loop above; if that seed black-holed on this platform (float drift),
+    // try the remaining seeds. A dead-hopping regression fails ALL of them; a healthy build passes ~any.
+    let live = sawProgress;
+    for (const s of LIVENESS_SEEDS[key].slice(1)) {
+      if (live) break;
+      live = probeStoreCarryProgress(key, s);
+    }
+    assert(live, `${tag}: expected store-carry progress under at least one of ${LIVENESS_SEEDS[key].length} liveness seeds (dead-hopping regression?)`);
+  }
+  if (restoreRng) restoreRng();
   if (failures > 10) break;
 }
 

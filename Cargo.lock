@@ -910,6 +910,7 @@ version = "0.0.1"
 dependencies = [
  "bs58",
  "hop-core",
+ "hop-gateway",
  "reqwest",
  "tungstenite",
 ]

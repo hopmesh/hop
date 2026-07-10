@@ -581,4 +581,41 @@ mod codec_tests {
         bad.extend_from_slice(b"short");
         assert!(decode_kv_pairs(&bad).is_empty());
     }
+
+    #[test]
+    fn kv_pairs_non_utf8_key_stops_cleanly() {
+        // A key length that frames invalid UTF-8 must abort decoding, not panic or emit garbage.
+        let mut bad = 2u32.to_le_bytes().to_vec();
+        bad.extend_from_slice(&[0xff, 0xfe]); // not valid UTF-8
+        bad.extend_from_slice(&0u32.to_le_bytes()); // a well-formed (empty) value follows
+        assert!(
+            decode_kv_pairs(&bad).is_empty(),
+            "an invalid-UTF8 key must halt decoding rather than yield a corrupt pair"
+        );
+    }
+
+    #[test]
+    fn kv_pairs_truncated_value_length_drops_trailing_record() {
+        // A valid key but a value-length that overruns the buffer must drop that trailing record
+        // rather than read past the end.
+        let mut buf = Vec::new();
+        // one complete pair
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(b"key");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.push(0x42);
+        // a second key with a value length that claims 99 bytes we don't have
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(b"k2");
+        buf.extend_from_slice(&99u32.to_le_bytes());
+        buf.push(0x00);
+        let decoded = decode_kv_pairs(&buf);
+        assert_eq!(
+            decoded.len(),
+            1,
+            "only the complete leading pair is decoded"
+        );
+        assert_eq!(decoded[0].0, "key");
+        assert_eq!(decoded[0].1, vec![0x42]);
+    }
 }

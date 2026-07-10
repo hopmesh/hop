@@ -46,7 +46,12 @@ const ogImageUrl = new URL(ogImage, Astro.site);
         unpinned third-party stylesheet on the site and no runtime dependency on
         fonts.googleapis.com / fonts.gstatic.com. Regenerate with tools if the weights change. */}
     <link rel="stylesheet" href="/fonts/poppins.css" />
-    {/* Icons, Font Awesome Pro kit */}
+    {/* Icons, Font Awesome Pro kit. NOT pinnable (documented supply-chain/availability residue,
+        web-06 / web-r3-02): the kit URL is a dynamic loader whose bytes change per config, so an
+        integrity= subresource hash cannot be applied. This is the last unpinned executable third-party
+        script on the site (Poppins was self-hosted to remove fonts.googleapis.com). Accepted deferral
+        for the pre-production phase, mirrored in sim/index.html and SECURITY.md's accepted-risks. To
+        close it, self-host the used FA SVG/webfont subset the same way Poppins was self-hosted. */}
     <script is:inline src="https://kit.fontawesome.com/8fa0df1cfb.js" crossorigin="anonymous"></script>
     <title>{title}</title>
     <meta name="description" content={description} />

@@ -27,7 +27,8 @@ rm -f "$here/pkg/package.json" "$here/pkg/.gitignore"
 # interface (.d.ts/.js) does NOT change on a same-API BUNDLE_VERSION bump, so the interface diff alone
 # can pass while the committed .wasm speaks an older wire. check-pkg-fresh.sh compares this stamp
 # against the source BUNDLE_VERSION so any wire bump trips the freshness guard even with an identical API.
-wire_version="$(grep -oE 'BUNDLE_VERSION: *u8 *= *([0-9]+)' "$here/../core/hop-core/src/bundle.rs" | grep -oE '[0-9]+' | head -1)"
+# sim-wasm-r3-02: take the number AFTER the `=`, not the first digit (which was the `8` in `u8`).
+wire_version="$(grep -oE 'BUNDLE_VERSION: *u8 *= *[0-9]+' "$here/../core/hop-core/src/bundle.rs" | grep -oE '=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
 if [ -n "$wire_version" ]; then
   printf '%s\n' "$wire_version" > "$here/pkg/.wire-version"
   echo "==> stamped sim/pkg/.wire-version = $wire_version"

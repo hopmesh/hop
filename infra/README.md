@@ -45,6 +45,29 @@ Deploy is GitOps: a push to `main` triggers the Cloud Build run in
    This stops a red commit from reaching `main` at all; layer 1 is the backstop if it
    somehow does.
 
+### Build SA privilege: accepted residual (infra-r3-03)
+
+The build identity (`hop-cloudbuild`, defined in `cloudbuild_trigger.tf`) runs
+`tofu apply -auto-approve` on every push to `main`, so it holds `roles/editor` plus
+several admin roles (`resourcemanager.projectIamAdmin`, `iam.serviceAccountAdmin`,
+`run.admin`, `storage.admin`, `logging.admin`, `cloudbuild.connectionAdmin`). This is
+broad **by necessity**: the module manages project-level IAM bindings (relay SA roles,
+the build SA's own roles), and `resourcemanager.projects.setIamPolicy` has no
+resource-scoped substitute.
+
+- **Already closed:** the seed-reading grant (`secretmanager.admin` /
+  `versions.access`) was removed in favor of a scoped custom role, so the pipeline can
+  no longer read the relay identity root seed (infra-02).
+- **Residual:** `projectIamAdmin` retains a theoretical "grant self owner" path on a
+  single bad/compromised `main` commit under `-auto-approve`. Today this is bounded by
+  single-maintainer + required-main-push + the runtime CI deploy gate above, and is not
+  reachable without a malicious commit landing.
+- **Mitigation before production:** gate IAM-touching TF changes behind
+  plan-then-approve instead of `-auto-approve` on every push (e.g. a manual approval
+  step on the `apply` when the plan changes `google_project_iam_*`). Not applied now:
+  it would change the fully-automated GitOps flow this stack is built around, and the
+  bounding controls above are sufficient for the pre-prod P2P test phase.
+
 ## Files
 
 | File | Purpose |

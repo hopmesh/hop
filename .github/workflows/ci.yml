@@ -148,6 +148,21 @@ jobs:
       # (:hop-sdk, :bearer-ble, :bearer-lan, :bearer-relay, :hop-driver) and run its JVM unit tests,
       # including :bearer-ble:testDebugUnitTest which is the dial-backoff (R7) regression. Uses the
       # committed gradle wrapper (gradlew) so the build is reproducible.
+      #
+      # quality-net-r3-03 (PRINCIPLED DEVICE-GATED RESIDUAL, not a defect): KeystoreSecret.kt
+      # (drivers/android/hop-driver, the source of both long-term device secrets: the Ed25519 identity
+      # seed and the SQLCipher db key) has NO JVM unit test, and cannot have one. Every code path calls
+      # Android framework classes that don't exist / throw on a plain JVM and are not backable by
+      # Robolectric: KeyStore.getInstance("AndroidKeyStore") + KeyGenerator.getInstance(AES,
+      # "AndroidKeyStore") (a real secure element / TEE), the android.security.keystore.* KeyGenParameter
+      # spec, StrongBox, and android.util.Base64. So the unwrap-recovery fall-through (a one-time identity
+      # reset on a lost Keystore key, KeystoreSecret.kt:51-56) and the StrongBox->TEE fallback are
+      # exercisable ONLY on-device. This is the exact same situation as the iOS Keychain identity/db-key
+      # store (sec-priv-02), which is likewise device-gated and JVM-untestable. The verification for this
+      # path is therefore the device-test workflow (MEMORY: "libhop rewrite deployed to fleet" verified
+      # identities are preserved across reinstall), not a JVM CI lane. Adding a spun-up-emulator
+      # androidTest lane here is possible but heavy (an emulator per CI run) and still would not cover a
+      # true StrongBox secure element; it is intentionally not added for the pre-prod P2P test phase.
       - name: Test Android bearers + driver
         working-directory: bearers/android
         run: ./gradlew :bearer-ble:testDebugUnitTest test --no-daemon --stacktrace

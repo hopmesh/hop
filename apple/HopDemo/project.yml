@@ -58,6 +58,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.hopme.demo
+        # apple-r3-03: raise the container default file-protection to
+        # NSFileProtectionCompleteUntilFirstUserAuthentication so the SQLCipher sidecar (-wal/-shm) and
+        # any unclassed write are encrypted at rest, not just the per-file UI mirrors.
+        CODE_SIGN_ENTITLEMENTS: HopDemo.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
