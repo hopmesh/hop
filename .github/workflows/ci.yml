@@ -469,3 +469,8 @@ jobs:
       # copy (InternetEgress, Wi-Fi Direct, bare "Bluetooth"), scoped to avoid legit API identifiers.
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
+      # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is
+      # empty or missing. A 0-byte LICENSE.md shipped TWICE before (restored, then re-emptied by a
+      # squash-merge) with every CI job green, because nothing asserted a tracked file has content.
+      - name: Repo integrity guard (critical files non-empty)
+        run: bash tools/repo-integrity-guard.sh
