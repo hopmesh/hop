@@ -8,9 +8,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- android-r2-01/-04: no auto-backup. The mirrors are gated out of release now, but keeping
-         backup off means even the encrypted hop.db + any debug-build data are never uploaded to
-         Google's backup transport off-device. -->
+    <!-- android-r2-01/-04: no auto-backup. The on-disk chat/contact/channel mirrors are NOT gated out
+         of any build; they are AES-256-GCM sealed at rest with the Keystore-wrapped db key (MirrorCrypto)
+         in both debug and release. Keeping backup off is defense in depth so that neither the encrypted
+         hop.db, the sealed mirrors, nor any debug-build data are ever uploaded to Google's off-device
+         backup transport. -->
     <application
         android:name=".HopApp"
         android:label="Hop Debug"

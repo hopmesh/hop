@@ -17,29 +17,61 @@
 # silently speak an older wire while this guard passes). To close that hole we also compare the wire
 # version the committed pkg was stamped with (sim/pkg/.wire-version, written by build-wasm.sh) against
 # the current source BUNDLE_VERSION, so a wire bump ALWAYS trips the guard even with an unchanged API.
-set -euo pipefail
+#
+# sim-wasm-r3-02: the interface/stamp compare above reads sim/pkg/.wire-version from the WORKING TREE.
+# In CI, sim/build-wasm.sh runs first and OVERWRITES that stamp with a fresh value, so by the time this
+# guard runs the committed drift is already masked (the guard compares a just-rebuilt stamp against
+# source, which can never fail). Two mitigations, both local to this script so they don't depend on CI
+# step ordering:
+#   * `--committed-only` mode: skip the rebuild entirely and cross-check ONLY the wire stamp. A CI or
+#     pre-commit step can run this BEFORE build-wasm.sh to guard the committed artifact.
+#   * the wire-stamp cross-check reads the stamp from `git show HEAD:sim/pkg/.wire-version` when the tree
+#     is a git repo, so a working-tree rebuild (build-wasm.sh re-stamp) cannot mask committed drift even
+#     in full mode. It falls back to the working-tree file outside a git checkout.
+set -uo pipefail
+
+committed_only=0
+if [ "${1:-}" = "--committed-only" ]; then
+  committed_only=1
+fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 crate="$here/../core/hop-wasm"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
-
-wasm-pack build "$crate" --target web --out-dir "$tmp" >/dev/null 2>&1
-
 drift=0
-for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do
-  if ! diff -q "$tmp/$f" "$here/pkg/$f" >/dev/null 2>&1; then
-    echo "DRIFT: sim/pkg/$f differs from a fresh core/hop-wasm build"
-    drift=1
-  fi
-done
+
+if [ "$committed_only" -eq 0 ]; then
+  command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
+  wasm-pack build "$crate" --target web --out-dir "$tmp" >/dev/null 2>&1
+fi
+if [ "$committed_only" -eq 0 ]; then
+  for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do
+    if ! diff -q "$tmp/$f" "$here/pkg/$f" >/dev/null 2>&1; then
+      echo "DRIFT: sim/pkg/$f differs from a fresh core/hop-wasm build"
+      drift=1
+    fi
+  done
+fi
 
 # Wire-version cross-check: the committed pkg must carry a .wire-version stamp that matches the source
 # BUNDLE_VERSION. Catches a same-interface wire bump the .d.ts/.js diff cannot see.
-src_wire="$(grep -oE 'BUNDLE_VERSION: *u8 *= *([0-9]+)' "$here/../core/hop-core/src/bundle.rs" | grep -oE '[0-9]+' | head -1)"
-committed_wire="$(cat "$here/pkg/.wire-version" 2>/dev/null || echo "")"
+#
+# sim-wasm-r3-02: read the stamp from the committed blob (git show HEAD:...) rather than the working
+# tree, so a build-wasm.sh re-stamp in the same CI run cannot mask committed drift. Fall back to the
+# working-tree file when we are not inside a git checkout (a tarball export, say).
+# sim-wasm-r3-02: extract the number AFTER the `=`. The naive `... | grep -oE '[0-9]+' | head -1`
+# matched the `8` in the `u8` type, not the version, so both this guard and build-wasm.sh stamped `8`
+# and the cross-check compared 8 against 8 forever (masking real drift). Anchor on the `=` sign.
+src_wire="$(grep -oE 'BUNDLE_VERSION: *u8 *= *[0-9]+' "$here/../core/hop-core/src/bundle.rs" | grep -oE '=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+committed_wire=""
+if git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  committed_wire="$(git -C "$here" show HEAD:sim/pkg/.wire-version 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$committed_wire" ]; then
+  committed_wire="$(cat "$here/pkg/.wire-version" 2>/dev/null || echo "")"
+fi
 if [ -z "$committed_wire" ]; then
   echo "DRIFT: sim/pkg/.wire-version is missing, rebuild the pkg so it stamps the wire version"
   drift=1
@@ -53,4 +85,8 @@ if [ "$drift" -ne 0 ]; then
   echo "sim/pkg is STALE, rebuild it: sim/build-wasm.sh (then commit sim/pkg)"
   exit 1
 fi
-echo "sim/pkg interface matches a fresh core/hop-wasm build (fresh)"
+if [ "$committed_only" -eq 1 ]; then
+  echo "sim/pkg committed .wire-version matches source BUNDLE_VERSION=$src_wire (fresh)"
+else
+  echo "sim/pkg interface matches a fresh core/hop-wasm build (fresh)"
+fi

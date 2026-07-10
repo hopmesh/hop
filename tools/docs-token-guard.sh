@@ -25,14 +25,18 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Default scan set: markdown docs at the repo root + docs/, and the Astro site copy.
+# Default scan set: markdown docs at the repo root + docs/, the Astro site copy, and the
+# sim/ + learn/ trees. web/package.json's `sync-sim`/`sync-learn` copy ../sim and ../learn
+# into web/public and pages.yml deploys web/dist, so sim/*.html and learn/*.html ship to the
+# live public site and must be guarded too (web-r3-01). Vendored/build artifacts under these
+# (sim/pkg, sim/sqlite-wasm, *.wasm) are already dropped by the shared `excludes` below.
 # Keep this list narrow so it does not false-positive on code/comments/build output.
 if [ "$#" -gt 0 ]; then
   REQUESTED=("$@")
 else
   REQUESTED=(
     "DESIGN.md" "MECHANISMS.md" "README.md"
-    "docs" "web/src"
+    "docs" "web/src" "sim" "learn"
   )
 fi
 

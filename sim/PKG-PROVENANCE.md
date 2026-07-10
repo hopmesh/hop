@@ -45,5 +45,13 @@ changes.
   `core/hop-core/src/bundle.rs` `BUNDLE_VERSION`. So a wire bump trips the guard even with an unchanged
   API. (The public site is always safe regardless, CI rebuilds `sim/pkg` from source before deploy; the
   stamp protects a developer running `sim/` locally against the committed pkg.)
+- **Guard teeth in CI (sim-wasm-r3-02):** two hardenings so the stamp check can actually fail on a
+  *committed* drift. (1) `check-pkg-fresh.sh` reads the committed stamp via `git show HEAD:sim/pkg/.wire-version`
+  rather than the working tree, so a `build-wasm.sh` re-stamp earlier in the same CI job cannot mask a
+  drifted commit (it falls back to the working-tree file outside a git checkout). (2) a `--committed-only`
+  mode skips the rebuild and cross-checks only the stamp, so it can run *before* `build-wasm.sh`. Also
+  fixed the version extraction in both scripts: the old `grep -oE '[0-9]+' | head -1` matched the `8` in
+  the `u8` type, not the version after `=`, so it stamped and compared `8 == 8` forever, silently masking
+  every wire bump. Both now anchor on the `=` sign.
 
 Both scripts require `rustup target add wasm32-unknown-unknown` and `wasm-pack`.

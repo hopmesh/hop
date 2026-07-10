@@ -84,6 +84,10 @@ struct HopDemoApp: App {
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
+                // apple-r3-01: force any debounced UI-history mirror write to disk NOW, before iOS can
+                // suspend/kill us in the ≤1s save-debounce window, so a message drained from the node
+                // inbox on a background wake can't vanish from chat history on relaunch.
+                HopBearer.shared.flushPendingSaves()
                 HopDemoApp.scheduleRefresh()
                 HopDemoApp.scheduleProcessing()
             }
@@ -162,6 +166,12 @@ struct HopDemoApp: App {
     static func runAutomationEnv() {
         let spec = ProcessInfo.processInfo.environment["HOP_AUTO"] ?? ""
         HopBearer.autoEnvSeen = spec   // breadcrumb: prove the env reached the app even if the send is a no-op
+        // apple-r3-02: HOP_AUTO=send|addr|text is a silent send-as-user primitive, the launch-env twin of
+        // the hopdemo://send deep link (apple-05). The deep link was DEBUG-gated but this one wasn't, so a
+        // RELEASE build launched with an attacker-injected env (USB/devicectl) could send as the user's
+        // identity and (via automationMirrorEnabled) drop a plaintext mirror, defeating SQLCipher-at-rest.
+        // Compile the send out of shipped builds; the harness runs DEBUG builds and keeps its automation.
+        #if DEBUG
         let parts = spec.components(separatedBy: "|")
         guard parts.count >= 3, parts[0] == "send" else { return }
         let to = parts[1]
@@ -178,6 +188,7 @@ struct HopDemoApp: App {
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { attempt(0) }
+        #endif
     }
 }
 

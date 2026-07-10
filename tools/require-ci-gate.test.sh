@@ -123,6 +123,15 @@ PY
 }
 run "rerun_supersedes" 0 "$BODY_RERUN"
 
+# --- infra-r3-02: a 200-with-garbage body (HTML rate-limit/abuse page) is WAIT (2), not a hard fail ---
+# BEFORE THE FIX json.loads raised an uncaught exception (rc=1), which the trigger maps to "refusing to
+# deploy; exit 1" - a transient upstream blip would lose the deploy for that commit. Now it retries.
+run "malformed_html_body" 2 '<!DOCTYPE html><html><body>rate limited</body></html>'
+run "empty_body"          2 ''
+run "truncated_json_body" 2 '{"check_runs": [{"name": "Rust'
+# A valid-JSON but non-object body (e.g. a JSON array) must also WAIT, not crash on .get().
+run "json_array_body"     2 '[]'
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "require-ci gate: all cases passed"

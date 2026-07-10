@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  apple-r3-03: raise the app container's DEFAULT file-protection class. Without this entitlement the
+  container falls back to the OS default, so the SQLCipher sidecar files (hop.db-wal / hop.db-shm), any
+  future unclassed writes, and the container as a whole sit at only the default at-rest posture. The
+  per-file `.completeFileProtectionUntilFirstUserAuthentication` write options on the plaintext UI mirrors
+  (apple-r2-03) still apply per file, but this lifts the CONTAINER floor to match, so nothing written
+  without an explicit protection class drops below NSFileProtectionCompleteUntilFirstUserAuthentication.
+
+  We use "…UntilFirstUserAuthentication" (not the stricter "…Complete") because Hop must receive and
+  persist messages while the device is LOCKED in the background (background BLE / relay wake). "…Complete"
+  would DENY writes while locked and re-create the exact history-gap the mirror fix closes; this class
+  keeps everything encrypted at rest yet writable any time after the first post-boot unlock.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.default-data-protection</key>
+	<string>NSFileProtectionCompleteUntilFirstUserAuthentication</string>
+</dict>
+</plist>
