@@ -253,14 +253,17 @@ jobs:
         working-directory: sdk/wrappers/Hop
         run: swift test
 
-      # apple-cov: all three bearer packages are tested headlessly (no device). BLE keeps its dedup
-      # tiebreaker tests; LAN + Relay now run REAL loopback-socket integration tests and are coverage-
-      # GATED at >=80% line coverage of the bearer source. Previously LAN's 28 + Relay's 14 tests never
-      # ran in CI and only re-modeled the logic in the test file, so LanBearer/RelayBearer sat at ~10%
-      # line coverage. `swift test` also builds, so these subsume the old build-only step.
-      - name: Test the BLE bearer (dedup tiebreaker)
-        working-directory: bearers/apple/HopBearerBle
-        run: swift test
+      # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at
+      # >=80% line coverage of their testable (radio-free) source. LAN + Relay run REAL loopback-socket
+      # integration tests; BLE cannot (CoreBluetooth has no simulator/headless support and its delegate
+      # arg types have no public initializers), so its Central/Peripheral DECISION logic was extracted
+      # into pure CentralCore/PeripheralCore + a DedupLink seam and is driven directly by tests. The
+      # CoreBluetooth glue (BleBearer+Radio.swift = Link/Central/Peripheral shells + start/stop/wake) and
+      # the CoreLocation wake (BeaconWake.swift) are EXCLUDED from the BLE denominator (covered by the
+      # on-device hopmac/testkit workflow). Previously all three re-modeled their logic in the test file
+      # and sat at ~7-10% line coverage. `swift test` also builds, so these subsume the old build-only step.
+      - name: Test + coverage-gate the BLE bearer (>=80% of the CB-free cores)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerBle "BleBearer.swift + CentralCore.swift + PeripheralCore.swift" 80 'BleBearer\+Radio\.swift|BeaconWake\.swift'
 
       - name: Test + coverage-gate the LAN bearer (>=80% of LanBearer.swift)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerLan Sources/HopBearerLan/LanBearer.swift 80
