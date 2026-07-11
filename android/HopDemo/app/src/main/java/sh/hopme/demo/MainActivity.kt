@@ -33,8 +33,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.ui.platform.LocalContext
@@ -242,20 +240,9 @@ private fun PermissionGate(
     }
 }
 
-private fun platformLabel(p: String): String = when (p) {
-    "ios" -> "iOS"; "android" -> "Android"; else -> p
-}
-
-/// Font Awesome (Light) vector per direct transport, mirroring the iOS SF Symbols. "LAN" is a
-/// shared-network Wi-Fi link (mDNS); "P2P" is peer-to-peer Wi-Fi (iOS Multipeer/AWDL); "Relay" is
-/// the cloud backbone. Returns null for an unknown tag (no icon). bluetooth-b is a brand glyph.
-private fun transportIcon(tag: String): Int? = when (tag) {
-    "BT" -> sh.hopme.demo.R.drawable.ic_fa_bluetooth_b
-    "LAN" -> sh.hopme.demo.R.drawable.ic_fa_wifi
-    "P2P" -> sh.hopme.demo.R.drawable.ic_fa_circle_nodes
-    "Relay" -> sh.hopme.demo.R.drawable.ic_fa_cloud
-    else -> null
-}
+// cov/android-demo: platformLabel / transportIcon / makeQrBitmap / jpegDownscale / messageMeta /
+// normalizeHops / statusText moved to DemoFormat.kt (pure, unit-tested on the JVM). The @Composable
+// render bodies below stay here and are excluded from the coverage denominator (UI/device-bound).
 
 /// Render a Font Awesome vector icon, tinted, inside a square `size`×`size` box with ContentScale.Fit
 /// so the whole glyph is letterboxed and NEVER clipped (FA paths span the full viewBox — e.g. the lock
@@ -269,50 +256,6 @@ private fun FaIcon(res: Int, tint: Color = LocalContentColor.current, size: Dp =
         contentScale = ContentScale.Fit,
         modifier = Modifier.size(size),
     )
-}
-
-/// Encode text (our "<base58>|<name>") to a QR bitmap via zxing core.
-private fun makeQrBitmap(text: String, size: Int = 600): android.graphics.Bitmap {
-    val bits = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
-    val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.RGB_565)
-    for (x in 0 until size) for (y in 0 until size)
-        bmp.setPixel(x, y, if (bits[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
-    return bmp
-}
-
-/// One-line metadata under a chat bubble (mirrors the iOS app).
-/// Decode + downscale an image to a modest JPEG so the mesh transfer stays reasonable —
-/// the carrier path chunks it (§20), but smaller means fewer chunks and faster across wakes.
-private fun jpegDownscale(raw: ByteArray, maxDim: Int = 1280, quality: Int = 80): ByteArray {
-    val src = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: return raw
-    val longest = maxOf(src.width, src.height).toFloat()
-    val scale = longest / maxDim
-    val bmp = if (scale > 1f) {
-        android.graphics.Bitmap.createScaledBitmap(
-            src, (src.width / scale).toInt(), (src.height / scale).toInt(), true
-        )
-    } else src
-    val out = java.io.ByteArrayOutputStream()
-    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
-    return out.toByteArray()
-}
-
-private fun messageMeta(m: HopBearer.Message): String {
-    if (m.incoming) {
-        var s = HopBearer.hopsLabel(m.hops)
-        m.latencyMs?.let { s += ", ${HopBearer.compactDuration(it)}" }
-        if (m.trace.isNotEmpty()) s += "  ·  via ${m.trace.joinToString(" → ")}"
-        return s
-    }
-    if (m.delivered) {
-        // FORWARD (A→B) time the recipient reported — how long the message took to reach them —
-        // not the A→B→A round trip (the ACK's return leg is uninteresting).
-        val dur = HopBearer.compactDuration(m.deliveryMs ?: 0uL)
-        return "Delivered, ${HopBearer.hopsLabel(m.deliveryHops)}, $dur"
-    }
-    if (m.failed) return "Not sent"
-    // relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
-    return "Sent · ${m.relayed} peer${if (m.relayed == 1u) "" else "s"}"
 }
 
 /// In-flight status for a message not yet handed to any peer: a pulsing dot + a live "Awaiting
@@ -981,14 +924,4 @@ fun HopBrowser(bearer: HopBearer, start: String, onBack: () -> Unit) {
             }
         })
     }
-}
-
-private fun normalizeHops(s: String): String {
-    val t = s.trim()
-    return if (t.startsWith("hops://")) t else "hops://" + t.removePrefix("https://").removePrefix("http://")
-}
-
-private fun statusText(code: Int): String = when (code) {
-    200 -> "OK"; 404 -> "Not Found"; 502 -> "Bad Gateway"; 503 -> "Unavailable"; 504 -> "Timeout"
-    else -> "Status"
 }

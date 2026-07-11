@@ -4,7 +4,8 @@ name: CI
 #   - rust        : full test suite, clippy, formatting, plus firestore/sqlcipher feature runs.
 #   - kotlin-sdk  : the transport-multiplexer JVM tests (via the gradle wrapper).
 #   - android     : the Android bearer + driver modules, incl. the :bearer-ble dial-backoff
-#                   regression (quality-net-01 / android-08 / infra-03).
+#                   regression (quality-net-01 / android-08 / infra-03), plus the HopDemo app's
+#                   non-UI helpers under a >=80% line-coverage gate (cov/android-demo).
 #   - apple       : swift-build of the four SwiftPM bearer packages + HopDriver, and a build-only
 #                   xcodebuild of the HopDemo app (no signing) (quality-net-02 / infra-04).
 #   - wasm        : wasm32 build of hop-wasm + the swarm sim invariant tests (simwasm-01 / infra-05).
@@ -204,6 +205,23 @@ jobs:
           :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification
           :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification
           --no-daemon --stacktrace
+
+      # cov/android-demo: the demo app (android/HopDemo) is a SEPARATE gradle build from bearers/android
+      # (its settings.gradle.kts points :hop-driver + the bearer modules at the SAME on-disk locations,
+      # so it reuses the uniffi bindings generated above under android/HopDemo/generated/kotlin). It had
+      # NO test source set and no coverage task at all. Its pure, non-UI helpers were lifted out of the
+      # wall-to-wall @Composable MainActivity.kt into DemoFormat.kt (platformLabel / transportIcon /
+      # makeQrBitmap / jpegDownscale / messageMeta / normalizeHops / statusText) and are now unit-tested
+      # under Robolectric alongside the HopApp crash handler; jacocoDemoReport + jacocoDemoCoverageVerification
+      # produce and ENFORCE a >=80% LINE floor over that non-UI denominator. The @Composable screen render
+      # bodies + the Activity/permission/camera/zxing-scan code are EXCLUDED from the denominator (UI/
+      # device-bound, brittle under Robolectric; verified on-device), the same principled posture as the
+      # driver's uniffi/** + KeystoreSecret exclusions. No HOP_LIBDIR: the demo tests never call libhop
+      # (messageMeta formats a Message via the driver's pure companion helpers), so the driver compiles
+      # against the generated bindings and the tests run without the native cdylib.
+      - name: Test HopDemo app (+ non-UI 80% line-coverage gate)
+        working-directory: android/HopDemo
+        run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
 
   apple:
     name: Apple bearers + driver + app (build-only)
