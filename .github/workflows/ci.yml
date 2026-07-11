@@ -104,10 +104,31 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-      # F-34: radio-free transport-multiplexer tests. Plain JVM module, no Android SDK needed.
-      - name: Test Kotlin SDK
+      # cov/kotlin: the SDK's JNA/native surface (HopNode + its Companion + FreeAction + HopRuntime +
+      # the HopAddress base58 path) is exercised against a REAL libhop, so build the host cdylib first
+      # and point JNA at it via HOP_LIBDIR. Without the lib those tests self-skip (assumeLibhop) and only
+      # the pure-Kotlin suite runs; the 80% coverage gate below would then fail, keeping the grade honest.
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-kotlin-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-kotlin-${{ runner.os }}-
+      - name: Build libhop (host cdylib for the JNA integration tests)
+        run: cargo build -p hop --locked
+      # F-34 + cov/kotlin: the radio-free transport-multiplexer tests AND the native HopNode/HopRuntime
+      # integration tests, then the JaCoCo 80%-line floor (jacocoTestCoverageVerification) that locks
+      # the grade. Plain JVM module, no Android SDK needed.
+      - name: Test Kotlin SDK (+ 80% coverage gate)
         working-directory: sdk/wrappers/kotlin
-        run: gradle test --no-daemon
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: gradle test jacocoTestReport jacocoTestCoverageVerification --no-daemon
 
   android:
     name: Android bearers + driver (JVM unit tests)
