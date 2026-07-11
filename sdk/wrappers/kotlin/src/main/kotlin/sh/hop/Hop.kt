@@ -1,4 +1,4 @@
-// Hop — the idiomatic Kotlin face of libhop's C ABI (hop.h), via JNA. Same role as the Swift `Hop`
+// Hop - the idiomatic Kotlin face of libhop's C ABI (hop.h), via JNA. Same role as the Swift `Hop`
 // wrapper: a thin, type-safe shim over the generated C contract (so it can't drift). Android bearers
 // and the app use this; on Android the same .so is loaded, here (host JVM) it is libhop.dylib.
 
@@ -59,7 +59,7 @@ data class HopStatus(
     val forwardMs: Int,
 )
 
-/** The raw JNA binding — one function per `hop_*` symbol. Internal; callers use [HopNode].
+/** The raw JNA binding - one function per `hop_*` symbol. Internal; callers use [HopNode].
  *
  *  bool-return marshalling: libhop's C ABI returns a 1-byte C `_Bool` (0 or 1) in the low byte of the
  *  return register. The x86-64 SysV ABI does NOT require the upper bits to be zeroed on a `false`
@@ -85,7 +85,7 @@ internal interface CHop : Library {
     fun hop_message_status(node: Pointer?, id: ByteArray, relayed: IntByReference?, delivered: ByteByReference?, hops: ByteByReference?, ms: IntByReference?): Byte
     fun hop_address_to_base58(addr: ByteArray, out: ByteArray, outCap: NativeLong): NativeLong
     fun hop_address_from_base58(text: String, out32: ByteArray): Byte
-    // D-wrappers: full hop.h parity — identity/status + the hops:// request/response surface.
+    // D-wrappers: full hop.h parity - identity/status + the hops:// request/response surface.
     fun hop_abi_version(): Int
     fun hop_node_is_persistent(node: Pointer?): Byte
     fun hop_node_rehydrate_dropped(node: Pointer?): Int
@@ -103,6 +103,21 @@ internal interface CHop : Library {
 /** Read a JNA byte-width C `bool` return: libhop returns 0/1 in the low byte; any non-zero is true.
  *  See the bool-return note on [CHop] for why these natives return [Byte] rather than Boolean. */
 private fun Byte.toBool(): Boolean = this != 0.toByte()
+
+/** Guard an address/bundle-id argument handed to a native call.
+ *
+ *  Every `hop_*` function that takes an address, bundle id, or request id (dst / addr / id / to /
+ *  for_request_id) reads EXACTLY 32 bytes from the pointer regardless of the Kotlin array's length: a
+ *  shorter array makes native code read out of bounds (undefined behavior - a crash or leaked adjacent
+ *  heap), and a longer one is silently truncated to its first 32 bytes. So validate the length here and
+ *  fail loudly (IllegalArgumentException) instead of handing native code a mis-sized buffer - exactly
+ *  as [HopAddress.base58] already does for its address argument. Returns the array for call-site chaining. */
+private fun require32(bytes: ByteArray, name: String): ByteArray {
+    require(bytes.size == HopAddress.ADDRESS_LEN) {
+        "$name must be ${HopAddress.ADDRESS_LEN} bytes, got ${bytes.size}"
+    }
+    return bytes
+}
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
@@ -258,6 +273,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
 
     /** Send an untraceable (§39) HDP datagram. Returns the 32-byte bundle id, or null on error. */
     fun send(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
+        require32(dst, "dst")
         val id = ByteArray(32)
         return if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
     }
@@ -277,6 +293,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Full delivery status of a message we sent (relayed-count / delivered / forward hops+latency).
      *  Mirrors Swift `status(of:)`; reads every hop_message_status out-param, not just `delivered`. */
     fun status(id: ByteArray): HopStatus {
+        require32(id, "id")
         val relayed = IntByReference()
         val delivered = ByteByReference()
         val hops = ByteByReference()
@@ -305,26 +322,31 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     fun setName(name: String) = C.hop_node_set_name(handle, name)
 
     /** Whether we hold a forward-secret session with `addr` (content is ratcheted, not static-sealed). */
-    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, addr).toBool()
+    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, require32(addr, "addr")).toBool()
 
     /** Subscribe to an hps:// topic. */
     fun subscribe(topic: String) = C.hop_subscribe(handle, topic)
 
     /** Send a device-addressed (traced) message. Returns the bundle id, or null on error. */
     fun sendTo(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
+        require32(dst, "dst")
         val id = ByteArray(32)
         return if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
     }
 
     /** Send an hops:// service request. Returns the request id, or null on error. */
     fun sendServiceRequest(dst: ByteArray, service: String, method: String, args: ByteArray): ByteArray? {
+        require32(dst, "dst")
         val id = ByteArray(32)
         return if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id).toBool()) id else null
     }
 
     /** Reply to an hops:// service request. */
-    fun sendServiceResponse(to: ByteArray, forRequestId: ByteArray, status: Int, body: ByteArray): Boolean =
-        C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong())).toBool()
+    fun sendServiceResponse(to: ByteArray, forRequestId: ByteArray, status: Int, body: ByteArray): Boolean {
+        require32(to, "to")
+        require32(forRequestId, "forRequestId")
+        return C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong())).toBool()
+    }
 
     /** Drain inbound hops:// requests addressed to this node (acting as a service). */
     fun pollServiceRequests(sink: (HopServiceRequest) -> Unit) {
