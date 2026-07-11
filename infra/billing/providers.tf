@@ -1,4 +1,4 @@
-# Stripe billing for the Hop backbone — provider + version pins.
+# Stripe billing for the Hop backbone: provider + version pins.
 #
 # Isolated root module (its own state) so the relay-fleet apply never needs Stripe
 # credentials and vice-versa. Resources here define the *catalog* (product, meters,
@@ -6,7 +6,10 @@
 # is the runtime account-service / reconciler's job (DESIGN.md §37), not Terraform.
 
 terraform {
-  required_version = ">= 1.5"
+  # Same floor as the relay-fleet module (infra/versions.tf): this state is written by the pinned
+  # 1.12.3 tofu, so require >= 1.12 rather than an older floor that would let an incompatible tofu
+  # touch the billing state.
+  required_version = ">= 1.12"
   required_providers {
     stripe = {
       source  = "lukasaron/stripe"

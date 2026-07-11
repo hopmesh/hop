@@ -1,10 +1,18 @@
 [package]
 name = "hop-wasm"
+# license-file points at this crate's OWN copy (core/hop-wasm/LICENSE.md, identical to the
+# workspace LICENSE.md), NOT `.workspace = true`. Inheriting the workspace value yields the
+# path "../../LICENSE.md", which cargo metadata reports relative to this crate dir. wasm-pack
+# joins that raw relative path onto its --out-dir to pick the copy DESTINATION, so an out-dir
+# two levels below the repo root (sim/pkg) resolves the destination back to the root LICENSE.md
+# and copies it onto itself, truncating it to 0 bytes (the "0-byte LICENSE shipped" regression).
+# A crate-local, non-`../` path keeps wasm-pack's destination inside the out-dir. See
+# sim/build-wasm.sh for the post-build non-empty assertion that backstops this.
 version.workspace = true
 edition.workspace = true
-license-file.workspace = true
+license-file = "LICENSE.md"
 repository.workspace = true
-description = "wasm-bindgen wrapper over a real hop-core Node<JsStore> (host-owned storage via a StoreBridge) — drives many real Hop nodes in the browser swarm simulator."
+description = "wasm-bindgen wrapper over a real hop-core Node<JsStore> (host-owned storage via a StoreBridge): drives many real Hop nodes in the browser swarm simulator."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
