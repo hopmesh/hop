@@ -59,39 +59,50 @@ data class HopStatus(
     val forwardMs: Int,
 )
 
-/** The raw JNA binding — one function per `hop_*` symbol. Internal; callers use [HopNode]. */
+/** The raw JNA binding — one function per `hop_*` symbol. Internal; callers use [HopNode].
+ *
+ *  bool-return marshalling: libhop's C ABI returns a 1-byte C `_Bool` (0 or 1) in the low byte of the
+ *  return register. The x86-64 SysV ABI does NOT require the upper bits to be zeroed on a `false`
+ *  return, and JNA's `boolean` return mapping reads a full-width int, so a `false` left with dirty
+ *  upper bits misreads as `true` (seen only on x86-64 Linux; arm64 happens to zero-extend). Every
+ *  bool-returning native is declared to return [Byte] here so libffi reads exactly the low byte; the
+ *  Kotlin wrappers convert with [toBool]. Do NOT change these back to Boolean. */
 internal interface CHop : Library {
     fun hop_node_new(): Pointer?
     fun hop_node_open(dbPath: String, secret: ByteArray?, secretLen: NativeLong, appSecret: ByteArray?, appSecretLen: NativeLong): Pointer?
     fun hop_node_open_keyed(dbPath: String, secret: ByteArray?, secretLen: NativeLong, appSecret: ByteArray?, appSecretLen: NativeLong, key: ByteArray?, keyLen: NativeLong): Pointer?
     fun hop_node_with_secret(secret: ByteArray?, secretLen: NativeLong): Pointer?
     fun hop_node_free(node: Pointer?)
-    fun hop_node_address(node: Pointer?, out: ByteArray): Boolean
+    fun hop_node_address(node: Pointer?, out: ByteArray): Byte
     fun hop_node_tick(node: Pointer?, nowMs: Long)
-    fun hop_publish_prekey(node: Pointer?): Boolean
+    fun hop_publish_prekey(node: Pointer?): Byte
     fun hop_link_up(node: Pointer?, link: Long, role: Int)
     fun hop_bytes_received(node: Pointer?, link: Long, data: ByteArray?, len: NativeLong)
     fun hop_link_down(node: Pointer?, link: Long)
     fun hop_drain_outgoing(node: Pointer?, sink: DrainSink, ctx: Pointer?)
-    fun hop_send_message(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Boolean
+    fun hop_send_message(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Byte
     fun hop_poll_inbox(node: Pointer?, sink: InboxSink, ctx: Pointer?)
-    fun hop_message_status(node: Pointer?, id: ByteArray, relayed: IntByReference?, delivered: ByteByReference?, hops: ByteByReference?, ms: IntByReference?): Boolean
+    fun hop_message_status(node: Pointer?, id: ByteArray, relayed: IntByReference?, delivered: ByteByReference?, hops: ByteByReference?, ms: IntByReference?): Byte
     fun hop_address_to_base58(addr: ByteArray, out: ByteArray, outCap: NativeLong): NativeLong
-    fun hop_address_from_base58(text: String, out32: ByteArray): Boolean
+    fun hop_address_from_base58(text: String, out32: ByteArray): Byte
     // D-wrappers: full hop.h parity — identity/status + the hops:// request/response surface.
     fun hop_abi_version(): Int
-    fun hop_node_is_persistent(node: Pointer?): Boolean
+    fun hop_node_is_persistent(node: Pointer?): Byte
     fun hop_node_rehydrate_dropped(node: Pointer?): Int
     fun hop_node_secret(node: Pointer?, out: ByteArray): NativeLong
     fun hop_node_set_name(node: Pointer?, name: String)
-    fun hop_is_secured(node: Pointer?, addr: ByteArray): Boolean
+    fun hop_is_secured(node: Pointer?, addr: ByteArray): Byte
     fun hop_subscribe(node: Pointer?, topic: String)
-    fun hop_send_to(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Boolean
-    fun hop_send_service_request(node: Pointer?, dst: ByteArray, service: String, method: String, args: ByteArray?, argsLen: NativeLong, outId: ByteArray?): Boolean
-    fun hop_send_service_response(node: Pointer?, to: ByteArray, forRequestId: ByteArray, status: Short, body: ByteArray?, bodyLen: NativeLong): Boolean
+    fun hop_send_to(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Byte
+    fun hop_send_service_request(node: Pointer?, dst: ByteArray, service: String, method: String, args: ByteArray?, argsLen: NativeLong, outId: ByteArray?): Byte
+    fun hop_send_service_response(node: Pointer?, to: ByteArray, forRequestId: ByteArray, status: Short, body: ByteArray?, bodyLen: NativeLong): Byte
     fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
     fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
 }
+
+/** Read a JNA byte-width C `bool` return: libhop returns 0/1 in the low byte; any non-zero is true.
+ *  See the bool-return note on [CHop] for why these natives return [Byte] rather than Boolean. */
+private fun Byte.toBool(): Boolean = this != 0.toByte()
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
@@ -233,7 +244,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
 
     fun address(): ByteArray = ByteArray(32).also { C.hop_node_address(handle, it) }
     fun tick(nowMs: Long) = C.hop_node_tick(handle, nowMs)
-    fun publishPrekey(): Boolean = C.hop_publish_prekey(handle)
+    fun publishPrekey(): Boolean = C.hop_publish_prekey(handle).toBool()
 
     fun linkUp(link: Long, role: HopRole) = C.hop_link_up(handle, link, role.c)
     fun linkDown(link: Long) = C.hop_link_down(handle, link)
@@ -248,7 +259,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Send an untraceable (§39) HDP datagram. Returns the 32-byte bundle id, or null on error. */
     fun send(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
         val id = ByteArray(32)
-        return if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id)) id else null
+        return if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
     }
 
     fun pollInbox(sink: (HopMessage) -> Unit) {
@@ -282,7 +293,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     // ---- D-wrappers: identity/status + the hops:// request/response surface (hop.h parity) ----
 
     /** Whether this node has durable storage (false ⇒ ephemeral fallback; F-26). */
-    fun isPersistent(): Boolean = C.hop_node_is_persistent(handle)
+    fun isPersistent(): Boolean = C.hop_node_is_persistent(handle).toBool()
 
     /** How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade. */
     fun rehydrateDropped(): Int = C.hop_node_rehydrate_dropped(handle)
@@ -294,7 +305,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     fun setName(name: String) = C.hop_node_set_name(handle, name)
 
     /** Whether we hold a forward-secret session with `addr` (content is ratcheted, not static-sealed). */
-    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, addr)
+    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, addr).toBool()
 
     /** Subscribe to an hps:// topic. */
     fun subscribe(topic: String) = C.hop_subscribe(handle, topic)
@@ -302,18 +313,18 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Send a device-addressed (traced) message. Returns the bundle id, or null on error. */
     fun sendTo(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
         val id = ByteArray(32)
-        return if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id)) id else null
+        return if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
     }
 
     /** Send an hops:// service request. Returns the request id, or null on error. */
     fun sendServiceRequest(dst: ByteArray, service: String, method: String, args: ByteArray): ByteArray? {
         val id = ByteArray(32)
-        return if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id)) id else null
+        return if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id).toBool()) id else null
     }
 
     /** Reply to an hops:// service request. */
     fun sendServiceResponse(to: ByteArray, forRequestId: ByteArray, status: Int, body: ByteArray): Boolean =
-        C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong()))
+        C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong())).toBool()
 
     /** Drain inbound hops:// requests addressed to this node (acting as a service). */
     fun pollServiceRequests(sink: (HopServiceRequest) -> Unit) {
@@ -362,6 +373,6 @@ object HopAddress {
     /** Decode a base58 address string, or null if it isn't exactly a 32-byte address. */
     fun fromBase58(text: String): ByteArray? {
         val out = ByteArray(ADDRESS_LEN)
-        return if (HopNode.C.hop_address_from_base58(text, out)) out else null
+        return if (HopNode.C.hop_address_from_base58(text, out).toBool()) out else null
     }
 }

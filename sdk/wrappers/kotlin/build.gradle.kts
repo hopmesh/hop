@@ -17,12 +17,23 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Where JNA finds libhop.{dylib,so} for the native integration tests (mirrors the `run` task):
+    // HOP_LIBDIR in CI, otherwise the in-repo target/debug. Tests that touch the lib skip themselves
+    // (assumeLibhop) when it isn't present, so `gradle test` still runs the pure-Kotlin suite alone.
+    systemProperty(
+        "jna.library.path",
+        System.getenv("HOP_LIBDIR")
+            ?: layout.projectDirectory.dir("../../../target/debug").asFile.absolutePath,
+    )
     finalizedBy(tasks.named("jacocoTestReport"))
 }
 
-// quality-cov: line-coverage report for the pure Kotlin SDK surface (Hop.kt / Transport.kt /
-// Bearers.kt). Smoke.kt is the libhop smoke harness (needs the native .so), so it is excluded from
-// the denominator — the unit tests deliberately cover the radio-/native-free logic only.
+// Smoke.kt is the libhop smoke harness (application main + a loopback bearer that drives two live
+// nodes). Its classes are excluded from the coverage denominator in BOTH the report and the gate;
+// the same code paths are covered by HopNodeIntegrationTest / HopRuntimeIntegrationTest instead.
+val smokeCoverageExcludes = listOf("sh/hop/SmokeKt.class", "sh/hop/Smoke*.class", "sh/hop/LoopbackBearer*.class")
+
+// quality-cov: line-coverage report for the Kotlin SDK surface (Hop.kt / Transport.kt / Bearers.kt).
 tasks.named<JacocoReport>("jacocoTestReport") {
     dependsOn(tasks.test)
     reports {
@@ -30,14 +41,28 @@ tasks.named<JacocoReport>("jacocoTestReport") {
         html.required.set(true)
     }
     classDirectories.setFrom(
-        files(classDirectories.files.map {
-            fileTree(it) {
-                // Smoke.kt is the libhop smoke harness (application main + a loopback bearer that drives
-                // two live nodes), so it needs the native .so and is not radio-free-testable.
-                exclude("sh/hop/SmokeKt.class", "sh/hop/Smoke*.class", "sh/hop/LoopbackBearer*.class")
-            }
-        }),
+        files(classDirectories.files.map { fileTree(it) { exclude(smokeCoverageExcludes) } }),
     )
+}
+
+// cov/kotlin: lock the grade. Fail the build if line coverage of the SDK surface (now including the
+// JNA/native HopNode layer) drops below 80%. Reaching it needs libhop present, so CI builds the lib
+// and passes HOP_LIBDIR before invoking this task; it is deliberately NOT wired into `check` so a
+// plain local `gradle build` (no lib) doesn't fail on the skipped native tests.
+tasks.named<JacocoCoverageVerification>("jacocoTestCoverageVerification") {
+    dependsOn(tasks.test)
+    classDirectories.setFrom(
+        files(classDirectories.files.map { fileTree(it) { exclude(smokeCoverageExcludes) } }),
+    )
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "0.80".toBigDecimal()
+            }
+        }
+    }
 }
 
 application {
