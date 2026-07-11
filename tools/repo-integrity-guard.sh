@@ -13,12 +13,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Tracked files that must always carry content (paths relative to repo root). LICENSE.md is the repo
-# license; `cargo metadata` confirms every crate's license-file inherits [workspace.package]
-# license-file = "LICENSE.md" resolved against the WORKSPACE ROOT (all crates point at ../../LICENSE.md
-# or ../../../LICENSE.md), so the single root file is what ships in every published crate. The rest are
-# load-bearing docs / the C ABI header.
+# license; most crates inherit [workspace.package] license-file = "LICENSE.md" (cargo reports it as
+# ../../LICENSE.md against the crate dir), so the single root file is what ships in every published
+# crate. The ONE exception is core/hop-wasm, which pins its OWN crate-local LICENSE.md (identical
+# content) precisely so wasm-pack's license copy can't resolve the inherited ../../ path back onto the
+# root LICENSE.md and truncate it (the 0-byte-LICENSE regression this guard exists for); that copy is
+# what wasm-pack ships into the committed sim/pkg, so guard it too. The rest are load-bearing docs /
+# the C ABI header.
 CRITICAL=(
   "LICENSE.md"
+  "core/hop-wasm/LICENSE.md"
   "README.md"
   "DESIGN.md"
   "MECHANISMS.md"
