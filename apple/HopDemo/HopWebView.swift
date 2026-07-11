@@ -9,6 +9,7 @@
 import SwiftUI
 import WebKit
 import HopDriver
+import HopDemoKit
 
 /// Routes WKWebView's `hops://` requests through the Hop mesh. The page's content-type comes
 /// back from the endpoint, so HTML renders as HTML and sub-resources load with the right MIME.
@@ -21,20 +22,18 @@ final class HopSchemeHandler: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.badURL)); return
         }
         let domain = url.host ?? ""
-        var path = url.path.isEmpty ? "/" : url.path
-        if let q = url.query, !q.isEmpty { path += "?\(q)" }
+        let path = DemoFormat.requestPath(path: url.path, query: url.query)
 
         let key = ObjectIdentifier(task)
         active.insert(key)
         bearer.hopsFetch(domain: domain, path: path) { [weak self] resp in
             // Only touch the task if it hasn't been stopped (WebKit may cancel mid-flight).
             guard let self, self.active.remove(key) != nil else { return }
-            let mime = resp.contentType.split(separator: ";").first.map(String.init) ?? "application/octet-stream"
             let response = HTTPURLResponse(
                 url: url,
                 statusCode: resp.status,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": resp.contentType.isEmpty ? mime : resp.contentType]
+                headerFields: ["Content-Type": DemoFormat.contentTypeHeader(resp.contentType)]
             )!
             task.didReceive(response)
             task.didReceive(resp.body)
@@ -109,8 +108,7 @@ struct HopBrowserView: View {
 
     init(bearer: HopBearer, start domain: String) {
         self.bearer = bearer
-        let d = domain.trimmingCharacters(in: .whitespacesAndNewlines)
-        let url = d.hasPrefix("hops://") ? d : "hops://\(d.isEmpty ? "example.hopme.sh" : d)"
+        let url = DemoFormat.normalizeHopsURL(domain, defaultHost: "example.hopme.sh")
         self.initialURL = url
         _address = State(initialValue: url)
     }
@@ -141,8 +139,7 @@ struct HopBrowserView: View {
     }
 
     private func go() {
-        var s = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !s.hasPrefix("hops://") { s = "hops://\(s)" }
+        let s = DemoFormat.normalizeHopsURL(address)
         address = s
         controller.load(s)
     }

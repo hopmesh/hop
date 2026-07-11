@@ -2,6 +2,7 @@ import SwiftUI
 import BackgroundTasks
 import UIKit
 import HopDriver
+import HopDemoKit
 
 extension HopBearer {
     /// The app's single shared Hop runtime — the dev `Config` (messages db in the document dir, the
@@ -149,12 +150,12 @@ struct HopDemoApp: App {
     /// DEBUG builds) keeps its automation, and shipped builds ignore the scheme entirely.
     static func handleAutomationURL(_ url: URL) {
         #if DEBUG
-        guard url.scheme == "hopdemo", url.host == "send",
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        let items = comps.queryItems ?? []
-        guard let to = items.first(where: { $0.name == "to" })?.value,
-              let text = items.first(where: { $0.name == "text" })?.value else { return }
-        HopBearer.shared.sendTo(addressBase58: to, text: text)
+        // The scheme/host/query parsing lives in HopDemoKit (unit-tested); the send stays here.
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let items = (comps?.queryItems ?? []).map { (name: $0.name, value: $0.value) }
+        guard let parsed = DemoFormat.parseAutomationURL(scheme: url.scheme, host: url.host,
+                                                         queryItems: items) else { return }
+        HopBearer.shared.sendTo(addressBase58: parsed.to, text: parsed.text)
         #else
         _ = url   // release: ignore the automation scheme (apple-05)
         #endif
@@ -172,10 +173,11 @@ struct HopDemoApp: App {
         // identity and (via automationMirrorEnabled) drop a plaintext mirror, defeating SQLCipher-at-rest.
         // Compile the send out of shipped builds; the harness runs DEBUG builds and keeps its automation.
         #if DEBUG
-        let parts = spec.components(separatedBy: "|")
-        guard parts.count >= 3, parts[0] == "send" else { return }
-        let to = parts[1]
-        let text = parts[2...].joined(separator: "|")   // rejoin any stray pipes into the marker text
+        // The "send|addr|text" parse (incl. rejoining stray pipes into the marker) lives in
+        // HopDemoKit and is unit-tested; the retry/send loop stays here.
+        guard let parsed = DemoFormat.parseAutomationEnv(spec) else { return }
+        let to = parsed.to
+        let text = parsed.text
         // Stage C moved node-open off the main thread, so the node isn't guaranteed ready at a fixed
         // delay after cold launch. Retry the send on a backoff until it's accepted (self-address known)
         // instead of a single fire-and-forget that can land before the node exists.

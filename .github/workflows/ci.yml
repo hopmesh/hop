@@ -292,6 +292,18 @@ jobs:
           echo "HopBearer.swift line coverage (headless, non-device denominator): ${PCT}%"
           awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopBearer.swift below the 80% coverage floor"; exit 1 } print "OK: at or above the 80% floor" }'
 
+      # cov/apple-demo: the demo app's pure, non-UI logic (transport-icon/tag mapping, peer subline,
+      # message-meta formatting, hops:// URL normalization, MIME/request-path parsing, QR payload
+      # encode/decode, the automation URL/env parsers, and the CoreImage/ImageIO QR-bitmap + photo-
+      # downscale builders) lives in the HopDemoKit SwiftPM package so it is unit-tested headlessly
+      # (no simulator). The whole DemoFormat.swift surface is coverage-GATED at >=95% line coverage.
+      # The app's SwiftUI View bodies + the AVFoundation camera scanner / WKWebView / PhotosUI /
+      # BackgroundTasks glue are UI/device-bound, are NOT in this package, and are covered only by the
+      # build-only step below + the on-device workflow (the same rationale as the driver's radio-layer
+      # exclusion). `swift test` also builds, so this doubles as HopDemoKit's build gate.
+      - name: Test + coverage-gate HopDemoKit (>=95% of DemoFormat.swift)
+        run: bash tools/apple-cov-gate.sh apple/HopDemoKit Sources/HopDemoKit/DemoFormat.swift 95
+
       # Build-only xcodebuild of the demo app: generate the project (XcodeGen), then build for the
       # simulator with signing disabled. This catches Swift/ABI breakage in the app half of the
       # product that a package-level swift build cannot (SwiftUI + Info.plist wiring).

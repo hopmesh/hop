@@ -1,8 +1,8 @@
 import SwiftUI
 import PhotosUI
-import ImageIO
 import UniformTypeIdentifiers
 import HopDriver
+import HopDemoKit
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -21,17 +21,12 @@ enum HopImages {
         return img
     }
 
-    /// Downscale + recompress a picked photo to a small JPEG using an ImageIO thumbnail — decodes
-    /// a reduced-size image directly (low memory/CPU) instead of loading a full 12MP+ image, which
-    /// hung the picker and bloated history. Mirrors Android's jpegDownscale.
+    /// Downscale + recompress a picked photo to a small JPEG using an ImageIO thumbnail. The
+    /// decode+downscale (the low memory/CPU part that avoids loading a full 12MP+ image, and the
+    /// bug-prone one) lives in HopDemoKit.downscaledCGImage and is unit-tested there; here we just
+    /// JPEG-encode the result. Mirrors Android's jpegDownscale.
     static func downscaledJPEG(_ data: Data, maxPixel: CGFloat = 1280, quality: CGFloat = 0.6) -> Data? {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let opts: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
-        ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        guard let cg = DemoFormat.downscaledCGImage(data, maxPixel: maxPixel) else { return nil }
         return UIImage(cgImage: cg).jpegData(compressionQuality: quality)
     }
 }
@@ -61,7 +56,7 @@ struct ContentView: View {
     /// `peerLinks` (otherwise direct peers flicker to "mesh" between link blips).
     /// Direct = a 1-hop neighbour. A live BT/Wi-Fi link is forced to 1 hop in refresh(), so this
     /// single rule covers both live links and direct adverts — and a 2-hop peer is never "direct".
-    private func isDirect(_ p: HopBearer.Peer) -> Bool { p.hops <= 1 }
+    private func isDirect(_ p: HopBearer.Peer) -> Bool { DemoFormat.isDirect(hops: p.hops) }
     private var direct: [HopBearer.Peer] { bearer.reachable.filter { isDirect($0) } }
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { !isDirect($0) } }
 
@@ -349,15 +344,11 @@ struct ContentView: View {
         bearer.openHops(s)
     }
 
-    /// "iOS" / "Android" / "" from the raw platform tag.
-    private func platformLabel(_ p: String) -> String {
-        switch p { case "ios": return "iOS"; case "android": return "Android"; default: return p }
-    }
-
-    /// Subtitle: address · platform · app (omitting empties).
+    /// Subtitle: address · platform · app (omitting empties). The join + platform-label logic lives
+    /// in HopDemoKit; the short address comes from the driver's base58 helper.
     private func subline(_ peer: HopBearer.Peer) -> String {
-        [HopBearer.shortHex(peer.address), platformLabel(peer.platform), peer.app]
-            .filter { !$0.isEmpty }.joined(separator: " · ")
+        DemoFormat.subline(shortAddress: HopBearer.shortHex(peer.address),
+                           platform: peer.platform, app: peer.app)
     }
 
     @ViewBuilder private func peerRow(_ peer: HopBearer.Peer) -> some View {
@@ -403,28 +394,12 @@ struct ContentView: View {
         }
     }
 
-    /// Font Awesome (Light) asset name for a transport tag. "LAN" (local network, shared Wi-Fi)
-    /// and "P2P" (peer-to-peer Wi-Fi — MultipeerConnectivity/AWDL) get distinct glyphs. Rendered
-    /// via FaIcon (template/tintable); bluetooth-b is a brand glyph.
-    private func transportIcon(_ tag: String) -> String {
-        switch tag {
-        case "BT": return "ic_fa_bluetooth_b"
-        case "LAN": return "ic_fa_wifi"          // local network over a shared Wi-Fi/router
-        case "P2P": return "ic_fa_circle_nodes"  // peer-to-peer WLAN (AWDL), no router
-        case "Relay": return "ic_fa_cloud"
-        default: return "ic_fa_circle_nodes"
-        }
-    }
+    /// Font Awesome (Light) asset name for a transport tag (logic in HopDemoKit, unit-tested).
+    /// Rendered via FaIcon (template/tintable); bluetooth-b is a brand glyph.
+    private func transportIcon(_ tag: String) -> String { DemoFormat.transportIcon(tag) }
 
-    /// Map a TransportStatus id to the tag used in `linkTransports`.
-    private func transportTag(_ id: String) -> String {
-        switch id {
-        case "Bluetooth": return "BT"
-        case "Peer-to-Peer": return "P2P"
-        case "Local Net": return "LAN"
-        default: return id
-        }
-    }
+    /// Map a TransportStatus id to the tag used in `linkTransports` (logic in HopDemoKit).
+    private func transportTag(_ id: String) -> String { DemoFormat.transportTag(id) }
 
     /// Addresses currently linked over a given transport (by its status id).
     private func peersOn(_ id: String) -> [Data] {
@@ -473,24 +448,14 @@ struct ChatView: View {
         }
     }
 
-    /// One-line metadata under a bubble.
+    /// One-line metadata under a bubble (formatting logic in HopDemoKit, unit-tested).
     /// Incoming: "2 hops, 1m" (path length + send→receive time).
-    /// Outgoing: "Delivered, 10 hops, 2h" once acked, else "Sent, 2 peers" / "Sending…".
+    /// Outgoing: "Delivered, 10 hops, 2h" once acked, else "Sent · N peers".
+    /// relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
     private func meta(_ m: HopBearer.Message) -> String {
-        if m.incoming {
-            var s = HopBearer.hopsLabel(m.hops)
-            if let lat = m.latencyMs { s += ", \(HopBearer.compactDuration(lat))" }
-            return s
-        }
-        if m.delivered {
-            // Show the FORWARD (A→B) time the recipient reported — how long the message took to
-            // reach them — not the A→B→A round trip (the ACK's return leg is uninteresting).
-            let fwd = HopBearer.compactDuration(UInt64(m.deliveryMs))
-            return "Delivered, \(HopBearer.hopsLabel(m.deliveryHops)), \(fwd)"
-        }
-        if m.failed { return "Not sent" }
-        // relayed == 0 is rendered by SendingIndicator (pulsing + live timer), not this string.
-        return "Sent · \(m.relayed) peer\(m.relayed == 1 ? "" : "s")"
+        DemoFormat.messageMeta(incoming: m.incoming, hops: m.hops, latencyMs: m.latencyMs,
+                               delivered: m.delivered, deliveryHops: m.deliveryHops,
+                               deliveryMs: m.deliveryMs, failed: m.failed, relayed: m.relayed)
     }
 
     var body: some View {
