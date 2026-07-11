@@ -251,9 +251,26 @@ jobs:
       - name: Test + coverage-gate the Relay bearer (>=80% of RelayBearer.swift)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerRelay Sources/HopBearerRelay/RelayBearer.swift 80
 
-      - name: Test HopDriver (Keychain identity store)
+      # cov/apple-driver: the headless-node suite drives the driver's public API + snapshot-mapping +
+      # persistence against a REAL libhop HopNode (no device), plus the Keychain identity store. The 80%
+      # line-coverage floor on HopBearer.swift keeps the grade honest. The genuinely device/radio/UIKit-
+      # bound surface (HopBearer+Radios.swift = BLE/Wi-Fi/relay/endpoint radio + DoH + notifications;
+      # HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator: it cannot run under
+      # macOS `swift test` and is covered by the on-device / cross-platform workflow (testkit + real devices).
+      - name: Test HopDriver (headless node + Keychain) + 80% coverage floor
         working-directory: drivers/apple/HopDriver
-        run: swift test
+        run: |
+          set -euo pipefail
+          swift test --enable-code-coverage
+          BIN_DIR="$(swift build --show-bin-path)"
+          XCTEST="$BIN_DIR/HopDriverPackageTests.xctest/Contents/MacOS/HopDriverPackageTests"
+          PROF="$BIN_DIR/codecov/default.profdata"
+          PCT=$(xcrun llvm-cov report "$XCTEST" -instr-profile "$PROF" \
+                  -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift' \
+                  Sources/HopDriver/HopBearer.swift \
+                | awk '/HopBearer\.swift/ { print $(NF-3) }' | tr -d '%')
+          echo "HopBearer.swift line coverage (headless, non-device denominator): ${PCT}%"
+          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopBearer.swift below the 80% coverage floor"; exit 1 } print "OK: at or above the 80% floor" }'
 
       # Build-only xcodebuild of the demo app: generate the project (XcodeGen), then build for the
       # simulator with signing disabled. This catches Swift/ABI breakage in the app half of the
