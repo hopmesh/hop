@@ -291,10 +291,15 @@ jobs:
 
       # cov/apple-driver: the headless-node suite drives the driver's public API + snapshot-mapping +
       # persistence against a REAL libhop HopNode (no device), plus the Keychain identity store. The 80%
-      # line-coverage floor on HopBearer.swift keeps the grade honest. The genuinely device/radio/UIKit-
-      # bound surface (HopBearer+Radios.swift = BLE/Wi-Fi/relay/endpoint radio + DoH + notifications;
-      # HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator: it cannot run under
-      # macOS `swift test` and is covered by the on-device / cross-platform workflow (testkit + real devices).
+      # line-coverage floor keeps the grade honest. The former god-object (HopBearer.swift) was decomposed
+      # into per-concern collaborators + sibling extension files (HopModels / Multipart / MirrorStore /
+      # RefreshMapper / HopBearer+Hps / +Services / +Messaging / +Hns), so the floor is now the AGGREGATE
+      # line coverage across that whole pure-logic surface (like the BLE bearer's aggregate gate) rather than
+      # one file — a file-count-invariant total, so moving code between these files cannot game it. The
+      # genuinely device/radio/UIKit-bound surface (HopBearer+Radios.swift = BLE/Wi-Fi/relay/endpoint radio +
+      # DoH + notifications; HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator:
+      # it cannot run under macOS `swift test` and is covered by the on-device / cross-platform workflow
+      # (testkit + real devices). Keychain.swift has its own dedicated tests and is not part of this surface.
       - name: Test HopDriver (headless node + Keychain) + 80% coverage floor
         working-directory: drivers/apple/HopDriver
         run: |
@@ -304,11 +309,11 @@ jobs:
           XCTEST="$BIN_DIR/HopDriverPackageTests.xctest/Contents/MacOS/HopDriverPackageTests"
           PROF="$BIN_DIR/codecov/default.profdata"
           PCT=$(xcrun llvm-cov report "$XCTEST" -instr-profile "$PROF" \
-                  -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift' \
-                  Sources/HopDriver/HopBearer.swift \
-                | awk '/HopBearer\.swift/ { print $(NF-3) }' | tr -d '%')
-          echo "HopBearer.swift line coverage (headless, non-device denominator): ${PCT}%"
-          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopBearer.swift below the 80% coverage floor"; exit 1 } print "OK: at or above the 80% floor" }'
+                  -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift|Keychain\.swift' \
+                  Sources/HopDriver/ \
+                | awk '/^TOTAL/ { print $(NF-3) }' | tr -d '%')
+          echo "HopDriver pure-logic aggregate line coverage (headless, non-device denominator): ${PCT}%"
+          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopDriver pure-logic aggregate below the 80% coverage floor"; exit 1 } print "OK: at or above the 80% floor" }'
 
       # cov/apple-demo: the demo app's pure, non-UI logic (transport-icon/tag mapping, peer subline,
       # message-meta formatting, hops:// URL normalization, MIME/request-path parsing, QR payload
