@@ -236,16 +236,20 @@ jobs:
         working-directory: sdk/wrappers/Hop
         run: swift test
 
-      - name: Build the three bearer packages
-        run: |
-          for pkg in HopBearerBle HopBearerLan HopBearerRelay; do
-            echo "== swift build $pkg =="
-            swift build --package-path "bearers/apple/$pkg"
-          done
-
+      # apple-cov: all three bearer packages are tested headlessly (no device). BLE keeps its dedup
+      # tiebreaker tests; LAN + Relay now run REAL loopback-socket integration tests and are coverage-
+      # GATED at >=80% line coverage of the bearer source. Previously LAN's 28 + Relay's 14 tests never
+      # ran in CI and only re-modeled the logic in the test file, so LanBearer/RelayBearer sat at ~10%
+      # line coverage. `swift test` also builds, so these subsume the old build-only step.
       - name: Test the BLE bearer (dedup tiebreaker)
         working-directory: bearers/apple/HopBearerBle
         run: swift test
+
+      - name: Test + coverage-gate the LAN bearer (>=80% of LanBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerLan Sources/HopBearerLan/LanBearer.swift 80
+
+      - name: Test + coverage-gate the Relay bearer (>=80% of RelayBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerRelay Sources/HopBearerRelay/RelayBearer.swift 80
 
       - name: Test HopDriver (Keychain identity store)
         working-directory: drivers/apple/HopDriver
