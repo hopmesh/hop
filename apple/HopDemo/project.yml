@@ -18,6 +18,10 @@ packages:
     # HopDriver moved to drivers/apple/HopDriver in the app cutover; project.yml was stale (the
     # committed .xcodeproj had the right ref, so xcodegen never re-ran until the apple CI job).
     path: ../../drivers/apple/HopDriver
+  # HopDemoKit holds the app's pure, non-UI logic (formatting, parsing, QR + downscale bitmap
+  # builders) so it can be unit-tested headlessly (macOS `swift test`); it has no HopDriver dep.
+  HopDemoKit:
+    path: ../HopDemoKit
 targets:
   HopDemo:
     type: application
@@ -31,6 +35,8 @@ targets:
     dependencies:
       - package: HopDriver
         product: HopDriver
+      - package: HopDemoKit
+        product: HopDemoKit
     info:
       path: HopDemo-Info.plist
       properties:

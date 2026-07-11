@@ -3,28 +3,14 @@
 // anonymous on the mesh but can hand someone your address face-to-face.
 import SwiftUI
 import AVFoundation
-import CoreImage.CIFilterBuiltins
 import HopDriver
+import HopDemoKit
 
-/// QR payload format, shared with Android: "<base58 address>|<name>". The name is optional.
-enum HopQR {
-    static func encode(address base58: String, name: String) -> String { "\(base58)|\(name)" }
-    static func decode(_ s: String) -> (address: String, name: String)? {
-        let body = s.hasPrefix("hop:") ? String(s.dropFirst(4)) : s   // tolerate a hop: prefix
-        let parts = body.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let addr = parts.first, !addr.isEmpty else { return nil }
-        let name = parts.count > 1 ? String(parts[1]) : ""
-        return (String(addr), name)
-    }
-}
+// The QR payload format (HopQR) and the QR-bitmap builder now live in HopDemoKit so they are
+// unit-tested headlessly; this file wraps the portable CGImage in a UIImage for SwiftUI.
 
 func makeQRImage(_ text: String) -> UIImage? {
-    let filter = CIFilter.qrCodeGenerator()
-    filter.message = Data(text.utf8)
-    filter.correctionLevel = "M"
-    let ctx = CIContext()
-    guard let out = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 10, y: 10)),
-          let cg = ctx.createCGImage(out, from: out.extent) else { return nil }
+    guard let cg = DemoFormat.qrCGImage(text) else { return nil }
     return UIImage(cgImage: cg)
 }
 

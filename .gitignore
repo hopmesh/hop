@@ -42,6 +42,9 @@ core/hop/examples/smoke
 sdk/wrappers/Hop/.build/
 bearers/apple/**/.build/
 
+# HopDemoKit (the demo app's pure, headlessly-tested logic) SwiftPM build dir
+apple/HopDemoKit/.build/
+
 # Kotlin/JVM SDK build dirs
 sdk/wrappers/kotlin/.gradle/
 sdk/wrappers/kotlin/build/
