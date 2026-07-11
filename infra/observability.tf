@@ -138,17 +138,17 @@ resource "google_monitoring_alert_policy" "relay_5xx" {
 
 # ---- F-24 (cont.): the remaining silent failure modes ---------------------------------------------
 #
-# The two alerts above catch FAILED ops (Firestore/handoff/spool) and Cloud Run 4xx/5xx. Three silent
-# modes were still uninstrumented:
+# The two alerts above catch FAILED ops (Firestore/handoff/spool) and Cloud Run 4xx/5xx. Two more:
 #   (a) a WEDGED driver loop: serve_healthz returns 503 when LAST_TICK is stale, the liveness probe
 #       then RESTARTS the instance, but with one instance per region a wedged instance IS the region
-#       until it recovers. Nothing paged an operator.
+#       until it recovers.
 #   (b) a CRASH/RESTART loop: a panic (bad env, store/backbone init failure) makes the container
 #       exit and Cloud Run restart it repeatedly. The startup banner just reprinted forever, unnoticed.
-#   (c) a SILENT region: an instance that emits no logs at all (deadlocked/hung short of a 503) looks
-#       identical to an idle scaled-to-zero region on the request metric.
-# These add log-based metrics + alerts for (b) and (c). (a) is covered because a wedged loop that keeps
-# restarting shows up as (b), and one that stays down shows up as (c)'s log-absence.
+# The crash-loop alert below instruments (b). (a) is covered structurally: a wedged loop that keeps
+# restarting shows up as (b), and one that stays down is restarted by the 503 liveness probe. NOTE
+# (r6-01): a third mode, a "silent region" (log-absence), is deliberately NOT alerted on: under
+# scale-to-zero an idle region legitimately emits no logs, so a log-absence alert false-pages every
+# idle region (see the NOTE further down where that alert + its heartbeat metric were removed).
 
 # Count the relay's own startup banner ("hop-relayd: address ...", printed once per process start) and
 # panics. Under normal operation a region prints the banner once; several in a short window means the
