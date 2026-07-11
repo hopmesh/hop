@@ -184,17 +184,26 @@ jobs:
       # identities are preserved across reinstall), not a JVM CI lane. Adding a spun-up-emulator
       # androidTest lane here is possible but heavy (an emulator per CI run) and still would not cover a
       # true StrongBox secure element; it is intentionally not added for the pre-prod P2P test phase.
-      - name: Test Android bearers + driver (+ hop-driver 80% line-coverage gate)
+      # cov/android-driver + cov/android-bearers: run every module's JVM unit tests (test) AND the
+      # per-module JaCoCo 80% LINE floors. HOP_LIBDIR points JNA at the host cdylib generated above (the
+      # driver's Robolectric suite calls the real libhop for the UniFFI free functions). Each module gates
+      # on its DOCUMENTED denominator (build.gradle.kts): LAN + Relay are driven end-to-end over loopback
+      # sockets / an OkHttp MockWebServer under Robolectric (only the platform-delivered NSD listeners /
+      # the 20s stable-reset lambda are excluded); the BLE bearer's testable wire + dial logic was lifted
+      # into the pure LinkProtocol + DialState (the radio-bound Link/Peripheral/Central/BleBearer shells
+      # are excluded, covered by the on-device workflow); the driver excludes the generated uniffi
+      # bindings + the device-gated KeystoreSecret. Previously CI ran no coverage task here.
+      - name: Test Android bearers + driver (+ per-module coverage floors)
         working-directory: bearers/android
         env:
-          # cov/android-driver: the driver's Robolectric suite drives the whole HopBearer instance and
-          # calls the real libhop for the UniFFI free functions (addressBase58 / decodeIdentity / ...),
-          # so point JNA at the host cdylib generated in the step above. jacocoDriverReport +
-          # jacocoDriverCoverageVerification then produce and ENFORCE the driver's >=80% LINE grade
-          # (excluding the generated uniffi bindings + the device-gated KeystoreSecret). Previously CI
-          # ran no coverage task here, so the grade was unenforced.
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
-        run: ./gradlew :bearer-ble:testDebugUnitTest test :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification --no-daemon --stacktrace
+        run: >-
+          ./gradlew :bearer-ble:testDebugUnitTest test
+          :bearer-lan:jacocoLanReport :bearer-lan:jacocoLanCoverageVerification
+          :bearer-relay:jacocoRelayReport :bearer-relay:jacocoRelayCoverageVerification
+          :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification
+          :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification
+          --no-daemon --stacktrace
 
   apple:
     name: Apple bearers + driver + app (build-only)
