@@ -10,68 +10,19 @@
 //! `prune` drops both by the seen expiry. The bridge object supplies those operations; this type only
 //! (de)serializes bundles (postcard, via `Bundle::to_bytes`/`from_bytes`) and mutates copy budgets.
 
+use crate::wasm_glue::StoreBridge;
 use hop_core::bundle::{Bundle, BundleId};
 use hop_core::store::{HaveSet, Store};
-use wasm_bindgen::prelude::*;
 
 /// Clamp on a retained dedup window (F-07): an attacker-set (and, for §39 private bundles,
 /// unauthenticated) `lifetime_ms` can't pin a `seen` row open for longer than a week.
 const MAX_SEEN_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
-#[wasm_bindgen]
-extern "C" {
-    /// A per-node host object implementing synchronous bundle storage. In the browser Worker this is
-    /// SQLite/OPFS; in Node tests a Map or better-sqlite3. Ids are 32 bytes; data is postcard bundle
-    /// bytes. All methods are synchronous (OPFS sync-access handles make this possible in a Worker).
-    pub type StoreBridge;
-
-    /// Insert if this id is not already `seen`. Returns false if it was a duplicate (dedup).
-    #[wasm_bindgen(method)]
-    fn put(this: &StoreBridge, id: &[u8], data: &[u8], expires_at: f64) -> bool;
-    /// The held bundle bytes for `id`, or undefined.
-    #[wasm_bindgen(method)]
-    fn get(this: &StoreBridge, id: &[u8]) -> Option<Vec<u8>>;
-    /// Drop the held data for `id` (keep its dedup entry); return the removed bytes if any.
-    #[wasm_bindgen(method)]
-    fn remove(this: &StoreBridge, id: &[u8]) -> Option<Vec<u8>>;
-    /// Still deduping this id (seen and not expired)?
-    #[wasm_bindgen(method)]
-    fn seen(this: &StoreBridge, id: &[u8]) -> bool;
-    /// The receiver-anchored dedup expiry (epoch-ms) stamped for `id` at `put` time, or undefined if
-    /// not tracked. This is the `expires_at` column of the `seen` row (stores-r3-01): a wasm relay's
-    /// handoff/spool re-mirror anchors Firestore's `expireAt` to this receiver-clock deadline, never
-    /// the sender's advisory `created_at`.
-    #[wasm_bindgen(method, js_name = seenExpiry)]
-    fn seen_expiry(this: &StoreBridge, id: &[u8]) -> Option<f64>;
-    /// Currently holding this id (not just seen)?
-    #[wasm_bindgen(method)]
-    fn contains(this: &StoreBridge, id: &[u8]) -> bool;
-    /// All held ids, concatenated as 32-byte chunks.
-    #[wasm_bindgen(method)]
-    fn have(this: &StoreBridge) -> Vec<u8>;
-    /// Drop held bundles + dedup entries whose window has closed at `now_ms`.
-    #[wasm_bindgen(method)]
-    fn prune(this: &StoreBridge, now_ms: f64);
-    /// Overwrite the held data for `id` (copy-budget mutation). No-op if not held.
-    #[wasm_bindgen(method, js_name = setData)]
-    fn set_data(this: &StoreBridge, id: &[u8], data: &[u8]);
-    #[wasm_bindgen(method, js_name = kvPut)]
-    fn kv_put(this: &StoreBridge, key: &str, value: &[u8]);
-    #[wasm_bindgen(method, js_name = kvGet)]
-    fn kv_get(this: &StoreBridge, key: &str) -> Option<Vec<u8>>;
-    #[wasm_bindgen(method, js_name = kvRemove)]
-    fn kv_remove(this: &StoreBridge, key: &str);
-    /// Every `(key, value)` whose key starts with `prefix`, flat-encoded as repeated
-    /// `[u32 LE keylen][key utf8][u32 LE vallen][val]` records.
-    #[wasm_bindgen(method, js_name = kvList)]
-    fn kv_list(this: &StoreBridge, prefix: &str) -> Vec<u8>;
-}
-
 /// The exact byte-level storage operations `JsStore` invokes on its host object. In production this
-/// is the wasm-bindgen [`StoreBridge`] (SQLite/OPFS in a Worker); the trait exists so the same
-/// `JsStore` logic can run on the host target against an in-memory fake for unit tests. Every method
-/// mirrors a `StoreBridge` method one-to-one, so the real impl below is a pure forward with no
-/// behavior change.
+/// is the wasm-bindgen [`StoreBridge`] (SQLite/OPFS in a Worker; the forwarding `impl` lives in
+/// [`crate::wasm_glue`], which is wasm-only); the trait exists so the same `JsStore` logic can run on
+/// the host target against an in-memory fake for unit tests. Every method mirrors a `StoreBridge`
+/// method one-to-one, so the production impl is a pure forward with no behavior change.
 pub(crate) trait Bridge {
     fn put(&self, id: &[u8], data: &[u8], expires_at: f64) -> bool;
     fn get(&self, id: &[u8]) -> Option<Vec<u8>>;
@@ -86,48 +37,6 @@ pub(crate) trait Bridge {
     fn kv_get(&self, key: &str) -> Option<Vec<u8>>;
     fn kv_remove(&self, key: &str);
     fn kv_list(&self, prefix: &str) -> Vec<u8>;
-}
-
-impl Bridge for StoreBridge {
-    fn put(&self, id: &[u8], data: &[u8], expires_at: f64) -> bool {
-        StoreBridge::put(self, id, data, expires_at)
-    }
-    fn get(&self, id: &[u8]) -> Option<Vec<u8>> {
-        StoreBridge::get(self, id)
-    }
-    fn remove(&self, id: &[u8]) -> Option<Vec<u8>> {
-        StoreBridge::remove(self, id)
-    }
-    fn seen(&self, id: &[u8]) -> bool {
-        StoreBridge::seen(self, id)
-    }
-    fn seen_expiry(&self, id: &[u8]) -> Option<f64> {
-        StoreBridge::seen_expiry(self, id)
-    }
-    fn contains(&self, id: &[u8]) -> bool {
-        StoreBridge::contains(self, id)
-    }
-    fn have(&self) -> Vec<u8> {
-        StoreBridge::have(self)
-    }
-    fn prune(&self, now_ms: f64) {
-        StoreBridge::prune(self, now_ms)
-    }
-    fn set_data(&self, id: &[u8], data: &[u8]) {
-        StoreBridge::set_data(self, id, data)
-    }
-    fn kv_put(&self, key: &str, value: &[u8]) {
-        StoreBridge::kv_put(self, key, value)
-    }
-    fn kv_get(&self, key: &str) -> Option<Vec<u8>> {
-        StoreBridge::kv_get(self, key)
-    }
-    fn kv_remove(&self, key: &str) {
-        StoreBridge::kv_remove(self, key)
-    }
-    fn kv_list(&self, prefix: &str) -> Vec<u8> {
-        StoreBridge::kv_list(self, prefix)
-    }
 }
 
 /// A `Store` that delegates every operation to a host [`Bridge`] (one per node). In production the
