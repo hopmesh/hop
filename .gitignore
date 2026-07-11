@@ -64,6 +64,11 @@ bearers/android/build/
 bearers/android/**/build/
 bearers/android/local.properties
 
+# Kotlin SDK: machine-local gradle config + Kotlin daemon logs (never tracked)
+sdk/wrappers/kotlin/local.properties
+sdk/wrappers/kotlin/.kotlin/
+sdk/wrappers/kotlin/build/
+
 # Android driver build
 drivers/android/**/build/
 
