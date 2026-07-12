@@ -14,10 +14,14 @@
     "build": "astro build",
     "preview": "astro preview"
   },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "devDependencies": {
-    "astro": "^4.16.0"
+    "astro": "^7.0.7",
+    "@astrojs/markdown-satteri": "^0.3.3"
   },
   "dependencies": {
-    "@astrojs/sitemap": "3.2.1"
+    "@astrojs/sitemap": "^3.7.3"
   }
 }

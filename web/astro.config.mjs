@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
+import { satteri } from '@astrojs/markdown-satteri';
 
 // Static marketing site. File-based routing in src/pages/, output to dist/.
 // `site` is the canonical production URL (used for absolute URLs / sitemaps).
@@ -8,11 +9,13 @@ export default defineConfig({
   site: 'https://hopme.sh',
   integrations: [sitemap()],
   markdown: {
-    // Landmine defused (F-8): Astro's smartypants (default true) rewrites a typed `--`/`---` in any
-    // future Markdown/MDX page into a rendered en/em dash, which the byte-scan docs-token-guard never
-    // sees (it scans source bytes, not rendered output). There are no markdown pages today, so this is
-    // insurance: keep the no-dash rule enforceable if a markdown-driven page is ever added.
-    smartypants: false,
+    // Landmine defused (F-8): Astro's smart-punctuation formatting (default on) rewrites a typed
+    // `--`/`---` in any future Markdown/MDX page into a rendered en/em dash, which the byte-scan
+    // docs-token-guard never sees (it scans source bytes, not rendered output). There are no markdown
+    // pages today, so this is insurance: keep the no-dash rule enforceable if a markdown-driven page
+    // is ever added. `markdown.smartypants` moved onto the processor as of Astro 6; Astro 7's default
+    // processor is Satteri, so smart punctuation is disabled there instead.
+    processor: satteri({ features: { smartPunctuation: false } }),
   },
   // Quickstart moved into the docs site; keep the old URL working.
   redirects: {
