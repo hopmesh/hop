@@ -444,9 +444,10 @@ jobs:
       - name: Sim scenario-check (all scenarios complete)
         run: node sim/scenario-check.mjs
 
+      # Astro 7 requires Node >=22.12 (dropped Node 20 support).
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
 
