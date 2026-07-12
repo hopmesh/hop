@@ -26,6 +26,11 @@ on:
 
 permissions:
   contents: read
+  # Reading a branch-protection rule requires repo administration scope. Without this the default
+  # GITHUB_TOKEN 403s (it defaults to no administration access). If an org policy still blocks the
+  # GITHUB_TOKEN from reading protection, set a BRANCH_PROTECTION_TOKEN secret (PAT/app token with
+  # administration:read) and this job prefers it (see the step env below).
+  administration: read
 
 jobs:
   audit:
