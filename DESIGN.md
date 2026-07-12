@@ -962,7 +962,7 @@ wants presence/discovery publishes a **service** and builds its contact book on 
   message ("who are you?") and reply with metadata, tying name↔address privately
   without any public name broadcast.
 
-None of this is in `hop-core`; the demo app (`apple/HopDemo`, `android/HopDemo`)
+None of this is in `hop-core`; the demo app (`apps/apple/HopDemo`, `apps/android/HopDemo`)
 implements presence + a contact book on top of the generic service API as the
 reference example.
 

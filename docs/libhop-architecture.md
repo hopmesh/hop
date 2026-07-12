@@ -87,7 +87,7 @@ Both shipping apps now drive the node via UniFFI **through the new isolated bear
   `HopContract` (pure Swift, no libhop, so no double-link of the Rust core with UniFFI's xcframework).
   `swift build` of HopDriver + hopmac + relaymac is clean; the app consumes it unchanged. The SDK was
   split into `HopContract` (libhop-free bearer kit) + `Hop` (libhop node) to enable this.
-- **Android**, `android/HopDemo` consumes `bearers/android/bearer-{ble,lan,relay}` +
+- **Android**, `apps/android/HopDemo` consumes `bearers/android/bearer-{ble,lan,relay}` +
   `:hop-sdk` (`sh.hop`) instead of the ble-lab modules; `:app` + `:hop-driver` `compileDebugKotlin`
   clean. (No double-core: JNA loads libhop.so lazily and the app never makes a `sh.hop.HopNode`.)
 

@@ -20,7 +20,7 @@ updates:
 
   # Marketing site (Astro / npm).
   - package-ecosystem: npm
-    directory: "/web"
+    directory: "/apps/web"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -45,7 +45,7 @@ updates:
 
   # Android demo app (Gradle).
   - package-ecosystem: gradle
-    directory: "/android/HopDemo"
+    directory: "/apps/android/HopDemo"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

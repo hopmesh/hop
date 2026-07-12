@@ -12,7 +12,7 @@ name: CI
 #   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check
 #                   plus the wasm-glue check (F-5: publish_recv_beacon/send_traced/
 #                   set_default_lifetime_ms/inbox_debug), builds the Astro site, and link-checks
-#                   web/dist (web-04 / quality-net-05 / infra-12).
+#                   apps/web/dist (web-04 / quality-net-05 / infra-12).
 #   - contract    : contract-purity guardrail, cbindgen header-drift, the ABI-version consistency guard
 #                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
 #                   pinned so an upstream release can't churn the gate.
@@ -157,7 +157,7 @@ jobs:
           key: cargo-android-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-android-${{ runner.os }}-
       # :hop-driver compiles against the UniFFI Kotlin bindings (uniffi.hop.*), which are GITIGNORED
-      # generated output (drivers/android/hop-driver reads ../../../android/HopDemo/generated/kotlin).
+      # generated output (drivers/android/hop-driver reads ../../../apps/android/HopDemo/generated/kotlin).
       # Generate them from the host libhop cdylib before gradle - the same bindings android/build-aar.sh
       # produces - so the driver resolves addressBase58 etc. The jniLibs (.so per ABI) are NOT needed for
       # JVM unit tests; an empty dir keeps AGP's srcDir happy.
@@ -166,8 +166,8 @@ jobs:
           cargo build -p hop
           cargo run -p hop --features cli --bin uniffi-bindgen -- \
             generate --library target/debug/libhop.so --language kotlin \
-            --out-dir android/HopDemo/generated/kotlin
-          mkdir -p android/HopDemo/generated/jniLibs
+            --out-dir apps/android/HopDemo/generated/kotlin
+          mkdir -p apps/android/HopDemo/generated/jniLibs
       # quality-net-01 / android-08 / infra-03: build the whole bearers/android gradle project
       # (:hop-sdk, :bearer-ble, :bearer-lan, :bearer-relay, :hop-driver) and run its JVM unit tests,
       # including :bearer-ble:testDebugUnitTest which is the dial-backoff (R7) regression. Uses the
@@ -208,9 +208,9 @@ jobs:
           :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification
           --no-daemon --stacktrace
 
-      # cov/android-demo: the demo app (android/HopDemo) is a SEPARATE gradle build from bearers/android
+      # cov/android-demo: the demo app (apps/android/HopDemo) is a SEPARATE gradle build from bearers/android
       # (its settings.gradle.kts points :hop-driver + the bearer modules at the SAME on-disk locations,
-      # so it reuses the uniffi bindings generated above under android/HopDemo/generated/kotlin). It had
+      # so it reuses the uniffi bindings generated above under apps/android/HopDemo/generated/kotlin). It had
       # NO test source set and no coverage task at all. Its pure, non-UI helpers were lifted out of the
       # wall-to-wall @Composable MainActivity.kt into DemoFormat.kt (platformLabel / transportIcon /
       # makeQrBitmap / jpegDownscale / messageMeta / normalizeHops / statusText) and are now unit-tested
@@ -222,7 +222,7 @@ jobs:
       # (messageMeta formats a Message via the driver's pure companion helpers), so the driver compiles
       # against the generated bindings and the tests run without the native cdylib.
       - name: Test HopDemo app (+ non-UI 80% line-coverage gate)
-        working-directory: android/HopDemo
+        working-directory: apps/android/HopDemo
         run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
 
   apple:
@@ -332,13 +332,13 @@ jobs:
       # build-only step below + the on-device workflow (the same rationale as the driver's radio-layer
       # exclusion). `swift test` also builds, so this doubles as HopDemoKit's build gate.
       - name: Test + coverage-gate HopDemoKit (>=95% of DemoFormat.swift)
-        run: bash tools/apple-cov-gate.sh apple/HopDemoKit Sources/HopDemoKit/DemoFormat.swift 95
+        run: bash tools/apple-cov-gate.sh apps/apple/HopDemoKit Sources/HopDemoKit/DemoFormat.swift 95
 
       # Build-only xcodebuild of the demo app: generate the project (XcodeGen), then build for the
       # simulator with signing disabled. This catches Swift/ABI breakage in the app half of the
       # product that a package-level swift build cannot (SwiftUI + Info.plist wiring).
       - name: Build HopDemo (no signing)
-        working-directory: apple/HopDemo
+        working-directory: apps/apple/HopDemo
         run: |
           brew install xcodegen
           xcodegen generate
@@ -452,20 +452,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install web deps
-        working-directory: web
+        working-directory: apps/web
         run: npm ci
 
       # The Astro build (prebuild syncs sim/ + learn/ into public/). A broken build fails here.
       - name: Build the marketing site (astro build)
-        working-directory: web
+        working-directory: apps/web
         run: npm run build
 
       # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
-      - name: Internal link check (web/dist)
-        run: node tools/check-web-links.mjs web/dist
+      - name: Internal link check (apps/web/dist)
+        run: node tools/check-web-links.mjs apps/web/dist
 
   contract:
     name: Contract purity + header drift + C smoke

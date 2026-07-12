@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CRATE=hop
-OUT=android/HopDemo/generated   # gradle sourceSets read ../generated from :app
+OUT=apps/android/HopDemo/generated   # gradle sourceSets read ../generated from :app
 T=target
 
 command -v cargo-ndk >/dev/null || { echo "missing: cargo install cargo-ndk"; exit 1; }

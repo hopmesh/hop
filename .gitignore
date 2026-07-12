@@ -20,19 +20,19 @@ apple/HopDriver/.build/
 # regenerate with xcodegen
 *.xcodeproj
 # xcodebuild output / DerivedData
-apple/HopDemo/build/
+apps/apple/HopDemo/build/
 **/xcuserdata/
 
 # ---- Android ----
-android/HopDemo/generated/
+apps/android/HopDemo/generated/
 .gradle/
-android/HopDemo/.gradle/
-android/HopDemo/build/
-android/HopDemo/app/build/
-android/HopDemo/local.properties
+apps/android/HopDemo/.gradle/
+apps/android/HopDemo/build/
+apps/android/HopDemo/app/build/
+apps/android/HopDemo/local.properties
 
 # Local marketing-site preview renders
-web/.preview/
+apps/web/.preview/
 apple/HopBearers/.build/
 
 # libhop C smoke-test binary (build artifact; source is examples/smoke.c)
@@ -43,7 +43,7 @@ sdk/wrappers/Hop/.build/
 bearers/apple/**/.build/
 
 # HopDemoKit (the demo app's pure, headlessly-tested logic) SwiftPM build dir
-apple/HopDemoKit/.build/
+apps/apple/HopDemoKit/.build/
 
 # Kotlin/JVM SDK build dirs
 sdk/wrappers/kotlin/.gradle/

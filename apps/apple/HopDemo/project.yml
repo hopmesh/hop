@@ -1,0 +1,76 @@
+# XcodeGen spec for the Hop iOS/iPadOS demo chat app.
+# Generate the project with:  cd apple/HopDemo && xcodegen
+# (run apple/build-xcframework.sh first so HopDriver's xcframework + bindings exist)
+#
+# The Hop runtime (bearer + transports + the FFI bindings + the xcframework) lives in the local
+# HopDriver SwiftPM package; this app is a thin SwiftUI consumer.
+name: HopDemo
+options:
+  bundleIdPrefix: sh.hopme
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+packages:
+  HopDriver:
+    # HopDriver moved to drivers/apple/HopDriver in the app cutover; project.yml was stale (the
+    # committed .xcodeproj had the right ref, so xcodegen never re-ran until the apple CI job).
+    path: ../../../drivers/apple/HopDriver
+  # HopDemoKit holds the app's pure, non-UI logic (formatting, parsing, QR + downscale bitmap
+  # builders) so it can be unit-tested headlessly (macOS `swift test`); it has no HopDriver dep.
+  HopDemoKit:
+    path: ../HopDemoKit
+targets:
+  HopDemo:
+    type: application
+    platform: iOS
+    sources:
+      - HopDemoApp.swift
+      - ContentView.swift
+      - QRViews.swift
+      - HopWebView.swift
+      - Assets.xcassets
+    dependencies:
+      - package: HopDriver
+        product: HopDriver
+      - package: HopDemoKit
+        product: HopDemoKit
+    info:
+      path: HopDemo-Info.plist
+      properties:
+        CFBundleDisplayName: Hop Debug
+        NSCameraUsageDescription: "Scan a Hop QR code to add someone as a contact."
+        # Keep BLE alive in the background and wake on BLE events (DESIGN.md §22). `location`
+        # lets us range the Hop iBeacon to extend the ~10s region-wake window so a relaunched
+        # app has runway to re-scan → connect → L2CAP before iOS re-suspends (BACKGROUND.md §3.1).
+        UIBackgroundModes: [bluetooth-central, bluetooth-peripheral, location, fetch, processing]
+        BGTaskSchedulerPermittedIdentifiers: [sh.hopme.refresh, sh.hopme.process]
+        NSBluetoothAlwaysUsageDescription: "Hop relays messages over Bluetooth so you can chat with people nearby without the internet."
+        NSLocationWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to notice people nearby so it can relay messages."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to wake and relay messages even when the app is in the background."
+        # MultipeerConnectivity Wi-Fi bearer (DESIGN.md §26) — required or it fails silently on iOS 14+.
+        NSLocalNetworkUsageDescription: "Hop meshes with nearby devices over Wi-Fi to relay messages without the internet."
+        NSBonjourServices: [_hop-mesh._tcp, _hop-mesh._udp, _hoplan._tcp]
+        # TEST/AUTOMATION: custom URL scheme so a headless harness can drive sends via
+        # `hopdemo://send?to=<base58>&text=<marker>` without UI tapping (HopDemoApp.handleAutomationURL).
+        CFBundleURLTypes:
+          - CFBundleURLName: sh.hopme.demo.automation
+            CFBundleURLSchemes: [hopdemo]
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.hopme.demo
+        # apple-r3-03: raise the container default file-protection to
+        # NSFileProtectionCompleteUntilFirstUserAuthentication so the SQLCipher sidecar (-wal/-shm) and
+        # any unclassed write are encrypted at rest, not just the per-file UI mirrors.
+        CODE_SIGN_ENTITLEMENTS: HopDemo.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        DEVELOPMENT_TEAM: 8H7HVPHS87
+        CODE_SIGN_STYLE: Automatic

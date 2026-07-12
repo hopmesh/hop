@@ -1,0 +1,671 @@
+--------- beginning of main
+07-07 00:37:25.829 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:37:25.842 11989 12013 I HOPLOG  : NODE START myId=05678ff3751d6fa10d1b8d6e3942e20e — symmetric dual role (peripheral + central)
+07-07 00:37:25.850 11989 12013 I HOPLOG  : PERIPHERAL listening psm=129 myId=05678ff3
+07-07 00:37:25.855 11989 12023 I HOPLOG  : GATT service added — starting advertiser
+07-07 00:37:25.860 11989 12013 I HOPLOG  : SCAN started mode=2 (0=LOW_POWER 1=BALANCED 2=LOW_LATENCY)
+07-07 00:37:25.860 11989 12013 I HOPLOG  : lan node-start myId=05678ff3751d6fa10d1b8d6e3942e20e service=_hoplan._tcp
+07-07 00:37:25.861 11989 12013 I HOPLOG  : shared bearers started (BLE+LAN+Relay) id=05678ff3
+07-07 00:37:25.862 11989 12030 I HOPLOG  : lan listening port=43317 name=05678ff3
+07-07 00:37:25.868 11989 12032 I HOPLOG  : relay node-start url=wss://relay.hopme.sh/ peer=7c4fb327
+07-07 00:37:25.868 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:25.870 11989 11989 I HOPLOG  : BEACON started status=0 txPower=-8
+07-07 00:37:25.876 11989 11989 I HOPLOG  : ADVERTISING started status=0 txPower=-8 prefix=05678ff3751d
+07-07 00:37:25.970 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:25.993 11989 11989 I HOPLOG  : DIALING addr=7A:C9:01:7A:E0:12 prefix=null inFlight=1
+07-07 00:37:25.999 11989 12023 I HOPLOG  : GATT connected addr=7A:C9:01:7A:E0:12 → discoverServices
+07-07 00:37:26.641 11989 12034 I HOPLOG  : lan nsd registered 05678ff3
+07-07 00:37:26.900 11989 12033 I HOPLOG  : lan inbound-connection (acceptor)
+07-07 00:37:26.902 11989 12033 I HOPLOG  : lan channel-ready isDialer=false — sent HELLO
+07-07 00:37:26.905 11989 12042 I HOPLOG  : lan hello-recv peer=675b6fd3 isDialer=false
+07-07 00:37:27.042 11989 12033 I HOPLOG  : lan inbound-connection (acceptor)
+07-07 00:37:27.042 11989 12033 I HOPLOG  : lan channel-ready isDialer=false — sent HELLO
+07-07 00:37:27.043 11989 12044 I HOPLOG  : lan hello-recv peer=3334b2e3 isDialer=false
+07-07 00:37:27.064 11989 12033 I HOPLOG  : lan inbound-connection (acceptor)
+07-07 00:37:27.064 11989 12033 I HOPLOG  : lan channel-ready isDialer=false — sent HELLO
+07-07 00:37:27.070 11989 12046 I HOPLOG  : lan hello-recv peer=850a6988 isDialer=false
+07-07 00:37:27.266 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:27.282 11989 12013 I HOPLOG  : peerLinks=3: H6g8Cbg6@1000000, CLUNwrg1@1000002, 3KRzkz1s@1000001
+07-07 00:37:27.308 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:27.903 11989 12013 I HOPLOG  : NODESTATE upLinks=3 peers=3 pend=0 id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false]
+07-07 00:37:28.168 11989 12023 I HOPLOG  : GATT services discovered addr=7A:C9:01:7A:E0:12 → readCharacteristic
+07-07 00:37:28.241 11989 12000 I HOPLOG  : READ psm=193 peer=850a6988 addr=7A:C9:01:7A:E0:12 → openL2CAP
+07-07 00:37:28.269 11989 12050 I HOPLOG  : L2CAP dialed psm=193 addr=7A:C9:01:7A:E0:12 — wrapping link
+07-07 00:37:28.271 11989 12050 I HOPLOG  : LINK OPENING isDialer=true reaper=3000ms — sent HELLO
+07-07 00:37:28.283 11989 12051 I HOPLOG  : LINK UP isDialer=true peer=850a6988 — HELLO both ways
+07-07 00:37:28.556 11989 12013 I HOPLOG  : peerLinks=4: CLUNwrg1@1000003, 3KRzkz1s@1000001, H6g8Cbg6@1000000, CLUNwrg1@1000002
+07-07 00:37:28.911 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:29.465 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:29.517 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:29.921 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:30.862 11989 12029 I HOPLOG  : STATUS links=1
+07-07 00:37:30.933 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:31.950 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:32.389 11989 12051 I HOPLOG  : RX peer counter advanced rx=1 peer=850a6988 rxBytes=16620
+07-07 00:37:32.390 11989 12051 I HOPLOG  : RX peer counter advanced rx=2 peer=850a6988 rxBytes=16641
+07-07 00:37:32.391 11989 12051 I HOPLOG  : RX peer counter advanced rx=3 peer=850a6988 rxBytes=16662
+07-07 00:37:32.392 11989 12051 I HOPLOG  : RX peer counter advanced rx=4 peer=850a6988 rxBytes=16683
+07-07 00:37:33.055 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:33.564 11989 12023 I HOPLOG  : GATT read → returning psm=129 to 4D:E8:F1:98:87:83
+07-07 00:37:33.682 11989 12023 I HOPLOG  : GATT read → returning psm=129 to 4D:E8:F1:98:87:83
+07-07 00:37:33.682 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:37:33.683 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:37:33.797 11989 12068 I HOPLOG  : LINK UP isDialer=false peer=3334b2e3 — HELLO both ways
+07-07 00:37:33.820 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:33.874 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:33.920 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:37:33.921 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:37:34.069 11989 12013 I HOPLOG  : NODESTATE upLinks=4 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false]
+07-07 00:37:34.130 11989 12073 I HOPLOG  : LINK UP isDialer=false peer=b703254e — HELLO both ways
+07-07 00:37:34.350 11989 12013 I HOPLOG  : peerLinks=5: CLUNwrg1@1000003, 3KRzkz1s@1000001, H6g8Cbg6@1000000, CLUNwrg1@1000002, 3KRzkz1s@1000004
+07-07 00:37:34.407 11989 12051 I HOPLOG  : RX peer counter advanced rx=5 peer=850a6988 rxBytes=22249
+07-07 00:37:34.455 11989 12051 I HOPLOG  : RX peer counter advanced rx=6 peer=850a6988 rxBytes=22668
+07-07 00:37:35.125 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:37:35.305 11989 12051 I HOPLOG  : RX peer counter advanced rx=7 peer=850a6988 rxBytes=22815
+07-07 00:37:35.394 11989 12073 I HOPLOG  : RX peer counter advanced rx=1 peer=b703254e rxBytes=44
+07-07 00:37:35.395 11989 12068 I HOPLOG  : RX peer counter advanced rx=1 peer=3334b2e3 rxBytes=17650
+07-07 00:37:35.861 11989 12029 I HOPLOG  : STATUS links=3
+07-07 00:37:35.930 11989 12068 I HOPLOG  : RX peer counter advanced rx=2 peer=3334b2e3 rxBytes=17671
+07-07 00:37:36.141 11989 12073 I HOPLOG  : RX peer counter advanced rx=2 peer=b703254e rxBytes=107
+07-07 00:37:36.144 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:37:36.300 11989 12051 I HOPLOG  : RX peer counter advanced rx=8 peer=850a6988 rxBytes=22857
+07-07 00:37:36.830 11989 12068 I HOPLOG  : RX peer counter advanced rx=3 peer=3334b2e3 rxBytes=18153
+07-07 00:37:37.168 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:37:37.188 11989 12073 I HOPLOG  : RX peer counter advanced rx=3 peer=b703254e rxBytes=149
+07-07 00:37:37.289 11989 12051 I HOPLOG  : RX peer counter advanced rx=9 peer=850a6988 rxBytes=23297
+07-07 00:37:37.887 11989 12068 I HOPLOG  : RX peer counter advanced rx=4 peer=3334b2e3 rxBytes=18195
+07-07 00:37:38.146 11989 12000 I HOPLOG  : GATT read → returning psm=129 to 77:95:83:4B:E2:F5
+07-07 00:37:38.156 11989 12073 I HOPLOG  : RX peer counter advanced rx=4 peer=b703254e rxBytes=191
+07-07 00:37:38.201 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:37:38.201 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:37:38.208 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=3 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:37:38.260 11989 12080 I HOPLOG  : LINK UP isDialer=false peer=350e354f — HELLO both ways
+07-07 00:37:38.285 11989 12051 I HOPLOG  : RX peer counter advanced rx=10 peer=850a6988 rxBytes=23339
+07-07 00:37:38.294 11989 11989 I HOPLOG  : SCAN started mode=1 (0=LOW_POWER 1=BALANCED 2=LOW_LATENCY)
+07-07 00:37:38.464 11989 12013 I HOPLOG  : peerLinks=6: CLUNwrg1@1000003, 3KRzkz1s@1000001, H6g8Cbg6@1000000, CLUNwrg1@1000002, 3KRzkz1s@1000004, 46ezenkM@1000006
+07-07 00:37:38.784 11989 12068 I HOPLOG  : RX peer counter advanced rx=5 peer=3334b2e3 rxBytes=18237
+07-07 00:37:39.206 11989 12073 I HOPLOG  : RX peer counter advanced rx=5 peer=b703254e rxBytes=233
+07-07 00:37:39.226 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:39.254 11989 12080 I HOPLOG  : RX peer counter advanced rx=1 peer=350e354f rxBytes=6568
+07-07 00:37:39.324 11989 12051 I HOPLOG  : RX peer counter advanced rx=11 peer=850a6988 rxBytes=23381
+07-07 00:37:39.896 11989 12068 I HOPLOG  : RX peer counter advanced rx=6 peer=3334b2e3 rxBytes=18279
+07-07 00:37:40.200 11989 12073 I HOPLOG  : RX peer counter advanced rx=6 peer=b703254e rxBytes=275
+07-07 00:37:40.250 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:40.307 11989 12051 I HOPLOG  : RX peer counter advanced rx=12 peer=850a6988 rxBytes=23423
+07-07 00:37:40.334 11989 12080 I HOPLOG  : RX peer counter advanced rx=2 peer=350e354f rxBytes=6631
+07-07 00:37:40.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:37:40.889 11989 12068 I HOPLOG  : RX peer counter advanced rx=7 peer=3334b2e3 rxBytes=18536
+07-07 00:37:41.157 11989 12073 I HOPLOG  : RX peer counter advanced rx=7 peer=b703254e rxBytes=317
+07-07 00:37:41.254 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:37:41.278 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:41.290 11989 12080 I HOPLOG  : RX peer counter advanced rx=3 peer=350e354f rxBytes=6888
+07-07 00:37:41.299 11989 12051 I HOPLOG  : RX peer counter advanced rx=13 peer=850a6988 rxBytes=23680
+07-07 00:37:41.813 11989 12068 I HOPLOG  : RX peer counter advanced rx=8 peer=3334b2e3 rxBytes=18578
+07-07 00:37:42.117 11989 12073 I HOPLOG  : RX peer counter advanced rx=8 peer=b703254e rxBytes=359
+07-07 00:37:42.288 11989 12051 I HOPLOG  : RX peer counter advanced rx=14 peer=850a6988 rxBytes=23722
+07-07 00:37:42.292 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:42.310 11989 12080 I HOPLOG  : RX peer counter advanced rx=4 peer=350e354f rxBytes=6930
+07-07 00:37:42.438 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:42.502 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:42.838 11989 12068 I HOPLOG  : RX peer counter advanced rx=9 peer=3334b2e3 rxBytes=18620
+07-07 00:37:43.136 11989 12073 I HOPLOG  : RX peer counter advanced rx=9 peer=b703254e rxBytes=401
+07-07 00:37:43.283 11989 12051 I HOPLOG  : RX peer counter advanced rx=15 peer=850a6988 rxBytes=23764
+07-07 00:37:43.311 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:43.365 11989 12080 I HOPLOG  : RX peer counter advanced rx=5 peer=350e354f rxBytes=11826
+07-07 00:37:43.829 11989 12068 I HOPLOG  : RX peer counter advanced rx=10 peer=3334b2e3 rxBytes=18662
+07-07 00:37:44.260 11989 12080 I HOPLOG  : RX peer counter advanced rx=6 peer=350e354f rxBytes=11868
+07-07 00:37:44.311 11989 12051 I HOPLOG  : RX peer counter advanced rx=16 peer=850a6988 rxBytes=23806
+07-07 00:37:44.317 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:44.455 11989 12073 I HOPLOG  : RX peer counter advanced rx=10 peer=b703254e rxBytes=443
+07-07 00:37:44.854 11989 12068 I HOPLOG  : RX peer counter advanced rx=11 peer=3334b2e3 rxBytes=23795
+07-07 00:37:45.174 11989 12073 I HOPLOG  : RX peer counter advanced rx=11 peer=b703254e rxBytes=485
+07-07 00:37:45.335 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:45.339 11989 12080 I HOPLOG  : RX peer counter advanced rx=7 peer=350e354f rxBytes=11910
+07-07 00:37:45.661 11989 12051 I HOPLOG  : RX peer counter advanced rx=17 peer=850a6988 rxBytes=28898
+07-07 00:37:45.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:37:45.925 11989 12068 I HOPLOG  : RX peer counter advanced rx=12 peer=3334b2e3 rxBytes=23837
+07-07 00:37:46.208 11989 12073 I HOPLOG  : RX peer counter advanced rx=12 peer=b703254e rxBytes=527
+07-07 00:37:46.276 11989 12080 I HOPLOG  : RX peer counter advanced rx=8 peer=350e354f rxBytes=11931
+07-07 00:37:46.297 11989 12051 I HOPLOG  : RX peer counter advanced rx=18 peer=850a6988 rxBytes=28940
+07-07 00:37:46.367 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:46.861 11989 12068 I HOPLOG  : RX peer counter advanced rx=13 peer=3334b2e3 rxBytes=24101
+07-07 00:37:47.192 11989 12073 I HOPLOG  : RX peer counter advanced rx=13 peer=b703254e rxBytes=569
+07-07 00:37:47.262 11989 12080 I HOPLOG  : RX peer counter advanced rx=9 peer=350e354f rxBytes=12216
+07-07 00:37:47.283 11989 12051 I HOPLOG  : RX peer counter advanced rx=19 peer=850a6988 rxBytes=29204
+07-07 00:37:47.399 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:47.910 11989 12068 I HOPLOG  : RX peer counter advanced rx=14 peer=3334b2e3 rxBytes=24143
+07-07 00:37:48.215 11989 12073 I HOPLOG  : RX peer counter advanced rx=14 peer=b703254e rxBytes=611
+07-07 00:37:48.255 11989 12080 I HOPLOG  : RX peer counter advanced rx=10 peer=350e354f rxBytes=12258
+07-07 00:37:48.323 11989 12051 I HOPLOG  : RX peer counter advanced rx=20 peer=850a6988 rxBytes=29246
+07-07 00:37:48.429 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:48.871 11989 12068 I HOPLOG  : RX peer counter advanced rx=15 peer=3334b2e3 rxBytes=24185
+07-07 00:37:49.198 11989 12073 I HOPLOG  : RX peer counter advanced rx=15 peer=b703254e rxBytes=653
+07-07 00:37:49.275 11989 12080 I HOPLOG  : RX peer counter advanced rx=11 peer=350e354f rxBytes=12492
+07-07 00:37:49.310 11989 12051 I HOPLOG  : RX peer counter advanced rx=21 peer=850a6988 rxBytes=29288
+07-07 00:37:49.463 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:49.892 11989 12068 I HOPLOG  : RX peer counter advanced rx=16 peer=3334b2e3 rxBytes=24227
+07-07 00:37:50.222 11989 12073 I HOPLOG  : RX peer counter advanced rx=16 peer=b703254e rxBytes=695
+07-07 00:37:50.303 11989 12051 I HOPLOG  : RX peer counter advanced rx=22 peer=850a6988 rxBytes=29330
+07-07 00:37:50.325 11989 12080 I HOPLOG  : RX peer counter advanced rx=12 peer=350e354f rxBytes=12555
+07-07 00:37:50.501 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:50.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:37:50.907 11989 12068 I HOPLOG  : RX peer counter advanced rx=17 peer=3334b2e3 rxBytes=24269
+07-07 00:37:51.151 11989 12073 I HOPLOG  : RX peer counter advanced rx=17 peer=b703254e rxBytes=737
+07-07 00:37:51.256 11989 12080 I HOPLOG  : RX peer counter advanced rx=13 peer=350e354f rxBytes=12576
+07-07 00:37:51.339 11989 12051 I HOPLOG  : RX peer counter advanced rx=23 peer=850a6988 rxBytes=29372
+07-07 00:37:51.535 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:51.865 11989 12068 I HOPLOG  : RX peer counter advanced rx=18 peer=3334b2e3 rxBytes=24311
+07-07 00:37:52.173 11989 12073 I HOPLOG  : RX peer counter advanced rx=18 peer=b703254e rxBytes=779
+07-07 00:37:52.278 11989 12080 I HOPLOG  : RX peer counter advanced rx=14 peer=350e354f rxBytes=12618
+07-07 00:37:52.328 11989 12051 I HOPLOG  : RX peer counter advanced rx=24 peer=850a6988 rxBytes=29414
+07-07 00:37:52.568 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:52.884 11989 12068 I HOPLOG  : RX peer counter advanced rx=19 peer=3334b2e3 rxBytes=24568
+07-07 00:37:53.215 11989 12073 I HOPLOG  : RX peer counter advanced rx=19 peer=b703254e rxBytes=821
+07-07 00:37:53.319 11989 12051 I HOPLOG  : RX peer counter advanced rx=25 peer=850a6988 rxBytes=29884
+07-07 00:37:53.357 11989 12080 I HOPLOG  : RX peer counter advanced rx=15 peer=350e354f rxBytes=13109
+07-07 00:37:53.599 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:53.877 11989 12068 I HOPLOG  : RX peer counter advanced rx=20 peer=3334b2e3 rxBytes=24823
+07-07 00:37:54.182 11989 12073 I HOPLOG  : RX peer counter advanced rx=20 peer=b703254e rxBytes=863
+07-07 00:37:54.250 11989 12080 I HOPLOG  : RX peer counter advanced rx=16 peer=350e354f rxBytes=13151
+07-07 00:37:54.308 11989 12051 I HOPLOG  : RX peer counter advanced rx=26 peer=850a6988 rxBytes=29926
+07-07 00:37:54.610 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:54.810 11989 12068 I HOPLOG  : RX peer counter advanced rx=21 peer=3334b2e3 rxBytes=24865
+07-07 00:37:55.139 11989 12073 I HOPLOG  : RX peer counter advanced rx=21 peer=b703254e rxBytes=905
+07-07 00:37:55.337 11989 12080 I HOPLOG  : RX peer counter advanced rx=17 peer=350e354f rxBytes=13193
+07-07 00:37:55.344 11989 12051 I HOPLOG  : RX peer counter advanced rx=27 peer=850a6988 rxBytes=29968
+07-07 00:37:55.633 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:55.794 11989 12068 I HOPLOG  : RX peer counter advanced rx=22 peer=3334b2e3 rxBytes=24907
+07-07 00:37:55.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:37:56.282 11989 12051 I HOPLOG  : RX peer counter advanced rx=28 peer=850a6988 rxBytes=30010
+07-07 00:37:56.321 11989 12080 I HOPLOG  : RX peer counter advanced rx=18 peer=350e354f rxBytes=18302
+07-07 00:37:56.640 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:37:56.642 11989 12073 I HOPLOG  : RX peer counter advanced rx=22 peer=b703254e rxBytes=947
+07-07 00:37:56.661 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:56.880 11989 12068 I HOPLOG  : RX peer counter advanced rx=23 peer=3334b2e3 rxBytes=30651
+07-07 00:37:57.215 11989 12073 I HOPLOG  : RX peer counter advanced rx=23 peer=b703254e rxBytes=989
+07-07 00:37:57.341 11989 12080 I HOPLOG  : RX peer counter advanced rx=19 peer=350e354f rxBytes=18344
+07-07 00:37:57.675 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:57.859 11989 12051 I HOPLOG  : RX peer counter advanced rx=29 peer=850a6988 rxBytes=35715
+07-07 00:37:57.864 11989 12068 I HOPLOG  : RX peer counter advanced rx=24 peer=3334b2e3 rxBytes=30693
+07-07 00:37:58.171 11989 12073 I HOPLOG  : RX peer counter advanced rx=24 peer=b703254e rxBytes=1031
+07-07 00:37:58.278 11989 12080 I HOPLOG  : RX peer counter advanced rx=20 peer=350e354f rxBytes=18365
+07-07 00:37:58.358 11989 12051 I HOPLOG  : RX peer counter advanced rx=30 peer=850a6988 rxBytes=35757
+07-07 00:37:58.531 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:37:58.641 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:37:58.698 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:58.890 11989 12068 I HOPLOG  : RX peer counter advanced rx=25 peer=3334b2e3 rxBytes=30735
+07-07 00:37:59.192 11989 12073 I HOPLOG  : RX peer counter advanced rx=25 peer=b703254e rxBytes=1073
+07-07 00:37:59.265 11989 12080 I HOPLOG  : RX peer counter advanced rx=21 peer=350e354f rxBytes=18428
+07-07 00:37:59.305 11989 12051 I HOPLOG  : RX peer counter advanced rx=31 peer=850a6988 rxBytes=35799
+07-07 00:37:59.723 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:37:59.881 11989 12068 I HOPLOG  : RX peer counter advanced rx=26 peer=3334b2e3 rxBytes=30777
+07-07 00:38:00.174 11989 12073 I HOPLOG  : RX peer counter advanced rx=26 peer=b703254e rxBytes=1115
+07-07 00:38:00.289 11989 12051 I HOPLOG  : RX peer counter advanced rx=32 peer=850a6988 rxBytes=35841
+07-07 00:38:00.344 11989 12080 I HOPLOG  : RX peer counter advanced rx=22 peer=350e354f rxBytes=18470
+07-07 00:38:00.744 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:00.835 11989 12068 I HOPLOG  : RX peer counter advanced rx=27 peer=3334b2e3 rxBytes=31034
+07-07 00:38:00.862 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:38:01.173 11989 12073 I HOPLOG  : RX peer counter advanced rx=27 peer=b703254e rxBytes=1157
+07-07 00:38:01.276 11989 12080 I HOPLOG  : RX peer counter advanced rx=23 peer=350e354f rxBytes=18706
+07-07 00:38:01.285 11989 12051 I HOPLOG  : RX peer counter advanced rx=33 peer=850a6988 rxBytes=36098
+07-07 00:38:01.771 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:01.891 11989 12068 I HOPLOG  : RX peer counter advanced rx=28 peer=3334b2e3 rxBytes=31076
+07-07 00:38:02.159 11989 12073 I HOPLOG  : RX peer counter advanced rx=28 peer=b703254e rxBytes=1199
+07-07 00:38:02.267 11989 12080 I HOPLOG  : RX peer counter advanced rx=24 peer=350e354f rxBytes=18748
+07-07 00:38:02.316 11989 12051 I HOPLOG  : RX peer counter advanced rx=34 peer=850a6988 rxBytes=36140
+07-07 00:38:02.790 11989 12068 I HOPLOG  : RX peer counter advanced rx=29 peer=3334b2e3 rxBytes=31516
+07-07 00:38:02.806 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:03.183 11989 12073 I HOPLOG  : RX peer counter advanced rx=29 peer=b703254e rxBytes=1241
+07-07 00:38:03.256 11989 12080 I HOPLOG  : RX peer counter advanced rx=25 peer=350e354f rxBytes=18811
+07-07 00:38:03.309 11989 12051 I HOPLOG  : RX peer counter advanced rx=35 peer=850a6988 rxBytes=36580
+07-07 00:38:03.834 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:03.836 11989 12068 I HOPLOG  : RX peer counter advanced rx=30 peer=3334b2e3 rxBytes=31558
+07-07 00:38:04.194 11989 12073 I HOPLOG  : RX peer counter advanced rx=30 peer=b703254e rxBytes=1283
+07-07 00:38:04.271 11989 12080 I HOPLOG  : RX peer counter advanced rx=26 peer=350e354f rxBytes=18832
+07-07 00:38:04.297 11989 12051 I HOPLOG  : RX peer counter advanced rx=36 peer=850a6988 rxBytes=36622
+07-07 00:38:04.856 11989 12068 I HOPLOG  : RX peer counter advanced rx=31 peer=3334b2e3 rxBytes=31600
+07-07 00:38:04.862 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:05.155 11989 12073 I HOPLOG  : RX peer counter advanced rx=31 peer=b703254e rxBytes=1325
+07-07 00:38:05.282 11989 12051 I HOPLOG  : RX peer counter advanced rx=37 peer=850a6988 rxBytes=37062
+07-07 00:38:05.326 11989 12080 I HOPLOG  : RX peer counter advanced rx=27 peer=350e354f rxBytes=18895
+07-07 00:38:05.821 11989 12068 I HOPLOG  : RX peer counter advanced rx=32 peer=3334b2e3 rxBytes=32040
+07-07 00:38:05.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:38:05.885 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:06.205 11989 12073 I HOPLOG  : RX peer counter advanced rx=32 peer=b703254e rxBytes=1367
+07-07 00:38:06.249 11989 12080 I HOPLOG  : RX peer counter advanced rx=28 peer=350e354f rxBytes=18937
+07-07 00:38:06.325 11989 12051 I HOPLOG  : RX peer counter advanced rx=38 peer=850a6988 rxBytes=37104
+07-07 00:38:06.804 11989 12068 I HOPLOG  : RX peer counter advanced rx=33 peer=3334b2e3 rxBytes=32480
+07-07 00:38:06.894 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:07.142 11989 12073 I HOPLOG  : RX peer counter advanced rx=33 peer=b703254e rxBytes=1409
+07-07 00:38:07.271 11989 12080 I HOPLOG  : RX peer counter advanced rx=29 peer=350e354f rxBytes=19401
+07-07 00:38:07.308 11989 12051 I HOPLOG  : RX peer counter advanced rx=39 peer=850a6988 rxBytes=37766
+07-07 00:38:07.795 11989 12068 I HOPLOG  : RX peer counter advanced rx=34 peer=3334b2e3 rxBytes=32744
+07-07 00:38:07.932 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=false,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:08.162 11989 12073 I HOPLOG  : RX peer counter advanced rx=34 peer=b703254e rxBytes=1451
+07-07 00:38:08.268 11989 12080 I HOPLOG  : RX peer counter advanced rx=30 peer=350e354f rxBytes=24510
+07-07 00:38:08.305 11989 12051 I HOPLOG  : RX peer counter advanced rx=40 peer=850a6988 rxBytes=37808
+07-07 00:38:08.691 11989 11989 I HOPLOG  : HOPAUTO sent to=CLUNwrg1 text=rr1_pixel2xr_fgfg_1783406284
+07-07 00:38:08.814 11989 12068 I HOPLOG  : RX peer counter advanced rx=35 peer=3334b2e3 rxBytes=33230
+07-07 00:38:08.950 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=1 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:09.251 11989 12080 I HOPLOG  : RX peer counter advanced rx=31 peer=350e354f rxBytes=25491
+07-07 00:38:09.625 11989 12073 I HOPLOG  : RX peer counter advanced rx=35 peer=b703254e rxBytes=1493
+07-07 00:38:09.653 11989 12051 I HOPLOG  : RX peer counter advanced rx=41 peer=850a6988 rxBytes=43559
+07-07 00:38:09.873 11989 12068 I HOPLOG  : RX peer counter advanced rx=36 peer=3334b2e3 rxBytes=38576
+07-07 00:38:09.958 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:10.142 11989 12073 I HOPLOG  : RX peer counter advanced rx=36 peer=b703254e rxBytes=1535
+07-07 00:38:10.277 11989 12051 I HOPLOG  : RX peer counter advanced rx=42 peer=850a6988 rxBytes=43601
+07-07 00:38:10.329 11989 12080 I HOPLOG  : RX peer counter advanced rx=32 peer=350e354f rxBytes=25533
+07-07 00:38:10.861 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:38:10.890 11989 12068 I HOPLOG  : RX peer counter advanced rx=37 peer=3334b2e3 rxBytes=38618
+07-07 00:38:10.979 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:11.162 11989 12073 I HOPLOG  : RX peer counter advanced rx=37 peer=b703254e rxBytes=1577
+07-07 00:38:11.262 11989 12080 I HOPLOG  : RX peer counter advanced rx=33 peer=350e354f rxBytes=25575
+07-07 00:38:11.312 11989 12051 I HOPLOG  : RX peer counter advanced rx=43 peer=850a6988 rxBytes=43643
+07-07 00:38:11.936 11989 12068 I HOPLOG  : RX peer counter advanced rx=38 peer=3334b2e3 rxBytes=38660
+07-07 00:38:11.982 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:38:11.995 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:12.174 11989 12073 I HOPLOG  : RX peer counter advanced rx=38 peer=b703254e rxBytes=1619
+07-07 00:38:12.253 11989 12080 I HOPLOG  : RX peer counter advanced rx=34 peer=350e354f rxBytes=25596
+07-07 00:38:12.303 11989 12051 I HOPLOG  : RX peer counter advanced rx=44 peer=850a6988 rxBytes=43685
+07-07 00:38:12.866 11989 12068 I HOPLOG  : RX peer counter advanced rx=39 peer=3334b2e3 rxBytes=38917
+07-07 00:38:13.012 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:13.198 11989 12073 I HOPLOG  : RX peer counter advanced rx=39 peer=b703254e rxBytes=1661
+07-07 00:38:13.271 11989 12080 I HOPLOG  : RX peer counter advanced rx=35 peer=350e354f rxBytes=26087
+07-07 00:38:13.293 11989 12051 I HOPLOG  : RX peer counter advanced rx=45 peer=850a6988 rxBytes=44155
+07-07 00:38:13.832 11989 12068 I HOPLOG  : RX peer counter advanced rx=40 peer=3334b2e3 rxBytes=39172
+07-07 00:38:14.032 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000003=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:14.187 11989 12073 I HOPLOG  : RX peer counter advanced rx=40 peer=b703254e rxBytes=1703
+07-07 00:38:14.260 11989 12080 I HOPLOG  : RX peer counter advanced rx=36 peer=350e354f rxBytes=26129
+07-07 00:38:14.284 11989 12051 I HOPLOG  : RX peer counter advanced rx=46 peer=850a6988 rxBytes=44197
+07-07 00:38:14.735 11989 12051 I HOPLOG  : LINK CLOSED (read: eof) isDialer=true peer=850a6988
+07-07 00:38:14.769 11989 11989 I HOPLOG  : DIALING addr=7A:C9:01:7A:E0:12 prefix=null inFlight=1
+07-07 00:38:14.798 11989 12023 I HOPLOG  : GATT connected addr=7A:C9:01:7A:E0:12 → discoverServices
+07-07 00:38:14.832 11989 12023 I HOPLOG  : GATT state addr=7A:C9:01:7A:E0:12 status=19 newState=0 → close()
+07-07 00:38:14.876 11989 12068 I HOPLOG  : RX peer counter advanced rx=41 peer=3334b2e3 rxBytes=39214
+07-07 00:38:15.005 11989 12013 I HOPLOG  : peerLinks=5: 3KRzkz1s@1000001, H6g8Cbg6@1000000, CLUNwrg1@1000002, 3KRzkz1s@1000004, 46ezenkM@1000006
+07-07 00:38:15.046 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000002=a86d8c[sec=true,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:15.072 11989 12046 I HOPLOG  : lan link-down (read: Connection reset) peer=850a6988 isDialer=false
+07-07 00:38:15.198 11989 12073 I HOPLOG  : RX peer counter advanced rx=41 peer=b703254e rxBytes=1745
+07-07 00:38:15.296 11989 12013 I HOPLOG  : peerLinks=4: 3KRzkz1s@1000001, H6g8Cbg6@1000000, 3KRzkz1s@1000004, 46ezenkM@1000006
+07-07 00:38:15.339 11989 12080 I HOPLOG  : RX peer counter advanced rx=37 peer=350e354f rxBytes=26171
+07-07 00:38:15.834 11989 12068 I HOPLOG  : RX peer counter advanced rx=42 peer=3334b2e3 rxBytes=39256
+07-07 00:38:15.862 11989 12029 I HOPLOG  : STATUS links=3
+07-07 00:38:15.931 11989 12033 I HOPLOG  : lan inbound-connection (acceptor)
+07-07 00:38:15.932 11989 12033 I HOPLOG  : lan channel-ready isDialer=false — sent HELLO
+07-07 00:38:15.934 11989 12167 I HOPLOG  : lan hello-recv peer=4e554f3b isDialer=false
+07-07 00:38:16.120 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:16.123 11989 11989 I HOPLOG  : DIALING addr=7A:C9:01:7A:E0:12 prefix=null inFlight=1
+07-07 00:38:16.173 11989 12023 I HOPLOG  : GATT connected addr=7A:C9:01:7A:E0:12 → discoverServices
+07-07 00:38:16.182 11989 12013 I HOPLOG  : peerLinks=5: CLUNwrg1@1000007, 3KRzkz1s@1000001, H6g8Cbg6@1000000, 3KRzkz1s@1000004, 46ezenkM@1000006
+07-07 00:38:16.186 11989 12073 I HOPLOG  : RX peer counter advanced rx=42 peer=b703254e rxBytes=1787
+07-07 00:38:16.299 11989 12080 I HOPLOG  : RX peer counter advanced rx=38 peer=350e354f rxBytes=26925
+07-07 00:38:16.878 11989 12068 I HOPLOG  : RX peer counter advanced rx=43 peer=3334b2e3 rxBytes=40408
+07-07 00:38:17.135 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:17.241 11989 12073 I HOPLOG  : RX peer counter advanced rx=43 peer=b703254e rxBytes=1829
+07-07 00:38:17.267 11989 12080 I HOPLOG  : RX peer counter advanced rx=39 peer=350e354f rxBytes=26967
+07-07 00:38:17.843 11989 12068 I HOPLOG  : RX peer counter advanced rx=44 peer=3334b2e3 rxBytes=40450
+07-07 00:38:18.152 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:18.198 11989 12073 I HOPLOG  : RX peer counter advanced rx=44 peer=b703254e rxBytes=1871
+07-07 00:38:18.318 11989 12080 I HOPLOG  : RX peer counter advanced rx=40 peer=350e354f rxBytes=27009
+07-07 00:38:18.827 11989 12068 I HOPLOG  : RX peer counter advanced rx=45 peer=3334b2e3 rxBytes=40492
+07-07 00:38:19.164 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000004=227017[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false]
+07-07 00:38:19.188 11989 12073 I HOPLOG  : RX peer counter advanced rx=45 peer=b703254e rxBytes=1913
+07-07 00:38:19.332 11989 12080 I HOPLOG  : RX peer counter advanced rx=41 peer=350e354f rxBytes=27051
+07-07 00:38:19.624 11989 12023 I HOPLOG  : GATT read → returning psm=129 to 7A:C9:01:7A:E0:12
+07-07 00:38:19.683 11989 12023 I HOPLOG  : GATT read → returning psm=129 to 7A:C9:01:7A:E0:12
+07-07 00:38:19.688 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:38:19.689 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:38:19.738 11989 12176 I HOPLOG  : LINK UP isDialer=false peer=4e554f3b — HELLO both ways
+07-07 00:38:19.774 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:38:19.775 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:38:19.789 11989 12068 I HOPLOG  : RX peer counter advanced rx=46 peer=3334b2e3 rxBytes=40534
+07-07 00:38:19.891 11989 12178 I HOPLOG  : LINK UP isDialer=false peer=205e716b — HELLO both ways
+07-07 00:38:20.153 11989 12073 I HOPLOG  : RX peer counter advanced rx=46 peer=b703254e rxBytes=1955
+07-07 00:38:20.180 11989 12013 I HOPLOG  : NODESTATE upLinks=5 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:20.321 11989 12080 I HOPLOG  : RX peer counter advanced rx=42 peer=350e354f rxBytes=27093
+07-07 00:38:20.448 11989 12013 I HOPLOG  : peerLinks=6: CLUNwrg1@1000007, 3KRzkz1s@1000001, H6g8Cbg6@1000000, CLUNwrg1@1000008, 46ezenkM@1000006, 3KRzkz1s@1000004
+07-07 00:38:20.806 11989 12068 I HOPLOG  : RX peer counter advanced rx=47 peer=3334b2e3 rxBytes=40791
+07-07 00:38:20.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:21.189 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:21.257 11989 12073 I HOPLOG  : RX peer counter advanced rx=47 peer=b703254e rxBytes=1997
+07-07 00:38:21.279 11989 12080 I HOPLOG  : RX peer counter advanced rx=43 peer=350e354f rxBytes=32912
+07-07 00:38:21.803 11989 12068 I HOPLOG  : RX peer counter advanced rx=48 peer=3334b2e3 rxBytes=46350
+07-07 00:38:22.162 11989 12073 I HOPLOG  : RX peer counter advanced rx=48 peer=b703254e rxBytes=2039
+07-07 00:38:22.201 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:22.271 11989 12080 I HOPLOG  : RX peer counter advanced rx=44 peer=350e354f rxBytes=32954
+07-07 00:38:22.792 11989 12068 I HOPLOG  : RX peer counter advanced rx=49 peer=3334b2e3 rxBytes=46392
+07-07 00:38:23.184 11989 12073 I HOPLOG  : RX peer counter advanced rx=49 peer=b703254e rxBytes=2081
+07-07 00:38:23.220 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:23.349 11989 12080 I HOPLOG  : RX peer counter advanced rx=45 peer=350e354f rxBytes=32996
+07-07 00:38:23.873 11989 12068 I HOPLOG  : RX peer counter advanced rx=50 peer=3334b2e3 rxBytes=46434
+07-07 00:38:24.203 11989 12073 I HOPLOG  : RX peer counter advanced rx=50 peer=b703254e rxBytes=2123
+07-07 00:38:24.236 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:24.305 11989 12080 I HOPLOG  : RX peer counter advanced rx=46 peer=350e354f rxBytes=33038
+07-07 00:38:24.887 11989 12068 I HOPLOG  : RX peer counter advanced rx=51 peer=3334b2e3 rxBytes=46476
+07-07 00:38:25.162 11989 12073 I HOPLOG  : RX peer counter advanced rx=51 peer=b703254e rxBytes=2165
+07-07 00:38:25.256 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:25.365 11989 12080 I HOPLOG  : RX peer counter advanced rx=47 peer=350e354f rxBytes=33080
+07-07 00:38:25.779 11989 12179 I HOPLOG  : LINK CLOSED (liveness DEAD (silent 5887ms > 5000ms)) isDialer=false peer=205e716b
+07-07 00:38:25.847 11989 12068 I HOPLOG  : RX peer counter advanced rx=52 peer=3334b2e3 rxBytes=46518
+07-07 00:38:25.860 11989 12029 I HOPLOG  : STATUS links=4
+07-07 00:38:26.185 11989 12073 I HOPLOG  : RX peer counter advanced rx=52 peer=b703254e rxBytes=2207
+07-07 00:38:26.255 11989 12080 I HOPLOG  : RX peer counter advanced rx=48 peer=350e354f rxBytes=33101
+07-07 00:38:26.281 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:26.340 11989 12176 I HOPLOG  : RX peer counter advanced rx=1 peer=4e554f3b rxBytes=21547
+07-07 00:38:26.341 11989 12176 I HOPLOG  : RX peer counter advanced rx=2 peer=4e554f3b rxBytes=21568
+07-07 00:38:26.341 11989 12176 I HOPLOG  : RX peer counter advanced rx=3 peer=4e554f3b rxBytes=21589
+07-07 00:38:26.342 11989 12176 I HOPLOG  : RX peer counter advanced rx=4 peer=4e554f3b rxBytes=21610
+07-07 00:38:26.369 11989 12176 I HOPLOG  : RX peer counter advanced rx=5 peer=4e554f3b rxBytes=21631
+07-07 00:38:26.490 11989 12176 I HOPLOG  : RX peer counter advanced rx=6 peer=4e554f3b rxBytes=21652
+07-07 00:38:26.737 11989 12176 I HOPLOG  : RX peer counter advanced rx=7 peer=4e554f3b rxBytes=21673
+07-07 00:38:26.775 11989 11989 W HOPLOG  : DIAL TIMEOUT addr=7A:C9:01:7A:E0:12 → refresh cache + closing GATT
+07-07 00:38:26.816 11989 12068 I HOPLOG  : RX peer counter advanced rx=53 peer=3334b2e3 rxBytes=46539
+07-07 00:38:27.201 11989 12073 I HOPLOG  : RX peer counter advanced rx=53 peer=b703254e rxBytes=2249
+07-07 00:38:27.249 11989 12080 I HOPLOG  : RX peer counter advanced rx=49 peer=350e354f rxBytes=33143
+07-07 00:38:27.286 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:38:27.299 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:27.837 11989 12068 I HOPLOG  : RX peer counter advanced rx=54 peer=3334b2e3 rxBytes=47201
+07-07 00:38:28.134 11989 12073 I HOPLOG  : RX peer counter advanced rx=54 peer=b703254e rxBytes=2270
+07-07 00:38:28.321 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:28.325 11989 12080 I HOPLOG  : RX peer counter advanced rx=50 peer=350e354f rxBytes=33407
+07-07 00:38:28.818 11989 12068 I HOPLOG  : RX peer counter advanced rx=55 peer=3334b2e3 rxBytes=47243
+07-07 00:38:29.179 11989 12073 I HOPLOG  : RX peer counter advanced rx=55 peer=b703254e rxBytes=2333
+07-07 00:38:29.314 11989 12080 I HOPLOG  : RX peer counter advanced rx=51 peer=350e354f rxBytes=33641
+07-07 00:38:29.336 11989 11989 I HOPLOG  : DIALING addr=7A:C9:01:7A:E0:12 prefix=null inFlight=1
+07-07 00:38:29.342 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:29.348 11989 12188 I HOPLOG  : GATT connected addr=7A:C9:01:7A:E0:12 → discoverServices
+07-07 00:38:29.351 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:38:29.417 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:38:29.888 11989 12176 I HOPLOG  : RX peer counter advanced rx=8 peer=4e554f3b rxBytes=28904
+07-07 00:38:29.898 11989 12068 I HOPLOG  : RX peer counter advanced rx=56 peer=3334b2e3 rxBytes=47285
+07-07 00:38:29.907 11989 12176 I HOPLOG  : RX peer counter advanced rx=9 peer=4e554f3b rxBytes=29051
+07-07 00:38:30.006 11989 12188 I HOPLOG  : GATT read → returning psm=129 to 7A:C9:01:7A:E0:12
+07-07 00:38:30.031 11989 12176 I HOPLOG  : RX peer counter advanced rx=10 peer=4e554f3b rxBytes=29093
+07-07 00:38:30.197 11989 12073 I HOPLOG  : RX peer counter advanced rx=56 peer=b703254e rxBytes=2354
+07-07 00:38:30.365 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:30.400 11989 12080 I HOPLOG  : RX peer counter advanced rx=52 peer=350e354f rxBytes=33725
+07-07 00:38:30.490 11989 12027 I HOPLOG  : ACCEPTED inbound L2CAP — wrapping link (reaper armed)
+07-07 00:38:30.491 11989 12027 I HOPLOG  : LINK OPENING isDialer=false reaper=3000ms — sent HELLO
+07-07 00:38:30.602 11989 12194 I HOPLOG  : LINK UP isDialer=false peer=205e716b — HELLO both ways
+07-07 00:38:30.749 11989 12176 I HOPLOG  : RX peer counter advanced rx=11 peer=4e554f3b rxBytes=29177
+07-07 00:38:30.829 11989 12068 I HOPLOG  : RX peer counter advanced rx=57 peer=3334b2e3 rxBytes=47348
+07-07 00:38:30.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:31.165 11989 12073 I HOPLOG  : RX peer counter advanced rx=57 peer=b703254e rxBytes=2417
+07-07 00:38:31.298 11989 12080 I HOPLOG  : RX peer counter advanced rx=53 peer=350e354f rxBytes=33767
+07-07 00:38:31.393 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:31.678 11989 12194 I HOPLOG  : RX peer counter advanced rx=1 peer=205e716b rxBytes=65
+07-07 00:38:31.767 11989 12176 I HOPLOG  : RX peer counter advanced rx=12 peer=4e554f3b rxBytes=29219
+07-07 00:38:31.787 11989 12068 I HOPLOG  : RX peer counter advanced rx=58 peer=3334b2e3 rxBytes=47390
+07-07 00:38:32.183 11989 12073 I HOPLOG  : RX peer counter advanced rx=58 peer=b703254e rxBytes=2459
+07-07 00:38:32.318 11989 12080 I HOPLOG  : RX peer counter advanced rx=54 peer=350e354f rxBytes=33809
+07-07 00:38:32.413 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:32.697 11989 12194 I HOPLOG  : RX peer counter advanced rx=2 peer=205e716b rxBytes=107
+07-07 00:38:32.757 11989 12176 I HOPLOG  : RX peer counter advanced rx=13 peer=4e554f3b rxBytes=29261
+07-07 00:38:32.807 11989 12068 I HOPLOG  : RX peer counter advanced rx=59 peer=3334b2e3 rxBytes=47432
+07-07 00:38:33.170 11989 12073 I HOPLOG  : RX peer counter advanced rx=59 peer=b703254e rxBytes=2501
+07-07 00:38:33.332 11989 12080 I HOPLOG  : RX peer counter advanced rx=55 peer=350e354f rxBytes=39839
+07-07 00:38:33.429 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:33.689 11989 12194 I HOPLOG  : RX peer counter advanced rx=3 peer=205e716b rxBytes=149
+07-07 00:38:33.695 11989 12095 I HOPLOG  : GATT services discovered addr=7A:C9:01:7A:E0:12 → readCharacteristic
+07-07 00:38:33.697 11989 12188 I HOPLOG  : GATT services discovered addr=7A:C9:01:7A:E0:12 → readCharacteristic
+07-07 00:38:33.780 11989 12176 I HOPLOG  : RX peer counter advanced rx=14 peer=4e554f3b rxBytes=29516
+07-07 00:38:33.799 11989 12068 I HOPLOG  : RX peer counter advanced rx=60 peer=3334b2e3 rxBytes=47687
+07-07 00:38:33.901 11989 12188 I HOPLOG  : GATT read: already linked to 4e554f3b → cancel dial
+07-07 00:38:34.018 11989 12095 I HOPLOG  : GATT read: already linked to 4e554f3b → cancel dial
+07-07 00:38:34.279 11989 12073 I HOPLOG  : RX peer counter advanced rx=60 peer=b703254e rxBytes=2543
+07-07 00:38:34.323 11989 12080 I HOPLOG  : RX peer counter advanced rx=56 peer=350e354f rxBytes=39881
+07-07 00:38:34.449 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:34.681 11989 12194 I HOPLOG  : RX peer counter advanced rx=4 peer=205e716b rxBytes=191
+07-07 00:38:34.738 11989 12176 I HOPLOG  : RX peer counter advanced rx=15 peer=4e554f3b rxBytes=29558
+07-07 00:38:34.817 11989 12068 I HOPLOG  : RX peer counter advanced rx=61 peer=3334b2e3 rxBytes=53459
+07-07 00:38:35.149 11989 12073 I HOPLOG  : RX peer counter advanced rx=61 peer=b703254e rxBytes=2585
+07-07 00:38:35.351 11989 12080 I HOPLOG  : RX peer counter advanced rx=57 peer=350e354f rxBytes=40138
+07-07 00:38:35.469 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:35.671 11989 12194 I HOPLOG  : RX peer counter advanced rx=5 peer=205e716b rxBytes=233
+07-07 00:38:35.758 11989 12176 I HOPLOG  : RX peer counter advanced rx=16 peer=4e554f3b rxBytes=30213
+07-07 00:38:35.822 11989 12068 I HOPLOG  : RX peer counter advanced rx=62 peer=3334b2e3 rxBytes=54114
+07-07 00:38:35.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:36.217 11989 12073 I HOPLOG  : RX peer counter advanced rx=62 peer=b703254e rxBytes=2627
+07-07 00:38:36.320 11989 12080 I HOPLOG  : RX peer counter advanced rx=58 peer=350e354f rxBytes=40180
+07-07 00:38:36.498 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:36.688 11989 12194 I HOPLOG  : RX peer counter advanced rx=6 peer=205e716b rxBytes=275
+07-07 00:38:36.747 11989 12176 I HOPLOG  : RX peer counter advanced rx=17 peer=4e554f3b rxBytes=30653
+07-07 00:38:36.811 11989 12068 I HOPLOG  : RX peer counter advanced rx=63 peer=3334b2e3 rxBytes=54554
+07-07 00:38:37.147 11989 12073 I HOPLOG  : RX peer counter advanced rx=63 peer=b703254e rxBytes=2669
+07-07 00:38:37.342 11989 12080 I HOPLOG  : RX peer counter advanced rx=59 peer=350e354f rxBytes=40422
+07-07 00:38:37.517 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:37.688 11989 12194 I HOPLOG  : RX peer counter advanced rx=7 peer=205e716b rxBytes=317
+07-07 00:38:37.744 11989 12176 I HOPLOG  : RX peer counter advanced rx=18 peer=4e554f3b rxBytes=30695
+07-07 00:38:37.862 11989 12068 I HOPLOG  : RX peer counter advanced rx=64 peer=3334b2e3 rxBytes=54596
+07-07 00:38:38.133 11989 12073 I HOPLOG  : RX peer counter advanced rx=64 peer=b703254e rxBytes=2711
+07-07 00:38:38.362 11989 12080 I HOPLOG  : RX peer counter advanced rx=60 peer=350e354f rxBytes=40464
+07-07 00:38:38.527 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:38.679 11989 12194 I HOPLOG  : RX peer counter advanced rx=8 peer=205e716b rxBytes=359
+07-07 00:38:38.762 11989 12176 I HOPLOG  : RX peer counter advanced rx=19 peer=4e554f3b rxBytes=30737
+07-07 00:38:38.882 11989 12068 I HOPLOG  : RX peer counter advanced rx=65 peer=3334b2e3 rxBytes=54638
+07-07 00:38:39.182 11989 12073 I HOPLOG  : RX peer counter advanced rx=65 peer=b703254e rxBytes=2753
+07-07 00:38:39.288 11989 12080 I HOPLOG  : RX peer counter advanced rx=61 peer=350e354f rxBytes=40506
+07-07 00:38:39.549 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:39.814 11989 12068 I HOPLOG  : RX peer counter advanced rx=66 peer=3334b2e3 rxBytes=54659
+07-07 00:38:40.151 11989 12073 I HOPLOG  : RX peer counter advanced rx=66 peer=b703254e rxBytes=2795
+07-07 00:38:40.336 11989 12080 I HOPLOG  : RX peer counter advanced rx=62 peer=350e354f rxBytes=40548
+07-07 00:38:40.560 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:40.647 11989 12176 I HOPLOG  : RX peer counter advanced rx=20 peer=4e554f3b rxBytes=37186
+07-07 00:38:40.704 11989 12194 I HOPLOG  : RX peer counter advanced rx=9 peer=205e716b rxBytes=401
+07-07 00:38:40.828 11989 12194 I HOPLOG  : RX peer counter advanced rx=10 peer=205e716b rxBytes=422
+07-07 00:38:40.847 11989 12068 I HOPLOG  : RX peer counter advanced rx=67 peer=3334b2e3 rxBytes=55219
+07-07 00:38:40.858 11989 12176 I HOPLOG  : RX peer counter advanced rx=21 peer=4e554f3b rxBytes=37704
+07-07 00:38:40.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:41.148 11989 12073 I HOPLOG  : RX peer counter advanced rx=67 peer=b703254e rxBytes=2837
+07-07 00:38:41.257 11989 12080 I HOPLOG  : RX peer counter advanced rx=63 peer=350e354f rxBytes=41087
+07-07 00:38:41.575 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:41.668 11989 12194 I HOPLOG  : RX peer counter advanced rx=11 peer=205e716b rxBytes=485
+07-07 00:38:41.762 11989 12176 I HOPLOG  : RX peer counter advanced rx=22 peer=4e554f3b rxBytes=37767
+07-07 00:38:41.865 11989 12068 I HOPLOG  : RX peer counter advanced rx=68 peer=3334b2e3 rxBytes=55261
+07-07 00:38:42.138 11989 12073 I HOPLOG  : RX peer counter advanced rx=68 peer=b703254e rxBytes=2879
+07-07 00:38:42.336 11989 12080 I HOPLOG  : RX peer counter advanced rx=64 peer=350e354f rxBytes=41129
+07-07 00:38:42.580 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:38:42.600 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:42.687 11989 12194 I HOPLOG  : RX peer counter advanced rx=12 peer=205e716b rxBytes=527
+07-07 00:38:42.753 11989 12176 I HOPLOG  : RX peer counter advanced rx=23 peer=4e554f3b rxBytes=37809
+07-07 00:38:42.833 11989 12068 I HOPLOG  : RX peer counter advanced rx=69 peer=3334b2e3 rxBytes=55303
+07-07 00:38:43.156 11989 12073 I HOPLOG  : RX peer counter advanced rx=69 peer=b703254e rxBytes=2921
+07-07 00:38:43.266 11989 12080 I HOPLOG  : RX peer counter advanced rx=65 peer=350e354f rxBytes=41171
+07-07 00:38:43.628 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:43.676 11989 12194 I HOPLOG  : RX peer counter advanced rx=13 peer=205e716b rxBytes=569
+07-07 00:38:43.737 11989 12176 I HOPLOG  : RX peer counter advanced rx=24 peer=4e554f3b rxBytes=37851
+07-07 00:38:43.821 11989 12068 I HOPLOG  : RX peer counter advanced rx=70 peer=3334b2e3 rxBytes=55345
+07-07 00:38:44.205 11989 12073 I HOPLOG  : RX peer counter advanced rx=70 peer=b703254e rxBytes=2963
+07-07 00:38:44.346 11989 12080 I HOPLOG  : RX peer counter advanced rx=66 peer=350e354f rxBytes=41213
+07-07 00:38:44.648 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:44.670 11989 12194 I HOPLOG  : RX peer counter advanced rx=14 peer=205e716b rxBytes=611
+07-07 00:38:44.762 11989 12176 I HOPLOG  : RX peer counter advanced rx=25 peer=4e554f3b rxBytes=37893
+07-07 00:38:44.896 11989 12068 I HOPLOG  : RX peer counter advanced rx=71 peer=3334b2e3 rxBytes=55387
+07-07 00:38:45.168 11989 12073 I HOPLOG  : RX peer counter advanced rx=71 peer=b703254e rxBytes=3005
+07-07 00:38:45.330 11989 12080 I HOPLOG  : RX peer counter advanced rx=67 peer=350e354f rxBytes=41255
+07-07 00:38:45.686 11989 12194 I HOPLOG  : RX peer counter advanced rx=15 peer=205e716b rxBytes=653
+07-07 00:38:45.692 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:45.746 11989 12176 I HOPLOG  : RX peer counter advanced rx=26 peer=4e554f3b rxBytes=38333
+07-07 00:38:45.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:45.890 11989 12068 I HOPLOG  : RX peer counter advanced rx=72 peer=3334b2e3 rxBytes=55827
+07-07 00:38:46.251 11989 12073 I HOPLOG  : RX peer counter advanced rx=72 peer=b703254e rxBytes=3047
+07-07 00:38:46.260 11989 12080 I HOPLOG  : RX peer counter advanced rx=68 peer=350e354f rxBytes=47072
+07-07 00:38:46.684 11989 12194 I HOPLOG  : RX peer counter advanced rx=16 peer=205e716b rxBytes=695
+07-07 00:38:46.709 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:46.722 11989 12176 I HOPLOG  : RX peer counter advanced rx=27 peer=4e554f3b rxBytes=38375
+07-07 00:38:46.853 11989 12068 I HOPLOG  : RX peer counter advanced rx=73 peer=3334b2e3 rxBytes=61599
+07-07 00:38:47.213 11989 12073 I HOPLOG  : RX peer counter advanced rx=73 peer=b703254e rxBytes=3089
+07-07 00:38:47.259 11989 12080 I HOPLOG  : RX peer counter advanced rx=69 peer=350e354f rxBytes=47114
+07-07 00:38:47.672 11989 12194 I HOPLOG  : RX peer counter advanced rx=17 peer=205e716b rxBytes=737
+07-07 00:38:47.741 11989 12176 I HOPLOG  : RX peer counter advanced rx=28 peer=4e554f3b rxBytes=38417
+07-07 00:38:47.745 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:47.901 11989 12068 I HOPLOG  : RX peer counter advanced rx=74 peer=3334b2e3 rxBytes=61863
+07-07 00:38:48.232 11989 12073 I HOPLOG  : RX peer counter advanced rx=74 peer=b703254e rxBytes=3131
+07-07 00:38:48.276 11989 12080 I HOPLOG  : RX peer counter advanced rx=70 peer=350e354f rxBytes=47357
+07-07 00:38:48.687 11989 12194 I HOPLOG  : RX peer counter advanced rx=18 peer=205e716b rxBytes=779
+07-07 00:38:48.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=29 peer=4e554f3b rxBytes=38681
+07-07 00:38:48.759 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:48.891 11989 12068 I HOPLOG  : RX peer counter advanced rx=75 peer=3334b2e3 rxBytes=61905
+07-07 00:38:49.193 11989 12073 I HOPLOG  : RX peer counter advanced rx=75 peer=b703254e rxBytes=3173
+07-07 00:38:49.267 11989 12080 I HOPLOG  : RX peer counter advanced rx=71 peer=350e354f rxBytes=47633
+07-07 00:38:49.681 11989 12194 I HOPLOG  : RX peer counter advanced rx=19 peer=205e716b rxBytes=821
+07-07 00:38:49.741 11989 12176 I HOPLOG  : RX peer counter advanced rx=30 peer=4e554f3b rxBytes=38723
+07-07 00:38:49.784 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:49.879 11989 12068 I HOPLOG  : RX peer counter advanced rx=76 peer=3334b2e3 rxBytes=61947
+07-07 00:38:50.178 11989 12073 I HOPLOG  : RX peer counter advanced rx=76 peer=b703254e rxBytes=3215
+07-07 00:38:50.346 11989 12080 I HOPLOG  : RX peer counter advanced rx=72 peer=350e354f rxBytes=47675
+07-07 00:38:50.667 11989 12194 I HOPLOG  : RX peer counter advanced rx=20 peer=205e716b rxBytes=863
+07-07 00:38:50.731 11989 12176 I HOPLOG  : RX peer counter advanced rx=31 peer=4e554f3b rxBytes=38786
+07-07 00:38:50.815 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:50.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:50.898 11989 12068 I HOPLOG  : RX peer counter advanced rx=77 peer=3334b2e3 rxBytes=61989
+07-07 00:38:51.134 11989 12073 I HOPLOG  : RX peer counter advanced rx=77 peer=b703254e rxBytes=3257
+07-07 00:38:51.271 11989 12080 I HOPLOG  : RX peer counter advanced rx=73 peer=350e354f rxBytes=47717
+07-07 00:38:51.795 11989 12068 I HOPLOG  : RX peer counter advanced rx=78 peer=3334b2e3 rxBytes=62031
+07-07 00:38:51.828 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:52.185 11989 12073 I HOPLOG  : RX peer counter advanced rx=78 peer=b703254e rxBytes=3299
+07-07 00:38:52.259 11989 12080 I HOPLOG  : RX peer counter advanced rx=74 peer=350e354f rxBytes=47759
+07-07 00:38:52.741 11989 12176 I HOPLOG  : RX peer counter advanced rx=32 peer=4e554f3b rxBytes=45633
+07-07 00:38:52.765 11989 12194 I HOPLOG  : RX peer counter advanced rx=21 peer=205e716b rxBytes=905
+07-07 00:38:52.794 11989 12194 I HOPLOG  : RX peer counter advanced rx=22 peer=205e716b rxBytes=947
+07-07 00:38:52.810 11989 12176 I HOPLOG  : RX peer counter advanced rx=33 peer=4e554f3b rxBytes=45654
+07-07 00:38:52.843 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:52.906 11989 12068 I HOPLOG  : RX peer counter advanced rx=79 peer=3334b2e3 rxBytes=62073
+07-07 00:38:53.175 11989 12073 I HOPLOG  : RX peer counter advanced rx=79 peer=b703254e rxBytes=3341
+07-07 00:38:53.348 11989 12080 I HOPLOG  : RX peer counter advanced rx=75 peer=350e354f rxBytes=48014
+07-07 00:38:53.684 11989 12194 I HOPLOG  : RX peer counter advanced rx=23 peer=205e716b rxBytes=989
+07-07 00:38:53.730 11989 12176 I HOPLOG  : RX peer counter advanced rx=34 peer=4e554f3b rxBytes=45909
+07-07 00:38:53.866 11989 12068 I HOPLOG  : RX peer counter advanced rx=80 peer=3334b2e3 rxBytes=62328
+07-07 00:38:53.866 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:54.195 11989 12073 I HOPLOG  : RX peer counter advanced rx=80 peer=b703254e rxBytes=3383
+07-07 00:38:54.304 11989 12080 I HOPLOG  : RX peer counter advanced rx=76 peer=350e354f rxBytes=48056
+07-07 00:38:54.704 11989 12194 I HOPLOG  : RX peer counter advanced rx=24 peer=205e716b rxBytes=1031
+07-07 00:38:54.749 11989 12176 I HOPLOG  : RX peer counter advanced rx=35 peer=4e554f3b rxBytes=45972
+07-07 00:38:54.830 11989 12068 I HOPLOG  : RX peer counter advanced rx=81 peer=3334b2e3 rxBytes=62370
+07-07 00:38:54.899 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:55.186 11989 12073 I HOPLOG  : RX peer counter advanced rx=81 peer=b703254e rxBytes=3425
+07-07 00:38:55.329 11989 12080 I HOPLOG  : RX peer counter advanced rx=77 peer=350e354f rxBytes=48313
+07-07 00:38:55.676 11989 12194 I HOPLOG  : RX peer counter advanced rx=25 peer=205e716b rxBytes=1073
+07-07 00:38:55.739 11989 12176 I HOPLOG  : RX peer counter advanced rx=36 peer=4e554f3b rxBytes=46208
+07-07 00:38:55.849 11989 12068 I HOPLOG  : RX peer counter advanced rx=82 peer=3334b2e3 rxBytes=62627
+07-07 00:38:55.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:38:55.924 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:56.177 11989 12073 I HOPLOG  : RX peer counter advanced rx=82 peer=b703254e rxBytes=3467
+07-07 00:38:56.249 11989 12080 I HOPLOG  : RX peer counter advanced rx=78 peer=350e354f rxBytes=48355
+07-07 00:38:56.685 11989 12194 I HOPLOG  : RX peer counter advanced rx=26 peer=205e716b rxBytes=1115
+07-07 00:38:56.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=37 peer=4e554f3b rxBytes=46250
+07-07 00:38:56.864 11989 12068 I HOPLOG  : RX peer counter advanced rx=83 peer=3334b2e3 rxBytes=62669
+07-07 00:38:56.931 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:57.254 11989 12073 I HOPLOG  : RX peer counter advanced rx=83 peer=b703254e rxBytes=3509
+07-07 00:38:57.274 11989 12080 I HOPLOG  : RX peer counter advanced rx=79 peer=350e354f rxBytes=48376
+07-07 00:38:57.669 11989 12194 I HOPLOG  : RX peer counter advanced rx=27 peer=205e716b rxBytes=1157
+07-07 00:38:57.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=38 peer=4e554f3b rxBytes=46313
+07-07 00:38:57.893 11989 12068 I HOPLOG  : RX peer counter advanced rx=84 peer=3334b2e3 rxBytes=62711
+07-07 00:38:57.950 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:38:57.961 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:58.184 11989 12073 I HOPLOG  : RX peer counter advanced rx=84 peer=b703254e rxBytes=3551
+07-07 00:38:58.258 11989 12080 I HOPLOG  : RX peer counter advanced rx=80 peer=350e354f rxBytes=54427
+07-07 00:38:58.698 11989 12194 I HOPLOG  : RX peer counter advanced rx=28 peer=205e716b rxBytes=1199
+07-07 00:38:58.740 11989 12176 I HOPLOG  : RX peer counter advanced rx=39 peer=4e554f3b rxBytes=46732
+07-07 00:38:58.879 11989 12068 I HOPLOG  : RX peer counter advanced rx=85 peer=3334b2e3 rxBytes=63151
+07-07 00:38:59.062 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:38:59.278 11989 12080 I HOPLOG  : RX peer counter advanced rx=81 peer=350e354f rxBytes=54469
+07-07 00:38:59.502 11989 12073 I HOPLOG  : RX peer counter advanced rx=85 peer=b703254e rxBytes=3593
+07-07 00:38:59.685 11989 12194 I HOPLOG  : RX peer counter advanced rx=29 peer=205e716b rxBytes=1241
+07-07 00:38:59.730 11989 12176 I HOPLOG  : RX peer counter advanced rx=40 peer=4e554f3b rxBytes=46774
+07-07 00:38:59.898 11989 12068 I HOPLOG  : RX peer counter advanced rx=86 peer=3334b2e3 rxBytes=69136
+07-07 00:39:00.076 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:00.196 11989 12073 I HOPLOG  : RX peer counter advanced rx=86 peer=b703254e rxBytes=3635
+07-07 00:39:00.297 11989 12032 I HOPLOG  : relay dial wss://relay.hopme.sh/
+07-07 00:39:00.329 11989 12080 I HOPLOG  : RX peer counter advanced rx=82 peer=350e354f rxBytes=54511
+07-07 00:39:00.360 11989 12032 W HOPLOG  : relay failed: connection closed
+07-07 00:39:00.687 11989 12194 I HOPLOG  : RX peer counter advanced rx=30 peer=205e716b rxBytes=1283
+07-07 00:39:00.734 11989 12176 I HOPLOG  : RX peer counter advanced rx=41 peer=4e554f3b rxBytes=47031
+07-07 00:39:00.861 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:39:00.944 11989 12068 I HOPLOG  : RX peer counter advanced rx=87 peer=3334b2e3 rxBytes=69393
+07-07 00:39:01.094 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:01.219 11989 12073 I HOPLOG  : RX peer counter advanced rx=87 peer=b703254e rxBytes=3677
+07-07 00:39:01.296 11989 12080 I HOPLOG  : RX peer counter advanced rx=83 peer=350e354f rxBytes=54747
+07-07 00:39:01.698 11989 12194 I HOPLOG  : RX peer counter advanced rx=31 peer=205e716b rxBytes=1325
+07-07 00:39:01.754 11989 12176 I HOPLOG  : RX peer counter advanced rx=42 peer=4e554f3b rxBytes=47094
+07-07 00:39:01.909 11989 12068 I HOPLOG  : RX peer counter advanced rx=88 peer=3334b2e3 rxBytes=69435
+07-07 00:39:02.125 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:02.181 11989 12073 I HOPLOG  : RX peer counter advanced rx=88 peer=b703254e rxBytes=3719
+07-07 00:39:02.254 11989 12080 I HOPLOG  : RX peer counter advanced rx=84 peer=350e354f rxBytes=54789
+07-07 00:39:02.678 11989 12194 I HOPLOG  : RX peer counter advanced rx=32 peer=205e716b rxBytes=1367
+07-07 00:39:02.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=43 peer=4e554f3b rxBytes=47115
+07-07 00:39:02.959 11989 12068 I HOPLOG  : RX peer counter advanced rx=89 peer=3334b2e3 rxBytes=69477
+07-07 00:39:03.132 11989 12073 I HOPLOG  : RX peer counter advanced rx=89 peer=b703254e rxBytes=3761
+07-07 00:39:03.161 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:03.273 11989 12080 I HOPLOG  : RX peer counter advanced rx=85 peer=350e354f rxBytes=54831
+07-07 00:39:03.940 11989 12068 I HOPLOG  : RX peer counter advanced rx=90 peer=3334b2e3 rxBytes=69519
+07-07 00:39:03.941 11989 12176 I HOPLOG  : RX peer counter advanced rx=44 peer=4e554f3b rxBytes=53779
+07-07 00:39:03.968 11989 12194 I HOPLOG  : RX peer counter advanced rx=33 peer=205e716b rxBytes=1409
+07-07 00:39:04.181 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:04.212 11989 12073 I HOPLOG  : RX peer counter advanced rx=90 peer=b703254e rxBytes=3803
+07-07 00:39:04.259 11989 12080 I HOPLOG  : RX peer counter advanced rx=86 peer=350e354f rxBytes=54873
+07-07 00:39:04.678 11989 12194 I HOPLOG  : RX peer counter advanced rx=34 peer=205e716b rxBytes=1451
+07-07 00:39:04.739 11989 12176 I HOPLOG  : RX peer counter advanced rx=45 peer=4e554f3b rxBytes=53842
+07-07 00:39:04.938 11989 12068 I HOPLOG  : RX peer counter advanced rx=91 peer=3334b2e3 rxBytes=69540
+07-07 00:39:05.203 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:05.206 11989 12073 I HOPLOG  : RX peer counter advanced rx=91 peer=b703254e rxBytes=3845
+07-07 00:39:05.341 11989 12080 I HOPLOG  : RX peer counter advanced rx=87 peer=350e354f rxBytes=54936
+07-07 00:39:05.685 11989 12194 I HOPLOG  : RX peer counter advanced rx=35 peer=205e716b rxBytes=1493
+07-07 00:39:05.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=46 peer=4e554f3b rxBytes=53863
+07-07 00:39:05.862 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:39:05.898 11989 12068 I HOPLOG  : RX peer counter advanced rx=92 peer=3334b2e3 rxBytes=69582
+07-07 00:39:06.253 11989 12073 I HOPLOG  : RX peer counter advanced rx=92 peer=b703254e rxBytes=3887
+07-07 00:39:06.255 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:06.268 11989 12080 I HOPLOG  : RX peer counter advanced rx=88 peer=350e354f rxBytes=54978
+07-07 00:39:06.665 11989 12194 I HOPLOG  : RX peer counter advanced rx=36 peer=205e716b rxBytes=1535
+07-07 00:39:06.729 11989 12176 I HOPLOG  : RX peer counter advanced rx=47 peer=4e554f3b rxBytes=54722
+07-07 00:39:06.914 11989 12068 I HOPLOG  : RX peer counter advanced rx=93 peer=3334b2e3 rxBytes=70420
+07-07 00:39:07.182 11989 12073 I HOPLOG  : RX peer counter advanced rx=93 peer=b703254e rxBytes=3929
+07-07 00:39:07.267 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:07.289 11989 12080 I HOPLOG  : RX peer counter advanced rx=89 peer=350e354f rxBytes=55220
+07-07 00:39:07.691 11989 12194 I HOPLOG  : RX peer counter advanced rx=37 peer=205e716b rxBytes=1577
+07-07 00:39:07.751 11989 12176 I HOPLOG  : RX peer counter advanced rx=48 peer=4e554f3b rxBytes=54764
+07-07 00:39:07.906 11989 12068 I HOPLOG  : RX peer counter advanced rx=94 peer=3334b2e3 rxBytes=70483
+07-07 00:39:08.262 11989 12073 I HOPLOG  : RX peer counter advanced rx=94 peer=b703254e rxBytes=3971
+07-07 00:39:08.288 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:08.307 11989 12080 I HOPLOG  : RX peer counter advanced rx=90 peer=350e354f rxBytes=55262
+07-07 00:39:08.684 11989 12194 I HOPLOG  : RX peer counter advanced rx=38 peer=205e716b rxBytes=1619
+07-07 00:39:08.725 11989 12176 I HOPLOG  : RX peer counter advanced rx=49 peer=4e554f3b rxBytes=55007
+07-07 00:39:08.867 11989 12068 I HOPLOG  : RX peer counter advanced rx=95 peer=3334b2e3 rxBytes=70747
+07-07 00:39:09.221 11989 12073 I HOPLOG  : RX peer counter advanced rx=95 peer=b703254e rxBytes=4013
+07-07 00:39:09.295 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:09.329 11989 12080 I HOPLOG  : RX peer counter advanced rx=91 peer=350e354f rxBytes=55739
+07-07 00:39:09.672 11989 12194 I HOPLOG  : RX peer counter advanced rx=39 peer=205e716b rxBytes=1661
+07-07 00:39:09.732 11989 12176 I HOPLOG  : RX peer counter advanced rx=50 peer=4e554f3b rxBytes=55049
+07-07 00:39:09.856 11989 12068 I HOPLOG  : RX peer counter advanced rx=96 peer=3334b2e3 rxBytes=70789
+07-07 00:39:10.184 11989 12073 I HOPLOG  : RX peer counter advanced rx=96 peer=b703254e rxBytes=4055
+07-07 00:39:10.313 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:10.347 11989 12080 I HOPLOG  : RX peer counter advanced rx=92 peer=350e354f rxBytes=55781
+07-07 00:39:10.672 11989 12194 I HOPLOG  : RX peer counter advanced rx=40 peer=205e716b rxBytes=1703
+07-07 00:39:10.732 11989 12176 I HOPLOG  : RX peer counter advanced rx=51 peer=4e554f3b rxBytes=55112
+07-07 00:39:10.818 11989 12068 I HOPLOG  : RX peer counter advanced rx=97 peer=3334b2e3 rxBytes=70831
+07-07 00:39:10.862 11989 12029 I HOPLOG  : STATUS links=5
+07-07 00:39:11.247 11989 12080 I HOPLOG  : RX peer counter advanced rx=93 peer=350e354f rxBytes=62024
+07-07 00:39:11.325 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:11.411 11989 12073 I HOPLOG  : RX peer counter advanced rx=97 peer=b703254e rxBytes=4097
+07-07 00:39:11.679 11989 12194 I HOPLOG  : RX peer counter advanced rx=41 peer=205e716b rxBytes=1745
+07-07 00:39:11.727 11989 12176 I HOPLOG  : RX peer counter advanced rx=52 peer=4e554f3b rxBytes=55133
+07-07 00:39:11.807 11989 12068 I HOPLOG  : RX peer counter advanced rx=98 peer=3334b2e3 rxBytes=76816
+07-07 00:39:12.131 11989 12073 I HOPLOG  : RX peer counter advanced rx=98 peer=b703254e rxBytes=4139
+07-07 00:39:12.274 11989 12080 I HOPLOG  : RX peer counter advanced rx=94 peer=350e354f rxBytes=62066
+07-07 00:39:12.346 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:12.667 11989 12194 I HOPLOG  : RX peer counter advanced rx=42 peer=205e716b rxBytes=1787
+07-07 00:39:12.728 11989 12176 I HOPLOG  : RX peer counter advanced rx=53 peer=4e554f3b rxBytes=55175
+07-07 00:39:12.886 11989 12068 I HOPLOG  : RX peer counter advanced rx=99 peer=3334b2e3 rxBytes=76858
+07-07 00:39:13.125 11989 12073 I HOPLOG  : RX peer counter advanced rx=99 peer=b703254e rxBytes=4181
+07-07 00:39:13.257 11989 12080 I HOPLOG  : RX peer counter advanced rx=95 peer=350e354f rxBytes=62321
+07-07 00:39:13.350 11989 12013 I HOPLOG  : HOPAUTO self=qwZi1GToZBJSJpggAD4Rr2cp6ibqXR4QqedKayvPzxe name=Pixel 7
+07-07 00:39:13.369 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:13.687 11989 12194 I HOPLOG  : RX peer counter advanced rx=43 peer=205e716b rxBytes=1829
+07-07 00:39:13.733 11989 12176 I HOPLOG  : RX peer counter advanced rx=54 peer=4e554f3b rxBytes=55430
+07-07 00:39:13.846 11989 12068 I HOPLOG  : RX peer counter advanced rx=100 peer=3334b2e3 rxBytes=77113
+07-07 00:39:14.206 11989 12073 I HOPLOG  : RX peer counter advanced rx=100 peer=b703254e rxBytes=4223
+07-07 00:39:14.247 11989 12080 I HOPLOG  : RX peer counter advanced rx=96 peer=350e354f rxBytes=62363
+07-07 00:39:14.395 11989 12013 I HOPLOG  : NODESTATE upLinks=6 peers=4 pend=0 id1000007=a86d8c[sec=true,rt=false] id1000001=227017[sec=false,rt=false] id1000000=ef2f21[sec=false,rt=false] id1000008=a86d8c[sec=true,rt=false] id1000006=2e05ec[sec=false,rt=false] id1000004=227017[sec=false,rt=false]
+07-07 00:39:14.675 11989 12194 I HOPLOG  : RX peer counter advanced rx=44 peer=205e716b rxBytes=1871
+07-07 00:39:14.737 11989 12176 I HOPLOG  : RX peer counter advanced rx=55 peer=4e554f3b rxBytes=55472
