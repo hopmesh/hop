@@ -7,9 +7,13 @@ name: Branch protection audit
 # live branch-protection rule on `main` requires EXACTLY that set, so drift is caught IN-REPO (a failing
 # scheduled run) instead of being trusted forever.
 #
-# Needs a token that can read branch protection (admin:repo). The default GITHUB_TOKEN can read
-# protection on many repos; if it 403s, set a repo/org secret BRANCH_PROTECTION_TOKEN (a PAT or app
-# token with the `administration:read` permission on hopmesh/hop) and this job uses it.
+# Needs a token that can READ branch protection, which requires repo-administration access. The default
+# GITHUB_TOKEN CANNOT be granted this: `administration` is not a valid `permissions:` scope (GitHub
+# rejects the whole workflow file if you try, which is exactly what broke this audit, it ran 0 jobs), and
+# the token has no admin access by default regardless. So the live assertion runs ONLY when a
+# BRANCH_PROTECTION_TOKEN secret (a fine-grained PAT / app token with `administration: read` on this repo)
+# is set; without it the audit skips with an actionable notice rather than a misleading permanent red.
+# To arm the drift-detector: create that PAT and add it as the BRANCH_PROTECTION_TOKEN repo secret.
 
 on:
   schedule:
@@ -26,11 +30,6 @@ on:
 
 permissions:
   contents: read
-  # Reading a branch-protection rule requires repo administration scope. Without this the default
-  # GITHUB_TOKEN 403s (it defaults to no administration access). If an org policy still blocks the
-  # GITHUB_TOKEN from reading protection, set a BRANCH_PROTECTION_TOKEN secret (PAT/app token with
-  # administration:read) and this job prefers it (see the step env below).
-  administration: read
 
 jobs:
   audit:
@@ -43,9 +42,16 @@ jobs:
       - name: Required-check allowlist is in sync (in-repo)
         run: bash tools/check-required-checks.sh
 
-      # Then: assert the LIVE branch protection on main requires exactly the ci.yml job names.
+      # Then: assert the LIVE branch protection on main requires exactly the ci.yml job names. This runs
+      # ONLY with a real admin-read PAT (BRANCH_PROTECTION_TOKEN); the default GITHUB_TOKEN 403s on the
+      # protection API, so without the secret we skip with an actionable notice instead of a false red.
       - name: Assert main branch protection requires the CI checks
         env:
-          GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN || github.token }}
+          BP_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: bash tools/check-branch-protection.sh
+        run: |
+          if [ -z "${BP_TOKEN:-}" ]; then
+            echo "::notice title=branch-protection audit skipped::BRANCH_PROTECTION_TOKEN is not set, so the live protection rule could not be read (the default GITHUB_TOKEN lacks administration:read). To arm this drift-detector, add a fine-grained PAT with 'administration: read' on this repo as the BRANCH_PROTECTION_TOKEN secret."
+            exit 0
+          fi
+          GH_TOKEN="$BP_TOKEN" bash tools/check-branch-protection.sh
