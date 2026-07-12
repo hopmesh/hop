@@ -300,7 +300,7 @@ jobs:
       # DoH + notifications; HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator:
       # it cannot run under macOS `swift test` and is covered by the on-device / cross-platform workflow
       # (testkit + real devices). Keychain.swift has its own dedicated tests and is not part of this surface.
-      - name: Test HopDriver (headless node + Keychain) + 80% coverage floor
+      - name: Test HopDriver (headless node + Keychain) + aggregate & per-file coverage floors
         working-directory: drivers/apple/HopDriver
         run: |
           set -euo pipefail
@@ -308,12 +308,23 @@ jobs:
           BIN_DIR="$(swift build --show-bin-path)"
           XCTEST="$BIN_DIR/HopDriverPackageTests.xctest/Contents/MacOS/HopDriverPackageTests"
           PROF="$BIN_DIR/codecov/default.profdata"
-          PCT=$(xcrun llvm-cov report "$XCTEST" -instr-profile "$PROF" \
+          REPORT=$(xcrun llvm-cov report "$XCTEST" -instr-profile "$PROF" \
                   -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift|Keychain\.swift' \
-                  Sources/HopDriver/ \
-                | awk '/^TOTAL/ { print $(NF-3) }' | tr -d '%')
+                  Sources/HopDriver/)
+          # Aggregate floor (unchanged): the whole pure-logic surface stays at or above 80%.
+          PCT=$(printf '%s\n' "$REPORT" | awk '/^TOTAL/ { print $(NF-3) }' | tr -d '%')
           echo "HopDriver pure-logic aggregate line coverage (headless, non-device denominator): ${PCT}%"
-          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopDriver pure-logic aggregate below the 80% coverage floor"; exit 1 } print "OK: at or above the 80% floor" }'
+          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopDriver pure-logic aggregate below the 80% coverage floor"; exit 1 } print "OK: aggregate at or above the 80% floor" }'
+          # Per-file floor (cov/apple-hns): a single untested file must not hide behind the aggregate
+          # again. HopBearer+Hns.swift sat at ~59% under a green aggregate until this branch lifted it to
+          # ~99%. Every non-excluded source file must now clear 70% line coverage ON ITS OWN, so a file
+          # that regresses fails loudly instead of being averaged away.
+          printf '%s\n' "$REPORT" | awk '
+            /\.swift/ {
+              pct=$(NF-3); gsub(/%/, "", pct);
+              if (pct+0 < 70) { printf "FAIL: %s at %s%% is below the 70%% per-file floor\n", $1, pct; bad=1 }
+            }
+            END { if (bad) { exit 1 } print "OK: every non-excluded HopDriver source file is at or above the 70% per-file floor" }'
 
       # cov/apple-demo: the demo app's pure, non-UI logic (transport-icon/tag mapping, peer subline,
       # message-meta formatting, hops:// URL normalization, MIME/request-path parsing, QR payload
