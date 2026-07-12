@@ -30,21 +30,21 @@ apps/android/HopDemo/app/build/
 apps/android/HopDemo/local.properties
 
 # Local marketing-site preview renders
-apps/web/.preview/
+apps/web/site/.preview/
 
 # libhop C smoke-test binary (build artifact; source is examples/smoke.c)
 core/hop/examples/smoke
 
 # SwiftPM build dirs for the SDK wrappers / bearer packages
-sdk/wrappers/apple/.build/
+sdk/apple/.build/
 bearers/apple/**/.build/
 
 # HopDemoKit (the demo app's pure, headlessly-tested logic) SwiftPM build dir
 apps/apple/HopDemoKit/.build/
 
 # Kotlin/JVM SDK build dirs
-sdk/wrappers/android/.gradle/
-sdk/wrappers/android/build/
+sdk/android/.gradle/
+sdk/android/build/
 
 # ESP32 example host binary
 apps/esp32/hop-sensor/hop-sensor
@@ -53,7 +53,7 @@ apps/esp32/hop-sensor/hop-sensor
 drivers/apple/**/.build/
 
 # libhop xcframework (gitignored artifact; build-xcframework.sh)
-sdk/wrappers/apple/Frameworks/
+sdk/apple/Frameworks/
 
 # Android bearer build artifacts
 bearers/android/.gradle/
@@ -62,9 +62,9 @@ bearers/android/**/build/
 bearers/android/local.properties
 
 # Kotlin SDK: machine-local gradle config + Kotlin daemon logs (never tracked)
-sdk/wrappers/android/local.properties
-sdk/wrappers/android/.kotlin/
-sdk/wrappers/android/build/
+sdk/android/local.properties
+sdk/android/.kotlin/
+sdk/android/build/
 
 # Android driver build
 drivers/android/**/build/

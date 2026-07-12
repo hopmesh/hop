@@ -5,7 +5,7 @@
 # named CHop (the module Hop.swift imports). Gitignored output; regenerate after editing cabi.rs.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../../.." && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$ROOT"
 CRATE=hop
 LIB=libhop.a

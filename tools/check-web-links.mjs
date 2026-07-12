@@ -1,7 +1,7 @@
 // Internal-link checker for the built marketing site (web-04 / quality-net-05).
 //
 // A broken internal link (a renamed page, a typo'd asset path, a moved anchor target) currently ships
-// straight to hopme.sh with no gate. This walks every built HTML file under apps/web/dist, extracts local
+// straight to hopme.sh with no gate. This walks every built HTML file under apps/web/site/dist, extracts local
 // href/src references, and fails (exit 1) if any of them points at a path that does not exist in the
 // build. It is deliberately dependency-free (plain Node + fs) so it runs in CI with no npm install.
 //
@@ -13,7 +13,7 @@
 //     extension is treated as a directory and must contain index.html (or exist as a literal file).
 //   - Query strings and fragments are stripped before resolving ("/sim/index.html?x=1#y" -> that file).
 //
-// Usage: node tools/check-web-links.mjs [distDir]   (default: apps/web/dist)
+// Usage: node tools/check-web-links.mjs [distDir]   (default: apps/web/site/dist)
 import { readdirSync, readFileSync, statSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, posix } from 'path';
@@ -22,7 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(process.argv[2] || join(here, '..', 'apps', 'web', 'dist'));
 
 if (!existsSync(DIST)) {
-  console.error(`error: dist dir not found: ${DIST} (run \`npm run build\` in apps/web/ first)`);
+  console.error(`error: dist dir not found: ${DIST} (run \`npm run build\` in apps/web/site/ first)`);
   process.exit(2);
 }
 

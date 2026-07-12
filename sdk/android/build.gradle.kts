@@ -23,7 +23,7 @@ tasks.test {
     systemProperty(
         "jna.library.path",
         System.getenv("HOP_LIBDIR")
-            ?: layout.projectDirectory.dir("../../../target/debug").asFile.absolutePath,
+            ?: layout.projectDirectory.dir("../../target/debug").asFile.absolutePath,
     )
     finalizedBy(tasks.named("jacocoTestReport"))
 }

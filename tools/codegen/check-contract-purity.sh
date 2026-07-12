@@ -9,8 +9,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TARGETS=(
   "$ROOT/sdk/hop.h"
   "$ROOT/core/hop/include/hop.h"
-  "$ROOT/sdk/wrappers/apple/Sources/Hop"
-  "$ROOT/sdk/wrappers/android/src/main/kotlin/sh/hop"
+  "$ROOT/sdk/apple/Sources/Hop"
+  "$ROOT/sdk/android/src/main/kotlin/sh/hop"
 )
 
 # Transport-specific symbols that must never appear in the contract/SDK.

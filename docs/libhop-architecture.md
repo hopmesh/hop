@@ -54,8 +54,8 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Layer | Where | Proof |
 |---|---|---|
 | C ABI | `core/hop/src/cabi.rs` → `sdk/hop.h` | `examples/smoke.c`: real §39 send→deliver+ACK, base58, **hops:// round-trip** |
-| Swift SDK | `sdk/wrappers/apple` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
-| Kotlin SDK | `sdk/wrappers/android` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
+| Swift SDK | `sdk/apple` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
+| Kotlin SDK | `sdk/android` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
 | Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Relay}` | each an independent SwiftPM package, `swift build` clean (Multipeer / Wi-Fi P2P stays in-driver, not a package) |
 | Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + the three bearer packages + the in-driver Multipeer transport; whole stack `swift build`s together |
@@ -63,10 +63,10 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Driver (Android) | `drivers/android/hop-driver` | thin glue composing the node + the three bearer packages; `compileDebugKotlin` clean |
 | Tree | `core/` `services/` `examples/` `sdk/` `bearers/` `drivers/` | north-star layout (`git mv` done), Cargo + Dockerfiles + Cloud Build updated, all green |
 
-Run it all: `core/hop/examples/smoke.sh`, `sdk/wrappers/apple/smoke.sh`,
-`sdk/wrappers/android/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (the full workspace suite is green; run it for the current count rather than trusting a hand-maintained number here).
+Run it all: `core/hop/examples/smoke.sh`, `sdk/apple/smoke.sh`,
+`sdk/android/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (the full workspace suite is green; run it for the current count rather than trusting a hand-maintained number here).
 
-**Renames done:** the SDK package is `sdk/wrappers/apple` (clean `package: "Hop"` id), the cdylib/staticlib
+**Renames done:** the SDK package is `sdk/apple` (clean `package: "Hop"` id), the cdylib/staticlib
 is **`libhop`** (`[lib] name = "hop"`; C ABI / SDK / ESP32 link `-lhop`), AND the crate itself is now
 **`hop`** (`core/hop`, commit fac7c9c), crate, UniFFI namespace (`uniffi.hop`), and libhop all align.
 The apps import `uniffi.hop.*`; the build produces `libhop.so` / `hop.kt` / `hop.swift`.
@@ -108,7 +108,7 @@ remains is the on-device Stage-D fleet run.
 
 ## Deferred questions
 
-- ~~SwiftPM package id~~ → **done**: renamed `sdk/wrappers/apple` (`package: "Hop"`).
+- ~~SwiftPM package id~~ → **done**: renamed `sdk/apple` (`package: "Hop"`).
 - ~~libhop naming~~ → **done**: cdylib/staticlib is now `libhop`.
 - ~~Crate rename `hop-ffi`→`hop`~~ → **done** (commit fac7c9c): crate, UniFFI namespace, and libhop align.
 - **ObjC/Java idiomatic wrappers**, generate thin ones over `hop.h` now, or rely on Swift/Kotlin
@@ -120,5 +120,5 @@ remains is the on-device Stage-D fleet run.
   contract (Kotlin), depend only on the SDK, register it with `HopRuntime`/`BearerManager`. Touches
   nothing else.
 - **New language**: bind `sdk/hop.h` (it's plain C) + add a thin idiomatic wrapper under
-  `sdk/wrappers/<lang>`. The Swift/Kotlin wrappers are the template.
+  `sdk/<lang>`. The Swift/Kotlin wrappers are the template.
 - **New client platform** (embedded, desktop, …): link `libhop` + use `hop.h`. See `apps/esp32/hop-sensor`.
