@@ -9,8 +9,10 @@ name: CI
 #   - apple       : swift-build of the four SwiftPM bearer packages + HopDriver, and a build-only
 #                   xcodebuild of the HopDemo app (no signing) (quality-net-02 / infra-04).
 #   - wasm        : wasm32 build of hop-wasm + the swarm sim invariant tests (simwasm-01 / infra-05).
-#   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check,
-#                   builds the Astro site, and link-checks web/dist (web-04 / quality-net-05 / infra-12).
+#   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check
+#                   plus the wasm-glue check (F-5: publish_recv_beacon/send_traced/
+#                   set_default_lifetime_ms/inbox_debug), builds the Astro site, and link-checks
+#                   web/dist (web-04 / quality-net-05 / infra-12).
 #   - contract    : contract-purity guardrail, cbindgen header-drift, the ABI-version consistency guard
 #                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
 #                   pinned so an upstream release can't churn the gate.
@@ -443,6 +445,13 @@ jobs:
       # scripted send delivers AND its ACK returns within budget). Runs against the pkg-node just built.
       - name: Sim scenario-check (all scenarios complete)
         run: node sim/scenario-check.mjs
+
+      # F-5: scenario-check's scripted scenarios never call publish_recv_beacon, send_traced,
+      # set_default_lifetime_ms, or inbox_debug (WasmNode methods with real behavior but no scenario
+      # call site). This drives all four directly against the same real wasm build, asserting an
+      # observable effect for each (see wasm_glue.rs's header comment + sim/wasm-glue-check.mjs).
+      - name: Sim wasm-glue check (direct WasmNode API coverage)
+        run: node sim/wasm-glue-check.mjs
 
       # Astro 7 requires Node >=22.12 (dropped Node 20 support).
       - uses: actions/setup-node@v6

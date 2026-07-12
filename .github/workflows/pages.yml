@@ -72,6 +72,12 @@ jobs:
         working-directory: .
         run: node sim/scenario-check.mjs
 
+      # F-5: direct coverage for the WasmNode methods no scenario script calls (publish_recv_beacon,
+      # send_traced, set_default_lifetime_ms, inbox_debug) against the same real wasm build.
+      - name: Sim wasm-glue check (direct WasmNode API coverage)
+        working-directory: .
+        run: node sim/wasm-glue-check.mjs
+
       - name: Configure Pages
         uses: actions/configure-pages@v6
 

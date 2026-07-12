@@ -3,10 +3,13 @@
 # `core/hop-wasm/src/wasm_glue.rs` is the genuinely wasm-only surface of the hop-wasm crate: the
 # `#[wasm_bindgen]` `WasmNode` export and the `StoreBridge` JS-callback bridge. Its bridge calls
 # panic on any non-wasm32 target and a `StoreBridge` value cannot even be constructed on the host,
-# so nothing in that file can execute under `cargo test`/tarpaulin. It is exercised for real by
-# `node sim/scenario-check.mjs` (all 15 homepage scenarios through the real wasm build) and the CI
-# `wasm` job's `cargo build --target wasm32-unknown-unknown`. Excluding it here makes tarpaulin
-# report the HOST-TESTABLE coverage denominator, mirroring the Swift driver's device-code exclusion
+# so nothing in that file can execute under `cargo test`/tarpaulin. It is exercised for real by two
+# node scripts against the real wasm build: `node sim/scenario-check.mjs` (all 15 homepage scenarios
+# end to end) and `node sim/wasm-glue-check.mjs` (F-5: direct calls + asserted effects for the four
+# WasmNode methods no scenario script drives — publish_recv_beacon, send_traced,
+# set_default_lifetime_ms, inbox_debug), plus the CI `wasm` job's
+# `cargo build --target wasm32-unknown-unknown`. Excluding it here makes tarpaulin report the
+# HOST-TESTABLE coverage denominator, mirroring the Swift driver's device-code exclusion
 # (`HopBearer+Radios.swift` / `HopLink.swift`). The file matched here does not exist in any other
 # crate, so this exclusion is a no-op for the rest of the workspace.
 [default]

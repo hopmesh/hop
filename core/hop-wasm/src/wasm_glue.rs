@@ -11,10 +11,22 @@
 //! This mirrors the driver layer's device-code exclusion (`HopBearer+Radios.swift` / `HopLink.swift`
 //! are split out and dropped from the Swift coverage denominator because they need real radios). This
 //! file is likewise **excluded from the host coverage denominator** (see `tarpaulin.toml`), because it
-//! is structurally unrunnable on the host. It is exercised for real by `node sim/scenario-check.mjs`,
-//! which builds this exact crate to wasm and drives all 15 homepage scenarios through `WasmNode` +
-//! `StoreBridge` end to end (each scripted send delivers and its ACK returns), plus the CI `wasm` job's
-//! `cargo build -p hop-wasm --target wasm32-unknown-unknown`.
+//! is structurally unrunnable on the host. It is exercised for real, against this exact crate compiled
+//! to wasm, by two node scripts:
+//!
+//! - `node sim/scenario-check.mjs` drives all 15 homepage scenarios through `WasmNode` + `StoreBridge`
+//!   end to end (each scripted send delivers and its ACK returns): construction, `tick`/`connected`/
+//!   `disconnected`/`receive`/`drain`/`drain_transfers`, `send`, `inbox`, `sends_status`, `held_ids`,
+//!   the `hps://` channel methods, and (indirectly, via `Node::tick`'s own 30s auto-republish timer)
+//!   the §39 P4 receiver-beacon's *effect* on `gradient`/`mailbox_tag`/`drain_beaconed`.
+//! - `node sim/wasm-glue-check.mjs` directly drives the four methods no scenario script ever calls
+//!   (F-5): `publish_recv_beacon` (an explicit call, not the tick timer, the §39 P4 receiver-beacon
+//!   itself), `send_traced`, `set_default_lifetime_ms`, and `inbox_debug`, each asserted against a real
+//!   observable effect (a formed gradient, a real delivery, a shortened-TTL prune, a drained inbox).
+//!
+//! Both run in CI's `web` job (see `.github/workflows/ci.yml`) plus the Pages deploy workflow, against
+//! the same `core/hop-wasm/pkg-node` build the CI `wasm` job's
+//! `cargo build -p hop-wasm --target wasm32-unknown-unknown` also proves still compiles.
 //!
 //! The host-testable logic these thin wrappers call lives in `store.rs` (the `JsStore<B>` `Store`
 //! contract over an in-memory `Bridge`) and `lib.rs` (the flat codecs + value-struct getters), each
