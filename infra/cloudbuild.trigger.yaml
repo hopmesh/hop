@@ -107,28 +107,34 @@ steps:
           echo "::error:: python3 not found in the require-ci builder image; the deploy gate cannot evaluate CI status"; exit 1; }
         command -v curl >/dev/null 2>&1 || {
           echo "::error:: curl not found in the require-ci builder image; the deploy gate cannot poll the check-runs API"; exit 1; }
+        # Shell variables below are escaped with a doubled dollar so Cloud Build passes them to the
+        # shell instead of resolving them as build-time substitutions at submit (a bare shell var name
+        # is not a valid built-in and hard-fails the build before any step runs). Only genuine
+        # substitutions stay single-dollar: COMMIT_SHA (built-in) and _GH_REPO (user substitution).
+        # Note: even a shell-comment line inside this block scalar is scanned for substitutions, so keep
+        # dollar-name patterns out of these comments too.
         api="https://api.github.com/repos/${_GH_REPO}/commits/$COMMIT_SHA/check-runs?per_page=100"
         auth=()
-        [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
-        deadline=$(( $(date +%s) + 1500 ))   # wait up to 25 min for CI to finish
+        [ -n "$${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $$GH_TOKEN")
+        deadline=$$(( $$(date +%s) + 1500 ))   # wait up to 25 min for CI to finish
         while :; do
-          body=$(curl -sS "${auth[@]}" -H "Accept: application/vnd.github+json" "$api") || {
+          body=$$(curl -sS "$${auth[@]}" -H "Accept: application/vnd.github+json" "$$api") || {
             echo "::error:: could not reach GitHub check-runs API"; exit 1; }
           # Evaluate the commit's check-runs against the REQUIRED allowlist. tools/require-ci-verdict.py
           # is the single source of truth (also unit-tested by tools/require-ci-gate.test.sh in CI):
           #   exit 0 -> every required check concluded success: proceed to apply
           #   exit 2 -> at least one required check is still pending/missing: keep waiting
           #   exit 1 -> a required check FAILED: refuse to deploy now (no point waiting)
-          verdict=$(printf '%s' "$body" | REQUIRED="$REQUIRED_CHECKS" python3 tools/require-ci-verdict.py) && rc=0 || rc=$?
-          case "$rc" in
-            0) echo "GitHub CI is green for $COMMIT_SHA: $verdict; proceeding to apply"; break ;;
-            1) echo "::error:: GitHub CI: $verdict for $COMMIT_SHA; refusing to deploy"; exit 1 ;;
+          verdict=$$(printf '%s' "$$body" | REQUIRED="$$REQUIRED_CHECKS" python3 tools/require-ci-verdict.py) && rc=0 || rc=$$?
+          case "$$rc" in
+            0) echo "GitHub CI is green for $COMMIT_SHA: $$verdict; proceeding to apply"; break ;;
+            1) echo "::error:: GitHub CI: $$verdict for $COMMIT_SHA; refusing to deploy"; exit 1 ;;
             2)
-              if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "::error:: required CI checks not green after the wait budget: $verdict; refusing to deploy"; exit 1
+              if [ "$$(date +%s)" -ge "$$deadline" ]; then
+                echo "::error:: required CI checks not green after the wait budget: $$verdict; refusing to deploy"; exit 1
               fi
-              echo "waiting on required CI: $verdict"; sleep 20 ;;
-            *) echo "::error:: unexpected verdict rc=$rc ($verdict)"; exit 1 ;;
+              echo "waiting on required CI: $$verdict"; sleep 20 ;;
+            *) echo "::error:: unexpected verdict rc=$$rc ($$verdict)"; exit 1 ;;
           esac
         done
   # Apply the fleet. Runs as the build trigger's service account (needs deploy +
@@ -184,20 +190,23 @@ steps:
         if [ "${_RELAYS_ENABLED}" != "true" ]; then
           echo "relays disabled (_RELAYS_ENABLED=${_RELAYS_ENABLED}); skipping relay smoke test"; exit 0
         fi
+        # Shell variables escaped with a doubled dollar (see the require-ci step). _DOMAIN and
+        # _RELAYS_ENABLED stay single-dollar as genuine substitutions; -w '%{http_code}' is a curl
+        # format, not a shell var. Keep dollar-name patterns out of this comment (it is scanned too).
         url="https://${_DOMAIN}/healthz"
-        deadline=$(( $(date +%s) + 300 ))   # up to 5 min for cert/instance warm-up on a cold re-enable
+        deadline=$$(( $$(date +%s) + 300 ))   # up to 5 min for cert/instance warm-up on a cold re-enable
         attempt=0
         while :; do
-          attempt=$((attempt + 1))
-          code=$(curl -sS -o /tmp/healthz.body -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo 000)
-          body=$(cat /tmp/healthz.body 2>/dev/null || true)
-          if [ "$code" = "200" ]; then
-            echo "relay smoke OK: $url -> $code ($body) after $attempt attempt(s)"; exit 0
+          attempt=$$((attempt + 1))
+          code=$$(curl -sS -o /tmp/healthz.body -w '%{http_code}' --max-time 15 "$$url" 2>/dev/null || echo 000)
+          body=$$(cat /tmp/healthz.body 2>/dev/null || true)
+          if [ "$$code" = "200" ]; then
+            echo "relay smoke OK: $$url -> $$code ($$body) after $$attempt attempt(s)"; exit 0
           fi
-          if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "::error:: relay smoke FAILED: $url did not return healthy within the budget (last code=$code body=$body); the fleet did not come up"; exit 1
+          if [ "$$(date +%s)" -ge "$$deadline" ]; then
+            echo "::error:: relay smoke FAILED: $$url did not return healthy within the budget (last code=$$code body=$$body); the fleet did not come up"; exit 1
           fi
-          echo "waiting on relay health: $url -> $code ($body); retrying"; sleep 10
+          echo "waiting on relay health: $$url -> $$code ($$body); retrying"; sleep 10
         done
 options:
   machineType: E2_HIGHCPU_8

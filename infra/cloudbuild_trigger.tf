@@ -62,32 +62,42 @@ resource "google_project_iam_custom_role" "build_secrets" {
   ]
 }
 
+# for_each is a MAP with STATIC keys, NOT a toset(). A set's members double as its instance keys, so
+# including a member that is only known after apply (the custom role's id, created in this SAME apply)
+# makes the whole for_each unplannable: "Invalid for_each argument ... known only after apply". That
+# error aborted `tofu apply` on every push, so the GitOps deploy could never converge. A map keeps the
+# keys static (plannable) while letting the value resolve at apply. Each static role uses its own role
+# string as the key, so those instance addresses are unchanged from the previous toset() form (no
+# churn); only the custom-role binding, which never applied, is newly keyed.
+#
+# infra-02 status (the high-privilege deploy identity):
+#   - secretmanager.admin: REMOVED. Replaced by the custom role above (secret containers + IAM, no
+#     versions.access), so the pipeline can no longer read the relay identity seed. [CLOSED]
+#   - projectIamAdmin: RETAINED. The module applies google_project_iam_member bindings (relay SA roles,
+#     this SA's own roles), which requires resourcemanager.projects.setIamPolicy; there is no
+#     resource-scoped substitute for project-level IAM. This carries the theoretical "grant self owner"
+#     path, so it is the residual broad grant. Mitigation before production: gate IAM-touching TF
+#     changes behind plan-then-approve instead of -auto-approve on every push (bounded today by
+#     single-maintainer + required main-push + the CI deploy gate). [DOCUMENTED]
 resource "google_project_iam_member" "build" {
-  for_each = local.build_enabled ? toset([
-    "roles/cloudbuild.builds.builder",
-    "roles/artifactregistry.writer",
-    "roles/logging.logWriter",
-    # Deploy perms for `tofu apply`. The pipeline manages the whole infra/ module (IAM bindings, Cloud
-    # Run, LB, DNS, Firestore, secret containers) so it is a high-privilege identity by necessity.
-    # infra-02 status:
-    #   - secretmanager.admin: REMOVED. Replaced by the custom role above (secret containers + IAM,
-    #     no versions.access), so the pipeline can no longer read the relay identity seed. [CLOSED]
-    #   - projectIamAdmin: RETAINED. The module applies google_project_iam_member bindings (relay SA
-    #     roles, this SA's own roles), which requires resourcemanager.projects.setIamPolicy; there is
-    #     no resource-scoped substitute for project-level IAM. This still carries the theoretical
-    #     "grant self owner" path, so it is the residual broad grant. Mitigation before production:
-    #     gate IAM-touching TF changes behind plan-then-approve instead of -auto-approve on every push
-    #     (bounded today by single-maintainer + required main-push + the CI deploy gate). [DOCUMENTED]
-    "roles/editor",
-    "roles/resourcemanager.projectIamAdmin",            # google_project_iam_member bindings (⚠ residual: can grant owner; see note)
-    "roles/iam.serviceAccountAdmin",                    # create/manage the build + relay SAs
-    "roles/iam.serviceAccountUser",                     # Cloud Run deploy runs services as the relay SA
-    "roles/run.admin",                                  # run service setIamPolicy (allUsers invoker)
-    "roles/storage.admin",                              # state-bucket setIamPolicy (build_state below)
-    "roles/cloudbuild.connectionAdmin",                 # google_cloudbuildv2_repository / connection
-    "roles/logging.admin",                              # observability.tf log bucket + sink + exclusion (editor lacks buckets.create)
-    google_project_iam_custom_role.build_secrets[0].id, # secret containers + IAM, NO versions.access (infra-02)
-  ]) : []
+  for_each = local.build_enabled ? {
+    "roles/cloudbuild.builds.builder"       = "roles/cloudbuild.builds.builder"
+    "roles/artifactregistry.writer"         = "roles/artifactregistry.writer"
+    "roles/logging.logWriter"               = "roles/logging.logWriter"
+    "roles/editor"                          = "roles/editor"
+    "roles/resourcemanager.projectIamAdmin" = "roles/resourcemanager.projectIamAdmin" # residual: can grant owner; see note
+    "roles/iam.serviceAccountAdmin"         = "roles/iam.serviceAccountAdmin"         # create/manage the build + relay SAs
+    "roles/iam.serviceAccountUser"          = "roles/iam.serviceAccountUser"          # Cloud Run deploy runs services as the relay SA
+    "roles/run.admin"                       = "roles/run.admin"                       # run service setIamPolicy (allUsers invoker)
+    "roles/storage.admin"                   = "roles/storage.admin"                   # state-bucket setIamPolicy (build_state below)
+    "roles/cloudbuild.connectionAdmin"      = "roles/cloudbuild.connectionAdmin"      # google_cloudbuildv2_repository / connection
+    "roles/logging.admin"                   = "roles/logging.admin"                   # observability.tf log bucket + sink + exclusion
+    # The custom role's id is known only after apply, so it is the VALUE, under a STATIC key equal to
+    # the id it resolves to (projects/<project>/roles/hopCloudBuildSecrets). Referencing the resource on
+    # the value side preserves the create-before-bind dependency edge. (secret containers + IAM, NO
+    # versions.access - infra-02)
+    "projects/${var.project_id}/roles/hopCloudBuildSecrets" = google_project_iam_custom_role.build_secrets[0].id
+  } : {}
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.build[0].email}"
