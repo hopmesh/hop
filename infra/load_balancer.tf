@@ -5,13 +5,24 @@
 # Anycast IPs the domain's A/AAAA records point at. Dual-stack: an IPv4 frontend and
 # an IPv6 one share the same proxies/url-map/backends/cert. IPv6 lets clients on
 # IPv6-only carrier networks reach the relay natively instead of via NAT64/464XLAT.
+# prevent_destroy: these anycast IPs are what the domain's A/AAAA records point at, and they
+# deliberately survive the relays_enabled teardown (the off-state chain reuses the SAME IP). A
+# destroy+recreate here would hand out a NEW public IP and black-hole every device until DNS
+# re-propagates. Guard both so no plan can silently drop them; releasing an IP is a deliberate,
+# out-of-band act (comment out the guard for that one apply).
 resource "google_compute_global_address" "relay" {
   name = "hop-relay-ip"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_global_address" "relay_v6" {
   name       = "hop-relay-ip6"
   ip_version = "IPV6"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # One serverless NEG per region, each targeting that region's Cloud Run service.

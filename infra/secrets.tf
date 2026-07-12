@@ -17,4 +17,12 @@ resource "google_secret_manager_secret" "relay_identity" {
   }
 
   depends_on = [google_project_service.this]
+
+  # prevent_destroy: the seed VALUE lives only in this container's versions (never in TF state), so
+  # if a plan ever destroys the container the seed is gone and every relay's stable Hop address
+  # changes, orphaning held bundles and the Firestore node keyed to that identity. Reseeding is an
+  # out-of-band act; destroying the container must never be a silent side effect of an apply.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
