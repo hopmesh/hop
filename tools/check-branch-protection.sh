@@ -2,8 +2,9 @@
 # quality-net-r2-03: assert the LIVE GitHub branch-protection rule on `main` requires exactly the CI
 # checks, so the deploy gate's intent half can't silently drift (a renamed job, protection turned off).
 #
-# Compares the required status-check contexts on main against the ci.yml job names (as GitHub reports
-# them for Actions checks: "<workflow-name> / <job-name>", here "CI / <job name>"). Fails on any
+# Compares the required status-check contexts on main against the ci.yml job names. For GitHub Actions
+# checks, the required-status-check context IS the job name verbatim (e.g. "Rust (test . clippy . fmt)"),
+# NOT "<workflow> / <job>". Verified against the live rule + the commit check-runs. Fails on any
 # mismatch, on protection being absent, or on an API error (so a missing/insufficient token surfaces
 # as a red audit rather than a false green).
 #
@@ -14,16 +15,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CI="$ROOT/.github/workflows/ci.yml"
 REPO="${GH_REPO:-hopmesh/hop}"
-WORKFLOW_NAME="CI" # the `name:` at the top of ci.yml; branch-protection contexts are "<name> / <job>"
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error:: GH_TOKEN not set; cannot read branch protection for $REPO"; exit 1
 fi
 
-# Expected contexts: "CI / <job name>" for every job name in ci.yml.
-expected="$(python3 - "$CI" "$WORKFLOW_NAME" <<'PY'
+# Expected contexts: the job name verbatim for every job in ci.yml (the Actions check-run name that
+# branch protection matches against).
+expected="$(python3 - "$CI" <<'PY'
 import sys, re
-ci, wf = sys.argv[1], sys.argv[2]
+ci = sys.argv[1]
 in_jobs = False
 job_pending = False
 for line in open(ci):
@@ -35,7 +36,7 @@ for line in open(ci):
         job_pending = True; continue
     m = re.match(r'^    name:\s*(.+?)\s*$', line)
     if m and job_pending:
-        print("%s / %s" % (wf, m.group(1)))
+        print(m.group(1))
         job_pending = False
 PY
 )"
@@ -54,7 +55,7 @@ body="$(printf '%s' "$resp" | sed '$d')"
 
 if [ "$code" = "404" ]; then
   echo "::error:: branch 'main' has NO protection rule (or it is not visible to this token)."
-  echo "  Set protection so 'Require status checks to pass' includes every 'CI / ...' context (see infra/README.md)."
+  echo "  Set protection so 'Require status checks to pass' includes every ci.yml job-name context (see infra/README.md)."
   exit 1
 fi
 if [ "$code" = "403" ] || [ "$code" = "401" ]; then
@@ -82,7 +83,7 @@ for c in sorted(ctx):
 
 if [ -z "$actual" ]; then
   echo "::error:: main protection exists but requires NO status checks. A red commit can land."
-  echo "  Add every 'CI / ...' context to 'Require status checks to pass'."
+  echo "  Add every ci.yml job-name context to 'Require status checks to pass'."
   exit 1
 fi
 
