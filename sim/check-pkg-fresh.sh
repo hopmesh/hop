@@ -42,6 +42,15 @@ trap 'rm -rf "$tmp"' EXIT
 
 drift=0
 
+# Are we inside a git work tree? If so, the COMMITTED pkg blob (git show HEAD:...) is authoritative, and
+# a committed pkg file that is MISSING from HEAD is itself DRIFT, not a reason to fall back to the
+# working-tree copy (F-web-1). build-wasm.sh runs immediately before this guard in CI and overwrites the
+# working tree, so a fallback would compare a fresh build against itself and report a false "fresh" even
+# across a real wire bump. Only a genuine non-git context (a tarball export, no HEAD to read) may fall
+# back to the working-tree files.
+in_git=0
+git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1 && in_git=1
+
 if [ "$committed_only" -eq 0 ]; then
   command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
   wasm-pack build "$crate" --target web --out-dir "$tmp" >/dev/null 2>&1
@@ -56,11 +65,19 @@ if [ "$committed_only" -eq 0 ]; then
     # regardless of step order. (This deterministic .d.ts/.js diff catches API/export drift; a wire
     # bump is caught by the .wire-version cross-check below; a purely-behavioral non-wire change lives
     # only in the excluded nondeterministic .wasm binary and is exercised by scenario-check on a fresh
-    # build.) Falls back to the working tree outside a git checkout (a tarball export).
+    # build.) Falls back to the working tree ONLY outside a git checkout (a tarball export).
     committed_f="$tmp/committed-$f"
-    if git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
-      git -C "$here" show "HEAD:sim/pkg/$f" >"$committed_f" 2>/dev/null; then
-      cmp_target="$committed_f"
+    if [ "$in_git" -eq 1 ]; then
+      if git -C "$here" show "HEAD:sim/pkg/$f" >"$committed_f" 2>/dev/null; then
+        cmp_target="$committed_f"
+      else
+        # F-web-1: inside a git tree but the committed pkg file is not at HEAD. That is DRIFT (a
+        # committed artifact went untracked, defeating the toolchain-less-clone guarantee), NOT a cue to
+        # fall back to the freshly-rebuilt working tree, which would report a false "fresh".
+        echo "DRIFT: sim/pkg/$f is not tracked at HEAD (a committed pkg file went untracked)"
+        drift=1
+        continue
+      fi
     else
       cmp_target="$here/pkg/$f"
     fi
@@ -76,19 +93,30 @@ fi
 #
 # sim-wasm-r3-02: read the stamp from the committed blob (git show HEAD:...) rather than the working
 # tree, so a build-wasm.sh re-stamp in the same CI run cannot mask committed drift. Fall back to the
-# working-tree file when we are not inside a git checkout (a tarball export, say).
+# working-tree file ONLY when we are not inside a git checkout (a tarball export, say). Inside a git tree
+# a stamp missing from HEAD is DRIFT, not a fallback trigger (F-web-1, same class as the interface diff).
 # sim-wasm-r3-02: extract the number AFTER the `=`. The naive `... | grep -oE '[0-9]+' | head -1`
 # matched the `8` in the `u8` type, not the version, so both this guard and build-wasm.sh stamped `8`
 # and the cross-check compared 8 against 8 forever (masking real drift). Anchor on the `=` sign.
 src_wire="$(grep -oE 'BUNDLE_VERSION: *u8 *= *[0-9]+' "$here/../core/hop-core/src/bundle.rs" | grep -oE '=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
 committed_wire=""
-if git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  committed_wire="$(git -C "$here" show HEAD:sim/pkg/.wire-version 2>/dev/null | head -1 || true)"
-fi
-if [ -z "$committed_wire" ]; then
+stamp_untracked=0
+if [ "$in_git" -eq 1 ]; then
+  if git -C "$here" cat-file -e HEAD:sim/pkg/.wire-version 2>/dev/null; then
+    committed_wire="$(git -C "$here" show HEAD:sim/pkg/.wire-version 2>/dev/null | head -1 || true)"
+  else
+    # F-web-1: inside a git tree but the committed stamp is not at HEAD -> DRIFT, do NOT read the
+    # working-tree stamp (which build-wasm.sh just re-stamped fresh, masking a real wire bump).
+    echo "DRIFT: sim/pkg/.wire-version is not tracked at HEAD (a committed stamp went untracked)"
+    drift=1
+    stamp_untracked=1
+  fi
+else
   committed_wire="$(cat "$here/pkg/.wire-version" 2>/dev/null || echo "")"
 fi
-if [ -z "$committed_wire" ]; then
+if [ "$stamp_untracked" -eq 1 ]; then
+  : # already reported as DRIFT above; skip the working-tree-based checks below
+elif [ -z "$committed_wire" ]; then
   echo "DRIFT: sim/pkg/.wire-version is missing, rebuild the pkg so it stamps the wire version"
   drift=1
 elif [ "$committed_wire" != "$src_wire" ]; then
