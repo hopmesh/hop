@@ -171,7 +171,7 @@ variable "google_dkim_txt" {
 # F-23: the relay identity secret VERSION each region mounts. "latest" silently re-keys the fleet on
 # a rotation (Cloud Run resolves it at cold start); pin the numeric version that was seeded for prod.
 variable "relay_identity_version" {
-  description = "Secret Manager version of the relay identity to mount ('latest' for dev; a pinned number for prod). See cloud_run.tf / GAP-ANALYSIS.md F-23."
+  description = "Secret Manager version of the relay identity to mount ('latest' for dev; a pinned number for prod). See cloud_run.tf / docs/audits/GAP-ANALYSIS.md F-23."
   type        = string
   default     = "latest"
 }

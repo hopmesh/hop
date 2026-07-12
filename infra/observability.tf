@@ -1,4 +1,4 @@
-# Observability + log retention for the relay fleet (GAP-ANALYSIS.md F-16, F-24).
+# Observability + log retention for the relay fleet (docs/audits/GAP-ANALYSIS.md F-16, F-24).
 #
 # infra-r2-04: the Monitoring + Logging APIs are enabled in apis.tf (monitoring.googleapis.com,
 # logging.googleapis.com), and every resource below carries depends_on = [google_project_service.this]

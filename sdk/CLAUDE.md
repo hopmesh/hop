@@ -5,8 +5,8 @@ FFI, and the wrapper cannot drift from the header without the drift guard notici
 
 ```
 sdk/hop.h            the generated C ABI header: the universal contract for every platform
-sdk/wrappers/kotlin  the Kotlin/JVM wrapper via JNA (loads libhop; Android bearers + the app use it)
-sdk/wrappers/Hop     the Swift wrapper + the xcframework packaging (build-xcframework.sh lives at apple/)
+sdk/wrappers/android  the Kotlin/JVM wrapper via JNA (loads libhop; Android bearers + the app use it)
+sdk/wrappers/apple     the Swift wrapper + the xcframework packaging (build-xcframework.sh lives at apple/)
 ```
 
 ## FFI discipline (do not "clean up")
@@ -19,4 +19,4 @@ sdk/wrappers/Hop     the Swift wrapper + the xcframework packaging (build-xcfram
 
 Kotlin: `gradle test jacocoTestReport jacocoTestCoverageVerification` with `HOP_LIBDIR` pointing at a
 built libhop (`cargo build -p hop`); without the lib the JNA tests self-skip and the 80% gate fails,
-keeping the grade honest. Swift: `swift test` in `sdk/wrappers/Hop`.
+keeping the grade honest. Swift: `swift test` in `sdk/wrappers/apple`.

@@ -7,7 +7,7 @@ Apple Multipeer / Wi-Fi P2P is a live transport but stays in-driver, not an extr
 apps now run the north-star `drivers/` packages (the legacy in-driver transports were pruned and the
 iOS facade `CLLocationManager` monitor was deleted, emission moved into the shared BLE bearer). The
 only thing left is **on-device Stage-D verification** (iOS Xcode app build + real BLE link-formation
-and beacon wake on the fleet). Per-finding remediation status lives in `gap-report/index.html`
+and beacon wake on the fleet). Per-finding remediation status lives in `docs/audits/index.html`
 (F-33, F-40 both Fixed).
 
 ## The locked decisions
@@ -45,7 +45,7 @@ services/  hop-relay/relayd/gateway/endpoint     tools/  testkit/codegen     web
 ```
 (This layout is LIVE: the `git mv` migration off `crates/` shipped (commit 1fb6bf0), and the old Apple
 `HopBearers` package was removed (2ae1d75). Both shipping apps now run the north-star `drivers/`
-packages; the cutover is complete. See `gap-report/index.html` F-33/F-40.)
+packages; the cutover is complete. See `docs/audits/index.html` F-33/F-40.)
 
 ## What's BUILT and VERIFIED
 
@@ -54,8 +54,8 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Layer | Where | Proof |
 |---|---|---|
 | C ABI | `core/hop/src/cabi.rs` → `sdk/hop.h` | `examples/smoke.c`: real §39 send→deliver+ACK, base58, **hops:// round-trip** |
-| Swift SDK | `sdk/wrappers/Hop` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
-| Kotlin SDK | `sdk/wrappers/kotlin` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
+| Swift SDK | `sdk/wrappers/apple` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
+| Kotlin SDK | `sdk/wrappers/android` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
 | Bearers (Apple) | `bearers/apple/HopBearer{Ble,Lan,Relay}` | each an independent SwiftPM package, `swift build` clean (Multipeer / Wi-Fi P2P stays in-driver, not a package) |
 | Driver (Apple) | `drivers/apple/HopDriver` | thin glue composing SDK + the three bearer packages + the in-driver Multipeer transport; whole stack `swift build`s together |
@@ -63,10 +63,10 @@ The whole spine is proven end to end, **four languages against one generated hea
 | Driver (Android) | `drivers/android/hop-driver` | thin glue composing the node + the three bearer packages; `compileDebugKotlin` clean |
 | Tree | `core/` `services/` `examples/` `sdk/` `bearers/` `drivers/` | north-star layout (`git mv` done), Cargo + Dockerfiles + Cloud Build updated, all green |
 
-Run it all: `core/hop/examples/smoke.sh`, `sdk/wrappers/Hop/smoke.sh`,
-`sdk/wrappers/kotlin/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (the full workspace suite is green; run it for the current count rather than trusting a hand-maintained number here).
+Run it all: `core/hop/examples/smoke.sh`, `sdk/wrappers/apple/smoke.sh`,
+`sdk/wrappers/android/smoke.sh`, `apps/esp32/hop-sensor/build.sh`. Rust: `cargo test` (the full workspace suite is green; run it for the current count rather than trusting a hand-maintained number here).
 
-**Renames done:** the SDK package is `sdk/wrappers/Hop` (clean `package: "Hop"` id), the cdylib/staticlib
+**Renames done:** the SDK package is `sdk/wrappers/apple` (clean `package: "Hop"` id), the cdylib/staticlib
 is **`libhop`** (`[lib] name = "hop"`; C ABI / SDK / ESP32 link `-lhop`), AND the crate itself is now
 **`hop`** (`core/hop`, commit fac7c9c), crate, UniFFI namespace (`uniffi.hop`), and libhop all align.
 The apps import `uniffi.hop.*`; the build produces `libhop.so` / `hop.kt` / `hop.swift`.
@@ -91,7 +91,7 @@ Both shipping apps now drive the node via UniFFI **through the new isolated bear
   `:hop-sdk` (`sh.hop`) instead of the ble-lab modules; `:app` + `:hop-driver` `compileDebugKotlin`
   clean. (No double-core: JNA loads libhop.so lazily and the app never makes a `sh.hop.HopNode`.)
 
-Bounded-cutover cleanup is DONE (see `gap-report/index.html` F-40): the dormant legacy
+Bounded-cutover cleanup is DONE (see `docs/audits/index.html` F-40): the dormant legacy
 `!useSharedBearers` paths and the redundant iOS facade beacon monitor were deleted, and both apps
 now run the north-star `drivers/` packages. The `F0900BEA` beacon UUID drift was fixed (one
 cross-platform source) and the old `apple/HopBearers` package was removed (commit 2ae1d75). What
@@ -108,7 +108,7 @@ remains is the on-device Stage-D fleet run.
 
 ## Deferred questions
 
-- ~~SwiftPM package id~~ → **done**: renamed `sdk/wrappers/Hop` (`package: "Hop"`).
+- ~~SwiftPM package id~~ → **done**: renamed `sdk/wrappers/apple` (`package: "Hop"`).
 - ~~libhop naming~~ → **done**: cdylib/staticlib is now `libhop`.
 - ~~Crate rename `hop-ffi`→`hop`~~ → **done** (commit fac7c9c): crate, UniFFI namespace, and libhop align.
 - **ObjC/Java idiomatic wrappers**, generate thin ones over `hop.h` now, or rely on Swift/Kotlin

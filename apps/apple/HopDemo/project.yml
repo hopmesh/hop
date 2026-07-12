@@ -1,6 +1,6 @@
 # XcodeGen spec for the Hop iOS/iPadOS demo chat app.
 # Generate the project with:  cd apple/HopDemo && xcodegen
-# (run apple/build-xcframework.sh first so HopDriver's xcframework + bindings exist)
+# (run tools/build-xcframework.sh first so HopDriver's xcframework + bindings exist)
 #
 # The Hop runtime (bearer + transports + the FFI bindings + the xcframework) lives in the local
 # HopDriver SwiftPM package; this app is a thin SwiftUI consumer.

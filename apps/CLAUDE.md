@@ -13,9 +13,9 @@ apps/esp32/hop-sensor    the ESP32 sensor demo (pure C against sdk/hop.h)
 
 ## What is NOT here
 
-Platform BUILD tooling is not an app and stays at the platform root, because `drivers/` and `sdk/`
-depend on it: `apple/build-xcframework.sh` (builds the HopDriver xcframework), `apple/smoke-test.sh`,
-`android/build-aar.sh`. If you move those, update every reference in `drivers/`, `sdk/`, CI, and docs.
+Platform BUILD tooling is not an app; it lives in `tools/` (`build-xcframework.sh` for the Apple SDK
+xcframework, `build-aar.sh` for the Android bindings, `smoke-test.sh`). `drivers/` and `sdk/` depend on
+those, so if you move them update every reference in `drivers/`, `sdk/`, CI, and docs.
 
 ## How apps consume the shared layers
 

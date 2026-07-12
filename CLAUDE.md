@@ -13,12 +13,22 @@ sdk/        the C-ABI language wrappers (Kotlin via JNA, Swift) + the xcframewor
 bearers/    per-platform transport packages (apple/, android/): BLE, LAN, relay
 drivers/    per-platform app-facing client (apple/HopDriver, android/hop-driver): node + bearers + UI glue
 apps/       every app: apps/apple/HopDemo, apps/android/HopDemo, apps/web, apps/ble-lab, apps/esp32
-sim/        the WASM swarm sim + scenario checks (real hop-core compiled to wasm)
+sim/        the WASM swarm sim + scenario checks (real hop-core compiled to wasm); its own subsystem
 infra/      GitOps deploy (OpenTofu + Cloud Build); push to main = build + tofu apply
-tools/      CI guards (each with a .test.sh) + build/link helpers
-docs/       the developer docs site content
-apple/ android/   platform BUILD tooling only (build-xcframework.sh, build-aar.sh); the apps are under apps/
+tools/      CI guards (each with a .test.sh) + build/link helpers + the platform SDK-artifact builders
+            (build-xcframework.sh for Apple, build-aar.sh for Android, smoke-test.sh)
+docs/       the developer docs site content; docs/audits/ holds the audit-report history
+assets/     cross-platform design-asset SOURCE (Font Awesome SVGs), hand-derived into per-platform icons
+learn/      standalone site pages, synced into apps/web/public/learn at build (like sim/)
+mockups/    design prototypes + the swarm invariant test (run by the WASM sim CI job)
 ```
+
+Everything is organized by LAYER (what it is), with `apple`/`android` a clean nested axis inside
+`apps/`, `bearers/`, `drivers/`, `sdk/wrappers/`. There are no top-level platform directories. The
+content dirs (`sim`, `assets`, `learn`, `mockups`) stay top-level ON PURPOSE: `sim` is a real subsystem
+(the core compiled to wasm, 24 references), `assets` feeds all three platforms' icons (not just web),
+and `learn` follows `sim`'s sync-into-the-site pattern. Folding them into `apps/web` would break the
+icon pipeline and demote a subsystem, so they are documented here rather than moved.
 
 ## The verify loop (run before calling anything done)
 

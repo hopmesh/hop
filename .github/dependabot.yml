@@ -31,7 +31,7 @@ updates:
 
   # Kotlin SDK wrapper (Gradle).
   - package-ecosystem: gradle
-    directory: "/sdk/wrappers/kotlin"
+    directory: "/sdk/wrappers/android"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

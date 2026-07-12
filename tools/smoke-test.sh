@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Compile + run a Swift program against the Rust library on the macOS host — proves
 # the generated bindings actually drive the node loop (Noise handshake + delivery),
-# no device or simulator needed. Run apple/build-xcframework.sh first.
+# no device or simulator needed. Run tools/build-xcframework.sh first.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The generated bindings + headers now live in the HopDriver package (build-xcframework.sh output).
 BINDINGS=drivers/apple/HopDriver/Sources/HopFFIBindings/hop.swift
 INC=drivers/apple/HopDriver/Frameworks/HopFFI.xcframework/macos-arm64_x86_64/Headers
-[ -f "$BINDINGS" ] || { echo "run apple/build-xcframework.sh first"; exit 1; }
+[ -f "$BINDINGS" ] || { echo "run tools/build-xcframework.sh first"; exit 1; }
 cargo build -p hop >/dev/null   # host staticlib at target/debug/libhop.a (crate renamed hop-ffi → hop)
 
 WORK=$(mktemp -d)

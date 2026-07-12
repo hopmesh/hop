@@ -128,7 +128,7 @@ jobs:
       # integration tests, then the JaCoCo 80%-line floor (jacocoTestCoverageVerification) that locks
       # the grade. Plain JVM module, no Android SDK needed.
       - name: Test Kotlin SDK (+ 80% coverage gate)
-        working-directory: sdk/wrappers/kotlin
+        working-directory: sdk/wrappers/android
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: gradle test jacocoTestReport jacocoTestCoverageVerification --no-daemon
@@ -158,7 +158,7 @@ jobs:
           restore-keys: cargo-android-${{ runner.os }}-
       # :hop-driver compiles against the UniFFI Kotlin bindings (uniffi.hop.*), which are GITIGNORED
       # generated output (drivers/android/hop-driver reads ../../../apps/android/HopDemo/generated/kotlin).
-      # Generate them from the host libhop cdylib before gradle - the same bindings android/build-aar.sh
+      # Generate them from the host libhop cdylib before gradle - the same bindings tools/build-aar.sh
       # produces - so the driver resolves addressBase58 etc. The jniLibs (.so per ABI) are NOT needed for
       # JVM unit tests; an empty dir keeps AGP's srcDir happy.
       - name: Generate the UniFFI Kotlin bindings
@@ -262,15 +262,15 @@ jobs:
         env:
           HOP_SQLCIPHER: "0"
         run: |
-          bash sdk/wrappers/Hop/build-xcframework.sh
-          bash apple/build-xcframework.sh
+          bash sdk/wrappers/apple/build-xcframework.sh
+          bash tools/build-xcframework.sh
 
       # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
       # runs the BearerManager multiplexer + full HopRuntime deliver/ACK tests (core-ffi-09); the BLE
       # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
       # (sec-priv-02). `swift test` also builds, so these subsume the build-only step for those packages.
       - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
-        working-directory: sdk/wrappers/Hop
+        working-directory: sdk/wrappers/apple
         run: swift test
 
       # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at

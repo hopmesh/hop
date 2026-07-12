@@ -18,7 +18,14 @@ require-ci-verdict.py       the runtime deploy-gate logic (Cloud Build). Tested 
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.
 check-web-links.mjs         internal-link checker for apps/web/dist.
+build-xcframework.sh        builds the Apple SDK xcframework + Swift bindings into drivers/apple/HopDriver.
+build-aar.sh                generates the Android UniFFI bindings + native libs into the demo app's dir.
+smoke-test.sh               compiles + runs a Swift program against libhop on the macOS host.
 ```
+
+The three build scripts `cd` to the repo root, so they operate on repo-relative paths regardless of
+being invoked from `tools/`. They are the platform SDK-artifact builders (previously the only contents
+of the now-removed `apple/` and `android/` root stubs); `drivers/` and `sdk/` + CI reference them.
 
 ## Rules
 

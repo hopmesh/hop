@@ -12,10 +12,10 @@
 #   - core/hop/src/cabi.rs                                  (the source of truth: the Rust const)
 #   - core/hop/include/hop.h                                (the hand-written header)
 #   - sdk/hop.h                                             (the cbindgen-published header)
-#   - sdk/wrappers/Hop/Sources/Hop/Hop.swift               (the Swift wrapper's compiled-in expectation)
-#   - sdk/wrappers/kotlin/src/main/kotlin/sh/hop/Hop.kt    (the Kotlin wrapper's compiled-in expectation)
+#   - sdk/wrappers/apple/Sources/Hop/Hop.swift               (the Swift wrapper's compiled-in expectation)
+#   - sdk/wrappers/android/src/main/kotlin/sh/hop/Hop.kt    (the Kotlin wrapper's compiled-in expectation)
 #
-# The two headers under sdk/wrappers/Hop/Frameworks/** are gitignored build artifacts (copied from
+# The two headers under sdk/wrappers/apple/Frameworks/** are gitignored build artifacts (copied from
 # core/hop/include/hop.h at xcframework-build time), so they are not authoritative and not checked here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -50,8 +50,8 @@ echo "Cross-checking HOP_ABI_VERSION across the Rust core and the language wrapp
 extract "rust-cabi"    "$ROOT/core/hop/src/cabi.rs"                              'HOP_ABI_VERSION: *u32 *= *[0-9]+'
 extract "header-src"   "$ROOT/core/hop/include/hop.h"                            '#define +HOP_ABI_VERSION +[0-9]+'
 extract "header-sdk"   "$ROOT/sdk/hop.h"                                         '#define +HOP_ABI_VERSION +[0-9]+'
-extract "swift"        "$ROOT/sdk/wrappers/Hop/Sources/Hop/Hop.swift"           'expectedABIVersion: *UInt32 *= *[0-9]+'
-extract "kotlin"       "$ROOT/sdk/wrappers/kotlin/src/main/kotlin/sh/hop/Hop.kt" 'HOP_ABI_VERSION *= *[0-9]+'
+extract "swift"        "$ROOT/sdk/wrappers/apple/Sources/Hop/Hop.swift"           'expectedABIVersion: *UInt32 *= *[0-9]+'
+extract "kotlin"       "$ROOT/sdk/wrappers/android/src/main/kotlin/sh/hop/Hop.kt" 'HOP_ABI_VERSION *= *[0-9]+'
 
 if [ "$fail" -ne 0 ]; then
   echo "::error:: HOP_ABI_VERSION guard failed: one or more declarations are missing (see above)."

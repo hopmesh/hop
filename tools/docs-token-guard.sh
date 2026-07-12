@@ -81,7 +81,7 @@ ALLOW_MARKER='docs-token-guard: allow'
 excludes=(
   --binary-files=without-match
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.astro
-  --exclude-dir=pkg --exclude-dir=pkg-node --exclude-dir=sqlite-wasm
+  --exclude-dir=pkg --exclude-dir=pkg-node --exclude-dir=sqlite-wasm --exclude-dir=audits
   --exclude='*.wasm' --exclude='*.lock' --exclude='package-lock.json'
   --exclude='*.svg' --exclude='*.png' --exclude='*.jpg'
 )

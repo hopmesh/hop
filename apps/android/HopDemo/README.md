@@ -22,7 +22,7 @@ rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-android
 ## Build the native libs + Kotlin bindings
 
 ```sh
-./android/build-aar.sh
+./tools/build-aar.sh
 ```
 
 Produces (gitignored) under `android/HopDemo/generated/`:
