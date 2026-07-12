@@ -96,7 +96,7 @@ class HopNodeIntegrationTest {
 
                 val msg = got!!
                 assertEquals(text, String(msg.body))
-                assertTrue(msg.hops >= 0)
+                assertTrue(msg.hops >= 0u)
                 assertEquals(msg.body.toList(), msg.bodyCopy().toList()) // defensive-copy accessors
                 assertEquals(32, msg.fromCopy().size)
 

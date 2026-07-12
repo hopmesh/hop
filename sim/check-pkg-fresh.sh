@@ -48,8 +48,24 @@ if [ "$committed_only" -eq 0 ]; then
 fi
 if [ "$committed_only" -eq 0 ]; then
   for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do
-    if ! diff -q "$tmp/$f" "$here/pkg/$f" >/dev/null 2>&1; then
-      echo "DRIFT: sim/pkg/$f differs from a fresh core/hop-wasm build"
+    # sim-wasm-r4-01 (F-3): diff the fresh build against the COMMITTED pkg blob (git show), NOT the
+    # working-tree file. In CI, build-wasm.sh overwrites the working-tree sim/pkg immediately before
+    # this guard runs, so a working-tree diff compares a fresh build against that same just-rebuilt
+    # copy: vacuous, it can never detect a stale commit (proven in the pass-17 audit). Reading the
+    # committed blob catches an interface/export change that was never rebuilt into the committed pkg,
+    # regardless of step order. (This deterministic .d.ts/.js diff catches API/export drift; a wire
+    # bump is caught by the .wire-version cross-check below; a purely-behavioral non-wire change lives
+    # only in the excluded nondeterministic .wasm binary and is exercised by scenario-check on a fresh
+    # build.) Falls back to the working tree outside a git checkout (a tarball export).
+    committed_f="$tmp/committed-$f"
+    if git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+      git -C "$here" show "HEAD:sim/pkg/$f" >"$committed_f" 2>/dev/null; then
+      cmp_target="$committed_f"
+    else
+      cmp_target="$here/pkg/$f"
+    fi
+    if ! diff -q "$tmp/$f" "$cmp_target" >/dev/null 2>&1; then
+      echo "DRIFT: sim/pkg/$f differs from a fresh core/hop-wasm build (committed pkg is stale)"
       drift=1
     fi
   done

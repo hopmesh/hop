@@ -25,7 +25,7 @@ class HopValueTypesTest {
     fun messageCopiesAreIndependentOfTheValue() {
         val from = bytes(1, 2, 3)
         val body = bytes(9, 8, 7)
-        val m = HopMessage(from = from, contentType = "text/plain", body = body, hops = 2, createdAt = 100L)
+        val m = HopMessage(from = from, contentType = "text/plain", body = body, hops = 2u, createdAt = 100L)
 
         val fc = m.fromCopy()
         val bc = m.bodyCopy()
@@ -40,25 +40,25 @@ class HopValueTypesTest {
 
     @Test
     fun messageEqualsIsContentBasedNotReference() {
-        val a = HopMessage(bytes(1, 2), "text/plain", bytes(3, 4), 1, 50L)
-        val b = HopMessage(bytes(1, 2), "text/plain", bytes(3, 4), 1, 50L)   // distinct arrays, same bytes
+        val a = HopMessage(bytes(1, 2), "text/plain", bytes(3, 4), 1u, 50L)
+        val b = HopMessage(bytes(1, 2), "text/plain", bytes(3, 4), 1u, 50L)   // distinct arrays, same bytes
         assertEquals(a, b)
         assertEquals(a.hashCode(), b.hashCode())
     }
 
     @Test
     fun messageInequalityOnEveryField() {
-        val base = HopMessage(bytes(1), "text/plain", bytes(2), 1, 10L)
+        val base = HopMessage(bytes(1), "text/plain", bytes(2), 1u, 10L)
         assertNotEquals(base, base.copy(from = bytes(9)))
         assertNotEquals(base, base.copy(contentType = "image/png"))
         assertNotEquals(base, base.copy(body = bytes(9)))
-        assertNotEquals(base, base.copy(hops = 2))
+        assertNotEquals(base, base.copy(hops = 2u))
         assertNotEquals(base, base.copy(createdAt = 11L))
     }
 
     @Test
     fun messageNotEqualToOtherTypesOrNull() {
-        val m = HopMessage(bytes(1), "text/plain", bytes(2), 1, 10L)
+        val m = HopMessage(bytes(1), "text/plain", bytes(2), 1u, 10L)
         assertFalse(m.equals(null))
         assertFalse(m.equals("not a message"))
         assertTrue(m.equals(m))   // reference-equal fast path
