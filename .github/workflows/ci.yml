@@ -46,13 +46,13 @@ jobs:
     name: Rust (test · clippy · fmt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: rustup component add clippy rustfmt
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -95,14 +95,14 @@ jobs:
     name: Kotlin SDK tests (BearerManager)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
       # infra-14: this module has no gradle wrapper, so pin gradle via the setup action instead
       # of relying on whatever version the runner image happens to ship (which drifts over time).
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.9"
       # cov/kotlin: the SDK's JNA/native surface (HopNode + its Companion + FreeAction + HopRuntime +
@@ -112,7 +112,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -135,18 +135,18 @@ jobs:
     name: Android bearers + driver (JVM unit tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
       # The Android SDK + the AGP/platform packages the bearer + driver modules compile against.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -227,7 +227,7 @@ jobs:
     name: Apple bearers + driver + app (build-only)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The default Xcode on macos-14 is 15.4, but `xcodegen` (latest from brew) emits the newest
       # project format (objectVersion 77 = Xcode 16), which Xcode 15.4's xcodebuild cannot open
@@ -242,7 +242,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -358,7 +358,7 @@ jobs:
     name: WASM sim (wasm32 build + swarm invariants)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust + wasm32 target
         run: |
@@ -366,7 +366,7 @@ jobs:
           rustup target add wasm32-unknown-unknown
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -381,7 +381,7 @@ jobs:
       - name: Build hop-wasm for wasm32
         run: cargo build -p hop-wasm --target wasm32-unknown-unknown
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -400,7 +400,7 @@ jobs:
     name: Web + sim (Astro build · scenario-check · link check)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # web-04 / quality-net-05 / infra-12: the marketing site + the homepage sim had NO PR-time gate;
       # a broken Astro build, a dead internal link, or a sim-scenario regression only surfaced as a
@@ -416,7 +416,7 @@ jobs:
         run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -444,7 +444,7 @@ jobs:
       - name: Sim scenario-check (all scenarios complete)
         run: node sim/scenario-check.mjs
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -467,7 +467,7 @@ jobs:
     name: Contract purity + header drift + C smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust + cbindgen (pinned)
         run: |
@@ -517,11 +517,11 @@ jobs:
     name: Terraform (fmt · validate · plan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # infra-10: run the same OpenTofu version that writes the state (pinned in
       # cloudbuild.trigger.yaml), so fmt/validate/plan here match the prod apply.
-      - uses: opentofu/setup-opentofu@v1
+      - uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: "1.12.3"
 
@@ -574,7 +574,7 @@ jobs:
     name: Docs token guard (banned copy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # First prove the guard itself still flags what it should and ignores legit API identifiers /
       # removal notes, then run it against the tree.
       - name: Self-test the docs token guard
