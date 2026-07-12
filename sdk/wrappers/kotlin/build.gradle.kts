@@ -1,7 +1,7 @@
 // Hop Kotlin SDK — the idiomatic Kotlin/JVM face of libhop (via JNA). On Android this same code loads
 // the libhop .so; this standalone JVM build lets the host smoke-test the wrapper against the dylib.
 plugins {
-    kotlin("jvm") version "2.0.21"
+    kotlin("jvm") version "2.4.0"
     application
     jacoco
 }
