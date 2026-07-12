@@ -111,6 +111,33 @@ resource "google_storage_bucket_iam_member" "build_state" {
   member = "serviceAccount:${google_service_account.build[0].email}"
 }
 
+# The deploy gate (require-ci in cloudbuild.trigger.yaml) polls the GitHub check-runs API to confirm CI
+# is green before `tofu apply`. hopmesh/hop is PRIVATE, so an UNauthenticated poll returns 404 and the
+# gate could never see green: it timed out on every deploy (the reason a fixed pipeline still would not
+# converge). This secret holds a read-only GitHub token (Checks:read + Contents/Metadata:read on
+# hopmesh/hop) that the gate sends as a Bearer. Like the relay seed, the token VALUE never lives in TF
+# state: this creates the empty container only. Seed it out-of-band:
+#   pbpaste | gcloud secrets versions add hop-ci-readtoken --project hop-mesh --data-file=-
+resource "google_secret_manager_secret" "ci_readtoken" {
+  count     = local.build_enabled ? 1 : 0
+  secret_id = "hop-ci-readtoken"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.this]
+}
+
+# Resource-scoped: the build SA may read THIS secret's versions (to mount GH_TOKEN on the require-ci
+# step) but nothing else. infra-02 deliberately keeps secretmanager.versions.access OFF project-wide (so
+# a bad main commit cannot read the relay identity seed); this grant is narrowly scoped to the CI-read
+# token alone, so that protection is preserved.
+resource "google_secret_manager_secret_iam_member" "build_ci_readtoken" {
+  count     = local.build_enabled ? 1 : 0
+  secret_id = google_secret_manager_secret.ci_readtoken[0].id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.build[0].email}"
+}
+
 resource "google_cloudbuild_trigger" "image" {
   count    = local.build_enabled ? 1 : 0
   name     = "hop-relayd-image"

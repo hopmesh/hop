@@ -83,10 +83,12 @@ steps:
   # deploy on a web/sim commit) are ignored, so they neither block nor gate the relay apply.
   # infra-r2-08: an all-skipped/neutral matrix no longer passes - each required name must be `success`.
   #
-  # Auth: hopmesh/hop is public, so the check-runs API is polled unauthenticated (subject to the
-  # lower rate limit, which one poll-every-20s run stays well under). If the repo is made private,
-  # export a GITHUB token as $GH_TOKEN here (mount a Secret Manager secret via availableSecrets +
-  # secretEnv) and the step will send it automatically.
+  # Auth: hopmesh/hop is PRIVATE, so the check-runs API MUST be polled with a token. An
+  # unauthenticated poll returns 404 (not 403) for a private repo, which the gate reads as "all
+  # checks missing" and waits out the whole budget, so the deploy could never converge. The
+  # read-only token (Checks:read + Contents/Metadata:read) is mounted as GH_TOKEN via availableSecrets
+  # + secretEnv (below); the step sends it as a Bearer. See google_secret_manager_secret.ci_readtoken
+  # in infra/cloudbuild_trigger.tf (container is TF-managed; the token value is seeded out-of-band).
   # infra-r3-01: use the gcloud builder, NOT gcr.io/cloud-builders/curl, for this step. The gate needs
   # BOTH curl (poll the API) and python3 (tools/require-ci-verdict.py). The curl builder is a minimal
   # image with no documented python3, so a base-image refresh could drop python3 and break the gate at
@@ -100,6 +102,8 @@ steps:
     entrypoint: bash
     env:
       - 'REQUIRED_CHECKS=${_REQUIRED_CHECKS}'
+    # GH_TOKEN (read-only, mounted from Secret Manager) authenticates the private-repo check-runs poll.
+    secretEnv: ['GH_TOKEN']
     args:
       - -ec
       - |
@@ -208,6 +212,13 @@ steps:
           fi
           echo "waiting on relay health: $$url -> $$code ($$body); retrying"; sleep 10
         done
+# The read-only GitHub token the require-ci gate sends as a Bearer to poll the PRIVATE repo's
+# check-runs (see the require-ci step + google_secret_manager_secret.ci_readtoken). Mounted as the
+# GH_TOKEN secretEnv; the token value is seeded out-of-band, never in TF state or this file.
+availableSecrets:
+  secretManager:
+    - versionName: projects/hop-mesh/secrets/hop-ci-readtoken/versions/latest
+      env: GH_TOKEN
 options:
   machineType: E2_HIGHCPU_8
   # Required when the build runs as a user-specified service account (no default
