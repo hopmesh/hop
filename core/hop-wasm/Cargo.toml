@@ -12,7 +12,7 @@ version.workspace = true
 edition.workspace = true
 license-file = "LICENSE.md"
 repository.workspace = true
-description = "wasm-bindgen wrapper over a real hop-core Node<JsStore> (host-owned storage via a StoreBridge): drives many real Hop nodes in the browser swarm simulator."
+description = "The wasm/browser binding of hop-core: a real Node<JsStore> (host-owned storage via a StoreBridge), JS-consumable via wasm-bindgen. Its primary consumer today is the browser swarm simulator."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
