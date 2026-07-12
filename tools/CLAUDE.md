@@ -1,0 +1,27 @@
+# tools/
+
+CI guards + build helpers. The guards are the repo's safety net; each has a `.test.sh` self-test that
+runs in CI BEFORE the guard itself, so a change to a guard proves it still flags what it should.
+
+```
+docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity incl. no-semicolon, \u/CSS
+                           escape) + removed terms (InternetEgress, Wi-Fi Direct) + bare "Bluetooth" in
+                           docs/site copy. Self-test: docs-token-guard.test.sh.
+check-required-checks.sh   asserts ci.yml job names == the deploy-gate _REQUIRED_CHECKS allowlist. Fails
+                           on a nameless job, an anchor/inline job, or a ${{ }}-templated name (all of
+                           which could gate deploys while hiding from the sync).
+check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the ci.yml
+                           job names (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
+repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
+                           empty, truncated, or drifted (the two LICENSE copies must stay identical).
+require-ci-verdict.py       the runtime deploy-gate logic (Cloud Build). Tested by require-ci-gate.test.sh.
+cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
+apple-cov-gate.sh           per-package Swift coverage floor.
+check-web-links.mjs         internal-link checker for apps/web/dist.
+```
+
+## Rules
+
+- **The guards are ASCII-clean and must stay so.** The dash bytes are built from `printf '\xe2...'`, never typed, so the guard cannot trip its own ban. Keep dollar-name patterns out of block-scalar comments in the deploy config (they get scanned as substitutions).
+- **When you change a guard, extend its self-test in the same PR** (add the case that would have caught the gap). The self-tests are the regression guard for the guards.
+- The guards were themselves a source of real audit findings (a case-sensitive ban, an unbounded parser, a broken workflow-permissions key). Probe a guard change for both new bypasses AND new false positives.
