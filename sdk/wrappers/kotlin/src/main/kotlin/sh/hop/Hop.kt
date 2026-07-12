@@ -24,7 +24,11 @@ enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
  *  that might mutate them (a `data class` can't return defensive copies from its generated accessors).
  *  equals/hashCode are content-based (value semantics); as with any value carrying a mutable array, do
  *  not mutate a field and then rely on it as a HashMap/HashSet key. */
-data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: Byte, val createdAt: Long) {
+// F-9: `hops` is `UByte`, not `Byte`. The C ABI field is uint8_t (0..255) and the UniFFI-generated
+// driver bindings expose the equivalent field as UByte; a signed Byte would render a hop count >= 128
+// as a negative number. The FFI boundary itself (InboxSink.invoke, hop_message_status) keeps Byte for
+// correct JNA marshalling of a native uint8_t; we reinterpret to UByte at this public surface.
+data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: UByte, val createdAt: Long) {
     /** A defensive copy of the sender address (mutate this freely without affecting the message). */
     fun fromCopy(): ByteArray = from.copyOf()
     /** A defensive copy of the body bytes (mutate this freely without affecting the message). */
@@ -40,7 +44,7 @@ data class HopMessage(val from: ByteArray, val contentType: String, val body: By
         var r = from.contentHashCode()
         r = 31 * r + contentType.hashCode()
         r = 31 * r + body.contentHashCode()
-        r = 31 * r + hops
+        r = 31 * r + hops.toInt()
         r = 31 * r + createdAt.hashCode()
         return r
     }
@@ -284,7 +288,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
                 from = from?.getByteArray(0, 32) ?: ByteArray(32),
                 contentType = ct ?: "",
                 body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0),
-                hops = hops, createdAt = created))
+                hops = hops.toUByte(), createdAt = created))
         }, null)
     }
 
