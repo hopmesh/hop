@@ -310,23 +310,17 @@ jobs:
           BIN_DIR="$(swift build --show-bin-path)"
           XCTEST="$BIN_DIR/HopDriverPackageTests.xctest/Contents/MacOS/HopDriverPackageTests"
           PROF="$BIN_DIR/codecov/default.profdata"
-          REPORT=$(xcrun llvm-cov report "$XCTEST" -instr-profile "$PROF" \
-                  -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift|Keychain\.swift' \
-                  Sources/HopDriver/)
-          # Aggregate floor (unchanged): the whole pure-logic surface stays at or above 80%.
-          PCT=$(printf '%s\n' "$REPORT" | awk '/^TOTAL/ { print $(NF-3) }' | tr -d '%')
-          echo "HopDriver pure-logic aggregate line coverage (headless, non-device denominator): ${PCT}%"
-          awk -v p="$PCT" 'BEGIN { if (p+0 < 80) { print "FAIL: HopDriver pure-logic aggregate below the 80% coverage floor"; exit 1 } print "OK: aggregate at or above the 80% floor" }'
-          # Per-file floor (cov/apple-hns): a single untested file must not hide behind the aggregate
-          # again. HopBearer+Hns.swift sat at ~59% under a green aggregate until this branch lifted it to
-          # ~99%. Every non-excluded source file must now clear 70% line coverage ON ITS OWN, so a file
-          # that regresses fails loudly instead of being averaged away.
-          printf '%s\n' "$REPORT" | awk '
-            /\.swift/ {
-              pct=$(NF-3); gsub(/%/, "", pct);
-              if (pct+0 < 70) { printf "FAIL: %s at %s%% is below the 70%% per-file floor\n", $1, pct; bad=1 }
-            }
-            END { if (bad) { exit 1 } print "OK: every non-excluded HopDriver source file is at or above the 70% per-file floor" }'
+          # pass-18 F-CI-7: gate from the STRUCTURED JSON export (each metric keyed by name), NOT the text
+          # `llvm-cov report` table with a positional `awk $(NF-3)`. The text table's column count depends
+          # on whether branch-coverage columns are present, so NF-3 would silently read the wrong field
+          # (likely function %, which reads higher) and PASS falsely if a future toolchain changes the
+          # layout. tools/cov-floor-gate.py reads summary.lines.percent, which cannot drift. It enforces
+          # the aggregate 80% floor AND a per-file 70% floor (so no untested file hides behind the
+          # aggregate). The device/thread-bound files (radios, L2CAP runloop, Keychain) stay excluded.
+          xcrun llvm-cov export "$XCTEST" -instr-profile "$PROF" \
+            -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift|Keychain\.swift' \
+            Sources/HopDriver/ \
+            | python3 "$GITHUB_WORKSPACE/tools/cov-floor-gate.py" "$PWD/Sources/HopDriver" 80 70
 
       # cov/apple-demo: the demo app's pure, non-UI logic (transport-icon/tag mapping, peer subline,
       # message-meta formatting, hops:// URL normalization, MIME/request-path parsing, QR payload
@@ -589,6 +583,11 @@ jobs:
       # removal notes, then run it against the tree.
       - name: Self-test the docs token guard
         run: bash tools/docs-token-guard.test.sh
+      # F-CI-7: the HopDriver coverage floor (in the apple job, which needs a Mac) parses llvm-cov's JSON
+      # export via tools/cov-floor-gate.py. Self-test that pure-python gate here on ubuntu (no swift
+      # needed) so an aggregate/per-file/empty-denominator regression is caught pre-merge.
+      - name: Self-test the coverage-floor gate
+        run: bash tools/cov-floor-gate.test.sh
       # docs-drift-02: fail on em-dash/en-dash and removed-API / mispositioned terms in docs + site
       # copy (InternetEgress, Wi-Fi Direct, bare "Bluetooth"), scoped to avoid legit API identifiers.
       - name: Run docs token guard
