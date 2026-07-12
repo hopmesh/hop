@@ -126,8 +126,8 @@ class HopValueTypesTest {
 
     @Test
     fun hopStatusIsValueEqual() {
-        val a = HopStatus(relayed = 3, delivered = true, forwardHops = 2, forwardMs = 1500)
-        val b = HopStatus(relayed = 3, delivered = true, forwardHops = 2, forwardMs = 1500)
+        val a = HopStatus(relayed = 3, delivered = true, forwardHops = 2u, forwardMs = 1500)
+        val b = HopStatus(relayed = 3, delivered = true, forwardHops = 2u, forwardMs = 1500)
         assertEquals(a, b)
         assertEquals(a.hashCode(), b.hashCode())
         assertNotEquals(a, a.copy(delivered = false))
@@ -138,5 +138,25 @@ class HopValueTypesTest {
         // DIALER=0 / ACCEPTOR=1 is the exact int the C ABI expects for hop_link_up(role).
         assertEquals(0, HopRole.DIALER.c)
         assertEquals(1, HopRole.ACCEPTOR.c)
+    }
+
+    @Test
+    fun uint8HopCountsSurfaceUnsignedNotNegative() {
+        // pass-18 F-1/F-2, the ACTUAL bug the UByte fields exist to prevent, exercised at the boundary
+        // that a real mesh test never reaches. The C ABI hop-count fields are uint8_t; JNA marshals a
+        // uint8_t of 200 as the signed Byte -56. The wrapper reinterprets `.toUByte()`, so the public
+        // field must read 200u, NOT a negative number. This is the reinterpretation both HopMessage.hops
+        // (F-9) and HopStatus.forwardHops (F-1) rely on; assert it directly rather than via a `>= 0`
+        // check that is vacuously true for any UByte.
+        assertEquals(200u.toUByte(), (-56).toByte().toUByte(), "uint8_t 200 marshals via Byte -56")
+        assertEquals(255u.toUByte(), (-1).toByte().toUByte(), "uint8_t 255 marshals via Byte -1")
+
+        val msg = HopMessage(bytes(1), "text/plain", bytes(2), hops = (-56).toByte().toUByte(), createdAt = 0L)
+        assertEquals(200u.toUByte(), msg.hops)
+        assertTrue(msg.hops > 127u, "a high hop count reads as > 127, not negative")
+
+        val st = HopStatus(relayed = 0, delivered = true, forwardHops = (-1).toByte().toUByte(), forwardMs = 0)
+        assertEquals(255u.toUByte(), st.forwardHops)
+        assertTrue(st.forwardHops > 127u, "a high forward-hop count reads as > 127, not negative")
     }
 }

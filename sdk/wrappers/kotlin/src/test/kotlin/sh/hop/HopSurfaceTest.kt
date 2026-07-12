@@ -48,10 +48,10 @@ class HopSurfaceTest {
     @Test
     fun hopStatusMirrorsSwiftFields() {
         // HopStatus data class field parity with Swift's HopStatus (relayed/delivered/forwardHops/forwardMs).
-        val s = HopStatus(relayed = 3, delivered = true, forwardHops = 2, forwardMs = 1500)
+        val s = HopStatus(relayed = 3, delivered = true, forwardHops = 2u, forwardMs = 1500)
         assertEquals(3, s.relayed)
         assertTrue(s.delivered)
-        assertEquals(2.toByte(), s.forwardHops)
+        assertEquals(2u.toUByte(), s.forwardHops)
         assertEquals(1500, s.forwardMs)
     }
 }
