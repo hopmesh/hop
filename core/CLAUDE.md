@@ -6,7 +6,8 @@ The Rust heart of Hop. Everything else binds through here.
 core/hop-core     the protocol: bundles, wire format, Noise links, spray-and-wait routing, the §39
                   untraceable-messaging path, HNS/DNSSEC, hps:// pub/sub, the crypto
 core/hop          the C ABI crate (cbindgen -> sdk/hop.h); the universal client + bearer contract
-core/hop-wasm     the browser build (wasm-bindgen); the real hop-core compiled to WASM for sim/
+core/hop-wasm     the wasm/browser binding of hop-core (JS-consumable via wasm-bindgen), peer to the
+                  C ABI; the browser swarm sim is its primary consumer today
 core/stores       the persistence adapters (sqlite / sqlcipher, firestore) behind the Store trait
 ```
 
