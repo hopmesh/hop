@@ -3,8 +3,6 @@ drivers/apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
 drivers/apple/HopDriver/.build-staging/
 # ---- Rust ----
 /target
-# the wasm site is excluded from the workspace, so it has its own target dir
-site/target/
 **/*.rs.bk
 # relay identity seeds + on-disk stores (never commit secrets/state)
 *.db
