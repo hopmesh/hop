@@ -91,7 +91,7 @@ dependencies {
 
     // QR identity exchange: zxing core encodes our address to a QR; zxing-android-embedded is a
     // drop-in camera scanner to add a contact from someone else's QR.
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:core:3.5.4")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // cov/android-demo: the demo app's JVM unit tests. junit for assertions; Robolectric shadows the
