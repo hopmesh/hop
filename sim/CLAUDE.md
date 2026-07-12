@@ -2,7 +2,7 @@
 
 The WASM swarm sim: a clickable swarm where each dot is a REAL `hop-core` instance compiled to WASM
 (via `core/hop-wasm`), bearer links forming and breaking as nodes move. It doubles as the homepage
-scenario player. `apps/web` syncs this whole directory into its `public/sim` at build time.
+scenario player. `apps/web/site` syncs this whole directory into its `public/sim` at build time.
 
 ## The committed pkg + the freshness guard
 

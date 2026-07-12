@@ -20,7 +20,7 @@ updates:
 
   # Marketing site (Astro / npm).
   - package-ecosystem: npm
-    directory: "/apps/web"
+    directory: "/apps/web/site"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -31,7 +31,7 @@ updates:
 
   # Kotlin SDK wrapper (Gradle).
   - package-ecosystem: gradle
-    directory: "/sdk/wrappers/android"
+    directory: "/sdk/android"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

@@ -26,8 +26,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Default scan set: markdown docs at the repo root + docs/, the Astro site copy, and the
-# sim/ + learn/ trees. apps/web/package.json's `sync-sim`/`sync-learn` copy ../sim and ../learn
-# into apps/web/public and pages.yml deploys apps/web/dist, so sim/*.html and learn/*.html ship to the
+# sim/ + learn/ trees. apps/web/site/package.json's `sync-sim`/`sync-learn` copy ../sim and ../learn
+# into apps/web/site/public and pages.yml deploys apps/web/site/dist, so sim/*.html and learn/*.html ship to the
 # live public site and must be guarded too (web-r3-01). Vendored/build artifacts under these
 # (sim/pkg, sim/sqlite-wasm, *.wasm) are already dropped by the shared `excludes` below.
 # Keep this list narrow so it does not false-positive on code/comments/build output.
@@ -36,7 +36,7 @@ if [ "$#" -gt 0 ]; then
 else
   REQUESTED=(
     "DESIGN.md" "MECHANISMS.md" "README.md"
-    "docs" "apps/web/src" "sim" "learn"
+    "docs" "apps/web/site/src" "sim" "learn"
   )
 fi
 
@@ -114,7 +114,7 @@ report "figure dash (U+2012): an en-dash lookalike, rewrite the sentence" \
 # Encoded dashes: an HTML entity (named &mdash;, decimal &#8212;, or hex &#x2014;, each of which HTML5
 # lets you zero-pad: &#08212;, &#x02014;), a JS/JSON \u escape, or a CSS \2014 escape (no u prefix) all
 # render a real em/en-dash on the page while the source bytes stay ASCII, so the literal-byte scan above
-# walks right past them. apps/web/src is Astro/HTML/TS and sim/ + learn/ ship HTML/CSS, so an encoded dash
+# walks right past them. apps/web/site/src is Astro/HTML/TS and sim/ + learn/ ship HTML/CSS, so an encoded dash
 # here IS a rendered dash on the public site. Case-insensitive extended regex (-iE) so &#X2014; / \U2014
 # and every zero-padded form match; 0* absorbs the optional leading zeros, \{?...\}? the \u{...} braces.
 # The trailing `;` on a numeric entity is OPTIONAL (pass-18 F-CI-3): the WHATWG tokenizer resolves

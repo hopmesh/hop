@@ -12,7 +12,7 @@ name: CI
 #   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check
 #                   plus the wasm-glue check (F-5: publish_recv_beacon/send_traced/
 #                   set_default_lifetime_ms/inbox_debug), builds the Astro site, and link-checks
-#                   apps/web/dist (web-04 / quality-net-05 / infra-12).
+#                   apps/web/site/dist (web-04 / quality-net-05 / infra-12).
 #   - contract    : contract-purity guardrail, cbindgen header-drift, the ABI-version consistency guard
 #                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
 #                   pinned so an upstream release can't churn the gate.
@@ -128,7 +128,7 @@ jobs:
       # integration tests, then the JaCoCo 80%-line floor (jacocoTestCoverageVerification) that locks
       # the grade. Plain JVM module, no Android SDK needed.
       - name: Test Kotlin SDK (+ 80% coverage gate)
-        working-directory: sdk/wrappers/android
+        working-directory: sdk/android
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: gradle test jacocoTestReport jacocoTestCoverageVerification --no-daemon
@@ -262,7 +262,7 @@ jobs:
         env:
           HOP_SQLCIPHER: "0"
         run: |
-          bash sdk/wrappers/apple/build-xcframework.sh
+          bash sdk/apple/build-xcframework.sh
           bash tools/build-xcframework.sh
 
       # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
@@ -270,7 +270,7 @@ jobs:
       # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
       # (sec-priv-02). `swift test` also builds, so these subsume the build-only step for those packages.
       - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
-        working-directory: sdk/wrappers/apple
+        working-directory: sdk/apple
         run: swift test
 
       # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at
@@ -452,20 +452,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: apps/web/site/package-lock.json
 
       - name: Install web deps
-        working-directory: apps/web
+        working-directory: apps/web/site
         run: npm ci
 
       # The Astro build (prebuild syncs sim/ + learn/ into public/). A broken build fails here.
       - name: Build the marketing site (astro build)
-        working-directory: apps/web
+        working-directory: apps/web/site
         run: npm run build
 
       # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
-      - name: Internal link check (apps/web/dist)
-        run: node tools/check-web-links.mjs apps/web/dist
+      - name: Internal link check (apps/web/site/dist)
+        run: node tools/check-web-links.mjs apps/web/site/dist
 
   contract:
     name: Contract purity + header drift + C smoke

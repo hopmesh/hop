@@ -2,13 +2,13 @@ name: Deploy marketing site (Pages)
 
 # Build the Astro marketing site in web/ and publish it to GitHub Pages.
 # Pages must be enabled with "Source: GitHub Actions" once in repo settings
-# (Settings → Pages). The custom domain hopme.sh is carried by apps/web/public/CNAME.
+# (Settings → Pages). The custom domain hopme.sh is carried by apps/web/site/public/CNAME.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'apps/web/**'
+      - 'apps/web/site/**'
       - 'sim/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: apps/web
+        working-directory: apps/web/site
     steps:
       - uses: actions/checkout@v7
 
@@ -64,7 +64,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: apps/web/site/package-lock.json
 
       # Every homepage scenario must actually complete (each scripted send delivers AND its ACK returns).
       # After setup-node so it runs on the pinned Node 20, against the pkg-node just built above.
@@ -90,14 +90,14 @@ jobs:
 
       # infra-r2-01: dead-internal-link gate over the built site, same as the CI `web` job. Blocks the
       # publish on a broken link instead of shipping it live.
-      - name: Internal link check (apps/web/dist)
+      - name: Internal link check (apps/web/site/dist)
         working-directory: .
-        run: node tools/check-web-links.mjs apps/web/dist
+        run: node tools/check-web-links.mjs apps/web/site/dist
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: apps/web/dist
+          path: apps/web/site/dist
 
   deploy:
     needs: build

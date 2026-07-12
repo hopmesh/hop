@@ -3,7 +3,7 @@
 # drives the C ABI (the same proof as the Swift/C smokes). Uses JDK17 + standalone gradle.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../../.." && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
 
 cargo build -p hop --manifest-path "$ROOT/Cargo.toml"
 "$ROOT/core/hop/regen-header.sh" >/dev/null

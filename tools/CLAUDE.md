@@ -17,7 +17,7 @@ repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs,
 require-ci-verdict.py       the runtime deploy-gate logic (Cloud Build). Tested by require-ci-gate.test.sh.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.
-check-web-links.mjs         internal-link checker for apps/web/dist.
+check-web-links.mjs         internal-link checker for apps/web/site/dist.
 build-xcframework.sh        builds the Apple SDK xcframework + Swift bindings into drivers/apple/HopDriver.
 build-aar.sh                generates the Android UniFFI bindings + native libs into the demo app's dir.
 smoke-test.sh               compiles + runs a Swift program against libhop on the macOS host.

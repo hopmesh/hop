@@ -10,7 +10,7 @@ libhop C-ABI contract, `docs/libhop-architecture.md`.
   generates `sdk/hop.h`), `hop-sim`, `hop-wasm`, and the store backends under
   `core/stores/`.
 - `sdk/` - `hop.h` (the C ABI, the ONE contract every non-Rust client binds) and the
-  Swift (`sdk/wrappers/apple`) and Kotlin (`sdk/wrappers/android`) wrappers.
+  Swift (`sdk/apple`) and Kotlin (`sdk/android`) wrappers.
 - `bearers/` - per-transport packages (BLE, LAN, relay), one isolated
   package per bearer. Apple Multipeer (Wi-Fi P2P) is a live transport but stays in-driver, not a package.
 - `drivers/` - the per-platform host layer.
