@@ -103,6 +103,17 @@ report "em-dash (U+2014): rewrite with a comma, colon, parens, or two sentences"
 report "en-dash (U+2013): do not substitute, rewrite the sentence" \
   "$("$GREP" -rInF "${excludes[@]}" -e "$ENDASH" -- "${TARGETS[@]}" 2>/dev/null)"
 
+# Encoded dashes: an HTML entity (&mdash; &#8212; &#x2014;) or a JS/JSON \u escape renders a real
+# em/en-dash on the page even though the source bytes stay ASCII, so the literal-byte scan above walks
+# right past it. web/src is Astro/HTML/TS and sim/ + learn/ ship HTML, so an entity here IS a rendered
+# em-dash on the public site. Ban the encoded forms in the same scoped copy. Fixed-string (-F) keeps
+# the backslash, '&', '#', and ';' literal; -i so &#X2014; / \U2014 case variants all match.
+report "encoded em/en-dash (HTML entity or \\u escape): rewrite the sentence, don't encode the dash" \
+  "$("$GREP" -rIniF "${excludes[@]}" \
+      -e '&mdash;' -e '&#8212;' -e '&#x2014;' -e '\u2014' -e '\u{2014}' \
+      -e '&ndash;' -e '&#8211;' -e '&#x2013;' -e '\u2013' -e '\u{2013}' \
+      -- "${TARGETS[@]}" 2>/dev/null)"
+
 # InternetEgress + Wi-Fi Direct: fixed-string match, then drop lines that document the removal.
 report "InternetEgress (removed Destination wire variant): use device-addressed hops://" \
   "$("$GREP" -rInF "${excludes[@]}" -e "InternetEgress" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev "$REMOVAL_CONTEXT")"

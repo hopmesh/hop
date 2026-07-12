@@ -68,5 +68,24 @@ expect_fail "$TMP/em.md"
 printf 'See sections 5%b7 for the wire format.\n' "$(printf '\xe2\x80\x93')" > "$TMP/en.md"
 expect_fail "$TMP/en.md"
 
+# --- encoded em-dash: an HTML entity or a \u escape renders a real dash but keeps the source ASCII,
+# so the literal-byte scan misses it. Each of these must fail. ---
+printf 'Signal grade encryption &mdash; on by default.\n' > "$TMP/ent-mdash.html"
+expect_fail "$TMP/ent-mdash.html"
+printf 'Fast &#8212; and quiet.\n' > "$TMP/ent-dec.html"
+expect_fail "$TMP/ent-dec.html"
+printf 'Untraceable &#x2014; by default.\n' > "$TMP/ent-hex.html"
+expect_fail "$TMP/ent-hex.html"
+printf 'const tagline = "spray \\u2014 wait";\n' > "$TMP/esc-u.ts"
+expect_fail "$TMP/esc-u.ts"
+printf 'const t = "sections 5 \\u2013 7";\n' > "$TMP/esc-en.ts"
+expect_fail "$TMP/esc-en.ts"
+# uppercase hex entity variant (&#X2014;) must also fail (the -i flag)
+printf 'Quiet &#X2014; by default.\n' > "$TMP/ent-hexcap.html"
+expect_fail "$TMP/ent-hexcap.html"
+# --- clean copy that merely mentions an ampersand or the word mdash in prose: must pass ---
+printf 'Ship it fast and quiet. No dashes here.\n' > "$TMP/clean2.md"
+expect_pass "$TMP/clean2.md"
+
 echo "docs-token-guard.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
