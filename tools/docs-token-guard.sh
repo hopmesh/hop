@@ -58,10 +58,14 @@ fi
 # system grep directly. GNU grep (CI/Linux) and BSD grep (macOS) both accept these flags.
 GREP="$(command -v grep)"
 
-# The two dash code points, built from hex so this script file itself stays ASCII-clean and
-# can never trip its own guard.
-EMDASH=$(printf '\xe2\x80\x94')   # U+2014
-ENDASH=$(printf '\xe2\x80\x93')   # U+2013
+# The banned dash code points, built from hex so this script file itself stays ASCII-clean and can
+# never trip its own guard. Beyond em (U+2014) and en (U+2013) we also ban the two common LOOKALIKE
+# substitutes anyone (or a model) dodging the em-dash rule reaches for (pass-18 F-CI-4): the HORIZONTAL
+# BAR (U+2015) and the FIGURE DASH (U+2012), both visually near-identical to an em/en-dash.
+EMDASH=$(printf '\xe2\x80\x94')   # U+2014 em dash
+ENDASH=$(printf '\xe2\x80\x93')   # U+2013 en dash
+HBAR=$(printf '\xe2\x80\x95')     # U+2015 horizontal bar (em-dash lookalike)
+FIGDASH=$(printf '\xe2\x80\x92')  # U+2012 figure dash (en-dash lookalike)
 
 # Lines that explicitly record a removal are legitimate history, not a live claim. A doc that
 # says "Wi-Fi Direct was REMOVED" or "InternetEgress ... removed" must pass; a doc that lists
@@ -97,11 +101,15 @@ report() {
   fi
 }
 
-# Fixed-string scan for the two dashes: any occurrence is a violation.
+# Fixed-string scan for the banned dashes (em, en, + the two lookalikes): any occurrence is a violation.
 report "em-dash (U+2014): rewrite with a comma, colon, parens, or two sentences" \
   "$("$GREP" -rInF "${excludes[@]}" -e "$EMDASH" -- "${TARGETS[@]}" 2>/dev/null)"
 report "en-dash (U+2013): do not substitute, rewrite the sentence" \
   "$("$GREP" -rInF "${excludes[@]}" -e "$ENDASH" -- "${TARGETS[@]}" 2>/dev/null)"
+report "horizontal bar (U+2015): an em-dash lookalike, rewrite the sentence" \
+  "$("$GREP" -rInF "${excludes[@]}" -e "$HBAR" -- "${TARGETS[@]}" 2>/dev/null)"
+report "figure dash (U+2012): an en-dash lookalike, rewrite the sentence" \
+  "$("$GREP" -rInF "${excludes[@]}" -e "$FIGDASH" -- "${TARGETS[@]}" 2>/dev/null)"
 
 # Encoded dashes: an HTML entity (named &mdash;, decimal &#8212;, or hex &#x2014;, each of which HTML5
 # lets you zero-pad: &#08212;, &#x02014;), a JS/JSON \u escape, or a CSS \2014 escape (no u prefix) all
@@ -109,9 +117,13 @@ report "en-dash (U+2013): do not substitute, rewrite the sentence" \
 # walks right past them. web/src is Astro/HTML/TS and sim/ + learn/ ship HTML/CSS, so an encoded dash
 # here IS a rendered dash on the public site. Case-insensitive extended regex (-iE) so &#X2014; / \U2014
 # and every zero-padded form match; 0* absorbs the optional leading zeros, \{?...\}? the \u{...} braces.
-report "encoded em/en-dash (HTML entity, \\u escape, or CSS \\2014): rewrite the sentence, don't encode the dash" \
+# The trailing `;` on a numeric entity is OPTIONAL (pass-18 F-CI-3): the WHATWG tokenizer resolves
+# &#8212 (no semicolon) to a real em-dash too, so `;?` after each numeric form. The em/en LOOKALIKES are
+# banned in their encoded forms as well (F-CI-4): U+2015 horizontal bar (&#8213; / &#x2015; / ― /
+# \2015) and U+2012 figure dash (&#8210; / &#x2012; / ‒ / \2012).
+report "encoded dash (HTML entity, \\u escape, or CSS \\NNNN, incl. lookalikes U+2015/U+2012): rewrite the sentence" \
   "$("$GREP" -rIniE "${excludes[@]}" \
-      -e '&mdash;|&ndash;|&#0*8212;|&#0*8211;|&#x0*2014;|&#x0*2013;|\\u\{?0*2014\}?|\\u\{?0*2013\}?|\\0*2014|\\0*2013' \
+      -e '&mdash;|&ndash;|&#0*821[0123];?|&#x0*201[2345];?|\\u\{?0*201[2345]\}?|\\0*201[2345]' \
       -- "${TARGETS[@]}" 2>/dev/null)"
 
 # InternetEgress + Wi-Fi Direct: case-INSENSITIVE fixed-string match (-i), then drop lines that document
@@ -126,9 +138,12 @@ report "Wi-Fi Direct (removed Android P2P bearer): Android-to-Android falls back
 # caught, not only "Bluetooth". Then drop real API identifiers where "Bluetooth" is glued to another
 # alnum token (CoreBluetooth, BluetoothAdapter, WebBluetooth, bluetooth-central, NSBluetooth*,
 # bluetoothd, ...); the exclusion is -Evi so it stays case-insensitive too. The -w word-match already
-# spares glued identifiers on its own; the exclusion covers the punctuation-adjacent forms.
+# spares glued identifiers on its own; the exclusion covers the punctuation-adjacent forms. The hyphen
+# exclusion is scoped to the two REAL iOS background-mode identifiers (bluetooth-central /
+# bluetooth-peripheral), not an open-ended `bluetooth-` prefix, which was letting bare marketing phrases
+# like "bluetooth-powered" / "bluetooth-free" through (pass-18 F-CI-5).
 report "bare Bluetooth (say BLE in user-facing copy)" \
-  "$("$GREP" -rInwi "${excludes[@]}" -e "Bluetooth" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Evi '[[:alnum:]]Bluetooth|Bluetooth[[:alnum:]]|Bluetooth[Ll]e|bluetooth-|bluetoothd|NSBluetooth')"
+  "$("$GREP" -rInwi "${excludes[@]}" -e "Bluetooth" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Evi '[[:alnum:]]Bluetooth|Bluetooth[[:alnum:]]|Bluetooth[Ll]e|bluetooth-central|bluetooth-peripheral|bluetoothd|NSBluetooth')"
 
 if [ "$fail" -ne 0 ]; then
   echo "docs-token-guard: FAIL (see errors above)"

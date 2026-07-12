@@ -23,19 +23,21 @@ names = []
 in_jobs = False
 pending = None      # a job id whose `name:` we have not seen yet
 nameless = []       # job ids that reached the next job (or EOF) with no name:
+templated = []      # job names carrying a ${{ }} expression (a matrix/expr template)
 for line in open(sys.argv[1]):
     if re.match(r'^jobs:\s*$', line):
         in_jobs = True
         continue
     if not in_jobs:
         continue
-    # A job key: exactly two-space indent, "<id>:" with nothing after.
-    m = re.match(r'^  (\S[^:]*):\s*$', line)
+    # A job key: two-space indent, "<id>:" then whitespace, an anchor, an inline map, or end of line.
+    # Matching ":(\s|$)" rather than the old ":\s*$" is deliberate (pass-18 F-CI-2): a job defined with a
+    # YAML anchor ("sneaky: &anchor") or inline map put ANYTHING after the colon, so the old anchored
+    # regex never saw it as a job boundary at all, letting it hide from this allowlist sync entirely (it
+    # ran in CI, produced a check-run, and was never required by the deploy gate). Now any such job is
+    # seen; if it then has no `    name:` line it is flagged nameless below (fail-loud, not fail-open).
+    m = re.match(r'^  (\S[^:]*):(\s|$)', line)
     if m:
-        # Starting a new job: if the previous one never got a name:, it's a blind spot.
-        # A nameless job still runs and still becomes a required check under its job-id,
-        # but it is INVISIBLE to this allowlist sync -> it could be red while tofu apply
-        # proceeds. Refuse to let a job go unnamed.
         if pending is not None:
             nameless.append(pending)
         pending = m.group(1)
@@ -43,22 +45,34 @@ for line in open(sys.argv[1]):
     # The job's name: is the first 4-space "name:" after a job key.
     m = re.match(r'^    name:\s*(.+?)\s*$', line)
     if m and pending is not None:
-        names.append(m.group(1))
+        nm = m.group(1)
+        # F-CI-6: a matrix/expression-templated name (e.g. "Test (${{ matrix.os }})") is NEVER the
+        # literal check-run name GitHub produces (it expands to "Test (ubuntu-latest)" etc.), so an
+        # allowlist entry matching the template can never match a real check and the deploy gate would
+        # poll forever. Refuse a templated job name outright.
+        if '${{' in nm:
+            templated.append(pending)
+        names.append(nm)
         pending = None
 if pending is not None:
     nameless.append(pending)
 if nameless:
-    sys.stderr.write(
-        "NAMELESS_JOBS " + ",".join(nameless) + "\n")
+    sys.stderr.write("NAMELESS_JOBS " + ",".join(nameless) + "\n")
     sys.exit(7)
+if templated:
+    sys.stderr.write("TEMPLATED_JOBS " + ",".join(templated) + "\n")
+    sys.exit(8)
 for n in names:
     print(n)
 PY
 )" || {
-  # The parser exits 7 with a NAMELESS_JOBS line on stderr when a job has no `name:`.
-  echo "::error:: every job in $CI must set an explicit \`name:\` so it is visible to the deploy-gate"
-  echo "::error:: allowlist. A nameless job still runs and gates deploys, but this sync can't see it,"
-  echo "::error:: so it could be red while \`tofu apply\` proceeds. Add a name: to the job(s) above."
+  # The parser exits 7 (a job has no `name:`, incl. an anchor/inline job that hid from the old regex) or
+  # 8 (a job name carries a ${{ }} expression that can never match a real check-run name). Either way the
+  # deploy-gate allowlist sync can't trust the job set, so fail loudly and name the offending jobs above.
+  echo "::error:: every job in $CI must set an explicit, literal (non-templated) \`name:\` so it is"
+  echo "::error:: visible to the deploy-gate allowlist. A job that is nameless, anchor/inline-defined"
+  echo "::error:: without a name, or whose name is a \${{ }} template, could run and gate deploys while"
+  echo "::error:: this sync cannot see or match it. Fix the job(s) named above."
   exit 1
 }
 
