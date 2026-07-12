@@ -87,5 +87,33 @@ expect_fail "$TMP/ent-hexcap.html"
 printf 'Ship it fast and quiet. No dashes here.\n' > "$TMP/clean2.md"
 expect_pass "$TMP/clean2.md"
 
+# --- F-4: zero-padded HTML entities and the CSS \NNNN escape also render a dash; all must fail ---
+printf 'Fast &#08212; and quiet.\n' > "$TMP/ent-deczero.html"     # zero-padded decimal
+expect_fail "$TMP/ent-deczero.html"
+printf 'Quiet &#x02014; here.\n' > "$TMP/ent-hexzero.html"        # zero-padded hex
+expect_fail "$TMP/ent-hexzero.html"
+printf '.tag::after{content:"\\2014";}\n' > "$TMP/css-em.css"     # CSS escape, no u prefix
+expect_fail "$TMP/css-em.css"
+printf '.s::before{content:"\\002014";}\n' > "$TMP/css-emzero.css" # CSS zero-padded
+expect_fail "$TMP/css-emzero.css"
+printf 'const t = "x \\u{2014} y";\n' > "$TMP/esc-brace.ts"       # \u{...} brace form
+expect_fail "$TMP/esc-brace.ts"
+# clean copy with a dollar-number and ampersands must NOT false-positive on the encoded scan
+printf 'Cost is $20140 and AT&T covers R&D.\n' > "$TMP/clean3.md"
+expect_pass "$TMP/clean3.md"
+
+# --- F-1: the word bans are case-INSENSITIVE now; lowercase/uppercase prose must fail ---
+printf 'Chat over bluetooth with people nearby.\n' > "$TMP/bt-lc.md"
+expect_fail "$TMP/bt-lc.md"
+printf 'Connect via BLUETOOTH today.\n' > "$TMP/bt-uc.md"
+expect_fail "$TMP/bt-uc.md"
+printf 'Send to internetegress for the internet.\n' > "$TMP/eg-lc.md"
+expect_fail "$TMP/eg-lc.md"
+printf 'Android uses wi-fi direct for transfer.\n' > "$TMP/wfd-lc.md"
+expect_fail "$TMP/wfd-lc.md"
+# legit API identifiers are still NOT flagged even with case-insensitive matching (word-boundary spares them)
+printf 'Drives BLE via CoreBluetooth and BluetoothAdapter.\n' > "$TMP/apis2.md"
+expect_pass "$TMP/apis2.md"
+
 echo "docs-token-guard.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
