@@ -7,6 +7,13 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
   site: 'https://hopme.sh',
   integrations: [sitemap()],
+  markdown: {
+    // Landmine defused (F-8): Astro's smartypants (default true) rewrites a typed `--`/`---` in any
+    // future Markdown/MDX page into a rendered en/em dash, which the byte-scan docs-token-guard never
+    // sees (it scans source bytes, not rendered output). There are no markdown pages today, so this is
+    // insurance: keep the no-dash rule enforceable if a markdown-driven page is ever added.
+    smartypants: false,
+  },
   // Quickstart moved into the docs site; keep the old URL working.
   redirects: {
     '/quickstart': '/docs/quickstart/',

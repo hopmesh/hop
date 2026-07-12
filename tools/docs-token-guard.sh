@@ -103,28 +103,32 @@ report "em-dash (U+2014): rewrite with a comma, colon, parens, or two sentences"
 report "en-dash (U+2013): do not substitute, rewrite the sentence" \
   "$("$GREP" -rInF "${excludes[@]}" -e "$ENDASH" -- "${TARGETS[@]}" 2>/dev/null)"
 
-# Encoded dashes: an HTML entity (&mdash; &#8212; &#x2014;) or a JS/JSON \u escape renders a real
-# em/en-dash on the page even though the source bytes stay ASCII, so the literal-byte scan above walks
-# right past it. web/src is Astro/HTML/TS and sim/ + learn/ ship HTML, so an entity here IS a rendered
-# em-dash on the public site. Ban the encoded forms in the same scoped copy. Fixed-string (-F) keeps
-# the backslash, '&', '#', and ';' literal; -i so &#X2014; / \U2014 case variants all match.
-report "encoded em/en-dash (HTML entity or \\u escape): rewrite the sentence, don't encode the dash" \
-  "$("$GREP" -rIniF "${excludes[@]}" \
-      -e '&mdash;' -e '&#8212;' -e '&#x2014;' -e '\u2014' -e '\u{2014}' \
-      -e '&ndash;' -e '&#8211;' -e '&#x2013;' -e '\u2013' -e '\u{2013}' \
+# Encoded dashes: an HTML entity (named &mdash;, decimal &#8212;, or hex &#x2014;, each of which HTML5
+# lets you zero-pad: &#08212;, &#x02014;), a JS/JSON \u escape, or a CSS \2014 escape (no u prefix) all
+# render a real em/en-dash on the page while the source bytes stay ASCII, so the literal-byte scan above
+# walks right past them. web/src is Astro/HTML/TS and sim/ + learn/ ship HTML/CSS, so an encoded dash
+# here IS a rendered dash on the public site. Case-insensitive extended regex (-iE) so &#X2014; / \U2014
+# and every zero-padded form match; 0* absorbs the optional leading zeros, \{?...\}? the \u{...} braces.
+report "encoded em/en-dash (HTML entity, \\u escape, or CSS \\2014): rewrite the sentence, don't encode the dash" \
+  "$("$GREP" -rIniE "${excludes[@]}" \
+      -e '&mdash;|&ndash;|&#0*8212;|&#0*8211;|&#x0*2014;|&#x0*2013;|\\u\{?0*2014\}?|\\u\{?0*2013\}?|\\0*2014|\\0*2013' \
       -- "${TARGETS[@]}" 2>/dev/null)"
 
-# InternetEgress + Wi-Fi Direct: fixed-string match, then drop lines that document the removal.
+# InternetEgress + Wi-Fi Direct: case-INSENSITIVE fixed-string match (-i), then drop lines that document
+# the removal. Case matters: prose naturally lowercases these ("wi-fi direct", "internetegress"), and
+# the ban must catch that, not only the canonical casing.
 report "InternetEgress (removed Destination wire variant): use device-addressed hops://" \
-  "$("$GREP" -rInF "${excludes[@]}" -e "InternetEgress" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev "$REMOVAL_CONTEXT")"
+  "$("$GREP" -rInFi "${excludes[@]}" -e "InternetEgress" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev "$REMOVAL_CONTEXT")"
 report "Wi-Fi Direct (removed Android P2P bearer): Android-to-Android falls back to BLE" \
-  "$("$GREP" -rInF "${excludes[@]}" -e "Wi-Fi Direct" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev "$REMOVAL_CONTEXT")"
+  "$("$GREP" -rInFi "${excludes[@]}" -e "Wi-Fi Direct" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev "$REMOVAL_CONTEXT")"
 
-# Bluetooth: only the bare marketing word. Word-match, then drop real API identifiers where
-# "Bluetooth" is glued to another alnum token (CoreBluetooth, BluetoothAdapter, WebBluetooth,
-# bluetooth-central, NSBluetooth*, bluetoothd, ...). An alnum on either side means identifier.
+# Bluetooth: only the bare marketing word, case-INSENSITIVELY (-wi), so prose "bluetooth"/"BLUETOOTH" is
+# caught, not only "Bluetooth". Then drop real API identifiers where "Bluetooth" is glued to another
+# alnum token (CoreBluetooth, BluetoothAdapter, WebBluetooth, bluetooth-central, NSBluetooth*,
+# bluetoothd, ...); the exclusion is -Evi so it stays case-insensitive too. The -w word-match already
+# spares glued identifiers on its own; the exclusion covers the punctuation-adjacent forms.
 report "bare Bluetooth (say BLE in user-facing copy)" \
-  "$("$GREP" -rInw "${excludes[@]}" -e "Bluetooth" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Ev '[[:alnum:]]Bluetooth|Bluetooth[[:alnum:]]|Bluetooth[Ll]e|bluetooth-|bluetoothd|NSBluetooth')"
+  "$("$GREP" -rInwi "${excludes[@]}" -e "Bluetooth" -- "${TARGETS[@]}" 2>/dev/null | "$GREP" -Evi '[[:alnum:]]Bluetooth|Bluetooth[[:alnum:]]|Bluetooth[Ll]e|bluetooth-|bluetoothd|NSBluetooth')"
 
 if [ "$fail" -ne 0 ]; then
   echo "docs-token-guard: FAIL (see errors above)"
