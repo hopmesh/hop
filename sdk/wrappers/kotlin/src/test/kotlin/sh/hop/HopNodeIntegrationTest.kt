@@ -104,7 +104,7 @@ class HopNodeIntegrationTest {
                 val st = a.status(id)
                 assertTrue(st.delivered)
                 assertTrue(st.relayed >= 1, "at least one peer was handed a copy")
-                assertTrue(st.forwardHops >= 0)
+                assertTrue(st.forwardHops >= 0u)
                 assertTrue(st.forwardMs >= 0)
 
                 // a forward-secret ratchet session now exists to B (the lock indicator).

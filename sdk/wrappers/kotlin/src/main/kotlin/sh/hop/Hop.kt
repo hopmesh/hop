@@ -57,8 +57,11 @@ data class HopStatus(
     val relayed: Int,
     /** Destination confirmed. */
     val delivered: Boolean,
-    /** Forward-path length the destination reported. */
-    val forwardHops: Byte,
+    /** Forward-path length the destination reported. `UByte`, not `Byte`: the C ABI field is uint8_t
+     *  (0..255), so a signed Byte would render a forward-hop count >= 128 as negative (pass-18 F-1, the
+     *  sibling of the HopMessage.hops F-9 fix). The FFI boundary keeps Byte for correct JNA marshalling;
+     *  we reinterpret to UByte at this public surface. */
+    val forwardHops: UByte,
     /** Forward-path latency (ms) the destination reported. */
     val forwardMs: Int,
 )
@@ -306,7 +309,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
         return HopStatus(
             relayed = relayed.value,
             delivered = delivered.value.toInt() != 0,
-            forwardHops = hops.value,
+            forwardHops = hops.value.toUByte(),
             forwardMs = ms.value,
         )
     }
