@@ -249,6 +249,7 @@ export interface InitOutput {
     readonly transfer_bundle: (a: number) => [number, number];
     readonly transfer_delivered: (a: number) => number;
     readonly transfer_link: (a: number) => number;
+    readonly ring_core_0_17_14__bn_mul_mont: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;

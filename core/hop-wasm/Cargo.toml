@@ -22,6 +22,8 @@ hop-core = { workspace = true }
 wasm-bindgen = "0.2"
 
 # On wasm32 the crypto RNG (rand_core::OsRng → getrandom 0.2) needs the browser
-# crypto.getRandomValues backend. hop-core's whole tree uses only getrandom 0.2.
+# crypto.getRandomValues backend. hop-core's tree also carries getrandom 0.3 (via snow, Noise
+# ephemeral keys) and 0.4 (hop-core's own bridge to the dalek crates' newer CryptoRng); those two
+# get the same wasm_js backend selected directly in core/hop-core/Cargo.toml.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
