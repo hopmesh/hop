@@ -1,3 +1,6 @@
+drivers/apple/HopDriver/Frameworks/
+drivers/apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
+drivers/apple/HopDriver/.build-staging/
 # ---- Rust ----
 /target
 # the wasm site is excluded from the workspace, so it has its own target dir
@@ -12,11 +15,6 @@ site/target/
 
 # ---- iOS / Xcode ----
 # generated XCFramework + Swift bindings (legacy path + the HopDriver package)
-apple/generated/
-apple/HopDriver/Frameworks/
-apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
-apple/HopDriver/.build-staging/
-apple/HopDriver/.build/
 # regenerate with xcodegen
 *.xcodeproj
 # xcodebuild output / DerivedData
@@ -33,21 +31,20 @@ apps/android/HopDemo/local.properties
 
 # Local marketing-site preview renders
 apps/web/.preview/
-apple/HopBearers/.build/
 
 # libhop C smoke-test binary (build artifact; source is examples/smoke.c)
 core/hop/examples/smoke
 
 # SwiftPM build dirs for the SDK wrappers / bearer packages
-sdk/wrappers/Hop/.build/
+sdk/wrappers/apple/.build/
 bearers/apple/**/.build/
 
 # HopDemoKit (the demo app's pure, headlessly-tested logic) SwiftPM build dir
 apps/apple/HopDemoKit/.build/
 
 # Kotlin/JVM SDK build dirs
-sdk/wrappers/kotlin/.gradle/
-sdk/wrappers/kotlin/build/
+sdk/wrappers/android/.gradle/
+sdk/wrappers/android/build/
 
 # ESP32 example host binary
 apps/esp32/hop-sensor/hop-sensor
@@ -56,7 +53,7 @@ apps/esp32/hop-sensor/hop-sensor
 drivers/apple/**/.build/
 
 # libhop xcframework (gitignored artifact; build-xcframework.sh)
-sdk/wrappers/Hop/Frameworks/
+sdk/wrappers/apple/Frameworks/
 
 # Android bearer build artifacts
 bearers/android/.gradle/
@@ -65,9 +62,9 @@ bearers/android/**/build/
 bearers/android/local.properties
 
 # Kotlin SDK: machine-local gradle config + Kotlin daemon logs (never tracked)
-sdk/wrappers/kotlin/local.properties
-sdk/wrappers/kotlin/.kotlin/
-sdk/wrappers/kotlin/build/
+sdk/wrappers/android/local.properties
+sdk/wrappers/android/.kotlin/
+sdk/wrappers/android/build/
 
 # Android driver build
 drivers/android/**/build/

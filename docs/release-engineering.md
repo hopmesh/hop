@@ -27,8 +27,8 @@ both in the release notes.
 `HOP_ABI_VERSION` is hand-duplicated in three places and they must agree:
 
 - `core/hop/src/cabi.rs` (`pub const HOP_ABI_VERSION`), generated into `sdk/hop.h`.
-- `sdk/wrappers/Hop/Sources/Hop/Hop.swift` (`expectedABIVersion`).
-- `sdk/wrappers/kotlin/.../Hop.kt` (`HOP_ABI_VERSION`).
+- `sdk/wrappers/apple/Sources/Hop/Hop.swift` (`expectedABIVersion`).
+- `sdk/wrappers/android/.../Hop.kt` (`HOP_ABI_VERSION`).
 
 CI checks the `cabi.rs` -> `sdk/hop.h` leg (the header-drift job regenerates the
 header with cbindgen and diffs it). The Swift/Kotlin copies are NOT yet
@@ -70,7 +70,7 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
 
 ### Apple: xcframework + SwiftPM
 
-- Build the xcframework with `sdk/wrappers/Hop/build-xcframework.sh` (device +
+- Build the xcframework with `sdk/wrappers/apple/build-xcframework.sh` (device +
   simulator slices).
 - Publish plan: attach the built `.xcframework` (zipped) to the GitHub release for
   the tag, and reference it from `Package.swift` as a `binaryTarget` with the
@@ -85,7 +85,7 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
 
 ### Android: AAR + Maven
 
-- Build the Kotlin SDK wrapper AAR from `sdk/wrappers/kotlin` (Gradle). Bundle the
+- Build the Kotlin SDK wrapper AAR from `sdk/wrappers/android` (Gradle). Bundle the
   `libhop` shared objects for the Android ABIs (`arm64-v8a`, `x86_64` for the
   emulator) into the AAR's `jniLibs`.
 - Publish plan: publish to a Maven repository (GitHub Packages or Maven Central)

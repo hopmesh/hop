@@ -8,19 +8,19 @@ the native BLE bearer (TODO, see below).
 ## Build
 
 ```sh
-./apple/build-xcframework.sh
+./tools/build-xcframework.sh
 ```
 
 Produces (gitignored) under `apple/generated/`:
 
-- `HopFFI.xcframework` — device (`ios-arm64`) + simulator slices. Drag into your
+- `HopFFI.xcframework`, device (`ios-arm64`) + simulator slices. Drag into your
   Xcode project (or add as a binary target in a Swift package).
-- `Sources/hop.swift` — the generated Swift API. Add it to your target.
+- `Sources/hop.swift`, the generated Swift API. Add it to your target.
 
 ## Verify it works (no device needed)
 
 ```sh
-./apple/smoke-test.sh
+./tools/smoke-test.sh
 ```
 
 Compiles and runs a Swift program against the Rust library on the macOS host: two
@@ -41,7 +41,7 @@ for m in node.takeInbox() { /* m.from, m.contentType, m.body */ }
 node.tick(nowMs: now)                              // periodic: retransmit, prune
 ```
 
-## TODO — native BLE bearer
+## TODO, native BLE bearer
 
 The only platform code left is a CoreBluetooth shim that implements the byte-stream
 contract `HopNode` expects: act as both central and peripheral, advertise the shared
