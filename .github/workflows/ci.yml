@@ -548,7 +548,13 @@ jobs:
         run: bash tools/require-ci-gate.test.sh
 
       # infra-r2-02: keep the deploy gate's required-check allowlist in sync with the actual CI job
-      # names, so a renamed/added/dropped job forces a matching allowlist edit in the same PR.
+      # names, so a renamed/added/dropped job forces a matching allowlist edit in the same PR. First
+      # self-test the sync guard (it must fail a drifted allowlist AND a job with no explicit name:, a
+      # deploy-gate blind spot: a nameless job still gates deploys but is invisible to this sync), then
+      # run it against the real tree.
+      - name: Self-test the required-check allowlist guard
+        working-directory: ${{ github.workspace }}
+        run: bash tools/check-required-checks.test.sh
       - name: Required-check allowlist is in sync
         working-directory: ${{ github.workspace }}
         run: bash tools/check-required-checks.sh
@@ -567,7 +573,11 @@ jobs:
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
       # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is
-      # empty or missing. A 0-byte LICENSE.md shipped TWICE before (restored, then re-emptied by a
-      # squash-merge) with every CI job green, because nothing asserted a tracked file has content.
+      # empty, missing, truncated below a sane floor, stripped of its signature line, or (for the two
+      # LICENSE copies) drifted apart. A 0-byte LICENSE.md shipped TWICE before (restored, then
+      # re-emptied by a squash-merge) with every CI job green, because nothing asserted a tracked file
+      # has real content. Self-test the guard first, then run it against the tree.
+      - name: Self-test the repo integrity guard
+        run: bash tools/repo-integrity-guard.test.sh
       - name: Repo integrity guard (critical files non-empty)
         run: bash tools/repo-integrity-guard.sh

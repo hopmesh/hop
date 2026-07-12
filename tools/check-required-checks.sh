@@ -21,7 +21,8 @@ ci_names="$(python3 - "$CI" <<'PY'
 import sys, re
 names = []
 in_jobs = False
-job_indent = None
+pending = None      # a job id whose `name:` we have not seen yet
+nameless = []       # job ids that reached the next job (or EOF) with no name:
 for line in open(sys.argv[1]):
     if re.match(r'^jobs:\s*$', line):
         in_jobs = True
@@ -31,17 +32,35 @@ for line in open(sys.argv[1]):
     # A job key: exactly two-space indent, "<id>:" with nothing after.
     m = re.match(r'^  (\S[^:]*):\s*$', line)
     if m:
-        job_indent = True
+        # Starting a new job: if the previous one never got a name:, it's a blind spot.
+        # A nameless job still runs and still becomes a required check under its job-id,
+        # but it is INVISIBLE to this allowlist sync -> it could be red while tofu apply
+        # proceeds. Refuse to let a job go unnamed.
+        if pending is not None:
+            nameless.append(pending)
+        pending = m.group(1)
         continue
     # The job's name: is the first 4-space "name:" after a job key.
     m = re.match(r'^    name:\s*(.+?)\s*$', line)
-    if m and job_indent:
+    if m and pending is not None:
         names.append(m.group(1))
-        job_indent = False
+        pending = None
+if pending is not None:
+    nameless.append(pending)
+if nameless:
+    sys.stderr.write(
+        "NAMELESS_JOBS " + ",".join(nameless) + "\n")
+    sys.exit(7)
 for n in names:
     print(n)
 PY
-)"
+)" || {
+  # The parser exits 7 with a NAMELESS_JOBS line on stderr when a job has no `name:`.
+  echo "::error:: every job in $CI must set an explicit \`name:\` so it is visible to the deploy-gate"
+  echo "::error:: allowlist. A nameless job still runs and gates deploys, but this sync can't see it,"
+  echo "::error:: so it could be red while \`tofu apply\` proceeds. Add a name: to the job(s) above."
+  exit 1
+}
 
 # (2) The _REQUIRED_CHECKS block-scalar lines in the trigger.
 req_names="$(python3 - "$TRIGGER" <<'PY'
