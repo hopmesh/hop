@@ -1,8 +1,13 @@
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // Kotlin 2.0+ moved the Compose compiler out of AGP/kotlinCompilerExtensionVersion into this plugin
+    // (version = the Kotlin version, above). Required for any module compiling @Composable code
+    // (MainActivity.kt, DemoFormat.kt) under Kotlin 2.x.
+    id("org.jetbrains.kotlin.plugin.compose")
     jacoco
 }
 
@@ -27,7 +32,7 @@ jacoco { toolVersion = "0.8.11" }
 
 android {
     namespace = "sh.hopme.demo"
-    compileSdk = 34
+    compileSdk = 36 // AGP 9.2.1 (below) supports API 37.0 at most; 36 is the newest platform on hand
 
     defaultConfig {
         applicationId = "sh.hopme.demo"
@@ -58,13 +63,14 @@ android {
     }
 
     buildFeatures { compose = true; buildConfig = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+    // composeOptions.kotlinCompilerExtensionVersion is gone as of Kotlin 2.0+ - the Compose compiler now
+    // ships as the org.jetbrains.kotlin.plugin.compose Gradle plugin (applied above, pinned to the Kotlin
+    // version), so there is nothing left to configure here.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
-    kotlinOptions { jvmTarget = "1.8" }
 
     // cov/android-demo: JVM unit tests for the pure helpers (DemoFormat.kt) + the crash handler
     // (HopApp.kt), run headless under Robolectric. isIncludeAndroidResources gives the merged R (so
@@ -77,16 +83,22 @@ android {
         }
     }
 }
+// Kotlin 2.x makes `android.kotlinOptions { jvmTarget = ... }` a hard compile error (moved to
+// compilerOptions); this is the direct replacement, one level up from the `android {}` block.
+kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_1_8) } }
 
 dependencies {
     // The Hop runtime (bearer, transports, UniFFI bindings, native libs) lives in the driver.
     implementation(project(":hop-driver"))
 
-    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
+    // HELD at 1.13.1, matching :hop-driver (same reasoning: core-ktx 1.19.0 needs AGP >= 9.1.0 AND
+    // compileSdk >= 37; :hop-driver is also built by the independent bearers/android Gradle build pinned
+    // to AGP 8.5.2, so both sides of this app's dependency graph must agree on one core-ktx version).
     implementation("androidx.core:core-ktx:1.13.1")
 
     // QR identity exchange: zxing core encodes our address to a QR; zxing-android-embedded is a
