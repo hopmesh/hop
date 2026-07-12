@@ -58,6 +58,27 @@ NAMELESS_JOBS=$'  rust:\n    name: Rust checks\n    runs-on: ubuntu-latest\n    
 build_root "$TMP/nameless" "$NAMELESS_JOBS" "$TWO_REQ" "$README"
 expect "$TMP/nameless" fail "job_without_name"
 
+# 4) PASS-18 F-CI-2: a YAML-ANCHOR-defined job must be SEEN (not hidden from the sync). Here the anchor
+# job "Web build" is present in ci.yml + required, so with the fix it parses as a normal job and the set
+# is in sync -> pass. (Before the fix the anchor line was not recognized as a job boundary, so "Web
+# build" was invisible and the set mismatched.)
+ANCHOR_JOBS=$'  rust:\n    name: Rust checks\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  web: &web_anchor\n    name: Web build\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+build_root "$TMP/anchor_ok" "$ANCHOR_JOBS" "$TWO_REQ" "$README"
+expect "$TMP/anchor_ok" pass "anchor_job_is_visible_and_in_sync"
+
+# 4b) the same anchor job, but the allowlist OMITS it (the real blind spot): must now fail, because the
+# anchor job is visible and unrequired (before the fix this passed clean, the deploy-gate hole).
+ONE_REQ=$'    Rust checks\n'
+build_root "$TMP/anchor_hole" "$ANCHOR_JOBS" "$ONE_REQ" "$README"
+expect "$TMP/anchor_hole" fail "anchor_job_missing_from_allowlist"
+
+# 5) PASS-18 F-CI-6: a job whose name is a ${{ }} matrix/expression template can never match a real
+# check-run name -> fail loudly.
+MATRIX_JOBS=$'  rust:\n    name: Rust checks\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  matrixed:\n    name: Test (${{ matrix.os }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+MATRIX_REQ=$'    Rust checks\n    Test (${{ matrix.os }})\n'
+build_root "$TMP/matrix" "$MATRIX_JOBS" "$MATRIX_REQ" "$README"
+expect "$TMP/matrix" fail "templated_matrix_name_rejected"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "check-required-checks.test: all $pass cases passed"

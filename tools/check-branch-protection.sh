@@ -32,7 +32,10 @@ for line in open(ci):
         in_jobs = True; continue
     if not in_jobs:
         continue
-    if re.match(r'^  (\S[^:]*):\s*$', line):
+    # ":(\s|$)" (not ":\s*$") so an anchor/inline-defined job is still seen as a job boundary (F-CI-2),
+    # matching check-required-checks.sh. This script only emits names for the comparison; the
+    # nameless/templated hard-fail lives in check-required-checks.sh, which the audit runs first.
+    if re.match(r'^  (\S[^:]*):(\s|$)', line):
         job_pending = True; continue
     m = re.match(r'^    name:\s*(.+?)\s*$', line)
     if m and job_pending:

@@ -115,5 +115,25 @@ expect_fail "$TMP/wfd-lc.md"
 printf 'Drives BLE via CoreBluetooth and BluetoothAdapter.\n' > "$TMP/apis2.md"
 expect_pass "$TMP/apis2.md"
 
+# --- F-CI-3: a numeric HTML entity WITHOUT the trailing semicolon still renders a dash; must fail ---
+printf 'Fast &#8212 and quiet.\n' > "$TMP/ent-nosemi.html"
+expect_fail "$TMP/ent-nosemi.html"
+printf 'Untraceable &#x2014 by default.\n' > "$TMP/ent-hexnosemi.html"
+expect_fail "$TMP/ent-hexnosemi.html"
+# --- F-CI-4: the two lookalike dash glyphs (U+2015 horizontal bar, U+2012 figure dash), literal + encoded ---
+printf 'Hop is fast%buntraceable.\n' "$(printf '\xe2\x80\x95')" > "$TMP/hbar.md"
+expect_fail "$TMP/hbar.md"
+printf 'See 5%b7 sections.\n' "$(printf '\xe2\x80\x92')" > "$TMP/figdash.md"
+expect_fail "$TMP/figdash.md"
+printf 'Quiet &#8213; by default.\n' > "$TMP/hbar-ent.html"
+expect_fail "$TMP/hbar-ent.html"
+# --- F-CI-5: bare marketing "bluetooth-<word>" must fail; the two real iOS background-mode ids must pass ---
+printf 'A bluetooth-powered mesh nearby.\n' > "$TMP/bt-powered.md"
+expect_fail "$TMP/bt-powered.md"
+printf 'Hop is fully bluetooth-free, no GATT.\n' > "$TMP/bt-free.md"
+expect_fail "$TMP/bt-free.md"
+printf 'UIBackgroundModes: bluetooth-central and bluetooth-peripheral.\n' > "$TMP/bt-bgmodes.md"
+expect_pass "$TMP/bt-bgmodes.md"
+
 echo "docs-token-guard.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
