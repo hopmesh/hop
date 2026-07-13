@@ -246,7 +246,16 @@ export class HopEndpoint extends EventEmitter {
     if (this.#closed) return
     this.#closed = true
     if (this.#timer) clearInterval(this.#timer)
-    for (const { timer } of this.#pending.values()) clearTimeout(timer)
+    // Reject (not just drop) every in-flight request so an awaiting caller gets a rejection instead of a
+    // promise that never settles (audit LOW: pending were cleared without rejecting the waiters).
+    for (const { reject, timer } of this.#pending.values()) {
+      clearTimeout(timer)
+      try {
+        reject(new Error('endpoint closed'))
+      } catch {
+        // the caller may have already settled/detached; ignore
+      }
+    }
     this.#pending.clear()
     for (const c of this.#closers) {
       try {

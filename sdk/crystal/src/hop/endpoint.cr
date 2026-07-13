@@ -96,12 +96,17 @@ module Hop
       end
       raise "endpoint is closed" unless req_id
 
-      select
-      when res = ch.receive
-        res
-      when timeout(timeout)
-        @pending.delete(req_id)
-        raise "hops://#{service}/#{method} timed out after #{timeout}"
+      begin
+        select
+        when res = ch.receive
+          res
+        when timeout(timeout)
+          @node_lock.synchronize { @pending.delete(req_id) } # under the node lock, like register + pump
+          raise "hops://#{service}/#{method} timed out after #{timeout}"
+        end
+      rescue Channel::ClosedError
+        # #close closed our waiter channel: fail fast instead of blocking the full timeout.
+        raise "endpoint is closed"
       end
     end
 
@@ -165,6 +170,12 @@ module Hop
       return if already
 
       @closers.each { |c| c.call rescue nil } # unblock bearer accept/read fibers so they exit
+      # Wake any in-flight request waiters so they fail fast instead of blocking their full timeout:
+      # closing the channel makes their `ch.receive` raise Channel::ClosedError (rescued in #request).
+      @node_lock.synchronize do
+        @pending.each_value(&.close)
+        @pending.clear
+      end
       # Free only after @closed is set: a late bearer-fiber call (a WSS run firing #link_down as its
       # socket closes) now short-circuits in #with_node instead of dereferencing a freed node.
       @node_lock.synchronize do
@@ -220,7 +231,9 @@ module Hop
       responses = with_node { |n| Hop::FFI.take_service_responses(n) }
       return unless responses
       responses.each do |(_frm, for_id, status, body)|
-        if ch = @pending.delete(for_id)
+        # audit LOW: mutate @pending under @node_lock (the reentrant node lock the register + timeout
+        # paths use), so all three @pending accesses share one lock and cannot race under -Dpreview_mt.
+        if ch = @node_lock.synchronize { @pending.delete(for_id) }
           ch.send({status, body})
         end
       end

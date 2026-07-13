@@ -115,6 +115,9 @@ class HopEndpoint:
             with self._lock:
                 self._pending.pop(req_id, None)
             raise TimeoutError(f"hops://{service}/{method} timed out after {timeout}s")
+        if holder.get("closed"):
+            # close() woke us instead of a response: fail fast rather than KeyError on holder["status"].
+            raise RuntimeError("endpoint is closed")
         return holder["status"], holder["body"]
 
     def sign_reach(self, endpoint: str, ttl_secs: int = 3600) -> bytes:
@@ -211,6 +214,11 @@ class HopEndpoint:
                 return
             self._closed = True
             closers, self._closers = self._closers, []
+            # Wake in-flight request() waiters so they fail fast instead of blocking their full timeout.
+            for ev, holder in self._pending.values():
+                holder["closed"] = True
+                ev.set()
+            self._pending.clear()
         for c in closers:  # unblock bearer accept/recv threads so they exit
             try:
                 c()
