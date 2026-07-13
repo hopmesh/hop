@@ -2,25 +2,15 @@
 // the domain (WebPKI), the served reach record self-certifies the address, and the WSS handshake
 // confirms it, then a hops:// round trip runs over the WebSocket. One process, a real self-signed
 // HTTPS server (production uses a real cert; here we accept the self-signed one with insecureTLS).
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import https from 'node:https'
 import { HopEndpoint } from '../lib/endpoint.mjs'
+import { selfSignedTls } from '../lib/dev-tls.mjs'
 
 const PORT = 8443
 const PUBLIC = `wss://localhost:${PORT}/_hop`
 
-// self-signed cert for localhost (dev only; production has a real WebPKI cert)
-const dir = mkdtempSync(join(tmpdir(), 'hop-tls-'))
-execFileSync(
-  'openssl',
-  ['req', '-x509', '-newkey', 'rsa:2048', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem'),
-    '-days', '1', '-nodes', '-subj', '/CN=localhost'],
-  { stdio: 'ignore' },
-)
-const tls = { key: readFileSync(join(dir, 'key.pem')), cert: readFileSync(join(dir, 'cert.pem')) }
+// self-signed cert for localhost, generated IN-PROCESS (no openssl CLI); production has a real WebPKI cert
+const tls = selfSignedTls()
 
 // --- the server: an existing https server, wired in ONE call ---
 const server = new HopEndpoint({ name: 'orders' })

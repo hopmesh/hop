@@ -46,8 +46,21 @@ cd sdk/python
 python3 examples/raw_roundtrip.py        # raw C ABI round trip (proves the ctypes bindings)
 python3 examples/echo.py                 # the hop.on / reply DX in-process
 python3 examples/tcp.py                  # the same round trip over a real TCP bearer
+pip install cryptography                  # the discovery example + test need it (in-process dev cert)
+python3 examples/discovery.py            # WSS + WebPKI + reach-record discovery (in-process cert)
 python3 -m unittest discover -s tests    # in-process, TCP, reach record, + WSS discovery, all pass
 ```
+
+Two-process shape (a standalone server + a client that dials it):
+
+```sh
+python3 examples/server.py                # prints its address, listens on tcp://0.0.0.0:9944
+python3 examples/client.py <address> localhost 9944
+```
+
+The endpoint SDK stays **zero runtime deps** (ctypes is stdlib). `cryptography` is a dev/example-only
+extra (`pip install -e '.[dev]'`), used solely to generate the in-process self-signed cert for the
+discovery example + test; it is never imported at runtime.
 
 ## Reachable by name (WSS + discovery)
 

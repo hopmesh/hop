@@ -40,8 +40,20 @@ cgo compiles against `sdk/hop.h` and links `libhop`. Build `libhop` first (or se
 cargo build -p hop          # from the repo root -> target/debug/libhop.<dylib|so>
 cd sdk/go
 go test ./...               # raw ABI + in-process + real TCP + reach record + WSS discovery, all pass
-go run ./examples/tcp       # the DX end to end over a real socket
+go run ./examples/echo      # the On / reply DX in-process
+go run ./examples/tcp       # the same round trip over a real TCP bearer
+go run ./examples/discovery # WSS + WebPKI + reach-record discovery (in-process cert)
 ```
+
+Two-process shape (a standalone server + a client that dials it):
+
+```sh
+go run ./examples/server                       # prints its address, listens on tcp://0.0.0.0:9944
+go run ./examples/client <address> localhost 9944
+```
+
+(The raw C ABI round trip lives in `TestRawRoundTrip` rather than an example, since Go's FFI layer is
+unexported; `go test` runs it.)
 
 The cgo `LDFLAGS` point `-L`/`-rpath` at `../../target/debug`. Set `CGO_LDFLAGS` if your `libhop` lives
 elsewhere.
