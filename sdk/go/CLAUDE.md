@@ -5,13 +5,22 @@ surface, over the `libhop` C ABI via **cgo**. Sibling to `sdk/node` (koffi), `sd
 and `sdk/python` (ctypes); all SERVER SDKs, same C-ABI contract.
 
 ```
-hop.go            the cgo layer: C trampolines for the sink callbacks + Go wrappers over hop_*
+hop.go            the cgo layer: C trampolines for the sink callbacks (incl. reach) + Go wrappers over hop_*
 endpoint.go       hop.Endpoint (pump GOROUTINE + handler dispatch) + Request + the Reply func type
-tcp_bearer.go     the Internet bearer (length-prefixed frames over net.Conn) + ConnectInProcess
+tcp_bearer.go     the raw-TCP Internet bearer (length-prefixed frames over net.Conn) + ConnectInProcess
+wss_bearer.go     the WSS Internet bearer (gorilla/websocket; one WS message = one frame, no prefix)
+discovery.go      SignReach/VerifyReach + the /.well-known/hop responder + Resolve + Attach + DialByName
 raw_test.go       proves the cgo layer (the cabi.rs round trip)
 endpoint_test.go  in-process + TCP round trips
+discovery_test.go reach record sign/verify + the full HTTPS well-known + WSS discovery round trip
 examples/tcp/     a runnable demo
 ```
+
+Reachable-by-name: `Attach(mux, publicURL)` wires `/_hop` (WSS) + `/.well-known/hop` in one call. In Go
+a WS upgrade is a plain `http.Handler`, so both are mux routes (unlike Node, where the upgrade is a
+server-level hook). `DialByName` fetches the well-known (TLS proves the domain), verifies the
+self-certifying reach record, dials the WSS, and the Noise handshake confirms the address, no DNSSEC.
+The reach cgo bindings reuse the trampoline + `runtime/cgo.Handle` pattern from the sink callbacks.
 
 ## Non-obvious things (cgo footguns)
 

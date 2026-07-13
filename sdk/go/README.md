@@ -39,15 +39,37 @@ cgo compiles against `sdk/hop.h` and links `libhop`. Build `libhop` first (or se
 ```sh
 cargo build -p hop          # from the repo root -> target/debug/libhop.<dylib|so>
 cd sdk/go
-go test ./...               # raw ABI round trip + in-process + real TCP, all must pass
+go test ./...               # raw ABI + in-process + real TCP + reach record + WSS discovery, all pass
 go run ./examples/tcp       # the DX end to end over a real socket
 ```
 
 The cgo `LDFLAGS` point `-L`/`-rpath` at `../../target/debug`. Set `CGO_LDFLAGS` if your `libhop` lives
 elsewhere.
 
+## Reachable by name (WSS + discovery)
+
+Make an endpoint reachable at `myaddress.com` with **no new port and no DNSSEC**. In Go a WS upgrade is
+a normal `http.Handler`, so `Attach` wires the WSS bearer and the discovery route into your mux in one
+call:
+
+```go
+mux := http.NewServeMux()
+hop.Attach(mux, "wss://myaddress.com/_hop")   // /_hop (WSS) + /.well-known/hop
+http.ListenAndServeTLS(":443", cert, key, mux)
+```
+
+```go
+address, _ := client.DialByName("https://myaddress.com", false) // WebPKI + self-certifying
+status, body, _ := client.Request(address, "acme/orders", "create", order)
+```
+
+Trust, no DNSSEC: `dialByName` fetches `/.well-known/hop` (TLS proves the domain), verifies the
+self-certifying reach record (signed by the address), then the Noise handshake over the WSS confirms
+the address. `discovery_test.go` proves the full chain against an in-process self-signed HTTPS server.
+
 ## Prototype scope
 
-Built and working: `On`, `reply`, `Request`, the pump goroutine, the TCP bearer, base58 addressing,
-ABI-version assertion. Stubbed follow-ups (each additive, none a core change): HNS publish/resolve,
+Built and working: `On`, `reply`, `Request`, the pump goroutine, TCP + WSS bearers, base58 addressing,
+reach records (`SignReach`/`VerifyReach`), `Attach`/`DialByName` discovery, ABI-version assertion.
+Follow-ups (each additive, none a core change): the no-domain gossip case,
 delegated keys, multi-tenant hosting. Not yet a required CI job. Design: `docs/endpoint-sdk.md`.
