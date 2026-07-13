@@ -46,7 +46,7 @@ public struct HopServiceResponse {
 public final class HopNode {
     /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted once on first use so a
     /// wrapper built against a newer header fails loudly instead of drifting (F-28).
-    public static let expectedABIVersion: UInt32 = 2
+    public static let expectedABIVersion: UInt32 = 3
     private static let abiChecked: Bool = {
         precondition(hop_abi_version() == HopNode.expectedABIVersion,
                      "libhop ABI mismatch: wrapper expects \(HopNode.expectedABIVersion), library is \(hop_abi_version())")

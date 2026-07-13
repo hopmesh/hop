@@ -12,7 +12,7 @@ from ctypes import CFUNCTYPE, POINTER, c_char_p, c_size_t, c_uint8, c_uint16, c_
 from pathlib import Path
 
 _EXT = {"darwin": "dylib", "win32": "dll"}.get(sys.platform, "so")
-_ABI_EXPECTED = 2
+_ABI_EXPECTED = 3
 
 
 def _resolve_lib() -> str:

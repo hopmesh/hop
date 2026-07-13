@@ -79,7 +79,7 @@ export const hop = {
   address_from_base58: lib.func('bool hop_address_from_base58(const char *text, uint8_t *out32)'),
 }
 
-const ABI_EXPECTED = 2
+const ABI_EXPECTED = 3
 export function assertAbi() {
   const got = hop.abi_version()
   if (got !== ABI_EXPECTED) {

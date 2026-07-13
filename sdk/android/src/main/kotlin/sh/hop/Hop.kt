@@ -128,7 +128,7 @@ private fun require32(bytes: ByteArray, name: String): ByteArray {
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
-const val HOP_ABI_VERSION = 2
+const val HOP_ABI_VERSION = 3
 
 /** hops:// request callback (D-wrappers), one per queued inbound request during pollServiceRequests. */
 internal fun interface ServiceReqSink : Callback {

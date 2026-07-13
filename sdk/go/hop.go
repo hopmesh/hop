@@ -40,7 +40,7 @@ import (
 	"unsafe"
 )
 
-const abiExpected = 2
+const abiExpected = 3
 
 // OutPacket is one drained outbound frame for a link.
 type OutPacket struct {
