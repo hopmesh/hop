@@ -13,14 +13,16 @@ sdk/elixir     the Elixir SERVER endpoint SDK via a Rustler NIF (see sdk/elixir/
                Phoenix/Plug-shaped Hop.Endpoint; binds the `hop` crate's Rust API, not the C header
 sdk/python     the Python SERVER endpoint SDK via ctypes (see sdk/python/CLAUDE.md): a Flask/FastAPI-
                shaped HopEndpoint over the C ABI; zero third-party deps (ctypes is stdlib)
+sdk/go         the Go SERVER endpoint SDK via cgo (see sdk/go/CLAUDE.md): an net/http-shaped
+               hop.Endpoint over the C ABI (C trampolines + runtime/cgo.Handle for the sink callbacks)
 ```
 
 The layout is `sdk/<target>` (one wrapper package per binding target), matching the repo-wide
 purpose/platform axis. `apple`/`android` are CLIENT SDKs (run a node on a device); `node`/`elixir`/
-`python` are SERVER SDKs (host a mailbox in a service). Each is one package, so the target dir *is* the
-package (no extra name level, unlike `bearers/<platform>/*` which holds several). C-FFI targets
-(`node` koffi, `python` ctypes) bind `sdk/hop.h`; Rust-hosting runtimes (Elixir via Rustler) bind the
-`hop` crate directly. Design: `docs/endpoint-sdk.md`.
+`python`/`go` are SERVER SDKs (host a mailbox in a service). Each is one package, so the target dir *is*
+the package (no extra name level, unlike `bearers/<platform>/*` which holds several). C-FFI targets
+(`node` koffi, `python` ctypes, `go` cgo) bind `sdk/hop.h`; Rust-hosting runtimes (Elixir via Rustler)
+bind the `hop` crate directly. Design: `docs/endpoint-sdk.md`.
 
 ## FFI discipline (do not "clean up")
 
