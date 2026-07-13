@@ -7,11 +7,14 @@ FFI, and the wrapper cannot drift from the header without the drift guard notici
 sdk/hop.h      the generated C ABI header: the universal contract for every platform
 sdk/apple      the Swift wrapper + xcframework packaging (its own sdk/apple/build-xcframework.sh)
 sdk/android    the Kotlin/JVM wrapper via JNA (loads libhop; Android bearers + the app use it)
+sdk/node       the SERVER-side endpoint SDK via koffi (see sdk/node/CLAUDE.md): host a mailbox in a
+               backend with an Express/Fastify-shaped hop.on/reply surface over the same C ABI
 ```
 
-The layout is `sdk/<platform>` (one wrapper package per platform), matching the repo-wide
-purpose/platform axis. There is exactly one SDK per platform, so the platform dir *is* the package
-(no extra name level, unlike `bearers/<platform>/*` which holds several).
+The layout is `sdk/<target>` (one wrapper package per binding target), matching the repo-wide
+purpose/platform axis. `apple`/`android` are CLIENT SDKs (run a node on a device); `node` is the
+first SERVER SDK (host a mailbox in a service). Each is one package, so the target dir *is* the package
+(no extra name level, unlike `bearers/<platform>/*` which holds several). Design: `docs/endpoint-sdk.md`.
 
 ## FFI discipline (do not "clean up")
 
