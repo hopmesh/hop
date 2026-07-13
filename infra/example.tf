@@ -2,9 +2,10 @@
 #
 # A single-region Cloud Run service runs the hop-example image: a tiny HTTP origin on
 # localhost fronted by a `hop-endpoint` bound to example.hopme.sh. A client speaking
-# hops://example.hopme.sh resolves the endpoint address from the `_hopaddress` TXT record
-# (HNS), reaches it over the mesh (or dials wss://example.hopme.sh through the shared LB),
-# and the endpoint serves ONLY its own origin — never an open proxy.
+# hops://example.hopme.sh resolves the endpoint address by fetching the signed reach record
+# at https://example.hopme.sh/.well-known/hop (HNS, §30), reaches it over the mesh (or dials
+# wss://example.hopme.sh through the shared LB), and the endpoint serves ONLY its own origin,
+# never an open proxy.
 #
 # It reuses the relay's global LB (one more host rule + a SNI cert entry) and anycast IPs,
 # so it costs one Cloud Run service, not a second load balancer.
@@ -214,15 +215,10 @@ resource "google_dns_record_set" "example_aaaa" {
   rrdatas      = [google_compute_global_address.relay_v6.address]
 }
 
-# HNS record (DESIGN.md §30): clients resolve _hopaddress.example.hopme.sh → the endpoint's
-# Hop address, then seal hops:// requests to it. The TTL is the HNS cache lifetime.
-resource "google_dns_record_set" "example_hopaddress" {
-  name         = "_hopaddress.${local.example_domain}."
-  managed_zone = google_dns_managed_zone.hopme.name
-  type         = "TXT"
-  ttl          = 300
-  rrdatas      = ["\"${local.example_endpoint_address}\""]
-}
+# HNS resolution (DESIGN.md §30) needs NO DNS record: clients resolve example.hopme.sh by fetching
+# https://example.hopme.sh/.well-known/hop, which the hop-endpoint serves (a signed reach record) via
+# the same LB host rule + cert already wired below. The domain's TLS cert proves the domain; the reach
+# record self-certifies the Hop address. (The old `_hopaddress` TXT record was removed with DNSSEC HNS.)
 
 # The CNAME proving control for the example cert's DNS authorization.
 resource "google_dns_record_set" "example_dnsauth" {

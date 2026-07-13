@@ -299,7 +299,7 @@ jobs:
       # line coverage across that whole pure-logic surface (like the BLE bearer's aggregate gate) rather than
       # one file (a file-count-invariant total), so moving code between these files cannot game it. The
       # genuinely device/radio/UIKit-bound surface (HopBearer+Radios.swift = BLE/Wi-Fi/relay/endpoint radio +
-      # DoH + notifications; HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator:
+      # well-known fetch + notifications; HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator:
       # it cannot run under macOS `swift test` and is covered by the on-device / cross-platform workflow
       # (testkit + real devices). Keychain.swift has its own dedicated tests and is not part of this surface.
       - name: Test HopDriver (headless node + Keychain) + aggregate & per-file coverage floors

@@ -190,9 +190,10 @@ Destination =                 // discriminant order is LOCKED; append-only (see 
   // the rest and breaks decode across every peer + the relay, which is exactly what that removal did.
   // Bump the bundle wire version on any change (see §13.4 / bundle.rs BUNDLE_VERSION).
 
-// SealedPayload is NON-EXHAUSTIVE below. The wire kind registry also carries HnsQuery/HnsAnswer,
+// SealedPayload is NON-EXHAUSTIVE below. The wire kind registry also carries
 // SessionInit/SessionMessage, Private (§39), ServiceRequest/ServiceResponse (§30), Stream*, and
-// Hps* variants, each defined in its own section. The four shown are the original core kinds:
+// Hps* variants, each defined in its own section. (HNS carries NO wire kind: name resolution is an
+// out-of-band HTTPS well-known fetch, not a mesh bundle, §30.) The four shown are the original core kinds:
 SealedPayload depends on kind:
   HttpRequest  { method, url, headers, body, max_resp_bytes }
   HttpResponse { status, headers, body, for_bundle_id }
@@ -1570,8 +1571,8 @@ which is why open-web fetch was dropped (§25). The only "live" hop is endpoint�
 the operator's own wire; the client↔endpoint path stays fully delay-tolerant.
 
 **An endpoint is bound to its own domain, never an open proxy.** `hops://google.com/x`
-can resolve *only* to `https://google.com/x`, and only because `google.com` published its
-`_hopaddress.google.com` TXT record pointing at its endpoint. The request carries just a
+can resolve *only* to `https://google.com/x`, and only because `google.com` served a signed
+reach record at `https://google.com/.well-known/hop` pointing at its endpoint. The request carries just a
 **path**; the endpoint prepends its *own* configured origin and refuses any other host, so
 there's no open-relay abuse and no laundering arbitrary web traffic through someone else's
 endpoint. You reach a domain's content only through that domain's own endpoint.
@@ -1601,53 +1602,59 @@ Response sizes map onto §31:
 
 ### HNS, the Hop Name System
 
-Name→address resolution, delay-tolerant, **built into hop-core**. A domain owner publishes a
-TXT record at `_hopaddress.{FQDN}` holding the base58 Hop **address** (pubkey) of their
-`hop-endpoint`. To reach `hops://example.com`, a client resolves `_hopaddress.example.com` →
-pubkey, then speaks `hdp` to that address.
+Name→address resolution, **built into hop-core**, anchored on the domain's own TLS certificate
+plus a self-certifying **reach record** (`reach.rs`). A domain owner serves a signed reach record
+at `https://{domain}/.well-known/hop`: the record binds the domain's Hop **address** (pubkey) to an
+endpoint and is Ed25519-signed **by that very address**. To reach `hops://example.com`, a client
+fetches `https://example.com/.well-known/hop`, then speaks `hdp` to the address it certifies.
 
-**Decentralized, multi-hop, trustless.** There is deliberately **no central HNS resolver**, an "HNS endpoint" would itself be a name needing resolution (chicken-and-egg). Instead a query
-walks the mesh hop by hop until it reaches a node that can answer, and the answer is verified
-end-to-end so it doesn't matter *who* answered.
+**Two independent proofs, no DNSSEC.** The bind is trustworthy because of two orthogonal checks:
 
-- **The query is public and floodable**, not sealed to one peer: `HnsQuery { domain, query_id,
-  origin }`. This is safe because a domain→pubkey mapping is public DNS data, there's nothing
-  to hide. Being readable is the whole point: every node it passes through can act on it.
-- **Each node does resolve-or-handoff.** On receiving a query: dedup by `query_id` → if it has
-  a fresh cached record, answer → else if it is internet-connected, do the DNS lookup and
-  answer → else forward the query to its other peers (bounded by hop limit + lifetime, like any
-  bundle). So a query from an offline device propagates `A → B → C …` until it reaches an
-  internet-connected node, with no pre-known resolver.
-- **Answers route back and seed caches.** The `HnsAnswer` heads back toward `origin`, and every
-  node on the return path **caches it**, DNS-recursive-resolver behavior across the mesh.
-  Entries honor the DNS TTL (clamped to [1 s, 24 h]) and are **pruned at expiry**, so a lapsed
-  record leaves the node and the next request re-resolves from scratch.
+- **WebPKI proves the domain.** The HTTPS fetch's TLS certificate proves the responder really is
+  `example.com` (the same trust every browser already relies on). Serving the well-known requires
+  control of the domain.
+- **The reach record self-certifies the address.** The record's signature is by the *claimed*
+  address itself (`sign(id, {address, endpoint, issued_at, ttl})`), so a tampered endpoint or a
+  substituted address simply fails the signature check. No external anchor, no root key, no DNSSEC
+  zone is consulted.
 
-**DNSSEC is required to publish a `hops://` endpoint, that's what makes multi-hop trustless.**
-A readable, anyone-answers query means a malicious intermediary could otherwise forge
-`example.com → attacker_pubkey`, and the client would seal its request to the attacker (MitM, the mirror of the endpoint's own domain-binding guarantee). So:
+Together: TLS says "this really is example.com's server," and the reach record says "example.com's
+operator holds the private key for this Hop address." A forged binding fails one check or the other.
 
-- The resolving node carries the **full DNSSEC proof** in the answer, the TXT + its `RRSIG`,
-  the zone `DNSKEY`, and the `DS` chain up the tree (fetched via DoH with `do=1`).
-- The **client validates the chain itself**, in core, against the baked-in **root trust
-  anchor**. A forged or unsigned answer fails validation and is rejected, so any node may
-  resolve, but none can lie.
-- Domains without DNSSEC simply **cannot be `hops://` endpoints**. Requiring it is reasonable
-  for a new protocol, and turns "trust the mesh" into "trustless and verifiable."
+**The fetch is the host's job; the trust decision is core's.** Core hands the host a domain to
+resolve (`take_dns_lookups`); the host does **one HTTPS GET** of the well-known and hands core the
+raw record bytes (`provide_reach_record`); core verifies the self-certifying signature + expiry and
+caches `domain→address` for the record's TTL. The host's only parsing is pulling the base64 `reach`
+field out of the `{address, endpoint, reach}` JSON body, no validation logic lives in the host.
 
-**Validation lives in `hop-core`, not the hosts.** The host is reduced to a dumb byte-fetcher:
-core says which records to fetch, the host does the DoH/UDP and returns **raw record bytes**,
-and core parses + verifies the chain + caches. (This also kills today's duplication, where the
-iOS app and the relay each parse DoH JSON independently and neither validates.) Parsing, the
-`_hopaddress.{domain}` convention, and the `hops://`/`hps://` grammar all belong in core too.
+**Resolution needs the resolving device's own internet.** Because the domain proof *is* the TLS
+handshake, only a node that can itself reach `https://{domain}` can resolve a name. There is
+deliberately **no mesh-assisted or relayed resolution**: relaying the lookup would either force the
+client to trust the resolver or re-introduce a DNSSEC-style proof chain, the exact complexity this
+design removes. An internet-connected device resolves names directly; a radio-only (e.g. BLE-only)
+device cannot resolve a name and must be handed the address directly, `send_hops_request(<address>,
+…)` / `hdp://<address>`, which is itself self-certifying. Once resolved, the cached address makes
+delivery fully delay-tolerant again.
 
-**Missing records are first-class errors.** `hops://thisdoesnotexist.com`, no `_hopaddress`
-TXT (an authenticated denial under DNSSEC), resolves to a **negative** answer cached briefly,
-surfaced as "no such hops endpoint" rather than a hang.
+**Missing / unreachable is a first-class negative.** A well-known that 404s, fails TLS, or serves a
+bad or expired record resolves to a **negative** answer cached briefly (surfaced as "no such hops
+endpoint" / "offline" rather than a hang). The offline case (no internet, so the fetch can't even be
+attempted) is surfaced distinctly so the UI can say "connect to the internet to resolve names."
 
-**Wire types:** `HnsQuery { domain, query_id, origin }` (public/floodable) and `HnsAnswer
-{ domain, address?, ttl_secs, proof, for_query }`, where `proof` is the DNSSEC chain the client
-verifies. (The earlier point-to-point `resolve_hns_via`, a query sealed to one known resolver, remains as a special case, but the floodable form is the general mechanism.)
+**Why this replaced DNSSEC-over-DoH.** The earlier design flooded a public `HnsQuery` across the
+mesh and carried a full DNSSEC proof chain (a `_hopaddress` TXT + its `RRSIG` + the zone `DNSKEY` +
+the `DS` chain) back in an `HnsAnswer` for the client to validate in-core against a baked-in root
+anchor. It resolved trustlessly over multiple hops, but it required every publisher to run DNSSEC,
+embedded a DNSSEC validator + DoH JSON parser in core, and carried a subtle owner-in-signer forgery
+class (caught in the pass-5 audit). The reach record collapses name→address onto the **same
+self-certifying primitive already used for endpoint discovery**: the address signs its own binding,
+so there is no chain to validate and no external anchor at all. The cost is that resolution is no
+longer mesh-assisted, it needs the resolving device's own internet, which matches how a `hops://`
+endpoint is reached in the first place.
+
+**No HNS wire types.** Resolution is an out-of-band HTTPS fetch, not a mesh bundle exchange, so HNS
+adds nothing to the wire kind registry. The old `HnsQuery` / `HnsAnswer` payloads and the
+point-to-point `resolve_hns_via` are removed.
 
 ## 31. Reliable, ordered, delay-tolerant delivery on `hdp`
 
@@ -1777,7 +1784,7 @@ member keeps whatever it could already read (keys aren't retroactively secret).
 ### Relationship to the rest of the stack
 
 - `hdp`, the datagram substrate everything rides.
-- `hops://`, request/response to a domain's own endpoint (HNS-resolved, DNSSEC-validated, §30).
+- `hops://`, request/response to a domain's own endpoint (HNS-resolved via the domain's TLS-served reach record, §30).
 - `hps://`, pub/sub services & channels at paths on any node (this section).
 - HNS resolves a `{host}` to an address for any of them; the `hps://`/`hops://` grammar and the
   signature/key handling live in core, not the hosts.
