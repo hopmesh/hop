@@ -40,7 +40,8 @@ Deploy is GitOps: a push to `main` triggers the Cloud Build run in
    so it must be set once in GitHub `Settings -> Branches` for `main`:
    - Require a pull request before merging.
    - Require status checks to pass, selecting every `CI / ...` check
-     (Rust, Kotlin SDK, Android, Apple, WASM, Web + sim, Contract, Terraform, Docs token guard).
+     (Rust, Kotlin SDK, Android, Apple, WASM, Web + sim, Contract, Terraform, Docs token guard,
+     and the Node/Python/Go/Ruby/Crystal/Elixir endpoint SDK jobs).
    - Require branches to be up to date before merging.
    This stops a red commit from reaching `main` at all; layer 1 is the backstop if it
    somehow does.

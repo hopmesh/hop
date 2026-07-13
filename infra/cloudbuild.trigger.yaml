@@ -47,6 +47,12 @@ substitutions:
     Contract purity + header drift + C smoke
     Terraform (fmt · validate · plan)
     Docs token guard (banned copy)
+    Node endpoint SDK (proofs)
+    Python endpoint SDK (proofs)
+    Go endpoint SDK (race)
+    Ruby endpoint SDK (proofs)
+    Crystal endpoint SDK (spec)
+    Elixir endpoint SDK (mix test)
 steps:
   # infra-07: both image builds start immediately (waitFor ['-']) so the two cold full-workspace Rust
   # release builds run in PARALLEL rather than serially. Cloud Build's default (no waitFor) makes a step
