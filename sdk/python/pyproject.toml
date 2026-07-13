@@ -1,0 +1,14 @@
+[project]
+name = "hop-endpoint"
+version = "0.0.1"
+description = "Receive Hop messages in Python: an embeddable endpoint over the libhop C ABI (ctypes)."
+requires-python = ">=3.9"
+license = { text = "FSL-1.1-ALv2" }
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["hop_endpoint*"]

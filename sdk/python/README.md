@@ -1,0 +1,57 @@
+# hop-endpoint (Python endpoint SDK, prototype)
+
+Receive Hop messages in Python with a Flask/FastAPI-shaped surface, over the `libhop` C ABI. Same idea
+as `sdk/node` and `sdk/elixir`: your service becomes directly reachable on the mesh, so senders hand
+messages straight to it without a relay. **Zero third-party deps**, `ctypes` is in the stdlib.
+
+```python
+import json
+from hop_endpoint import HopEndpoint, listen
+
+hop = HopEndpoint()
+
+@hop.on("acme/orders")
+def handle(req, reply):
+    # req.from_addr is a cryptographically VERIFIED identity, not a spoofable header
+    order = json.loads(req.args)
+    reply(201, json.dumps({"ok": True, "order": order}).encode())   # uint16 status + bytes body
+
+listen(hop, 9944)          # reachable by any device; in production HNS resolves name -> host/port/key
+print(hop.address)         # publish this (or its HNS name)
+```
+
+## What it is (and isn't)
+
+The endpoint is a `hop-core` node in service-host mode. The mapping onto the C ABI is exact:
+
+| Endpoint concept        | libhop C ABI                                              |
+| ----------------------- | --------------------------------------------------------- |
+| `hop.on(service, fn)`   | `hop_subscribe` + `hop_poll_service_requests`             |
+| `reply(status, body)`   | `hop_send_service_response` (status is a `uint16`)        |
+| `hop.request(...)`      | `hop_send_service_request` + `hop_poll_service_responses` |
+| the Internet bearer     | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing` |
+
+**The DX is HTTP-shaped; the semantics are not.** Inbound is a durable store-and-forward consume; a
+reply is a new addressed message that may arrive later, even after a restart. It is a queue consumer,
+not a synchronous route, that is what makes it offline-tolerant. core is poll-model, so the endpoint
+runs a background pump thread (the node is thread-safe).
+
+## Run the proofs
+
+Build `libhop` first (or set `HOP_LIBDIR`):
+
+```sh
+cargo build -p hop                       # from the repo root -> target/debug/libhop.<dylib|so>
+cd sdk/python
+python3 examples/raw_roundtrip.py        # raw C ABI round trip (proves the ctypes bindings)
+python3 examples/echo.py                 # the hop.on / reply DX in-process
+python3 examples/tcp.py                  # the same round trip over a real TCP bearer
+python3 -m unittest discover -s tests    # both round trips, must pass
+```
+
+## Prototype scope
+
+Built and working: `hop.on` (also usable as a decorator), `reply`, `request`, the pump thread, the TCP
+bearer, base58 addressing, ABI-version assertion. Stubbed follow-ups (each additive, none a core
+change): HNS publish/resolve, delegated keys, multi-tenant hosting. Not yet a required CI job.
+Design: `docs/endpoint-sdk.md`.
