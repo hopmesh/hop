@@ -9,7 +9,7 @@
 @[Link("hop", ldflags: "-L#{__DIR__}/../../../../target/debug")]
 lib LibHop
   # `const struct HopNode *` is an opaque handle; a Void* is the honest binding.
-  fun abi_version = hop_abi_version : Int32
+  fun abi_version = hop_abi_version : UInt32 # the C ABI returns uint32_t; keep the binding's sign honest
   fun node_new = hop_node_new : Void*
   fun node_with_secret = hop_node_with_secret(secret : UInt8*, secret_len : LibC::SizeT) : Void*
   fun node_free = hop_node_free(node : Void*) : Void
@@ -35,7 +35,7 @@ module Hop
   # Thin, one-to-one helpers over LibHop: turn raw pointers + synchronous sink callbacks into Crystal
   # Bytes/String/arrays. Everything ergonomic lives in Hop::Endpoint.
   module FFI
-    ABI_EXPECTED = 3
+    ABI_EXPECTED = 3_u32
 
     # Verified reach record fields (mirrors ReachInfo on the Rust side).
     record Reach, address : Bytes, endpoint : String, issued_at : UInt64, ttl_secs : UInt32

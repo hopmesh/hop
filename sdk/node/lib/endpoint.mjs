@@ -201,7 +201,7 @@ export class HopEndpoint extends EventEmitter {
     hop.poll_service_requests(this.#node, (_ctx, from, rid, service, method, argPtr, argLen) => {
       const req = new HopRequest(addr(from), addr(rid), service, method, bytes(argPtr, Number(argLen)))
       const handler = this.#handlers.get(service)
-      const reply = makeReply(this.#node, req)
+      const reply = this.#makeReply(req)
       if (handler) Promise.resolve(handler(req, reply)).catch((e) => this.emit('error', e))
       else this.emit('unhandled', req, reply)
     }, null)
@@ -226,6 +226,20 @@ export class HopEndpoint extends EventEmitter {
         createdAt: Number(created),
       })
     }, null)
+  }
+
+  // Build the reply callable for a request. It re-reads this.#node and re-checks #closed at CALL time
+  // (not at pump time), so a deferred/async reply issued after close() short-circuits instead of
+  // dereferencing the freed node (mirrors the guard the other SDKs route their reply through).
+  #makeReply(req) {
+    let sent = false
+    return (status, body = Buffer.alloc(0)) => {
+      if (sent) throw new Error('reply already sent')
+      sent = true
+      if (this.#closed) return false
+      const b = toBuf(body)
+      return hop.send_service_response(this.#node, req._raw, req._rid, status, b, b.length)
+    }
   }
 
   close() {
@@ -261,18 +275,6 @@ class HopRequest {
   }
   json() {
     return JSON.parse(this.args.toString('utf8'))
-  }
-}
-
-// The handler gets a plain callable reply(status, body), aligned with the other SDKs. status is a
-// uint16 (HTTP-shaped); body is a Buffer | string | JSON-able value.
-function makeReply(node, req) {
-  let sent = false
-  return (status, body = Buffer.alloc(0)) => {
-    if (sent) throw new Error('reply already sent')
-    sent = true
-    const b = toBuf(body)
-    return hop.send_service_response(node, req._raw, req._rid, status, b, b.length)
   }
 }
 
