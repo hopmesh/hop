@@ -4,7 +4,13 @@ version = "0.0.1"
 description = "Receive Hop messages in Python: an embeddable endpoint over the libhop C ABI (ctypes)."
 requires-python = ">=3.9"
 license = { text = "FSL-1.1-ALv2" }
+# The endpoint SDK itself has ZERO runtime dependencies (ctypes is stdlib). `cryptography` is a
+# dev/example-only extra, used solely to generate the in-process self-signed cert for the discovery
+# example + test (hop_endpoint.dev_tls); it is never imported at runtime.
 dependencies = []
+
+[project.optional-dependencies]
+dev = ["cryptography>=41"]
 
 [build-system]
 requires = ["setuptools>=61"]

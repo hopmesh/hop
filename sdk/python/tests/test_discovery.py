@@ -1,25 +1,12 @@
 """Proofs for reachable-by-name: the reach record, and the full HTTPS well-known + WSS discovery
-round trip against a real self-signed HTTPS server."""
-import os
-import ssl
-import subprocess
-import tempfile
+round trip against a real self-signed HTTPS server (the cert is generated in-process by
+hop_endpoint.dev_tls, no openssl CLI; needs the dev dependency `cryptography`)."""
 import time
 import unittest
 
 from hop_endpoint import HopEndpoint
 from hop_endpoint import _ffi as ffi
-
-
-def _self_signed():
-    d = tempfile.mkdtemp()
-    cert, key = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
-    subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key, "-out", cert,
-         "-days", "1", "-nodes", "-subj", "/CN=localhost"],
-        check=True, capture_output=True,
-    )
-    return cert, key
+from hop_endpoint.dev_tls import server_context
 
 
 class ReachRecord(unittest.TestCase):
@@ -42,9 +29,7 @@ class Discovery(unittest.TestCase):
     def test_dial_by_name_round_trip(self):
         port = 8446
         public_url = f"wss://localhost:{port}/_hop"
-        cert, key = _self_signed()
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(cert, key)
+        ctx = server_context()  # in-process self-signed cert, no openssl CLI
 
         server = HopEndpoint()
         server.on("acme/orders", lambda req, reply: reply(201, req.args))
