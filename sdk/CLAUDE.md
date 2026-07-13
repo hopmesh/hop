@@ -9,12 +9,15 @@ sdk/apple      the Swift wrapper + xcframework packaging (its own sdk/apple/buil
 sdk/android    the Kotlin/JVM wrapper via JNA (loads libhop; Android bearers + the app use it)
 sdk/node       the SERVER-side endpoint SDK via koffi (see sdk/node/CLAUDE.md): host a mailbox in a
                backend with an Express/Fastify-shaped hop.on/reply surface over the same C ABI
+sdk/elixir     the Elixir SERVER endpoint SDK via a Rustler NIF (see sdk/elixir/CLAUDE.md): a
+               Phoenix/Plug-shaped Hop.Endpoint; binds the `hop` crate's Rust API, not the C header
 ```
 
 The layout is `sdk/<target>` (one wrapper package per binding target), matching the repo-wide
-purpose/platform axis. `apple`/`android` are CLIENT SDKs (run a node on a device); `node` is the
-first SERVER SDK (host a mailbox in a service). Each is one package, so the target dir *is* the package
-(no extra name level, unlike `bearers/<platform>/*` which holds several). Design: `docs/endpoint-sdk.md`.
+purpose/platform axis. `apple`/`android` are CLIENT SDKs (run a node on a device); `node`/`elixir` are
+SERVER SDKs (host a mailbox in a service). Each is one package, so the target dir *is* the package (no
+extra name level, unlike `bearers/<platform>/*` which holds several). C-FFI targets bind `sdk/hop.h`;
+Rust-hosting runtimes (Elixir via Rustler) bind the `hop` crate directly. Design: `docs/endpoint-sdk.md`.
 
 ## FFI discipline (do not "clean up")
 

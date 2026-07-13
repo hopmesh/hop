@@ -12,7 +12,7 @@ members = [
     "services/hop-endpoint",
     "examples/hop-example-origin",
 ]
-exclude = ["site"]
+exclude = ["site", "sdk/elixir/native/hop_endpoint"]
 
 [workspace.package]
 version = "0.0.1"
