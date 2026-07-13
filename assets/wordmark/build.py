@@ -21,7 +21,7 @@ POP_ORDER = [4, 2, 5, 3, 1]   # node ids, pop sequence
 POP_EVERY = 7                 # frames between node pops
 POP_LEN = 11                  # frames for one pop
 PIECE_START = 46              # first stroke piece appears here
-PIECE_EVERY = 7               # frames between piece reveals
+PIECE_TOTAL = 112             # frames for the whole draw, split evenly
 HOLD = 50                     # tail hold after the last piece
 
 EASE_OUT = {"o": {"x": [0.25], "y": [0.9]}, "i": {"x": [0.4], "y": [1]}}
@@ -67,6 +67,7 @@ def _ks():
 
 
 def piece_layer(ind, pid, subs, t_on, t_end):
+    # a 3-frame opacity ramp softens each reveal into a continuous draw
     items = []
     for k, pts in enumerate(subs):
         items.append({"ty": "sh", "nm": f"sub-{k}", "ks": {"a": 0, "k": {
@@ -75,7 +76,9 @@ def piece_layer(ind, pid, subs, t_on, t_end):
     items.append({"ty": "fl", "nm": "ink", "c": {"a": 0, "k": GREEN_RGB + [1]},
                   "o": {"a": 0, "k": 100}, "r": 2})
     items.append(_tr())
-    return {"ddd": 0, "ind": ind, "ty": 4, "nm": pid, "sr": 1, "ks": _ks(),
+    ks = _ks()
+    ks["o"] = {"a": 1, "k": [{"t": t_on, "s": [0]}, {"t": t_on + 3, "s": [100]}]}
+    return {"ddd": 0, "ind": ind, "ty": 4, "nm": pid, "sr": 1, "ks": ks,
             "ao": 0, "shapes": [{"ty": "gr", "nm": pid, "it": items}],
             "ip": t_on, "op": t_end, "st": 0, "bm": 0}
 
@@ -112,7 +115,8 @@ def main():
     assert len(node_list) == 5
 
     pops = {n: k * POP_EVERY for k, n in enumerate(POP_ORDER)}
-    end = PIECE_START + (len(pieces) - 1) * PIECE_EVERY + HOLD
+    piece_every = max(2, round(PIECE_TOTAL / max(len(pieces) - 1, 1)))
+    end = PIECE_START + (len(pieces) - 1) * piece_every + HOLD
 
     layers = []
     ind = 1
@@ -122,7 +126,7 @@ def main():
     # later pen pieces stack above earlier ones: reverse pen order top-down
     for k, (pid, subs) in reversed(list(enumerate(pieces))):
         layers.append(piece_layer(ind, pid, subs,
-                                  PIECE_START + k * PIECE_EVERY, end))
+                                  PIECE_START + k * piece_every, end))
         ind += 1
 
     lottie = {

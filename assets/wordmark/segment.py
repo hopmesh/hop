@@ -217,7 +217,24 @@ def cut_segments():
         spec = CUTS[name]
         windows = cut_windows(pts, total, spec["cuts"], step=2.0)
         assert len(windows) == len(spec["names"]), name
+        # subdivide long pieces so sequential reveals read as continuous
+        # drawing (SUB_LEN arc-units per sub-piece, small forward overlap)
+        SUB_LEN, SUB_FWD, SUB_BACK = 150.0, 11, 4
+        subwins = []
         for pname, (i0, i1) in zip(spec["names"], windows):
+            arc = (i1 - i0) * 2.0
+            n = max(1, round(arc / SUB_LEN))
+            if name == "arrowhead":
+                n = 1
+            if n == 1:
+                subwins.append((pname, i0, i1))
+                continue
+            span = (i1 - i0) / n
+            for j in range(n):
+                a = max(i0, int(i0 + j * span) - (SUB_BACK if j else 0))
+                b = min(i1, int(i0 + (j + 1) * span) + (SUB_FWD if j < n - 1 else 0))
+                subwins.append((f"{pname}-{j + 1}", a, b))
+        for pname, (i0, i1) in [(p, (a, b)) for p, a, b in subwins]:
             span = pts[i0:i1 + 1]
             line = LineString(span)
             if name == "arrowhead":
