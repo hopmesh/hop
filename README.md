@@ -57,4 +57,7 @@ store suites and the client wrappers.
 
 ## License
 
-Hop is licensed under FSL-1.1-ALv2. See `LICENSE.md`.
+This monorepo has no single repo-wide license. Instead every component licenses itself: each Rust
+crate, SDK, and service carries its own `LICENSE.md`, currently FSL-1.1-ALv2 (source-available, and
+converts to Apache-2.0 after two years). So a component stays licensed when it is split out into its
+own repository, and components can be licensed independently. See any component's `LICENSE.md`.

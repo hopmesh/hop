@@ -79,9 +79,8 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
   codesign + notarize the framework before zipping.
 - The three per-bearer SwiftPM packages (`bearers/apple/HopBearer{Ble,Lan,Relay}`; Multipeer /
   Wi-Fi P2P is an in-driver transport, not an extracted package)
-  and the SDK wrapper are pitched as independently publishable. Each needs a LICENSE
-  file so the FSL-1.1-ALv2 terms travel with the package (see the license note
-  below).
+  and the SDK wrapper are pitched as independently publishable. Each already carries its own
+  `LICENSE.md` so the FSL-1.1-ALv2 terms travel with the package (see the license note below).
 
 ### Android: AAR + Maven
 
@@ -96,20 +95,22 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
 
 ### Rust crates
 
-- The workspace crates are FSL-licensed (`LICENSE.md`), which is not an SPDX id, so
-  they are not published to crates.io as-is. If/when a crate is published, it is
-  cut from the release tag with `cargo publish` and the FSL terms stated in the
-  crate metadata (`license-file`).
+- Each workspace crate carries its OWN crate-local `LICENSE.md` (FSL-1.1-ALv2) and
+  points at it via `license-file = "LICENSE.md"` in its `[package]` (FSL is not an
+  SPDX id, so it is a `license-file`, not a `license` field). So a crate cut from
+  the release tag with `cargo publish` ships its FSL terms with no extra step.
 
-## License note (per-artifact)
+## License note (per-component)
 
-Hop ships under FSL-1.1-ALv2 (`LICENSE.md`), which is NOT an SPDX identifier. The
-workspace root covers the Rust crates via `license-file`. The independently
-publishable Swift/Kotlin packages and the per-bearer packages currently carry no
-LICENSE file, so a published or vendored artifact would ship with no license terms.
-Before publishing any package, add a LICENSE file (copy `LICENSE.md`) to that
-package root so the FSL obligations (and the Font Awesome Pro caveat for app assets)
-travel with the artifact.
+There is NO repo-wide root license. Every component (each Rust crate, each SDK, each
+service) carries its own `LICENSE.md`, all currently the identical FSL-1.1-ALv2 text,
+so the terms already travel with any package that is published or split into its own
+repository (the Font Awesome Pro caveat still applies separately to app assets). The
+`tools/repo-integrity-guard.sh` CI check enforces that every component LICENSE.md is
+present, above the size floor, carries the FSL signature line, and stays byte-identical
+to the others, so a copy cannot silently truncate or drift. When adding a new component,
+drop a copy of an existing component's `LICENSE.md` into its root (and, for a Rust crate,
+add `license-file = "LICENSE.md"`).
 
 ## Pre-release checklist
 

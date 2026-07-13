@@ -24,11 +24,12 @@ unmaintained = "workspace"
 ignore = []
 
 [licenses]
-# Hop itself ships under FSL-1.1-ALv2 (see LICENSE.md), which is NOT an SPDX
-# identifier, so the workspace crates are covered by `license-file` in Cargo.toml
-# rather than a `license` field. This list governs THIRD-PARTY dependency licenses,
-# which must be permissive so they can travel inside the shipped binaries and the
-# per-bearer packages.
+# No repo-wide root license: every first-party crate carries its OWN FSL-1.1-ALv2 via a crate-local
+# `license-file = "LICENSE.md"` (FSL is not an SPDX id, hence license-file not a `license` field).
+# `cargo deny` is NOT a CI gate here; if you gate it, add a `[[licenses.clarify]]` per first-party
+# crate mapping its license-file to `LicenseRef-FSL-1.1-ALv2` (or exempt them via `[licenses] private`).
+# This list governs THIRD-PARTY dependency licenses, which must be permissive so they can travel inside
+# the shipped binaries and the per-bearer packages.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -43,22 +44,9 @@ allow = [
     "CC0-1.0",
     "0BSD",
 ]
-# A crate missing usable license metadata falls below this and fails the check,
-# which is what we want (unknown terms should not ship).
+# A crate missing usable license metadata falls below this and fails the check, which is what we want
+# for THIRD-PARTY crates (unknown terms should not ship). First-party crates carry FSL via license-file.
 confidence-threshold = 0.9
-
-# The workspace crates carry no SPDX `license` field (they use FSL via
-# license-file), so clarify them here to keep them out of the "unlicensed" bucket.
-# These are first-party crates governed by the repo LICENSE.md.
-[[licenses.clarify]]
-crate = "hop-core"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = []
-
-[[licenses.clarify]]
-crate = "hop"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = []
 
 [bans]
 # Warn on duplicate versions of the same crate so tree bloat and skew stay visible;

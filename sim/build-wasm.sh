@@ -20,12 +20,13 @@ root="$(cd "$here/.." && pwd)"
 command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
 
 # legal-01 backstop: wasm-pack copies the crate's license-file into --out-dir, joining the manifest's
-# raw relative path onto the out-dir to pick the destination. If that path ever contains `../` (e.g. a
-# crate inheriting the workspace `license-file = "LICENSE.md"`, which cargo reports as "../../LICENSE.md")
-# the destination can resolve back onto the repo-root LICENSE.md and truncate it to 0 bytes. That exact
-# 0-byte-LICENSE regression shipped before. core/hop-wasm/Cargo.toml now pins a crate-local license-file
-# to prevent it; snapshot the root LICENSE.md here and hard-fail if a build ever empties or changes it.
-license="$root/LICENSE.md"
+# raw relative path onto the out-dir to pick the destination. If that path ever contained `../` (e.g. a
+# crate inheriting a workspace `license-file`, which cargo reports as "../../LICENSE.md") the
+# destination could resolve back onto the source LICENSE.md and truncate it to 0 bytes. That exact
+# 0-byte-LICENSE regression shipped before. There is no repo-root license now; core/hop-wasm carries its
+# OWN crate-local LICENSE.md (license-file = "LICENSE.md"), which is the file wasm-pack copies. Snapshot
+# THAT and hard-fail if a build ever empties or changes it.
+license="$crate/LICENSE.md"
 license_before=""
 [ -f "$license" ] && license_before="$(cksum < "$license")"
 
@@ -50,12 +51,12 @@ fi
 echo "==> building core/hop-wasm/pkg-node (target nodejs)"
 wasm-pack build "$crate" --target nodejs --out-dir "$crate/pkg-node"
 
-# legal-01 backstop (see the snapshot above): the root LICENSE.md must be non-empty and byte-for-byte
-# unchanged by this build. If it was truncated or altered, fail loudly instead of letting a 0-byte
-# license slip into a commit.
+# legal-01 backstop (see the snapshot above): core/hop-wasm/LICENSE.md must be non-empty and
+# byte-for-byte unchanged by this build. If it was truncated or altered, fail loudly instead of letting
+# a 0-byte license slip into a commit.
 if [ ! -s "$license" ]; then
   echo "error: $license is empty or missing after the wasm build (wasm-pack license-copy truncation?)." >&2
-  echo "       Restore it with 'git checkout LICENSE.md' and check core/hop-wasm/Cargo.toml license-file." >&2
+  echo "       Restore it with 'git checkout core/hop-wasm/LICENSE.md' and check core/hop-wasm/Cargo.toml license-file." >&2
   exit 1
 fi
 if [ -n "$license_before" ] && [ "$license_before" != "$(cksum < "$license")" ]; then
