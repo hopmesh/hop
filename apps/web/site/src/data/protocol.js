@@ -9,7 +9,7 @@ export const layers = [
     id: 'hops', name: 'hops://', mono: true, group: 'Semantics', ref: '§30',
     tagline: 'HTTP over the mesh',
     how: [
-      "Resolve the domain via <a href=\"/protocol/hns/\">HNS</a> to the endpoint's key, <span class=\"term\" tabindex=\"0\">DNSSEC<span class=\"tip\"><b>DNSSEC</b>, DNS Security Extensions: signed DNS records the client verifies itself, so a name can't be forged into the wrong key.</span></span>-verified, not an IP, or address the endpoint directly and skip the lookup.",
+      "Resolve the domain via <a href=\"/protocol/hns/\">HNS</a> to the endpoint's key, verified by the domain's <span class=\"term\" tabindex=\"0\">TLS-served reach record<span class=\"tip\"><b>Reach record</b>: a signed statement the domain serves at <code>/.well-known/hop</code>. TLS proves the domain, the signature proves the address, so a name can't be forged into the wrong key.</span></span>, not an IP, or address the endpoint directly and skip the lookup.",
       "Sealed hop datagrams cross the mesh to the operator's own <code>hop-endpoint</code>. The only live hop is endpoint↔backend, on the operator's own wire; the client↔endpoint path stays delay-tolerant.",
       "The endpoint runs the request against its own origin and re-seals the response. It <em>is</em> the origin, bound to one domain, never an open proxy, so nothing on the mesh ever sees plaintext HTTP.",
     ],
@@ -17,7 +17,7 @@ export const layers = [
     biz: "Expose your existing web service to devices with no internet, running on your own infrastructure, with no third-party proxy in the middle that could read your traffic or your users'.",
     viz: {
       vb: '0 0 700 380',
-      caption: "Resolve the name via HNS (DNSSEC-verified, a hop address, not an IP), then spray sealed hop packets across the mesh to the hop-endpoint behind the operator's firewall. Only there are they translated to HTTP for the origin. The endpoint is the origin, not a proxy.",
+      caption: "Resolve the name via HNS (the domain's TLS-served reach record, a hop address, not an IP), then spray sealed hop packets across the mesh to the hop-endpoint behind the operator's firewall. Only there are they translated to HTTP for the origin. The endpoint is the origin, not a proxy.",
       svg: `
         <rect class="pd-zone" x="446" y="26" width="232" height="330" rx="10"/>
         <text class="pd-zone-l" x="664" y="48" text-anchor="end">operator network</text>
@@ -28,7 +28,7 @@ export const layers = [
         <path class="pd-resolve" d="M64,250 Q92,124 250,104"/>
         <circle class="pd-node" cx="250" cy="104" r="12"/><circle class="pd-core" cx="250" cy="104" r="3.2"/>
         <text class="pd-lbl" x="250" y="132" text-anchor="middle">HNS</text>
-        <g transform="translate(258,80)"><rect class="pd-note deliv" x="-86" y="-11" width="172" height="20" rx="5"/><text class="pd-note-t deliv" x="0" y="3.5" text-anchor="middle">DNSSEC ✓ → hop address</text></g>
+        <g transform="translate(258,80)"><rect class="pd-note deliv" x="-96" y="-11" width="192" height="20" rx="5"/><text class="pd-note-t deliv" x="0" y="3.5" text-anchor="middle">reach record ✓ → hop address</text></g>
         <text class="pd-step" x="86" y="166">1 · resolve</text>
         <text class="pd-step" x="86" y="324">2 · request</text>
 
@@ -54,7 +54,7 @@ export const layers = [
         <text class="pd-seg http" x="599" y="238" text-anchor="middle">HTTP</text>
         <g transform="translate(540,210)"><rect class="pd-note deliv" x="-82" y="-11" width="164" height="20" rx="5"/><text class="pd-note-t deliv" x="0" y="3.5" text-anchor="middle">terminates hop → HTTP</text></g>
 
-        <!-- one synced 7.2s loop: 1) public HNS query (a plain dot, not sealed), 2) DNSSEC answer back, 3) sealed request locks over the mesh, 4) unsealed HTTP to origin -->
+        <!-- one synced 7.2s loop: 1) HNS resolve (well-known reach record), 2) reach record back, 3) sealed request locks over the mesh, 4) unsealed HTTP to origin -->
         <circle class="pd-pkt" r="4.6"><animateMotion dur="7.2s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.02;0.18;1" calcMode="linear" path="M64,250 Q92,124 250,104"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.02;0.04;0.18;0.2;1" dur="7.2s" repeatCount="indefinite"/></circle>
         <circle class="pd-pkt resp" r="4.4"><animateMotion dur="7.2s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.2;0.36;1" calcMode="linear" path="M250,104 Q92,124 64,250"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.2;0.22;0.36;0.38;1" dur="7.2s" repeatCount="indefinite"/></circle>
         <use class="pd-lock" href="#pdlk"><animateMotion dur="7.2s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.42;0.64;1" calcMode="linear" path="M64,250 L196,206 L330,250 L540,250"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.42;0.44;0.64;0.66;1" dur="7.2s" repeatCount="indefinite"/></use>
@@ -153,61 +153,43 @@ export const layers = [
     id: 'hns', name: 'HNS', mono: false, group: 'Semantics', ref: '§30',
     tagline: 'The Hop Name System',
     how: [
-      "A query is forwarded peer to peer, each node answers if it holds a fresh record, otherwise hands it on, until it reaches one that can resolve. There's no central resolver to find first.",
-      "Only a peer with internet does the actual DNS lookup, and just once: the signed answer is cached at every hop on the way back, so the next lookup is a <span class=\"term\" tabindex=\"0\">TTL<span class=\"tip\"><b>TTL</b>, Time To Live: how long a cached record stays valid. Within the TTL, a lookup is answered from a nearby cache on the mesh and never reaches DNS; once it expires, it's re-resolved.</span></span> cache hit on the mesh, no internet.",
-      "The answer carries the full <span class=\"term\" tabindex=\"0\">DNSSEC<span class=\"tip\"><b>DNSSEC</b>, DNS Security Extensions: signed DNS records. The client verifies the chain against a baked-in root anchor, so any peer can answer but none can forge.</span></span> chain; the client verifies it itself, so a cached answer is just as trustworthy as a fresh one.",
+      "Resolving a name is a single HTTPS fetch of the domain's <code>/.well-known/hop</code>, no DNS, no DNSSEC, no central resolver. The domain serves a signed <span class=\"term\" tabindex=\"0\">reach record<span class=\"tip\"><b>Reach record</b>: a signed statement <em>\"I, address X, am reachable at this endpoint\"</em>. The signature is by X itself, so it self-certifies, a forged address or endpoint just fails the check.</span></span> that binds its name to a Hop address.",
+      "Two independent proofs make the bind trustworthy: the fetch's <span class=\"term\" tabindex=\"0\">TLS<span class=\"tip\"><b>TLS / WebPKI</b>: the same certificate check a browser does. It proves the responder really is <code>example.com</code>, so only the domain's operator can serve the record.</span></span> certificate proves the domain, and the reach record's signature proves the address, signed by the very key it claims.",
+      "Resolution needs the resolving device's own internet, on purpose: there's no relayed lookup to trust. A radio-only device can't fetch a name and is handed the address directly instead, which is self-certifying and needs no lookup at all.",
     ],
-    dev: "Names map to keys, not IPs. Resolution and DNSSEC validation live in <code>hop-core</code>; the host is a dumb byte-fetcher. Publish an endpoint by adding a <code>_hopaddress</code> TXT record (DNSSEC required).",
-    biz: "Verifiable names that keep resolving from cache when the internet is down, and can't be spoofed by a malicious relay, because the client checks the signatures itself.",
+    dev: "Names map to keys, not IPs. The host does one HTTPS GET of <code>/.well-known/hop</code> and hands <code>hop-core</code> the raw bytes; core verifies the self-certifying signature and caches it. Publish an endpoint by serving a signed reach record at your domain's well-known, no DNSSEC.",
+    biz: "Verifiable names anchored on the certificate your domain already has. A name can't be spoofed without both the site's TLS key and the endpoint's identity key, and the client checks both itself.",
     viz: {
       vb: '0 0 760 420',
-      caption: "There's no central resolver. A cold query walks peer to peer, A misses, B misses, C is online and resolves it over DNS (just once). The signed answer routes back, seeding a cache at every hop. A later query hits A's cache while its TTL is still valid and stops there, it never reaches DNS again.",
+      caption: "Resolving acme.hop is one HTTPS GET of its /.well-known/hop. The TLS certificate proves the responder is really acme.hop; the signed reach record proves the Hop address, signed by the address itself. The client checks both, then talks straight to the key. A device with no internet skips the lookup and is handed the self-certifying address directly.",
       svg: `
-        <text class="pd-step" x="60" y="96">1 · cold lookup</text>
-        <text class="pd-seg" x="60" y="112">walk until a peer can resolve</text>
-        <text class="pd-step" x="60" y="300">2 · later lookup</text>
-        <text class="pd-seg" x="60" y="316">cache hit at A · no DNS</text>
+        <text class="pd-step" x="60" y="96">1 · resolve a name</text>
+        <text class="pd-seg" x="60" y="112">one HTTPS GET · /.well-known/hop</text>
+        <text class="pd-step" x="60" y="300">2 · no internet</text>
+        <text class="pd-seg" x="60" y="316">use the address directly</text>
 
-        <!-- the walk chain -->
-        <line class="pd-edge" x1="72" y1="150" x2="252" y2="150"/>
-        <line class="pd-edge" x1="252" y1="150" x2="432" y2="150"/>
-        <line class="pd-edge" x1="432" y1="150" x2="600" y2="150"/>
-        <line class="pd-edge" x1="600" y1="138" x2="600" y2="86"/>
-        <path class="pd-edge" d="M72,326 Q150,250 250,168" fill="none"/>
+        <line class="pd-edge" x1="86" y1="150" x2="586" y2="150"/>
 
         <circle class="pd-node live" cx="72" cy="150" r="13"/><circle class="pd-core" cx="72" cy="150" r="4"/>
-        <text class="pd-lbl" x="72" y="128" text-anchor="middle">query · cold</text>
+        <text class="pd-lbl" x="72" y="128" text-anchor="middle">client</text>
+        <text class="pd-seg" fill="#2bf0a0" x="72" y="182" text-anchor="middle">TLS ✓ · sig ✓<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.60;0.64;0.92;0.96;1" dur="9s" repeatCount="indefinite"/></text>
 
-        <circle class="pd-node" cx="252" cy="150" r="12"/><circle class="pd-core" cx="252" cy="150" r="3.2"/>
-        <text class="pd-lbl" x="252" y="128" text-anchor="middle">peer A</text>
-        <rect x="220" y="170" width="64" height="6" rx="3" fill="#1b2227"/>
-        <rect x="220" y="170" width="64" height="6" rx="3" fill="#2bf0a0"><animate attributeName="width" values="0;0;64;52" keyTimes="0;0.62;0.66;1" dur="10s" repeatCount="indefinite"/></rect>
-        <text class="pd-seg" x="252" y="194" text-anchor="middle"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.62;0.66;1" dur="10s" repeatCount="indefinite"/>cached · TTL</text>
+        <circle class="pd-ring" cx="600" cy="150" r="18"/><circle class="pd-node" cx="600" cy="150" r="12"/><circle class="pd-core" cx="600" cy="150" r="3.4"/>
+        <text class="pd-lbl" x="600" y="128" text-anchor="middle">acme.hop</text>
+        <rect class="pd-cloud" x="548" y="176" width="104" height="34" rx="9"/><text class="pd-glyph" x="600" y="197" text-anchor="middle">🔒 TLS · well-known</text>
 
-        <circle class="pd-node" cx="432" cy="150" r="12"/><circle class="pd-core" cx="432" cy="150" r="3.2"/>
-        <text class="pd-lbl" x="432" y="128" text-anchor="middle">peer B</text>
-        <text class="pd-seg" fill="#2bf0a0" x="432" y="180" text-anchor="middle">✓ cached<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.56;0.6;1" dur="10s" repeatCount="indefinite"/></text>
+        <g transform="translate(380,400)"><rect class="pd-result" x="-250" y="-16" width="500" height="32" rx="8"/><text class="pd-result-t" x="0" y="4" text-anchor="middle">acme.hop  →  hop:7f3a…9c2   ·   a key, not an IP   ·   TLS + sig ✓</text></g>
 
-        <circle class="pd-ring" cx="600" cy="150" r="18"/><circle class="pd-node live" cx="600" cy="150" r="11"/><circle class="pd-core" cx="600" cy="150" r="3.4"/>
-        <text class="pd-lbl" x="600" y="180" text-anchor="middle">peer C · online</text>
-        <rect class="pd-cloud" x="552" y="48" width="96" height="36" rx="9"/><text class="pd-glyph" x="600" y="70" text-anchor="middle">public DNS</text>
-        <text class="pd-seg" x="600" y="38" text-anchor="middle">queried once, on the cold miss</text>
-        <text class="pd-seg" x="636" y="116" text-anchor="start">DoH</text>
+        <!-- GET flies to the domain, the signed reach record comes back -->
+        <circle class="pd-pkt" r="4.6"><animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.06;0.32;1" calcMode="linear" path="M72,150 L600,150"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.08;0.32;0.34;1" dur="9s" repeatCount="indefinite"/></circle>
+        <circle class="pd-pkt resp" r="4.6"><animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.38;0.60;1" calcMode="linear" path="M600,150 L72,150"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.40;0.60;0.62;1" dur="9s" repeatCount="indefinite"/></circle>
+        <text class="pd-seg" x="336" y="140" text-anchor="middle">GET well-known<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.08;0.10;0.30;0.34;1" dur="9s" repeatCount="indefinite"/></text>
+        <text class="pd-seg" fill="#2bf0a0" x="336" y="140" text-anchor="middle">signed reach record<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.40;0.42;0.58;0.62;1" dur="9s" repeatCount="indefinite"/></text>
 
-        <circle class="pd-node live" cx="72" cy="326" r="13"/><circle class="pd-core" cx="72" cy="326" r="4"/>
-        <text class="pd-lbl" x="72" y="350" text-anchor="middle">query · later</text>
-
-        <g transform="translate(380,400)"><rect class="pd-result" x="-238" y="-16" width="476" height="32" rx="8"/><text class="pd-result-t" x="0" y="4" text-anchor="middle">acme.hop  →  hop:7f3a…9c2   ·   a key, not an IP   ·   DNSSEC ✓</text></g>
-
-        <!-- cold: query walks A→B→C, then DoH, then signed answer seeds caches back -->
-        <circle class="pd-pkt" r="4.6"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.02;0.30;1" calcMode="linear" path="M72,150 L252,150 L432,150 L600,150"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.02;0.04;0.30;0.32;1" dur="10s" repeatCount="indefinite"/></circle>
-        <circle class="pd-pkt" r="4.2"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.32;0.40;1" calcMode="linear" path="M600,150 L600,86"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.32;0.34;0.40;0.42;1" dur="10s" repeatCount="indefinite"/></circle>
-        <circle class="pd-pkt resp" r="4.2"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.42;0.50;1" calcMode="linear" path="M600,86 L600,150"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.42;0.44;0.50;0.52;1" dur="10s" repeatCount="indefinite"/></circle>
-        <circle class="pd-pkt resp" r="4.6"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.52;0.70;1" calcMode="linear" path="M600,150 L432,150 L252,150 L72,150"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.52;0.54;0.70;0.72;1" dur="10s" repeatCount="indefinite"/></circle>
-
-        <!-- later: query from a second source hits A's cache, stops there -->
-        <circle class="pd-pkt" r="4.6"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.76;0.84;1" calcMode="linear" path="M72,326 Q150,250 250,168"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.76;0.78;0.84;0.86;1" dur="10s" repeatCount="indefinite"/></circle>
-        <circle class="pd-pkt resp" r="4.6"><animateMotion dur="10s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.86;0.94;1" calcMode="linear" path="M250,168 Q150,250 72,326"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.86;0.88;0.94;0.96;1" dur="10s" repeatCount="indefinite"/></circle>
+        <!-- offline: no fetch possible, the address is handed over directly (self-certifying) -->
+        <circle class="pd-node" cx="72" cy="326" r="13"/><circle class="pd-core" cx="72" cy="326" r="4"/>
+        <text class="pd-lbl" x="72" y="350" text-anchor="middle">radio-only</text>
+        <text class="pd-seg" x="150" y="322" text-anchor="start">hop:7f3a…9c2  ·  self-certifying, no lookup</text>
       `,
     },
   },

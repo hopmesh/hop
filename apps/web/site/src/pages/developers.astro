@@ -25,7 +25,7 @@ node.send_service_request(
 ---
 <Base
   title="Hop for developers, embed the mesh"
-  description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with end-to-end encrypted messaging, HTTP-over-mesh (hops://), pub/sub, and DNSSEC-backed naming (HNS). Free and source-available."
+  description="Embed hop-core in your iOS and Android app: a pure-Rust delay-tolerant mesh with end-to-end encrypted messaging, HTTP-over-mesh (hops://), pub/sub, and self-certifying naming (HNS). Free and source-available."
   path="/developers"
 >
   <!-- hero -->
@@ -119,11 +119,11 @@ node.send_service_request(
         <a class="srow" href="/protocol/hns/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">HNS</div>
           <div class="body">
-            <h3>Hop Name System, delay-tolerant, trustless <span class="link-go" style="font-size:13px;">→</span></h3>
-            <p>Resolve <code>hops://example.com</code> to an address via a DNSSEC-signed
-               TXT record. No central resolver: a query walks the mesh until a node can
-               answer, and the client verifies the DNSSEC chain itself, any node may
-               resolve, none can lie.</p>
+            <h3>Hop Name System, self-certifying, no DNSSEC <span class="link-go" style="font-size:13px;">→</span></h3>
+            <p>Resolve <code>hops://example.com</code> to an address with one HTTPS fetch
+               of the domain's <code>/.well-known/hop</code>. TLS proves the domain, the
+               signed reach record proves the address, so a name can't be forged into the
+               wrong key. No central resolver, no DNSSEC.</p>
           </div>
         </a>
       </div>
