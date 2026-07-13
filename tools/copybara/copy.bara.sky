@@ -1,0 +1,58 @@
+# copy.bara.sky - bidirectional sync of the sdk/node component with its own repository.
+#
+# The Hop monorepo is the SOURCE OF TRUTH. Copybara mirrors one subtree (sdk/node) to a standalone
+# public repo and brings external contributions back, so a component can live in its own repo (npm
+# consumers, issues, PRs) without forking the monorepo. This is the Meta react-native / relay pattern,
+# done with Copybara instead of fbshipit.
+#
+#   export  : monorepo:sdk/node  ->  hopmesh/hop-sdk-node   (commit-for-commit, prefix stripped)
+#   import  : hop-sdk-node PR     ->  monorepo PR            (prefix re-added, opened for review)
+#
+# See tools/copybara/README.md for the one-time bootstrap and how it runs in CI.
+
+MONOREPO = "https://github.com/hopmesh/hop.git"
+MIRROR = "https://github.com/hopmesh/hop-sdk-node.git"
+PREFIX = "sdk/node"
+BOT = "hop-sync <sync@hopme.sh>"
+
+# Monorepo-internal files that must never appear in the public mirror, and must never be rewritten by
+# an import. CLAUDE.md is agent/dev guidance tied to the monorepo layout.
+INTERNAL = [PREFIX + "/CLAUDE.md"]
+
+core.workflow(
+    name = "export",
+    origin = git.origin(url = MONOREPO, ref = "main"),
+    destination = git.destination(url = MIRROR, push = "main"),
+    # Only sdk/node travels out, minus the internal files.
+    origin_files = glob([PREFIX + "/**"], exclude = INTERNAL),
+    destination_files = glob(["**"]),
+    authoring = authoring.pass_thru(default = BOT),
+    # ITERATIVE replays every monorepo commit that touches sdk/node as its OWN commit in the mirror
+    # (commit-for-commit). The very first run is seeded once in SQUASH mode (see README).
+    mode = "ITERATIVE",
+    transformations = [
+        # Strip the monorepo prefix so sdk/node/** becomes the mirror's root.
+        core.move(PREFIX, ""),
+    ],
+)
+
+core.workflow(
+    name = "import",
+    # A PR opened on the mirror becomes a PR opened on the monorepo, NEVER a direct push to main.
+    origin = git.github_pr_origin(url = MIRROR, branch = "main"),
+    destination = git.github_pr_destination(
+        url = MONOREPO,
+        destination_ref = "main",
+        pr_branch = "copybara/import/sdk-node",
+    ),
+    origin_files = glob(["**"]),
+    # The change lands ONLY under sdk/node, and never rewrites the monorepo-internal files (so an
+    # import can't delete CLAUDE.md just because the mirror doesn't have it).
+    destination_files = glob([PREFIX + "/**"], exclude = INTERNAL),
+    authoring = authoring.pass_thru(default = BOT),
+    mode = "CHANGE_REQUEST",
+    transformations = [
+        # Re-add the prefix so the mirror's root maps back under sdk/node.
+        core.move("", PREFIX),
+    ],
+)
