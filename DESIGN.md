@@ -1528,6 +1528,29 @@ same shape as the HTTP-egress pair, §9, but device-to-device).
   fulfills them and seals a response back. This is the "call a device with a command"
   primitive, an app registers whatever services it wants on top.
 
+**Forward secrecy: services are sealed, not ratcheted, by design.** A `ServiceRequest` /
+`ServiceResponse` (and the `hops://` HTTP-over-mesh pair built on them, §30) is **statically
+sealed** to the destination key (ephemeral-static ECDH, §4), the same bundle class as the
+HNS/HTTP-egress traffic, and deliberately does **not** go through the per-peer Double Ratchet
+that user messages use. This is a considered decision, not an oversight:
+
+- **Services are addressed RPC, usually first-contact and one-shot.** A `hops://` request to an
+  endpoint you have never messaged, or a `hop.identify` to a fresh address, has **no session and
+  no reason to build one**: a ratchet needs a prekey exchange and stateful continuity that a
+  single request/response to an arbitrary address does not have. Forcing a session would add
+  round-trips and state to a fundamentally stateless call.
+- **The forward-secrecy law is about user CONTENT, not RPC.** The repo law "device-to-device
+  content is always forward-secret" (see `CLAUDE.md` / §25) scopes to **`PeerMessage` user
+  content**, which is exactly the traffic that carries private conversation and is always
+  ratcheted or deferred, never static-sealed. Services are a separate class, like adverts,
+  HNS answers, vaccines, and egress requests, all sealed end-to-end but not ratcheted.
+- **Consequence, stated plainly.** An adversary who records a node's service traffic and *later*
+  compromises the recipient's identity key can decrypt those past service payloads (no
+  recipient-compromise forward secrecy for the RPC class). An app that needs to move sensitive
+  device-to-device data with forward secrecy should carry it as **messaging content**
+  (`PeerMessage`, ratcheted), not as a custom service. `hops://` and `hop.identify` payloads are
+  request metadata / public-directory data where this trade is acceptable.
+
 **Why identify matters for traces (§27).** A trace records each hop as an 8-byte short
 address, compact, and not reversible to a full address. The app resolves a hop to a
 **display name** by indexing the full addresses it already knows (peers, contacts, the

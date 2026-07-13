@@ -134,22 +134,36 @@ func (e *Endpoint) RequestTimeout(dst, service, method string, args []byte, time
 	if err != nil {
 		return 0, nil, err
 	}
+	ch := make(chan [2]interface{}, 1)
 	var reqID []byte
 	var sErr error
-	if !e.withNode(func(n *node) { reqID, sErr = n.sendServiceRequest(dstBytes, service, method, args) }) {
+	// Register the waiter WHILE still holding nodeMu (inside this withNode), so pump's
+	// takeServiceResponses (also serialized on nodeMu) cannot deliver the response before pending knows
+	// to route it. audit LOW: Go registered pending only AFTER releasing nodeMu, a window in which a fast
+	// response is dropped and the caller then waits the full timeout. This matches the atomic send+register
+	// the Crystal SDK already does.
+	if !e.withNode(func(n *node) {
+		reqID, sErr = n.sendServiceRequest(dstBytes, service, method, args)
+		if sErr == nil {
+			e.mu.Lock()
+			e.pending[string(reqID)] = ch
+			e.mu.Unlock()
+		}
+	}) {
 		return 0, nil, fmt.Errorf("endpoint is closed")
 	}
 	if sErr != nil {
 		return 0, nil, sErr
 	}
-	ch := make(chan [2]interface{}, 1)
 	key := string(reqID)
-	e.mu.Lock()
-	e.pending[key] = ch
-	e.mu.Unlock()
 	select {
 	case r := <-ch:
 		return r[0].(uint16), r[1].([]byte), nil
+	case <-e.done: // Close() fires this, so an in-flight caller fails fast instead of blocking the full timeout
+		e.mu.Lock()
+		delete(e.pending, key)
+		e.mu.Unlock()
+		return 0, nil, fmt.Errorf("endpoint closed")
 	case <-time.After(timeout):
 		e.mu.Lock()
 		delete(e.pending, key)

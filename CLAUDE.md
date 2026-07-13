@@ -49,7 +49,7 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 
 - **Wire format is a contract.** `bundle.rs BUNDLE_VERSION` is the wire version. Any wire-layout change bumps it, and a bump MUST be followed by `sim/build-wasm.sh` + committing `sim/pkg` (a stamp guard reddens CI otherwise). Never change wire bytes as a side effect (a dep bump must produce identical bytes).
 - **Deploy = push to main.** The Cloud Build trigger builds images and runs `tofu apply` on every push to main, gated on this workflow being green for the commit. See `infra/CLAUDE.md`. The relay fleet is currently OFF (`relays_enabled=false`).
-- **Device-to-device content is always forward-secret** (Double Ratchet). A send without a session ratchet is a bug, never a static seal.
+- **Device-to-device user content is always forward-secret** (Double Ratchet). A `PeerMessage` send without a session ratchet is a bug, never a static seal. This scopes to **user messaging content**: addressed RPC (`ServiceRequest`/`ServiceResponse`, `hops://`, `hop.identify`) and the other sealed-not-ratcheted classes (adverts, HNS answers, vaccines, egress) are statically sealed by design, see DESIGN.md §29.
 - **No em-dashes or en-dashes anywhere** (code, comments, docs, commits, PRs). `tools/docs-token-guard.sh` enforces it on docs/site copy in CI, including encoded and lookalike forms.
 - **Iteration mode:** pre-prod, single maintainer. Breaking changes are fine; iterate freely, but keep CI green.
 
