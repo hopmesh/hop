@@ -1,6 +1,6 @@
 // HopEndpoint: receive Hop messages in your Node app with an Express/Fastify-shaped surface, over
 // the libhop C ABI. `hop.on(service, handler)` registers a receiver; the handler gets (req, reply)
-// and reply.send(status, body) seals a hops:// response back to the authenticated sender.
+// and reply(status, body) seals a hops:// response back to the authenticated sender.
 //
 // SEMANTICS (read this): this is NOT synchronous HTTP. Inbound is a durable, store-and-forward
 // consume; a reply is a new addressed message that may arrive later. The DX looks like HTTP; the
@@ -119,7 +119,7 @@ export class HopEndpoint extends EventEmitter {
     hop.poll_service_requests(this.#node, (_ctx, from, rid, service, method, argPtr, argLen) => {
       const req = new HopRequest(addr(from), addr(rid), service, method, bytes(argPtr, Number(argLen)))
       const handler = this.#handlers.get(service)
-      const reply = new HopReply(this.#node, req)
+      const reply = makeReply(this.#node, req)
       if (handler) Promise.resolve(handler(req, reply)).catch((e) => this.emit('error', e))
       else this.emit('unhandled', req, reply)
     }, null)
@@ -174,20 +174,15 @@ class HopRequest {
   }
 }
 
-class HopReply {
-  #node
-  #req
-  #sent = false
-  constructor(node, req) {
-    this.#node = node
-    this.#req = req
-  }
-  // status: uint16 (HTTP-shaped); body: Buffer | string | JSON-able
-  send(status, body = Buffer.alloc(0)) {
-    if (this.#sent) throw new Error('reply already sent')
-    this.#sent = true
+// The handler gets a plain callable reply(status, body), aligned with the other SDKs. status is a
+// uint16 (HTTP-shaped); body is a Buffer | string | JSON-able value.
+function makeReply(node, req) {
+  let sent = false
+  return (status, body = Buffer.alloc(0)) => {
+    if (sent) throw new Error('reply already sent')
+    sent = true
     const b = toBuf(body)
-    return hop.send_service_response(this.#node, this.#req._raw, this.#req._rid, status, b, b.length)
+    return hop.send_service_response(node, req._raw, req._rid, status, b, b.length)
   }
 }
 

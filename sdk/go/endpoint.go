@@ -86,9 +86,18 @@ func (e *Endpoint) On(service string, h Handler) {
 // Address is this endpoint's base58 address (publish it, or its HNS name).
 func (e *Endpoint) Address() string { return toB58(e.n.address()) }
 
+// DefaultRequestTimeout bounds Request when no explicit timeout is given (aligns with the other SDKs,
+// which default the timeout too).
+const DefaultRequestTimeout = 15 * time.Second
+
 // Request calls a service on a remote endpoint (dst is a base58 address). Blocks until the response
-// returns (delay-tolerant), or the timeout elapses.
-func (e *Endpoint) Request(dst, service, method string, args []byte, timeout time.Duration) (uint16, []byte, error) {
+// returns (delay-tolerant) or DefaultRequestTimeout elapses. Use RequestTimeout to override.
+func (e *Endpoint) Request(dst, service, method string, args []byte) (uint16, []byte, error) {
+	return e.RequestTimeout(dst, service, method, args, DefaultRequestTimeout)
+}
+
+// RequestTimeout is Request with an explicit timeout.
+func (e *Endpoint) RequestTimeout(dst, service, method string, args []byte, timeout time.Duration) (uint16, []byte, error) {
 	dstBytes, err := fromB58(dst)
 	if err != nil {
 		return 0, nil, err

@@ -9,7 +9,7 @@ const PORT = 9944
 const server = new HopEndpoint({ name: 'orders' })
 server.on('acme/orders', (req, reply) => {
   console.log(`  [server] ${req.service}/${req.method} from ${req.from.slice(0, 10)}… over TCP: ${req.text}`)
-  reply.send(201, { ok: true, item: req.json().item })
+  reply(201, { ok: true, item: req.json().item })
 })
 await listen(server, PORT)
 console.log(`server listening on tcp://localhost:${PORT}  addr=${server.address.slice(0, 12)}…`)

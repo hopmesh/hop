@@ -41,7 +41,7 @@ The C ABI (`sdk/hop.h`) already exposes the whole surface:
 | ------------------------- | ------------------------------------------------------------- |
 | register a receiver       | `hop_subscribe(node, "acme/orders")`                          |
 | inbound handler           | `hop_poll_service_requests` -> `(from, request_id, service, method, args)` |
-| `reply.send(status, body)`| `hop_send_service_response(node, from, request_id, status, body)` (status is `uint16`) |
+| `reply(status, body)`     | `hop_send_service_response(node, from, request_id, status, body)` (status is `uint16`) |
 | client `request(...)`     | `hop_send_service_request` + `hop_poll_service_responses`     |
 | the Internet bearer       | `hop_link_up` + `hop_bytes_received` + `hop_drain_outgoing` (opaque bytes; core does Noise) |
 | config = the key          | `hop_node_open(db, secret, ...)`                              |
@@ -84,7 +84,7 @@ The same C ABI backs a thin, idiomatic wrapper per runtime (the `sdk/<target>` p
 
 ```js
 const hop = new HopEndpoint({ dbPath: './hop.db' })
-hop.on('acme/orders', (req, reply) => reply.send(201, { ok: true, order: req.json() }))
+hop.on('acme/orders', (req, reply) => reply(201, { ok: true, order: req.json() }))
 await listen(hop, 9944)
 ```
 
@@ -100,6 +100,28 @@ Hop.Endpoint.on(ep, "acme/orders", fn req, reply -> reply.(201, Jason.encode!(%{
 
 Python (`sdk/python`, ctypes, a `@hop.on(topic)` decorator) and Go (`sdk/go`, cgo, `server.On(topic,
 fn)`) are built. Ruby (Fiddle) and others bind the C ABI and follow the same shape.
+
+### Aligned surface
+
+The four SDKs are kept as close as possible while staying idiomatic per language. Same verbs, same
+argument order, same handler shape `(req, reply)`, a callable `reply(status, body)`, and a `request`
+that defaults its timeout. Differences below are language convention, not divergence: casing (Go
+exports `On`), Elixir's `.()` anonymous-call syntax, and Python's `req.from_addr` (because `from` is a
+keyword).
+
+| Concept   | Node                          | Python                         | Go                              | Elixir                              |
+| --------- | ----------------------------- | ------------------------------ | ------------------------------- | ----------------------------------- |
+| register  | `hop.on(svc, fn)`             | `@hop.on(svc)` / `hop.on(...)` | `ep.On(svc, fn)`                | `Endpoint.on(ep, svc, fn)`          |
+| handler   | `(req, reply) =>`             | `def fn(req, reply)`           | `func(req, reply)`              | `fn req, reply ->`                  |
+| reply     | `reply(status, body)`         | `reply(status, body)`          | `reply(status, body)`           | `reply.(status, body)`              |
+| request   | `await hop.request(dst,s,m,a)`| `hop.request(dst,s,m,a)`       | `ep.Request(dst,s,m,a)`         | `Endpoint.request(ep,dst,s,m,a)`    |
+| address   | `hop.address`                 | `hop.address`                  | `ep.Address()`                  | `Endpoint.address(ep)`              |
+| sender id | `req.from`                    | `req.from_addr`                | `req.From`                      | `req.from`                          |
+| listen    | `listen(hop, port)`           | `listen(hop, port)`            | `hop.Listen(ep, port)`          | `TcpBearer.listen(ep, port)`        |
+| dial      | `dial(hop, host, port)`       | `dial(hop, host, port)`        | `hop.Dial(ep, host, port)`      | `TcpBearer.dial(ep, host, port)`    |
+
+Return shapes stay idiomatic: Node resolves a `{status, body}` object (a Promise), Python returns a
+`(status, body)` tuple, Go returns `(status, body, err)`, Elixir returns `{:ok, status, body}`.
 
 ## The privacy dial (never a silent default)
 
