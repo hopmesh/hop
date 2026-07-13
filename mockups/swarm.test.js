@@ -60,6 +60,14 @@ const LIVENESS_SEEDS = {
   disaster: [12345, 23456, 34567, 45678, 56789, 67890],
 };
 
+// Fallback seeds for the WELL-CONNECTED scenarios' delivery gate. Those run the primary physics loop
+// UNSEEDED (a well-connected swarm delivers under ~any world), but an unlucky random layout can rarely
+// black-hole the fixed 45s window (observed once as "stadium: expected deliveries (got 0)" at ~1 in
+// 3M checks). Rather than weaken the gate, we retry under these fixed seeds when the unseeded run
+// delivered nothing, mirroring the sparse-scenario multi-seed liveness gate: a healthy build delivers
+// under ~any seed on any platform, while a real delivery regression fails ALL of them (and all platforms).
+const DELIVERY_SEEDS = [12345, 23456, 34567, 45678, 56789, 67890];
+
 // Run a sparse scenario under one seed and report whether any message made store-carry progress
 // (entered a hopping leg, took a hop, or completed) within the 45s window. No physics asserts here:
 // those run in the seeded main loop below. Used by the multi-seed liveness gate to stay robust to
@@ -77,6 +85,20 @@ function probeStoreCarryProgress(key, seed) {
   }
   restore();
   return saw;
+}
+
+// Run a WELL-CONNECTED scenario under one seed and report whether any message was DELIVERED within the
+// 45s window. Companion to probeStoreCarryProgress: used by the delivery gate to retry a rare unlucky
+// unseeded world under fixed seeds, so a probabilistic 0-delivery layout can't flake the build while a
+// genuine delivery regression (0 deliveries under every seed) still trips it.
+function probeDelivery(key, seed) {
+  const restore = seedRandom(seed);
+  S.setView(1124, 600);
+  S.buildWorld(key);
+  for (let t = 0; t < 60 * 45; t++) S.update(1 / 60);
+  const ok = S.msgStats.delivered >= 1;
+  restore();
+  return ok;
 }
 
 let checks = 0, failures = 0;
@@ -372,7 +394,16 @@ for (const key of Object.keys(S.SCENARIOS)) {
   // disaster) are demos of store-carry over a broken mesh, where 0 deliveries in a fixed 45s is a
   // legitimate (marginal) outcome, so we do not gate on them.
   if (key !== 'remote' && key !== 'disaster') {
-    assert(S.msgStats.delivered >= 1, `${tag}: expected deliveries in 45s (got ${S.msgStats.delivered})`);
+    // The primary run is UNSEEDED; a well-connected swarm delivers under ~any world, but an unlucky
+    // random layout can rarely black-hole the fixed 45s window. If it did, retry under the fixed
+    // DELIVERY_SEEDS and require delivery under at least one (a healthy build delivers under ~any seed;
+    // a real delivery regression fails ALL of them). This kills the flake without weakening the gate.
+    let delivered = S.msgStats.delivered >= 1;
+    for (const s of DELIVERY_SEEDS) {
+      if (delivered) break;
+      delivered = probeDelivery(key, s);
+    }
+    assert(delivered, `${tag}: expected deliveries in 45s under the primary world or any of ${DELIVERY_SEEDS.length} seeds (delivery regression?)`);
   } else {
     // weaker liveness for the sparse/degraded demos: store-carry must at least MOVE a message, even if
     // none completes in 45s. A total black-hole (nothing ever hops) trips this. sawProgress already holds
