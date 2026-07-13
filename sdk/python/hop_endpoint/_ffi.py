@@ -36,6 +36,8 @@ _lib = C.CDLL(_resolve_lib())
 DRAIN_SINK = CFUNCTYPE(None, c_void_p, c_uint64, POINTER(c_uint8), c_size_t)
 SVCREQ_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_char_p, c_char_p, POINTER(c_uint8), c_size_t)
 SVCRESP_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_uint16, POINTER(c_uint8), c_size_t)
+REACH_SIGN_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_size_t)
+REACH_VERIFY_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint64, c_uint32)
 
 # ---- signatures (restype MUST be set, else ctypes truncates 64-bit pointers) ----
 _lib.hop_abi_version.restype = c_uint32
@@ -63,6 +65,9 @@ _lib.hop_address_to_base58.argtypes = [c_char_p, c_char_p, c_size_t]
 _lib.hop_address_to_base58.restype = c_size_t
 _lib.hop_address_from_base58.argtypes = [c_char_p, c_char_p]
 _lib.hop_address_from_base58.restype = c_bool
+_lib.hop_sign_reach_record.argtypes = [c_void_p, c_char_p, c_uint32, REACH_SIGN_SINK, c_void_p]
+_lib.hop_verify_reach_record.argtypes = [c_char_p, c_size_t, c_uint64, REACH_VERIFY_SINK, c_void_p]
+_lib.hop_verify_reach_record.restype = c_bool
 
 
 def assert_abi() -> None:
@@ -178,3 +183,28 @@ def from_b58(text: str) -> bytes:
     if not _lib.hop_address_from_base58(text.encode(), out):
         raise ValueError(f"not a valid Hop address: {text}")
     return out.raw[:32]
+
+
+def sign_reach(node, endpoint: str, ttl_secs: int) -> bytes:
+    """Sign a self-certifying reachability record for this node's address -> record bytes."""
+    out: list[bytes] = []
+
+    @REACH_SIGN_SINK
+    def sink(_ctx, ptr, length):
+        out.append(C.string_at(ptr, length) if length else b"")
+
+    _lib.hop_sign_reach_record(node, endpoint.encode(), ttl_secs, sink, None)
+    return out[0] if out else b""
+
+
+def verify_reach(record: bytes, now_secs: int) -> dict | None:
+    """Verify a reach record. Returns {address, address_b58, endpoint, issued_at, ttl_secs} or None."""
+    info: dict = {}
+
+    @REACH_VERIFY_SINK
+    def sink(_ctx, addr_ptr, endpoint, issued_at, ttl_secs):
+        a = C.string_at(addr_ptr, 32)
+        info.update(address=a, address_b58=to_b58(a), endpoint=endpoint.decode(), issued_at=int(issued_at), ttl_secs=int(ttl_secs))
+
+    ok = _lib.hop_verify_reach_record(record, len(record), now_secs, sink, None)
+    return info if ok and info else None
