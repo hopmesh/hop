@@ -30,6 +30,19 @@ static void svcresp_tramp(void *ctx, const uint8_t *f, const uint8_t *r, uint16_
 static void call_drain(const HopNode *node, uintptr_t ctx) { hop_drain_outgoing(node, drain_tramp, (void *)ctx); }
 static void call_poll_reqs(const HopNode *node, uintptr_t ctx) { hop_poll_service_requests(node, svcreq_tramp, (void *)ctx); }
 static void call_poll_resps(const HopNode *node, uintptr_t ctx) { hop_poll_service_responses(node, svcresp_tramp, (void *)ctx); }
+
+extern void goReachSignSink(uintptr_t ctx, uint8_t *bytes, size_t len);
+extern void goReachVerifySink(uintptr_t ctx, uint8_t *addr, char *endpoint, uint64_t issued_at, uint32_t ttl_secs);
+static void reach_sign_tramp(void *ctx, const uint8_t *b, size_t n) { goReachSignSink((uintptr_t)ctx, (uint8_t *)b, n); }
+static void reach_verify_tramp(void *ctx, const uint8_t *a, const char *e, uint64_t i, uint32_t t) {
+    goReachVerifySink((uintptr_t)ctx, (uint8_t *)a, (char *)e, i, t);
+}
+static void call_sign_reach(const HopNode *node, const char *endpoint, uint32_t ttl, uintptr_t ctx) {
+    hop_sign_reach_record(node, endpoint, ttl, reach_sign_tramp, (void *)ctx);
+}
+static bool call_verify_reach(const uint8_t *bytes, size_t len, uint64_t now, uintptr_t ctx) {
+    return hop_verify_reach_record(bytes, len, now, reach_verify_tramp, (void *)ctx);
+}
 */
 import "C"
 
@@ -181,6 +194,52 @@ func fromB58(text string) ([]byte, error) {
 	}
 	runtime.KeepAlive(out)
 	return out, nil
+}
+
+// ReachInfo is a verified reachability record: which Address is reachable at which Endpoint.
+type ReachInfo struct {
+	Address  []byte
+	Endpoint string
+	IssuedAt uint64
+	TtlSecs  uint32
+}
+
+func signReach(n *node, endpoint string, ttlSecs uint32) []byte {
+	ce := C.CString(endpoint)
+	defer C.free(unsafe.Pointer(ce))
+	var out []byte
+	h := cgo.NewHandle(&out)
+	defer h.Delete()
+	C.call_sign_reach(n.p, ce, C.uint32_t(ttlSecs), C.uintptr_t(h))
+	return out
+}
+
+func verifyReach(record []byte, nowSecs uint64) (ReachInfo, bool) {
+	var info ReachInfo
+	h := cgo.NewHandle(&info)
+	defer h.Delete()
+	var ptr *C.uint8_t
+	if len(record) > 0 {
+		ptr = (*C.uint8_t)(unsafe.Pointer(&record[0]))
+	}
+	ok := bool(C.call_verify_reach(ptr, C.size_t(len(record)), C.uint64_t(nowSecs), C.uintptr_t(h)))
+	runtime.KeepAlive(record)
+	return info, ok
+}
+
+//export goReachSignSink
+func goReachSignSink(ctx C.uintptr_t, bytes *C.uint8_t, length C.size_t) {
+	out := cgo.Handle(ctx).Value().(*[]byte)
+	*out = C.GoBytes(unsafe.Pointer(bytes), C.int(length))
+}
+
+//export goReachVerifySink
+func goReachVerifySink(ctx C.uintptr_t, addr *C.uint8_t, endpoint *C.char, issuedAt C.uint64_t, ttlSecs C.uint32_t) {
+	info := cgo.Handle(ctx).Value().(*ReachInfo)
+	info.Address = C.GoBytes(unsafe.Pointer(addr), 32)
+	info.Endpoint = C.GoString(endpoint)
+	info.IssuedAt = uint64(issuedAt)
+	info.TtlSecs = uint32(ttlSecs)
 }
 
 //export goDrainSink
