@@ -9,7 +9,7 @@ every joint) which are revealed sequentially in pen order.
 ## Files
 
 - `hop-wordmark.svg` is the source lockup (3 letter paths + 5 node circles).
-- `hop-wordmark-segments.svg` is the letterforms cut into 17 long ribbon
+- `hop-wordmark-segments.svg` is the letterforms cut into 32 ribbon
   pieces in pen order (`#stroke-segments`, ids like `h-stem--loop`,
   `p--descender`, each with `data-order`; plus `#nodes` with `node-1..5`).
   Every piece is a real filled shape rebuilt from medial-axis disks along
@@ -31,7 +31,9 @@ every joint) which are revealed sequentially in pen order.
 ## Animation sequence
 
 Act 1: the five nodes POP in (scale overshoot, no drop) in the order
-4, 2, 5, 3, 1. Act 2: the 17 stroke pieces appear as sequential hard cuts in
+4, 2, 5, 3, 1. Act 2: the 32 stroke pieces (landmark cuts subdivided to ~150 arc
+units each, 3-frame opacity ramps) appear in quick sequence, reading as
+continuous drawing, in
 pen order: h stem (node-1 to node-2), h hump and swash passing under node-3,
 the o counterclockwise (entry and top-left quadrant first, then the bottom,
 then the closing top arc), the link up to node-4, the p (descender, return,
@@ -56,7 +58,8 @@ its `GUIDES_TABLE` if the artwork changes and check `overlay.png`.
 `segment.py` cuts the ink into ribbon pieces (`CUTS` holds the landmarks and
 names; verify with `segments-debug.svg` and a raster diff against the
 source). `build.py` holds the timing knobs (`POP_ORDER`, `POP_EVERY`,
-`PIECE_START`, `PIECE_EVERY`, `HOLD`).
+`PIECE_START`, `PIECE_TOTAL`, `HOLD`); sub-piece length is `SUB_LEN` in
+`segment.py`.
 
 ## Rules
 
