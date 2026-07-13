@@ -18,14 +18,18 @@ W, H = 1200, 732
 FR = 60
 
 POP_ORDER = [4, 2, 5, 3, 1]   # node ids, pop sequence
-POP_EVERY = 7                 # frames between node pops
+POP_EVERY = 5                 # frames between node pops
 POP_LEN = 11                  # frames for one pop
-PIECE_START = 46              # first stroke piece appears here
-PIECE_TOTAL = 112             # frames for the whole draw, split evenly
-HOLD = 50                     # tail hold after the last piece
+PIECE_START = 34              # first stroke piece appears here
+PIECE_TOTAL = 66              # frames for the whole draw, split evenly
+HOLD = 45                     # tail hold; must outlast any host comp window
 
 EASE_OUT = {"o": {"x": [0.25], "y": [0.9]}, "i": {"x": [0.4], "y": [1]}}
 EASE_IN_OUT = {"o": {"x": [0.4], "y": [0]}, "i": {"x": [0.3], "y": [1]}}
+# opacity-ramp easing handles. Lottie needs i/o bezier handles on an
+# animated keyframe; without them lottie-web fails to interpolate and the
+# layer stays hidden until forced on (the "just dots" regression).
+RAMP = {"o": {"x": [0.4], "y": [0]}, "i": {"x": [0.6], "y": [1]}}
 
 
 def parse_pieces():
@@ -67,7 +71,8 @@ def _ks():
 
 
 def piece_layer(ind, pid, subs, t_on, t_end):
-    # a 3-frame opacity ramp softens each reveal into a continuous draw
+    # a 4-frame opacity ramp (= 2 comp frames at 2x playback) softens each
+    # reveal without phase-aliasing when the animation is sampled at 30fps
     items = []
     for k, pts in enumerate(subs):
         items.append({"ty": "sh", "nm": f"sub-{k}", "ks": {"a": 0, "k": {
@@ -77,7 +82,7 @@ def piece_layer(ind, pid, subs, t_on, t_end):
                   "o": {"a": 0, "k": 100}, "r": 2})
     items.append(_tr())
     ks = _ks()
-    ks["o"] = {"a": 1, "k": [{"t": t_on, "s": [0]}, {"t": t_on + 3, "s": [100]}]}
+    ks["o"] = {"a": 1, "k": [{"t": t_on, "s": [0], **RAMP}, {"t": t_on + 4, "s": [100]}]}
     return {"ddd": 0, "ind": ind, "ty": 4, "nm": pid, "sr": 1, "ks": ks,
             "ao": 0, "shapes": [{"ty": "gr", "nm": pid, "it": items}],
             "ip": t_on, "op": t_end, "st": 0, "bm": 0}
