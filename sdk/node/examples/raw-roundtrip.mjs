@@ -52,7 +52,7 @@ hop.poll_service_requests(b, (_ctx, from, rid, service, method, argPtr, argLen) 
 }, null)
 console.log('B received:', got.service + '/' + got.method, '=', got.args.toString(), ' from', b58(got.from).slice(0, 12))
 
-// B replies 200 + body (the reply.send surface).
+// B replies 200 + body (the reply surface).
 hop.send_service_response(b, got.from, got.rid, 200, Buffer.from('stored'), 6)
 pump(a, b)
 

@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
 	hop "github.com/hopmesh/hop/sdk/go"
 )
@@ -36,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte(`{"item":"widget"}`), 15*time.Second)
+	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte(`{"item":"widget"}`))
 	if err != nil {
 		fmt.Println("request:", err)
 		os.Exit(1)

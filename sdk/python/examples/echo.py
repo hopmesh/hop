@@ -20,7 +20,7 @@ def handle(req, reply):
 connect_in_process(server, client)
 print("server address:", server.address)
 
-status, body = client.request(server.address_bytes, "acme/orders", "create", json.dumps({"item": "widget"}))
+status, body = client.request(server.address, "acme/orders", "create", json.dumps({"item": "widget"}))
 print(f"  [client] <- {status} {body.decode()}")
 
 parsed = json.loads(body)

@@ -2,7 +2,6 @@ package hop
 
 import (
 	"testing"
-	"time"
 )
 
 func TestInProcessRoundTrip(t *testing.T) {
@@ -21,7 +20,7 @@ func TestInProcessRoundTrip(t *testing.T) {
 	defer client.Close()
 	ConnectInProcess(server, client)
 
-	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte("temp=21"), 15*time.Second)
+	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte("temp=21"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +48,7 @@ func TestTCPRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte("widget"), 15*time.Second)
+	status, body, err := client.Request(server.Address(), "acme/orders", "create", []byte("widget"))
 	if err != nil {
 		t.Fatal(err)
 	}

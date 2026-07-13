@@ -13,7 +13,7 @@ const hop = new HopEndpoint({ dbPath: './hop.db' }) // the identity (key) is the
 hop.on('acme/orders', (req, reply) => {
   // req.from is a cryptographically VERIFIED identity, not a spoofable header
   const order = req.json()
-  reply.send(201, { ok: true, id: save(order) }) // uint16 status + JSON/Buffer/string body
+  reply(201, { ok: true, id: save(order) }) // uint16 status + JSON/Buffer/string body
 })
 
 await listen(hop, 9944)     // reachable by any device; in production HNS resolves name -> host/port/key
@@ -28,7 +28,7 @@ the existing C ABI with **zero core changes**:
 | Endpoint concept        | libhop C ABI                                         |
 | ----------------------- | ---------------------------------------------------- |
 | `hop.on(service, fn)`   | `hop_subscribe` + `hop_poll_service_requests`        |
-| `reply.send(status, b)` | `hop_send_service_response` (status is a `uint16`)   |
+| `reply(status, b)` | `hop_send_service_response` (status is a `uint16`)   |
 | `hop.request(...)`      | `hop_send_service_request` + `hop_poll_service_responses` |
 | the Internet bearer     | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing` |
 | config = the key        | `hop_node_open(db, secret, ...)`                     |
@@ -50,7 +50,7 @@ npm test                      # raw ABI round-trip + ergonomic in-process + real
 ```
 
 - `examples/raw-roundtrip.mjs` drives the raw C ABI (proves the bindings).
-- `examples/echo.mjs` shows the `hop.on` / `reply.send` DX in-process.
+- `examples/echo.mjs` shows the `hop.on` / `reply` DX in-process.
 - `examples/tcp.mjs` runs the same round trip over a real TCP Internet bearer.
 
 Two-process (the real deployment shape):

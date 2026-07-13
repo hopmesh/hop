@@ -11,7 +11,7 @@ const server = new HopEndpoint({ name: 'orders-service', dbPath: process.env.HOP
 server.on('acme/orders', (req, reply) => {
   // req.from is the cryptographically VERIFIED sender, not a spoofable header. No auth middleware.
   console.log(`[server] ${req.service}/${req.method} from ${req.from.slice(0, 12)}…: ${req.text}`)
-  reply.send(201, { ok: true, received: req.json() })
+  reply(201, { ok: true, received: req.json() })
 })
 server.on('error', (e) => console.error('[server] error:', e.message))
 
