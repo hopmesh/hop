@@ -1,6 +1,7 @@
 # Endpoint SDK: self-hostable, embeddable Hop endpoints
 
-Status: design + working Node prototype (`sdk/node`). This locks the semantics before the surface
+Status: design + working prototypes in Node (`sdk/node`, via koffi over the C ABI) and Elixir
+(`sdk/elixir`, via a Rustler NIF over the `hop` crate). This locks the semantics before the surface
 grows to more languages.
 
 ## Why
@@ -87,19 +88,18 @@ hop.on('acme/orders', (req, reply) => reply.send(201, { ok: true, order: req.jso
 await listen(hop, 9944)
 ```
 
-Elixir is a natural fit (mailbox, supervision, and delay-tolerance line up):
+Elixir is built and is a natural fit (mailbox, supervision, and delay-tolerance line up). Note the
+binding mechanism differs by runtime: C-FFI languages bind `sdk/hop.h`, while a Rust-hosting runtime
+like the BEAM binds the `hop` crate directly through a Rustler NIF (no unsafe extern-C round trip):
 
 ```elixir
-defmodule Acme.Orders do
-  use Hop.Endpoint, key: {:system, "HOP_KEY"}
-  def handle_message(%Hop.Message{topic: "acme/orders"} = msg, reply) do
-    :ok = Acme.Repo.save(msg.payload)
-    reply.(201, %{ok: true})
-  end
-end
+{:ok, ep} = Hop.Endpoint.start_link([])
+Hop.Endpoint.on(ep, "acme/orders", fn req, reply -> reply.(201, Jason.encode!(%{ok: true})) end)
+{:ok, _} = Hop.TcpBearer.listen(ep, 9944)
 ```
 
-Go (`hop.HandleFunc(topic, fn)`), Python (`@hop.on(topic)`), and others follow the same shape.
+Go (`hop.HandleFunc(topic, fn)`), Python (`@hop.on(topic)`), and others bind the C ABI and follow the
+same shape.
 
 ## The privacy dial (never a silent default)
 
