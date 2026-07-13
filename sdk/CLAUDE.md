@@ -17,14 +17,17 @@ sdk/go         the Go SERVER endpoint SDK via cgo (see sdk/go/CLAUDE.md): an net
                hop.Endpoint over the C ABI (C trampolines + runtime/cgo.Handle for the sink callbacks)
 sdk/ruby       the Ruby SERVER endpoint SDK via Fiddle (see sdk/ruby/CLAUDE.md): a Sinatra/Rails-shaped
                Hop::Endpoint over the C ABI; zero gems (Fiddle is stdlib FFI, like ctypes)
+sdk/crystal    the Crystal SERVER endpoint SDK via `lib` bindings (see sdk/crystal/CLAUDE.md): a
+               Sinatra/Rails-shaped Hop::Endpoint over the C ABI; zero shards, block AND channel surface
 ```
 
 The layout is `sdk/<target>` (one wrapper package per binding target), matching the repo-wide
 purpose/platform axis. `apple`/`android` are CLIENT SDKs (run a node on a device); `node`/`elixir`/
-`python`/`go`/`ruby` are SERVER SDKs (host a mailbox in a service). Each is one package, so the target
-dir *is* the package (no extra name level, unlike `bearers/<platform>/*` which holds several). C-FFI
-targets (`node` koffi, `python` ctypes, `go` cgo, `ruby` Fiddle) bind `sdk/hop.h`; Rust-hosting runtimes
-(Elixir via Rustler) bind the `hop` crate directly. Design: `docs/endpoint-sdk.md`.
+`python`/`go`/`ruby`/`crystal` are SERVER SDKs (host a mailbox in a service). Each is one package, so
+the target dir *is* the package (no extra name level, unlike `bearers/<platform>/*` which holds
+several). C-FFI targets (`node` koffi, `python` ctypes, `go` cgo, `ruby` Fiddle, `crystal` `lib`) bind
+`sdk/hop.h`; Rust-hosting runtimes (Elixir via Rustler) bind the `hop` crate directly. Design:
+`docs/endpoint-sdk.md`.
 
 ## FFI discipline (do not "clean up")
 
