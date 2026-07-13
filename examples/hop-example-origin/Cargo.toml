@@ -2,7 +2,7 @@
 name = "hop-example-origin"
 version.workspace = true
 edition.workspace = true
-license-file.workspace = true
+license-file = "LICENSE.md"
 repository.workspace = true
 description = "A tiny example HTTP backend for example.hopme.sh — the origin a hop-endpoint fronts (DESIGN.md §30). Serves a fixed demo payload; no deps."
 

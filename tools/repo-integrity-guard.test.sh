@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Self-test for tools/repo-integrity-guard.sh. A bare `-s` (size > 0) check is too weak: the
 # 0-byte-LICENSE regression this guard exists for could re-land as a 1-byte or marker-stripped file
-# and still pass. This test copies the guard into a throwaway ROOT and asserts it (a) passes a healthy
-# fixture, and fails on (b) a missing file, (c) a 0-byte file, (d) a 1-byte/truncated file, (e) a file
-# whose signature line was stripped, and (f) the two LICENSE copies drifting apart. No repo state.
+# and still pass. Licensing is now PER-COMPONENT (several byte-identical FSL LICENSE.md files, no repo
+# root license), so this test lays down a multi-component fixture and asserts the guard (a) passes a
+# healthy tree, and fails on (b) a 0-byte copy, (c) a 1-byte/truncated copy, (d) a copy whose signature
+# line was stripped, (e) one copy drifting from the rest, and (f) no LICENSE.md present at all. No repo state.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HERE/repo-integrity-guard.sh"
@@ -18,13 +19,16 @@ print(body)
 PY
 )"
 
+# The component LICENSE.md copies the fixture lays down (all identical). A failure case mutates one.
+COMPONENT_LICENSES=("core/hop-core/LICENSE.md" "sdk/node/LICENSE.md" "core/hop-wasm/LICENSE.md")
+
 # lay_down DIR: a fully-healthy fixture tree. Callers then mutate one file to create a failure.
 lay_down() {
   local d="$1"
-  mkdir -p "$d/core/hop-wasm" "$d/sdk" "$d/tools"
+  mkdir -p "$d/core/hop-core" "$d/core/hop-wasm" "$d/sdk/node" "$d/tools"
   cp "$GUARD" "$d/tools/repo-integrity-guard.sh"
-  printf '%s\n' "$LICENSE_BODY" > "$d/LICENSE.md"
-  printf '%s\n' "$LICENSE_BODY" > "$d/core/hop-wasm/LICENSE.md"
+  local lf
+  for lf in "${COMPONENT_LICENSES[@]}"; do printf '%s\n' "$LICENSE_BODY" > "$d/$lf"; done
   python3 - "$d/README.md" <<'PY'
 import sys; open(sys.argv[1],"w").write("# Hop\n" + "A delay-tolerant mesh. "*30 + "\n")
 PY
@@ -54,16 +58,18 @@ expect() {
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+ONE="core/hop-core/LICENSE.md"    # mutate this component's copy to create a failure
 lay_down "$TMP/ok";         expect "$TMP/ok" pass "healthy"
-lay_down "$TMP/missing";    rm "$TMP/missing/LICENSE.md";                 expect "$TMP/missing" fail "missing_license"
-lay_down "$TMP/zero";       : > "$TMP/zero/LICENSE.md";                   expect "$TMP/zero" fail "zero_byte_license"
-lay_down "$TMP/onebyte";    printf 'x' > "$TMP/onebyte/LICENSE.md";       expect "$TMP/onebyte" fail "one_byte_license"
-lay_down "$TMP/nomarker";   python3 - "$TMP/nomarker/LICENSE.md" <<'PY'
+lay_down "$TMP/zero";       : > "$TMP/zero/$ONE";                        expect "$TMP/zero" fail "zero_byte_license"
+lay_down "$TMP/onebyte";    printf 'x' > "$TMP/onebyte/$ONE";           expect "$TMP/onebyte" fail "one_byte_license"
+lay_down "$TMP/nomarker";   python3 - "$TMP/nomarker/$ONE" <<'PY'
 import sys; open(sys.argv[1],"w").write("padding text without the signature line. "*80 + "\n")
 PY
 expect "$TMP/nomarker" fail "marker_stripped"
-lay_down "$TMP/drift";      printf '%s\nextra line makes it differ\n' "$LICENSE_BODY" > "$TMP/drift/LICENSE.md"
-expect "$TMP/drift" fail "license_copies_drift"
+lay_down "$TMP/drift";      printf '%s\nextra line makes this copy differ\n' "$LICENSE_BODY" > "$TMP/drift/$ONE"
+expect "$TMP/drift" fail "component_licenses_drift"
+lay_down "$TMP/nolicense";  find "$TMP/nolicense" -name LICENSE.md -delete
+expect "$TMP/nolicense" fail "no_license_at_all"
 
 echo
 if [ "$fail" -eq 0 ]; then

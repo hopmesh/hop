@@ -17,8 +17,7 @@ exclude = ["site", "sdk/elixir/native/hop_endpoint"]
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-# FSL-1.1-ALv2 is not an SPDX identifier, so reference the file directly.
-license-file = "LICENSE.md"
+# No repo-wide license: this is a monorepo; components carry their own license as they split out.
 repository = "https://github.com/jwaldrip/hop"
 
 [workspace.dependencies]
