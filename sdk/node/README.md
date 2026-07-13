@@ -52,12 +52,49 @@ npm test                      # raw ABI round-trip + ergonomic in-process + real
 - `examples/raw-roundtrip.mjs` drives the raw C ABI (proves the bindings).
 - `examples/echo.mjs` shows the `hop.on` / `reply` DX in-process.
 - `examples/tcp.mjs` runs the same round trip over a real TCP Internet bearer.
+- `examples/discovery.mjs` runs the full reachable-by-name chain over HTTPS + WSS.
 
 Two-process (the real deployment shape):
 
 ```sh
 node examples/server.mjs                                   # prints its address
 node examples/client.mjs <that-address> localhost 9944
+```
+
+## Reachable by name (WSS + discovery)
+
+Make an endpoint reachable at `myaddress.com` with **no new port and no DNSSEC**. Wire the WSS bearer
+and the discovery route into your existing HTTPS server in one call:
+
+```js
+const hop = new HopEndpoint({ dbPath: './hop.db' })
+hop.attach(server, { publicUrl: 'wss://myaddress.com/_hop' })  // GET /.well-known/hop + wss /_hop
+server.listen(443)
+```
+
+A client reaches it by name:
+
+```js
+const address = await client.dialByName('https://myaddress.com')   // verified, WebPKI + self-certifying
+const res = await client.request(address, 'acme/orders', 'create', order)
+```
+
+How the trust works, no DNSSEC, no new records beyond a plain A record:
+
+1. `dialByName` fetches `https://myaddress.com/.well-known/hop`. The **TLS cert proves the domain**.
+2. The body carries a **self-certifying reach record** signed by the endpoint's address; `verifyReach`
+   checks the signature (a forged address or tampered endpoint fails).
+3. It dials `wss://myaddress.com/_hop`; the **Noise handshake confirms** the endpoint holds that address.
+
+Even if the A record is spoofed or the lookup is MITM'd, the attacker cannot forge the domain's cert or
+complete the handshake as the address, and a request sealed to that address is unreadable to anyone else.
+
+Integrating with a framework router (Express/Fastify), mount the well-known as a normal route and let
+`attach` handle only the upgrade:
+
+```js
+app.get('/.well-known/hop', hop.wellKnownHandler('wss://myaddress.com/_hop'))
+hop.attach(server, { publicUrl: 'wss://myaddress.com/_hop', serveWellKnown: false })
 ```
 
 ## Prototype scope
