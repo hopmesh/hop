@@ -1,8 +1,8 @@
 # Endpoint SDK: self-hostable, embeddable Hop endpoints
 
-Status: design + working prototypes in Node (`sdk/node`, via koffi over the C ABI) and Elixir
-(`sdk/elixir`, via a Rustler NIF over the `hop` crate). This locks the semantics before the surface
-grows to more languages.
+Status: design + working prototypes in Node (`sdk/node`, koffi over the C ABI), Elixir (`sdk/elixir`,
+a Rustler NIF over the `hop` crate), and Python (`sdk/python`, ctypes over the C ABI, zero deps). This
+locks the semantics before the surface grows to more languages.
 
 ## Why
 
@@ -98,8 +98,8 @@ Hop.Endpoint.on(ep, "acme/orders", fn req, reply -> reply.(201, Jason.encode!(%{
 {:ok, _} = Hop.TcpBearer.listen(ep, 9944)
 ```
 
-Go (`hop.HandleFunc(topic, fn)`), Python (`@hop.on(topic)`), and others bind the C ABI and follow the
-same shape.
+Python is built (`sdk/python`, via ctypes, a `@hop.on(topic)` decorator). Go (`hop.HandleFunc(topic,
+fn)`), Ruby, and others bind the C ABI and follow the same shape.
 
 ## The privacy dial (never a silent default)
 
