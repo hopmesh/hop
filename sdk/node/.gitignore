@@ -1,0 +1,4 @@
+node_modules/
+*.db
+*.db.key
+.demo-server-addr

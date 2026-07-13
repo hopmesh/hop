@@ -1,0 +1,17 @@
+{
+  "name": "@hop/endpoint",
+  "version": "0.0.1",
+  "description": "Receive Hop messages in your Node app: an Express/Fastify-shaped endpoint over the libhop C ABI.",
+  "type": "module",
+  "main": "lib/endpoint.mjs",
+  "exports": { ".": "./lib/endpoint.mjs", "./tcp": "./lib/tcp-bearer.mjs", "./raw": "./lib/ffi.mjs" },
+  "scripts": {
+    "test": "node examples/raw-roundtrip.mjs && node examples/echo.mjs && node examples/tcp.mjs",
+    "demo": "node examples/echo.mjs",
+    "demo:tcp": "node examples/tcp.mjs",
+    "serve": "node examples/server.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": { "koffi": "^2.9.0" },
+  "license": "FSL-1.1-ALv2"
+}

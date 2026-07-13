@@ -1,0 +1,103 @@
+// Raw koffi bindings to libhop (the C ABI, sdk/hop.h). This is the thin, mechanical layer; the
+// ergonomics live in endpoint.mjs. Everything here mirrors a `hop_*` symbol one-to-one.
+//
+// libhop is resolved from HOP_LIBDIR (same env the Kotlin SDK uses) or the in-repo debug build.
+import koffi from 'koffi'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const REPO = join(HERE, '..', '..', '..') // sdk/node/lib -> repo root
+const EXT = process.platform === 'darwin' ? 'dylib' : process.platform === 'win32' ? 'dll' : 'so'
+
+function resolveLib() {
+  const candidates = [
+    process.env.HOP_LIBDIR && join(process.env.HOP_LIBDIR, `libhop.${EXT}`),
+    join(REPO, 'target', 'debug', `libhop.${EXT}`),
+    join(REPO, 'target', 'release', `libhop.${EXT}`),
+  ].filter(Boolean)
+  const found = candidates.find(existsSync)
+  if (!found) {
+    throw new Error(
+      `libhop.${EXT} not found. Build it with \`cargo build -p hop\` or set HOP_LIBDIR.\n` +
+        `Looked in:\n  ${candidates.join('\n  ')}`,
+    )
+  }
+  return found
+}
+
+const lib = koffi.load(resolveLib())
+
+// The node handle is an opaque pointer.
+const HopNode = 'void *'
+
+// Callback prototypes. core drains/polls invoke these SYNCHRONOUSLY during the call, so a transient
+// JS function passed at the call site is exactly right (no persistent registration needed).
+export const DrainSink = koffi.proto('void DrainSink(void *ctx, uint64_t link, uint8_t *bytes, size_t len)')
+export const InboxSink = koffi.proto(
+  'void InboxSink(void *ctx, uint8_t *from, const char *content_type, uint8_t *body, size_t body_len, uint8_t hops, uint64_t created_at)',
+)
+export const SvcReqSink = koffi.proto(
+  'void SvcReqSink(void *ctx, uint8_t *from, uint8_t *request_id, const char *service, const char *method, uint8_t *args, size_t args_len)',
+)
+export const SvcRespSink = koffi.proto(
+  'void SvcRespSink(void *ctx, uint8_t *from, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
+)
+
+export const hop = {
+  abi_version: lib.func('uint32_t hop_abi_version()'),
+  node_new: lib.func('void *hop_node_new()'),
+  node_with_secret: lib.func('void *hop_node_with_secret(uint8_t *secret, size_t secret_len)'),
+  node_open: lib.func(
+    'void *hop_node_open(const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len)',
+  ),
+  node_free: lib.func('void hop_node_free(void *node)'),
+  node_address: lib.func('bool hop_node_address(void *node, uint8_t *out)'),
+  node_secret: lib.func('size_t hop_node_secret(void *node, uint8_t *out)'),
+  node_set_name: lib.func('void hop_node_set_name(void *node, const char *name)'),
+  node_tick: lib.func('void hop_node_tick(void *node, uint64_t now_ms)'),
+  link_up: lib.func('void hop_link_up(void *node, uint64_t link, uint32_t role)'),
+  bytes_received: lib.func('void hop_bytes_received(void *node, uint64_t link, uint8_t *data, size_t len)'),
+  link_down: lib.func('void hop_link_down(void *node, uint64_t link)'),
+  drain_outgoing: lib.func('void hop_drain_outgoing(void *node, DrainSink *sink, void *ctx)'),
+  subscribe: lib.func('void hop_subscribe(void *node, const char *topic)'),
+  publish_prekey: lib.func('bool hop_publish_prekey(void *node)'),
+  poll_inbox: lib.func('void hop_poll_inbox(void *node, InboxSink *sink, void *ctx)'),
+  send_message: lib.func(
+    'bool hop_send_message(void *node, uint8_t *dst, const char *content_type, uint8_t *body, size_t body_len, bool request_ack, uint8_t *out_id)',
+  ),
+  send_service_request: lib.func(
+    'bool hop_send_service_request(void *node, uint8_t *dst, const char *service, const char *method, uint8_t *args, size_t args_len, uint8_t *out_id)',
+  ),
+  send_service_response: lib.func(
+    'bool hop_send_service_response(void *node, uint8_t *to, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
+  ),
+  poll_service_requests: lib.func('void hop_poll_service_requests(void *node, SvcReqSink *sink, void *ctx)'),
+  poll_service_responses: lib.func('void hop_poll_service_responses(void *node, SvcRespSink *sink, void *ctx)'),
+  address_to_base58: lib.func('size_t hop_address_to_base58(uint8_t *addr, char *out, size_t out_cap)'),
+  address_from_base58: lib.func('bool hop_address_from_base58(const char *text, uint8_t *out32)'),
+}
+
+const ABI_EXPECTED = 2
+export function assertAbi() {
+  const got = hop.abi_version()
+  if (got !== ABI_EXPECTED) {
+    throw new Error(`libhop ABI mismatch: header expects ${ABI_EXPECTED}, library reports ${got}`)
+  }
+}
+
+// ---- small decode helpers for the sink callbacks (pointers valid only during the call) ----
+export const bytes = (ptr, len) => (len === 0 ? Buffer.alloc(0) : Buffer.from(koffi.decode(ptr, 'uint8_t', len)))
+export const addr = (ptr) => Buffer.from(koffi.decode(ptr, 'uint8_t', 32))
+export const b58 = (addr32) => {
+  const out = Buffer.alloc(64)
+  const n = hop.address_to_base58(addr32, out, out.length)
+  return out.toString('utf8', 0, n)
+}
+export const fromB58 = (text) => {
+  const out = Buffer.alloc(32)
+  if (!hop.address_from_base58(text, out)) throw new Error(`not a valid Hop address: ${text}`)
+  return out
+}
+export { koffi }
