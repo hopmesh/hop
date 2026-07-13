@@ -5,7 +5,12 @@ shaped surface, over the `libhop` C ABI via **ctypes** (stdlib, zero third-party
 `sdk/node` (koffi) and `sdk/elixir` (Rustler); all SERVER SDKs, same C-ABI contract.
 
 ```
-hop_endpoint/_ffi.py       raw ctypes bindings to libhop (one-to-one with hop_*); resolves the lib via
+hop_endpoint/wss_bearer.py the WSS bearer + HTTPS server, in PURE STDLIB (no deps): a minimal RFC 6455
+                           WebSocket (handshake + binary framing) + a threaded server that also answers
+                           GET /.well-known/hop on the same port
+hop_endpoint/discovery.py  well_known_body (signed reach record) + resolve (HTTPS fetch + verify)
+hop_endpoint/_ffi.py       raw ctypes bindings to libhop (one-to-one with hop_*, incl. sign/verify_reach)
+                           ; resolves the lib via
                            HOP_LIBDIR or target/{debug,release}
 hop_endpoint/endpoint.py   HopEndpoint (pump THREAD + handler dispatch) + HopRequest + the reply callable
 hop_endpoint/tcp_bearer.py the Internet bearer: length-prefixed frames over a socket (core does Noise)

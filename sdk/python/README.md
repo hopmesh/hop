@@ -46,12 +46,34 @@ cd sdk/python
 python3 examples/raw_roundtrip.py        # raw C ABI round trip (proves the ctypes bindings)
 python3 examples/echo.py                 # the hop.on / reply DX in-process
 python3 examples/tcp.py                  # the same round trip over a real TCP bearer
-python3 -m unittest discover -s tests    # both round trips, must pass
+python3 -m unittest discover -s tests    # in-process, TCP, reach record, + WSS discovery, all pass
 ```
+
+## Reachable by name (WSS + discovery)
+
+Make an endpoint reachable at `myaddress.com` with **no new port and no DNSSEC**, using a **pure-stdlib**
+WebSocket bearer (zero third-party deps):
+
+```python
+import ssl
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("cert.pem", "key.pem")
+hop.attach("0.0.0.0", 443, ctx, "wss://myaddress.com/_hop")   # WSS /_hop + /.well-known/hop in one call
+```
+
+```python
+address = client.dial_by_name("https://myaddress.com")        # WebPKI + self-certifying
+status, body = client.request(address, "acme/orders", "create", order)
+```
+
+Trust, no DNSSEC: `dial_by_name` fetches `/.well-known/hop` (TLS proves the domain), verifies the
+self-certifying reach record (signed by the address), dials the WSS, and the Noise handshake confirms
+the address. `tests/test_discovery.py` proves the full chain against a self-signed HTTPS server.
 
 ## Prototype scope
 
-Built and working: `hop.on` (also usable as a decorator), `reply`, `request`, the pump thread, the TCP
-bearer, base58 addressing, ABI-version assertion. Stubbed follow-ups (each additive, none a core
-change): HNS publish/resolve, delegated keys, multi-tenant hosting. Not yet a required CI job.
+Built and working: `hop.on` (also a decorator), `reply`, `request`, the pump thread, TCP + WSS bearers,
+base58 addressing, reach records + `attach`/`dial_by_name` discovery, ABI-version assertion. Follow-ups
+(each additive, none a core change): the no-domain gossip case, delegated keys, multi-tenant hosting.
+Not yet a required CI job.
 Design: `docs/endpoint-sdk.md`.

@@ -93,6 +93,29 @@ class HopEndpoint:
             raise TimeoutError(f"hops://{service}/{method} timed out after {timeout}s")
         return holder["status"], holder["body"]
 
+    def sign_reach(self, endpoint: str, ttl_secs: int = 3600) -> bytes:
+        """Sign a self-certifying reachability record for this endpoint's address bound to `endpoint`."""
+        return ffi.sign_reach(self._node, endpoint, ttl_secs)
+
+    def attach(self, host, port, ssl_context, public_url, ttl_secs=3600):
+        """Wire this endpoint into a threaded HTTPS server IN ONE CALL: the WSS bearer at /_hop and the
+        /.well-known/hop discovery responder. Returns the listen socket. `public_url` is where senders
+        reach it, e.g. "wss://myaddress.com/_hop". (Python has no standard existing-server object, so
+        attach starts the server; run it on 443 or behind a reverse proxy.)"""
+        from .wss_bearer import serve
+
+        return serve(self, host, port, ssl_context, public_url, ttl_secs)
+
+    def dial_by_name(self, base_url, insecure_tls: bool = False):
+        """Resolve a base HTTPS URL to a verified endpoint, dial its WSS, and return the reachable
+        address (then use request()). Set insecure_tls only for a dev/self-signed cert."""
+        from .discovery import _ssl_context, resolve
+        from .wss_bearer import dial
+
+        info = resolve(base_url, insecure_tls=insecure_tls)
+        dial(self, info["wss_url"], _ssl_context(insecure_tls))
+        return info["address"]
+
     # ---- bearer seam (used by tcp_bearer) ----
     def _register_link(self, link: int, role: str, send_fn: Callable[[bytes], None]) -> None:
         self._links[link] = send_fn
