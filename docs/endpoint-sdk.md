@@ -146,14 +146,19 @@ default; publish an endpoint to trade for reachability and lower cost. The recip
 
 ## Prototype scope and follow-ups
 
-Built and working (`sdk/node`): the handler/reply surface, client `request()`, in-process and TCP
-bearers, base58 addressing, ABI-version assertion, three passing proofs.
+Built and working (`sdk/node`): the handler/reply surface, client `request()`, in-process, TCP, and
+**WSS** bearers, base58 addressing, ABI-version assertion, and **reachable-by-name discovery**
+(`attach` + `dialByName` over HTTPS `/.well-known/hop` + a self-certifying reach record). Four passing
+proofs. The reach record itself is a core primitive (`reach.rs` + the C ABI `hop_sign_reach_record` /
+`hop_verify_reach_record`), so the other SDKs can adopt the same WSS + discovery surface.
 
 Known follow-ups (each is additive, none is a core rewrite):
 
-- **HNS publish and resolve** exposed through the ABI, so an endpoint advertises `name -> host/port/key`
-  and callers resolve it. Without this, HNS becomes a metadata honeypot (lookups reveal the who-reaches-
-  whom graph), so it needs the DoH/ODoH analog or mesh-gossiped records.
+- **Self-certifying discovery for the no-domain case**: gossip/relay-cache the signed reach record so a
+  bare `hops://<address>` resolves `address -> location` without a domain (the named case above needs no
+  new infra: DNS A + the TLS-served well-known). This is where the DoH/ODoH-style lookup-privacy story
+  lives so discovery does not become a metadata honeypot.
+- **Fan the WSS bearer + `attach`/`dialByName` out** to `sdk/python`, `sdk/go`, `sdk/elixir`.
 - **Delegated endpoint keys** (receive-on-behalf-of, with rotation).
 - **Multi-tenant hosting** (relay-for-others), which also buys the k-anonymity cover above.
 - **The Internet bearer as a first-class, reconnecting, NAT-aware bearer** (the prototype uses a plain

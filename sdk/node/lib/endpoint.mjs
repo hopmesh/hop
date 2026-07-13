@@ -6,7 +6,30 @@
 // consume; a reply is a new addressed message that may arrive later. The DX looks like HTTP; the
 // delivery is delay-tolerant and offline-safe. core is poll-model, so the endpoint runs a pump loop.
 import { EventEmitter } from 'node:events'
-import { hop, addr, bytes, b58, fromB58, assertAbi } from './ffi.mjs'
+import https from 'node:https'
+import { hop, addr, bytes, b58, fromB58, signReach, assertAbi } from './ffi.mjs'
+import { serveWss, dialWss } from './wss-bearer.mjs'
+import { wellKnownBody, resolve as resolveWellKnown, WELL_KNOWN_PATH } from './discovery.mjs'
+
+// A minimal fetch-shaped GET that accepts a self-signed cert, for dev only (dialByName insecureTLS).
+// Production uses the global fetch with real WebPKI validation.
+function insecureFetch(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, { rejectUnauthorized: false }, (res) => {
+        let data = ''
+        res.on('data', (c) => (data += c))
+        res.on('end', () =>
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            json: async () => JSON.parse(data),
+          }),
+        )
+      })
+      .on('error', reject)
+  })
+}
 
 const DIALER = 0
 const ACCEPTOR = 1
@@ -88,6 +111,52 @@ export class HopEndpoint extends EventEmitter {
       if (timer.unref) timer.unref()
       this.#pending.set(key, { resolve, reject, timer })
     })
+  }
+
+  // Sign a self-certifying reachability record for this endpoint's address bound to `endpoint`
+  // (e.g. "wss://myaddress.com/_hop"). Returns the record bytes (Buffer).
+  signReach(endpoint, ttlSecs = 3600) {
+    return signReach(this.#node, endpoint, ttlSecs)
+  }
+
+  // Wire this endpoint into an existing http/https server IN ONE CALL: the WSS bearer at `path` and
+  // the /.well-known/hop discovery responder. Pass `publicUrl` (e.g. "wss://myaddress.com/_hop"), the
+  // address senders will reach. On a Hop-dedicated server this also answers the well-known request;
+  // to mount the well-known through an app router instead, pass serveWellKnown:false and use
+  // wellKnownHandler().
+  attach(server, { publicUrl, path = '/_hop', ttlSecs = 3600, serveWellKnown = true } = {}) {
+    if (!publicUrl) throw new Error('attach requires { publicUrl } (e.g. "wss://myaddress.com/_hop")')
+    serveWss(this, server, { path })
+    if (serveWellKnown) {
+      const handler = this.wellKnownHandler(publicUrl, ttlSecs)
+      server.on('request', (req, res) => {
+        let pathname
+        try {
+          pathname = new URL(req.url, 'http://x').pathname
+        } catch {
+          pathname = req.url
+        }
+        if (pathname === WELL_KNOWN_PATH) handler(req, res)
+      })
+    }
+    return this
+  }
+
+  // A framework-agnostic request handler for GET /.well-known/hop (mount in Express/Fastify/etc.).
+  wellKnownHandler(publicUrl, ttlSecs = 3600) {
+    return (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(wellKnownBody(this, publicUrl, ttlSecs))
+    }
+  }
+
+  // Resolve a base HTTPS URL to a verified endpoint, dial its WSS, and return the reachable address.
+  // The caller then request(address, ...). Pass insecureTLS:true only for a dev/self-signed cert.
+  async dialByName(baseUrl, { insecureTLS = false } = {}) {
+    const fetchImpl = insecureTLS ? insecureFetch : fetch
+    const { address, wssUrl } = await resolveWellKnown(baseUrl, { fetch: fetchImpl })
+    dialWss(this, wssUrl, { rejectUnauthorized: !insecureTLS })
+    return address
   }
 
   // ---- bearer seam: a bearer registers a link + a send function, and feeds inbound frames ----

@@ -44,6 +44,10 @@ export const SvcReqSink = koffi.proto(
 export const SvcRespSink = koffi.proto(
   'void SvcRespSink(void *ctx, uint8_t *from, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
 )
+export const ReachSignSink = koffi.proto('void ReachSignSink(void *ctx, uint8_t *bytes, size_t len)')
+export const ReachVerifySink = koffi.proto(
+  'void ReachVerifySink(void *ctx, uint8_t *address, const char *endpoint, uint64_t issued_at, uint32_t ttl_secs)',
+)
 
 export const hop = {
   abi_version: lib.func('uint32_t hop_abi_version()'),
@@ -77,6 +81,12 @@ export const hop = {
   poll_service_responses: lib.func('void hop_poll_service_responses(void *node, SvcRespSink *sink, void *ctx)'),
   address_to_base58: lib.func('size_t hop_address_to_base58(uint8_t *addr, char *out, size_t out_cap)'),
   address_from_base58: lib.func('bool hop_address_from_base58(const char *text, uint8_t *out32)'),
+  sign_reach_record: lib.func(
+    'void hop_sign_reach_record(void *node, const char *endpoint, uint32_t ttl_secs, ReachSignSink *sink, void *ctx)',
+  ),
+  verify_reach_record: lib.func(
+    'bool hop_verify_reach_record(uint8_t *bytes, size_t len, uint64_t now_secs, ReachVerifySink *sink, void *ctx)',
+  ),
 }
 
 const ABI_EXPECTED = 3
@@ -99,5 +109,27 @@ export const fromB58 = (text) => {
   const out = Buffer.alloc(32)
   if (!hop.address_from_base58(text, out)) throw new Error(`not a valid Hop address: ${text}`)
   return out
+}
+
+// Sign a self-certifying reachability record for this node's address -> Buffer (postcard bytes).
+export const signReach = (node, endpoint, ttlSecs) => {
+  let out = null
+  hop.sign_reach_record(node, endpoint, ttlSecs, (_ctx, ptr, len) => (out = bytes(ptr, Number(len))), null)
+  return out
+}
+// Verify a reach record. Returns { address (base58), addressBytes, endpoint, issuedAt, ttlSecs } or null.
+export const verifyReach = (recordBytes, nowSecs = Math.floor(Date.now() / 1000)) => {
+  let info = null
+  const ok = hop.verify_reach_record(
+    recordBytes,
+    recordBytes.length,
+    BigInt(nowSecs),
+    (_ctx, addrPtr, endpoint, issuedAt, ttlSecs) => {
+      const a = addr(addrPtr)
+      info = { address: b58(a), addressBytes: a, endpoint, issuedAt: Number(issuedAt), ttlSecs }
+    },
+    null,
+  )
+  return ok ? info : null
 }
 export { koffi }
