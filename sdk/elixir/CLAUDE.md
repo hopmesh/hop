@@ -9,8 +9,12 @@ mix.exs                       the mix project (dep: rustler); .mise.toml pins er
 native/hop_endpoint/          the Rustler NIF crate: binds the `hop` crate's HopNode Rust API
 lib/hop/native.ex             the NIF module (use Rustler); stubs replaced at load
 lib/hop/endpoint.ex           Hop.Endpoint GenServer (pump loop + handler dispatch) + Hop.Request
-lib/hop/tcp_bearer.ex         the Internet bearer (opaque frames over :gen_tcp with packet: 4)
-test/ examples/               the round-trip ExUnit test + a runnable demo
+lib/hop/tcp_bearer.ex         the raw-TCP Internet bearer (opaque frames over :gen_tcp with packet: 4)
+lib/hop/wss_bearer.ex         the WSS bearer over :ssl (no WS hex deps): minimal RFC 6455 handshake +
+                              binary framing; packet: :line for the HTTP head, then :raw for frames
+lib/hop/discovery.ex          well_known_body + resolve (raw :ssl HTTPS GET + Native.verify_reach_record)
+lib/hop/native.ex             ...also sign_reach_record + verify_reach_record NIFs
+test/ examples/               the round-trip + discovery ExUnit tests + a runnable demo
 ```
 
 ## Non-obvious things
