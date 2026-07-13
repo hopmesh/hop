@@ -40,11 +40,39 @@ func WithTickMs(ms int) Option { return func(c *config) { c.tickMs = ms } }
 type Endpoint struct {
 	n        *node
 	mu       sync.Mutex
+	nodeMu   sync.Mutex // serializes every libhop call on n vs. Close so a late bearer goroutine
 	handlers map[string]Handler
 	links    map[uint64]func([]byte)
 	pending  map[string]chan [2]interface{} // reqID -> {status, body}
 	done     chan struct{}
+	closers  []func() // bearer teardown hooks (listeners/conns), run by Close before freeing n
 	closed   bool
+}
+
+// withNode runs a libhop call on the node under nodeMu, unless the endpoint has been closed (in which
+// case n may already be freed, so we must not touch it). Returns false when closed. Never held across a
+// handler or bearer IO, so a reply issued from a handler can re-enter via its own withNode.
+func (e *Endpoint) withNode(fn func(n *node)) bool {
+	e.nodeMu.Lock()
+	defer e.nodeMu.Unlock()
+	if e.closed {
+		return false
+	}
+	fn(e.n)
+	return true
+}
+
+// registerCloser records a bearer teardown hook. If already closed, it fires immediately.
+func (e *Endpoint) registerCloser(c func()) {
+	e.nodeMu.Lock()
+	closed := e.closed
+	if !closed {
+		e.closers = append(e.closers, c)
+	}
+	e.nodeMu.Unlock()
+	if closed {
+		c()
+	}
 }
 
 // New starts an endpoint and its pump loop.
@@ -80,11 +108,15 @@ func (e *Endpoint) On(service string, h Handler) {
 	e.mu.Lock()
 	e.handlers[service] = h
 	e.mu.Unlock()
-	e.n.subscribe(service)
+	e.withNode(func(n *node) { n.subscribe(service) })
 }
 
 // Address is this endpoint's base58 address (publish it, or its HNS name).
-func (e *Endpoint) Address() string { return toB58(e.n.address()) }
+func (e *Endpoint) Address() string {
+	var s string
+	e.withNode(func(n *node) { s = toB58(n.address()) })
+	return s
+}
 
 // DefaultRequestTimeout bounds Request when no explicit timeout is given (aligns with the other SDKs,
 // which default the timeout too).
@@ -102,9 +134,13 @@ func (e *Endpoint) RequestTimeout(dst, service, method string, args []byte, time
 	if err != nil {
 		return 0, nil, err
 	}
-	reqID, err := e.n.sendServiceRequest(dstBytes, service, method, args)
-	if err != nil {
-		return 0, nil, err
+	var reqID []byte
+	var sErr error
+	if !e.withNode(func(n *node) { reqID, sErr = n.sendServiceRequest(dstBytes, service, method, args) }) {
+		return 0, nil, fmt.Errorf("endpoint is closed")
+	}
+	if sErr != nil {
+		return 0, nil, sErr
 	}
 	ch := make(chan [2]interface{}, 1)
 	key := string(reqID)
@@ -127,16 +163,18 @@ func (e *Endpoint) registerLink(link uint64, role string, send func([]byte)) {
 	e.mu.Lock()
 	e.links[link] = send
 	e.mu.Unlock()
-	e.n.connected(link, role == "dialer")
+	e.withNode(func(n *node) { n.connected(link, role == "dialer") })
 }
 
-func (e *Endpoint) deliver(link uint64, data []byte) { e.n.received(link, data) }
+func (e *Endpoint) deliver(link uint64, data []byte) {
+	e.withNode(func(n *node) { n.received(link, data) })
+}
 
 func (e *Endpoint) linkDown(link uint64) {
 	e.mu.Lock()
 	delete(e.links, link)
 	e.mu.Unlock()
-	e.n.disconnected(link)
+	e.withNode(func(n *node) { n.disconnected(link) })
 }
 
 func (e *Endpoint) pumpLoop(dt time.Duration) {
@@ -153,8 +191,16 @@ func (e *Endpoint) pumpLoop(dt time.Duration) {
 }
 
 func (e *Endpoint) pump() {
-	e.n.tick(nowMs())
-	for _, p := range e.n.drainOutgoing() {
+	// Each node call is its own withNode; the lock is never held across a bearer send or a handler, so
+	// a reply issued from a handler re-enters via its own withNode without deadlocking.
+	var out []OutPacket
+	if !e.withNode(func(n *node) {
+		n.tick(nowMs())
+		out = n.drainOutgoing()
+	}) {
+		return // closed
+	}
+	for _, p := range out {
 		e.mu.Lock()
 		send := e.links[p.Link]
 		e.mu.Unlock()
@@ -162,18 +208,26 @@ func (e *Endpoint) pump() {
 			send(p.Bytes)
 		}
 	}
-	for _, r := range e.n.takeServiceRequests() {
+	var reqs []ServiceReq
+	e.withNode(func(n *node) { reqs = n.takeServiceRequests() })
+	for _, r := range reqs {
 		e.mu.Lock()
 		h := e.handlers[r.Service]
 		e.mu.Unlock()
 		if h != nil {
 			req := &Request{From: toB58(r.From), FromBytes: r.From, Service: r.Service, Method: r.Method, Args: r.Args}
 			to, rid := r.From, r.RequestID
-			reply := Reply(func(status uint16, body []byte) bool { return e.n.sendServiceResponse(to, rid, status, body) })
+			reply := Reply(func(status uint16, body []byte) bool {
+				ok := false
+				e.withNode(func(n *node) { ok = n.sendServiceResponse(to, rid, status, body) })
+				return ok
+			})
 			h(req, reply)
 		}
 	}
-	for _, r := range e.n.takeServiceResponses() {
+	var resps []ServiceResp
+	e.withNode(func(n *node) { resps = n.takeServiceResponses() })
+	for _, r := range resps {
 		key := string(r.ForRequestID)
 		e.mu.Lock()
 		ch := e.pending[key]
@@ -185,17 +239,28 @@ func (e *Endpoint) pump() {
 	}
 }
 
-// Close stops the pump and frees the node.
+// Close stops the pump, shuts the bearers, and frees the node. Safe against a late bearer goroutine:
+// once closed is set, every withNode call short-circuits, so a recvLoop firing linkDown as its socket
+// closes cannot dereference a freed node.
 func (e *Endpoint) Close() {
-	e.mu.Lock()
+	e.nodeMu.Lock()
 	if e.closed {
-		e.mu.Unlock()
+		e.nodeMu.Unlock()
 		return
 	}
 	e.closed = true
-	e.mu.Unlock()
-	close(e.done)
+	closers := e.closers
+	e.closers = nil
+	e.nodeMu.Unlock()
+
+	close(e.done)               // stop the pump loop
+	for _, c := range closers { // stop bearer accept/recv goroutines so they exit
+		func() { defer func() { _ = recover() }(); c() }()
+	}
+	// Free under nodeMu: any in-flight withNode has released it, and new ones see closed and skip.
+	e.nodeMu.Lock()
 	e.n.free()
+	e.nodeMu.Unlock()
 }
 
 func nowMs() uint64 { return uint64(time.Now().UnixMilli()) }

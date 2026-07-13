@@ -45,6 +45,7 @@ export function listen(endpoint, port, { host = '0.0.0.0' } = {}) {
     socket.on('close', () => endpoint._linkDown(link))
     socket.on('error', () => endpoint._linkDown(link))
   })
+  endpoint._registerCloser(() => server.close()) // close() stops accepting new connections
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)))
 }
 
@@ -53,6 +54,7 @@ export function dial(endpoint, host, port) {
   const link = LINK_SEQ++
   const deframe = deframer()
   const socket = net.connect(port, host)
+  endpoint._registerCloser(() => socket.destroy()) // close() ends this link's read side
   socket.on('connect', () => endpoint._registerLink(link, DIALER, (buf) => socket.write(frame(buf))))
   socket.on('data', (chunk) => {
     for (const f of deframe(chunk)) endpoint._deliver(link, f)

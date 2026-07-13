@@ -45,6 +45,7 @@ export function serveWss(endpoint, server, { path = '/_hop' } = {}) {
 // for a self-signed/dev cert; production leaves it true so WebPKI authenticates the domain.
 export function dialWss(endpoint, url, { rejectUnauthorized = true } = {}) {
   const ws = new WebSocket(url, { rejectUnauthorized })
+  endpoint._registerCloser(() => ws.close()) // close() ends this dialed link
   const link = nextLink()
   ws.on('open', () =>
     endpoint._registerLink(link, DIALER, (buf) => {

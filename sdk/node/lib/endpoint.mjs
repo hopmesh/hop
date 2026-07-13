@@ -51,6 +51,7 @@ export class HopEndpoint extends EventEmitter {
   #pending = new Map() // reqId(hex) -> {resolve, reject, timer}
   #timer = null
   #closed = false
+  #closers = [] // bearer teardown hooks (server/sockets), run by close() before freeing the node
 
   // opts: { key?: 32-byte Buffer secret, dbPath?, name?, tickMs=50 }
   constructor(opts = {}) {
@@ -160,14 +161,26 @@ export class HopEndpoint extends EventEmitter {
   }
 
   // ---- bearer seam: a bearer registers a link + a send function, and feeds inbound frames ----
+  // A bearer registers teardown hooks here so close() can shut its sockets. If already closed, the hook
+  // fires immediately.
+  _registerCloser(fn) {
+    if (this.#closed) {
+      fn()
+      return
+    }
+    this.#closers.push(fn)
+  }
   _registerLink(linkId, role, sendFn) {
+    if (this.#closed) return
     this.#links.set(linkId, sendFn)
     hop.link_up(this.#node, BigInt(linkId), role)
   }
   _deliver(linkId, buf) {
+    if (this.#closed) return // a bearer event after close() must not touch the freed/null node
     hop.bytes_received(this.#node, BigInt(linkId), buf, buf.length)
   }
   _linkDown(linkId) {
+    if (this.#closed) return
     this.#links.delete(linkId)
     hop.link_down(this.#node, BigInt(linkId))
   }
@@ -221,6 +234,14 @@ export class HopEndpoint extends EventEmitter {
     if (this.#timer) clearInterval(this.#timer)
     for (const { timer } of this.#pending.values()) clearTimeout(timer)
     this.#pending.clear()
+    for (const c of this.#closers) {
+      try {
+        c()
+      } catch {
+        // ignore teardown errors
+      }
+    }
+    this.#closers = []
     hop.node_free(this.#node)
     this.#node = null
   }
