@@ -46,6 +46,7 @@ def listen(endpoint: HopEndpoint, port: int, host: str = "0.0.0.0") -> socket.so
     lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     lsock.bind((host, port))
     lsock.listen()
+    endpoint._register_closer(lsock.close)  # close() stops the accept loop (accept then raises)
 
     def accept_loop():
         while True:
@@ -64,6 +65,7 @@ def listen(endpoint: HopEndpoint, port: int, host: str = "0.0.0.0") -> socket.so
 def dial(endpoint: HopEndpoint, host: str, port: int) -> socket.socket:
     """Dial a reachable endpoint (we are the Noise initiator)."""
     sock = socket.create_connection((host, port))
+    endpoint._register_closer(sock.close)  # close() ends this link's recv loop
     link = next(_link_seq)
     endpoint._register_link(link, "dialer", lambda b: _send_framed(sock, b))
     threading.Thread(target=_recv_loop, args=(endpoint, sock, link), daemon=True).start()

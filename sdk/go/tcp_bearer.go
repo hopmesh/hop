@@ -45,6 +45,7 @@ func Listen(e *Endpoint, port int) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.registerCloser(func() { _ = ln.Close() }) // Close() stops the accept loop (Accept then errors)
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -63,6 +64,9 @@ func Listen(e *Endpoint, port int) (net.Listener, error) {
 // Dial connects to a reachable endpoint (we are the Noise initiator).
 func Dial(e *Endpoint, host string, port int) (net.Conn, error) {
 	conn, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err == nil {
+		e.registerCloser(func() { _ = conn.Close() }) // Close() ends recvLoop's read
+	}
 	if err != nil {
 		return nil, err
 	}

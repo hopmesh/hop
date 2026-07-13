@@ -128,6 +128,7 @@ def serve(endpoint, host, port, ssl_context, public_url, ttl_secs=3600):
     lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     lsock.bind((host, port))
     lsock.listen()
+    endpoint._register_closer(lsock.close)  # close() stops the accept loop
 
     def handle(conn):
         try:
@@ -178,6 +179,7 @@ def dial(endpoint, wss_url, ssl_context):
     host, port, path = u.hostname, u.port or 443, u.path or "/_hop"
     raw = socket.create_connection((host, port))
     conn = ssl_context.wrap_socket(raw, server_hostname=host)
+    endpoint._register_closer(conn.close)  # close() ends this link's read loop
     key = base64.b64encode(os.urandom(16)).decode()
     conn.sendall(
         (

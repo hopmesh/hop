@@ -18,7 +18,9 @@ const wellKnownPath = "/.well-known/hop"
 // SignReach signs a self-certifying reachability record for this endpoint's address bound to endpoint
 // (e.g. "wss://myaddress.com/_hop"), valid ttlSecs from now.
 func (e *Endpoint) SignReach(endpoint string, ttlSecs uint32) []byte {
-	return signReach(e.n, endpoint, ttlSecs)
+	var rec []byte
+	e.withNode(func(n *node) { rec = signReach(n, endpoint, ttlSecs) })
+	return rec
 }
 
 // VerifyReach verifies a reachability record (0 nowSecs skips the expiry check).

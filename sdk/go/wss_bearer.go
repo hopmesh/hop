@@ -19,6 +19,7 @@ func pumpConn(e *Endpoint, conn *websocket.Conn, role string) {
 	// Only the pump goroutine writes a given conn (drain is single-threaded per endpoint), so a lone
 	// read goroutine + pump writes is gorilla's supported one-reader-one-writer pattern.
 	e.registerLink(link, role, func(b []byte) { _ = conn.WriteMessage(websocket.BinaryMessage, b) })
+	e.registerCloser(func() { _ = conn.Close() }) // Close() ends the read loop below
 	go func() {
 		defer e.linkDown(link)
 		defer conn.Close()
