@@ -849,6 +849,7 @@ version = "0.0.1"
 dependencies = [
  "bs58",
  "hop-core",
+ "hop-endpoint-core",
  "hop-store-sqlite",
  "postcard",
  "thiserror",
@@ -883,9 +884,21 @@ dependencies = [
  "base64",
  "bs58",
  "hop-core",
+ "hop-endpoint-core",
  "hop-gateway",
  "reqwest",
  "tungstenite",
+]
+
+[[package]]
+name = "hop-endpoint-core"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "hop-core",
+ "postcard",
+ "rand_core 0.6.4",
+ "serde",
 ]
 
 [[package]]
