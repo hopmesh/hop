@@ -133,6 +133,21 @@ func (n *node) subscribe(topic string) {
 
 func (n *node) publishPrekey() bool { return bool(C.hop_publish_prekey(n.p)) }
 
+// Endpoint clustering (DESIGN.md §40): join a cluster and dedup applies transparently to the poll.
+func (n *node) clusterJoin(secret []byte) {
+	cb := C.CBytes(secret)
+	defer C.free(cb)
+	C.hop_cluster_join(n.p, (*C.uint8_t)(cb))
+}
+
+func (n *node) clusterJoinPassphrase(pass []byte) {
+	cb := C.CBytes(pass)
+	defer C.free(cb)
+	C.hop_cluster_join_passphrase(n.p, (*C.uint8_t)(cb), C.size_t(len(pass)))
+}
+
+func (n *node) clusterMembers() uint32 { return uint32(C.hop_cluster_members(n.p)) }
+
 func (n *node) drainOutgoing() []OutPacket {
 	var out []OutPacket
 	h := cgo.NewHandle(&out)

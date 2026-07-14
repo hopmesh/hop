@@ -12,11 +12,11 @@
     "./discovery": "./lib/discovery.mjs"
   },
   "scripts": {
-    "test": "node examples/raw-roundtrip.mjs && node examples/echo.mjs && node examples/tcp.mjs && node examples/discovery.mjs",
+    "test": "node examples/raw-roundtrip.mjs && node examples/echo.mjs && node examples/tcp.mjs && node examples/discovery.mjs && node examples/cluster.mjs",
     "demo": "node examples/echo.mjs",
     "demo:tcp": "node examples/tcp.mjs",
     "serve": "node examples/server.mjs",
-    "demo:discovery": "node examples/discovery.mjs"
+    "demo:discovery": "node examples/discovery.mjs && node examples/cluster.mjs"
   },
   "engines": {
     "node": ">=18"

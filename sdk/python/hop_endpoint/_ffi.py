@@ -68,6 +68,11 @@ _lib.hop_address_from_base58.restype = c_bool
 _lib.hop_sign_reach_record.argtypes = [c_void_p, c_char_p, c_uint32, REACH_SIGN_SINK, c_void_p]
 _lib.hop_verify_reach_record.argtypes = [c_char_p, c_size_t, c_uint64, REACH_VERIFY_SINK, c_void_p]
 _lib.hop_verify_reach_record.restype = c_bool
+# Endpoint clustering (DESIGN.md §40).
+_lib.hop_cluster_join.argtypes = [c_void_p, c_char_p]
+_lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
+_lib.hop_cluster_members.argtypes = [c_void_p]
+_lib.hop_cluster_members.restype = c_uint32
 
 
 def assert_abi() -> None:
@@ -208,3 +213,15 @@ def verify_reach(record: bytes, now_secs: int) -> dict | None:
 
     ok = _lib.hop_verify_reach_record(record, len(record), now_secs, sink, None)
     return info if ok and info else None
+
+
+def cluster_join(node, secret: bytes) -> None:
+    _lib.hop_cluster_join(node, secret)
+
+
+def cluster_join_passphrase(node, passphrase: bytes) -> None:
+    _lib.hop_cluster_join_passphrase(node, passphrase, len(passphrase))
+
+
+def cluster_members(node) -> int:
+    return int(_lib.hop_cluster_members(node))

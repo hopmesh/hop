@@ -48,9 +48,13 @@ class HopRequest:
 
 
 class HopEndpoint:
-    def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50):
+    def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50, cluster=None):
         ffi.assert_abi()
         self._node = ffi.node_with_secret(key) if key else ffi.node_new()
+        # Cluster with sibling replicas (same identity, no shared datastore) if configured: dedup then
+        # applies transparently to inbound requests. See cluster() below.
+        if cluster is not None:
+            self.cluster(cluster)
         ffi.tick(self._node, _now_ms())
         ffi.publish_prekey(self._node)
         self._handlers: dict[str, Callable] = {}
@@ -63,6 +67,24 @@ class HopEndpoint:
         self._closed = False
         self._thread = threading.Thread(target=self._pump_loop, args=(tick_ms / 1000.0,), daemon=True)
         self._thread.start()
+
+    def cluster(self, secret_or_passphrase) -> "HopEndpoint":
+        """Join the endpoint cluster so sibling replicas (same identity, no shared datastore) each
+        handle a given request once. Pass a ``str`` passphrase (interops with the standalone service's
+        ``HOP_CLUSTER_SECRET``) or 32 raw bytes. Dedup then applies transparently. Returns self."""
+        if isinstance(secret_or_passphrase, str):
+            ffi.cluster_join_passphrase(self._node, secret_or_passphrase.encode("utf-8"))
+        else:
+            b = bytes(secret_or_passphrase)
+            if len(b) != 32:
+                raise ValueError("cluster secret must be 32 bytes or a passphrase string")
+            ffi.cluster_join(self._node, b)
+        return self
+
+    @property
+    def cluster_members(self) -> int:
+        """Live replica count (self + peers within the membership TTL); 1 if not clustered."""
+        return ffi.cluster_members(self._node)
 
     def _with_node(self, fn):
         """Run a libhop call on the node under the lock, unless closed (the node may already be freed, so

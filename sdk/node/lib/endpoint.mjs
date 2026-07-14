@@ -53,11 +53,12 @@ export class HopEndpoint extends EventEmitter {
   #closed = false
   #closers = [] // bearer teardown hooks (server/sockets), run by close() before freeing the node
 
-  // opts: { key?: 32-byte Buffer secret, dbPath?, name?, tickMs=50 }
+  // opts: { key?: 32-byte Buffer secret, dbPath?, name?, tickMs=50,
+  //         cluster?: string passphrase | 32-byte Buffer secret }
   constructor(opts = {}) {
     super()
     assertAbi()
-    const { key, dbPath, name, tickMs = 50 } = opts
+    const { key, dbPath, name, tickMs = 50, cluster } = opts
     if (dbPath) {
       this.#node = hop.node_open(dbPath, key ?? null, key ? key.length : 0, null, 0)
     } else if (key) {
@@ -67,6 +68,10 @@ export class HopEndpoint extends EventEmitter {
     }
     if (!this.#node) throw new Error('hop_node_open returned NULL')
     if (name) hop.node_set_name(this.#node, name)
+    // Cluster with sibling replicas (same identity, no shared datastore): dedup then applies
+    // transparently to poll_service_requests. A string is a passphrase (derived the same way as the
+    // standalone service's HOP_CLUSTER_SECRET, so they interop); a 32-byte Buffer is a raw secret.
+    if (cluster != null) this.cluster(cluster)
     hop.node_tick(this.#node, BigInt(Date.now()))
     hop.publish_prekey(this.#node) // so senders can seal forward-secret messages to us
     this.tickMs = tickMs
@@ -83,6 +88,29 @@ export class HopEndpoint extends EventEmitter {
     const o = Buffer.alloc(32)
     hop.node_address(this.#node, o)
     return o
+  }
+
+  // Join the endpoint cluster so sibling replicas (same identity, no shared datastore) each handle a
+  // given request once. Pass a string passphrase (interops with the standalone service's
+  // HOP_CLUSTER_SECRET) or a 32-byte Buffer secret. Dedup then applies transparently to inbound
+  // requests. Also settable via the `cluster` constructor option. Returns this.
+  cluster(secretOrPassphrase) {
+    if (typeof secretOrPassphrase === 'string') {
+      const buf = Buffer.from(secretOrPassphrase, 'utf8')
+      hop.cluster_join_passphrase(this.#node, buf, buf.length)
+    } else {
+      const b = Buffer.isBuffer(secretOrPassphrase)
+        ? secretOrPassphrase
+        : Buffer.from(secretOrPassphrase)
+      if (b.length !== 32) throw new Error('cluster secret must be a 32-byte Buffer or a string passphrase')
+      hop.cluster_join(this.#node, b)
+    }
+    return this
+  }
+
+  // Live replica count (self + peers within the membership TTL); 1 if not clustered.
+  get clusterMembers() {
+    return hop.cluster_members(this.#node)
   }
 
   // Register a receiver for a hops:// service (the endpoint's "route"). handler(req, reply).

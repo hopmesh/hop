@@ -29,6 +29,10 @@ lib LibHop
   fun address_from_base58 = hop_address_from_base58(text : LibC::Char*, out32 : UInt8*) : Bool
   fun sign_reach_record = hop_sign_reach_record(node : Void*, endpoint : LibC::Char*, ttl_secs : UInt32, sink : (Void*, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
   fun verify_reach_record = hop_verify_reach_record(bytes : UInt8*, len : LibC::SizeT, now_secs : UInt64, sink : (Void*, UInt8*, LibC::Char*, UInt64, UInt32 ->), ctx : Void*) : Bool
+  # Endpoint clustering (DESIGN.md §40).
+  fun cluster_join = hop_cluster_join(node : Void*, secret : UInt8*) : Void
+  fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
+  fun cluster_members = hop_cluster_members(node : Void*) : UInt32
 end
 
 module Hop
@@ -87,6 +91,18 @@ module Hop
 
     def self.subscribe(node : Void*, topic : String) : Nil
       LibHop.subscribe(node, topic)
+    end
+
+    def self.cluster_join(node : Void*, secret : Bytes) : Nil
+      LibHop.cluster_join(node, secret.to_unsafe)
+    end
+
+    def self.cluster_join_passphrase(node : Void*, pass : Bytes) : Nil
+      LibHop.cluster_join_passphrase(node, pass.to_unsafe, pass.size)
+    end
+
+    def self.cluster_members(node : Void*) : UInt32
+      LibHop.cluster_members(node)
     end
 
     def self.publish_prekey(node : Void*) : Bool
