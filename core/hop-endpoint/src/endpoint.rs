@@ -94,6 +94,13 @@ fn gate<T>(
             first_seen: now_ms,
         });
     }
+    // CP (phase 3): without a quorum we can't be sure an unseen member won't also process it, so hold
+    // EVERYTHING rather than risk a double-process across a partition. Sibling-handled ones stay safe
+    // to drop. When quorum is unset this is always true, so it's a no-op (AP).
+    if !cluster.has_quorum(now_ms) {
+        held.retain(|h| !cluster.is_handled(&h.key));
+        return Vec::new();
+    }
     let mut surface = Vec::new();
     let mut keep = Vec::new();
     for h in std::mem::take(held) {
@@ -206,6 +213,16 @@ impl<S: Store> Endpoint<S> {
         match &self.cluster {
             Some(c) => c.member_count(self.node.now_ms()),
             None => 1,
+        }
+    }
+
+    /// Require at least `min_live_members` (incl. self) visible before this replica processes anything
+    /// (phase 3, hold-until-coordinated / CP). Set it to a MAJORITY of your replica count so a
+    /// partition minority holds rather than risk a double-process. `0` (default) disables it (AP:
+    /// process whatever you own among who you can see). No-op if not clustered.
+    pub fn cluster_quorum(&mut self, min_live_members: usize) {
+        if let Some(c) = &mut self.cluster {
+            c.set_quorum(min_live_members);
         }
     }
 
@@ -530,6 +547,61 @@ mod tests {
             "the standby takes over the silent owner's request"
         );
         assert_eq!(taken[0].id, req_id);
+    }
+
+    #[test]
+    fn cp_quorum_holds_under_partition_until_the_cluster_can_coordinate() {
+        // Two replicas both require a quorum of 2. They can't see each other (a partition), so each is
+        // alone (1 < 2) and HOLDS the request rather than risk a double-process. Once they can
+        // coordinate (the partition heals), quorum is met and exactly one processes. DESIGN.md §40 P3.
+        let e = [42u8; 32];
+        let mut eps = [ep(Some(&e)), ep(Some(&e)), ep(None)]; // A, B, sender S
+        let cs = [7u8; 32];
+        eps[0].cluster_join(cs);
+        eps[1].cluster_join(cs);
+        eps[0].cluster_quorum(2);
+        eps[1].cluster_quorum(2);
+        for e in eps.iter_mut() {
+            e.set_time(1_000);
+        }
+
+        let mut net = Wire::new();
+        net.connect(&mut eps, 2, 1, 0, 1); // S -> A
+        net.connect(&mut eps, 2, 2, 1, 2); // S -> B  (A and B are NOT linked: a partition)
+
+        let a_addr = eps[0].address();
+        let req_id = eps[2]
+            .send_service_request(a_addr, "app.order".into(), "create".into(), b"{}".to_vec())
+            .unwrap();
+        net.pump(&mut eps);
+
+        // Partitioned: neither sees the other, so both hold (no double-process), but both received it.
+        assert_eq!(eps[0].cluster_members(), 1);
+        assert!(
+            eps[0].take_service_requests().is_empty(),
+            "A holds: no quorum"
+        );
+        assert!(
+            eps[1].take_service_requests().is_empty(),
+            "B holds: no quorum"
+        );
+        assert!(
+            eps[0].store.seen(&req_id) && eps[1].store.seen(&req_id),
+            "both received it"
+        );
+
+        // Heal the partition: A <-> B link + converge. Now each sees 2 members = quorum, and exactly
+        // one (the owner) surfaces the held request.
+        net.connect(&mut eps, 0, 10, 1, 10);
+        converge(&mut net, &mut eps, 2_000);
+        let a = eps[0].take_service_requests();
+        let b = eps[1].take_service_requests();
+        assert_eq!(
+            a.len() + b.len(),
+            1,
+            "after coordinating, exactly one processes it"
+        );
+        assert_eq!(a.iter().chain(b.iter()).next().unwrap().id, req_id);
     }
 
     #[test]

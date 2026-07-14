@@ -97,6 +97,8 @@ pub struct Cluster {
     pending: Vec<ClaimKey>,
     last_presence_ms: u64,
     started: bool,
+    /// Min live members (incl. self) required to act (phase 3 CP). 0 = disabled (AP).
+    quorum: usize,
 }
 
 impl Cluster {
@@ -110,7 +112,23 @@ impl Cluster {
             pending: Vec::new(),
             last_presence_ms: 0,
             started: false,
+            quorum: 0,
         }
+    }
+
+    /// Require at least `min_live_members` (incl. self) visible before this replica acts (phase 3,
+    /// DESIGN.md §40). `0` disables it (AP: process whatever you own among who you can see). Set it to
+    /// a MAJORITY of the expected replica count for **hold-until-coordinated / CP**: under a partition
+    /// only the majority side reaches quorum, so a request is never processed twice across a split.
+    pub fn set_quorum(&mut self, min_live_members: usize) {
+        self.quorum = min_live_members;
+    }
+
+    /// Whether this replica currently sees enough of the cluster to act safely (`member_count >=
+    /// quorum`). Always true when quorum is unset. When false the caller HOLDS every request rather
+    /// than risk a double-process against a member it can't currently see.
+    pub fn has_quorum(&self, now_ms: u64) -> bool {
+        self.member_count(now_ms) >= self.quorum
     }
 
     /// This replica's member id.
@@ -443,6 +461,30 @@ mod tests {
         assert!(
             c.is_owner(&k, 1_000 + MEMBER_TTL_MS + 1),
             "we take over once the owner ages out"
+        );
+    }
+
+    #[test]
+    fn quorum_gates_acting_on_the_visible_membership() {
+        let mut c = Cluster::new([1u8; 16]);
+        c.set_quorum(2);
+        assert!(!c.has_quorum(1_000), "alone (1 live) is below quorum 2");
+        c.on_gossip(
+            &ClusterMsg::Presence {
+                member: [2u8; 16],
+                at_ms: 0,
+            },
+            1_000,
+        );
+        assert!(c.has_quorum(1_000), "self + 1 peer meets quorum 2");
+        assert!(
+            !c.has_quorum(1_000 + MEMBER_TTL_MS + 1),
+            "the peer aged out, back below quorum"
+        );
+        c.set_quorum(0);
+        assert!(
+            c.has_quorum(1_000 + MEMBER_TTL_MS + 1),
+            "quorum 0 disables the check (AP)"
         );
     }
 }
