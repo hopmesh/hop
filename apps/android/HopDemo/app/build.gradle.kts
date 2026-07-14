@@ -111,7 +111,7 @@ dependencies {
     // the QR/JPEG bitmap paths, and the HopApp crash handler run headless on the host - no device.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.13")
-    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test:core:1.7.0")
 }
 
 // cov/android-demo: line-coverage report over the demo app's NON-UI, testable surface only:
