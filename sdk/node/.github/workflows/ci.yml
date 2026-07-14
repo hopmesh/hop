@@ -1,0 +1,25 @@
+# DORMANT in the monorepo: GitHub only runs workflows in the ROOT .github/workflows/, so this file does
+# nothing here. It ACTIVATES in the standalone hop-sdk-node repo, where Copybara strips the sdk/node/
+# prefix and this lands at .github/workflows/ci.yml (the root). There it downloads a prebuilt libhop and
+# runs the same tests the monorepo runs, via the SAME canonical composite action (./.github/actions/ci).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci
+        with:
+          pkg-dir: "."
+          libhop-source: download
