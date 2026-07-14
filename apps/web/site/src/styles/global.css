@@ -95,9 +95,12 @@ code {
   box-shadow: 0 4px 16px #2bf0a033;
 }
 .site-nav { display: flex; align-items: center; gap: 28px; }
-.site-nav a { color: var(--ink-dim); font-size: 14.5px; }
-.site-nav a:hover { color: var(--ink); }
-.site-nav a.active { color: var(--ink); }
+/* :not(.btn) so a button-styled nav link (the Quickstart CTA) keeps its own .btn-primary
+   white text + size; otherwise .site-nav a (0,1,1) outspecifies .btn-primary (0,1,0) and the
+   button text renders in the dark nav-link ink, unreadable on the gradient. */
+.site-nav a:not(.btn) { color: var(--ink-dim); font-size: 14.5px; }
+.site-nav a:not(.btn):hover { color: var(--ink); }
+.site-nav a:not(.btn).active { color: var(--ink); }
 
 /* ---------- buttons ---------- */
 .btn {
