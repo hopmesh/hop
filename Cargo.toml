@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core/hop-core",
     "core/hop",
+    "core/hop-endpoint",
     "core/hop-sim",
     "core/hop-wasm",
     "core/stores/hop-store-sqlite",
@@ -22,6 +23,7 @@ repository = "https://github.com/jwaldrip/hop"
 
 [workspace.dependencies]
 hop-core = { path = "core/hop-core" }
+hop-endpoint-core = { path = "core/hop-endpoint" }
 # default-features off so each consumer picks plain `bundled` (default) OR encrypted `sqlcipher`
 # explicitly (F-25). The two SQLite bundling backends can't both be active in one build.
 hop-store-sqlite = { path = "core/stores/hop-store-sqlite", default-features = false }
