@@ -109,7 +109,11 @@ code {
 .btn:hover { transform: translateY(-1px); }
 .btn-primary { background: linear-gradient(135deg, var(--accent), #54f5b4); background-clip: padding-box; color: var(--accent-ink); box-shadow: 0 8px 22px -8px #2bf0a07a; }
 .btn-primary:hover { box-shadow: 0 12px 28px -8px #2bf0a099; }
-:root[data-theme="light"] .btn-primary { box-shadow: 0 9px 8px -10px rgba(16,42,67,.42); }
+/* Light theme: the base gradient ends on the bright mint #54f5b4, which leaves the white
+   button text (--accent-ink flips to #fff on light) at ~1.4:1 over that end, unreadable.
+   Re-ground it as a deep blue -> emerald so white clears AA (4.5:1) across the whole gradient
+   and the button stays dark enough to pop on the white page. */
+:root[data-theme="light"] .btn-primary { background: linear-gradient(135deg, #1f74d8, #0a7d55); box-shadow: 0 9px 8px -10px rgba(16,42,67,.42); }
 :root[data-theme="light"] .btn-primary:hover { box-shadow: 0 14px 12px -12px rgba(16,42,67,.48); }
 .btn-ghost { background: var(--panel); border-color: var(--line); color: var(--ink); }
 .btn-ghost:hover { border-color: #3a4248; background: var(--panel-2); }
