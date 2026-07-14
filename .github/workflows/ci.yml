@@ -612,29 +612,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      # The CANONICAL sdk/node CI, shared verbatim with the standalone hop-sdk-node repo (one composite
+      # action, no drift). Here it builds libhop from the in-tree Rust core; the standalone downloads a
+      # prebuilt from the hopmesh/libhop release. See sdk/node/.github/ + tools/copybara/.
+      - uses: ./sdk/node/.github/actions/ci
         with:
-          node-version: "20"
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-node-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-node-${{ runner.os }}-
-      - name: Build libhop
-        run: cargo build -p hop --locked
-      - name: Test Node SDK (raw + echo + tcp + WSS discovery)
-        working-directory: sdk/node
-        env:
-          HOP_LIBDIR: ${{ github.workspace }}/target/debug
-        run: |
-          npm install
-          npm test
+          pkg-dir: sdk/node
+          libhop-source: build
 
   python-sdk:
     name: Python endpoint SDK (proofs)

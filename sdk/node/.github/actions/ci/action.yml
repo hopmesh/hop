@@ -1,0 +1,86 @@
+# Canonical CI for the @hop/endpoint SDK, as a COMPOSITE ACTION so ONE definition is used by both:
+#   - the monorepo root workflow:  uses: ./sdk/node/.github/actions/ci
+#   - the standalone hop-sdk-node: uses: ./.github/actions/ci   (Copybara strips the sdk/node/ prefix)
+# There is no reusable-workflow equivalent, GitHub requires those to live in root .github/workflows/,
+# so a composite action is the only unit that can live in a subfolder AND be referenced from both roots.
+name: "Hop Node SDK CI"
+description: "Test @hop/endpoint against libhop: built from source in the monorepo, downloaded from a release in the standalone repo."
+
+inputs:
+  pkg-dir:
+    description: "Directory of the SDK package. '.' in the standalone repo; 'sdk/node' in the monorepo."
+    default: "."
+  node-version:
+    description: "Node version to test against."
+    default: "20"
+  libhop-source:
+    description: "How to obtain libhop: build | download | auto. auto = build if the Rust core is present, else download."
+    default: "auto"
+  libhop-version:
+    description: "Release tag of libhop to download when not building from source (e.g. v0.1.0). 'latest' allowed."
+    default: "latest"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # Cache the cargo build (only relevant when building libhop from source; harmless otherwise).
+    - name: Cache cargo
+      if: inputs.libhop-source != 'download'
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-hopsdk-node-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-hopsdk-node-${{ runner.os }}-
+
+    # The crux: get a libhop for THIS runner. In the monorepo the Rust core (core/hop) is present, so we
+    # build it. In the standalone mirror there is no core/, so we download the prebuilt that the monorepo
+    # release pipeline published to hopmesh/libhop. HOP_LIBDIR is the escape hatch either way.
+    - name: Resolve libhop
+      id: libhop
+      shell: bash
+      run: |
+        set -euo pipefail
+        mode="${{ inputs.libhop-source }}"
+        if [ "$mode" = "auto" ]; then
+          if [ -f core/hop/Cargo.toml ]; then mode="build"; else mode="download"; fi
+        fi
+        echo "mode=$mode"
+        if [ "$mode" = "build" ]; then
+          rustup toolchain install stable --profile minimal
+          cargo build -p hop --locked
+          echo "dir=$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_OUTPUT"
+        else
+          # map runner -> release asset. The monorepo release pipeline publishes one tarball per target.
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)   asset="libhop-x86_64-unknown-linux-gnu" ;;
+            Linux-ARM64) asset="libhop-aarch64-unknown-linux-gnu" ;;
+            macOS-ARM64) asset="libhop-aarch64-apple-darwin" ;;
+            macOS-X64)   asset="libhop-x86_64-apple-darwin" ;;
+            *) echo "no prebuilt libhop for $RUNNER_OS-$RUNNER_ARCH; set HOP_LIBDIR to a local build" >&2; exit 1 ;;
+          esac
+          ver="${{ inputs.libhop-version }}"
+          base="https://github.com/hopmesh/libhop/releases"
+          url="$base/$([ "$ver" = latest ] && echo latest/download || echo download/$ver)/$asset.tar.gz"
+          mkdir -p "$GITHUB_WORKSPACE/.libhop"
+          echo "downloading $url"
+          curl -fsSL "$url" -o /tmp/libhop.tar.gz
+          curl -fsSL "$url.sha256" -o /tmp/libhop.sha256 && (cd /tmp && sha256sum -c libhop.sha256)
+          tar -xzf /tmp/libhop.tar.gz -C "$GITHUB_WORKSPACE/.libhop"
+          echo "dir=$GITHUB_WORKSPACE/.libhop" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Test
+      shell: bash
+      working-directory: ${{ inputs.pkg-dir }}
+      env:
+        HOP_LIBDIR: ${{ steps.libhop.outputs.dir }}
+      run: |
+        npm install
+        npm test
