@@ -12,12 +12,17 @@
 //! ships nothing itself. [`Endpoint`](crate::Endpoint) pipes [`ClusterMsg`]s over an `hps://`
 //! broadcast (see `endpoint.rs`), and persistence hands the durable [`ClaimKey`] set back on restart.
 //!
-//! **Phase 1 (this file): membership + a durable, gossiped `HANDLED` set.** When a member finishes
-//! a request it records and gossips `Handled(key)`; a member drops any request whose key is already
-//! `HANDLED`. Delivery is delay-tolerant, so the copies of one message usually reach the workers
-//! *apart in time*; the later copy sees the earlier's `HANDLED` and is suppressed. Guarantee:
-//! at-least-once + dedup (two near-simultaneous receives can still both run before either's gossip
-//! lands). Phase 2 adds claim-before-process (rendezvous ownership) for exactly-once when connected.
+//! **Phase 1: membership + a durable, gossiped `HANDLED` set.** When a member finishes a request it
+//! records and gossips `Handled(key)`; a member drops any request whose key is already `HANDLED`.
+//! Delivery is delay-tolerant, so the copies of one message usually reach the workers *apart in
+//! time*; the later copy sees the earlier's `HANDLED` and is suppressed.
+//!
+//! **Phase 2: rendezvous ownership ([`Cluster::rank_for`]).** Every replica computes the same owner
+//! for a key by HRW hashing over the live membership, so only the owner processes it and the standbys
+//! hold (the [`Endpoint`](crate::Endpoint) gate). If the owner is silent, ranked standbys take over
+//! one at a time (in `endpoint.rs`); if it ages out, the successor becomes owner automatically. That
+//! is exactly-once when the owner is up and gossip flows, degrading to at-least-once under partition
+//! (the CP/AP knob is Phase 3).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -41,6 +46,18 @@ pub fn claim_key(from: &[u8; 32], request_id: &[u8; 32]) -> ClaimKey {
     h.update(from);
     h.update(request_id);
     *h.finalize().as_bytes()
+}
+
+/// Rendezvous (highest-random-weight) score of `member` for `key`; the highest score owns the key.
+/// Deterministic across replicas, so they agree on ownership from the membership set alone.
+fn hrw(member: &MemberId, key: &ClaimKey) -> u64 {
+    let mut h = blake3::Hasher::new();
+    h.update(b"hop.cluster.hrw.v1");
+    h.update(member);
+    h.update(key);
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&h.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(b)
 }
 
 /// Messages gossiped on the cluster topic. Serialized with postcard, then content-sealed by the
@@ -183,6 +200,30 @@ impl Cluster {
             .values()
             .filter(|&&t| now_ms.saturating_sub(t) < MEMBER_TTL_MS)
             .count()
+    }
+
+    /// This replica's **rank** for `key` among the live membership (0 = owner). Rendezvous / highest-
+    /// random-weight (HRW) hashing: every replica computes the same descending order of members by
+    /// `hrw(member, key)`, so they agree on who owns a given message with NO coordination. The owner
+    /// processes it; higher ranks are hot standbys that take over in order if the owner is silent.
+    /// Ties (astronomically unlikely) break by member id. Phase 2 (DESIGN.md §40).
+    pub fn rank_for(&self, key: &ClaimKey, now_ms: u64) -> usize {
+        let mine = hrw(&self.me, key);
+        let mut higher = 0;
+        for (m, &t) in &self.members {
+            if now_ms.saturating_sub(t) < MEMBER_TTL_MS {
+                let w = hrw(m, key);
+                if w > mine || (w == mine && *m > self.me) {
+                    higher += 1;
+                }
+            }
+        }
+        higher
+    }
+
+    /// Whether THIS replica is the current owner of `key` (rank 0).
+    pub fn is_owner(&self, key: &ClaimKey, now_ms: u64) -> bool {
+        self.rank_for(key, now_ms) == 0
     }
 
     /// Number of keys currently retained in the dedup set (for tests/metrics).
@@ -332,6 +373,76 @@ mod tests {
         assert!(
             !g.iter().any(|m| matches!(m, ClusterMsg::Handled { .. })),
             "loaded keys are not re-gossiped"
+        );
+    }
+
+    #[test]
+    fn rendezvous_ownership_is_agreed_and_balanced() {
+        // Two replicas that see each other agree, per key, on exactly one owner (rank 0) + one rank 1,
+        // with NO coordination, and HRW spreads ownership across both.
+        let a_id = [0xA1; 16];
+        let b_id = [0xB2; 16];
+        let mut a = Cluster::new(a_id);
+        let mut b = Cluster::new(b_id);
+        a.on_gossip(
+            &ClusterMsg::Presence {
+                member: b_id,
+                at_ms: 0,
+            },
+            1_000,
+        );
+        b.on_gossip(
+            &ClusterMsg::Presence {
+                member: a_id,
+                at_ms: 0,
+            },
+            1_000,
+        );
+
+        let (mut a_owns, mut b_owns) = (0, 0);
+        for n in 0u8..60 {
+            let k = [n; 32];
+            let ra = a.rank_for(&k, 1_000);
+            let rb = b.rank_for(&k, 1_000);
+            assert_eq!(
+                ra + rb,
+                1,
+                "exactly one owner + one standby, and the replicas agree"
+            );
+            if ra == 0 {
+                a_owns += 1;
+            } else {
+                b_owns += 1;
+            }
+        }
+        assert!(
+            a_owns > 0 && b_owns > 0,
+            "HRW spreads ownership ({a_owns} vs {b_owns})"
+        );
+    }
+
+    #[test]
+    fn ownership_fails_over_when_the_owner_ages_out() {
+        // While a peer owns a key we are its standby (rank 1); once it stops beaconing and ages out,
+        // rendezvous recomputes over the remaining membership and we become the owner.
+        let me = [0x11; 16];
+        let peer = [0x22; 16];
+        let mut c = Cluster::new(me);
+        c.on_gossip(
+            &ClusterMsg::Presence {
+                member: peer,
+                at_ms: 0,
+            },
+            1_000,
+        );
+        let k = (0u8..=255)
+            .map(|n| [n; 32])
+            .find(|k| c.rank_for(k, 1_000) == 1)
+            .expect("some key the peer owns");
+        assert!(!c.is_owner(&k, 1_000), "the peer owns it while live");
+        assert!(
+            c.is_owner(&k, 1_000 + MEMBER_TTL_MS + 1),
+            "we take over once the owner ages out"
         );
     }
 }

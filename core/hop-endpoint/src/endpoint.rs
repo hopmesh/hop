@@ -6,7 +6,8 @@
 //! - `cluster_join` registers the derived, pre-shared-key `hps://` cluster topic on the node
 //!   (`hps_register_keyed`) and reloads the durable HANDLED set from the store.
 //! - `tick` advances the node, then drains inbound cluster gossip and emits due gossip.
-//! - `take_service_requests` shadows the node's: it drops any request a sibling already handled.
+//! - `take_service_requests` / `take_http_requests` shadow the node's: they surface only the requests
+//!   this replica OWNS (rendezvous rank 0), hold the rest, and drop sibling-handled ones (phase 2).
 //! - `send_service_response` / `cluster_mark_done` mark completion so siblings drop their copies.
 //! - `take_hps_messages` returns only the app's (non-cluster) `hps://` messages.
 //!
@@ -58,6 +59,58 @@ fn push_hex(s: &mut String, bytes: &[u8]) {
     }
 }
 
+/// Grace per rank step: a held request surfaces at `first_seen + rank * OWNER_GRACE_MS`. Rank 0 (the
+/// owner) surfaces immediately; each standby waits one more grace, so a silent owner hands off to its
+/// successors one at a time instead of all of them piling in at once.
+const OWNER_GRACE_MS: u64 = 8_000;
+
+/// A request held back because this replica is not (yet) the one that should process it.
+struct Held<T> {
+    item: T,
+    key: ClaimKey,
+    first_seen: u64,
+}
+
+/// The rendezvous-ownership gate (DESIGN.md §40, phase 2). Stages `incoming` into `held`, then
+/// returns the requests this replica should process NOW: the ones it owns (rank 0), plus any standby
+/// whose grace elapsed while the owner stayed silent. Requests a sibling already handled are dropped;
+/// the rest stay held for a later poll. Exactly-once when the owner is up and gossip flows; otherwise
+/// a single successor takes over per grace window.
+fn gate<T>(
+    cluster: &Cluster,
+    held: &mut Vec<Held<T>>,
+    incoming: Vec<T>,
+    key_of: impl Fn(&T) -> ClaimKey,
+    now_ms: u64,
+) -> Vec<T> {
+    for item in incoming {
+        let key = key_of(&item);
+        if cluster.is_handled(&key) || held.iter().any(|h| h.key == key) {
+            continue;
+        }
+        held.push(Held {
+            item,
+            key,
+            first_seen: now_ms,
+        });
+    }
+    let mut surface = Vec::new();
+    let mut keep = Vec::new();
+    for h in std::mem::take(held) {
+        if cluster.is_handled(&h.key) {
+            continue; // a sibling replica already handled it
+        }
+        let rank = cluster.rank_for(&h.key, now_ms) as u64;
+        if now_ms.saturating_sub(h.first_seen) >= rank * OWNER_GRACE_MS {
+            surface.push(h.item);
+        } else {
+            keep.push(h);
+        }
+    }
+    *held = keep;
+    surface
+}
+
 /// A `hop_core::Node` with endpoint clustering. `Deref`s to the node, so `subscribe`, `handle`,
 /// `drain_outgoing`, addressing, etc. are used exactly as before; the methods defined here shadow
 /// the node's to fold in the cluster coordinator.
@@ -68,6 +121,9 @@ pub struct Endpoint<S: Store> {
     cluster_path: Option<String>,
     /// Non-cluster `hps://` messages, separated out for the app on the way through.
     passthrough_hps: Vec<HpsMessage>,
+    /// Requests held because a sibling replica owns them (phase 2 rendezvous ownership).
+    held_svc: Vec<Held<ServiceReqItem>>,
+    held_http: Vec<Held<HttpReqItem>>,
 }
 
 impl<S: Store> Deref for Endpoint<S> {
@@ -91,6 +147,8 @@ impl<S: Store> Endpoint<S> {
             cluster: None,
             cluster_path: None,
             passthrough_hps: Vec::new(),
+            held_svc: Vec::new(),
+            held_http: Vec::new(),
         }
     }
 
@@ -172,18 +230,24 @@ impl<S: Store> Endpoint<S> {
         self.pump_cluster(now_ms);
     }
 
-    /// Drain custom service requests, dropping any a sibling replica already handled. Shadows
-    /// `Node::take_service_requests`, so every caller gets dedup with no code change.
+    /// Drain custom service requests this replica should process now: the ones it owns (rendezvous
+    /// rank 0), plus any it holds for a silent owner past the grace, with sibling-handled ones
+    /// dropped. Shadows `Node::take_service_requests`, so every caller gets clustering unchanged.
     pub fn take_service_requests(&mut self) -> Vec<ServiceReqItem> {
         let now = self.node.now_ms();
         self.pump_cluster(now);
-        let reqs = self.node.take_service_requests();
-        if self.cluster.is_none() {
-            return reqs;
-        }
-        reqs.into_iter()
-            .filter(|r| !self.cluster_would_drop(&r.from, &r.id))
-            .collect()
+        let incoming = self.node.take_service_requests();
+        let cluster = match &self.cluster {
+            Some(c) => c,
+            None => return incoming, // unclustered: transparent passthrough
+        };
+        gate(
+            cluster,
+            &mut self.held_svc,
+            incoming,
+            |r| claim_key(&r.from, &r.id),
+            now,
+        )
     }
 
     /// Send a response AND record the request handled (responding is completion), so sibling
@@ -200,18 +264,24 @@ impl<S: Store> Endpoint<S> {
         Ok(id)
     }
 
-    /// Drain HTTP-over-mesh requests, dropping any a sibling replica already handled (so a clustered
-    /// origin endpoint proxies each request once). Shadows `Node::take_http_requests`.
+    /// Drain HTTP-over-mesh requests this replica should proxy now (same rendezvous-ownership gate as
+    /// `take_service_requests`), so a clustered origin endpoint proxies each request once. Shadows
+    /// `Node::take_http_requests`.
     pub fn take_http_requests(&mut self) -> Vec<HttpReqItem> {
         let now = self.node.now_ms();
         self.pump_cluster(now);
-        let reqs = self.node.take_http_requests();
-        if self.cluster.is_none() {
-            return reqs;
-        }
-        reqs.into_iter()
-            .filter(|r| !self.cluster_would_drop(&r.from, &r.id))
-            .collect()
+        let incoming = self.node.take_http_requests();
+        let cluster = match &self.cluster {
+            Some(c) => c,
+            None => return incoming,
+        };
+        gate(
+            cluster,
+            &mut self.held_http,
+            incoming,
+            |r| claim_key(&r.from, &r.id),
+            now,
+        )
     }
 
     /// Send an HTTP-over-mesh response AND mark the request handled, so sibling replicas drop their
@@ -346,11 +416,22 @@ mod tests {
         Endpoint::new(Node::with_store(id, MemoryStore::new()))
     }
 
+    /// Tick every endpoint + pump a few rounds so membership (Presence gossip) converges: each
+    /// replica learns the others before rendezvous ownership is computed.
+    fn converge(net: &mut Wire, eps: &mut [Endpoint<MemoryStore>], t: u64) {
+        for r in 0..4u64 {
+            for e in eps.iter_mut() {
+                e.tick(t + r);
+            }
+            net.pump(eps);
+        }
+    }
+
     #[test]
-    fn a_handles_gossips_and_a_sibling_replica_will_dedup() {
-        // Two replicas share ONE identity (so both can open the statically-sealed request) but no
-        // shared store. A handles a request and gossips HANDLED over the private hps:// cluster
-        // topic; B learns it and will now DROP that same request. Proven over the real transport.
+    fn only_the_owner_surfaces_a_request_the_standby_holds_then_drops() {
+        // Both replicas share ONE identity and receive the SAME request. Rendezvous ownership makes
+        // exactly one (the owner) surface it while the other holds it; when the owner handles + gossips
+        // HANDLED, the standby drops its held copy. Exactly-once, no shared store. DESIGN.md §40 phase 2.
         let e = [42u8; 32];
         let mut eps = [ep(Some(&e)), ep(Some(&e)), ep(None)]; // A, B, sender S
         assert_eq!(eps[0].address(), eps[1].address());
@@ -362,8 +443,14 @@ mod tests {
         }
 
         let mut net = Wire::new();
-        net.connect(&mut eps, 0, 10, 1, 10); // A <-> B: cluster gossip link
+        net.connect(&mut eps, 0, 10, 1, 10); // A <-> B: cluster gossip
         net.connect(&mut eps, 2, 1, 0, 1); // S -> A
+        net.connect(&mut eps, 2, 2, 1, 2); // S -> B  (both receive the request)
+        converge(&mut net, &mut eps, 1_000);
+        assert!(
+            eps[0].cluster_members() >= 2 && eps[1].cluster_members() >= 2,
+            "membership converged"
+        );
 
         let a_addr = eps[0].address();
         let req_id = eps[2]
@@ -371,38 +458,38 @@ mod tests {
             .unwrap();
         net.pump(&mut eps);
 
-        let reqs = eps[0].take_service_requests();
-        assert_eq!(reqs.len(), 1, "A received the request");
-        let (from, id) = (reqs[0].from, reqs[0].id);
-        assert_eq!(id, req_id);
-        assert!(
-            !eps[1].cluster_would_drop(&from, &id),
-            "B has not learned it"
+        let a = eps[0].take_service_requests();
+        let b = eps[1].take_service_requests();
+        assert_eq!(
+            a.len() + b.len(),
+            1,
+            "exactly the owner surfaces the request"
         );
 
-        eps[0]
+        // Whichever surfaced it is the owner; it handles + gossips, and the standby drops its held copy.
+        let (owner, standby, from, id) = if a.len() == 1 {
+            (0usize, 1usize, a[0].from, a[0].id)
+        } else {
+            (1usize, 0usize, b[0].from, b[0].id)
+        };
+        assert_eq!(id, req_id);
+        eps[owner]
             .send_service_response(from, id, 0, b"ok".to_vec())
             .unwrap();
-        eps[0].tick(2_000);
+        eps[owner].tick(1_500);
         net.pump(&mut eps);
-        eps[1].tick(2_000); // B drains + applies the inbound gossip on its own tick
-
+        eps[standby].tick(1_500);
         assert!(
-            eps[1].cluster_would_drop(&from, &id),
-            "B learned HANDLED over the cluster topic"
-        );
-        assert!(eps[1].cluster_members() >= 2, "B sees A as a live peer");
-        assert!(
-            !eps[1].cluster_would_drop(&from, &[9u8; 32]),
-            "unrelated not dropped"
+            eps[standby].take_service_requests().is_empty(),
+            "the standby drops the request its owner already handled"
         );
     }
 
     #[test]
-    fn dedup_gate_drops_the_sibling_handled_copy_end_to_end() {
-        // Full path through the actual gate. A completes the request fire-and-forget (no response,
-        // so the sender keeps its copies), gossips HANDLED to B, THEN the sender reaches B and
-        // sprays it the SAME request bundle, which B must drop instead of surfacing to its app.
+    fn a_silent_owner_fails_over_to_the_standby_after_the_grace() {
+        // Both receive the request; the owner surfaces it but stays SILENT (never handles). The
+        // standby holds it, then takes over once its grace (rank * OWNER_GRACE_MS) elapses with no
+        // HANDLED gossip, so a stuck/lost owner never black-holes the request. DESIGN.md §40 phase 2.
         let e = [42u8; 32];
         let mut eps = [ep(Some(&e)), ep(Some(&e)), ep(None)]; // A, B, sender S
         let csecret = [7u8; 32];
@@ -414,7 +501,9 @@ mod tests {
 
         let mut net = Wire::new();
         net.connect(&mut eps, 0, 10, 1, 10); // A <-> B: cluster gossip
-        net.connect(&mut eps, 2, 1, 0, 1); // S -> A (S -> B comes later)
+        net.connect(&mut eps, 2, 1, 0, 1); // S -> A
+        net.connect(&mut eps, 2, 2, 1, 2); // S -> B
+        converge(&mut net, &mut eps, 1_000);
 
         let a_addr = eps[0].address();
         let req_id = eps[2]
@@ -422,31 +511,25 @@ mod tests {
             .unwrap();
         net.pump(&mut eps);
 
-        let reqs = eps[0].take_service_requests();
-        assert_eq!(reqs.len(), 1, "A received the request");
-        let (from, id) = (reqs[0].from, reqs[0].id);
+        let a = eps[0].take_service_requests();
+        let b = eps[1].take_service_requests();
+        assert_eq!(a.len() + b.len(), 1, "exactly the owner surfaces it");
+        let standby = if a.is_empty() { 0usize } else { 1usize };
 
-        eps[0].cluster_mark_done(&from, &id); // fire-and-forget: no response, sender keeps copies
-        eps[0].tick(2_000);
-        net.pump(&mut eps);
-        eps[1].tick(2_000); // B drains + applies the inbound gossip
-
+        // The owner is silent. The standby is still holding the request now...
         assert!(
-            eps[1].cluster_would_drop(&from, &id),
-            "B learned HANDLED before its own copy arrives"
+            eps[standby].take_service_requests().is_empty(),
+            "the standby holds while the owner is presumed working"
         );
-
-        net.connect(&mut eps, 2, 2, 1, 2); // S -> B: sprays the SAME request bundle
-        net.pump(&mut eps);
-
-        assert!(
-            eps[1].store.seen(&req_id),
-            "B actually received the request bundle (guards against a vacuous pass)"
+        // ...but once the grace elapses with no HANDLED, it takes over (a single successor, staggered).
+        eps[standby].set_time(1_000 + OWNER_GRACE_MS + 100);
+        let taken = eps[standby].take_service_requests();
+        assert_eq!(
+            taken.len(),
+            1,
+            "the standby takes over the silent owner's request"
         );
-        assert!(
-            eps[1].take_service_requests().is_empty(),
-            "B dropped the sibling-handled copy at the gate"
-        );
+        assert_eq!(taken[0].id, req_id);
     }
 
     #[test]
