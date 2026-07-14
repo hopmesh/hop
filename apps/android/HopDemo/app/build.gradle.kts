@@ -110,7 +110,7 @@ dependencies {
     // Android framework (Context / File IO / Bitmap[+native graphics] / Log) so the DemoFormat helpers,
     // the QR/JPEG bitmap paths, and the HopApp crash handler run headless on the host - no device.
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("androidx.test:core:1.7.0")
 }
 
