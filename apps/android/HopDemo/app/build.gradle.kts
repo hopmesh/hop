@@ -94,7 +94,7 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
     // HELD at 1.13.1, matching :hop-driver (same reasoning: core-ktx 1.19.0 needs AGP >= 9.1.0 AND
     // compileSdk >= 37; :hop-driver is also built by the independent bearers/android Gradle build pinned
