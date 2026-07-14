@@ -87,6 +87,12 @@ export const hop = {
   verify_reach_record: lib.func(
     'bool hop_verify_reach_record(uint8_t *bytes, size_t len, uint64_t now_secs, ReachVerifySink *sink, void *ctx)',
   ),
+  // Endpoint clustering (DESIGN.md §40): join a cluster and dedup applies transparently to the poll.
+  cluster_join: lib.func('void hop_cluster_join(void *node, uint8_t *secret)'),
+  cluster_join_passphrase: lib.func('void hop_cluster_join_passphrase(void *node, uint8_t *pass, size_t pass_len)'),
+  cluster_mark_done: lib.func('void hop_cluster_mark_done(void *node, uint8_t *from, uint8_t *request_id)'),
+  cluster_would_drop: lib.func('bool hop_cluster_would_drop(void *node, uint8_t *from, uint8_t *request_id)'),
+  cluster_members: lib.func('uint32_t hop_cluster_members(void *node)'),
 }
 
 const ABI_EXPECTED = 3

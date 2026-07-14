@@ -23,8 +23,9 @@ type Reply func(status uint16, body []byte) bool
 type Handler func(req *Request, reply Reply)
 
 type config struct {
-	key    []byte
-	tickMs int
+	key     []byte
+	tickMs  int
+	cluster string // passphrase; empty = unclustered
 }
 
 // Option configures New.
@@ -35,6 +36,11 @@ func WithKey(k []byte) Option { return func(c *config) { c.key = k } }
 
 // WithTickMs sets the pump interval (default 50ms).
 func WithTickMs(ms int) Option { return func(c *config) { c.tickMs = ms } }
+
+// WithCluster joins the endpoint cluster keyed by a passphrase, so sibling replicas (same identity,
+// no shared datastore) each handle a given request once. The same string interops with the standalone
+// service's HOP_CLUSTER_SECRET. Dedup then applies transparently to inbound requests.
+func WithCluster(passphrase string) Option { return func(c *config) { c.cluster = passphrase } }
 
 // Endpoint receives Hop messages with an net/http-shaped surface, over hop-core.
 type Endpoint struct {
@@ -99,8 +105,19 @@ func New(opts ...Option) (*Endpoint, error) {
 	}
 	n.tick(nowMs())
 	n.publishPrekey()
+	if cfg.cluster != "" {
+		n.clusterJoinPassphrase([]byte(cfg.cluster))
+	}
 	go e.pumpLoop(time.Duration(cfg.tickMs) * time.Millisecond)
 	return e, nil
+}
+
+// ClusterMembers reports the live replica count (self + peers within the membership TTL); 1 if not
+// clustered.
+func (e *Endpoint) ClusterMembers() uint32 {
+	var m uint32
+	e.withNode(func(n *node) { m = n.clusterMembers() })
+	return m
 }
 
 // On registers a receiver for a hops:// service.
