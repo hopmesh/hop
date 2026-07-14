@@ -150,6 +150,32 @@
   html[data-theme="light"] .qrow{background:#f2f5f6}
   html[data-theme="light"] .qrow:hover{background:#e9eef0}
   html[data-theme="light"] #mem{color:#5a6a74;background:rgba(255,255,255,.8);border-color:var(--line)}
+  /* Accent TEXT is tuned bright for the dark HUD; on the white panes green/teal/amber wash out, so
+     darken the text tones (bright accents stay for pins/buttons/swatches, which read as fills). The sim
+     also writes inline style="color:#hex" from JS, which the cascade can't reach, so match the raw hex. */
+  html[data-theme="light"] #head h1 b,
+  html[data-theme="light"] #narr b,
+  html[data-theme="light"] #head .logo,
+  html[data-theme="light"] #minibar a,
+  html[data-theme="light"] #minibar #mLive,
+  html[data-theme="light"] #minibar #mTimer b{color:#0a7d55}
+  html[data-theme="light"] #minibar #mTimer,
+  html[data-theme="light"] #minichat .mb .mw{color:#0e7490}
+  html[data-theme="light"] [style*="#2bf0a0"]{color:#0a7d55!important}
+  html[data-theme="light"] [style*="#9fe8f2"]{color:#0e7490!important}
+  html[data-theme="light"] [style*="#e3c48a"]{color:#96590a!important}
+  html[data-theme="light"] [style*="#7d8f96"]{color:#5a6a74!important}
+  html[data-theme="light"] [style*="#8ea1a9"]{color:#5a6a74!important}
+  html[data-theme="light"] [style*="#e8eef0"]{color:#16202a!important}
+  html[data-theme="light"] [style*="var(--g)"]{color:#0a7d55!important}
+  /* remaining muted greys used across the control bar / compose / rows */
+  html[data-theme="light"] .seg,
+  html[data-theme="light"] #minibar,
+  html[data-theme="light"] .qrow .mtext,
+  html[data-theme="light"] .qrow .st,
+  html[data-theme="light"] #compose label,
+  html[data-theme="light"] #inspect .ir span{color:#5a6a74}
+  html[data-theme="light"] #minibar #mTitle{color:#16202a}
   /* keep the green primary buttons readable; only the neutral chrome inverts */
   html[data-theme="light"] .maplibregl-ctrl-attrib{background:rgba(255,255,255,.75)!important}
 </style>
@@ -544,6 +570,11 @@ const MAP_STYLES={
 // style (topo), which is terrain and stays the same in both themes.
 const THEME=(()=>{ const t=QP.get('theme'); return (t==='light'||t==='dark')?t:'dark'; })();
 document.documentElement.dataset.theme=THEME;
+// Map labels are tuned for the dark basemap (light text + dark halo). On the light Positron basemap
+// they wash out, so flip label fills dark and halos white in light mode. Read live so a theme flip
+// (postMessage) reflows on the next deck rebuild.
+const isLight=()=>document.documentElement.dataset.theme==='light';
+const LBL_HALO=()=>isLight()?[255,255,255]:[12,15,19];
 // Resolve a scenario's basemap key, honoring the current theme for the default city map.
 const styleOf=s=>{ const st=(s&&s.stage&&s.stage.style); if(st) return st;   // stage pins its own terrain
   return document.documentElement.dataset.theme==='light'?'light':'dark'; };
@@ -829,7 +860,7 @@ function deckLayers(){ deckTick++;
     // Scenario decorations, e.g. the Hop Bridge's LoRa span: drawn (amber, labeled) but NOT simulated;
     // it's an honest preview of a future bearer, not a working link.
     new deck.LineLayer({id:'decor', data:(SCEN&&SCEN.stage&&SCEN.stage.decor)||[], getSourcePosition:d=>d.from, getTargetPosition:d=>d.to, getColor:[228,180,110,150], getWidth:2, widthUnits:'pixels'}),
-    new deck.TextLayer({id:'decorlbl', data:((SCEN&&SCEN.stage&&SCEN.stage.decor)||[]).filter(d=>d.label), getText:d=>d.label, getPosition:d=>[(d.from[0]+d.to[0])/2,(d.from[1]+d.to[1])/2], getColor:[227,196,138,235], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,-10], fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}}),
+    new deck.TextLayer({id:'decorlbl', data:((SCEN&&SCEN.stage&&SCEN.stage.decor)||[]).filter(d=>d.label), getText:d=>d.label, getPosition:d=>[(d.from[0]+d.to[0])/2,(d.from[1]+d.to[1])/2], getColor:isLight()?[150,92,12,255]:[227,196,138,235], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,-10], fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:LBL_HALO(), fontSettings:{sdf:true}, updateTriggers:{getColor:isLight()}}),
     // §39 P4 routing tree toward the focused recipient, each relay's next hop toward them. Drawn UNDER
     // the flood so you see the directed gradient the private bundle steers along (converging on the recipient).
     new deck.LineLayer({id:'gradient', data:gradData(), getSourcePosition:d=>d.s, getTargetPosition:d=>d.t, getColor:[80,200,255,110], getWidth:1.5, widthUnits:'pixels', widthMinPixels:1}),
@@ -845,12 +876,12 @@ function deckLayers(){ deckTick++;
     new deck.ScatterplotLayer({id:'beacons', data:pulseData(), getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:d=>d.r, filled:false, stroked:true, lineWidthUnits:'pixels', getLineWidth:1, getLineColor:d=>[90,205,255,d.a], updateTriggers:{getRadius:deckTick,getLineColor:deckTick}}),
     new deck.ScatterplotLayer({id:'rings', data:ppl, getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:11, filled:false, stroked:true, lineWidthUnits:'pixels', getLineWidth:p=>roleOf(p)?2.5:0, getLineColor:p=>DOT[roleOf(p)], updateTriggers:{getLineWidth:roleVer,getLineColor:roleVer}}),
     new deck.ScatterplotLayer({id:'dots', data:ppl, getPosition:d=>d.pos, radiusUnits:'pixels', getRadius:4.5, getFillColor:p=>DOT[roleOf(p)], stroked:true, lineWidthUnits:'pixels', getLineWidth:1.2, getLineColor:[12,15,19], updateTriggers:{getFillColor:roleVer}, pickable:true, onClick:pick}),
-    new deck.IconLayer({id:'emoji', data:dWithRelay, iconAtlas, iconMapping, getIcon:d=>d.emoji, getPosition:d=>d.pos, sizeUnits:'pixels', getSize:20, getColor:d=>{ const r=roleOf(d); return r?DOT[r]:[206,217,223]; }, updateTriggers:{getPosition:deckTick,getColor:roleVer}, pickable:true, onClick:pick}),
+    new deck.IconLayer({id:'emoji', data:dWithRelay, iconAtlas, iconMapping, getIcon:d=>d.emoji, getPosition:d=>d.pos, sizeUnits:'pixels', getSize:20, getColor:d=>{ const r=roleOf(d); return r?DOT[r]:(isLight()?[92,104,116]:[206,217,223]); }, updateTriggers:{getPosition:deckTick,getColor:[roleVer,isLight()]}, pickable:true, onClick:pick}),
     new deck.IconLayer({id:'sig', data:ppl, iconAtlas, iconMapping, getIcon:d=>d._badge||'signal-slash', getPosition:d=>d.pos, sizeUnits:'pixels', getSize:9, getColor:d=>{ const b=d._badge; return b==='wifi'?[120,215,235]:b==='signal'?[43,240,160]:[152,120,120]; }, getPixelOffset:[13,-12], updateTriggers:{getIcon:deckTick,getColor:deckTick}}),
     new deck.IconLayer({id:'apicon', data:onAps, iconAtlas, iconMapping, getIcon:()=>'router', getPosition:a=>a.pos, sizeUnits:'pixels', getSize:18, getColor:a=>apNet(a)?[120,215,235]:[228,180,110], pickable:true, onClick:info=>{ if(info.object) apClick(aps.indexOf(info.object)); }, updateTriggers:{getPosition:apVer,getColor:apVer}}),
-    new deck.TextLayer({id:'aplabel', data:onAps, getText:a=>a.name+(a.pub?'':' - private')+(a.sat?' - starlink':'')+(a.bat?' - battery':'')+(apNet(a)?'':' - no net'), getPosition:a=>a.pos, getColor:a=>apNet(a)?[159,232,242,225]:[227,196,138,225], sizeUnits:'pixels', getSize:10.5, getPixelOffset:[0,14], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}, updateTriggers:{getText:apVer,getColor:apVer}}),
+    new deck.TextLayer({id:'aplabel', data:onAps, getText:a=>a.name+(a.pub?'':' - private')+(a.sat?' - starlink':'')+(a.bat?' - battery':'')+(apNet(a)?'':' - no net'), getPosition:a=>a.pos, getColor:a=>isLight()?(apNet(a)?[20,102,201,240]:[150,92,12,240]):(apNet(a)?[159,232,242,225]:[227,196,138,225]), sizeUnits:'pixels', getSize:10.5, getPixelOffset:[0,14], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:LBL_HALO(), fontSettings:{sdf:true}, updateTriggers:{getText:apVer,getColor:[apVer,isLight()]}}),
     // mini declutter: once a conversation is in focus, only the participants keep name labels
-    new deck.TextLayer({id:'labels', data:dWithRelay, getText:d=> (MINI&&focus&&d.id!==focus.src&&d.id!==focus.recip)?'':d.name, getPosition:d=>d.pos, getColor:[195,206,212], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,15], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:[12,15,19], fontSettings:{sdf:true}, updateTriggers:{getPosition:deckTick,getText:roleVer}}),
+    new deck.TextLayer({id:'labels', data:dWithRelay, getText:d=> (MINI&&focus&&d.id!==focus.src&&d.id!==focus.recip)?'':d.name, getPosition:d=>d.pos, getColor:isLight()?[38,52,66]:[195,206,212], sizeUnits:'pixels', getSize:11, getPixelOffset:[0,15], getTextAnchor:'middle', getAlignmentBaseline:'top', fontFamily:'system-ui,sans-serif', outlineWidth:2, outlineColor:LBL_HALO(), fontSettings:{sdf:true}, updateTriggers:{getPosition:deckTick,getText:roleVer,getColor:isLight()}}),
   ]; }
 function fcTowerCov(){ return {type:'FeatureCollection',features:towers.map(t=>{ const c=turf.circle(t.pos,t.r/1000,{units:'kilometers',steps:56}); c.properties={on:t.on&&powerUp}; return c; })}; }
 function fcTowers(){ return {type:'FeatureCollection',features:towers.map((t,i)=>({type:'Feature',geometry:{type:'Point',coordinates:t.pos},properties:{idx:i,on:t.on&&powerUp}}))}; }
