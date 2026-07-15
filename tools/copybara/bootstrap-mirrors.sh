@@ -69,10 +69,29 @@ else
 fi
 
 echo
-echo "== 3. seed each mirror (run AFTER the Copybara configs for each component are merged) =="
-echo "  For the FIRST export of a component, append --init-history in its sync workflow, then:"
-echo "      gh workflow run 'Sync sdk/node'    -f workflow=export"
-echo "      gh workflow run 'Sync sdk/python'  -f workflow=export"
-echo "      ... one per component ..."
+echo "== 3. seed each mirror (one-time, per component) =="
+echo "  The FIRST export of a component passes init_history=true:"
+echo "      gh workflow run sync-components.yml -f component=hop-sdk-node -f direction=export -f init_history=true"
+echo "  Repeat per component (hop-sdk-python, hop-core, libhop, hop-relayd, ...); later exports omit it."
+
+echo
+echo "== 4. enable security features on every repo =="
+# All free on public repos, idempotent, and tolerant: a repo whose only language CodeQL does not support
+# (Crystal, Elixir) simply skips the code-scanning step. Run this after the repos exist.
+printf '%s\n' "$MIRRORS" | while IFS='|' read -r repo _; do
+  [ -z "$repo" ] && continue
+  full="$ORG/$repo"
+  echo "  $full:"
+  gh api -X PUT "repos/$full/vulnerability-alerts" >/dev/null 2>&1 && echo "    dependabot alerts: on" || echo "    dependabot alerts: skipped"
+  gh api -X PUT "repos/$full/automated-security-fixes" >/dev/null 2>&1 && echo "    dependabot security updates: on" || true
+  gh api -X PUT "repos/$full/private-vulnerability-reporting" >/dev/null 2>&1 && echo "    private vulnerability reporting: on" || echo "    private vulnerability reporting: skipped"
+  gh api -X PATCH "repos/$full" \
+    -f 'security_and_analysis[secret_scanning][status]=enabled' \
+    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' >/dev/null 2>&1 \
+    && echo "    secret scanning + push protection: on" || echo "    secret scanning: skipped"
+  gh api -X PATCH "repos/$full/code-scanning/default-setup" -f state=configured >/dev/null 2>&1 \
+    && echo "    codeql default setup: configured" || echo "    codeql: skipped (e.g. crystal/elixir have no CodeQL support)"
+done
+
 echo
 echo "Done."
