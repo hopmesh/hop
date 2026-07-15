@@ -54,11 +54,11 @@ export class HopEndpoint extends EventEmitter {
   #closers = [] // bearer teardown hooks (server/sockets), run by close() before freeing the node
 
   // opts: { key?: 32-byte Buffer secret, dbPath?, name?, tickMs=50,
-  //         cluster?: string passphrase | 32-byte Buffer secret }
+  //         cluster?: string passphrase | 32-byte Buffer secret, quorum?: min live members (CP) }
   constructor(opts = {}) {
     super()
     assertAbi()
-    const { key, dbPath, name, tickMs = 50, cluster } = opts
+    const { key, dbPath, name, tickMs = 50, cluster, quorum } = opts
     if (dbPath) {
       this.#node = hop.node_open(dbPath, key ?? null, key ? key.length : 0, null, 0)
     } else if (key) {
@@ -72,6 +72,7 @@ export class HopEndpoint extends EventEmitter {
     // transparently to poll_service_requests. A string is a passphrase (derived the same way as the
     // standalone service's HOP_CLUSTER_SECRET, so they interop); a 32-byte Buffer is a raw secret.
     if (cluster != null) this.cluster(cluster)
+    if (quorum != null) this.clusterQuorum(quorum)
     hop.node_tick(this.#node, BigInt(Date.now()))
     hop.publish_prekey(this.#node) // so senders can seal forward-secret messages to us
     this.tickMs = tickMs
@@ -111,6 +112,15 @@ export class HopEndpoint extends EventEmitter {
   // Live replica count (self + peers within the membership TTL); 1 if not clustered.
   get clusterMembers() {
     return hop.cluster_members(this.#node)
+  }
+
+  // Require at least `min` live cluster members visible before this replica will process a request
+  // (CP: hold-until-coordinated). Under a partition that drops the visible count below `min`, inbound
+  // requests are HELD rather than surfaced, so a split cluster never double-processes. 0 or 1 disables
+  // the hold (the default). Also settable via the `quorum` constructor option. Returns this.
+  clusterQuorum(min) {
+    hop.cluster_set_quorum(this.#node, min >>> 0)
+    return this
   }
 
   // Register a receiver for a hops:// service (the endpoint's "route"). handler(req, reply).

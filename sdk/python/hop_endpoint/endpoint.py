@@ -48,13 +48,15 @@ class HopRequest:
 
 
 class HopEndpoint:
-    def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50, cluster=None):
+    def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50, cluster=None, quorum=None):
         ffi.assert_abi()
         self._node = ffi.node_with_secret(key) if key else ffi.node_new()
         # Cluster with sibling replicas (same identity, no shared datastore) if configured: dedup then
         # applies transparently to inbound requests. See cluster() below.
         if cluster is not None:
             self.cluster(cluster)
+        if quorum is not None:
+            self.cluster_quorum(quorum)
         ffi.tick(self._node, _now_ms())
         ffi.publish_prekey(self._node)
         self._handlers: dict[str, Callable] = {}
@@ -85,6 +87,15 @@ class HopEndpoint:
     def cluster_members(self) -> int:
         """Live replica count (self + peers within the membership TTL); 1 if not clustered."""
         return ffi.cluster_members(self._node)
+
+    def cluster_quorum(self, min_live_members: int) -> "HopEndpoint":
+        """Require at least ``min_live_members`` live cluster members visible before this replica will
+        process a request (CP: hold-until-coordinated). Under a partition that drops the visible count
+        below the quorum, inbound requests are HELD rather than surfaced, so a split cluster never
+        double-processes. 0 or 1 disables the hold (the default). Also settable via the ``quorum``
+        constructor argument. Returns self."""
+        ffi.cluster_set_quorum(self._node, int(min_live_members))
+        return self
 
     def _with_node(self, fn):
         """Run a libhop call on the node under the lock, unless closed (the node may already be freed, so

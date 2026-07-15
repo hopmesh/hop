@@ -33,6 +33,7 @@ lib LibHop
   fun cluster_join = hop_cluster_join(node : Void*, secret : UInt8*) : Void
   fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
   fun cluster_members = hop_cluster_members(node : Void*) : UInt32
+  fun cluster_set_quorum = hop_cluster_set_quorum(node : Void*, min_live_members : UInt32) : Void
 end
 
 module Hop
@@ -103,6 +104,10 @@ module Hop
 
     def self.cluster_members(node : Void*) : UInt32
       LibHop.cluster_members(node)
+    end
+
+    def self.cluster_set_quorum(node : Void*, min : UInt32) : Nil
+      LibHop.cluster_set_quorum(node, min)
     end
 
     def self.publish_prekey(node : Void*) : Bool

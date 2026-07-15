@@ -73,6 +73,7 @@ _lib.hop_cluster_join.argtypes = [c_void_p, c_char_p]
 _lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
 _lib.hop_cluster_members.argtypes = [c_void_p]
 _lib.hop_cluster_members.restype = c_uint32
+_lib.hop_cluster_set_quorum.argtypes = [c_void_p, c_uint32]
 
 
 def assert_abi() -> None:
@@ -225,3 +226,7 @@ def cluster_join_passphrase(node, passphrase: bytes) -> None:
 
 def cluster_members(node) -> int:
     return int(_lib.hop_cluster_members(node))
+
+
+def cluster_set_quorum(node, min_live_members: int) -> None:
+    _lib.hop_cluster_set_quorum(node, min_live_members)

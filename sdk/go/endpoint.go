@@ -26,6 +26,7 @@ type config struct {
 	key     []byte
 	tickMs  int
 	cluster string // passphrase; empty = unclustered
+	quorum  uint32 // min live members before processing (CP); 0 = disabled (default)
 }
 
 // Option configures New.
@@ -41,6 +42,12 @@ func WithTickMs(ms int) Option { return func(c *config) { c.tickMs = ms } }
 // no shared datastore) each handle a given request once. The same string interops with the standalone
 // service's HOP_CLUSTER_SECRET. Dedup then applies transparently to inbound requests.
 func WithCluster(passphrase string) Option { return func(c *config) { c.cluster = passphrase } }
+
+// WithQuorum requires at least min live cluster members visible before this replica will process a
+// request (CP: hold-until-coordinated). Under a partition that drops the visible count below min,
+// inbound requests are HELD rather than surfaced, so a split cluster never double-processes. 0 or 1
+// disables the hold (the default).
+func WithQuorum(min uint32) Option { return func(c *config) { c.quorum = min } }
 
 // Endpoint receives Hop messages with an net/http-shaped surface, over hop-core.
 type Endpoint struct {
@@ -108,6 +115,9 @@ func New(opts ...Option) (*Endpoint, error) {
 	if cfg.cluster != "" {
 		n.clusterJoinPassphrase([]byte(cfg.cluster))
 	}
+	if cfg.quorum > 0 {
+		n.clusterSetQuorum(cfg.quorum)
+	}
 	go e.pumpLoop(time.Duration(cfg.tickMs) * time.Millisecond)
 	return e, nil
 }
@@ -118,6 +128,12 @@ func (e *Endpoint) ClusterMembers() uint32 {
 	var m uint32
 	e.withNode(func(n *node) { m = n.clusterMembers() })
 	return m
+}
+
+// ClusterQuorum requires at least min live cluster members visible before this replica will process a
+// request (CP: hold-until-coordinated); see WithQuorum. 0 or 1 disables the hold.
+func (e *Endpoint) ClusterQuorum(min uint32) {
+	e.withNode(func(n *node) { n.clusterSetQuorum(min) })
 }
 
 // On registers a receiver for a hops:// service.

@@ -27,6 +27,14 @@ assert.equal(d.clusterMembers, 1, 'unclustered = solo')
 // 5. A wrong-length raw secret is rejected (a passphrase string is always fine).
 assert.throws(() => new HopEndpoint().cluster(Buffer.alloc(16)), /32-byte/)
 
-for (const ep of [a, b, c, d]) ep.close()
-console.log('cluster.mjs: OK (join via passphrase + raw secret, members query, validation)')
+// 6. CP quorum (hold-until-coordinated, DESIGN.md §40): set the minimum live-member threshold via the
+//    chainable method and via the constructor option. The hold behavior itself is proven in the Rust
+//    crate; here we exercise the JS surface against the real C ABI.
+const e = new HopEndpoint({ cluster: 'shared-cluster-passphrase' })
+assert.equal(e.clusterQuorum(2), e, 'clusterQuorum() returns this')
+const f = new HopEndpoint({ cluster: 'shared-cluster-passphrase', quorum: 3 })
+assert.equal(f.clusterMembers, 1, 'quorum set at construction, endpoint still functions')
+
+for (const ep of [a, b, c, d, e, f]) ep.close()
+console.log('cluster.mjs: OK (join via passphrase + raw secret, members query, quorum setter, validation)')
 process.exit(0)

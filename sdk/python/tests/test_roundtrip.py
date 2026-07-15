@@ -32,5 +32,17 @@ class RoundTrip(unittest.TestCase):
             client.close()
 
 
+class Cluster(unittest.TestCase):
+    def test_join_and_quorum(self):
+        # DESIGN.md §40: cluster join + CP quorum bindings resolve against libhop and behave. The
+        # cross-replica dedup + hold are proven in the Rust crate; here we exercise the Python surface.
+        e = HopEndpoint(cluster="shared-cluster-passphrase", quorum=3)
+        try:
+            self.assertEqual(e.cluster_members, 1)
+            self.assertIs(e.cluster_quorum(2), e)  # chainable
+        finally:
+            e.close()
+
+
 if __name__ == "__main__":
     unittest.main()
