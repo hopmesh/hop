@@ -1631,15 +1631,15 @@ at `https://{domain}/.well-known/hop`: the record binds the domain's Hop **addre
 endpoint and is Ed25519-signed **by that very address**. To reach `hops://example.com`, a client
 fetches `https://example.com/.well-known/hop`, then speaks `hdp` to the address it certifies.
 
-**Two independent proofs, no DNSSEC.** The bind is trustworthy because of two orthogonal checks:
+**Two independent proofs.** The bind is trustworthy because of two orthogonal checks:
 
 - **WebPKI proves the domain.** The HTTPS fetch's TLS certificate proves the responder really is
   `example.com` (the same trust every browser already relies on). Serving the well-known requires
   control of the domain.
 - **The reach record self-certifies the address.** The record's signature is by the *claimed*
   address itself (`sign(id, {address, endpoint, issued_at, ttl})`), so a tampered endpoint or a
-  substituted address simply fails the signature check. No external anchor, no root key, no DNSSEC
-  zone is consulted.
+  substituted address simply fails the signature check. No external anchor, no root key is
+  consulted.
 
 Together: TLS says "this really is example.com's server," and the reach record says "example.com's
 operator holds the private key for this Hop address." A forged binding fails one check or the other.
@@ -1653,8 +1653,8 @@ field out of the `{address, endpoint, reach}` JSON body, no validation logic liv
 **Resolution needs the resolving device's own internet.** Because the domain proof *is* the TLS
 handshake, only a node that can itself reach `https://{domain}` can resolve a name. There is
 deliberately **no mesh-assisted or relayed resolution**: relaying the lookup would either force the
-client to trust the resolver or re-introduce a DNSSEC-style proof chain, the exact complexity this
-design removes. An internet-connected device resolves names directly; a radio-only (e.g. BLE-only)
+client to trust the resolver or re-introduce a proof chain for the client to validate, the exact
+complexity this design removes. An internet-connected device resolves names directly; a radio-only (e.g. BLE-only)
 device cannot resolve a name and must be handed the address directly, `send_hops_request(<address>,
 …)` / `hdp://<address>`, which is itself self-certifying. Once resolved, the cached address makes
 delivery fully delay-tolerant again.
@@ -1664,16 +1664,15 @@ bad or expired record resolves to a **negative** answer cached briefly (surfaced
 endpoint" / "offline" rather than a hang). The offline case (no internet, so the fetch can't even be
 attempted) is surfaced distinctly so the UI can say "connect to the internet to resolve names."
 
-**Why this replaced DNSSEC-over-DoH.** The earlier design flooded a public `HnsQuery` across the
-mesh and carried a full DNSSEC proof chain (a `_hopaddress` TXT + its `RRSIG` + the zone `DNSKEY` +
-the `DS` chain) back in an `HnsAnswer` for the client to validate in-core against a baked-in root
-anchor. It resolved trustlessly over multiple hops, but it required every publisher to run DNSSEC,
-embedded a DNSSEC validator + DoH JSON parser in core, and carried a subtle owner-in-signer forgery
-class (caught in the pass-5 audit). The reach record collapses name→address onto the **same
-self-certifying primitive already used for endpoint discovery**: the address signs its own binding,
-so there is no chain to validate and no external anchor at all. The cost is that resolution is no
-longer mesh-assisted, it needs the resolving device's own internet, which matches how a `hops://`
-endpoint is reached in the first place.
+**Why name→address is self-certifying.** An earlier design instead flooded a public `HnsQuery` across
+the mesh and carried a full signed proof chain back in an `HnsAnswer` for the client to validate
+in-core against a baked-in root anchor. It resolved trustlessly over multiple hops, but it required
+every publisher to run a signed zone, embedded a chain validator + DoH JSON parser in core, and
+carried a subtle owner-in-signer forgery class (caught in the pass-5 audit). The reach record
+collapses name→address onto the **same self-certifying primitive already used for endpoint
+discovery**: the address signs its own binding, so there is no chain to validate and no external
+anchor at all. The cost is that resolution is no longer mesh-assisted, it needs the resolving
+device's own internet, which matches how a `hops://` endpoint is reached in the first place.
 
 **No HNS wire types.** Resolution is an out-of-band HTTPS fetch, not a mesh bundle exchange, so HNS
 adds nothing to the wire kind registry. The old `HnsQuery` / `HnsAnswer` payloads and the

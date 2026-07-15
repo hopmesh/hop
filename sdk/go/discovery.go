@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Discovery: bind a human name to a Hop address without DNSSEC, using the domain's TLS cert (WebPKI)
+// Discovery: bind a human name to a Hop address using the domain's TLS cert (WebPKI)
 // plus a self-certifying reachability record served at /.well-known/hop. See docs/endpoint-sdk.md.
 
 const wellKnownPath = "/.well-known/hop"

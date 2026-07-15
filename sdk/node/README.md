@@ -55,7 +55,7 @@ console.log(hop.address)   // publish this (or its name); senders reach you by i
 a reply is a new addressed message that may arrive later, even after a restart. It works when the peer
 is offline, and there is no auth layer to bolt on, the identity is cryptographic.
 
-## Reachable by name (WSS + discovery, no DNSSEC)
+## Reachable by name (WSS + discovery)
 
 Make your endpoint reachable at `myaddress.com` with no new port and no DNS records beyond a plain `A`.
 Wire the WSS bearer and the discovery route into your existing HTTPS server in one call:
@@ -117,5 +117,5 @@ The protocol core is [libhop](https://github.com/hopmesh/libhop) / [hop-core](ht
 
 ## License
 
-[Apache-2.0](./LICENSE.md). The SDKs are permissively licensed so you can embed them freely; `hop-core`
-and the services stay FSL-1.1-ALv2.
+[Apache-2.0](./LICENSE.md), embed it freely. Only the protocol core (`hop-core`) stays FSL-1.1-ALv2,
+source-available and converting to Apache-2.0 after two years.

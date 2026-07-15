@@ -13,8 +13,9 @@ check-required-checks.sh   asserts ci.yml job names == the deploy-gate _REQUIRED
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the ci.yml
                            job names (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
-                           empty, truncated, or drifted. TWO-TIER licenses: sdk/* byte-identical
-                           Apache-2.0, every other component byte-identical FSL, neither may cross tiers.
+                           empty, truncated, or drifted. TWO-TIER licenses: core/* byte-identical
+                           FSL-1.1-ALv2, every other component byte-identical Apache-2.0 (marker
+                           "January 2004", since FSL text references "Apache License"), no cross-tiers.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 require-ci-verdict.py       the runtime deploy-gate logic (Cloud Build). Tested by require-ci-gate.test.sh.

@@ -78,7 +78,7 @@ crystal run examples/client.cr -- <address> localhost 9944
 
 ## Reachable by name (WSS + discovery)
 
-Make an endpoint reachable at `myaddress.com` with **no new port and no DNSSEC**, on Crystal's stdlib
+Make an endpoint reachable at `myaddress.com` with **no new port**, on Crystal's stdlib
 `HTTP::WebSocket` + `HTTP::Server` (zero shards):
 
 ```crystal
@@ -93,7 +93,7 @@ address = client.dial_by_name("https://myaddress.com")        # WebPKI + self-ce
 status, body = client.request(address, "acme/orders", "create", order)
 ```
 
-Trust, no DNSSEC: `dial_by_name` fetches `/.well-known/hop` (TLS proves the domain), verifies the
+Trust: `dial_by_name` fetches `/.well-known/hop` (TLS proves the domain), verifies the
 self-certifying reach record (signed by the address), dials the WSS, and the Noise handshake confirms
 the address. `spec/hop_spec.cr` proves the full chain against an in-process self-signed HTTPS server
 (the cert is generated in-process by `Hop::DevTls`, no `openssl` CLI).

@@ -6,7 +6,7 @@ require "openssl"
 require "./ffi"
 
 module Hop
-  # Discovery: bind a name to a Hop address without DNSSEC, using the domain's TLS cert (WebPKI) plus a
+  # Discovery: bind a name to a Hop address using the domain's TLS cert (WebPKI) plus a
   # self-certifying reachability record served at /.well-known/hop. See docs/endpoint-sdk.md.
   module Discovery
     WELL_KNOWN_PATH = "/.well-known/hop"

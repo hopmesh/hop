@@ -60,7 +60,7 @@ elsewhere.
 
 ## Reachable by name (WSS + discovery)
 
-Make an endpoint reachable at `myaddress.com` with **no new port and no DNSSEC**. In Go a WS upgrade is
+Make an endpoint reachable at `myaddress.com` with **no new port**. In Go a WS upgrade is
 a normal `http.Handler`, so `Attach` wires the WSS bearer and the discovery route into your mux in one
 call:
 
@@ -75,7 +75,7 @@ address, _ := client.DialByName("https://myaddress.com", false) // WebPKI + self
 status, body, _ := client.Request(address, "acme/orders", "create", order)
 ```
 
-Trust, no DNSSEC: `dialByName` fetches `/.well-known/hop` (TLS proves the domain), verifies the
+Trust: `dialByName` fetches `/.well-known/hop` (TLS proves the domain), verifies the
 self-certifying reach record (signed by the address), then the Noise handshake over the WSS confirms
 the address. `discovery_test.go` proves the full chain against an in-process self-signed HTTPS server.
 

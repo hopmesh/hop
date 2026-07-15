@@ -32,14 +32,15 @@ CRITICAL=(
 fail=0
 
 # Per-component licenses (legal-01), TWO TIERS:
-#   - sdk/*  wrapper packages carry Apache-2.0 (permissive, to maximize SDK adoption).
-#   - every other component (core/services/bearers/drivers/examples) carries FSL-1.1-ALv2.
+#   - core/*  carries FSL-1.1-ALv2: the protocol is the moat (hop-core, libhop, hop-wasm, the stores).
+#   - EVERY other component (sdk, bearers, drivers, services, examples) carries Apache-2.0, permissive
+#     to maximize adoption of what people integrate or self-host.
 # Within EACH tier every LICENSE.md must be byte-identical; each must be above the floor and carry its
 # own tier's signature line. The failure modes this catches: a copy going 0-byte/truncated (the wasm-pack
 # self-copy regression this guard exists for), a copy drifting from the rest of its tier, or a copy
-# wearing the WRONG tier's license (an sdk/ file that says FSL, or a core/ file that says Apache). Find
-# every first-party LICENSE.md (git-free, so the self-test can run in a throwaway tree; excludes vendored
-# deps + build output) and check it against its tier.
+# wearing the WRONG tier's license (a core/ file that says Apache, or a non-core file that says FSL). The
+# Apache marker is the header date "January 2004", NOT "Apache License": the FSL text references the
+# Apache License as its future license, so "Apache License" is not unique to the Apache tier.
 fsl_canon=""
 apache_canon=""
 lic_count=0
@@ -52,29 +53,29 @@ while IFS= read -r lf; do
     continue
   fi
   case "$lf" in
-    ./sdk/*)  # Apache-2.0 tier
-      if ! grep -qF -- "Apache License" "$lf"; then
-        echo "repo-integrity-guard: CONTENT $lf under sdk/ must be Apache-2.0 (its signature line is missing)" >&2
-        fail=1
-        continue
-      fi
-      if [ -z "$apache_canon" ]; then
-        apache_canon="$lf"
-      elif ! cmp -s "$lf" "$apache_canon"; then
-        echo "repo-integrity-guard: DRIFT $lf differs from $apache_canon (sdk/ Apache licenses must be identical)" >&2
-        fail=1
-      fi
-      ;;
-    *)        # FSL-1.1-ALv2 tier
+    ./core/*)  # FSL-1.1-ALv2 tier (the protocol core)
       if ! grep -qF -- "Functional Source License" "$lf"; then
-        echo "repo-integrity-guard: CONTENT $lf outside sdk/ must be FSL-1.1-ALv2 (its signature line is missing)" >&2
+        echo "repo-integrity-guard: CONTENT $lf under core/ must be FSL-1.1-ALv2 (its signature line is missing)" >&2
         fail=1
         continue
       fi
       if [ -z "$fsl_canon" ]; then
         fsl_canon="$lf"
       elif ! cmp -s "$lf" "$fsl_canon"; then
-        echo "repo-integrity-guard: DRIFT $lf differs from $fsl_canon (per-component FSL licenses must be identical)" >&2
+        echo "repo-integrity-guard: DRIFT $lf differs from $fsl_canon (core/ FSL licenses must be identical)" >&2
+        fail=1
+      fi
+      ;;
+    *)         # Apache-2.0 tier (everything outside core/)
+      if ! grep -qF -- "January 2004" "$lf"; then
+        echo "repo-integrity-guard: CONTENT $lf outside core/ must be Apache-2.0 (its header is missing)" >&2
+        fail=1
+        continue
+      fi
+      if [ -z "$apache_canon" ]; then
+        apache_canon="$lf"
+      elif ! cmp -s "$lf" "$apache_canon"; then
+        echo "repo-integrity-guard: DRIFT $lf differs from $apache_canon (Apache licenses must be identical)" >&2
         fail=1
       fi
       ;;

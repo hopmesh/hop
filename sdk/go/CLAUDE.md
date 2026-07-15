@@ -19,7 +19,7 @@ examples/tcp/     a runnable demo
 Reachable-by-name: `Attach(mux, publicURL)` wires `/_hop` (WSS) + `/.well-known/hop` in one call. In Go
 a WS upgrade is a plain `http.Handler`, so both are mux routes (unlike Node, where the upgrade is a
 server-level hook). `DialByName` fetches the well-known (TLS proves the domain), verifies the
-self-certifying reach record, dials the WSS, and the Noise handshake confirms the address, no DNSSEC.
+self-certifying reach record, dials the WSS, and the Noise handshake confirms the address.
 The reach cgo bindings reuse the trampoline + `runtime/cgo.Handle` pattern from the sink callbacks.
 
 ## Non-obvious things (cgo footguns)

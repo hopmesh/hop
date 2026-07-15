@@ -201,7 +201,7 @@ a record for an address that has no domain fronting it.
   delay a record but can never substitute a wrong location.
 
 Trust chain without a domain: instead of "TLS proves the domain, record self-certifies the address,"
-it is "the address IS the name, the record self-certifies it." No WebPKI, no DNSSEC, no trusted relay.
+it is "the address IS the name, the record self-certifies it." No WebPKI, no trusted relay.
 
 **Mechanism B, gossip.** Reach records ride the existing prekey-advert gossip (adverts already propagate
 on link-up), so a peer caches `address -> location` opportunistically from the mesh. Eventually
