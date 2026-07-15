@@ -1,5 +1,5 @@
 {
-  "name": "@hop/endpoint",
+  "name": "@hop-mesh/endpoint",
   "version": "0.0.1",
   "description": "Receive Hop messages in your Node app: an Express/Fastify-shaped endpoint over the libhop C ABI.",
   "type": "module",

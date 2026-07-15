@@ -2,7 +2,7 @@
   <img alt="Hop" src="https://hopme.sh/hop-mark.svg" width="200">
 </p>
 
-<h1 align="center">@hop/endpoint</h1>
+<h1 align="center">@hop-mesh/endpoint</h1>
 
 <p align="center">
   <b>Receive Hop messages in your Node service.</b><br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@hop/endpoint"><img src="https://img.shields.io/npm/v/@hop/endpoint?color=6ea8fe&label=npm" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@hop-mesh/endpoint"><img src="https://img.shields.io/npm/v/@hop-mesh/endpoint?color=6ea8fe&label=npm" alt="npm"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-6ea8fe" alt="node >=18">
 </p>
@@ -20,7 +20,7 @@
 Hop is a **delay-tolerant mesh**: end-to-end encrypted datagrams that hop device to device, over BLE,
 Wi-Fi, and the internet, until they reach the person or service you meant. Held, never dropped.
 
-`@hop/endpoint` is the **server side**: your Node service becomes a first-class address on the mesh, so
+`@hop-mesh/endpoint` is the **server side**: your Node service becomes a first-class address on the mesh, so
 senders hand messages straight to it. Self-host is an import, not an ops project. No inbound port to
 open to the world, no bearer tokens to rotate, no message queue to run: the sender identity is
 authenticated by the ratchet, and delivery is durable and store-and-forward.
@@ -28,7 +28,7 @@ authenticated by the ratchet, and delivery is durable and store-and-forward.
 ## Install
 
 ```sh
-npm install @hop/endpoint
+npm install @hop-mesh/endpoint
 ```
 
 You also need `libhop` (the Rust core, via a prebuilt binary or a `cargo build -p hop`), pointed to
@@ -37,8 +37,8 @@ with `HOP_LIBDIR`. See [libhop](https://github.com/hopmesh/libhop).
 ## Quick start
 
 ```js
-import { HopEndpoint } from '@hop/endpoint'
-import { listen } from '@hop/endpoint/tcp'
+import { HopEndpoint } from '@hop-mesh/endpoint'
+import { listen } from '@hop-mesh/endpoint/tcp'
 
 const hop = new HopEndpoint({ dbPath: './hop.db' }) // the identity key is the only real config
 
@@ -106,7 +106,7 @@ hosting are on the roadmap (each is an SDK-level follow-up, not a core change).
 
 ## The Hop family
 
-`@hop/endpoint` is one of several SDKs over the same C ABI. Same surface, your language:
+`@hop-mesh/endpoint` is one of several SDKs over the same C ABI. Same surface, your language:
 [node](https://github.com/hopmesh/hop-sdk-node) ·
 [python](https://github.com/hopmesh/hop-sdk-python) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·

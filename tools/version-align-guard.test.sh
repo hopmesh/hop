@@ -16,7 +16,7 @@ lay_down() {
   mkdir -p "$d/tools" "$d/sdk/node" "$d/sdk/python" "$d/sdk/ruby" "$d/sdk/crystal" "$d/sdk/elixir"
   cp "$GUARD" "$d/tools/version-align-guard.sh"
   printf '[workspace.package]\nversion = "%s"\nedition = "2021"\n' "$anchor" > "$d/Cargo.toml"
-  printf '{\n  "name": "@hop/endpoint",\n  "version": "%s"\n}\n' "$node" > "$d/sdk/node/package.json"
+  printf '{\n  "name": "@hop-mesh/endpoint",\n  "version": "%s"\n}\n' "$node" > "$d/sdk/node/package.json"
   printf '[project]\nname = "hop-endpoint"\nversion = "%s"\n' "$py" > "$d/sdk/python/pyproject.toml"
   printf 'Gem::Specification.new do |spec|\n  spec.version     = "%s"\nend\n' "$ruby" > "$d/sdk/ruby/hop-endpoint.gemspec"
   printf 'name: hop\nversion: %s\n' "$anchor" > "$d/sdk/crystal/shard.yml"
