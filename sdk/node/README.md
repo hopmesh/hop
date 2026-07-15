@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@hop/endpoint"><img src="https://img.shields.io/npm/v/@hop/endpoint?color=6ea8fe&label=npm" alt="npm"></a>
-  <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3ddc84" alt="license">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-6ea8fe" alt="node >=18">
 </p>
 
@@ -117,4 +117,5 @@ The protocol core is [libhop](https://github.com/hopmesh/libhop) / [hop-core](ht
 
 ## License
 
-[FSL-1.1-ALv2](./LICENSE.md) (source-available, converts to Apache-2.0 after two years).
+[Apache-2.0](./LICENSE.md). The SDKs are permissively licensed so you can embed them freely; `hop-core`
+and the services stay FSL-1.1-ALv2.
