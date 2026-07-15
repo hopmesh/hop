@@ -153,11 +153,11 @@ export const layers = [
     id: 'hns', name: 'HNS', mono: false, group: 'Semantics', ref: '§30',
     tagline: 'The Hop Name System',
     how: [
-      "Resolving a name is a single HTTPS fetch of the domain's <code>/.well-known/hop</code>, no DNS, no DNSSEC, no central resolver. The domain serves a signed <span class=\"term\" tabindex=\"0\">reach record<span class=\"tip\"><b>Reach record</b>: a signed statement <em>\"I, address X, am reachable at this endpoint\"</em>. The signature is by X itself, so it self-certifies, a forged address or endpoint just fails the check.</span></span> that binds its name to a Hop address.",
+      "Resolving a name is a single HTTPS fetch of the domain's <code>/.well-known/hop</code>, no DNS, no central resolver. The domain serves a signed <span class=\"term\" tabindex=\"0\">reach record<span class=\"tip\"><b>Reach record</b>: a signed statement <em>\"I, address X, am reachable at this endpoint\"</em>. The signature is by X itself, so it self-certifies, a forged address or endpoint just fails the check.</span></span> that binds its name to a Hop address.",
       "Two independent proofs make the bind trustworthy: the fetch's <span class=\"term\" tabindex=\"0\">TLS<span class=\"tip\"><b>TLS / WebPKI</b>: the same certificate check a browser does. It proves the responder really is <code>example.com</code>, so only the domain's operator can serve the record.</span></span> certificate proves the domain, and the reach record's signature proves the address, signed by the very key it claims.",
       "Resolution needs the resolving device's own internet, on purpose: there's no relayed lookup to trust. A radio-only device can't fetch a name and is handed the address directly instead, which is self-certifying and needs no lookup at all.",
     ],
-    dev: "Names map to keys, not IPs. The host does one HTTPS GET of <code>/.well-known/hop</code> and hands <code>hop-core</code> the raw bytes; core verifies the self-certifying signature and caches it. Publish an endpoint by serving a signed reach record at your domain's well-known, no DNSSEC.",
+    dev: "Names map to keys, not IPs. The host does one HTTPS GET of <code>/.well-known/hop</code> and hands <code>hop-core</code> the raw bytes; core verifies the self-certifying signature and caches it. Publish an endpoint by serving a signed reach record at your domain's well-known.",
     biz: "Verifiable names anchored on the certificate your domain already has. A name can't be spoofed without both the site's TLS key and the endpoint's identity key, and the client checks both itself.",
     viz: {
       vb: '0 0 760 420',
