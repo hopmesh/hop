@@ -1,0 +1,53 @@
+# release: build the sdist/wheel and publish hop-endpoint to PyPI on a semver tag.
+#
+# Inert in the monorepo (root .github/workflows only). Copybara mirrors sdk/python to
+# its own repo, where pyproject.toml is at the repo root and this becomes the repo-root
+# release workflow.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# id-token: write enables PyPI Trusted Publishing (OIDC): no token is stored in the repo.
+# contents: read is all the checkout needs.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Guard: the tag (minus its leading v) must equal pyproject.toml's [project] version,
+      # so a mistyped tag can never publish the wrong version. tomllib is stdlib on 3.11.
+      - name: Verify tag matches project version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "$tag" != "$ver" ]; then
+            echo "tag $tag does not match pyproject.toml version $ver" >&2
+            exit 1
+          fi
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      # Publish via PyPI Trusted Publishing (OIDC), using the id-token permission above:
+      # no secret needed. Alternative (drop the OIDC setup and use a stored token): add
+      #   with:
+      #     password: ${{ secrets.PYPI_API_TOKEN }}
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
