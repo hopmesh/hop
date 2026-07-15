@@ -1,10 +1,10 @@
-# Canonical CI for the @hop/endpoint SDK, as a COMPOSITE ACTION so ONE definition is used by both:
+# Canonical CI for the @hop-mesh/endpoint SDK, as a COMPOSITE ACTION so ONE definition is used by both:
 #   - the monorepo root workflow:  uses: ./sdk/node/.github/actions/ci
 #   - the standalone hop-sdk-node: uses: ./.github/actions/ci   (Copybara strips the sdk/node/ prefix)
 # There is no reusable-workflow equivalent, GitHub requires those to live in root .github/workflows/,
 # so a composite action is the only unit that can live in a subfolder AND be referenced from both roots.
 name: "Hop Node SDK CI"
-description: "Test @hop/endpoint against libhop: built from source in the monorepo, downloaded from a release in the standalone repo."
+description: "Test @hop-mesh/endpoint against libhop: built from source in the monorepo, downloaded from a release in the standalone repo."
 
 inputs:
   pkg-dir:

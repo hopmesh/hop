@@ -24,7 +24,7 @@ Same Express/Fastify-shaped surface over `libhop`, one per language.
 
 | Repo | From | Package |
 | --- | --- | --- |
-| `hop-sdk-node` | `sdk/node` | npm `@hop/endpoint` (**mirror already live, private**) |
+| `hop-sdk-node` | `sdk/node` | npm `@hop-mesh/endpoint` (**mirror already live, private**) |
 | `hop-sdk-python` | `sdk/python` | PyPI |
 | `hop-sdk-go` | `sdk/go` | Go module |
 | `hop-sdk-ruby` | `sdk/ruby` | RubyGems |

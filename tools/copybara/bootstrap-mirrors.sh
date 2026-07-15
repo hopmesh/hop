@@ -18,7 +18,7 @@ ORG="hopmesh"
 # with no reference to any private source of truth. Kept bash-3.2 safe (no associative arrays) so it runs
 # on stock macOS.
 MIRRORS="
-hop-sdk-node|Receive Hop mesh messages in Node with an Express/Fastify-shaped API over the libhop C ABI. npm: @hop/endpoint.
+hop-sdk-node|Receive Hop mesh messages in Node with an Express/Fastify-shaped API over the libhop C ABI. npm: @hop-mesh/endpoint.
 hop-sdk-python|Receive Hop mesh messages in Python: an embeddable endpoint over the libhop C ABI (ctypes). On PyPI.
 hop-sdk-go|Receive Hop mesh messages in Go with a net/http-shaped surface over the libhop C ABI (cgo). A Go module.
 hop-sdk-ruby|Receive Hop mesh messages in Ruby with a Sinatra/Rails-shaped surface over the libhop C ABI (Fiddle). On RubyGems.
