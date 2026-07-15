@@ -218,7 +218,7 @@ resource "google_dns_record_set" "example_aaaa" {
 # HNS resolution (DESIGN.md §30) needs NO DNS record: clients resolve example.hopme.sh by fetching
 # https://example.hopme.sh/.well-known/hop, which the hop-endpoint serves (a signed reach record) via
 # the same LB host rule + cert already wired below. The domain's TLS cert proves the domain; the reach
-# record self-certifies the Hop address. (The old `_hopaddress` TXT record was removed with DNSSEC HNS.)
+# record self-certifies the Hop address.
 
 # The CNAME proving control for the example cert's DNS authorization.
 resource "google_dns_record_set" "example_dnsauth" {

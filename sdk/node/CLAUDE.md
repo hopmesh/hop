@@ -34,7 +34,7 @@ examples/           raw-roundtrip, echo, tcp, server/client, discovery (HTTPS we
 - **Reachable by name:** `attach(server, {publicUrl})` wires the WSS bearer (`/_hop`) AND the
   `/.well-known/hop` responder in one call. The well-known serves a self-certifying reach record;
   `dialByName(https://...)` fetches it (TLS = WebPKI domain proof), verifies the record (address
-  self-certification), dials the WSS, and the Noise handshake confirms the address. No DNSSEC. The
+  self-certification), dials the WSS, and the Noise handshake confirms the address. The
   well-known route is served on the 'request' event only for a Hop-dedicated server; for an app router,
   mount `wellKnownHandler()` and pass `serveWellKnown:false` (a WS upgrade is a server-level hook, not
   an app route, which is why `attach` takes the server).

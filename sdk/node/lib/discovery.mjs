@@ -1,4 +1,4 @@
-// Discovery: bind a human name to a Hop address without DNSSEC, using the domain's TLS cert (WebPKI)
+// Discovery: bind a human name to a Hop address using the domain's TLS cert (WebPKI)
 // plus a self-certifying reachability record. The endpoint serves the signed record at
 // /.well-known/hop over HTTPS; a client fetches it (TLS proves the domain), verifies the record's
 // signature (proves the address signed this endpoint), then dials the WSS and the Noise handshake

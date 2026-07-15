@@ -59,11 +59,12 @@ store suites and the client wrappers.
 
 This monorepo has no single repo-wide license. Instead every component licenses itself, in two tiers:
 
-- The client and server **SDKs** (`sdk/*`) are **Apache-2.0**, so you can embed them in your own app or
-  service with no strings attached. Adoption is the whole point of a binding layer.
-- Everything else, the protocol core, the services, the bearers, and the drivers, is **FSL-1.1-ALv2**
-  (source-available, and converts to Apache-2.0 after two years). That is where the differentiated work
-  lives.
+- The protocol **core** (`core/*`: hop-core, libhop, hop-wasm, the stores) is **FSL-1.1-ALv2**
+  (source-available, and converts to Apache-2.0 after two years). That is the differentiated work, the
+  moat.
+- **Everything else**, the SDKs, the bearers, the drivers, and the services, is **Apache-2.0**, so you
+  can embed or self-host any of it with no strings attached. Adoption is the whole point of the layers
+  people build on.
 
 Each component carries its own `LICENSE.md`, so it stays licensed when it is split out into its own
 repository. See any component's `LICENSE.md`.
