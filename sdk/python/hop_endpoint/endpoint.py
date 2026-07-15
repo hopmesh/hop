@@ -90,9 +90,8 @@ class HopEndpoint:
 
     def cluster_quorum(self, min_live_members: int) -> "HopEndpoint":
         """Require at least ``min_live_members`` live cluster members visible before this replica will
-        process a request (CP: hold-until-coordinated). Under a partition that drops the visible count
-        below the quorum, inbound requests are HELD rather than surfaced, so a split cluster never
-        double-processes. 0 or 1 disables the hold (the default). Also settable via the ``quorum``
+        process a request. This is a TTL-based visibility threshold and conservative failover
+        heuristic, not consensus or an at-most-once guarantee. 0 or 1 disables the hold (the default). Also settable via the ``quorum``
         constructor argument. Returns self."""
         ffi.cluster_set_quorum(self._node, int(min_live_members))
         return self
@@ -257,7 +256,8 @@ class HopEndpoint:
                 c()
             except Exception:
                 pass
-        self._thread.join(timeout=1.0)
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
         # Free under the lock: a late bearer-thread seam call now short-circuits on _closed instead of
         # touching a freed node, and the join timeout can no longer let the pump race the free.
         with self._lock:

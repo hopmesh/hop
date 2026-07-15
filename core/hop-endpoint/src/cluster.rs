@@ -4,7 +4,7 @@
 //! Multiple endpoint workers on customer hardware (horizontally scaled, same endpoint identity, no
 //! shared DB, no known side-channel) each receive their own copy of an addressed message and would
 //! each run the handler, so the side effect and the addressed response happen twice. This module
-//! lets the replicas agree that at most one processes a given message, with the coordination state
+//! lets replicas reduce duplicate processing, with the coordination state
 //! replicated *among the members over an `hps://` cluster topic* rather than a shared store. Because
 //! it rides Hop, it works wherever the replicas can mesh at all.
 //!
@@ -21,8 +21,8 @@
 //! for a key by HRW hashing over the live membership, so only the owner processes it and the standbys
 //! hold (the [`Endpoint`](crate::Endpoint) gate). If the owner is silent, ranked standbys take over
 //! one at a time (in `endpoint.rs`); if it ages out, the successor becomes owner automatically. That
-//! is exactly-once when the owner is up and gossip flows, degrading to at-least-once under partition
-//! (the CP/AP knob is Phase 3).
+//! reduces duplicates while membership views agree. The optional visibility threshold is a
+//! conservative failover heuristic, not consensus or an at-most-once guarantee.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -97,7 +97,7 @@ pub struct Cluster {
     pending: Vec<ClaimKey>,
     last_presence_ms: u64,
     started: bool,
-    /// Min live members (incl. self) required to act (phase 3 CP). 0 = disabled (AP).
+    /// Min recently visible members (incl. self) required to act. 0 disables the threshold.
     quorum: usize,
 }
 
@@ -116,10 +116,9 @@ impl Cluster {
         }
     }
 
-    /// Require at least `min_live_members` (incl. self) visible before this replica acts (phase 3,
-    /// DESIGN.md §40). `0` disables it (AP: process whatever you own among who you can see). Set it to
-    /// a MAJORITY of the expected replica count for **hold-until-coordinated / CP**: under a partition
-    /// only the majority side reaches quorum, so a request is never processed twice across a split.
+    /// Require at least `min_live_members` (incl. self) recently visible before this replica acts.
+    /// `0` disables the threshold. Visibility is TTL-based and can be stale or asymmetric, so this is
+    /// a conservative failover control, not a consensus quorum or at-most-once guarantee.
     pub fn set_quorum(&mut self, min_live_members: usize) {
         self.quorum = min_live_members;
     }
@@ -129,6 +128,11 @@ impl Cluster {
     /// than risk a double-process against a member it can't currently see.
     pub fn has_quorum(&self, now_ms: u64) -> bool {
         self.member_count(now_ms) >= self.quorum
+    }
+
+    /// Whether the conservative visibility threshold is enabled.
+    pub fn quorum_enabled(&self) -> bool {
+        self.quorum != 0
     }
 
     /// This replica's member id.

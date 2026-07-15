@@ -6,8 +6,13 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"sync/atomic"
 )
+
+const MaxFrameBytes = 1 << 20
+
+func frameLenOK(n uint32) bool { return n <= MaxFrameBytes }
 
 // The Internet bearer: opaque Hop frames over TCP, core does the Noise. TCP is a stream, so each
 // drained packet is length-prefixed (4-byte big-endian) and reassembled on the far side. HNS would
@@ -25,13 +30,18 @@ func sendFramed(conn net.Conn, buf []byte) {
 }
 
 func recvLoop(e *Endpoint, conn net.Conn, link uint64) {
+	defer conn.Close()
 	defer e.linkDown(link)
 	hdr := make([]byte, 4)
 	for {
 		if _, err := io.ReadFull(conn, hdr); err != nil {
 			return
 		}
-		frame := make([]byte, binary.BigEndian.Uint32(hdr))
+		n := binary.BigEndian.Uint32(hdr)
+		if !frameLenOK(n) {
+			return
+		}
+		frame := make([]byte, int(n))
 		if _, err := io.ReadFull(conn, frame); err != nil {
 			return
 		}
@@ -46,16 +56,40 @@ func Listen(e *Endpoint, port int) (net.Listener, error) {
 		return nil, err
 	}
 	e.registerCloser(func() { _ = ln.Close() }) // Close() stops the accept loop (Accept then errors)
+	var connMu sync.Mutex
+	conns := make(map[net.Conn]struct{})
+	closing := false
+	e.registerCloser(func() {
+		connMu.Lock()
+		closing = true
+		for conn := range conns {
+			_ = conn.Close()
+		}
+		connMu.Unlock()
+	})
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
+			connMu.Lock()
+			if closing {
+				connMu.Unlock()
+				_ = conn.Close()
+				continue
+			}
+			conns[conn] = struct{}{}
+			connMu.Unlock()
 			link := nextLink()
 			c := conn
 			e.registerLink(link, "acceptor", func(b []byte) { sendFramed(c, b) })
-			go recvLoop(e, conn, link)
+			go func() {
+				recvLoop(e, conn, link)
+				connMu.Lock()
+				delete(conns, conn)
+				connMu.Unlock()
+			}()
 		}
 	}()
 	return ln, nil

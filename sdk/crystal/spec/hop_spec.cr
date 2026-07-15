@@ -58,7 +58,7 @@ describe Hop do
     end
   end
 
-  it "joins a cluster and sets the CP quorum (DESIGN.md §40)" do
+  it "joins a cluster and sets the TTL visibility threshold" do
     # cluster join + quorum bindings resolve against libhop and behave; the cross-replica dedup + hold
     # are proven in the Rust crate, here we exercise the Crystal surface.
     e = Hop::Endpoint.new(cluster: "shared-cluster-passphrase", quorum: 3)

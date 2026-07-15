@@ -46,7 +46,7 @@ module Hop
       @closed = false
       @tick = tick_ms.milliseconds
       cluster(cluster) if cluster      # dedup across sibling replicas (same identity, no shared store)
-      cluster_quorum(quorum) if quorum # hold-until-coordinated (CP); avoids double-processing on split
+      cluster_quorum(quorum) if quorum # TTL-based visibility threshold; not consensus
       spawn pump_loop
     end
 
@@ -78,9 +78,8 @@ module Hop
     end
 
     # Require at least *min* live cluster members visible before this replica will process a request
-    # (CP: hold-until-coordinated). Under a partition that drops the visible count below *min*, inbound
-    # requests are HELD rather than surfaced, so a split cluster never double-processes. 0 or 1 disables
-    # the hold (the default). Also settable via the *quorum* constructor argument. Returns self.
+    # using a TTL-based visibility threshold. This is a conservative failover heuristic, not consensus
+    # or an at-most-once guarantee. 0 or 1 disables it. Returns self.
     def cluster_quorum(min : Int) : self
       with_node { |n| Hop::FFI.cluster_set_quorum(n, min.to_u32) }
       self

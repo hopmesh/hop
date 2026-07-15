@@ -43,10 +43,8 @@ func WithTickMs(ms int) Option { return func(c *config) { c.tickMs = ms } }
 // service's HOP_CLUSTER_SECRET. Dedup then applies transparently to inbound requests.
 func WithCluster(passphrase string) Option { return func(c *config) { c.cluster = passphrase } }
 
-// WithQuorum requires at least min live cluster members visible before this replica will process a
-// request (CP: hold-until-coordinated). Under a partition that drops the visible count below min,
-// inbound requests are HELD rather than surfaced, so a split cluster never double-processes. 0 or 1
-// disables the hold (the default).
+// WithQuorum sets a TTL-based visibility threshold before this replica processes a request. It is a
+// conservative failover heuristic, not consensus or an at-most-once guarantee. 0 or 1 disables it.
 func WithQuorum(min uint32) Option { return func(c *config) { c.quorum = min } }
 
 // Endpoint receives Hop messages with an net/http-shaped surface, over hop-core.

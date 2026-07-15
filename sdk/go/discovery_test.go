@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -51,6 +52,43 @@ func TestReachRecordSignVerify(t *testing.T) {
 		t.Fatal("tampered record must not verify")
 	}
 }
+
+func TestResolveRejectsPlaintextBeforeFetch(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("plaintext discovery must be rejected before network I/O")
+		return nil, nil
+	})}
+	if _, _, err := Resolve(client, "http://example.com"); err == nil {
+		t.Fatal("expected plaintext discovery to fail")
+	}
+}
+
+func TestResolveRejectsRedirect(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://attacker.example/.well-known/hop"}},
+			Body:       io.NopCloser(&emptyReader{}),
+			Request:    r,
+		}, nil
+	})}
+	if _, _, err := Resolve(client, "https://example.com"); err == nil {
+		t.Fatal("expected redirect to fail")
+	}
+	if requests != 1 {
+		t.Fatalf("redirect followed: got %d requests", requests)
+	}
+}
+
+type emptyReader struct{}
+
+func (*emptyReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestDiscoveryRoundTrip(t *testing.T) {
 	const port = 8444

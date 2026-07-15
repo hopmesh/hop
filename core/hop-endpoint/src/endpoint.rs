@@ -73,9 +73,8 @@ struct Held<T> {
 
 /// The rendezvous-ownership gate (DESIGN.md §40, phase 2). Stages `incoming` into `held`, then
 /// returns the requests this replica should process NOW: the ones it owns (rank 0), plus any standby
-/// whose grace elapsed while the owner stayed silent. Requests a sibling already handled are dropped;
-/// the rest stay held for a later poll. Exactly-once when the owner is up and gossip flows; otherwise
-/// a single successor takes over per grace window.
+/// whose grace elapsed while the owner stayed silent and no visibility threshold is enabled. Requests
+/// a sibling already handled are dropped; the rest stay held for a later poll.
 fn gate<T>(
     cluster: &Cluster,
     held: &mut Vec<Held<T>>,
@@ -94,9 +93,8 @@ fn gate<T>(
             first_seen: now_ms,
         });
     }
-    // CP (phase 3): without a quorum we can't be sure an unseen member won't also process it, so hold
-    // EVERYTHING rather than risk a double-process across a partition. Sibling-handled ones stay safe
-    // to drop. When quorum is unset this is always true, so it's a no-op (AP).
+    // A visibility threshold is conservative: hold below it, and disable timed standby takeover while
+    // it is enabled. Recently visible membership can be stale, so it is not a consensus quorum.
     if !cluster.has_quorum(now_ms) {
         held.retain(|h| !cluster.is_handled(&h.key));
         return Vec::new();
@@ -108,7 +106,10 @@ fn gate<T>(
             continue; // a sibling replica already handled it
         }
         let rank = cluster.rank_for(&h.key, now_ms) as u64;
-        if now_ms.saturating_sub(h.first_seen) >= rank * OWNER_GRACE_MS {
+        if rank == 0
+            || (!cluster.quorum_enabled()
+                && now_ms.saturating_sub(h.first_seen) >= rank * OWNER_GRACE_MS)
+        {
             surface.push(h.item);
         } else {
             keep.push(h);
@@ -216,10 +217,9 @@ impl<S: Store> Endpoint<S> {
         }
     }
 
-    /// Require at least `min_live_members` (incl. self) visible before this replica processes anything
-    /// (phase 3, hold-until-coordinated / CP). Set it to a MAJORITY of your replica count so a
-    /// partition minority holds rather than risk a double-process. `0` (default) disables it (AP:
-    /// process whatever you own among who you can see). No-op if not clustered.
+    /// Require at least `min_live_members` (incl. self) recently visible before this replica acts.
+    /// While enabled, timed standby takeover is disabled. This TTL-based threshold reduces ordinary
+    /// failover races but is not consensus or an at-most-once guarantee. `0` disables it.
     pub fn cluster_quorum(&mut self, min_live_members: usize) {
         if let Some(c) = &mut self.cluster {
             c.set_quorum(min_live_members);
@@ -550,10 +550,9 @@ mod tests {
     }
 
     #[test]
-    fn cp_quorum_holds_under_partition_until_the_cluster_can_coordinate() {
-        // Two replicas both require a quorum of 2. They can't see each other (a partition), so each is
-        // alone (1 < 2) and HOLDS the request rather than risk a double-process. Once they can
-        // coordinate (the partition heals), quorum is met and exactly one processes. DESIGN.md §40 P3.
+    fn visibility_threshold_holds_until_members_are_visible() {
+        // Two replicas require visibility of 2 members. Before discovery each holds the request.
+        // Once they exchange presence, deterministic ownership surfaces one copy.
         let e = [42u8; 32];
         let mut eps = [ep(Some(&e)), ep(Some(&e)), ep(None)]; // A, B, sender S
         let cs = [7u8; 32];
@@ -602,6 +601,58 @@ mod tests {
             "after coordinating, exactly one processes it"
         );
         assert_eq!(a.iter().chain(b.iter()).next().unwrap().id, req_id);
+    }
+
+    #[test]
+    fn visibility_threshold_disables_standby_takeover_with_stale_membership() {
+        let a_id = [0xA1; 16];
+        let b_id = [0xB2; 16];
+        let mut a = Cluster::new(a_id);
+        let mut b = Cluster::new(b_id);
+        a.on_gossip(
+            &ClusterMsg::Presence {
+                member: b_id,
+                at_ms: 1_000,
+            },
+            1_000,
+        );
+        b.on_gossip(
+            &ClusterMsg::Presence {
+                member: a_id,
+                at_ms: 1_000,
+            },
+            1_000,
+        );
+        a.set_quorum(2);
+        b.set_quorum(2);
+
+        let key = (0u8..=u8::MAX)
+            .map(|n| [n; 32])
+            .find(|k| a.rank_for(k, 1_000) == 0 && b.rank_for(k, 1_000) == 1)
+            .expect("HRW assigns at least one sampled key to A");
+        let mut held_a = Vec::new();
+        let mut held_b = Vec::new();
+        assert_eq!(gate(&a, &mut held_a, vec![1u8], |_| key, 1_000), vec![1]);
+        assert!(gate(&b, &mut held_b, vec![1u8], |_| key, 1_000).is_empty());
+
+        // The link is now partitioned, but B still counts A until the TTL. The old timed takeover
+        // surfaced the duplicate here. Threshold mode must keep holding it instead.
+        assert!(gate(
+            &b,
+            &mut held_b,
+            Vec::new(),
+            |_| key,
+            1_000 + OWNER_GRACE_MS + 1,
+        )
+        .is_empty());
+        assert!(gate(
+            &b,
+            &mut held_b,
+            Vec::new(),
+            |_| key,
+            1_000 + crate::cluster::MEMBER_TTL_MS + 1,
+        )
+        .is_empty());
     }
 
     #[test]

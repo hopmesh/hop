@@ -115,9 +115,8 @@ export class HopEndpoint extends EventEmitter {
   }
 
   // Require at least `min` live cluster members visible before this replica will process a request
-  // (CP: hold-until-coordinated). Under a partition that drops the visible count below `min`, inbound
-  // requests are HELD rather than surfaced, so a split cluster never double-processes. 0 or 1 disables
-  // the hold (the default). Also settable via the `quorum` constructor option. Returns this.
+  // using a TTL-based visibility threshold. This is a conservative failover heuristic, not consensus
+  // or an at-most-once guarantee. 0 or 1 disables it. Returns this.
   clusterQuorum(min) {
     hop.cluster_set_quorum(this.#node, min >>> 0)
     return this
