@@ -9,6 +9,7 @@
 #
 # Tokens are read from env vars so they are never printed or left in shell history:
 #   export NPM_TOKEN=... PYPI_API_TOKEN=... RUBYGEMS_API_KEY=... HEX_API_KEY=... CARGO_REGISTRY_TOKEN=...
+#   export PLATFORMIO_AUTH_TOKEN=...
 #   export MAVEN_USERNAME=... MAVEN_PASSWORD=... MAVEN_GPG_KEY=... MAVEN_GPG_PASSPHRASE=...
 #   tools/copybara/bootstrap-packages.sh
 set -euo pipefail
@@ -21,6 +22,7 @@ echo "  RubyGems     an account (rubygems.org) for the hop-endpoint gem"
 echo "  Hex          an account (hex.pm) for the hop package"
 echo "  crates.io    a crates.io account (sign in with GitHub) for hop-core / libhop / hop-store-*"
 echo "  Maven Central a Sonatype Central account + a VERIFIED namespace (e.g. sh.hop) + a published GPG key"
+echo "  PlatformIO   a registry.platformio.org account + token, for the Hop embedded library (hop-embedded)"
 echo "  Go / Swift / Crystal  NO account: they publish by pushing a git tag (the repo IS the package)"
 echo
 
@@ -39,6 +41,7 @@ set_secret hop-wasm       NPM_TOKEN        "${NPM_TOKEN:-}"           NPM_TOKEN
 set_secret hop-sdk-python PYPI_API_TOKEN   "${PYPI_API_TOKEN:-}"      PYPI_API_TOKEN
 set_secret hop-sdk-ruby   RUBYGEMS_API_KEY "${RUBYGEMS_API_KEY:-}"    RUBYGEMS_API_KEY
 set_secret hop-sdk-elixir HEX_API_KEY      "${HEX_API_KEY:-}"         HEX_API_KEY
+set_secret hop-embedded   PLATFORMIO_AUTH_TOKEN "${PLATFORMIO_AUTH_TOKEN:-}" PLATFORMIO_AUTH_TOKEN
 for r in hop-core libhop hop-store-sqlite hop-store-firestore; do
   set_secret "$r" CARGO_REGISTRY_TOKEN "${CARGO_REGISTRY_TOKEN:-}" CARGO_REGISTRY_TOKEN
 done

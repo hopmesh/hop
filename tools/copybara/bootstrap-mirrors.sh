@@ -26,6 +26,7 @@ hop-sdk-crystal|Receive Hop mesh messages in Crystal with a Sinatra/Rails-shaped
 hop-sdk-elixir|Receive Hop mesh messages in Elixir with a Phoenix/Plug-shaped surface over hop-core via a Rustler NIF. On Hex.
 hop-sdk-apple|The Hop client SDK for Apple platforms: run a node on iOS/macOS. SwiftPM + xcframework.
 hop-sdk-android|The Hop client SDK for Android: run a node on-device. Maven (AAR).
+hop-embedded|Hop for microcontrollers: an Arduino/ESP-IDF C++ library over the libhop C ABI (ESP32). On the PlatformIO registry.
 hop-core|The Hop protocol in pure Rust: bundles, the wire format, Noise links, spray-and-wait routing, the untraceable metadata path, and the crypto.
 libhop|The Hop C ABI (hop.h) over hop-core: the universal client and bearer contract every non-Rust SDK binds. Prebuilt binaries + a crate.
 hop-wasm|hop-core compiled to WASM: a real Hop node in the browser.

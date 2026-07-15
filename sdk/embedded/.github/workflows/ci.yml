@@ -1,0 +1,24 @@
+# Light CI for the Hop PlatformIO library: lint the manifest and confirm the package packs. A full
+# on-device build needs the prebuilt libhop archive (produced by the libhop release), so that is not
+# gated here. Carried in from the Hop monorepo subtree by Copybara; edit it there, never in a mirror.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: library.json is valid JSON
+        run: python3 -c "import json; json.load(open('library.json'))"
+      - name: Set up PlatformIO
+        run: pipx install platformio
+      - name: Pack the library (manifest + layout sanity)
+        run: pio pkg pack --output /tmp/hop-pkg.tar.gz
