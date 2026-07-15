@@ -1,5 +1,5 @@
 name: hop-endpoint
-version: 0.1.0
+version: 0.0.1
 description: |
   Embeddable Hop mesh endpoint for Crystal (Sinatra/Rails-shaped) over the libhop C ABI.
   Your service becomes directly reachable on the mesh, no relay. Zero shards (Crystal binds C directly).
@@ -7,7 +7,7 @@ description: |
 authors:
   - Jason Waldrip
 
-license: FSL-1.1-ALv2
+license: Apache-2.0
 crystal: ">= 1.15.0"
 
 # No shard dependencies: Crystal binds libhop via `lib` (see src/hop/ffi.cr), and the WSS bearer +

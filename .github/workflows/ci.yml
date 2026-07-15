@@ -601,6 +601,12 @@ jobs:
         run: bash tools/repo-integrity-guard.test.sh
       - name: Repo integrity guard (critical files non-empty)
         run: bash tools/repo-integrity-guard.sh
+      # Every published package tracks the protocol's major.minor (the Rust workspace version is the
+      # anchor); patch may differ per package, but a major/minor bump must move them all together.
+      - name: Self-test the version-alignment guard
+        run: bash tools/version-align-guard.test.sh
+      - name: Version-alignment guard (SDK major.minor tracks the anchor)
+        run: bash tools/version-align-guard.sh
 
   # ---- server endpoint SDKs -------------------------------------------------------------------------
   # Each SDK builds a host libhop and runs its own proofs (the runnable examples + tests that complete a
