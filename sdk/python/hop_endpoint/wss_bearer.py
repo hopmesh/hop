@@ -18,6 +18,7 @@ from .discovery import well_known_body
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _link_seq = count(60000)
+MAX_FRAME_BYTES = 1 << 20
 
 
 def _accept_key(key: str) -> str:
@@ -69,6 +70,8 @@ def _read_frame(c: _Conn) -> tuple[int, bytes]:
         n = struct.unpack(">H", c.recv_exact(2))[0]
     elif n == 127:
         n = struct.unpack(">Q", c.recv_exact(8))[0]
+    if n > MAX_FRAME_BYTES:
+        raise ConnectionError("WebSocket frame exceeds 1 MiB")
     mk = c.recv_exact(4) if masked else None
     payload = c.recv_exact(n)
     if mk:

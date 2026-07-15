@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 )
 
@@ -55,7 +55,22 @@ func (e *Endpoint) Attach(mux *http.ServeMux, publicURL string) {
 
 // Resolve fetches + verifies baseURL's well-known, returning the reachable address (base58) + wss URL.
 func Resolve(client *http.Client, baseURL string) (address, wssURL string, err error) {
-	res, err := client.Get(strings.TrimRight(baseURL, "/") + wellKnownPath)
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil {
+		return "", "", fmt.Errorf("discovery base URL must be an HTTPS origin without credentials")
+	}
+	base.Path = wellKnownPath
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+	if client == nil {
+		client = http.DefaultClient
+	}
+	strictClient := *client
+	strictClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("well-known redirects are not allowed")
+	}
+	res, err := strictClient.Get(base.String())
 	if err != nil {
 		return "", "", err
 	}

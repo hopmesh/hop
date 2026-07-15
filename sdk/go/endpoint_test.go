@@ -58,7 +58,7 @@ func TestTCPRoundTrip(t *testing.T) {
 }
 
 func TestClusterAndQuorum(t *testing.T) {
-	// DESIGN.md §40: cluster join + CP quorum bindings resolve against libhop and behave. The
+	// Cluster join + TTL visibility threshold bindings resolve against libhop and behave. The
 	// cross-replica dedup + hold are proven in the Rust crate; here we exercise the Go surface.
 	e, err := New(WithCluster("shared-cluster-passphrase"), WithQuorum(3))
 	if err != nil {

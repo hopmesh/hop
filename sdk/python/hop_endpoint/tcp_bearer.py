@@ -11,6 +11,7 @@ from itertools import count
 from .endpoint import HopEndpoint
 
 _link_seq = count(40000)
+MAX_FRAME_BYTES = 1 << 20
 
 
 def _send_framed(sock: socket.socket, buf: bytes) -> None:
@@ -30,6 +31,8 @@ def _recv_loop(endpoint: HopEndpoint, sock: socket.socket, link: int) -> None:
             buf += chunk
             while len(buf) >= 4:
                 (n,) = struct.unpack(">I", buf[:4])
+                if n > MAX_FRAME_BYTES:
+                    return
                 if len(buf) < 4 + n:
                     break
                 frame, buf = buf[4 : 4 + n], buf[4 + n :]
@@ -38,6 +41,10 @@ def _recv_loop(endpoint: HopEndpoint, sock: socket.socket, link: int) -> None:
         pass
     finally:
         endpoint._link_down(link)
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 def listen(endpoint: HopEndpoint, port: int, host: str = "0.0.0.0") -> socket.socket:
@@ -47,6 +54,26 @@ def listen(endpoint: HopEndpoint, port: int, host: str = "0.0.0.0") -> socket.so
     lsock.bind((host, port))
     lsock.listen()
     endpoint._register_closer(lsock.close)  # close() stops the accept loop (accept then raises)
+    sockets: set[socket.socket] = set()
+    sockets_lock = threading.Lock()
+    closing = False
+
+    def close_all():
+        nonlocal closing
+        with sockets_lock:
+            closing = True
+            current = list(sockets)
+        try:
+            lsock.close()
+        except OSError:
+            pass
+        for accepted in current:
+            try:
+                accepted.close()
+            except OSError:
+                pass
+
+    endpoint._register_closer(close_all)
 
     def accept_loop():
         while True:
@@ -54,9 +81,21 @@ def listen(endpoint: HopEndpoint, port: int, host: str = "0.0.0.0") -> socket.so
                 sock, _ = lsock.accept()
             except OSError:
                 return
+            with sockets_lock:
+                if closing:
+                    sock.close()
+                    continue
+                sockets.add(sock)
             link = next(_link_seq)
             endpoint._register_link(link, "acceptor", lambda b, s=sock: _send_framed(s, b))
-            threading.Thread(target=_recv_loop, args=(endpoint, sock, link), daemon=True).start()
+            def receive(s=sock, link_id=link):
+                try:
+                    _recv_loop(endpoint, s, link_id)
+                finally:
+                    with sockets_lock:
+                        sockets.discard(s)
+
+            threading.Thread(target=receive, daemon=True).start()
 
     threading.Thread(target=accept_loop, daemon=True).start()
     return lsock

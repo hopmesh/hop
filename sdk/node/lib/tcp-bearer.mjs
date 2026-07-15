@@ -9,6 +9,7 @@ import net from 'node:net'
 
 const DIALER = 0
 const ACCEPTOR = 1
+export const MAX_FRAME_BYTES = 1 << 20
 
 const frame = (b) => {
   const h = Buffer.alloc(4)
@@ -22,6 +23,7 @@ function deframer() {
     const frames = []
     while (buf.length >= 4) {
       const len = buf.readUInt32BE(0)
+      if (len > MAX_FRAME_BYTES) throw new RangeError('TCP frame exceeds 1 MiB')
       if (buf.length < 4 + len) break
       frames.push(buf.subarray(4, 4 + len))
       buf = buf.subarray(4 + len)
@@ -35,17 +37,27 @@ let LINK_SEQ = 40000
 // Listen for inbound Hop connections. Every accepted socket becomes one bearer link (we are the
 // Noise responder). Returns the net.Server.
 export function listen(endpoint, port, { host = '0.0.0.0' } = {}) {
+  const sockets = new Set()
   const server = net.createServer((socket) => {
+    sockets.add(socket)
     const link = LINK_SEQ++
     const deframe = deframer()
     endpoint._registerLink(link, ACCEPTOR, (buf) => socket.write(frame(buf)))
     socket.on('data', (chunk) => {
-      for (const f of deframe(chunk)) endpoint._deliver(link, f)
+      try {
+        for (const f of deframe(chunk)) endpoint._deliver(link, f)
+      } catch {
+        socket.destroy()
+      }
     })
-    socket.on('close', () => endpoint._linkDown(link))
+    socket.on('close', () => { sockets.delete(socket); endpoint._linkDown(link) })
     socket.on('error', () => endpoint._linkDown(link))
   })
-  endpoint._registerCloser(() => server.close()) // close() stops accepting new connections
+  endpoint._registerCloser(() => {
+    server.close()
+    for (const socket of sockets) socket.destroy()
+    sockets.clear()
+  })
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)))
 }
 
@@ -57,7 +69,11 @@ export function dial(endpoint, host, port) {
   endpoint._registerCloser(() => socket.destroy()) // close() ends this link's read side
   socket.on('connect', () => endpoint._registerLink(link, DIALER, (buf) => socket.write(frame(buf))))
   socket.on('data', (chunk) => {
-    for (const f of deframe(chunk)) endpoint._deliver(link, f)
+    try {
+      for (const f of deframe(chunk)) endpoint._deliver(link, f)
+    } catch {
+      socket.destroy()
+    }
   })
   socket.on('close', () => endpoint._linkDown(link))
   socket.on('error', (e) => endpoint.emit('error', e))

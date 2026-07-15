@@ -23,8 +23,18 @@ export function wellKnownBody(endpoint, publicUrl, ttlSecs = 3600) {
 // verification. `fetchOpts` is passed to fetch (use { rejectUnauthorized:false } only for dev certs;
 // see dialByName which threads it through).
 export async function resolve(baseUrl, { fetch: fetchImpl = fetch } = {}) {
-  const url = new URL(WELL_KNOWN_PATH, baseUrl)
-  const res = await fetchImpl(url)
+  const base = new URL(baseUrl)
+  if (base.protocol !== 'https:' || !base.hostname || base.username || base.password) {
+    throw new Error('discovery base URL must be an HTTPS origin without credentials')
+  }
+  const url = new URL(WELL_KNOWN_PATH, base)
+  const res = await fetchImpl(url, { redirect: 'error' })
+  if (res.url) {
+    const finalUrl = new URL(res.url)
+    if (finalUrl.protocol !== 'https:' || finalUrl.origin !== url.origin) {
+      throw new Error('well-known fetch changed origin')
+    }
+  }
   if (!res.ok) throw new Error(`well-known fetch failed: HTTP ${res.status} for ${url}`)
   const body = await res.json()
   if (!body.reach) throw new Error('well-known has no `reach` record')
