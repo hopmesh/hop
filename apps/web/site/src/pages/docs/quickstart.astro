@@ -14,8 +14,8 @@ node.send(
     Payload::message(<span style="color:var(--tok-str)">"on my way"</span>),
 )?;
 
-<span style="color:var(--tok-comment)">// reach the internet from offline: a hops:// request to an endpoint node's key</span>
-node.send_service_request(endpoint, <span style="color:var(--tok-str)">"http"</span>, <span style="color:var(--tok-str)">"get"</span>, <span style="color:var(--tok-str)">b"hops://example.com/status"</span>)?;
+<span style="color:var(--tok-comment)">// call a hops:// service another app hosts (an endpoint SDK), addressed by its key</span>
+node.send_service_request(endpoint, <span style="color:var(--tok-str)">"acme/orders"</span>, <span style="color:var(--tok-str)">"create"</span>, <span style="color:var(--tok-str)">br#"{"item":"widget"}"#</span>)?;
 
 <span style="color:var(--tok-comment)">// drain inbox: sealed bundles addressed to you</span>
 <span style="color:var(--tok-kw)">for</span> msg <span style="color:var(--tok-kw)">in</span> node.receive()? { handle(msg.open()?); }`;

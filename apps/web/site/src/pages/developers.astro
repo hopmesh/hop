@@ -11,11 +11,11 @@ node.send(
     Payload::message(<span style="color:var(--tok-str)">"on my way"</span>),
 )?;
 
-<span style="color:var(--tok-comment)">// reach the internet from offline: a hops:// request to an endpoint node's key</span>
+<span style="color:var(--tok-comment)">// call a hops:// service another app hosts (an endpoint SDK), addressed by its key</span>
 node.send_service_request(
     endpoint,
-    <span style="color:var(--tok-str)">"http"</span>, <span style="color:var(--tok-str)">"get"</span>,
-    <span style="color:var(--tok-str)">b"hops://example.com/status"</span>,
+    <span style="color:var(--tok-str)">"acme/orders"</span>, <span style="color:var(--tok-str)">"create"</span>,
+    <span style="color:var(--tok-str)">br#"{"item":"widget"}"#</span>,
 )?;
 
 <span style="color:var(--tok-comment)">// drain inbox: sealed bundles addressed to you</span>
@@ -119,11 +119,11 @@ node.send_service_request(
         <a class="srow" href="/protocol/hns/" style="display:grid;text-decoration:none;">
           <div class="lbl mono">HNS</div>
           <div class="body">
-            <h3>Hop Name System, self-certifying, no DNSSEC <span class="link-go" style="font-size:13px;">→</span></h3>
+            <h3>Hop Name System, self-certifying <span class="link-go" style="font-size:13px;">→</span></h3>
             <p>Resolve <code>hops://example.com</code> to an address with one HTTPS fetch
                of the domain's <code>/.well-known/hop</code>. TLS proves the domain, the
                signed reach record proves the address, so a name can't be forged into the
-               wrong key. No central resolver, no DNSSEC.</p>
+               wrong key. No central resolver.</p>
           </div>
         </a>
       </div>
