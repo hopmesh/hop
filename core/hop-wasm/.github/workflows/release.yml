@@ -1,0 +1,67 @@
+# release: build the wasm package and publish @hop-mesh/wasm to npm on a semver tag.
+#
+# Inert in the monorepo (GitHub runs only root .github/workflows). Copybara mirrors
+# core/hop-wasm to its own repo, where Cargo.toml is at the repo root and this becomes
+# the repo-root release workflow.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Least privilege: we only read the checkout. npm auth rides NODE_AUTH_TOKEN.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Rust plus the wasm target that wasm-pack compiles into.
+      - name: Set up Rust (stable, wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      # Build the bundler-target npm package. --scope hop-mesh makes wasm-pack emit a
+      # pkg/ whose package name is @hop-mesh/<crate>, i.e. @hop-mesh/hop-wasm (the
+      # published name follows the crate name unless renamed). The README ships it as
+      # @hop-mesh/wasm, so the next step renames the built package to match.
+      - name: Build wasm package
+        run: wasm-pack build --release --target bundler --scope hop-mesh
+
+      - name: Rename package to @hop-mesh/wasm
+        run: |
+          node -e "const f='pkg/package.json',p=require('./'+f);p.name='@hop-mesh/wasm';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+
+      # Guard: the crate inherits its version from the workspace (version.workspace = true),
+      # so the concrete version only materializes in pkg/package.json after the build.
+      # Compare the tag (minus its leading v) to that and fail a mistyped tag before publish.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./pkg/package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $tag does not match pkg/package.json version $pkg" >&2
+            exit 1
+          fi
+
+      # Scoped package, so --access public. Publish from pkg/ (wasm-pack's output dir).
+      - name: Publish to npm
+        run: npm publish --access public
+        working-directory: pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

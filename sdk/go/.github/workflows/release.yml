@@ -1,0 +1,52 @@
+# Cut a GitHub Release when a semver tag is pushed. This module publishes BY GIT TAG: there is no
+# registry and no token beyond the built-in GITHUB_TOKEN. The tag itself IS the release, Go's module
+# proxy serves the package straight from the tagged commit. Consumers pin it with:
+#
+#     go get github.com/hopmesh/hop-sdk-go@vX.Y.Z
+#
+# This file is carried in from the Hop monorepo subtree (sdk/go) by Copybara, where it becomes the
+# repo-root release workflow of the hopmesh/hop-sdk-go mirror. Edit it in the monorepo, never here.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt (hard gate, needs no libhop)
+        # gofmt only parses, so it runs on a bare runner with no libhop present. Any listed file is not
+        # gofmt-clean, so fail the release.
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet (best effort, needs libhop via cgo)
+        # A real build, vet, or test binds libhop through cgo (sdk/hop.h plus the C-ABI static lib),
+        # which a bare mirror runner does not have, so this cannot block the release. It runs for signal
+        # only; the full cgo verify happens in the monorepo CI where libhop is built.
+        continue-on-error: true
+        run: go vet ./...
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

@@ -1,0 +1,48 @@
+# release: publish @hop-mesh/endpoint to npm on a semver tag.
+#
+# In the monorepo this file is inert (GitHub only runs root .github/workflows).
+# Copybara mirrors sdk/node to its own repo, where package.json sits at the repo
+# root and this becomes the repo-root release workflow.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Least privilege: we only read the checkout. npm auth rides NODE_AUTH_TOKEN.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Guard: the tag (minus its leading v) must equal package.json's version, so a
+      # mistyped tag can never publish the wrong version.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $tag does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      # @hop-mesh/endpoint is scoped, so --access public makes it a public publish.
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,51 @@
+# Cut a GitHub Release when a semver tag is pushed. This shard publishes BY GIT TAG: there is no registry
+# and no token beyond the built-in GITHUB_TOKEN. The tag itself IS the release, shards resolves the
+# package straight from the tagged commit. Consumers pin it in shard.yml with:
+#
+#     dependencies:
+#       hop:
+#         github: hopmesh/hop-sdk-crystal
+#         version: ~> X.Y.Z
+#
+# This file is carried in from the Hop monorepo subtree (sdk/crystal) by Copybara, where it becomes the
+# repo-root release workflow of the hopmesh/hop-sdk-crystal mirror. Edit it in the monorepo, never here.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+
+      - name: Verify the tag matches shard.yml
+        # A mistyped tag must not become a release for a different version. shard.yml is plain YAML, so
+        # this needs no compile.
+        run: |
+          declared="v$(grep -m1 '^version:' shard.yml | sed 's/version:[[:space:]]*//')"
+          if [ "$declared" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match shard.yml version ($declared)"
+            exit 1
+          fi
+
+      - name: crystal tool format (hard gate, needs no libhop)
+        # The formatter only parses, so it runs on a bare runner. Compiling or running the specs binds
+        # libhop (the C-ABI lib), which a bare mirror runner does not have; that full check happens in the
+        # monorepo CI where libhop is built. So gate on format only here.
+        run: crystal tool format --check
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

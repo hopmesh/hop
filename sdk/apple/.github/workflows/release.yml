@@ -1,0 +1,39 @@
+# Cut a GitHub Release when a semver tag is pushed. This Swift package publishes BY GIT TAG: Swift
+# Package Manager resolves a tagged commit directly, there is no registry and no token beyond the
+# built-in GITHUB_TOKEN. The tag itself IS the release. Consumers pin it with:
+#
+#     .package(url: "https://github.com/hopmesh/hop-sdk-apple.git", from: "X.Y.Z")
+#
+# This file is carried in from the Hop monorepo subtree (sdk/apple) by Copybara, where it becomes the
+# repo-root release workflow of the hopmesh/hop-sdk-apple mirror. Edit it in the monorepo, never here.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Describe the package (light gate, no full build)
+        # A full `swift build` binds libhop through the CHop binary target (Frameworks/libhop.xcframework),
+        # a gitignored artifact built by build-xcframework.sh that a bare mirror runner does not have, so
+        # it cannot gate the release. `swift package describe` parses Package.swift and dumps the target
+        # graph, which catches a broken manifest. It is best effort (resolving the whole graph may still
+        # touch the missing xcframework), so it never blocks the release. The full build plus `swift test`
+        # runs in the monorepo CI where the xcframework is present.
+        continue-on-error: true
+        run: swift package describe
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
