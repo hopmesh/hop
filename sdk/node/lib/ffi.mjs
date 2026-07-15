@@ -93,6 +93,7 @@ export const hop = {
   cluster_mark_done: lib.func('void hop_cluster_mark_done(void *node, uint8_t *from, uint8_t *request_id)'),
   cluster_would_drop: lib.func('bool hop_cluster_would_drop(void *node, uint8_t *from, uint8_t *request_id)'),
   cluster_members: lib.func('uint32_t hop_cluster_members(void *node)'),
+  cluster_set_quorum: lib.func('void hop_cluster_set_quorum(void *node, uint32_t min_live_members)'),
 }
 
 const ABI_EXPECTED = 3

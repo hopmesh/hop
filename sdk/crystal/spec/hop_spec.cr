@@ -57,4 +57,16 @@ describe Hop do
       client.close
     end
   end
+
+  it "joins a cluster and sets the CP quorum (DESIGN.md §40)" do
+    # cluster join + quorum bindings resolve against libhop and behave; the cross-replica dedup + hold
+    # are proven in the Rust crate, here we exercise the Crystal surface.
+    e = Hop::Endpoint.new(cluster: "shared-cluster-passphrase", quorum: 3)
+    begin
+      e.cluster_members.should eq 1_u32
+      e.cluster_quorum(2).should be(e) # chainable
+    ensure
+      e.close
+    end
+  end
 end

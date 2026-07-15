@@ -148,6 +148,8 @@ func (n *node) clusterJoinPassphrase(pass []byte) {
 
 func (n *node) clusterMembers() uint32 { return uint32(C.hop_cluster_members(n.p)) }
 
+func (n *node) clusterSetQuorum(min uint32) { C.hop_cluster_set_quorum(n.p, C.uint32_t(min)) }
+
 func (n *node) drainOutgoing() []OutPacket {
 	var out []OutPacket
 	h := cgo.NewHandle(&out)
