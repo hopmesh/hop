@@ -52,7 +52,9 @@ def mirror_url(name):
 def internal_files(prefix):
     return [prefix + "/CLAUDE.md"]
 
-for prefix, name in COMPONENTS:
+# Copybara's Starlark forbids top-level for loops, so register each component's two workflows from a
+# function, invoked once per component by the comprehension at the end of the file.
+def _register(prefix, name):
     internal = internal_files(prefix)
     core.workflow(
         name = name + "_export",
@@ -91,3 +93,6 @@ for prefix, name in COMPONENTS:
             core.move("", prefix),
         ],
     )
+
+# Register all components (a comprehension is allowed at the top level; a bare for loop is not).
+[_register(prefix, name) for prefix, name in COMPONENTS]
