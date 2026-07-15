@@ -5,21 +5,23 @@ This monorepo is the source of truth. Copybara mirrors a component subtree to it
 forking. It is the Meta react-native / relay pattern, done with [Copybara](https://github.com/google/copybara)
 instead of fbshipit.
 
-The first component wired up is `sdk/node` -> `hopmesh/hop-sdk-node`. Adding more is a copy-paste (see
-the last section).
+Every component is wired up: `tools/copybara/copy.bara.sky` holds a `COMPONENTS` list (the 8 SDK repos
+plus the core, service, bearer, and driver repos) and a loop that generates an export + import workflow
+for each. Adding a new one is a single line in that list.
 
 ## What it does
 
-`tools/copybara/copy.bara.sky` declares two workflows:
+For each component, `copy.bara.sky` generates two workflows, `<mirror>_export` and `<mirror>_import`:
 
-- **export** (`monorepo:sdk/node` -> `hopmesh/hop-sdk-node`): replays every monorepo commit that touches
-  `sdk/node`, commit-for-commit, into the mirror, stripping the `sdk/node/` prefix so the subtree becomes
-  the mirror's root. `CLAUDE.md` (monorepo-internal dev guidance) is left out of the public mirror.
-- **import** (`hop-sdk-node` PR -> monorepo PR): takes a PR opened on the mirror, re-adds the `sdk/node/`
-  prefix, and opens it as a **PR on the monorepo** (never a direct push to `main`), so external
-  contributions still go through review. It never rewrites the monorepo-internal files.
+- **export** (`monorepo:<prefix>` -> `hopmesh/<mirror>`): replays every monorepo commit that touches the
+  subtree, commit-for-commit, into the mirror, stripping the prefix so the subtree becomes the mirror's
+  root. `CLAUDE.md` (monorepo-internal dev guidance) is left out of the public mirror.
+- **import** (`<mirror>` PR -> monorepo PR): takes a PR opened on the mirror, re-adds the prefix, and
+  opens it as a **PR on the monorepo** (never a direct push to `main`), so external contributions still
+  go through review. It never rewrites the monorepo-internal files.
 
-The GitHub Action is `.github/workflows/sync-sdk-node.yml`.
+The GitHub Action is `.github/workflows/sync-components.yml`, a single dispatch parameterized by
+`component` (the mirror repo name) and `direction`.
 
 ## Quick sanity check (no Docker, no Copybara)
 
@@ -50,24 +52,56 @@ state tracking so it can run continuously.
    gh secret set COPYBARA_TOKEN --repo hopmesh/hop --body "<token>"
    ```
 
-3. **Seed the mirror** with the full history (one-off). ITERATIVE mode needs a baseline, so the first
-   run imports history with `--init-history`. Trigger the export manually and, just for this first run,
-   append `--init-history` to `copybara_options` in the workflow (or run Copybara locally, below):
+   Steps 1 and 2 (create the mirror repos + set `COPYBARA_TOKEN`) are automated by
+   `tools/copybara/bootstrap-mirrors.sh`, which you run yourself.
+
+3. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
+   so the FIRST export passes `init_history=true`:
 
    ```sh
-   gh workflow run "Sync sdk/node" -f workflow=export
+   gh workflow run "Sync component" -f component=hop-sdk-node -f direction=export -f init_history=true
    ```
 
-4. **Turn on continuous export**: uncomment the `push:` block in `.github/workflows/sync-sdk-node.yml`.
-   From then on every merge to `main` that touches `sdk/node` mirrors out automatically, incrementally.
+   After the first run, leave `init_history` off; subsequent exports are incremental.
 
-## Importing a contribution back
+## Where the conversation happens, and where the merge happens
 
-When someone opens a PR on `hopmesh/hop-sdk-node`, run the import workflow to bring it back as a monorepo
-PR (reviewed like any other change):
+One rule: **`main` on the monorepo is the source of truth, and every merge happens there.** What varies
+is where the *conversation* is:
+
+| Work | Conversation | Merge | How it reaches the other side |
+| --- | --- | --- | --- |
+| **Public** (external contribution, open by design) | a **PR on the mirror** (public) | the monorepo (the PR is imported there) | import (mirror PR -> monorepo PR), then export cascades back out |
+| **Internal / confidential** | a **PR on the monorepo** (private, can be locked) | the monorepo | export cascades to the mirror on merge (unless held back, below) |
+
+So a public contributor discusses on the mirror; the change is imported as a monorepo PR, reviewed and
+merged there, and the export publishes the result back to the mirror. The mirror PR is the public
+record; the monorepo PR is the merge of record.
+
+### Sync-back (mirror PR -> monorepo PR)
+
+Every component subtree ships a `.github/workflows/sync-back.yml` (carried out to each mirror by the
+export). It fires on a mirror **pull request** and asks the monorepo to import it (Copybara
+`CHANGE_REQUEST`), which opens the matching monorepo PR. It derives its own component name from the
+mirror repo, so the one file is identical everywhere; edit it in the monorepo, never in a mirror.
+
+No loop guard is needed: the export cascades out as a **push**, and a push does not fire pull-request
+events, so the sync-back never sees the export's own commits. It runs under `pull_request_target` (so the
+token is available even on a fork PR) and only dispatches, never checking out PR code. It needs an **org
+secret `HOP_SYNC_TOKEN`** shared to the mirrors, a token with push access to `hopmesh/hop`.
+
+### Confidentiality (what the export publishes)
+
+The export only ever ships a component's **own subtree** (minus `CLAUDE.md`), so nothing else in the
+private monorepo is visible to a public mirror. For a per-change embargo on top of that, gate the
+cascade on a label: publish a merge only if its monorepo PR is **not** labeled `confidential` (or require
+an explicit `publish` label). That gate lives in the export trigger, not in a change-request, so a
+reviewed monorepo merge still flows out with no extra approval when it is not held back.
+
+To import a mirror PR by hand instead:
 
 ```sh
-gh workflow run "Sync sdk/node" -f workflow=import
+gh workflow run "Sync component" -f component=hop-sdk-node -f direction=import
 ```
 
 ## Running Copybara locally
@@ -96,13 +130,11 @@ its consumers) must provide `libhop`: either a published prebuilt binary the pac
 
 ## Adding another component
 
-Copy the pattern:
+Add one line, `("<monorepo/subtree>", "<mirror-repo-name>")`, to the `COMPONENTS` list in
+`copy.bara.sky`. The loop generates its export + import workflows automatically, and the single
+`sync-components.yml` dispatch already handles any component by name. Then create + seed its mirror
+(add it to `bootstrap-mirrors.sh`, run that, then the seed command above).
 
-1. Add an `export`/`import` workflow pair to `copy.bara.sky` (or a new `copy.bara.sky` under
-   `tools/copybara/<component>/`) with the component's `PREFIX` and `MIRROR` repo.
-2. Copy `.github/workflows/sync-sdk-node.yml` to `sync-<component>.yml`, changing the paths, the
-   `destination_repo`, and the `custom_config`/`workflow` names.
-3. Run the one-time bootstrap for that component's mirror.
-
-Good next candidates: `core/hop-core`, each `sdk/<lang>`, `services/hop-relayd`. Each already carries its
-own FSL-1.1-ALv2 `LICENSE.md`, so it is ready to stand alone.
+The components wired today: the 8 SDKs, plus `hop-core`, `libhop`, `hop-wasm`, the two stores, the two
+bearer repos, the two driver repos, and the three services. Each already carries its own `LICENSE.md`
+(Apache-2.0 for the SDKs, FSL-1.1-ALv2 for the rest), so it is ready to stand alone.
