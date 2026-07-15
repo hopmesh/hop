@@ -1,0 +1,50 @@
+{
+  "name": "Hop",
+  "version": "0.0.1",
+  "description": "Hop for microcontrollers: a delay-tolerant, end-to-end-encrypted mesh over BLE, LoRa, and Wi-Fi, wrapping the libhop C ABI in a small Arduino / ESP-IDF C++ class. ESP32 today, more MCUs as the cross-compiles land.",
+  "keywords": [
+    "mesh",
+    "ble",
+    "lora",
+    "esp32",
+    "encryption"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hopmesh/hop-embedded"
+  },
+  "authors": [
+    {
+      "name": "Hop Mesh, LLC",
+      "url": "https://hopme.sh",
+      "maintainer": true
+    }
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://hopme.sh",
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "headers": "Hop.h",
+  "export": {
+    "include": [
+      "src",
+      "include",
+      "examples",
+      "prebuilt",
+      "library.json",
+      "link-libhop.py",
+      "README.md",
+      "LICENSE.md"
+    ]
+  },
+  "build": {
+    "srcDir": "src",
+    "libArchive": false,
+    "extraScript": "link-libhop.py"
+  }
+}

@@ -28,6 +28,7 @@ COMPONENTS = [
     ("sdk/elixir", "hop-sdk-elixir"),
     ("sdk/apple", "hop-sdk-apple"),
     ("sdk/android", "hop-sdk-android"),
+    ("sdk/embedded", "hop-embedded"),
     ("core/hop-core", "hop-core"),
     ("core/hop", "libhop"),
     ("core/hop-wasm", "hop-wasm"),

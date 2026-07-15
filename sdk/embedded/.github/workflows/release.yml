@@ -1,0 +1,54 @@
+# Publish the Hop PlatformIO library on a semver tag. This library ships a prebuilt libhop static archive
+# per ESP32 arch, so the release fetches those from the libhop repo's own Releases (libhop is the upstream
+# that cross-compiles hop-core for embedded targets), stages them, and runs `pio pkg publish`.
+#
+# Carried in from the Hop monorepo subtree (sdk/embedded) by Copybara; edit it there, never in a mirror.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Verify the tag matches library.json
+        # A mistyped tag must not publish the wrong version. library.json is plain JSON.
+        run: |
+          declared="v$(python3 -c "import json;print(json.load(open('library.json'))['version'])")"
+          if [ "$declared" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match library.json version ($declared)"; exit 1
+          fi
+
+      - name: Fetch the prebuilt libhop archives for ESP32
+        # libhop (github.com/hopmesh/libhop) cross-compiles hop-core (minimal feature) to a static
+        # archive per arch and attaches them to its Release for the SAME vX.Y.Z. We stage hop.h + the
+        # per-arch libhop.a into place; link-libhop.py points the linker at the right one per board.
+        # NOTE: this depends on the libhop release producer running first. The two hard arches are
+        # xtensa (ESP32/S-series, built with the esp-rs Rust fork) and riscv (C3/C6, stock Rust); the
+        # xtensa cross-compile is the part to validate on the first real libhop release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir -p include prebuilt/xtensa prebuilt/riscv
+          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'hop.h' --dir include || {
+            echo "no libhop release ${GITHUB_REF_NAME} yet; cut the libhop release first"; exit 1; }
+          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'libhop-esp32-xtensa.a' --output prebuilt/xtensa/libhop.a
+          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'libhop-esp32-riscv.a'  --output prebuilt/riscv/libhop.a
+
+      - name: Set up PlatformIO
+        run: pipx install platformio
+
+      - name: Publish to the PlatformIO registry
+        env:
+          PLATFORMIO_AUTH_TOKEN: ${{ secrets.PLATFORMIO_AUTH_TOKEN }}
+        run: pio pkg publish --no-interactive
