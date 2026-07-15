@@ -29,7 +29,7 @@
   *{box-sizing:border-box;margin:0;padding:0}
   html,body,#map{height:100%;width:100%}
   body{font-family:'Poppins',system-ui,sans-serif;background:var(--bg);color:#e8eef0;overflow:hidden}
-  #map{position:absolute;inset:0}
+  #map{position:absolute;inset:0;opacity:0;transition:opacity .35s ease}   /* revealed once framed on the real city (never flash SanFran) */
   .pane{background:rgba(18,23,30,.95);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px)}
   #head{position:absolute;top:16px;left:16px;z-index:5;padding:14px 16px;width:290px}
   #head .logo{height:40px;width:auto;color:var(--g);display:block;margin:0 0 12px}
@@ -110,7 +110,7 @@
   #minichat{position:absolute;left:10px;bottom:54px;z-index:9;width:min(300px,44%);display:flex;flex-direction:column;gap:5px;pointer-events:none}
   #minichat .mb{max-width:92%;padding:5px 9px;border-radius:11px;font-size:11.5px;line-height:1.3;color:#eafff5;word-break:break-word;background:#1f6f52;align-self:flex-end;border-bottom-right-radius:4px;box-shadow:0 1px 6px rgba(0,0,0,.35)}
   #minichat .mb.them{background:#232b34;color:#e8eef0;align-self:flex-start;border-bottom-right-radius:11px;border-bottom-left-radius:4px}
-  #minichat .mb .mw{display:block;font-size:9px;font-weight:600;color:#9fe8f2;margin-bottom:1px;text-transform:uppercase;letter-spacing:.05em}
+  #minichat .mb .mw{display:block;font-size:9px;font-weight:600;color:rgba(255,255,255,.72);margin-bottom:1px;text-transform:uppercase;letter-spacing:.05em}
   #minichat .mb .ms{display:block;font-size:9.5px;opacity:.75;margin-top:2px;text-align:right}
   #minichat .mb.them .ms{text-align:left}
   #appop h2{font-size:14px;margin:0 0 4px;color:#e8eef0;display:flex;justify-content:space-between;align-items:center;font-weight:600}
@@ -159,8 +159,7 @@
   html[data-theme="light"] #minibar a,
   html[data-theme="light"] #minibar #mLive,
   html[data-theme="light"] #minibar #mTimer b{color:#0a7d55}
-  html[data-theme="light"] #minibar #mTimer,
-  html[data-theme="light"] #minichat .mb .mw{color:#0e7490}
+  html[data-theme="light"] #minibar #mTimer{color:#0e7490}
   html[data-theme="light"] [style*="#2bf0a0"]{color:#0a7d55!important}
   html[data-theme="light"] [style*="#9fe8f2"]{color:#0e7490!important}
   html[data-theme="light"] [style*="#e3c48a"]{color:#96590a!important}
@@ -176,6 +175,8 @@
   html[data-theme="light"] #compose label,
   html[data-theme="light"] #inspect .ir span{color:#5a6a74}
   html[data-theme="light"] #minibar #mTitle{color:#16202a}
+  /* light mode: the minibar is a light panel, not a dark band (was a black bar with a dark-on-dark title) */
+  html[data-theme="light"] #minibar{background:rgba(255,255,255,.94)}
   /* keep the green primary buttons readable; only the neutral chrome inverts */
   html[data-theme="light"] .maplibregl-ctrl-attrib{background:rgba(255,255,255,.75)!important}
 </style>
@@ -579,7 +580,22 @@ const LBL_HALO=()=>isLight()?[255,255,255]:[12,15,19];
 const styleOf=s=>{ const st=(s&&s.stage&&s.stage.style); if(st) return st;   // stage pins its own terrain
   return document.documentElement.dataset.theme==='light'?'light':'dark'; };
 let curStyle=styleOf(SCEN);
-const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle],center:[-122.4095,37.7845],zoom:12.9,attributionControl:{compact:true}});
+// Start already looking at THIS scenario's own place (its hand-framed camera, else the centroid of
+// whatever staged coords we have at construction), never San Francisco, so the "loading" beat never
+// flashes a different city. applyCamera() does the precise fit once the route geometry is in; the map
+// stays hidden (opacity 0) until then.
+const START=(()=>{
+  if(SCEN&&SCEN.camera&&SCEN.camera.center) return {center:SCEN.camera.center, zoom:SCEN.camera.zoom||12.9};
+  const st=SCEN&&SCEN.stage, pts=[];
+  if(st){ for(const a of (st.aps||[])) if(a.pos) pts.push(a.pos);
+          for(const d of (st.decor||[])){ if(d&&d.from) pts.push(d.from); if(d&&d.to) pts.push(d.to); } }
+  if(pts.length){ let x=0,y=0; for(const p of pts){ x+=p[0]; y+=p[1]; } return {center:[x/pts.length, y/pts.length], zoom:11}; }
+  return {center:[-122.4095,37.7845], zoom:12.9};   // free-play / no scenario: the SF sandbox
+})();
+const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle],center:START.center,zoom:START.zoom,attributionControl:{compact:true}});
+// Safety floor: never leave the map hidden. If the load handler ever stalls, reveal anyway after a
+// beat, it is already centered on the scenario's own place, so it's the right city, not a SF flash.
+setTimeout(()=>{ const m=document.getElementById('map'); if(m&&m.style.opacity!=='1') m.style.opacity='1'; }, 2600);
 const EMPTY={type:'FeatureCollection',features:[]};
 function emojiImg(e,s){const c=document.createElement('canvas');c.width=c.height=s;const x=c.getContext('2d');x.font=(s*0.78)+'px "Apple Color Emoji", sans-serif';x.textAlign='center';x.textBaseline='middle';x.fillText(e,s/2,s*0.54);return x.getImageData(0,0,s,s);}
 // signal-bars badge: green bars = has cell, grey bars + red slash = no signal (no SIM, no tower, or towers down)
@@ -610,6 +626,7 @@ map.on('load', async ()=>{ try{
   await loadRoutes();     // real street geometry positions everyone
   await initDeck();       // deck.gl overlay for people + lines (awaits the FA icon atlas)
   applyCamera();
+  map.getContainer().style.opacity = '1';   // now framed on the scenario's own city, reveal it
   if(MINI) enterMini();
   startWorker();
   requestAnimationFrame(loop);
