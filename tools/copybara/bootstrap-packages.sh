@@ -140,7 +140,16 @@ create_crate() {
     if [ -n "$name" ] && curl -sf "https://crates.io/api/v1/crates/$name/$ver" >/dev/null 2>&1; then
       echo "  $repo (crates.io): $name@$ver already published, skipping"
     elif CARGO_REGISTRY_TOKEN="$CARGO_REGISTRY_TOKEN" cargo publish; then
-      echo "  $repo (crates.io): published $name@$ver"
+      # crates.io's sparse index (what cargo resolves against) lags the upload by a few seconds, so a
+      # dependent crate published right after would fail "no matching package". Wait until it is served.
+      idx="$(python3 -c 'import sys;n=sys.argv[1];print(("1/"+n) if len(n)==1 else ("2/"+n) if len(n)==2 else ("3/"+n[0]+"/"+n) if len(n)==3 else (n[:2]+"/"+n[2:4]+"/"+n))' "$name")"
+      echo "  $repo (crates.io): published $name@$ver; waiting for the index to serve it..."
+      for _ in $(seq 1 30); do
+        if curl -sf "https://index.crates.io/$idx" 2>/dev/null | grep -q "\"vers\":\"$ver\""; then
+          echo "  $repo (crates.io): $name@$ver is live on the index"; break
+        fi
+        sleep 4
+      done
     else
       echo "  $repo (crates.io): publish failed above (a dep not on crates.io yet? publish hop-core first)"
     fi
