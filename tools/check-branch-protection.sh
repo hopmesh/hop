@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# quality-net-r2-03: assert the LIVE GitHub branch-protection rule on `main` requires exactly the CI
-# checks, so the deploy gate's intent half can't silently drift (a renamed job, protection turned off).
+# quality-net-r2-03: assert the LIVE GitHub branch-protection rule on `main` requires exactly the single
+# aggregate `CI gate` check, so the deploy gate's intent half can't silently drift (protection turned
+# off, or the required check swapped away from the gate).
 #
-# Compares the required status-check contexts on main against the ci.yml job names. For GitHub Actions
-# checks, the required-status-check context IS the job name verbatim (e.g. "Rust (test . clippy . fmt)"),
-# NOT "<workflow> / <job>". Verified against the live rule + the commit check-runs. Fails on any
-# mismatch, on protection being absent, or on an API error (so a missing/insufficient token surfaces
-# as a red audit rather than a false green).
+# In the aggregate-gate model the ONE required context is `CI gate` (its Actions check-run context is
+# the job name verbatim, NOT "<workflow> / <job>"). The per-job integrity (the gate `needs:` every job,
+# _REQUIRED_CHECKS == [CI gate]) is enforced separately by check-required-checks.sh in the PR gate; here
+# we only assert the live rule requires the gate and nothing else. Fails on any mismatch, on protection
+# being absent, or on an API error (so a missing/insufficient token surfaces as a red audit, not a false
+# green).
 #
 # Env:
 #   GH_TOKEN  a token that can read branch protection (administration:read) on the repo.
@@ -20,35 +22,41 @@ if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error:: GH_TOKEN not set; cannot read branch protection for $REPO"; exit 1
 fi
 
-# Expected contexts: the job name verbatim for every job in ci.yml (the Actions check-run name that
-# branch protection matches against).
+# Expected context: exactly the single `CI gate` check. Confirm ci.yml actually defines that job (skip
+# comment lines; ":(\s|$)" so an anchor/inline job is still a boundary, matching check-required-checks.sh)
+# so a rename of the gate here surfaces as a config error rather than a silently-empty expectation.
 expected="$(python3 - "$CI" <<'PY'
 import sys, re
 ci = sys.argv[1]
 in_jobs = False
-job_pending = False
+pending = False
+found = False
 for line in open(ci):
     if re.match(r'^jobs:\s*$', line):
         in_jobs = True; continue
     if not in_jobs:
         continue
-    # ":(\s|$)" (not ":\s*$") so an anchor/inline-defined job is still seen as a job boundary (F-CI-2),
-    # matching check-required-checks.sh. This script only emits names for the comparison; the
-    # nameless/templated hard-fail lives in check-required-checks.sh, which the audit runs first.
+    if line.lstrip().startswith('#'):
+        continue
     if re.match(r'^  (\S[^:]*):(\s|$)', line):
-        job_pending = True; continue
+        pending = True; continue
     m = re.match(r'^    name:\s*(.+?)\s*$', line)
-    if m and job_pending:
-        print(m.group(1))
-        job_pending = False
+    if m and pending:
+        if m.group(1) == "CI gate":
+            found = True
+        pending = False
+if found:
+    print("CI gate")
 PY
 )"
 if [ -z "$expected" ]; then
-  echo "::error:: could not parse job names from $CI"; exit 1
+  echo "::error:: ci.yml defines no 'CI gate' job; the aggregate-gate branch-protection model expects one"; exit 1
 fi
 
 api="https://api.github.com/repos/${REPO}/branches/main/protection"
-resp="$(curl -sS -w '\n%{http_code}' \
+# -L follows the 301 GitHub returns when the repo has been renamed (repos/<owner>/<oldname> ->
+# repositories/<id>); without it a renamed repo reads as an "unexpected HTTP 301" and reddens the audit.
+resp="$(curl -sSL -w '\n%{http_code}' \
   -H "Authorization: Bearer $GH_TOKEN" \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -58,7 +66,7 @@ body="$(printf '%s' "$resp" | sed '$d')"
 
 if [ "$code" = "404" ]; then
   echo "::error:: branch 'main' has NO protection rule (or it is not visible to this token)."
-  echo "  Set protection so 'Require status checks to pass' includes every ci.yml job-name context (see infra/README.md)."
+  echo "  Set protection so 'Require status checks to pass' includes the 'CI gate' check (see infra/README.md)."
   exit 1
 fi
 if [ "$code" = "403" ] || [ "$code" = "401" ]; then
@@ -86,7 +94,7 @@ for c in sorted(ctx):
 
 if [ -z "$actual" ]; then
   echo "::error:: main protection exists but requires NO status checks. A red commit can land."
-  echo "  Add every ci.yml job-name context to 'Require status checks to pass'."
+  echo "  Add the 'CI gate' check to 'Require status checks to pass'."
   exit 1
 fi
 
@@ -109,4 +117,4 @@ fi
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "branch protection on main requires all $(printf '%s\n' "$expected" | grep -c .) CI checks"
+echo "branch protection on main requires exactly the single CI gate check"
