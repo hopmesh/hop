@@ -37,22 +37,12 @@ substitutions:
   # KEEP IN SYNC with ci.yml job names AND infra/README.md ("Deploy gate + branch protection") AND the
   # branch-protection audit (.github/workflows/branch-protection-audit.yml). The purity of this list is
   # itself asserted in CI (tools/check-required-checks.sh).
+  # The deploy gate requires the single aggregate check `CI gate`, which passes only when every CI job
+  # that needed to run passed (a path-filtered skip is fine). Requiring just the gate (not each job)
+  # lets jobs skip on unrelated commits without the gate polling forever for a skipped required name.
+  # check-required-checks.sh asserts this list is exactly [CI gate] AND that the gate `needs:` every
+  # other ci.yml job, so a new job can't fail-open by being left out of the gate.
   _REQUIRED_CHECKS: |
-    Rust (test · clippy · fmt)
-    Kotlin SDK tests (BearerManager)
-    Android bearers + driver (JVM unit tests)
-    Apple bearers + driver + app (build-only)
-    WASM sim (wasm32 build + swarm invariants)
-    Web + sim (Astro build · scenario-check · link check)
-    Contract purity + header drift + C smoke
-    Terraform (fmt · validate · plan)
-    Docs token guard (banned copy)
-    Node endpoint SDK (proofs)
-    Python endpoint SDK (proofs)
-    Go endpoint SDK (race)
-    Ruby endpoint SDK (proofs)
-    Crystal endpoint SDK (spec)
-    Elixir endpoint SDK (mix test)
     CI gate
 steps:
   # infra-07: both image builds start immediately (waitFor ['-']) so the two cold full-workspace Rust
