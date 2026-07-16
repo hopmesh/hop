@@ -1,33 +1,153 @@
 #!/usr/bin/env bash
-# bootstrap-packages.sh: set up the Hop packages on every package manager. RUN THIS YOURSELF: it touches
-# your registry accounts and sets repo secrets. Idempotent where it can be. bash-3.2 safe (stock macOS).
+# bootstrap-packages.sh: create the Hop packages on each registry, then turn on trusted publishing.
+# RUN THIS YOURSELF: it publishes packages under your registry accounts and sets repo secrets. It is a
+# human action, not something CI or an agent does for you. Idempotent: every create checks the registry
+# first and skips a package that is already there. bash-3.2 safe (stock macOS).
 #
-# On most registries a package is CREATED by its first publish, so this script does not "reserve" names
-# itself. Its job is the setup around that: (1) the account/org steps you do on the web, (2) wiring each
-# registry's publish token as a secret on the mirror(s) that publish to it, so the per-repo release
-# workflows can publish on a vX.Y.Z tag, and (3) how to cut that first release.
+# WHY "create locally" FIRST (the reason this script exists):
+#   npm, RubyGems, and crates.io only let you configure a Trusted Publisher (GitHub OIDC, no long-lived
+#   token) on a package that ALREADY EXISTS. So section 2 does the FIRST publish of each package from a
+#   clean mirror clone using a one-time token, which reserves the name and makes the package exist.
+#   Section 3 then points each package's Trusted Publisher at its release.yml workflow, and from the next
+#   version on, every release publishes over OIDC with NO token. (PyPI also supports "pending
+#   publishers", so it does not strictly need the local create, but we create it the same way so all
+#   four OIDC registries are consistent.)
 #
-# Tokens are read from env vars so they are never printed or left in shell history:
-#   export NPM_TOKEN=... PYPI_API_TOKEN=... RUBYGEMS_API_KEY=... HEX_API_KEY=... CARGO_REGISTRY_TOKEN=...
-#   export PLATFORMIO_AUTH_TOKEN=...
+# The first publish comes from the CLEAN MIRROR (github.com/hopmesh/<repo>), never the monorepo: the
+# mirror has the release manifests at its root and none of the monorepo-internal files (no CLAUDE.md).
+# Seed the mirrors first (tools/copybara/bootstrap-mirrors.sh + the initial export) so the clones exist.
+#
+# Tokens come from env vars so they are never printed or saved in shell history:
+#   export NPM_TOKEN=...            # npmjs.com automation token (publish) for @hop-mesh/*
+#   export PYPI_API_TOKEN=...       # pypi.org token (account-scoped for the first publish)
+#   export RUBYGEMS_API_KEY=...     # rubygems.org key with push scope (an MFA key if the account has MFA)
+#   export HEX_API_KEY=...          # hex.pm key (Hex has no OIDC: token now AND for every release)
+#   export CARGO_REGISTRY_TOKEN=... # crates.io token
 #   export MAVEN_USERNAME=... MAVEN_PASSWORD=... MAVEN_GPG_KEY=... MAVEN_GPG_PASSPHRASE=...
 #   tools/copybara/bootstrap-packages.sh
 set -euo pipefail
 ORG="hopmesh"
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+
+have() { command -v "$1" >/dev/null 2>&1; }
+# clone <mirror-repo>: shallow-clone the clean mirror into $WORK and echo its path (empty on failure).
+clone() {
+  d="$WORK/$1"
+  if git clone --depth 1 "https://github.com/$ORG/$1.git" "$d" >/dev/null 2>&1; then
+    printf '%s\n' "$d"
+  fi
+}
 
 echo "== 1. accounts / orgs to create on the web (one-time) =="
-echo "  npm          create the 'hop-mesh' org (npmjs.com/org/create) so @hop-mesh/* can publish"
-echo "  PyPI         an account; prefer Trusted Publishing (GitHub OIDC, no long-lived token) for hop-endpoint"
-echo "  RubyGems     an account (rubygems.org) for the hop-endpoint gem"
-echo "  Hex          an account (hex.pm) for the hop package"
-echo "  crates.io    a crates.io account (sign in with GitHub) for hop-core / libhop / hop-store-*"
+echo "  npm           create the 'hop-mesh' org (npmjs.com/org/create) so @hop-mesh/* can publish"
+echo "  PyPI          an account (pypi.org) for the hop-endpoint project"
+echo "  RubyGems      an account (rubygems.org) for the hop-endpoint gem"
+echo "  Hex           an account (hex.pm) for the hop package (no OIDC: always token-published)"
+echo "  crates.io     a crates.io account (sign in with GitHub) for hop-core / libhop / hop-store-*"
 echo "  Maven Central a Sonatype Central account + a VERIFIED namespace (e.g. sh.hop) + a published GPG key"
-echo "  PlatformIO   a registry.platformio.org account + token, for the Hop embedded library (hop-embedded)"
 echo "  Go / Swift / Crystal  NO account: they publish by pushing a git tag (the repo IS the package)"
 echo
 
-echo "== 2. wire registry publish tokens as repo secrets (from env; nothing printed) =="
-# set_secret REPO SECRET VALUE LABEL: set SECRET on ORG/REPO to VALUE if VALUE is non-empty.
+echo "== 2. create each package locally (first publish reserves the name + makes it exist) =="
+# create_npm <mirror>: first-publish an npm package from its clean mirror. hop-wasm is built with
+# wasm-pack (publishing pkg/); the rest publish their repo root. Skips if the version is already on npm.
+create_npm() {
+  repo="$1"
+  [ -n "${NPM_TOKEN:-}" ] || { echo "  $repo (npm): skip, NPM_TOKEN not set"; return; }
+  have npm && have node || { echo "  $repo (npm): skip, need node + npm on PATH"; return; }
+  d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (npm): skip, clone failed (mirror seeded yet?)"; return; }
+  npmrc="$WORK/npmrc"; printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" >"$npmrc"; chmod 600 "$npmrc"
+  (
+    cd "$d"
+    if [ "$repo" = "hop-wasm" ]; then
+      have wasm-pack || { echo "  $repo (npm): skip, wasm-pack not installed (cargo install wasm-pack)"; exit 0; }
+      wasm-pack build --release --scope hop-mesh --target bundler >/dev/null || { echo "  $repo (npm): wasm-pack build failed"; exit 0; }
+      cd pkg
+    else
+      npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1 || true
+    fi
+    name="$(node -p "require('./package.json').name")"
+    ver="$(node -p "require('./package.json').version")"
+    if npm view "$name@$ver" version >/dev/null 2>&1; then
+      echo "  $repo (npm): $name@$ver already published, skipping"
+    else
+      npm publish --access public --userconfig "$npmrc" >/dev/null \
+        && echo "  $repo (npm): published $name@$ver" \
+        || echo "  $repo (npm): publish failed (2FA? run 'npm publish --otp=CODE' from $d by hand)"
+    fi
+  )
+}
+
+create_pypi() {  # hop-sdk-python -> hop-endpoint on PyPI
+  repo="hop-sdk-python"
+  [ -n "${PYPI_API_TOKEN:-}" ] || { echo "  $repo (PyPI): skip, PYPI_API_TOKEN not set"; return; }
+  have python3 || { echo "  $repo (PyPI): skip, python3 not on PATH"; return; }
+  python3 -c 'import build, twine' 2>/dev/null || { echo "  $repo (PyPI): skip, need 'pip install build twine'"; return; }
+  d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (PyPI): skip, clone failed"; return; }
+  (
+    cd "$d"
+    python3 -m build >/dev/null || { echo "  $repo (PyPI): build failed"; exit 0; }
+    TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" \
+      python3 -m twine upload --skip-existing dist/* >/dev/null \
+      && echo "  $repo (PyPI): uploaded dist to hop-endpoint" \
+      || echo "  $repo (PyPI): upload failed"
+  )
+}
+
+create_gem() {  # hop-sdk-ruby -> hop-endpoint gem on RubyGems
+  repo="hop-sdk-ruby"
+  [ -n "${RUBYGEMS_API_KEY:-}" ] || { echo "  $repo (RubyGems): skip, RUBYGEMS_API_KEY not set"; return; }
+  have gem || { echo "  $repo (RubyGems): skip, gem not on PATH"; return; }
+  d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (RubyGems): skip, clone failed"; return; }
+  (
+    cd "$d"
+    gem build ./*.gemspec >/dev/null || { echo "  $repo (RubyGems): gem build failed"; exit 0; }
+    GEM_HOST_API_KEY="$RUBYGEMS_API_KEY" gem push ./*.gem >/dev/null 2>&1 \
+      && echo "  $repo (RubyGems): pushed hop-endpoint gem" \
+      || echo "  $repo (RubyGems): push failed (already published, or MFA OTP required)"
+  )
+}
+
+create_hex() {  # hop-sdk-elixir -> hop on Hex (Hex has no OIDC; token-published now and always)
+  repo="hop-sdk-elixir"
+  [ -n "${HEX_API_KEY:-}" ] || { echo "  $repo (Hex): skip, HEX_API_KEY not set"; return; }
+  have mix || { echo "  $repo (Hex): skip, mix not on PATH"; return; }
+  d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (Hex): skip, clone failed"; return; }
+  (
+    cd "$d"
+    mix deps.get >/dev/null 2>&1 || true
+    HEX_API_KEY="$HEX_API_KEY" mix hex.publish --yes >/dev/null 2>&1 \
+      && echo "  $repo (Hex): published hop" \
+      || echo "  $repo (Hex): publish failed (already published, or 'mix hex.publish' by hand from $d)"
+  )
+}
+
+create_npm hop-sdk-node
+create_npm hop-wasm
+create_pypi
+create_gem
+create_hex
+echo "  crates.io (hop-core/libhop/hop-store-*): NOT auto-created here. The four Rust crates depend on"
+echo "     hop-core by PATH today; publishing needs version deps first (see docs/repo-catalog.md 'open')."
+echo "     Once decided:  cd <clone> && CARGO_REGISTRY_TOKEN=\$CARGO_REGISTRY_TOKEN cargo publish -p <crate>"
+echo "  Maven Central (hop-sdk-android/...): needs the Sonatype namespace + GPG key; publish via its"
+echo "     release.yml once MAVEN_* secrets are set (section 4)."
+echo
+
+echo "== 3. turn on trusted publishing (GitHub OIDC, no token) for every release after the first =="
+# For each OIDC registry, configure a Trusted Publisher in the package's registry settings with EXACTLY
+# these values. Provider = GitHub Actions; leave the environment field blank (the workflows use none).
+echo "  npm  @hop-mesh/endpoint   settings 'Trusted Publisher': owner hopmesh, repo hop-sdk-node, workflow release.yml"
+echo "  npm  @hop-mesh/wasm       settings 'Trusted Publisher': owner hopmesh, repo hop-wasm,     workflow release.yml"
+echo "  PyPI hop-endpoint         'Publishing' > 'Trusted Publishers': owner hopmesh, repo hop-sdk-python, workflow release.yml"
+echo "  RubyGems hop-endpoint     gem 'Trusted publishers': owner hopmesh, repo hop-sdk-ruby, workflow release.yml"
+echo "  crates.io hop-core/...    crate settings 'Trusted Publishing': owner hopmesh, repo <the crate's mirror>, workflow release.yml"
+echo "  (Hex + Maven Central have no OIDC path yet: they stay token-published, see section 4.)"
+echo "  Each release.yml already declares 'permissions: id-token: write'; nothing else in CI to change."
+echo
+
+echo "== 4. wire tokens as repo secrets (token-only registries + a fallback if you skip OIDC) =="
+# set_secret REPO SECRET VALUE LABEL: set SECRET on ORG/REPO to VALUE when VALUE is non-empty.
 set_secret() {
   repo="$1"; secret="$2"; val="$3"; label="$4"
   if [ -n "$val" ]; then
@@ -36,31 +156,32 @@ set_secret() {
     echo "  $repo  skip $secret  (\$$label not exported)"
   fi
 }
-set_secret hop-sdk-node   NPM_TOKEN        "${NPM_TOKEN:-}"           NPM_TOKEN
-set_secret hop-wasm       NPM_TOKEN        "${NPM_TOKEN:-}"           NPM_TOKEN
-set_secret hop-sdk-python PYPI_API_TOKEN   "${PYPI_API_TOKEN:-}"      PYPI_API_TOKEN
-set_secret hop-sdk-ruby   RUBYGEMS_API_KEY "${RUBYGEMS_API_KEY:-}"    RUBYGEMS_API_KEY
-set_secret hop-sdk-elixir HEX_API_KEY      "${HEX_API_KEY:-}"         HEX_API_KEY
-set_secret hop-embedded   PLATFORMIO_AUTH_TOKEN "${PLATFORMIO_AUTH_TOKEN:-}" PLATFORMIO_AUTH_TOKEN
-for r in hop-core libhop hop-store-sqlite hop-store-firestore; do
-  set_secret "$r" CARGO_REGISTRY_TOKEN "${CARGO_REGISTRY_TOKEN:-}" CARGO_REGISTRY_TOKEN
-done
+# Hex is always token-published (no OIDC). Maven Central is token + GPG. Set these for real releases.
+set_secret hop-sdk-elixir HEX_API_KEY "${HEX_API_KEY:-}" HEX_API_KEY
 for r in hop-sdk-android hop-bearers-android hop-driver-android; do
   set_secret "$r" MAVEN_USERNAME       "${MAVEN_USERNAME:-}"       MAVEN_USERNAME
   set_secret "$r" MAVEN_PASSWORD       "${MAVEN_PASSWORD:-}"       MAVEN_PASSWORD
   set_secret "$r" MAVEN_GPG_KEY        "${MAVEN_GPG_KEY:-}"        MAVEN_GPG_KEY
   set_secret "$r" MAVEN_GPG_PASSPHRASE "${MAVEN_GPG_PASSPHRASE:-}" MAVEN_GPG_PASSPHRASE
 done
+# OIDC registries need NO secret once section 3 is done. If you would rather keep tokens (and reverted the
+# release.yml files to the token form), uncomment these to wire them as a fallback:
+#   set_secret hop-sdk-node   NPM_TOKEN            "${NPM_TOKEN:-}"            NPM_TOKEN
+#   set_secret hop-wasm       NPM_TOKEN            "${NPM_TOKEN:-}"            NPM_TOKEN
+#   set_secret hop-sdk-python PYPI_API_TOKEN       "${PYPI_API_TOKEN:-}"       PYPI_API_TOKEN
+#   set_secret hop-sdk-ruby   RUBYGEMS_API_KEY     "${RUBYGEMS_API_KEY:-}"     RUBYGEMS_API_KEY
+#   for r in hop-core libhop hop-store-sqlite hop-store-firestore; do
+#     set_secret "$r" CARGO_REGISTRY_TOKEN "${CARGO_REGISTRY_TOKEN:-}" CARGO_REGISTRY_TOKEN
+#   done
 echo "  (Go, Swift/SPM, Crystal shards need no token: a git tag is the publish.)"
 echo
 
-echo "== 3. cut the first release (this CREATES each package) =="
-echo "  Each mirror carries a release workflow that fires on a vX.Y.Z tag, checks the tag's major.minor"
-echo "  against the protocol anchor, builds, and publishes. Tag the first version once its token is set:"
-echo "      gh release create v0.0.1 --repo $ORG/hop-sdk-node    --title v0.0.1 --generate-notes"
-echo "      gh release create v0.0.1 --repo $ORG/hop-sdk-python  --title v0.0.1 --generate-notes"
+echo "== 5. cut every release after the first with a tag (publishes over OIDC) =="
+echo "  Each mirror's release.yml fires on a vX.Y.Z tag, checks the tag's major.minor against the anchor,"
+echo "  builds, and publishes. Section 2 created v0.0.1, so the next release is v0.0.2:"
+echo "      gh release create v0.0.2 --repo $ORG/hop-sdk-node   --title v0.0.2 --generate-notes"
+echo "      gh release create v0.0.2 --repo $ORG/hop-sdk-python --title v0.0.2 --generate-notes"
 echo "      ... one per package ..."
-echo "  Registry-push targets (npm, PyPI, RubyGems, Hex, crates.io, Maven) reserve the name on that first"
-echo "  publish. Tag-only targets (Go, Swift, Crystal) are consumable by that tag immediately."
+echo "  Tag-only targets (Go, Swift, Crystal) are consumable by that tag immediately, no registry push."
 echo
 echo "Done."

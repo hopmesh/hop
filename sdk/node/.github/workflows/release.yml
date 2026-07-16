@@ -10,9 +10,13 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-# Least privilege: we only read the checkout. npm auth rides NODE_AUTH_TOKEN.
+# OIDC trusted publishing: id-token lets the npm CLI authenticate to the registry via GitHub OIDC, so
+# there is no long-lived token. Configure the trusted publisher on npmjs.com first (package
+# @hop-mesh/endpoint, org hop-mesh, repository hopmesh/hop-sdk-node, workflow release.yml). To use a
+# token instead, set the NPM_TOKEN secret and swap the publish step for the commented NODE_AUTH_TOKEN form.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -24,7 +28,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       # Guard: the tag (minus its leading v) must equal package.json's version, so a
@@ -41,8 +45,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # @hop-mesh/endpoint is scoped, so --access public makes it a public publish.
-      - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # OIDC trusted publishing needs a recent npm (>= 11.5.1); node 22 ships an older one.
+      - name: Update npm for OIDC
+        run: npm install -g npm@latest
+
+      # @hop-mesh/endpoint is scoped, so --access public makes it a public publish. --provenance
+      # attaches a signed build-provenance statement (also via OIDC).
+      - name: Publish to npm (OIDC trusted publishing)
+        run: npm publish --access public --provenance
+        # Token fallback (if you did not set up a trusted publisher): drop --provenance, drop the
+        # id-token permission, and add:  env: { NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} }
