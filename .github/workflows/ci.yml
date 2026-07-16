@@ -329,11 +329,29 @@ jobs:
 
   apple:
     name: Apple bearers + driver + app (build-only)
-    runs-on: macos-14
+    # Self-hosted macOS runner (the 10x GitHub-hosted macOS minutes were the biggest CI line item). To
+    # fall back to GitHub-hosted, set: runs-on: macos-14 (and drop the CI-keychain step below).
+    runs-on: [self-hosted, macOS]
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
     steps:
       - uses: actions/checkout@v7
+
+      # A self-hosted runner running as a background launchd agent has NO unlocked keychain in its
+      # session search list, so the HopDriver Keychain/Secure-Enclave tests (SecItemAdd/Copy) fail and
+      # fall back to in-memory. Create + unlock a dedicated CI keychain and make it the default (the same
+      # thing GitHub-hosted runners and every iOS CI pipeline do). Harmless on a hosted runner too.
+      - name: Set up a CI keychain
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/hop-ci.keychain-db"
+          security create-keychain -p ci-temp "$KC"
+          security set-keychain-settings -lut 21600 "$KC"   # unlocked, no auto-lock on sleep
+          security unlock-keychain -p ci-temp "$KC"
+          # Put the CI keychain first in the user search list but keep login so existing items resolve.
+          security list-keychains -d user -s "$KC" "$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -s "$KC"
+          echo "CI keychain ready: $KC"
 
       # The default Xcode on macos-14 is 15.4, but `xcodegen` (latest from brew) emits the newest
       # project format (objectVersion 77 = Xcode 16), which Xcode 15.4's xcodebuild cannot open
