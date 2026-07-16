@@ -39,9 +39,11 @@ Deploy is GitOps: a push to `main` triggers the Cloud Build run in
 2. **Intent gate (repo settings, not code).** No file can turn on branch protection,
    so it must be set once in GitHub `Settings -> Branches` for `main`:
    - Require a pull request before merging.
-   - Require status checks to pass, selecting every `CI / ...` check
-     (Rust, Kotlin SDK, Android, Apple, WASM, Web + sim, Contract, Terraform, Docs token guard,
-     and the Node/Python/Go/Ruby/Crystal/Elixir endpoint SDK jobs).
+   - Require status checks to pass. The single required check is `CI / CI gate`, an aggregate that
+     passes only when every other CI job passed or was correctly skipped by a path filter. (The
+     individual jobs still run: Rust, Kotlin SDK, Android, Apple, WASM, Web + sim, Contract, Terraform,
+     Docs token guard, and the Node/Python/Go/Ruby/Crystal/Elixir endpoint SDK jobs. Requiring only the
+     gate lets a job skip on an unrelated change without leaving a required check stuck pending.)
    - Require branches to be up to date before merging.
    This stops a red commit from reaching `main` at all; layer 1 is the backstop if it
    somehow does.

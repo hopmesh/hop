@@ -30,6 +30,11 @@ for line in open(sys.argv[1]):
         continue
     if not in_jobs:
         continue
+    # Skip YAML comments: a two-space-indented job-level comment like "  # Gate: ..." would otherwise
+    # match the job-key regex below (captured as a job id "# Gate") and then be flagged nameless. A
+    # comment never defines a job. (Step-level block content is indented deeper and is not scanned here.)
+    if line.lstrip().startswith("#"):
+        continue
     # A job key: two-space indent, "<id>:" then whitespace, an anchor, an inline map, or end of line.
     # Matching ":(\s|$)" rather than the old ":\s*$" is deliberate (pass-18 F-CI-2): a job defined with a
     # YAML anchor ("sneaky: &anchor") or inline map put ANYTHING after the colon, so the old anchored

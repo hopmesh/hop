@@ -53,6 +53,7 @@ substitutions:
     Ruby endpoint SDK (proofs)
     Crystal endpoint SDK (spec)
     Elixir endpoint SDK (mix test)
+    CI gate
 steps:
   # infra-07: both image builds start immediately (waitFor ['-']) so the two cold full-workspace Rust
   # release builds run in PARALLEL rather than serially. Cloud Build's default (no waitFor) makes a step

@@ -774,3 +774,39 @@ jobs:
           mix deps.get
           mix format --check-formatted
           mix test
+
+  # Aggregate gate: the intended SINGLE required check for branch protection AND the deploy gate. It
+  # `needs:` every other job and, via `if: always()`, runs even when one failed. It passes iff no job
+  # FAILED or was CANCELLED; a job that was SKIPPED by a path filter is fine. Collapsing the required
+  # set to this one check lets jobs skip on unrelated PRs without leaving a required check stuck pending
+  # (a skipped required check does not reliably satisfy branch protection; a green gate always does).
+  # Until branch protection + the deploy allowlist are repointed at "CI gate" alone, every job still
+  # runs on every PR, so this is inert-but-green today.
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - rust
+      - kotlin-sdk
+      - android
+      - apple
+      - wasm
+      - web
+      - contract
+      - infra
+      - docs-tokens
+      - node-sdk
+      - python-sdk
+      - go-sdk
+      - ruby-sdk
+      - crystal-sdk
+      - elixir-sdk
+    steps:
+      - name: Results
+        run: echo "job results:${{ format(' {0}', join(needs.*.result, ' ')) }}"
+      - name: Fail if any required job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::a required CI job did not pass (see the results above)"
+          exit 1

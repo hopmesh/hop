@@ -79,6 +79,13 @@ MATRIX_REQ=$'    Rust checks\n    Test (${{ matrix.os }})\n'
 build_root "$TMP/matrix" "$MATRIX_JOBS" "$MATRIX_REQ" "$README"
 expect "$TMP/matrix" fail "templated_matrix_name_rejected"
 
+# 6) a two-space-indented job-level COMMENT that contains a colon (e.g. "  # CI gate: ...") must be
+# SKIPPED, not misread as a job id "# CI gate" and then flagged nameless. This broke the parser when the
+# aggregate CI gate job got an explanatory comment above it.
+COMMENT_JOBS=$'  # CI gate: the single required check for branch protection.\n'"$TWO_JOBS"
+build_root "$TMP/comment" "$COMMENT_JOBS" "$TWO_REQ" "$README"
+expect "$TMP/comment" pass "job_level_comment_skipped"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "check-required-checks.test: all $pass cases passed"
