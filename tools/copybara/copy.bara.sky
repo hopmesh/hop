@@ -53,10 +53,86 @@ def mirror_url(name):
 def internal_files(prefix):
     return [prefix + "/CLAUDE.md"]
 
+# The Rust crate mirrors. Each crate's Cargo.toml inherits version/edition/repository and its external
+# deps from the monorepo [workspace.*] tables and depends on sibling crates by path, none of which exist
+# in a standalone single-crate mirror, so `cargo`/`wasm-pack` cannot resolve it. On export we inject a
+# self-contained [workspace] preamble that supplies those tables, with the four inter-crate deps rewritten
+# to their crates.io VERSIONS (Jason's call: crates.io version deps, not git or a collapsed workspace).
+# cargo resolves the `.workspace = true` inheritance into concrete values at publish time, so the manifest
+# that lands on crates.io is clean. The import direction strips the preamble back out so a mirror PR never
+# writes it into the monorepo. hop-core is a leaf (publishes first); libhop/services also pull
+# hop-endpoint-core (core/hop-endpoint), which is not mirrored yet, so they only fully build once it is
+# published too. KEEP THIS PREAMBLE IN SYNC WITH THE ROOT Cargo.toml: tools/version-align-guard.sh checks
+# the version line against the workspace anchor.
+RUST_MIRRORS = [
+    "hop-core", "libhop", "hop-wasm", "hop-store-sqlite", "hop-store-firestore",
+    "hop-relayd", "hop-endpoint", "hop-gateway",
+]
+
+WORKSPACE_PREAMBLE = """# --- injected for the standalone mirror by tools/copybara/copy.bara.sky ---
+[workspace]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+repository = "https://github.com/hopmesh/hop"
+
+[workspace.dependencies]
+hop-core = "0.0.1"
+hop-endpoint-core = "0.0.1"
+hop-store-sqlite = { version = "0.0.1", default-features = false }
+hop-store-firestore = "0.0.1"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+blake3 = "1"
+sha2 = "0.11"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+chacha20poly1305 = "0.11"
+rand_core = { version = "0.6", features = ["getrandom"] }
+thiserror = "2"
+miniz_oxide = "0.9"
+snow = "0.10"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# --- end injected preamble ---
+[package]
+"""
+
+# core.replace is single-line by default; the preamble spans newlines, so multiline is required. Anchored
+# on the crate's first "[package]\\n"; a mirror with no Cargo.toml (the non-Rust SDKs) matches nothing.
+def _inject_workspace():
+    return core.replace(
+        before = "[package]\n",
+        after = WORKSPACE_PREAMBLE,
+        paths = glob(["Cargo.toml"]),
+        first_only = True,
+        multiline = True,
+    )
+
+def _strip_workspace():
+    return core.replace(
+        before = WORKSPACE_PREAMBLE,
+        after = "[package]\n",
+        paths = glob(["Cargo.toml"]),
+        first_only = True,
+        multiline = True,
+    )
+
 # Copybara's Starlark forbids top-level for loops, so register each component's two workflows from a
 # function, invoked once per component by the comprehension at the end of the file.
 def _register(prefix, name):
     internal = internal_files(prefix)
+    is_rust = name in RUST_MIRRORS
+    # export: strip the prefix, then (Rust only) inject the standalone [workspace] preamble.
+    export_transforms = [core.move(prefix, "")]
+    if is_rust:
+        export_transforms.append(_inject_workspace())
+    # import: (Rust only) strip the injected preamble first, then re-add the prefix.
+    import_transforms = []
+    if is_rust:
+        import_transforms.append(_strip_workspace())
+    import_transforms.append(core.move("", prefix))
     core.workflow(
         name = name + "_export",
         origin = git.origin(url = MONOREPO, ref = "main"),
@@ -68,10 +144,7 @@ def _register(prefix, name):
         # ITERATIVE replays every monorepo commit that touches the subtree as its OWN commit in the
         # mirror. The first run is seeded once with --init-history (see the sync workflow's init input).
         mode = "ITERATIVE",
-        transformations = [
-            # Strip the monorepo prefix so <prefix>/** becomes the mirror's root.
-            core.move(prefix, ""),
-        ],
+        transformations = export_transforms,
     )
     core.workflow(
         name = name + "_import",
@@ -89,10 +162,7 @@ def _register(prefix, name):
         destination_files = glob([prefix + "/**"], exclude = internal),
         authoring = authoring.pass_thru(default = BOT),
         mode = "CHANGE_REQUEST",
-        transformations = [
-            # Re-add the prefix so the mirror's root maps back under <prefix>.
-            core.move("", prefix),
-        ],
+        transformations = import_transforms,
     )
 
 # Register all components (a comprehension is allowed at the top level; a bare for loop is not).
