@@ -88,8 +88,12 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain*'
               - '.github/workflows/ci.yml'
-              - 'tools/**'
-              - '!tools/copybara/**'
+              # tools/ EXCEPT tools/copybara/** (mirror machinery, affects no build). A `!` negation would
+              # not work here: dorny's default predicate-quantifier is `some`, under which "!tools/copybara/**"
+              # is true for every file NOT under copybara, matching almost everything. So enumerate instead:
+              # top-level tool files + the codegen subdir. Add any NEW tools/ subdir (besides copybara) here.
+              - 'tools/*'
+              - 'tools/codegen/**'
             rust:
               - 'services/**'
               - '**/*.rs'

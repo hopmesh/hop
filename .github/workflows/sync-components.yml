@@ -57,6 +57,7 @@ jobs:
           # positionals: `java -jar copybara.jar $COPYBARA_OPTIONS $COPYBARA_SUBCOMMAND $COPYBARA_CONFIG
           # $COPYBARA_WORKFLOW $COPYBARA_SOURCEREF`. Run from the config's folder so the bare filename
           # resolves; git push + the GitHub API both authenticate from the mounted token credentials.
+          set +e
           docker run --rm \
             -v "$PWD":/usr/src/app -w /usr/src/app/tools/copybara \
             -v "$HOME/.gitconfig":/root/.gitconfig \
@@ -65,3 +66,15 @@ jobs:
             -e COPYBARA_WORKFLOW="$WORKFLOW" \
             -e COPYBARA_OPTIONS="--ignore-noop $INIT --force" \
             olivr/copybara copybara
+          rc=$?
+          set -e
+          # Copybara exit 4 = NO_OP: the mirror is already up to date (no new commits under this subtree
+          # to export). For a sync that is success, not failure, so an idempotent re-sync of an already
+          # current mirror stays green instead of reddening. Any OTHER non-zero is a real error.
+          if [ "$rc" -eq 0 ]; then
+            echo "synced: changes migrated to the mirror"
+          elif [ "$rc" -eq 4 ]; then
+            echo "no-op: mirror already up to date (nothing new to export)"
+          else
+            echo "::error::copybara exited $rc"; exit "$rc"
+          fi
