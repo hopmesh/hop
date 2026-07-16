@@ -44,6 +44,10 @@ check "sdk/python (pyproject.toml)" "$(ver_in sdk/python/pyproject.toml '^versio
 check "sdk/ruby (gemspec)"          "$(ver_in sdk/ruby/hop-endpoint.gemspec 'spec\.version')"
 check "sdk/crystal (shard.yml)"     "$(ver_in sdk/crystal/shard.yml '^version:')"
 check "sdk/elixir (mix.exs)"        "$(ver_in sdk/elixir/mix.exs 'version:')"
+# The Copybara Rust-mirror preamble bakes the anchor version into each standalone mirror's [workspace.
+# package] (tools/copybara/copy.bara.sky WORKSPACE_PREAMBLE), so the crate mirrors publish at that
+# version. Guard it against the anchor so a bump can't silently leave the mirrors a version behind.
+check "copybara mirror preamble (copy.bara.sky)" "$(ver_in tools/copybara/copy.bara.sky '^version = ')"
 
 if [ "$fail" -ne 0 ]; then
   echo "version-align-guard: FAIL (a package's major.minor drifted from the anchor $anchor_mm)" >&2

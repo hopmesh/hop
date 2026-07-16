@@ -14,9 +14,13 @@ FSL-1.1-ALv2 license. Names are proposals; boundaries marked **(open)** are real
 | `hop-store-sqlite` | `core/stores/hop-store-sqlite` | SQLite + SQLCipher persistence behind the `Store` trait. | crates.io | Rust embedders |
 | `hop-store-firestore` | `core/stores/hop-store-firestore` | Firestore persistence for the cloud relay/mailbox. | crates.io | operators |
 
-**(open)** the four Rust crates depend on `hop-core` by path today. Splitting them into separate repos
-means publishing to crates.io (or git deps). Simplest v1: one `hop-core` repo holding the whole Rust
-workspace, split further only if there's demand.
+**(decided)** the Rust crates depend on `hop-core` by path in the monorepo. Across repos they resolve by
+**crates.io version** (`hop-core = "0.0.1"`), so each stays its own repo. On export Copybara injects a
+self-contained `[workspace]` preamble into every Rust mirror's `Cargo.toml` (see
+`tools/copybara/copy.bara.sky`), rewriting the inter-crate path deps to those crates.io versions; cargo
+resolves the inheritance to concrete values at publish time. `hop-core` is the leaf, so it publishes
+first, then the stores / `hop-wasm`; `libhop` and the services also pull `hop-endpoint-core`
+(`core/hop-endpoint`), which is not mirrored yet, so publish that crate before their first release.
 
 ## Server SDKs (host an endpoint)
 

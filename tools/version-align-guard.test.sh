@@ -10,9 +10,12 @@ GUARD="$HERE/version-align-guard.sh"
 pass=0
 fail=0
 
-# lay_down DIR ANCHOR NODE PY RUBY: a fixture with the anchor + SDK manifests at the given versions.
+# lay_down DIR ANCHOR NODE PY RUBY [PREAMBLE]: a fixture with the anchor + SDK manifests at the given
+# versions. If PREAMBLE (6th arg) is set, also write a copy.bara.sky whose mirror preamble carries that
+# version; if absent, no copy.bara.sky is written (the guard then skips that check, as for a tag-versioned
+# package).
 lay_down() {
-  local d="$1" anchor="$2" node="$3" py="$4" ruby="$5"
+  local d="$1" anchor="$2" node="$3" py="$4" ruby="$5" pre="${6:-}"
   mkdir -p "$d/tools" "$d/sdk/node" "$d/sdk/python" "$d/sdk/ruby" "$d/sdk/crystal" "$d/sdk/elixir"
   cp "$GUARD" "$d/tools/version-align-guard.sh"
   printf '[workspace.package]\nversion = "%s"\nedition = "2021"\n' "$anchor" > "$d/Cargo.toml"
@@ -21,6 +24,10 @@ lay_down() {
   printf 'Gem::Specification.new do |spec|\n  spec.version     = "%s"\nend\n' "$ruby" > "$d/sdk/ruby/hop-endpoint.gemspec"
   printf 'name: hop\nversion: %s\n' "$anchor" > "$d/sdk/crystal/shard.yml"
   printf 'defmodule Hop.MixProject do\n  def project, do: [version: "%s"]\nend\n' "$anchor" > "$d/sdk/elixir/mix.exs"
+  if [ -n "$pre" ]; then
+    mkdir -p "$d/tools/copybara"
+    printf 'WORKSPACE_PREAMBLE = """\n[workspace.package]\nversion = "%s"\n"""\n' "$pre" > "$d/tools/copybara/copy.bara.sky"
+  fi
 }
 
 # expect DIR WANT(pass|fail) LABEL
@@ -47,6 +54,10 @@ lay_down "$TMP/major" "0.2.0" "0.2.0" "0.2.0" "1.2.0"; expect "$TMP/major" fail 
 # a missing manifest (tag-versioned) is skipped, not failed.
 lay_down "$TMP/absent" "0.2.0" "0.2.0" "0.2.0" "0.2.0"; rm -f "$TMP/absent/sdk/python/pyproject.toml"
 expect "$TMP/absent" pass "absent_manifest_skipped"
+# the copybara mirror preamble shares the anchor major.minor (patch may differ) -> aligned.
+lay_down "$TMP/pre_ok" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.5"; expect "$TMP/pre_ok" pass "preamble_aligned"
+# the preamble drifted a MINOR behind the anchor (0.1.x != 0.2) -> fail.
+lay_down "$TMP/pre_drift" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.1.0"; expect "$TMP/pre_drift" fail "preamble_drift"
 
 echo
 if [ "$fail" -eq 0 ]; then

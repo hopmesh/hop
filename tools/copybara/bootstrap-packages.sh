@@ -78,19 +78,25 @@ create_npm() {
   )
 }
 
-create_pypi() {  # hop-sdk-python -> hop-endpoint on PyPI
+create_pypi() {  # hop-sdk-python -> hop-endpoint on PyPI (build + twine live in a throwaway venv)
   repo="hop-sdk-python"
   [ -n "${PYPI_API_TOKEN:-}" ] || { echo "  $repo (PyPI): skip, PYPI_API_TOKEN not set"; return; }
   have python3 || { echo "  $repo (PyPI): skip, python3 not on PATH"; return; }
-  python3 -c 'import build, twine' 2>/dev/null || { echo "  $repo (PyPI): skip, need 'pip install build twine'"; return; }
   d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (PyPI): skip, clone failed"; return; }
+  venv="$WORK/pyvenv"
+  python3 -m venv "$venv" >/dev/null 2>&1 || { echo "  $repo (PyPI): skip, python venv unavailable"; return; }
+  "$venv/bin/pip" install -q --upgrade build twine >/dev/null 2>&1 \
+    || { echo "  $repo (PyPI): skip, could not install build+twine into the venv (offline?)"; return; }
   (
     cd "$d"
-    python3 -m build >/dev/null || { echo "  $repo (PyPI): build failed"; exit 0; }
-    TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" \
-      python3 -m twine upload --skip-existing dist/* >/dev/null \
-      && echo "  $repo (PyPI): uploaded dist to hop-endpoint" \
-      || echo "  $repo (PyPI): upload failed"
+    "$venv/bin/python" -m build >/dev/null || { echo "  $repo (PyPI): build failed"; exit 0; }
+    # --skip-existing makes re-runs idempotent; errors are shown (not swallowed).
+    if TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" \
+        "$venv/bin/twine" upload --skip-existing dist/*; then
+      echo "  $repo (PyPI): uploaded to hop-endpoint"
+    else
+      echo "  $repo (PyPI): upload failed (see error above)"
+    fi
   )
 }
 
@@ -102,9 +108,40 @@ create_gem() {  # hop-sdk-ruby -> hop-endpoint gem on RubyGems
   (
     cd "$d"
     gem build ./*.gemspec >/dev/null || { echo "  $repo (RubyGems): gem build failed"; exit 0; }
-    GEM_HOST_API_KEY="$RUBYGEMS_API_KEY" gem push ./*.gem >/dev/null 2>&1 \
-      && echo "  $repo (RubyGems): pushed hop-endpoint gem" \
-      || echo "  $repo (RubyGems): push failed (already published, or MFA OTP required)"
+    # The gemspec sets rubygems_mfa_required, so a plain API key is REJECTED. Use a key created with
+    # "MFA UI and API" / gem-push scope, or pass an OTP. The real error is shown, not swallowed.
+    if GEM_HOST_API_KEY="$RUBYGEMS_API_KEY" gem push ./*.gem; then
+      echo "  $repo (RubyGems): pushed hop-endpoint gem"
+    else
+      echo "  $repo (RubyGems): push failed above. If it asks for an OTP, run from the clone:"
+      echo "      GEM_HOST_API_KEY=\$RUBYGEMS_API_KEY gem push hop-endpoint-*.gem --otp <code>"
+    fi
+  )
+}
+
+# create_crate <mirror>: first-publish a Rust crate to crates.io from its clean mirror. The mirror carries
+# the injected standalone [workspace] preamble (copy.bara.sky), so it resolves without the monorepo.
+create_crate() {
+  repo="$1"
+  [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || { echo "  $repo (crates.io): skip, CARGO_REGISTRY_TOKEN not set"; return; }
+  have cargo || { echo "  $repo (crates.io): skip, cargo not on PATH"; return; }
+  d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (crates.io): skip, clone failed"; return; }
+  if ! grep -q "injected for the standalone mirror" "$d/Cargo.toml" 2>/dev/null; then
+    echo "  $repo (crates.io): skip, mirror has no standalone [workspace] preamble yet (re-sync it first)"
+    return
+  fi
+  (
+    cd "$d"
+    meta="$(cargo metadata --no-deps --format-version 1 2>/dev/null)"
+    name="$(printf '%s' "$meta" | python3 -c 'import sys,json; print(json.load(sys.stdin)["packages"][0]["name"])' 2>/dev/null)"
+    ver="$(printf '%s' "$meta" | python3 -c 'import sys,json; print(json.load(sys.stdin)["packages"][0]["version"])' 2>/dev/null)"
+    if [ -n "$name" ] && curl -sf "https://crates.io/api/v1/crates/$name/$ver" >/dev/null 2>&1; then
+      echo "  $repo (crates.io): $name@$ver already published, skipping"
+    elif CARGO_REGISTRY_TOKEN="$CARGO_REGISTRY_TOKEN" cargo publish; then
+      echo "  $repo (crates.io): published $name@$ver"
+    else
+      echo "  $repo (crates.io): publish failed above (a dep not on crates.io yet? publish hop-core first)"
+    fi
   )
 }
 
@@ -123,13 +160,17 @@ create_hex() {  # hop-sdk-elixir -> hop on Hex (Hex has no OIDC; token-published
 }
 
 create_npm hop-sdk-node
-create_npm hop-wasm
 create_pypi
 create_gem
 create_hex
-echo "  crates.io (hop-core/libhop/hop-store-*): NOT auto-created here. The four Rust crates depend on"
-echo "     hop-core by PATH today; publishing needs version deps first (see docs/repo-catalog.md 'open')."
-echo "     Once decided:  cd <clone> && CARGO_REGISTRY_TOKEN=\$CARGO_REGISTRY_TOKEN cargo publish -p <crate>"
+# crates.io in DEPENDENCY ORDER: hop-core is the leaf, so it must land before anything that depends on it.
+create_crate hop-core
+create_crate hop-store-sqlite
+create_crate hop-store-firestore
+# hop-wasm depends on hop-core = "0.0.1" from crates.io, so it only builds AFTER hop-core is published.
+create_npm hop-wasm
+echo "  libhop + the services (hop-relayd/endpoint/gateway) also pull hop-endpoint-core (core/hop-endpoint),"
+echo "     which is not mirrored/published yet; publish that crate before their first release."
 echo "  Maven Central (hop-sdk-android/...): needs the Sonatype namespace + GPG key; publish via its"
 echo "     release.yml once MAVEN_* secrets are set (section 4)."
 echo
@@ -141,7 +182,9 @@ echo "  npm  @hop-mesh/endpoint   settings 'Trusted Publisher': owner hopmesh, r
 echo "  npm  @hop-mesh/wasm       settings 'Trusted Publisher': owner hopmesh, repo hop-wasm,     workflow release.yml"
 echo "  PyPI hop-endpoint         'Publishing' > 'Trusted Publishers': owner hopmesh, repo hop-sdk-python, workflow release.yml"
 echo "  RubyGems hop-endpoint     gem 'Trusted publishers': owner hopmesh, repo hop-sdk-ruby, workflow release.yml"
-echo "  crates.io hop-core/...    crate settings 'Trusted Publishing': owner hopmesh, repo <the crate's mirror>, workflow release.yml"
+echo "  crates.io hop-core             crate settings 'Trusted Publishing': owner hopmesh, repo hop-core,             workflow release.yml"
+echo "  crates.io hop-store-sqlite     crate settings 'Trusted Publishing': owner hopmesh, repo hop-store-sqlite,     workflow release.yml"
+echo "  crates.io hop-store-firestore  crate settings 'Trusted Publishing': owner hopmesh, repo hop-store-firestore,  workflow release.yml"
 echo "  (Hex + Maven Central have no OIDC path yet: they stay token-published, see section 4.)"
 echo "  Each release.yml already declares 'permissions: id-token: write'; nothing else in CI to change."
 echo
