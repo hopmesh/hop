@@ -56,10 +56,10 @@ def internal_files(prefix):
 # The Rust crate mirrors. Each crate's Cargo.toml inherits version/edition/repository and its external
 # deps from the monorepo [workspace.*] tables and depends on sibling crates by path, none of which exist
 # in a standalone single-crate mirror, so `cargo`/`wasm-pack` cannot resolve it. On export we inject a
-# self-contained [workspace] preamble that supplies those tables, with the four inter-crate deps rewritten
-# to their crates.io VERSIONS (Jason's call: crates.io version deps, not git or a collapsed workspace).
-# cargo resolves the `.workspace = true` inheritance into concrete values at publish time, so the manifest
-# that lands on crates.io is clean. The import direction strips the preamble back out so a mirror PR never
+# self-contained [workspace] preamble that supplies those tables, with the inter-crate deps rewritten to
+# their crates.io VERSIONS (Jason's call: crates.io version deps, not git or a collapsed workspace). cargo
+# resolves the `.workspace = true` inheritance into concrete values at publish time, so the manifest that
+# lands on crates.io is clean. The import direction strips the preamble back out so a mirror PR never
 # writes it into the monorepo. hop-core is a leaf (publishes first); libhop/services also pull
 # hop-endpoint-core (core/hop-endpoint), which is not mirrored yet, so they only fully build once it is
 # published too. KEEP THIS PREAMBLE IN SYNC WITH THE ROOT Cargo.toml: tools/version-align-guard.sh checks
@@ -68,6 +68,31 @@ RUST_MIRRORS = [
     "hop-core", "libhop", "hop-wasm", "hop-store-sqlite", "hop-store-firestore",
     "hop-relayd", "hop-endpoint", "hop-gateway",
 ]
+
+# crates.io CRATE NAMES: `hop-core` and `hop` are already taken on crates.io by an unrelated project, so
+# the published crates use the hop-mesh-* convention (matches the @hop-mesh npm scope; all free). This is a
+# PUBLISH-NAME-ONLY rename applied to the mirror: the monorepo keeps hop-core/hop/... and consumer Rust
+# code keeps `use hop_core` because the preamble deps above alias via `package = "hop-mesh-*"` (the dep KEY,
+# not the published name, is the extern-crate name). Mirror repo names are unchanged; only the crates.io
+# package differs. Map: mirror -> (monorepo [package] name, crates.io name). Crates not listed keep their
+# name (hop-wasm publishes to npm; the services are binaries, not crates.io crates).
+CRATE_RENAMES = {
+    "hop-core": ("hop-core", "hop-mesh-core"),
+    "libhop": ("hop", "libhop"),  # package "hop" is taken; libhop is free + the canonical C-ABI name
+    "hop-store-sqlite": ("hop-store-sqlite", "hop-mesh-store-sqlite"),
+    "hop-store-firestore": ("hop-store-firestore", "hop-mesh-store-firestore"),
+}
+
+# Rewrite the mirror's [package] name to its crates.io name (export) and back (import). Anchored on
+# "[package]\\nname = ..." so it targets the package section, never a [lib]/[[bin]] name or a dep.
+def _rename_pkg(old, new):
+    return core.replace(
+        before = '[package]\nname = "' + old + '"\n',
+        after = '[package]\nname = "' + new + '"\n',
+        paths = glob(["Cargo.toml"]),
+        first_only = True,
+        multiline = True,
+    )
 
 WORKSPACE_PREAMBLE = """# --- injected for the standalone mirror by tools/copybara/copy.bara.sky ---
 [workspace]
@@ -79,10 +104,10 @@ edition = "2021"
 repository = "https://github.com/hopmesh/hop"
 
 [workspace.dependencies]
-hop-core = "0.0.1"
-hop-endpoint-core = "0.0.1"
-hop-store-sqlite = { version = "0.0.1", default-features = false }
-hop-store-firestore = "0.0.1"
+hop-core = { version = "0.0.1", package = "hop-mesh-core" }
+hop-endpoint-core = { version = "0.0.1", package = "hop-mesh-endpoint-core" }
+hop-store-sqlite = { version = "0.0.1", default-features = false, package = "hop-mesh-store-sqlite" }
+hop-store-firestore = { version = "0.0.1", package = "hop-mesh-store-firestore" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 blake3 = "1"
@@ -124,14 +149,20 @@ def _strip_workspace():
 def _register(prefix, name):
     internal = internal_files(prefix)
     is_rust = name in RUST_MIRRORS
-    # export: strip the prefix, then (Rust only) inject the standalone [workspace] preamble.
+    rename = CRATE_RENAMES.get(name)  # (old, new) crates.io package name, or None
+    # export: strip the prefix, then (Rust only) rename the crates.io package + inject the [workspace]
+    # preamble. Rename BEFORE inject so it anchors on the original "[package]\nname" at the file top.
     export_transforms = [core.move(prefix, "")]
+    if rename:
+        export_transforms.append(_rename_pkg(rename[0], rename[1]))
     if is_rust:
         export_transforms.append(_inject_workspace())
-    # import: (Rust only) strip the injected preamble first, then re-add the prefix.
+    # import: reverse order: strip the preamble, un-rename the package, then re-add the prefix.
     import_transforms = []
     if is_rust:
         import_transforms.append(_strip_workspace())
+    if rename:
+        import_transforms.append(_rename_pkg(rename[1], rename[0]))
     import_transforms.append(core.move("", prefix))
     core.workflow(
         name = name + "_export",

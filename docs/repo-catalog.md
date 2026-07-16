@@ -15,12 +15,19 @@ FSL-1.1-ALv2 license. Names are proposals; boundaries marked **(open)** are real
 | `hop-store-firestore` | `core/stores/hop-store-firestore` | Firestore persistence for the cloud relay/mailbox. | crates.io | operators |
 
 **(decided)** the Rust crates depend on `hop-core` by path in the monorepo. Across repos they resolve by
-**crates.io version** (`hop-core = "0.0.1"`), so each stays its own repo. On export Copybara injects a
-self-contained `[workspace]` preamble into every Rust mirror's `Cargo.toml` (see
-`tools/copybara/copy.bara.sky`), rewriting the inter-crate path deps to those crates.io versions; cargo
-resolves the inheritance to concrete values at publish time. `hop-core` is the leaf, so it publishes
-first, then the stores / `hop-wasm`; `libhop` and the services also pull `hop-endpoint-core`
-(`core/hop-endpoint`), which is not mirrored yet, so publish that crate before their first release.
+**crates.io version**, so each stays its own repo. On export Copybara injects a self-contained
+`[workspace]` preamble into every Rust mirror's `Cargo.toml` (see `tools/copybara/copy.bara.sky`),
+rewriting the inter-crate path deps to those crates.io versions; cargo resolves the inheritance to
+concrete values at publish time. `hop-core` is the leaf, so it publishes first, then the stores /
+`hop-wasm`; `libhop` and the services also pull `hop-endpoint-core` (`core/hop-endpoint`), which is not
+mirrored yet, so publish that crate before their first release.
+
+The crates.io names `hop-core` and `hop` are already taken by an unrelated project, so the published
+crates use the `hop-mesh-*` convention (matches the `@hop-mesh` npm scope): `hop-core` -> `hop-mesh-core`,
+`hop` -> `libhop`, `hop-store-sqlite` -> `hop-mesh-store-sqlite`, `hop-store-firestore` ->
+`hop-mesh-store-firestore`, `hop-endpoint-core` -> `hop-mesh-endpoint-core`. This is a publish-name-only
+rename in the mirror transform: the monorepo keeps the bare names and consumer code keeps `use hop_core`
+(the preamble deps alias via `package = "..."`). Mirror repo names are unchanged.
 
 ## Server SDKs (host an endpoint)
 
