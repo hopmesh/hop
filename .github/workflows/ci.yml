@@ -329,17 +329,36 @@ jobs:
 
   apple:
     name: Apple bearers + driver + app (build-only)
-    runs-on: macos-14
+    # Self-hosted macOS runner `cirunner-m5max` (an isolated standard-user LaunchDaemon on the M5 Max),
+    # so the 10x GitHub-hosted macOS minutes cost nothing. Fallback: runs-on: macos-14 (and re-enable the
+    # Xcode-select step, which the self-hosted default Xcode does not need).
+    runs-on: [self-hosted, macOS]
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
     steps:
       - uses: actions/checkout@v7
 
-      # The default Xcode on macos-14 is 15.4, but `xcodegen` (latest from brew) emits the newest
-      # project format (objectVersion 77 = Xcode 16), which Xcode 15.4's xcodebuild cannot open
-      # ("future Xcode project file format"). Select the latest-stable Xcode so xcodebuild matches
-      # what xcodegen generates.
+      # The daemon runner has no login-keychain session, so the HopDriver Keychain + Secure-Enclave tests
+      # (SecItemAdd/Copy) fail and fall back to in-memory. Create + unlock a dedicated CI keychain and make
+      # it the default (the standard iOS-CI pattern). Only on self-hosted; the runner user is a throwaway
+      # CI account, so mutating its default keychain is isolated and harmless.
+      - name: Set up a CI keychain
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/hop-ci.keychain-db"
+          security create-keychain -p ci-temp "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p ci-temp "$KC"
+          security list-keychains -d user -s "$KC" "$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -d user -s "$KC"
+          echo "CI keychain ready: $KC"
+
+      # On GitHub-hosted macos-14 the default Xcode is 15.4, too old for xcodegen's project format, so
+      # select the latest-stable. The self-hosted runner already defaults to a current Xcode and its user
+      # cannot `sudo xcode-select`, so this step (which shells out to sudo) is skipped there.
       - name: Select the latest-stable Xcode
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
