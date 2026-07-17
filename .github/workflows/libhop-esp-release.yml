@@ -1,19 +1,15 @@
 # libhop ESP32 prebuilt producer.
 #
 # hop-embedded (the PlatformIO "Hop" library) ships a prebuilt libhop.a per ESP32 arch, which its own
-# release.yml fetches from a hopmesh/libhop RELEASE of the same vX.Y.Z. Nothing produced those archives,
-# so PlatformIO could never publish. This workflow is that producer: it cross-compiles the `minimal`
-# libhop (drops UniFFI + SQLite, keeps std) for ESP32 xtensa + riscv from the MONOREPO (where hop-core
-# resolves by path; the standalone libhop mirror cannot build without hop-core on crates.io), then
-# attaches hop.h + the two archives to a hopmesh/libhop release.
+# release.yml fetches from a hopmesh/libhop RELEASE of the same vX.Y.Z. This workflow is that producer:
+# it cross-compiles the `minimal` libhop (drops UniFFI + SQLite, keeps std) for ESP32 xtensa + riscv
+# from the MONOREPO (where hop-core resolves by path; the standalone libhop mirror cannot build without
+# hop-core on crates.io), then attaches hop.h + the two archives to a hopmesh/libhop release.
 #
-# Manual (workflow_dispatch) because the espup toolchain install + cross-compile is heavy, and because a
-# release is an intentional act. Recipe follows apps/esp32/hop-sensor/build-libhop-esp.sh (the authority).
-#
-# STATUS: the xtensa/riscv esp-espidf cross-compile of the crypto-heavy core is UNVALIDATED (libhop has 0
-# releases; core/hop/Cargo.toml + the build script flag it as "validate on the first real release"). The
-# likely rough edge is the esp-espidf std sysroot for a crate that does not pull esp-idf-sys. Expect the
-# first run to need iteration.
+# Manual (workflow_dispatch): the espup toolchain install + cross-compile is heavy, and a release is an
+# intentional act. Recipe follows apps/esp32/hop-sensor/build-libhop-esp.sh (the authority). The crypto
+# is pure-Rust (RustCrypto via snow's default-resolver; the workspace drops snow's ring pull), so no C
+# cross-toolchain is needed - only the esp Rust channel + -Zbuild-std for the espidf std tier.
 name: libhop ESP32 release
 
 on:
@@ -33,8 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The esp-rs toolchain: the esp Rust channel (xtensa needs the fork; riscv works on it too), LLVM,
-      # ldproxy, and the two build targets. This action wires up the -Zbuild-std config for the espidf tier.
+      # The esp Rust channel (xtensa needs the fork; riscv rides it too), LLVM, ldproxy, and the targets.
       - name: Install the esp-rs toolchain (xtensa + riscv) + ldproxy
         uses: esp-rs/xtensa-toolchain@v1.5
         with:
@@ -42,24 +37,24 @@ jobs:
           buildtargets: esp32,esp32c3
           ldproxy: true
 
-      # Same invocation as build-libhop-esp.sh: minimal feature, per-arch espidf target, release.
+      # Same invocation as build-libhop-esp.sh. The `*-esp-espidf` (std) targets ship NO prebuilt
+      # core/std, so -Zbuild-std builds it from source (the esp channel is nightly-based, so -Z is
+      # allowed). With ring dropped, the whole crypto tree is pure Rust - no ESP GCC / C compiler needed.
       - name: Build minimal libhop for ESP32 (xtensa esp32 + riscv esp32c3)
         run: |
           set -euo pipefail
-          cargo build -p hop --no-default-features --features minimal --release --target xtensa-esp32-espidf
+          cargo build -p hop --no-default-features --features minimal --release --target xtensa-esp32-espidf -Zbuild-std=std,panic_abort
           cp "target/xtensa-esp32-espidf/release/libhop.a" libhop-esp32-xtensa.a
-          cargo build -p hop --no-default-features --features minimal --release --target riscv32imc-esp-espidf
+          cargo build -p hop --no-default-features --features minimal --release --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
           cp "target/riscv32imc-esp-espidf/release/libhop.a" libhop-esp32-riscv.a
           ls -l libhop-esp32-xtensa.a libhop-esp32-riscv.a
 
-      # The header hop-embedded ships alongside the archives; regenerate from cabi.rs so it can never drift.
-      - name: Regenerate hop.h
-        run: |
-          bash core/hop/regen-header.sh
-          cp sdk/hop.h hop.h
+      # sdk/hop.h is kept in sync with cabi.rs by the header-drift CI guard, so ship it as-is.
+      - name: Stage hop.h
+        run: cp sdk/hop.h hop.h
 
-      # Create the hopmesh/libhop release with the prebuilt assets. The default GITHUB_TOKEN cannot write
-      # to another repo, so use the org-scoped HOP_SYNC_TOKEN (the same PAT the Copybara mirror sync uses).
+      # Create the hopmesh/libhop release. The default GITHUB_TOKEN cannot write another repo, so use the
+      # org-scoped HOP_SYNC_TOKEN (the same PAT the Copybara mirror sync uses).
       - name: Publish the prebuilt archives to hopmesh/libhop
         env:
           GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}

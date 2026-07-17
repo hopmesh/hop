@@ -39,5 +39,9 @@ chacha20poly1305 = "0.11"
 rand_core = { version = "0.6", features = ["getrandom"] }
 thiserror = "2"
 miniz_oxide = "0.9"
-snow = "0.10"
+# snow 0.10.0's `std` feature erroneously lists `ring/std` (no `?`), which force-pulls the unused C
+# `ring` even though we only use the pure-Rust default-resolver. That dead dep breaks the ESP32
+# cross-compile (ring needs the ESP GCC). Drop snow's default features and enable only the pure-Rust
+# resolver: same active crypto (ChaCha20-Poly1305/AES-GCM/X25519/BLAKE2), no ring, portable everywhere.
+snow = { version = "0.10", default-features = false, features = ["default-resolver", "default-resolver-crypto"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
