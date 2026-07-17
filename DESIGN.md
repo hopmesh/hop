@@ -2026,7 +2026,9 @@ keys can read it). Inbox-spam / storage-exhaustion is bounded by **TTL + per-des
 
 ## 35. Backbone access control & metering, keyed relay, free tier, and wake protection
 
-> **Status: design.** Adds the missing seam that makes the **hosted** backbone (§21/§28) both
+> **Status: partially built.** The carriage stamp, keyed-relay gate, and per-tenant metering are
+> implemented (see "The carriage stamp" below); the link-RAT admission and Stage-1 edge gate
+> remain design. This section adds the missing seam that makes the **hosted** backbone (§21/§28) both
 > *monetizable* and *abuse-resistant*. This is a property of the **hosted service**, not the
 > protocol: the open SDK and any self-hosted relay fleet set their own admission policy. The
 > protocol's only obligation is to **carry a credential at link establishment** (below); whether a
@@ -2134,6 +2136,97 @@ a chat line and a media payload.
 Usage rolls up per `tenant` for billing; the relay never opens a payload to meter it. (`hps://`
 topic fan-out is metered to the **publishing** tenant, since broadcasts have no per-subscriber
 billing identity.)
+
+### The carriage stamp, bundle-level attribution (built)
+
+> **Status: built** (`hop-core/src/access.rs`, `Envelope::access`, wire v8; relayd
+> `--require-stamps` / `--billing-root` / `--deny-tenant`). The link-RAT admission above and the
+> Stage-1 edge gate remain design.
+
+The link-level RAT has a blind spot that store-and-forward creates by construction: **the peer
+whose connection carries a bundle into a relay is routinely not the tenant whose traffic it
+is**. A §39 private bundle floods peer-to-peer and reaches the backbone via whatever device
+touched a relay last; a mailbox pull re-injects bundles with no live sender at all. Attributing
+at the link would bill couriers, not senders. So the billing credential ALSO rides the bundle:
+
+```
+CarriageStamp {
+  hint:  [u8; 4]     // H("hop carriage hint v1" || tenant_id || epoch)[..4], rotates per epoch
+  sig:   Signature   // Ed25519 by the tenant key over "hop carriage stamp v1" || bundle_id || epoch
+  epoch: u64         // the (coarse, hourly) rotation epoch this hint + sig were computed for
+}
+```
+
+The stamp reveals NOTHING about the tenant to the network: no app id, no tenant id, no public
+key on the wire, only a `hint` that rotates every epoch (the same discipline as §39 mailbox-tag
+rotation). The `hint` is an O(1) SELECTOR, not the authorization: a keyed relay's KEYSERVER
+(its keylist of `{tenant_id -> stamping pubkey}`) precomputes `{hint -> [tenant]}` per epoch, so
+recovering the tenant is a hint lookup plus an O(bucket) signature check, never an N-key loop,
+and an unauthenticated bundle whose hint hits no known tenant is rejected after an O(1) lookup.
+The authorization is the SIGNATURE, which only the tenant's key can produce over this exact
+bundle id, so a relay cannot fabricate attribution and a captured stamp cannot be lifted onto
+another bundle.
+
+- **Where it rides.** A trailing `Option` on the mutable, unsigned forwarding `Envelope`, so
+  both the private content id and the wire id EXCLUDE it: identical content keeps one identity
+  and dedups regardless of access material, re-stamping never forks an id, and the §39 id
+  discipline (the id as the sole integrity check of an unsigned bundle) is untouched. The
+  price: the bundle's own checks do not cover the stamp, so a stripped stamp is lost postage
+  rather than a forgery (any custodian holding a tenant key can re-stamp; a couriered bundle
+  that loses its stamp just stops being admissible until then).
+- **Verify at the meter, never read a field.** Because the stamp is on the unsigned envelope,
+  EVERY point that reads it for a billing or admission decision re-runs the keyserver lookup +
+  signature check (`AccessPolicy::admit`). It never trusts a bare recovered tenant, or an
+  attacker rewrites who-pays (bill a victim, or garbage for free carriage).
+- **Who stamps.** `Node::submit`, the single origination choke point, stamps everything a
+  configured node originates for the current epoch. The return path must be admissible at keyed
+  relays too. Vaccines are exempt (anti-packets, not billable, and stamping would leak the
+  recipient). Devices without a stamper (pure P2P apps) originate unstamped bundles and lose
+  nothing off the backbone. Stamping keys MUST be app-scoped, never per-user (a per-device key
+  makes the rotating hint a per-user tracking handle within an epoch).
+- **Epoch rotation.** The hint rotates hourly; a relay accepts the current AND previous epoch
+  (transit + clock skew) and refreshes its precomputed tables as the epoch rolls, which also
+  bounds stamp replay to the ~2h hint window.
+- **The gate.** Under a `Keyed` policy the relay admits a foreign bundle to custody only with a
+  verifying stamp; `LOCAL_LINK` re-injections (durable re-ingest, mailbox pulls) are trusted
+  first-accepts, and vaccines are exempt (anonymous anti-packets that must propagate to purge
+  delivered copies; stamping would leak the recipient).
+- **The meter (delivery-justified).** Billing is NOT charged at custody. The relay records the
+  tenant it VERIFIED at admission and bills it only when delivery is PROVEN: a returning ACK or
+  a §39 delivery vaccine that purges the held copy. A bundle held but never delivered (evicts or
+  TTL-expires) is never billed as carriage; its durable-storage occupancy is priced by the
+  separate storage GB-hour floor. Recording the verified tenant at admission (rather than
+  re-reading the mutable stamp at delivery) both closes the bill-shifting hole and bills a
+  delay-tolerant delivery correctly after the stamp epoch has rolled. The OFFLINE path bills too:
+  a spooled bundle re-ingested for delivery is attributed at re-ingest (verifying the stamp
+  against its own signed epoch, since a spooled stamp is legitimately old), so its eventual mesh
+  delivery bills the offline-delivery path. Still to wire: cross-instance region-shared dedup (so
+  N same-region instances bill once) belongs at the async §37 reconciler, not the driver hot
+  path; and the §37 BigQuery reconciler + Stripe.
+- **The partition IS the business boundary.** A relay only honors stamps whose signer is in ITS
+  keyserver. A commercial (hosted-fabric) stamp means nothing to a private fleet with a
+  different keyserver, and vice versa: an unauthed key cannot ride, so self-hosting yields a
+  sealed island by construction, and reaching the broader fabric is always metered (§36
+  federation is the sanctioned bridge).
+- **Custody beacon (COGS, mode-1 built).** A relay's dominant cost is duplicate INGRESS: a
+  high-degree relay is offered the same bundle by every neighbor that already accepted it. The
+  custody beacon cuts it: on connect, a relay sends a `Wire::Have` listing what it already holds,
+  and the peer suppresses re-offering those (a new pre-send check beside the per-link
+  sent-bundles filter). MODE-1 only for now: the beacon is exchanged over the AUTHENTICATED Noise
+  link with the peer it constrains, so it is that peer's own truthful claim about its own store,
+  an exact set with no false positives and no forgery/censorship surface. (A FLOODED regional
+  beacon would be strictly advisory and exclude §39-private ids, per the adversarial review; it
+  is a later addition.) Off by default (devices spare their BLE link); relays enable it.
+- **Privacy stance.** The stamp exposes only a rotating `hint` to on-path observers: nothing
+  about the person, and nothing that links a tenant's bundles across epochs to an observer who
+  cannot enumerate tenant ids. One who can enumerate them recovers at most the k-anonymity of
+  the epoch bucket, the app-level attribution §33/§39 already accept, and sender identity still
+  stays inside the seal with recipients recognition-only. Blind tokens (per-bundle unlinkable
+  credentials) remain the documented upgrade path for full unlinkability.
+- **Known gaps, deliberate.** `hps://` broadcast fan-out work happens before the custody gate
+  and is not yet metered to the publisher; mailbox-storage and egress dimensions are §37 work
+  on top of the same ledger; the link-RAT + edge gate (wake protection) compose with, and do
+  not replace, the stamp.
 
 ### Revocation & key rotation
 
