@@ -47,6 +47,9 @@ echo "  crates.io     a crates.io account (sign in with GitHub) + a VERIFIED ema
 echo "                Names hop-core and hop are taken on crates.io, so the crates publish as hop-mesh-core / libhop /"
 echo "                hop-mesh-store-* (the Copybara transform renames the package; monorepo + 'use hop_core' unchanged)."
 echo "  Maven Central a Sonatype Central account + a VERIFIED namespace (e.g. sh.hop) + a published GPG key"
+echo "  PlatformIO    a registry.platformio.org account + token, for the Hop embedded library (hop-embedded). NOTE:"
+echo "                the publish also needs the prebuilt ESP32 libhop.a archives from a hopmesh/libhop release, which"
+echo "                do NOT exist yet (no ESP32 cross-compile producer). The token alone cannot publish."
 echo "  Go / Swift / Crystal  NO account: they publish by pushing a git tag (the repo IS the package)"
 echo
 
@@ -213,6 +216,10 @@ set_secret() {
 }
 # Hex is always token-published (no OIDC). Maven Central is token + GPG. Set these for real releases.
 set_secret hop-sdk-elixir HEX_API_KEY "${HEX_API_KEY:-}" HEX_API_KEY
+# PlatformIO (hop-embedded): the release.yml publishes on a vX.Y.Z tag, but ONLY after fetching the
+# prebuilt ESP32 libhop.a archives from a hopmesh/libhop release. Those archives + their cross-compile
+# producer do not exist yet, so setting this token wires the secret but cannot publish on its own.
+set_secret hop-embedded PLATFORMIO_AUTH_TOKEN "${PLATFORMIO_AUTH_TOKEN:-}" PLATFORMIO_AUTH_TOKEN
 for r in hop-sdk-android hop-bearers-android hop-driver-android; do
   set_secret "$r" MAVEN_USERNAME       "${MAVEN_USERNAME:-}"       MAVEN_USERNAME
   set_secret "$r" MAVEN_PASSWORD       "${MAVEN_PASSWORD:-}"       MAVEN_PASSWORD

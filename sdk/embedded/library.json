@@ -1,7 +1,7 @@
 {
   "name": "Hop",
   "version": "0.0.1",
-  "description": "Hop for microcontrollers: a delay-tolerant, end-to-end-encrypted mesh over BLE, LoRa, and Wi-Fi, wrapping the libhop C ABI in a small Arduino / ESP-IDF C++ class. ESP32 today, more MCUs as the cross-compiles land.",
+  "description": "Hop for microcontrollers: a delay-tolerant, end-to-end-encrypted mesh over BLE, LoRa, and Wi-Fi, wrapping the libhop C ABI in a small Arduino / ESP-IDF C++ class. ESP32 today, more MCUs as the cross-compiles land. Bundles the Hop protocol core (hop-core, https://github.com/hopmesh/hop-core), source-available under FSL-1.1-ALv2.",
   "keywords": [
     "mesh",
     "ble",
@@ -20,7 +20,7 @@
       "maintainer": true
     }
   ],
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "homepage": "https://hopme.sh",
   "frameworks": [
     "arduino",
