@@ -11,6 +11,7 @@ members = [
     "services/hop-relayd",
     "services/hop-gateway",
     "services/hop-endpoint",
+    "services/hop-billingd",
     "examples/hop-example-origin",
 ]
 exclude = ["site", "sdk/elixir/native/hop_endpoint"]

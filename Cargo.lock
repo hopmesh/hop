@@ -857,6 +857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hop-billingd"
+version = "0.0.1"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hop-core"
 version = "0.0.1"
 dependencies = [
