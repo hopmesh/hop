@@ -76,6 +76,7 @@ expect_bad("relay_seed_to_builder", lambda f: replace(
 expect_bad("example_reuses_relay", lambda f: replace(f, pathlib.Path("infra/example.tf"), "service_account = local.example_service_account", "service_account = local.relay_service_account"))
 expect_bad("example_identity_version_unpinned", lambda f: replace(f, pathlib.Path("infra/example.tf"), "version = var.example_identity_version", 'version = "latest"'))
 expect_bad("revision_loaded_trigger", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), 'service_account = google_service_account.build.id', 'filename = "infra/cloudbuild.trigger.yaml"\n  service_account = google_service_account.build.id'))
+expect_bad("legacy_source_connector_reused", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), 'name              = "monorepo"', 'name              = "hop"'))
 expect_bad("short_sha", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), '$COMMIT_SHA', '$SHORT_SHA'))
 expect_bad("runtime_backend_retargeted", lambda f: replace(f, pathlib.Path("infra/versions.tf"), 'backend "gcs"', 'backend "local"'))
 expect_bad("untrusted_backend_init", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), "tofu init -input=false -backend-config=/workspace/runtime-backend.tfbackend", "tofu init -input=false"))

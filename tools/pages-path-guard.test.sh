@@ -32,6 +32,15 @@ assert module.transitive_workspace_crates(root, metadata) == {
     "core/hop-core/**",
 }
 
+pages_workflow = (root / ".github/workflows/pages.yml").read_text(encoding="utf-8")
+module.check_authority(pages_workflow)
+try:
+    module.check_authority(pages_workflow.replace("hopmesh/monorepo", "hopmesh/hop"))
+except module.PagesPathError:
+    pass
+else:
+    raise AssertionError("legacy Pages repository was accepted")
+
 with tempfile.TemporaryDirectory() as temp:
     workflow = Path(temp) / "pages.yml"
     workflow.write_text(

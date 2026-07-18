@@ -13,7 +13,7 @@
 #
 # See tools/copybara/README.md for the one-time bootstrap + how the first (--init-history) run works.
 
-MONOREPO = "https://github.com/hopmesh/hop.git"
+MONOREPO = "https://github.com/hopmesh/monorepo.git"
 BOT = "hop-sync <sync@hopme.sh>"
 PROVENANCE_HELPER = "tools/release-provenance.py"
 RELEASE_ARTIFACT_HELPER = "tools/release-artifact.py"
@@ -177,7 +177,7 @@ resolver = "2"
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-repository = "https://github.com/hopmesh/hop"
+repository = "https://github.com/hopmesh/monorepo"
 
 [workspace.dependencies]
 hop-core = { version = "0.0.1", package = "hop-mesh-core" }

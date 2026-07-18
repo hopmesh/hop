@@ -111,7 +111,7 @@ rejected(
 
 check = {
     "name": "Rust",
-    "details_url": "https://github.com/hopmesh/hop/actions/runs/42/job/1",
+    "details_url": "https://github.com/hopmesh/monorepo/actions/runs/42/job/1",
     "status": "completed",
     "conclusion": "success",
 }
@@ -196,7 +196,8 @@ for workflow, component in expected_workflows.items():
     assert "permission-actions: read" in text
     assert "permission-checks: read" in text
     assert "permission-contents: read" in text
-    assert "repositories: hop" in text and "hopmesh/monorepo" not in text
+    assert "repositories: monorepo" in text
+    assert "repositories: hopmesh/monorepo" not in text
     lines = text.splitlines()
     verify_line = next(index for index, line in enumerate(lines) if "release-provenance.py" in line)
     publish_lines = [

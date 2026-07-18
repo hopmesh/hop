@@ -61,4 +61,4 @@ ABI (`HOP_ABI_VERSION`) versions are tracked separately (see
     peer can still be reached via its later want-beacon pull.
   - **Android mirror sealing:** driver mirror payloads are sealed via `MirrorCrypto`.
 
-[Unreleased]: https://github.com/hopmesh/hop/commits/main
+[Unreleased]: https://github.com/hopmesh/monorepo/commits/main
