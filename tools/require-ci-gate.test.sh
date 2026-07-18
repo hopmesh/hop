@@ -15,7 +15,7 @@ verdict = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verdict)
 
 SHA = "a" * 40
-REPO = "hopmesh/hop"
+REPO = "hopmesh/monorepo"
 REPO_ID = 101
 APP_ID = 15368
 WORKFLOW_ID = 202

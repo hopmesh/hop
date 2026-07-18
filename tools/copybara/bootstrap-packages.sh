@@ -49,7 +49,7 @@ echo "                Names hop-core and hop are taken on crates.io, so the crat
 echo "                hop-mesh-store-* (the Copybara transform renames the package; monorepo + 'use hop_core' unchanged)."
 echo "  Maven Central a Sonatype Central account + a VERIFIED namespace (e.g. sh.hop) + a published GPG key"
 echo "  PlatformIO    a registry.platformio.org account + token, for the Hop embedded library (hop-embedded)."
-echo "                The release consumes the signed exact-target outputs from hopmesh/hop's canonical native workflow."
+echo "                The release consumes the signed exact-target outputs from hopmesh/monorepo's canonical native workflow."
 echo "  Go / Swift / Crystal  NO account: they publish by pushing a git tag (the repo IS the package)"
 echo
 
@@ -230,7 +230,7 @@ set_secret() {
 # Hex is always token-published (no OIDC). Maven Central is token + GPG. Set these for real releases.
 set_secret hop-sdk-elixir HEX_API_KEY "${HEX_API_KEY:-}" HEX_API_KEY
 # PlatformIO (hop-embedded): release.yml publishes only after downloading and verifying the signed
-# exact-target archives from hopmesh/hop's successful canonical native-artifacts workflow.
+# exact-target archives from hopmesh/monorepo's successful canonical native-artifacts workflow.
 set_secret hop-embedded PLATFORMIO_AUTH_TOKEN "${PLATFORMIO_AUTH_TOKEN:-}" PLATFORMIO_AUTH_TOKEN
 for r in hop-sdk-android hop-bearers-android hop-driver-android; do
   set_secret "$r" MAVEN_USERNAME       "${MAVEN_USERNAME:-}"       MAVEN_USERNAME

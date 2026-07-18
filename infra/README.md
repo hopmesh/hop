@@ -193,7 +193,7 @@ Required inputs and resources:
    name in `build_connection_name`.
 3. The numeric GitHub repository id, GitHub Actions App id, CI workflow id, and the
    SHA-256 of the separately reviewed `.github/workflows/ci.yml` bytes.
-4. A fine-grained GitHub token limited to `hopmesh/hop` with Actions read,
+4. A fine-grained GitHub token limited to `hopmesh/monorepo` with Actions read,
    Checks read, Contents read, and Metadata read. Add it out of band to
    `hop-ci-readtoken`, then pin its numeric version.
 5. Numeric versions for both identity secrets. The relay seed must be exactly 32
@@ -213,9 +213,9 @@ Required inputs and resources:
 Retrieve immutable GitHub ids with an administrator-read token:
 
 ```sh
-gh api repos/hopmesh/hop --jq .id
-gh api repos/hopmesh/hop/actions/workflows/ci.yml --jq .id
-gh api repos/hopmesh/hop/commits/main/check-suites \
+gh api repos/hopmesh/monorepo --jq .id
+gh api repos/hopmesh/monorepo/actions/workflows/ci.yml --jq .id
+gh api repos/hopmesh/monorepo/commits/main/check-suites \
   --jq '.check_suites[] | select(.app.slug == "github-actions") | .app.id' | sort -u
 shasum -a 256 .github/workflows/ci.yml
 ```
@@ -333,11 +333,11 @@ After the bootstrap apply, wire the billing workflow to exact bootstrap outputs
 and remove the superseded project-number variable if it exists:
 
 ```sh
-gh variable set GCP_BILLING_WIF_PROVIDER --repo hopmesh/hop \
+gh variable set GCP_BILLING_WIF_PROVIDER --repo hopmesh/monorepo \
   --body "$(tofu -chdir=infra/bootstrap output -raw github_wif_provider)"
-gh variable set GCP_BILLING_SERVICE_ACCOUNT --repo hopmesh/hop \
+gh variable set GCP_BILLING_SERVICE_ACCOUNT --repo hopmesh/monorepo \
   --body "$(tofu -chdir=infra/bootstrap output -raw github_wif_service_account)"
-gh variable delete GCP_PROJECT_NUMBER --repo hopmesh/hop 2>/dev/null || true
+gh variable delete GCP_PROJECT_NUMBER --repo hopmesh/monorepo 2>/dev/null || true
 ```
 
 ## One-time migration from the old trigger
@@ -358,8 +358,6 @@ tofu -chdir=infra/bootstrap import google_service_account.relay \
   projects/hop-mesh/serviceAccounts/hop-relay@hop-mesh.iam.gserviceaccount.com
 tofu -chdir=infra/bootstrap import google_artifact_registry_repository.hop \
   projects/hop-mesh/locations/us-central1/repositories/hop
-tofu -chdir=infra/bootstrap import google_cloudbuildv2_repository.hop \
-  projects/hop-mesh/locations/us-central1/connections/CONNECTION/repositories/hop
 tofu -chdir=infra/bootstrap import google_firestore_database.relay \
   projects/hop-mesh/databases/'(default)'
 tofu -chdir=infra/bootstrap import google_firestore_field.bundle_ttl \
@@ -377,6 +375,11 @@ tofu -chdir=infra/bootstrap import google_secret_manager_secret.ci_readtoken \
 tofu -chdir=infra/bootstrap import google_project_iam_custom_role.build_secrets \
   projects/hop-mesh/roles/hopCloudBuildSecrets
 ```
+
+Do not import the legacy Cloud Build repository named `hop` into bootstrap.
+Bootstrap creates a parallel repository named `monorepo` for the trusted triggers.
+Keep the disabled old trigger and its `hop` repository intact until both trusted
+triggers have been applied and inspected.
 
 Import each already-enabled API tracked by the old runtime state with this form:
 
@@ -436,9 +439,10 @@ tofu -chdir=infra state rm 'google_secret_manager_secret_iam_member.build_ci_rea
 tofu -chdir=infra state rm 'google_cloudbuild_trigger.image[0]'
 ```
 
-Delete the disabled `hop-relayd-image` trigger only after `hop-source-build` and
-`hop-runtime-deploy` are applied and inspected. Run `tools/infra-authority-guard.py`
-and inspect the live IAM policy before re-enabling push-to-main builds.
+Delete the disabled `hop-relayd-image` trigger and legacy `hop` repository only
+after `hop-source-build` and `hop-runtime-deploy` are applied and inspected. Run
+`tools/infra-authority-guard.py` and inspect the live IAM policy before re-enabling
+push-to-main builds.
 
 ## Verification
 

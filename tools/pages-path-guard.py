@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep Pages path filters aligned with the deployed build graph."""
+"""Keep Pages authority and path filters aligned with the deployed build graph."""
 
 import json
 import re
@@ -9,6 +9,15 @@ from pathlib import Path
 
 class PagesPathError(RuntimeError):
     pass
+
+
+def check_authority(text):
+    repository_check = 'test "$REPOSITORY" = hopmesh/monorepo'
+    main_api = "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main"
+    if text.count(repository_check) != 1:
+        raise PagesPathError("Pages canonical repository check drifted")
+    if text.count(main_api) != 2:
+        raise PagesPathError("Pages canonical main checks drifted")
 
 
 def workflow_paths(path):
@@ -106,7 +115,9 @@ def required_paths(root, metadata=None):
 
 
 def check(root):
-    actual = set(workflow_paths(root / ".github/workflows/pages.yml"))
+    workflow = root / ".github/workflows/pages.yml"
+    check_authority(workflow.read_text(encoding="utf-8"))
+    actual = set(workflow_paths(workflow))
     required = required_paths(root)
     missing = sorted(required - actual)
     extra = sorted(actual - required)

@@ -29,7 +29,7 @@ jobs:
           app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
           private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
           owner: hopmesh
-          repositories: hop
+          repositories: monorepo
           permission-actions: read
           permission-attestations: read
           permission-checks: read
@@ -65,7 +65,7 @@ jobs:
             --tag "$GITHUB_REF_NAME" --run-id '${{ steps.provenance.outputs.native_run_id }}' \
             --run-attempt '${{ steps.provenance.outputs.native_run_attempt }}'
           for subject in "$RUNNER_TEMP/native-release/native-artifacts.json" "$RUNNER_TEMP/native-release"/*.tar.gz "$RUNNER_TEMP/native-release"/*.zip; do
-            gh attestation verify "$subject" --repo hopmesh/hop
+            gh attestation verify "$subject" --repo hopmesh/monorepo
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

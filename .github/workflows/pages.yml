@@ -52,7 +52,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$REPOSITORY" = hopmesh/hop
+          test "$REPOSITORY" = hopmesh/monorepo
           test "$REF" = refs/heads/main
           test "$REF_PROTECTED" = true
           case "$EVENT_NAME" in push|workflow_dispatch) ;; *) exit 1 ;; esac
@@ -62,7 +62,7 @@ jobs:
           import urllib.request
 
           request = urllib.request.Request(
-              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
               headers={
                   "Accept": "application/vnd.github+json",
                   "Authorization": "Bearer " + os.environ["GH_TOKEN"],
@@ -208,7 +208,7 @@ jobs:
           import urllib.request
 
           request = urllib.request.Request(
-              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
               headers={
                   "Accept": "application/vnd.github+json",
                   "Authorization": "Bearer " + os.environ["GH_TOKEN"],

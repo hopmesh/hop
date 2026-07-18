@@ -35,7 +35,7 @@ def contract():
     return {
         "schema": p.BOOTSTRAP_SCHEMA,
         "project_id": PROJECT,
-        "repository": "hopmesh/hop",
+        "repository": "hopmesh/monorepo",
         "repository_id": 10,
         "actions_app_id": 15368,
         "ci_workflow_sha256": "4" * 64,
@@ -58,7 +58,7 @@ def manifest():
     return {
         "schema": p.SCHEMA,
         "source_sha": SHA,
-        "repository": "hopmesh/hop",
+        "repository": "hopmesh/monorepo",
         "repository_id": 10,
         "builder_identity": BUILDER,
         "build_id": BUILD_ID,
@@ -85,7 +85,7 @@ def build():
             "COMMIT_SHA": SHA,
             "REVISION_ID": SHA,
             "BRANCH_NAME": "main",
-            "_TRUSTED_REPOSITORY": "hopmesh/hop",
+            "_TRUSTED_REPOSITORY": "hopmesh/monorepo",
             "_TRUSTED_REPOSITORY_ID": "10",
             "_TRUSTED_CI_SHA256": "4" * 64,
             "_TRUSTED_CONFIG_VERSION": "v2",

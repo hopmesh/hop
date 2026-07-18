@@ -58,7 +58,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.context.outputs.source_sha }}
     steps:
-      - name: Bind dispatch to the current protected hopmesh/hop main commit
+      - name: Bind dispatch to the current protected hopmesh/monorepo main commit
         id: context
         env:
           ACTOR: ${{ github.actor }}
@@ -80,7 +80,7 @@ jobs:
           import re
           import urllib.request
 
-          expected = "hopmesh/hop"
+          expected = "hopmesh/monorepo"
           checks = {
               "repository": os.environ["REPOSITORY"] == expected,
               "event repository": os.environ["EVENT_REPOSITORY"] == expected,
@@ -98,7 +98,7 @@ jobs:
               raise SystemExit("sync authority rejected: " + ", ".join(failed))
 
           request = urllib.request.Request(
-              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
               headers={
                   "Accept": "application/vnd.github+json",
                   "Authorization": "Bearer " + os.environ["GH_TOKEN"],
@@ -171,7 +171,7 @@ jobs:
           gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
           cleanup() { rm -f "$credentials" "$gitconfig"; }
           trap cleanup EXIT
-          printf 'https://x-access-token:%s@github.com/hopmesh/hop.git\n' "$SOURCE_TOKEN" > "$credentials"
+          printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$SOURCE_TOKEN" > "$credentials"
           printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY" >> "$credentials"
           cat > "$gitconfig" <<'CONFIG'
           [credential]
@@ -242,7 +242,7 @@ jobs:
           cleanup() { rm -f "$credentials" "$gitconfig"; }
           trap cleanup EXIT
           printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$SOURCE_TOKEN" "$SOURCE_REPOSITORY" > "$credentials"
-          printf 'https://x-access-token:%s@github.com/hopmesh/hop.git\n' "$DESTINATION_TOKEN" >> "$credentials"
+          printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$DESTINATION_TOKEN" >> "$credentials"
           cat > "$gitconfig" <<'CONFIG'
           [credential]
               helper = store --file=/run/secrets/git-credentials
@@ -265,7 +265,7 @@ jobs:
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then
-            echo "synced: changes migrated to hopmesh/hop"
+            echo "synced: changes migrated to hopmesh/monorepo"
           elif [ "$rc" -eq 4 ]; then
             echo "no-op: canonical repository already up to date"
           else

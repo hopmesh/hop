@@ -9,6 +9,14 @@ mkdir "$tmp/bin"
 
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env sh
+expected="https://api.github.com/repos/hopmesh/monorepo/branches/main/protection"
+found=false
+for argument in "$@"; do
+  if [ "$argument" = "$expected" ]; then
+    found=true
+  fi
+done
+[ "$found" = true ] || exit 97
 printf '%s\n%s\n' "$FAKE_BODY" "${FAKE_CODE:-200}"
 SH
 chmod +x "$tmp/bin/curl"

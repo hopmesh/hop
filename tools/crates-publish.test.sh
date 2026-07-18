@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory() as temporary:
         "manifest_path": str(manifest),
         "name": "fixture",
         "readme": str(readme),
-        "repository": "https://github.com/hopmesh/hop",
+        "repository": "https://github.com/hopmesh/monorepo",
         "rust_version": "1.85",
         "version": "1.2.3",
     }

@@ -1,7 +1,7 @@
 # Required external identifiers. Obtain repository and workflow ids from the GitHub
 # API, and the Actions App id from the workflow run's authenticated check suite.
 build_connection_name = "hop-github"
-github_repository     = "hopmesh/hop" # also scopes billing-catalog WIF tokens and impersonation
+github_repository     = "hopmesh/monorepo" # also scopes billing-catalog WIF tokens and impersonation
 github_repository_id  = 0 # replace; bootstrap validation rejects zero
 github_actions_app_id = 0 # replace; bootstrap validation rejects zero
 github_ci_workflow_id = 0 # replace; bootstrap validation rejects zero

@@ -18,8 +18,8 @@ from pathlib import Path, PurePosixPath
 
 
 SCHEMA = "https://hopme.sh/schemas/native-artifacts-v1.json"
-CANONICAL_REPOSITORY = "https://github.com/hopmesh/hop"
-CANONICAL_GITHUB_REPOSITORY = "hopmesh/hop"
+CANONICAL_REPOSITORY = "https://github.com/hopmesh/monorepo"
+CANONICAL_GITHUB_REPOSITORY = "hopmesh/monorepo"
 NATIVE_WORKFLOW = ".github/workflows/native-artifacts.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")

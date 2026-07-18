@@ -24,7 +24,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "hopmesh/hop"
+          test "$GITHUB_REPOSITORY" = "hopmesh/monorepo"
           test "$GITHUB_REF" = "refs/heads/main"
           test "$REF_PROTECTED" = "true"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -106,7 +106,7 @@ jobs:
           gh release create "$VERSION" \
             --repo hopmesh/libhop \
             --title "$VERSION" \
-            --notes "Verified prebuilt libhop for ESP32 Xtensa and RISC-V, produced from hopmesh/hop main." \
+            --notes "Verified prebuilt libhop for ESP32 Xtensa and RISC-V, produced from hopmesh/monorepo main." \
             "$RUNNER_TEMP/release/hop.h" \
             "$RUNNER_TEMP/release/libhop-esp32-xtensa.a" \
             "$RUNNER_TEMP/release/libhop-esp32-riscv.a" \

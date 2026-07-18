@@ -376,10 +376,13 @@ func TestWSSPendingLinkCapRejectsCapPlusOneAndRecovers(t *testing.T) {
 	connections = connections[:len(connections)-1]
 	deadline := time.Now().Add(time.Second)
 	for {
-		recovered, _, dialErr := dialer.Dial(url, nil)
+		recovered, response, dialErr := dialer.Dial(url, nil)
 		if dialErr == nil {
 			connections = append(connections, recovered)
 			break
+		}
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("capacity was not released: %v", dialErr)

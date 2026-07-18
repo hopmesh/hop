@@ -13,7 +13,7 @@ locals {
 }
 
 resource "google_cloudbuildv2_repository" "hop" {
-  name              = "hop"
+  name              = "monorepo"
   location          = var.region
   parent_connection = "projects/${var.project_id}/locations/${var.region}/connections/${var.build_connection_name}"
   remote_uri        = "https://github.com/${var.github_repository}.git"

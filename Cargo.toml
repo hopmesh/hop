@@ -21,7 +21,7 @@ exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz"]
 version = "0.0.1"
 edition = "2021"
 # No repo-wide license: this is a monorepo; components carry their own license as they split out.
-repository = "https://github.com/hopmesh/hop"
+repository = "https://github.com/hopmesh/monorepo"
 
 [workspace.dependencies]
 hop-core = { path = "core/hop-core", version = "0.0.1" }

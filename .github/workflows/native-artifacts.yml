@@ -21,7 +21,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.repository.full_name == 'hopmesh/hop'
+      github.event.workflow_run.repository.full_name == 'hopmesh/monorepo'
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}

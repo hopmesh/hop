@@ -280,6 +280,9 @@ def check(root):
     if not deploy_lease or "objects/${local.lease_object}'" not in deploy_lease:
         errors.append("deploy lease access is not scoped to the single global lease")
 
+    repository = resource_block(triggers, "google_cloudbuildv2_repository", "hop")
+    if not repository or 'name              = "monorepo"' not in repository:
+        errors.append("trusted source repository is not isolated from the legacy connector")
     source = resource_block(triggers, "google_cloudbuild_trigger", "source")
     deploy = resource_block(triggers, "google_cloudbuild_trigger", "deploy")
     if not source or not deploy:

@@ -31,8 +31,8 @@ import (
 const (
 	currentVersion      = "v0.0.1"
 	manifestSchema      = "https://hopme.sh/schemas/native-artifacts-v1.json"
-	canonicalRepository = "https://github.com/hopmesh/hop"
-	canonicalBuilder    = "hopmesh/hop"
+	canonicalRepository = "https://github.com/hopmesh/monorepo"
+	canonicalBuilder    = "hopmesh/monorepo"
 	canonicalWorkflow   = ".github/workflows/native-artifacts.yml"
 	releaseRepository   = "hopmesh/hop-sdk-go"
 	maxManifestBytes    = 10 << 20

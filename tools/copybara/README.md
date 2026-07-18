@@ -41,11 +41,11 @@ state tracking so it can run continuously.
 1. **Create the empty destination repo** `hopmesh/hop-sdk-node` (no README, no license, no commit):
 
    ```sh
-   gh repo create hopmesh/hop-sdk-node --public --description "Hop endpoint SDK for Node (mirror of hopmesh/hop:sdk/node)"
+   gh repo create hopmesh/hop-sdk-node --public --description "Hop endpoint SDK for Node (mirror of hopmesh/monorepo:sdk/node)"
    ```
 
-2. **Create the sync GitHub App.** Install it on `hopmesh/hop` and every mirror. Grant Actions
-   read/write, Contents read/write, and Pull requests read. In `hopmesh/hop`, create a protected
+2. **Create the sync GitHub App.** Install it on `hopmesh/monorepo` and every mirror. Grant Actions
+   read/write, Contents read/write, and Pull requests read. In `hopmesh/monorepo`, create a protected
    `component-sync` environment restricted to `main`, require a reviewer other than the dispatcher,
    enable prevention of self-review, and store `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` only as
    environment secrets. Mirror dispatch workflows that retain these credentials need the same protected
@@ -54,7 +54,7 @@ state tracking so it can run continuously.
    them and does not create or verify the environment policy.
 
 3. **Create the source-verifier GitHub App.** Install this separate read-only App on
-   `hopmesh/hop` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as
+   `hopmesh/monorepo` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as
    `HOP_SOURCE_APP_ID` and `HOP_SOURCE_APP_PRIVATE_KEY` in each publishing mirror's `release`
    environment. Release jobs use it to prove that the mirror tag exactly matches a successful canonical
    `main` commit before any registry or GitHub publish step runs.
@@ -107,7 +107,7 @@ component name; edit it in the monorepo, never in a mirror.
 
 No loop guard is needed: the export cascades out as a **push**, and a push does not fire pull-request
 events, so the sync-back never sees the export's own commits. It runs under `pull_request_target` and
-only dispatches, never checking out PR code. It mints a token scoped only to `hopmesh/hop` with
+only dispatches, never checking out PR code. It mints a token scoped only to `hopmesh/monorepo` with
 Actions write from the sync App credentials; fork code never executes in the privileged job.
 
 ### Confidentiality (what the export publishes)

@@ -34,7 +34,7 @@ variable "build_connection_name" {
 variable "github_repository" {
   description = "Canonical private GitHub repository in owner/name form."
   type        = string
-  default     = "hopmesh/hop"
+  default     = "hopmesh/monorepo"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))

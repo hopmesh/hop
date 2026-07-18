@@ -26,7 +26,7 @@
       "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
     "repository": {
-      "const": "https://github.com/hopmesh/hop"
+      "const": "https://github.com/hopmesh/monorepo"
     },
     "source_sha": {
       "type": "string",
@@ -44,7 +44,7 @@
       ],
       "properties": {
         "repository": {
-          "const": "hopmesh/hop"
+          "const": "hopmesh/monorepo"
         },
         "workflow": {
           "const": ".github/workflows/native-artifacts.yml"
@@ -59,7 +59,7 @@
         },
         "identity": {
           "type": "string",
-          "pattern": "^https://github\\.com/hopmesh/hop/actions/runs/[1-9][0-9]*$"
+          "pattern": "^https://github\\.com/hopmesh/monorepo/actions/runs/[1-9][0-9]*$"
         }
       }
     },

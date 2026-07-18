@@ -49,7 +49,7 @@ def check_text(text, components):
     import_job = job(text, "import")
 
     for literal in (
-        'expected = "hopmesh/hop"',
+        'expected = "hopmesh/monorepo"',
         'os.environ["EVENT_NAME"] == "workflow_dispatch"',
         'os.environ["REF"] == "refs/heads/main"',
         'os.environ["DEFAULT_BRANCH"] == "main"',
@@ -57,7 +57,7 @@ def check_text(text, components):
         'os.environ["ACTOR"] == os.environ["TRIGGERING_ACTOR"]',
         'os.environ["ACTOR"] == os.environ["EVENT_SENDER"]',
         'not os.environ["ACTOR"].endswith("[bot]")',
-        "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+        "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
         'current != os.environ["SHA"]',
     ):
         require(literal in authorize, f"canonical preflight check is absent: {literal}")
@@ -102,7 +102,7 @@ def check_text(text, components):
     )
     require("permission-contents: write" not in import_job, "import App token can write mirror contents")
     require(text.count(COPYBARA_IMAGE) == 2, "Copybara image count drifted")
-    require("github.com/hopmesh/monorepo" not in text, "legacy canonical repository remains")
+    require("github.com/hopmesh/hop" not in text, "legacy canonical repository remains")
 
 
 def check_sync_back_text(text, component):
@@ -113,10 +113,10 @@ def check_sync_back_text(text, component):
         f"sync-back protected environment drifted: {component}",
     )
     require(text.count(TOKEN_ACTION) == 1, f"sync-back App token action drifted: {component}")
-    require("repositories: hop" in text, f"sync-back token is not scoped to canonical hop: {component}")
+    require("repositories: monorepo" in text, f"sync-back token is not scoped to canonical monorepo: {component}")
     require("permission-actions: write" in text, f"sync-back token cannot dispatch: {component}")
     require("permission-contents: write" not in text, f"sync-back token can write contents: {component}")
-    require("--repo hopmesh/hop" in text, f"sync-back dispatch repository drifted: {component}")
+    require("--repo hopmesh/monorepo" in text, f"sync-back dispatch repository drifted: {component}")
     require(
         f"-f component={component}" in text,
         f"sync-back component identity drifted: {component}",
