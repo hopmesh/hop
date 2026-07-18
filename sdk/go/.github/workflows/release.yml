@@ -32,7 +32,6 @@ jobs:
           owner: hopmesh
           repositories: monorepo
           permission-actions: read
-          permission-attestations: read
           permission-checks: read
           permission-contents: read
       - name: Verify canonical source, tag, tree, CI, and native provenance
