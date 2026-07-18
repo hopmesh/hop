@@ -972,6 +972,9 @@ dependencies = [
  "bs58",
  "hop-core",
  "hop-gateway",
+ "hop-store-firestore",
+ "hop-store-sqlite",
+ "libc",
  "tungstenite",
 ]
 

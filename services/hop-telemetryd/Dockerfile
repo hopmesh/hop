@@ -10,7 +10,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY core ./core
 COPY services ./services
 COPY examples ./examples
-RUN cargo build --release -p hop-telemetryd
+RUN cargo build --release -p hop-telemetryd --features firestore
 
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -26,4 +26,6 @@ RUN mkdir -p /etc/hop
 # Cloud Run sets $PORT (inbound HTTP /healthz + /.well-known/hop, plus the direct-dial WS bearer). HOP_*
 # come from the Cloud Run env. Telemetry arrives inbound (direct-dial) or over the outbound relay link.
 ENV PORT=8080
-ENTRYPOINT ["/bin/sh", "-c", "exec hop-telemetryd --listen 0.0.0.0:${PORT} --domain \"${HOP_DOMAIN:-telemetry.hopme.sh}\" --identity-file \"${HOP_IDENTITY_FILE:-/etc/hop/identity}\""]
+# HOP_FIRESTORE_PROJECT / HOP_KEY_SERVER are optional: the `${VAR:+--flag "$VAR"}` idiom passes the
+# flag only when the env var is set, so a plain run still comes up on the local SQLite ledger.
+ENTRYPOINT ["/bin/sh", "-c", "exec hop-telemetryd --listen 0.0.0.0:${PORT} --domain \"${HOP_DOMAIN:-telemetry.hopme.sh}\" --identity-file \"${HOP_IDENTITY_FILE:-/etc/hop/identity}\" --db \"${HOP_DB:-/tmp/hop-telemetryd.db}\" ${HOP_FIRESTORE_PROJECT:+--firestore \"$HOP_FIRESTORE_PROJECT\"} ${HOP_KEY_SERVER:+--key-server \"$HOP_KEY_SERVER\"}"]

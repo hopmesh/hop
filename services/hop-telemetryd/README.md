@@ -32,15 +32,27 @@ aggregate only, not billed. Per-tenant counts are merged every 30s into the dura
 reconciler bills as `hop_telemetry_events` (`reconcile_telemetry`, in hop-billingd).
 
 The `TelemetrySink` (`AggregateSink`) runs alongside for throughput logging, aggregate counts only,
-never per-record or per-device (services-03). Remaining follow-ups: the durable Firestore store
-backend (a `firestore` feature, so the ledger survives a restart) and a raw-event BigQuery forwarder
-for the observability dashboard.
+never per-record or per-device (services-03).
+
+## Durable ledger
+
+The ledger has to outlive the process for the reconciler to bill it, so the collector runs on a real
+store: local **SQLite** by default (`--db`), or **Firestore** on the cloud deploy
+(`--firestore <project>`, needs `--features firestore`), the same split as the relay. On SIGTERM it
+drains the meter into the ledger and flushes the store before exiting, so a Cloud Run reap does not
+lose the window's billable usage.
+
+Remaining follow-up: a raw-event BigQuery forwarder for the observability dashboard, and the
+reconciler's live read path over these rows.
 
 ## Run
 
 ```sh
 hop-telemetryd --listen 0.0.0.0:9445 --domain telemetry.hopme.sh \
-               --identity-file /etc/hop/identity --relay wss://relay.hopme.sh/
+               --identity-file /etc/hop/identity --relay wss://relay.hopme.sh/ \
+               --key-server /etc/hop/tenants --db /var/lib/hop/telemetry.db
+# cloud deploy (durable ledger), built with --features firestore:
+#   ... --firestore hop-mesh
 ```
 
 `--no-relay` (or `HOP_NO_RELAY=1`) runs it isolated (health + reach record only, receives nothing),

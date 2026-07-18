@@ -20,3 +20,14 @@ tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 bs58 = "0.5"
 # Base64 (std alphabet) for the `reach` field of the /.well-known/hop body, matching the endpoint SDK.
 base64 = "0.22"
+# Durable store for the telemetry_usage ledger: local SQLite by default, Firestore on the cloud
+# deploy (same split as the relay). Without one the ledger dies with the process and nothing bills.
+hop-store-sqlite = { workspace = true, features = ["bundled"] }
+hop-store-firestore = { workspace = true, optional = true }
+# SIGTERM handler so a Cloud Run shutdown drains the meter + store before the instance is reaped.
+libc = "0.2"
+
+[features]
+# Off by default so a plain build stays lean. Enable for the Cloud Run deploy that needs the durable
+# Firestore-backed telemetry_usage ledger the §37 reconciler reads.
+firestore = ["dep:hop-store-firestore"]
