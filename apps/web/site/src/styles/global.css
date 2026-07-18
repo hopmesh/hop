@@ -245,8 +245,10 @@ code {
 .srow .body p { font-size: 14px; }
 
 /* ---------- pricing ---------- */
-.tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; align-items: start; }
-.tier { padding: 28px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+/* stretch (not start) so all three cards share the tallest card's height; each tier is a flex column
+   so its CTA can be pinned to the bottom and the buttons line up across the row. */
+.tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; align-items: stretch; }
+.tier { padding: 28px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
 .tier.feature { border-color: var(--accent); box-shadow: 0 16px 50px #2bf0a01f; background: linear-gradient(180deg, var(--panel-2), var(--panel)); }
 .tier .name { font-weight: 680; font-size: 18px; }
 .tier .price { margin: 14px 0 4px; font-size: 32px; font-weight: 780; letter-spacing: -0.02em; }
@@ -255,7 +257,9 @@ code {
 .tier ul { list-style: none; margin: 18px 0 22px; display: grid; gap: 10px; }
 .tier li { font-size: 14px; color: var(--ink-dim); padding-left: 24px; position: relative; }
 .tier li::before { content: "→"; position: absolute; left: 0; color: var(--accent-2); }
-.tier .btn { width: 100%; justify-content: center; }
+/* margin-top:auto absorbs the leftover height in a stretched card, so every CTA sits on the bottom
+   edge instead of floating under a short feature list. */
+.tier .btn { width: 100%; justify-content: center; margin-top: auto; }
 .ribbon { font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
 
 /* ---------- cta band ---------- */
