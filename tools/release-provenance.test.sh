@@ -90,19 +90,26 @@ rejected(lambda: module.select_workflow_run([run, run], source), "duplicate CI r
 native_run = dict(
     run,
     id=84,
-    event="workflow_run",
+    event="push",
     path=".github/workflows/native-artifacts.yml",
     display_title=f"Native artifacts for {source}",
-    head_sha="f" * 40,
+    head_sha=source,
     run_attempt=3,
 )
 assert module.select_native_run([native_run], source)["id"] == 84
 rejected(lambda: module.select_native_run([], source), "absent native artifact run")
 newer_native_run = dict(native_run, id=85, run_attempt=1)
-assert module.select_native_run([native_run, newer_native_run], source)["id"] == 85
+rejected(
+    lambda: module.select_native_run([native_run, newer_native_run], source),
+    "duplicate native artifact run",
+)
 rejected(
     lambda: module.select_native_run([dict(native_run, display_title="Native artifacts")], source),
     "native artifact run without source identity",
+)
+rejected(
+    lambda: module.select_native_run([dict(native_run, head_sha="f" * 40)], source),
+    "native artifact run with the wrong source SHA",
 )
 rejected(
     lambda: module.select_native_run([dict(native_run, run_attempt=0)], source),
@@ -160,7 +167,10 @@ expected_workflows = {
     for name, entry in components.items()
     if (root / entry["prefix"] / ".github/workflows/release.yml").is_file()
 }
-actual_workflows = set(root.glob("**/.github/workflows/release.yml"))
+actual_workflows = {
+    path for path in root.glob("**/.github/workflows/release.yml")
+    if "node_modules" not in path.relative_to(root).parts
+}
 assert actual_workflows == set(expected_workflows), "release workflow is outside the component map"
 
 token_action_v2 = (
@@ -223,10 +233,64 @@ for workflow, component in expected_workflows.items():
         assert "--require-native-artifacts" in workflow_text, f"native provenance not required: {workflow}"
         assert "permission-attestations: read" in workflow_text, f"native attestation access absent: {workflow}"
         assert workflow_text.count("native_run_attempt") >= 2, f"native run attempt not bound: {workflow}"
+        assert workflow_text.count("native-artifacts.py verify-provenance") == 1, f"local provenance verification drifted: {workflow}"
+        assert "native-artifacts.provenance.sigstore.json" in workflow_text, f"local provenance bundle absent: {workflow}"
+        assert "native_artifact_name" in workflow_text, f"native input producer identity absent: {workflow}"
+        assert "release_artifact_name" in workflow_text, f"release producer identity absent: {workflow}"
+        assert "release_artifact_attempt" in workflow_text, f"release producer attempt absent: {workflow}"
+        assert "--run-attempt '${{ needs.build.outputs.release_artifact_attempt }}'" in workflow_text, f"release verifier is not producer-bound: {workflow}"
+        build_section = workflow_text.split("  build:", 1)[1].split("  publish:", 1)[0]
+        publish_section = workflow_text.split("uses: softprops/action-gh-release@", 1)[1]
+        assert "native-artifacts.provenance.sigstore.json" in build_section, f"authoritative provenance not staged: {workflow}"
+        assert (
+            "native-artifacts.provenance.sigstore.json" in publish_section
+            or "files: ${{ runner.temp }}/release/*" in publish_section
+        ), f"authoritative provenance not published: {workflow}"
 
 native_workflow = (root / ".github/workflows/native-artifacts.yml").read_text()
 assert "native-release-bundle-${{ github.run_attempt }}" in native_workflow
-assert "native-*-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}" in native_workflow
+assert "native-artifacts.py download-partials" in native_workflow
+assert "pattern: native-*-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}" not in native_workflow
+assert "github.event.repository.visibility == 'public' || github.event.enterprise != null" in native_workflow
+assert "native-artifacts.py verify-provenance" in native_workflow
+assert "native-artifacts.py authorize-ci" in native_workflow
+assert "native-artifacts.provenance.sigstore.json" in native_workflow
+assert "workflow_run" not in native_workflow
+assert "continue-on-error" not in native_workflow
+
+embedded_release = (root / "sdk/embedded/.github/workflows/release.yml").read_text()
+embedded_publish = embedded_release.split("uses: softprops/action-gh-release@", 1)[1]
+assert "release/native/native-artifacts.provenance.sigstore.json" in embedded_publish
+
+ci_workflow = (root / ".github/workflows/ci.yml").read_text()
+assert "npm test --prefix tools/native-attestation" in ci_workflow
+assert "'tools/native-attestation/**'" in ci_workflow
+
+local_attestation = (root / "tools/native-attestation/create.mjs").read_text()
+assert "https://fulcio.githubapp.com" in local_attestation
+assert "https://timestamp.githubapp.com" in local_attestation
+assert local_attestation.count("timeout: SIGNING_TIMEOUT_MS") == 2
+assert local_attestation.count("retry: SIGNING_RETRIES") == 2
+assert "writeAttestation" not in local_attestation
+lock = json.loads((root / "tools/native-attestation/package-lock.json").read_text())
+assert "node_modules/@actions/attest" not in lock["packages"]
+expected_sigstore = {
+    "node_modules/@sigstore/bundle": (
+        "5.0.0",
+        "sha512-wefjygudENbzbQMks1t5u34EP0fFoD0XvaEP7DOUP/sXKvogzEJYFw5E6pegGyp3onGWzVEYKVa3bNZWyTYX+A==",
+    ),
+    "node_modules/@sigstore/core": (
+        "4.0.1",
+        "sha512-9v5hRjujn5NXq8o7XFEUgLyAtdr5Iisb4pzM05u3K61IS5q3hP3luWAndk0RkPPLTUFoTbg7Vb84UQ1ZQeajWQ==",
+    ),
+    "node_modules/@sigstore/sign": (
+        "5.0.0",
+        "sha512-DSFivqz9/i5AkwZ5fq0YdjaJlc4o1WeS2Zffon0kqtChx0vy4W9NOjkEet9bF2vkzOufX72eVH8kZBIGtcBp1w==",
+    ),
+}
+for package, expected in expected_sigstore.items():
+    dependency = lock["packages"][package]
+    assert (dependency["version"], dependency["integrity"]) == expected
 
 print("release provenance tests passed")
 PY

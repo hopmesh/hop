@@ -62,10 +62,12 @@ state tracking so it can run continuously.
 4. **Protect releases.** In every mirror that carries `.github/workflows/release.yml`, create an
    environment named `release`, add a required reviewer, and configure each registry trusted publisher
    with environment `release`. The canonical monorepo `release` environment needs
-   `NATIVE_ARTIFACT_SIGNING_KEY`, whose public half is committed as
-   `tools/native-artifacts-public.pem`. Native wrapper releases download the successful canonical
-   native workflow by immutable run and artifact ID, verify that signature and every archive digest,
-   then verify GitHub's build-provenance attestation before publishing.
+    `NATIVE_ARTIFACT_SIGNING_KEY`, whose public half is committed as
+    `tools/native-artifacts-public.pem`. Native wrapper releases download the successful canonical
+    native workflow by immutable run and artifact ID, verify that signature and every archive digest,
+    then verify the attached GitHub OIDC SLSA provenance bundle before publishing. The canonical
+    workflow mirrors the same provenance to GitHub's attestation API when the repository plan supports
+    hosted storage; the attached Sigstore bundle is always authoritative.
 
    The canonical environment also needs `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
    from a separate App installed only on `hopmesh/libhop` with Contents write.

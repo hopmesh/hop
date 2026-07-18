@@ -17,6 +17,7 @@ jobs:
       contents: read
     outputs:
       source_sha: ${{ steps.provenance.outputs.source_sha }}
+      native_artifact_name: ${{ steps.native-artifact.outputs.name }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -56,19 +57,21 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
-          python3 native/native-artifacts.py verify \
+          python3 native/native-artifacts.py verify-provenance \
             --manifest "$RUNNER_TEMP/native-release/native-artifacts.json" \
             --signature "$RUNNER_TEMP/native-release/native-artifacts.json.sig" \
             --public-key native/native-artifacts-public.pem \
-            --directory "$RUNNER_TEMP/native-release" --strict \
+            --directory "$RUNNER_TEMP/native-release" \
+            --provenance-bundle "$RUNNER_TEMP/native-release/native-artifacts.provenance.sigstore.json" \
             --source-sha '${{ steps.provenance.outputs.source_sha }}' \
             --tag "$GITHUB_REF_NAME" --run-id '${{ steps.provenance.outputs.native_run_id }}' \
             --run-attempt '${{ steps.provenance.outputs.native_run_attempt }}'
-          gh attestation verify "$RUNNER_TEMP/native-release/native-artifacts.json" --repo hopmesh/monorepo
-          gh attestation verify "$RUNNER_TEMP/native-release/libhop.xcframework.zip" --repo hopmesh/monorepo
+      - name: Bind native input artifact identity
+        id: native-artifact
+        run: echo "name=native-input-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.native-artifact.outputs.name }}
           path: ${{ runner.temp }}/native-release/*
           if-no-files-found: error
           retention-days: 1
@@ -78,6 +81,9 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: read
+    outputs:
+      release_artifact_name: ${{ steps.release-artifact.outputs.name }}
+      release_artifact_attempt: ${{ steps.release-artifact.outputs.run_attempt }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -86,7 +92,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.prepare.outputs.native_artifact_name }}
           path: ${{ runner.temp }}/native-release
       - name: Verify package checksum, slices, tests, and clean consumer
         run: |
@@ -127,11 +133,17 @@ jobs:
           cp "$RUNNER_TEMP/native-release/libhop.xcframework.zip" "$release/"
           cp "$RUNNER_TEMP/native-release/native-artifacts.json" "$release/"
           cp "$RUNNER_TEMP/native-release/native-artifacts.json.sig" "$release/"
+          cp "$RUNNER_TEMP/native-release/native-artifacts.provenance.sigstore.json" "$release/"
           python3 .github/release-artifact.py create --directory "$release" \
             --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+      - name: Bind release artifact identity
+        id: release-artifact
+        run: |
+          echo "name=release-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.release-artifact.outputs.name }}
           path: ${{ runner.temp }}/release/*
           if-no-files-found: error
 
@@ -149,12 +161,13 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.release_artifact_name }}
           path: ${{ runner.temp }}/release
       - name: Verify immutable Swift release assets
         run: >-
           python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
           --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+          --run-attempt '${{ needs.build.outputs.release_artifact_attempt }}'
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:

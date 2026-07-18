@@ -21,6 +21,46 @@ SCHEMA = "https://hopme.sh/schemas/native-artifacts-v1.json"
 CANONICAL_REPOSITORY = "https://github.com/hopmesh/monorepo"
 CANONICAL_GITHUB_REPOSITORY = "hopmesh/monorepo"
 NATIVE_WORKFLOW = ".github/workflows/native-artifacts.yml"
+PROVENANCE_FILENAME = "native-artifacts.provenance.sigstore.json"
+SLSA_PROVENANCE_TYPE = "https://slsa.dev/provenance/v1"
+GITHUB_WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1"
+NATIVE_CERT_IDENTITY = f"https://github.com/{CANONICAL_GITHUB_REPOSITORY}/{NATIVE_WORKFLOW}@refs/heads/main"
+CI_WORKFLOW = ".github/workflows/ci.yml"
+CI_AUTHORIZATION_JOBS = {"Automation authority guards", "CI gate"}
+NATIVE_TARGET_FILENAMES = {
+    "x86_64-unknown-linux-gnu": "libhop-x86_64-unknown-linux-gnu.tar.gz",
+    "aarch64-unknown-linux-gnu": "libhop-aarch64-unknown-linux-gnu.tar.gz",
+    "apple-xcframework": "libhop.xcframework.zip",
+    "aarch64-apple-darwin": "libhop-aarch64-apple-darwin.tar.gz",
+    "x86_64-apple-darwin": "libhop-x86_64-apple-darwin.tar.gz",
+    "aarch64-linux-android": "libhop-aarch64-linux-android.tar.gz",
+    "armv7-linux-androideabi": "libhop-armv7-linux-androideabi.tar.gz",
+    "i686-linux-android": "libhop-i686-linux-android.tar.gz",
+    "x86_64-linux-android": "libhop-x86_64-linux-android.tar.gz",
+    "xtensa-esp32-espidf": "libhop-xtensa-esp32-espidf.tar.gz",
+    "xtensa-esp32s2-espidf": "libhop-xtensa-esp32s2-espidf.tar.gz",
+    "xtensa-esp32s3-espidf": "libhop-xtensa-esp32s3-espidf.tar.gz",
+    "riscv32imc-esp-espidf": "libhop-riscv32imc-esp-espidf.tar.gz",
+    "riscv32imac-esp-espidf": "libhop-riscv32imac-esp-espidf.tar.gz",
+}
+PARTIAL_ARTIFACT_TARGETS = {
+    "native-linux-x86_64-unknown-linux-gnu": ("x86_64-unknown-linux-gnu",),
+    "native-linux-aarch64-unknown-linux-gnu": ("aarch64-unknown-linux-gnu",),
+    "native-apple": ("apple-xcframework", "aarch64-apple-darwin", "x86_64-apple-darwin"),
+    "native-android": (
+        "aarch64-linux-android",
+        "armv7-linux-androideabi",
+        "i686-linux-android",
+        "x86_64-linux-android",
+    ),
+    "native-embedded": (
+        "xtensa-esp32-espidf",
+        "xtensa-esp32s2-espidf",
+        "xtensa-esp32s3-espidf",
+        "riscv32imc-esp-espidf",
+        "riscv32imac-esp-espidf",
+    ),
+}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -182,6 +222,8 @@ def validate_manifest(value):
             require(isinstance(entry["sha256"], str) and SHA256_RE.fullmatch(entry["sha256"]), f"{entry_label} SHA-256 is invalid")
             require(isinstance(entry["size"], int) and entry["size"] >= 0, f"{entry_label} size is invalid")
             require(entry["mode"] in ("0644", "0755"), f"{entry_label} mode is invalid")
+    actual_inventory = {artifact["target"]: artifact["filename"] for artifact in artifacts}
+    require(actual_inventory == NATIVE_TARGET_FILENAMES, "manifest does not contain the canonical native target inventory")
     return value
 
 
@@ -237,6 +279,7 @@ def verify_release(
     expected_tag=None,
     expected_run_id=None,
     expected_run_attempt=None,
+    provenance_bundle=None,
 ):
     verify_signature(manifest_path, signature, public_key)
     manifest = load_manifest(manifest_path)
@@ -254,12 +297,194 @@ def verify_release(
     artifacts = [select_artifact(manifest, target)] if target else manifest["artifacts"]
     for artifact in artifacts:
         verify_artifact(artifact, directory)
+    if provenance_bundle is not None:
+        provenance_bundle = Path(provenance_bundle)
+        require(provenance_bundle.name == PROVENANCE_FILENAME, "provenance bundle filename is not canonical")
+        require(
+            provenance_bundle.parent.resolve() == Path(directory).resolve(),
+            "provenance bundle is outside the release directory",
+        )
+        require(
+            provenance_bundle.is_file() and not provenance_bundle.is_symlink() and provenance_bundle.stat().st_size > 0,
+            "provenance bundle is missing",
+        )
     if strict:
         expected = {artifact["filename"] for artifact in manifest["artifacts"]}
         expected.update({Path(manifest_path).name, Path(signature).name})
+        if provenance_bundle is not None:
+            expected.add(provenance_bundle.name)
         actual = {path.name for path in Path(directory).iterdir() if path.is_file()}
         require(actual == expected, f"release bundle files differ: missing={sorted(expected - actual)} extra={sorted(actual - expected)}")
     return manifest
+
+
+def attestation_subjects(manifest, manifest_path, signature, directory):
+    directory = Path(directory).resolve()
+    paths = [Path(manifest_path), Path(signature)]
+    paths.extend(directory / artifact["filename"] for artifact in manifest["artifacts"])
+    subjects = []
+    names = set()
+    for path in paths:
+        require(path.parent.resolve() == directory, f"attestation subject is outside the release directory: {path}")
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0, f"attestation subject is missing: {path.name}")
+        require(path.name not in names, f"duplicate attestation subject: {path.name}")
+        names.add(path.name)
+        subjects.append({"name": path.name, "digest": {"sha256": digest_file(path)}})
+    return sorted(subjects, key=lambda subject: subject["name"])
+
+
+def expected_attestation_subjects(manifest, manifest_path, signature):
+    subjects = []
+    names = set()
+    for path in (Path(manifest_path), Path(signature)):
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0, f"attestation subject is missing: {path.name}")
+        require(path.name not in names, f"duplicate attestation subject: {path.name}")
+        names.add(path.name)
+        subjects.append({"name": path.name, "digest": {"sha256": digest_file(path)}})
+    for artifact in manifest["artifacts"]:
+        require(artifact["filename"] not in names, f"duplicate attestation subject: {artifact['filename']}")
+        names.add(artifact["filename"])
+        subjects.append({"name": artifact["filename"], "digest": {"sha256": artifact["sha256"]}})
+    return sorted(subjects, key=lambda subject: subject["name"])
+
+
+def validate_provenance_result(manifest, expected_subjects, value):
+    require(isinstance(value, list) and len(value) == 1, "provenance verification result must contain one attestation")
+    result = value[0].get("verificationResult") if isinstance(value[0], dict) else None
+    require(isinstance(result, dict), "provenance verification result is malformed")
+    signature = result.get("signature")
+    certificate = signature.get("certificate") if isinstance(signature, dict) else None
+    require(isinstance(certificate, dict), "provenance signing certificate is missing")
+    expected_invocation = (
+        f"https://github.com/{CANONICAL_GITHUB_REPOSITORY}/actions/runs/"
+        f"{manifest['builder']['run_id']}/attempts/{manifest['builder']['run_attempt']}"
+    )
+    expected_certificate = {
+        "subjectAlternativeName": NATIVE_CERT_IDENTITY,
+        "buildSignerURI": NATIVE_CERT_IDENTITY,
+        "buildSignerDigest": manifest["source_sha"],
+        "runnerEnvironment": "github-hosted",
+        "sourceRepositoryURI": CANONICAL_REPOSITORY,
+        "sourceRepositoryDigest": manifest["source_sha"],
+        "sourceRepositoryRef": "refs/heads/main",
+        "buildConfigURI": NATIVE_CERT_IDENTITY,
+        "buildConfigDigest": manifest["source_sha"],
+        "buildTrigger": "push",
+        "runInvocationURI": expected_invocation,
+    }
+    for field, expected in expected_certificate.items():
+        require(certificate.get(field) == expected, f"provenance certificate {field} is wrong")
+    statement = result.get("statement")
+    require(isinstance(statement, dict), "provenance statement is missing")
+    require(statement.get("predicateType") == SLSA_PROVENANCE_TYPE, "provenance predicate type is wrong")
+    subjects = statement.get("subject")
+    require(isinstance(subjects, list), "provenance subjects are missing")
+    actual_subjects = []
+    for index, subject in enumerate(subjects):
+        exact_keys(subject, ("name", "digest"), f"provenance subject[{index}]")
+        require(isinstance(subject["name"], str) and subject["name"], f"provenance subject[{index}] name is invalid")
+        exact_keys(subject["digest"], ("sha256",), f"provenance subject[{index}].digest")
+        require(SHA256_RE.fullmatch(subject["digest"]["sha256"]), f"provenance subject[{index}] digest is invalid")
+        actual_subjects.append(subject)
+    require(
+        sorted(actual_subjects, key=lambda subject: subject["name"]) == expected_subjects,
+        "provenance subjects differ from the signed release inventory",
+    )
+
+    predicate = statement.get("predicate")
+    require(isinstance(predicate, dict), "provenance predicate is missing")
+    build = predicate.get("buildDefinition")
+    require(isinstance(build, dict), "provenance build definition is missing")
+    require(build.get("buildType") == GITHUB_WORKFLOW_BUILD_TYPE, "provenance build type is wrong")
+    external = build.get("externalParameters")
+    workflow = external.get("workflow") if isinstance(external, dict) else None
+    require(
+        workflow == {"ref": "refs/heads/main", "repository": CANONICAL_REPOSITORY, "path": NATIVE_WORKFLOW},
+        "provenance workflow identity is wrong",
+    )
+    internal = build.get("internalParameters")
+    github = internal.get("github") if isinstance(internal, dict) else None
+    require(isinstance(github, dict), "provenance GitHub parameters are missing")
+    require(github.get("event_name") == "push", "provenance event is not push")
+    require(github.get("runner_environment") == "github-hosted", "provenance runner is not GitHub-hosted")
+    require(
+        build.get("resolvedDependencies")
+        == [{"uri": f"git+{CANONICAL_REPOSITORY}@refs/heads/main", "digest": {"gitCommit": manifest["source_sha"]}}],
+        "provenance source dependency is wrong",
+    )
+    details = predicate.get("runDetails")
+    require(isinstance(details, dict), "provenance run details are missing")
+    require(details.get("builder") == {"id": NATIVE_CERT_IDENTITY}, "provenance builder identity is wrong")
+    require(
+        details.get("metadata") == {"invocationId": expected_invocation},
+        "provenance invocation identity is wrong",
+    )
+
+
+def verify_sigstore_provenance(manifest, manifest_path, signature, provenance_bundle, expected_subjects=None):
+    provenance_bundle = Path(provenance_bundle)
+    require(provenance_bundle.name == PROVENANCE_FILENAME, "provenance bundle filename is not canonical")
+    require(
+        provenance_bundle.parent.resolve() == Path(manifest_path).resolve().parent,
+        "provenance bundle is outside the release directory",
+    )
+    require(
+        provenance_bundle.is_file() and not provenance_bundle.is_symlink() and provenance_bundle.stat().st_size > 0,
+        "provenance bundle is missing",
+    )
+    if expected_subjects is None:
+        expected_subjects = expected_attestation_subjects(manifest, manifest_path, signature)
+    command = [
+        "gh",
+        "attestation",
+        "verify",
+        str(Path(manifest_path).resolve()),
+        "--bundle",
+        str(provenance_bundle.resolve()),
+        "--repo",
+        CANONICAL_GITHUB_REPOSITORY,
+        "--predicate-type",
+        SLSA_PROVENANCE_TYPE,
+        "--cert-identity",
+        NATIVE_CERT_IDENTITY,
+        "--source-digest",
+        manifest["source_sha"],
+        "--source-ref",
+        "refs/heads/main",
+        "--deny-self-hosted-runners",
+        "--format",
+        "json",
+    ]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True)
+    require(result.returncode == 0, f"Sigstore provenance verification failed: {result.stderr.strip()}")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ArtifactError("Sigstore provenance verification returned invalid JSON") from error
+    validate_provenance_result(manifest, expected_subjects, value)
+
+
+def verify_provenance(args):
+    manifest = verify_release(
+        args.manifest,
+        args.signature,
+        args.public_key,
+        args.directory,
+        strict=True,
+        expected_source_sha=args.source_sha,
+        expected_tag=args.tag,
+        expected_run_id=args.run_id,
+        expected_run_attempt=args.run_attempt,
+        provenance_bundle=args.provenance_bundle,
+    )
+    expected_subjects = attestation_subjects(manifest, args.manifest, args.signature, args.directory)
+    verify_sigstore_provenance(
+        manifest,
+        args.manifest,
+        args.signature,
+        args.provenance_bundle,
+        expected_subjects,
+    )
 
 
 def safe_extract(archive, destination):
@@ -422,6 +647,164 @@ def gh_json(path):
         raise ArtifactError(f"GitHub API returned invalid JSON for {path}") from error
 
 
+def select_partial_artifacts(listing, source_sha, run_attempt):
+    require(SHA_RE.fullmatch(source_sha or ""), "partial artifact source SHA is invalid")
+    require(isinstance(run_attempt, int) and run_attempt > 0, "partial artifact run attempt is invalid")
+    require(isinstance(listing, dict), "partial artifact listing is malformed")
+    artifacts = listing.get("artifacts")
+    require(isinstance(artifacts, list), "partial artifact list is missing")
+    require(listing.get("total_count") == len(artifacts) and len(artifacts) <= 100, "partial artifact listing is incomplete")
+    selected = []
+    selected_ids = set()
+    for base, targets in PARTIAL_ARTIFACT_TARGETS.items():
+        pattern = re.compile(rf"^{re.escape(base)}-{source_sha}-([1-9][0-9]*)$")
+        matching = []
+        for artifact in artifacts:
+            if not isinstance(artifact, dict) or not isinstance(artifact.get("name"), str):
+                continue
+            match = pattern.fullmatch(artifact["name"])
+            if match:
+                matching.append((int(match.group(1)), artifact))
+        require(matching, f"partial artifact is missing: {base}")
+        require(all(attempt <= run_attempt for attempt, _artifact in matching), f"partial artifact has a future attempt: {base}")
+        newest_attempt = max(attempt for attempt, _artifact in matching)
+        newest = [artifact for attempt, artifact in matching if attempt == newest_attempt]
+        require(len(newest) == 1, f"partial artifact attempt is ambiguous: {base}")
+        artifact = newest[0]
+        require(not artifact.get("expired"), f"partial artifact has expired: {base}")
+        artifact_id = artifact.get("id")
+        require(isinstance(artifact_id, int) and artifact_id > 0, f"partial artifact ID is invalid: {base}")
+        require(artifact_id not in selected_ids, f"partial artifact ID is duplicated: {base}")
+        selected_ids.add(artifact_id)
+        expected_files = {NATIVE_TARGET_FILENAMES[target] for target in targets}
+        selected.append((base, newest_attempt, artifact, expected_files))
+    return selected
+
+
+def download_partials(args):
+    require(args.repository == CANONICAL_GITHUB_REPOSITORY, "partial artifact repository must be canonical")
+    require(args.run_id > 0, "partial artifact workflow run ID is invalid")
+    run = gh_json(f"/repos/{args.repository}/actions/runs/{args.run_id}")
+    require(run.get("id") == args.run_id, "partial artifact workflow run ID changed")
+    require(run.get("run_attempt") == args.run_attempt, "partial artifact workflow run attempt changed")
+    require(run.get("head_sha") == args.source_sha, "partial artifact workflow source SHA is wrong")
+    require(run.get("head_branch") == "main", "partial artifact workflow branch is wrong")
+    require(run.get("event") == "push", "partial artifact workflow event is wrong")
+    require(run.get("path") == NATIVE_WORKFLOW, "partial artifact workflow path is wrong")
+    repository = run.get("repository")
+    require(
+        isinstance(repository, dict) and repository.get("full_name") == CANONICAL_GITHUB_REPOSITORY,
+        "partial artifact workflow repository is wrong",
+    )
+    listing = gh_json(f"/repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100")
+    selected = select_partial_artifacts(listing, args.source_sha, args.run_attempt)
+    output = Path(args.output).resolve()
+    require(not output.exists(), "partial artifact output already exists")
+    with tempfile.TemporaryDirectory(prefix="hop-native-partials-") as temporary:
+        temporary = Path(temporary)
+        combined = temporary / "combined"
+        combined.mkdir()
+        for base, attempt, artifact, expected_files in selected:
+            archive = temporary / f"{artifact['id']}.zip"
+            with archive.open("wb") as destination:
+                result = subprocess.run(
+                    ["gh", "api", f"/repos/{args.repository}/actions/artifacts/{artifact['id']}/zip"],
+                    check=False,
+                    stdout=destination,
+                    stderr=subprocess.PIPE,
+                )
+            require(
+                result.returncode == 0,
+                f"partial artifact download failed for {base}: {result.stderr.decode('utf-8', 'replace').strip()}",
+            )
+            extracted = temporary / f"extracted-{artifact['id']}"
+            safe_extract_zip(archive, extracted)
+            files = [path for path in extracted.rglob("*") if path.is_file()]
+            require(all(path.parent == extracted for path in files), f"partial artifact contains a nested path: {base}")
+            actual_files = {path.name for path in files}
+            require(actual_files == expected_files, f"partial artifact files differ for {base}")
+            for path in files:
+                destination = combined / path.name
+                require(not destination.exists(), f"partial artifact file is duplicated: {path.name}")
+                shutil.copy2(path, destination)
+            print(f"selected native partial: group={base} attempt={attempt} artifact_id={artifact['id']}")
+        require(
+            {path.name for path in combined.iterdir()} == set(NATIVE_TARGET_FILENAMES.values()),
+            "combined partial artifact inventory is incomplete",
+        )
+        shutil.copytree(combined, output)
+
+
+def select_ci_run(runs_response, source_sha):
+    require(isinstance(runs_response, dict), "CI workflow run response is malformed")
+    runs = runs_response.get("workflow_runs")
+    require(isinstance(runs, list), "CI workflow run list is missing")
+    require(runs_response.get("total_count") == len(runs) and len(runs) <= 100, "CI workflow run list is incomplete")
+    matches = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("head_sha") == source_sha
+        and run.get("head_branch") == "main"
+        and run.get("event") == "push"
+        and run.get("path") == CI_WORKFLOW
+    ]
+    require(len(matches) == 1, f"source must have exactly one canonical CI run, found {len(matches)}")
+    run = matches[0]
+    require(isinstance(run.get("id"), int) and run["id"] > 0, "source CI run ID is invalid")
+    require(isinstance(run.get("run_attempt"), int) and run["run_attempt"] > 0, "source CI run attempt is invalid")
+    for label in ("repository", "head_repository"):
+        repository = run.get(label)
+        require(
+            isinstance(repository, dict) and repository.get("full_name") == CANONICAL_GITHUB_REPOSITORY,
+            f"source CI {label} is not canonical",
+        )
+    return run
+
+
+def validate_ci_authorization(runs_response, jobs_response, source_sha):
+    run = select_ci_run(runs_response, source_sha)
+    require(run.get("status") == "completed" and run.get("conclusion") == "success", "source CI run is not successful")
+
+    require(isinstance(jobs_response, dict), "CI workflow jobs response is malformed")
+    jobs = jobs_response.get("jobs")
+    require(isinstance(jobs, list), "CI workflow jobs are missing")
+    require(jobs_response.get("total_count") == len(jobs) and len(jobs) <= 100, "CI workflow jobs list is incomplete")
+    for name in CI_AUTHORIZATION_JOBS:
+        matching = [job for job in jobs if isinstance(job, dict) and job.get("name") == name]
+        require(len(matching) == 1, f"CI authorization job must appear once: {name}")
+        job = matching[0]
+        require(job.get("status") == "completed" and job.get("conclusion") == "success", f"CI authorization job failed: {name}")
+        require(job.get("head_sha") == source_sha, f"CI authorization job has the wrong source SHA: {name}")
+        require(job.get("run_attempt") == run["run_attempt"], f"CI authorization job has a stale run attempt: {name}")
+    return run
+
+
+def authorize_ci(args):
+    require(SHA_RE.fullmatch(args.source_sha or ""), "source SHA is invalid")
+    query = (
+        f"/repos/{CANONICAL_GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs"
+        f"?head_sha={args.source_sha}&branch=main&event=push&per_page=100"
+    )
+    runs = gh_json(query)
+    selected = select_ci_run(runs, args.source_sha)
+    watched = subprocess.run(
+        ["gh", "run", "watch", str(selected["id"]), "--repo", CANONICAL_GITHUB_REPOSITORY, "--exit-status"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    require(watched.returncode == 0, f"source CI run did not succeed: {watched.stderr.strip()}")
+    runs = gh_json(query)
+    selected = select_ci_run(runs, args.source_sha)
+    jobs = gh_json(
+        f"/repos/{CANONICAL_GITHUB_REPOSITORY}/actions/runs/{selected['id']}/jobs?filter=latest&per_page=100"
+    )
+    run = validate_ci_authorization(runs, jobs, args.source_sha)
+    print(f"authorized native source from CI run {run['id']} attempt {run['run_attempt']}")
+
+
 def download_github(args):
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository), "GitHub repository is invalid")
     require(args.run_id > 0, "native artifact run ID is invalid")
@@ -433,7 +816,7 @@ def download_github(args):
     require(run.get("display_title") == f"Native artifacts for {args.source_sha}", "GitHub workflow run source identity is wrong")
     require(run.get("head_branch") == "main", "GitHub workflow run branch is wrong")
     require(run.get("path") == NATIVE_WORKFLOW, "GitHub workflow run path is wrong")
-    require(run.get("event") == "workflow_run", "GitHub workflow run event is wrong")
+    require(run.get("event") == "push", "GitHub workflow run event is wrong")
     require(run.get("status") == "completed" and run.get("conclusion") == "success", "GitHub workflow run is not successful")
     listing = gh_json(f"/repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100")
     artifacts = listing.get("artifacts", [])
@@ -574,6 +957,28 @@ def main():
     verify.add_argument("--tag")
     verify.add_argument("--run-id", type=int)
     verify.add_argument("--run-attempt", type=int)
+    verify.add_argument("--provenance-bundle")
+
+    provenance = subparsers.add_parser("verify-provenance")
+    provenance.add_argument("--manifest", required=True)
+    provenance.add_argument("--signature", required=True)
+    provenance.add_argument("--public-key", required=True)
+    provenance.add_argument("--directory", required=True)
+    provenance.add_argument("--provenance-bundle", required=True)
+    provenance.add_argument("--source-sha", required=True)
+    provenance.add_argument("--tag", required=True)
+    provenance.add_argument("--run-id", type=int, required=True)
+    provenance.add_argument("--run-attempt", type=int, required=True)
+
+    ci_authorization = subparsers.add_parser("authorize-ci")
+    ci_authorization.add_argument("--source-sha", required=True)
+
+    partials = subparsers.add_parser("download-partials")
+    partials.add_argument("--repository", default=CANONICAL_GITHUB_REPOSITORY)
+    partials.add_argument("--run-id", type=int, required=True)
+    partials.add_argument("--run-attempt", type=int, required=True)
+    partials.add_argument("--source-sha", required=True)
+    partials.add_argument("--output", required=True)
 
     extract = subparsers.add_parser("extract")
     extract.add_argument("--manifest", required=True)
@@ -617,7 +1022,14 @@ def main():
                 args.tag,
                 args.run_id,
                 args.run_attempt,
+                args.provenance_bundle,
             )
+        elif args.command == "verify-provenance":
+            verify_provenance(args)
+        elif args.command == "authorize-ci":
+            authorize_ci(args)
+        elif args.command == "download-partials":
+            download_partials(args)
         elif args.command == "extract":
             manifest = verify_release(args.manifest, args.signature, args.public_key, args.directory, args.target)
             artifact = select_artifact(manifest, args.target)

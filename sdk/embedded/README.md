@@ -36,6 +36,8 @@ python3 install-libhop.py --version v0.0.1
 ```
 
 Use repeated `--target <exact-triple>` options to install only the boards this checkout builds.
+The source installer requires the GitHub CLI (`gh`) to verify the attached Sigstore bundle and its
+canonical workflow, source commit, runner, and subject inventory before downloading native archives.
 
 ## Clock Contract
 

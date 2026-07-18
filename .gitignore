@@ -10,6 +10,8 @@ drivers/apple/HopDriver/.build-staging/
 # Python verification helpers
 __pycache__/
 *.py[cod]
+# Node dependency trees
+node_modules/
 # relay identity seeds + on-disk stores (never commit secrets/state)
 *.db
 *.db.key

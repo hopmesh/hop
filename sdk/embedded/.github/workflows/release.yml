@@ -17,6 +17,7 @@ jobs:
       contents: read
     outputs:
       source_sha: ${{ steps.provenance.outputs.source_sha }}
+      native_artifact_name: ${{ steps.native-artifact.outputs.name }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -56,27 +57,21 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
-          python3 native/native-artifacts.py verify \
+          python3 native/native-artifacts.py verify-provenance \
             --manifest "$RUNNER_TEMP/native-release/native-artifacts.json" \
             --signature "$RUNNER_TEMP/native-release/native-artifacts.json.sig" \
             --public-key native/native-artifacts-public.pem \
-            --directory "$RUNNER_TEMP/native-release" --strict \
+            --directory "$RUNNER_TEMP/native-release" \
+            --provenance-bundle "$RUNNER_TEMP/native-release/native-artifacts.provenance.sigstore.json" \
             --source-sha '${{ steps.provenance.outputs.source_sha }}' \
             --tag "$GITHUB_REF_NAME" --run-id '${{ steps.provenance.outputs.native_run_id }}' \
             --run-attempt '${{ steps.provenance.outputs.native_run_attempt }}'
-          gh attestation verify "$RUNNER_TEMP/native-release/native-artifacts.json" --repo hopmesh/monorepo
-          for target in xtensa-esp32-espidf xtensa-esp32s2-espidf xtensa-esp32s3-espidf riscv32imc-esp-espidf riscv32imac-esp-espidf; do
-            archive="$(python3 - "$RUNNER_TEMP/native-release/native-artifacts.json" "$target" <<'PY'
-          import json, sys
-          manifest = json.load(open(sys.argv[1]))
-          print(next(item["filename"] for item in manifest["artifacts"] if item["target"] == sys.argv[2]))
-          PY
-          )"
-            gh attestation verify "$RUNNER_TEMP/native-release/$archive" --repo hopmesh/monorepo
-          done
+      - name: Bind native input artifact identity
+        id: native-artifact
+        run: echo "name=native-input-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.native-artifact.outputs.name }}
           path: ${{ runner.temp }}/native-release/*
           if-no-files-found: error
           retention-days: 1
@@ -86,6 +81,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      release_artifact_name: ${{ steps.release-artifact.outputs.name }}
+      release_artifact_attempt: ${{ steps.release-artifact.outputs.run_attempt }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -94,7 +92,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.prepare.outputs.native_artifact_name }}
           path: ${{ runner.temp }}/native-release
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -113,6 +111,7 @@ jobs:
             --signature "$RUNNER_TEMP/native-release/native-artifacts.json.sig" \
             --public-key native/native-artifacts-public.pem \
             --directory "$RUNNER_TEMP/native-release" --strict \
+            --provenance-bundle "$RUNNER_TEMP/native-release/native-artifacts.provenance.sigstore.json" \
             --source-sha '${{ needs.prepare.outputs.source_sha }}' --tag "$GITHUB_REF_NAME"
           python3 install-libhop.py --version "$GITHUB_REF_NAME" --bundle "$RUNNER_TEMP/native-release"
           bash test/run-host-tests.sh
@@ -148,17 +147,24 @@ jobs:
           fi
           grep -Eq '(^|/)native/native-artifacts.json$' "$RUNNER_TEMP/package-files.txt"
           grep -Eq '(^|/)native/native-artifacts.json.sig$' "$RUNNER_TEMP/package-files.txt"
+          grep -Eq '(^|/)native/native-artifacts.provenance.sigstore.json$' "$RUNNER_TEMP/package-files.txt"
           grep -Eq '(^|/)native/native-artifacts.py$' "$RUNNER_TEMP/package-files.txt"
           for target in xtensa-esp32-espidf xtensa-esp32s2-espidf xtensa-esp32s3-espidf riscv32imc-esp-espidf riscv32imac-esp-espidf; do
             grep -Eq "(^|/)native/artifacts/libhop-$target\\.tar\\.gz$" "$RUNNER_TEMP/package-files.txt"
           done
-          cp native/native-artifacts.json native/native-artifacts.json.sig "$release/native/"
+          cp native/native-artifacts.json native/native-artifacts.json.sig \
+            native/native-artifacts.provenance.sigstore.json "$release/native/"
           cp native/artifacts/*.tar.gz "$release/native/artifacts/"
           python3 .github/release-artifact.py create --directory "$release" \
             --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+      - name: Bind release artifact identity
+        id: release-artifact
+        run: |
+          echo "name=release-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.release-artifact.outputs.name }}
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
 
@@ -178,12 +184,13 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.release_artifact_name }}
           path: ${{ runner.temp }}/release
       - name: Verify immutable embedded release bundle
         run: >-
           python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
           --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+          --run-attempt '${{ needs.build.outputs.release_artifact_attempt }}'
       - name: Attest verified PlatformIO archive
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
@@ -195,6 +202,7 @@ jobs:
             ${{ runner.temp }}/release/hop-embedded-${{ github.ref_name }}.tar.gz
             ${{ runner.temp }}/release/native/native-artifacts.json
             ${{ runner.temp }}/release/native/native-artifacts.json.sig
+            ${{ runner.temp }}/release/native/native-artifacts.provenance.sigstore.json
             ${{ runner.temp }}/release/native/artifacts/*.tar.gz
             ${{ runner.temp }}/release/release-manifest.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
