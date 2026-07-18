@@ -14,10 +14,13 @@ class PagesPathError(RuntimeError):
 def check_authority(text):
     repository_check = 'test "$REPOSITORY" = hopmesh/monorepo'
     main_api = "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main"
+    hidden_artifacts = "include-hidden-files: true"
     if text.count(repository_check) != 1:
         raise PagesPathError("Pages canonical repository check drifted")
     if text.count(main_api) != 2:
         raise PagesPathError("Pages canonical main checks drifted")
+    if text.count(hidden_artifacts) != 1:
+        raise PagesPathError("Pages artifact omits hidden provenance files")
 
 
 def workflow_paths(path):

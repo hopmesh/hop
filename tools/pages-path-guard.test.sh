@@ -40,6 +40,12 @@ except module.PagesPathError:
     pass
 else:
     raise AssertionError("legacy Pages repository was accepted")
+try:
+    module.check_authority(pages_workflow.replace("          include-hidden-files: true\n", ""))
+except module.PagesPathError:
+    pass
+else:
+    raise AssertionError("Pages artifact without hidden provenance files was accepted")
 
 with tempfile.TemporaryDirectory() as temp:
     workflow = Path(temp) / "pages.yml"

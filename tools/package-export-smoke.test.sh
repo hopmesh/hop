@@ -231,6 +231,18 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert "env.Append(LINKFLAGS=[archive])" not in embedded_linker
 
     native_workflow = (root / ".github/workflows/native-artifacts.yml").read_text()
+    android_setup = native_workflow.split(
+        "- name: Install exact NDK and Rust builders", 1
+    )[1].split("- name: Invoke the canonical Android native builder", 1)[0]
+    assert "rustup target add" in android_setup
+    for target in (
+        "aarch64-linux-android",
+        "armv7-linux-androideabi",
+        "i686-linux-android",
+        "x86_64-linux-android",
+    ):
+        assert target in android_setup, f"Android setup omitted Rust target: {target}"
+
     for target in (
         "xtensa-esp32-espidf",
         "xtensa-esp32s2-espidf",
