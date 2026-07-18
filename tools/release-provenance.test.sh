@@ -231,7 +231,7 @@ for workflow, component in expected_workflows.items():
     if component in native_components:
         workflow_text = workflow.read_text()
         assert "--require-native-artifacts" in workflow_text, f"native provenance not required: {workflow}"
-        assert "permission-attestations: read" in workflow_text, f"native attestation access absent: {workflow}"
+        assert "permission-attestations:" not in workflow_text, f"native source token retains attestation access: {workflow}"
         assert workflow_text.count("native_run_attempt") >= 2, f"native run attempt not bound: {workflow}"
         assert workflow_text.count("native-artifacts.py verify-provenance") == 1, f"local provenance verification drifted: {workflow}"
         assert "native-artifacts.provenance.sigstore.json" in workflow_text, f"local provenance bundle absent: {workflow}"
