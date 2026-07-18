@@ -3,10 +3,12 @@
 //! A mesh leaf that RECEIVES telemetry: devices call `Node::send_telemetry(collector_addr, batch)`,
 //! which routes a statically sealed `hop.telemetry` bundle to this node's address; the node decodes
 //! and bounds-checks it (`hop_core::telemetry`) and surfaces it via `take_telemetry`. This daemon
-//! drains those batches and hands each to a [`TelemetrySink`], the seam a later increment fills with
-//! a BigQuery/warehouse forwarder + per-tenant Stripe metering (the `hop_telemetry_events` dimension,
-//! DESIGN.md §37). The built-in [`AggregateSink`] just counts, and logs aggregates only, never
-//! per-record or per-device lines (services-03: a per-message log would be a traffic-analysis feed).
+//! drains those batches, meters each to its billing TENANT (recovered from the carriage stamp, §35,
+//! the SAME attribution as billing), and merges the per-tenant counts into the durable `telemetry_usage`
+//! ledger the §37 reconciler bills as `hop_telemetry_events`. A [`TelemetrySink`] (aggregate-only
+//! [`AggregateSink`]) also runs for throughput logging, never per-record or per-device (services-03: a
+//! per-message log would be a traffic-analysis feed). Remaining follow-ups: the durable Firestore store
+//! backend (a `firestore` feature, off by default) and a raw-event BigQuery forwarder for the dashboard.
 //!
 //! Mesh attachment mirrors hop-endpoint: this is a leaf that never relays others' traffic
 //! (`set_max_relayed(0)`) and becomes addressable by DIALING a relay as the Noise `Role::Initiator`.
@@ -20,7 +22,7 @@
 //!   hop-telemetryd --listen 0.0.0.0:9445 [--domain telemetry.hopme.sh] \
 //!                  [--identity-file PATH] [--relay wss://relay.hopme.sh/ | --no-relay]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -60,6 +62,10 @@ const MAX_FRAME_BYTES: usize = 1 << 20; // 1 MiB
 
 /// How often time-based node maintenance (tick + reach re-sign) runs, independent of inbound load.
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How often the per-tenant telemetry counts are merged into the durable `telemetry_usage` ledger
+/// the §37 reconciler reads. A crash loses at most one interval; the hour bucket bounds granularity.
+const TELEMETRY_FLUSH: Duration = Duration::from_secs(30);
 
 /// Decrements the active-connection count when a handler thread finishes (including on panic unwind).
 struct ConnGuard;
@@ -150,6 +156,120 @@ impl AggregateSink {
     }
 }
 
+// --- per-tenant metering ----------------------------------------------------------------------
+
+/// Per-tenant billable telemetry counts accumulating for the current window, flushed into the durable
+/// `telemetry_usage/{hour}/{tenant}` ledger the §37 reconciler reads (`reconcile_telemetry`). This is
+/// the SAME tenant attribution as billing (recovered from the carriage stamp in the core, §35), so a
+/// tenant's observability bills to the same identity as its reach. Un-attributed batches (no stamp, or
+/// the collector runs an `Open` policy) can't be billed, so they are counted in aggregate only.
+#[derive(Default)]
+struct TelemetryMeter {
+    counts: HashMap<TenantId, u64>,
+    unattributed: u64,
+}
+
+impl TelemetryMeter {
+    fn add(&mut self, tenant: Option<TenantId>, events: u64) {
+        match tenant {
+            Some(t) => {
+                let c = self.counts.entry(t).or_insert(0);
+                *c = c.saturating_add(events);
+            }
+            None => self.unattributed = self.unattributed.saturating_add(events),
+        }
+    }
+
+    /// RMW-merge the accumulated per-tenant counts into the store's `telemetry_usage` ledger for the
+    /// current hour, then clear. Mirrors the relay's usage merge; only this node writes these keys, so
+    /// the read-modify-write is race-free. With a durable (Firestore) store the rows survive a restart
+    /// and the reconciler reads them; with `MemoryStore` they are in-process only.
+    fn flush_to_store<S: Store>(&mut self, store: &mut S, now_ms: u64) {
+        if self.counts.is_empty() {
+            return;
+        }
+        let hour = now_ms / 3_600_000;
+        for (tenant, events) in self.counts.drain() {
+            if events == 0 {
+                continue;
+            }
+            let key = telemetry_usage_key(hour, &tenant);
+            let total = store.get_kv(&key).map(|b| decode_events(&b)).unwrap_or(0);
+            store.put_kv(&key, encode_events(total.saturating_add(events)));
+        }
+    }
+
+    fn take_unattributed(&mut self) -> u64 {
+        std::mem::replace(&mut self.unattributed, 0)
+    }
+}
+
+/// Ledger row key: `telemetry_usage/{hour}/{tenant_hex}`, distinct from the relay's `usage/` prefix so
+/// the two capture paths never collide (the reconciler reads them as separate dimensions).
+fn telemetry_usage_key(hour: u64, tenant: &TenantId) -> String {
+    let hex: String = tenant.iter().map(|b| format!("{b:02x}")).collect();
+    format!("telemetry_usage/{hour}/{hex}")
+}
+
+/// Row value: the event count as 8 LE bytes. Decode tolerates corruption by reading as zero (the row
+/// is overwritten whole), the same convention as the relay's `decode_usage`.
+fn encode_events(events: u64) -> Vec<u8> {
+    events.to_le_bytes().to_vec()
+}
+fn decode_events(bytes: &[u8]) -> u64 {
+    <[u8; 8]>::try_from(bytes)
+        .map(u64::from_le_bytes)
+        .unwrap_or(0)
+}
+
+/// Load a tenant `KeyServer` from a file of `<tenant-hex-32> <pubkey-base58>` lines (`#` comments and
+/// blank lines skipped), so the collector can attribute telemetry the same way the relays do. This is
+/// a stopgap loader; the live sync from the account service is a follow-up. `None` if the file can't be
+/// read; an empty/all-invalid file yields an empty server (attributes nothing) with a warning.
+fn load_key_server(path: &str) -> Option<KeyServer> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut server = KeyServer::new();
+    let mut loaded = 0usize;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let (Some(tenant_hex), Some(pubkey_b58)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(tenant) = parse_tenant_hex(tenant_hex) else {
+            continue;
+        };
+        let Some(pubkey) = bs58::decode(pubkey_b58)
+            .into_vec()
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
+        else {
+            continue;
+        };
+        server.insert(tenant, pubkey);
+        loaded += 1;
+    }
+    if loaded == 0 {
+        eprintln!("hop-telemetryd: key-server file {path} had no valid entries");
+    }
+    Some(server)
+}
+
+/// Parse a 32-char hex string into a 16-byte `TenantId`; `None` if it is not exactly 32 hex chars.
+fn parse_tenant_hex(s: &str) -> Option<TenantId> {
+    if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 // --- CLI ---------------------------------------------------------------------------------------
 
 struct CliConfig {
@@ -161,6 +281,8 @@ struct CliConfig {
     /// Whether a --relay/--no-relay was given on the CLI, so env only fills the default.
     relay_cli_set: bool,
     print_address: bool,
+    /// Tenant KeyServer file (`<tenant-hex> <pubkey-b58>` lines) for telemetry attribution + billing.
+    key_server_file: Option<String>,
 }
 
 /// Parse the CLI flags. Pure over its `args` iterator (no env, no I/O), so every flag/default is
@@ -172,6 +294,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
     let mut relay: Option<String> = Some("wss://relay.hopme.sh/".to_string());
     let mut relay_cli_set = false;
     let mut print_address = false;
+    let mut key_server_file: Option<String> = None;
     let mut args = args;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -186,6 +309,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
                 relay = None;
                 relay_cli_set = true;
             }
+            "--key-server" => key_server_file = args.next(),
             "--print-address" => print_address = true,
             other => eprintln!("ignoring unknown arg: {other}"),
         }
@@ -197,6 +321,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
         relay,
         relay_cli_set,
         print_address,
+        key_server_file,
     }
 }
 
@@ -208,6 +333,7 @@ fn main() {
         mut relay,
         relay_cli_set,
         print_address,
+        key_server_file,
     } = parse_args(std::env::args().skip(1));
 
     // Graceful degrade when the relay fleet is off: infra can set HOP_NO_RELAY=1 so the instance
@@ -234,6 +360,20 @@ fn main() {
     node.set_kind(NodeKind::Endpoint);
     node.set_name(domain.clone());
     node.set_max_relayed(0); // a leaf: routable by address, relays nothing
+
+    // Attribution: run the SAME Keyed access policy as the billing relays so a received stamp resolves
+    // to a tenant. Without a key server the collector runs Open and telemetry is unattributed (counted
+    // in aggregate, not billed) until one is provided.
+    match key_server_file.as_deref().and_then(load_key_server) {
+        Some(server) => {
+            node.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(server, HashSet::new())));
+            node.refresh_access();
+            println!("hop-telemetryd: keyed policy loaded; telemetry is tenant-attributed");
+        }
+        None => eprintln!(
+            "hop-telemetryd: no --key-server; telemetry is UNATTRIBUTED (not billable) until one is set"
+        ),
+    }
 
     println!(
         "hop-telemetryd: address {}",
@@ -308,10 +448,12 @@ enum Ev {
 fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
     let mut sink = AggregateSink::default();
+    let mut meter = TelemetryMeter::default();
     let public_url = domain.as_deref().map(public_url_for);
     let mut last_wk = Instant::now();
     let mut last_stats = Instant::now();
     let mut last_tick = Instant::now();
+    let mut last_flush = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(1000)) {
             Ok(Ev::Up(link, role, out)) => {
@@ -353,7 +495,7 @@ fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
         // Drain received telemetry into the sink. The batch was already decoded + DoS-bounded by the
         // core on receipt; take_telemetry itself parses no attacker bytes but is guarded for symmetry.
         let received = guard_core("take-telemetry", || node.take_telemetry()).unwrap_or_default();
-        forward_telemetry(&mut sink, received);
+        forward_telemetry(&mut sink, &mut meter, received);
 
         // Aggregate throughput line (counts only, services-03).
         if last_stats.elapsed() >= STATS_LOG_INTERVAL {
@@ -364,6 +506,19 @@ fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
                 );
             }
             last_stats = Instant::now();
+        }
+
+        // Merge per-tenant billable counts into the durable telemetry_usage ledger (§37 reconciler
+        // reads it). Attribution is aggregate-only in the log (services-03: no per-tenant line).
+        if last_flush.elapsed() >= TELEMETRY_FLUSH {
+            meter.flush_to_store(&mut node.store, now_ms());
+            let unattributed = meter.take_unattributed();
+            if unattributed > 0 {
+                eprintln!(
+                    "hop-telemetryd: {unattributed} unattributed events this window (unstamped or no key server)"
+                );
+            }
+            last_flush = Instant::now();
         }
 
         let outgoing = guard_core("drain-outgoing", || node.drain_outgoing()).unwrap_or_default();
@@ -377,10 +532,16 @@ fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
     }
 }
 
-/// Hand each received batch to the sink. Split out of `run` so it's unit-testable without the driver.
-fn forward_telemetry(sink: &mut dyn TelemetrySink, received: Vec<TelemetryIn>) {
+/// Hand each received batch to the sink (throughput) and the meter (per-tenant billing). Split out of
+/// `run` so it's unit-testable without the driver.
+fn forward_telemetry(
+    sink: &mut dyn TelemetrySink,
+    meter: &mut TelemetryMeter,
+    received: Vec<TelemetryIn>,
+) {
     for t in &received {
         sink.record(t.from, &t.batch);
+        meter.add(t.tenant, t.batch.billable_events());
     }
 }
 
@@ -789,20 +950,55 @@ mod tests {
     }
 
     #[test]
-    fn forward_telemetry_feeds_every_batch_to_the_sink() {
+    fn forward_telemetry_feeds_the_sink_and_meters_by_tenant() {
         let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        let tenant = [9u8; 16];
         let received = vec![
             TelemetryIn {
                 from: [1u8; 32],
                 batch: TelemetryBatch::new().counter("a", 1, 0),
+                tenant: Some(tenant),
             },
             TelemetryIn {
                 from: [2u8; 32],
                 batch: TelemetryBatch::new().counter("b", 1, 0).counter("c", 1, 0),
+                tenant: None, // unattributed
             },
         ];
-        forward_telemetry(&mut sink, received);
-        assert_eq!(sink.take(), (2, 3));
+        forward_telemetry(&mut sink, &mut meter, received);
+        assert_eq!(sink.take(), (2, 3)); // throughput: 2 batches, 3 events
+        assert_eq!(meter.counts.get(&tenant), Some(&1)); // 1 billable event to the tenant
+        assert_eq!(meter.take_unattributed(), 2); // 2 unattributed events
+    }
+
+    #[test]
+    fn telemetry_meter_flushes_per_tenant_rows_to_the_store_and_rmw_accumulates() {
+        let mut store = MemoryStore::default();
+        let now = 5 * 3_600_000 + 123; // hour 5
+        let tenant = [7u8; 16];
+        let mut meter = TelemetryMeter::default();
+        meter.add(Some(tenant), 10);
+        meter.add(Some(tenant), 5);
+        meter.add(None, 3);
+        meter.flush_to_store(&mut store, now);
+        let key = telemetry_usage_key(5, &tenant);
+        assert_eq!(store.get_kv(&key).map(|b| decode_events(&b)), Some(15));
+        assert!(meter.counts.is_empty(), "cleared after flush");
+        // A second window RMW-adds into the same hour row.
+        meter.add(Some(tenant), 4);
+        meter.flush_to_store(&mut store, now);
+        assert_eq!(store.get_kv(&key).map(|b| decode_events(&b)), Some(19));
+    }
+
+    #[test]
+    fn parse_tenant_hex_round_trips_and_rejects_bad_input() {
+        assert_eq!(
+            parse_tenant_hex("000102030405060708090a0b0c0d0e0f"),
+            Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        );
+        assert_eq!(parse_tenant_hex("07"), None); // too short
+        assert_eq!(parse_tenant_hex("zz0102030405060708090a0b0c0d0e0f"), None); // non-hex
     }
 
     #[test]

@@ -21,12 +21,20 @@ direct-dial `wss://<domain>/` and become an inbound bearer, so telemetry reaches
 with the relay fleet down. It serves a signed reach record at `/.well-known/hop` so the SDK can
 resolve `telemetry.<domain>` to this collector's address (what telemetry is sealed and routed to).
 
-## The sink
+## Metering
 
-`TelemetrySink` is the seam a later increment fills with a BigQuery/warehouse forwarder plus
-per-tenant Stripe metering (the `hop_telemetry_events` dimension, DESIGN.md §37), mirroring
-hop-billingd's `live` feature. The built-in `AggregateSink` only counts and logs aggregates
-(never per-record or per-device lines, services-03), so nothing here is a traffic-analysis surface.
+Each received batch is metered to its billing **tenant**, recovered from the bundle's carriage stamp
+(§35) by the same `AccessPolicy::attribute` the relays use, so a tenant's observability bills to the
+same identity as its reach. Provide the tenant `KeyServer` with `--key-server <file>` (lines of
+`<tenant-hex> <pubkey-base58>`); without it the collector runs `Open` and telemetry is counted in
+aggregate only, not billed. Per-tenant counts are merged every 30s into the durable
+`telemetry_usage/{hour}/{tenant}` ledger (mirroring the relay's `usage/` write), which the §37
+reconciler bills as `hop_telemetry_events` (`reconcile_telemetry`, in hop-billingd).
+
+The `TelemetrySink` (`AggregateSink`) runs alongside for throughput logging, aggregate counts only,
+never per-record or per-device (services-03). Remaining follow-ups: the durable Firestore store
+backend (a `firestore` feature, so the ledger survives a restart) and a raw-event BigQuery forwarder
+for the observability dashboard.
 
 ## Run
 
