@@ -12,6 +12,10 @@ locals {
     "dns.googleapis.com",                # public DNS zone for hopme.sh
     "monitoring.googleapis.com",         # infra-r2-04: observability.tf alert policies + notification channel
     "logging.googleapis.com",            # infra-r2-04: observability.tf log bucket/sink/exclusion/metric
+    "bigquery.googleapis.com",           # billing reconciler usage history (DESIGN.md §37)
+    "iam.googleapis.com",                # workload identity federation (GitHub Actions -> GCP)
+    "iamcredentials.googleapis.com",     # WIF: mint short-lived SA credentials for GitHub OIDC
+    "sts.googleapis.com",                # WIF: exchange the GitHub OIDC token for a GCP token
   ]
 }
 

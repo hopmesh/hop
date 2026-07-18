@@ -12,8 +12,8 @@ terraform {
   required_version = ">= 1.12"
   required_providers {
     stripe = {
-      source  = "lukasaron/stripe"
-      version = "~> 3.4"
+      source  = "stripe/stripe"
+      version = "~> 0.2.2"
     }
   }
 

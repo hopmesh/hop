@@ -1,0 +1,69 @@
+# Apply the Stripe billing catalog (infra/billing) via CI/CD, never a local tofu run.
+#
+# - On a PR that touches infra/billing/**: `tofu plan` so the catalog diff is reviewable.
+# - On manual dispatch with confirm=apply: `tofu apply` (creating live Stripe billing resources is
+#   consequential and meters are append-only, so it is gated behind a deliberate click, not a push).
+#
+# Auth is keyless: GitHub OIDC -> Workload Identity Federation -> the billing-catalog-apply service
+# account (infra/wif_github.tf), which can reach ONLY the billing/ Terraform state prefix. The Stripe
+# key is the STRIPE_API_KEY repo secret. The job is skipped until GCP_PROJECT_NUMBER (a repo variable)
+# is set, so it stays neutral until WIF has been applied and wired.
+name: Billing catalog (Stripe)
+
+on:
+  pull_request:
+    paths: ["infra/billing/**"]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply" to create/update the LIVE Stripe catalog (else plan only)'
+        required: true
+        default: "plan"
+
+permissions:
+  contents: read
+  id-token: write # required for the WIF OIDC token exchange
+
+concurrency: billing-catalog # never two catalog applies at once
+
+jobs:
+  catalog:
+    # Neutral (skipped) until WIF is applied and its project number is wired as a repo variable.
+    if: vars.GCP_PROJECT_NUMBER != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/billing
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: hop-mesh
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: billing-catalog-apply@hop-mesh.iam.gserviceaccount.com
+
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.3"
+
+      - name: tofu init
+        run: tofu init -input=false
+
+      - name: tofu plan
+        env:
+          TF_VAR_stripe_api_key: ${{ secrets.STRIPE_API_KEY }}
+        run: tofu plan -input=false -no-color
+
+      - name: tofu apply
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
+        env:
+          TF_VAR_stripe_api_key: ${{ secrets.STRIPE_API_KEY }}
+        run: tofu apply -input=false -auto-approve -no-color
+
+      - name: catalog outputs (ids the metering system needs)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
+        run: |
+          echo "meter event_names:"; tofu output -json meter_event_names
+          echo "price ids:";         tofu output -json price_ids

@@ -1,0 +1,23 @@
+[package]
+name = "hop-billingd"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license-file = "LICENSE.md"
+description = "Hop billing reconciler (DESIGN.md §37): rolls the relays' durable usage ledger into idempotent Stripe meter events and BigQuery history."
+
+[[bin]]
+name = "hop-billingd"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The live Firestore-read + Stripe-emit path is behind `live` so unit tests build the pure
+# reconciler with no network deps. Wiring is credential-gated (STRIPE_API_KEY, a BigQuery dataset).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
+
+[features]
+default = []
+live = ["dep:reqwest"]

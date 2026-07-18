@@ -20,9 +20,9 @@ output "price_ids" {
 output "meter_event_names" {
   description = "Meter event_names the reconciler emits usage against."
   value = {
-    active_devices = stripe_meter.active_devices.event_name
-    data_carried   = stripe_meter.data_carried.event_name
-    egress         = stripe_meter.egress.event_name
-    mailbox        = stripe_meter.mailbox.event_name
+    active_devices = stripe_billing_meter.active_devices.event_name
+    data_carried   = stripe_billing_meter.data_carried.event_name
+    egress         = stripe_billing_meter.egress.event_name
+    mailbox        = stripe_billing_meter.mailbox.event_name
   }
 }

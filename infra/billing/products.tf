@@ -1,4 +1,4 @@
-# Product + prices. One product, one base (flat) price, and four metered prices —
+# Product + prices. One product, one base (flat) price, and four metered prices,
 # each bound to a meter. A tenant's subscription carries the base price plus whichever
 # metered items apply; the account service builds subscriptions at signup (§37).
 #
@@ -7,7 +7,7 @@
 
 resource "stripe_product" "backbone" {
   name        = "Hop Backbone"
-  description = "Hosted delay-tolerant mesh backbone — relay, mailbox, and egress."
+  description = "Hosted delay-tolerant mesh backbone: relay, mailbox, and egress."
 }
 
 # Base platform fee (flat, recurring, licensed). $0 by default (free-tier compatible).
@@ -22,7 +22,7 @@ resource "stripe_price" "base" {
   }
 }
 
-# Active devices — per device (priced per 1,000 MAD → divide by 1,000).
+# Active devices, per device (priced per 1,000 MAD → divide by 1,000).
 resource "stripe_price" "active_devices" {
   product             = stripe_product.backbone.id
   currency            = var.currency
@@ -31,11 +31,11 @@ resource "stripe_price" "active_devices" {
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_meter.active_devices.id
+    meter      = stripe_billing_meter.active_devices.id
   }
 }
 
-# Data carried — per chunk (priced per 1,000,000 chunks → divide by 1e6).
+# Data carried, per chunk (priced per 1,000,000 chunks → divide by 1e6).
 resource "stripe_price" "data_carried" {
   product             = stripe_product.backbone.id
   currency            = var.currency
@@ -44,11 +44,11 @@ resource "stripe_price" "data_carried" {
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_meter.data_carried.id
+    meter      = stripe_billing_meter.data_carried.id
   }
 }
 
-# Internet egress — per GB.
+# Internet egress, per GB.
 resource "stripe_price" "egress" {
   product             = stripe_product.backbone.id
   currency            = var.currency
@@ -57,11 +57,11 @@ resource "stripe_price" "egress" {
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_meter.egress.id
+    meter      = stripe_billing_meter.egress.id
   }
 }
 
-# Mailbox storage — per GB-month.
+# Mailbox storage, per GB-month.
 resource "stripe_price" "mailbox" {
   product             = stripe_product.backbone.id
   currency            = var.currency
@@ -70,6 +70,6 @@ resource "stripe_price" "mailbox" {
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_meter.mailbox.id
+    meter      = stripe_billing_meter.mailbox.id
   }
 }
