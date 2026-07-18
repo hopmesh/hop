@@ -150,6 +150,78 @@ pub fn reconcile<S: MeterSink>(
     new_watermark
 }
 
+/// One hour-bucketed telemetry-usage row, written by hop-telemetryd's meter drain (the
+/// `telemetry_usage/{hour}/{tenant}` value). Kept SEPARATE from [`LedgerRow`] on purpose: telemetry
+/// counts come from the collector (OTel-over-Hop, §40), a different producer than the relay carriage
+/// ledger (§37), so the two capture paths never couple. Additive across a tenant's collectors for one
+/// (hour, tenant).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetryRow {
+    /// OTel-over-Hop events ingested this hour for this tenant (billed to `hop_telemetry_events`).
+    pub events: u64,
+}
+
+impl TelemetryRow {
+    pub fn add(&mut self, other: &TelemetryRow) {
+        self.events = self.events.saturating_add(other.events);
+    }
+}
+
+/// Reconcile the TELEMETRY dimension (OTel-over-Hop observability, §40). Same hour-bucketed,
+/// watermarked, idempotent contract as [`reconcile`], but over `telemetry_usage` rows written by the
+/// collector: it sums events per (hour, tenant) for closed hours strictly after `watermark_hour`,
+/// emits one `hop_telemetry_events` event per non-zero (hour, tenant) with a deterministic idempotency
+/// key, and returns the highest hour for which EVERY event was accepted (a failed emit stops there so
+/// the next run retries; Stripe dedups the successes).
+pub fn reconcile_telemetry<S: MeterSink>(
+    rows: &[(u64, TenantId, TelemetryRow)],
+    watermark_hour: u64,
+    now_hour: u64,
+    sink: &mut S,
+) -> u64 {
+    let mut agg: BTreeMap<(u64, TenantId), TelemetryRow> = BTreeMap::new();
+    for (hour, tenant, row) in rows {
+        if *hour <= watermark_hour || *hour >= now_hour {
+            continue;
+        }
+        agg.entry((*hour, *tenant)).or_default().add(row);
+    }
+
+    let mut new_watermark = watermark_hour;
+    let mut current_hour: Option<u64> = None;
+    let mut hour_ok = true;
+
+    for ((hour, tenant), row) in &agg {
+        if current_hour != Some(*hour) {
+            if let Some(prev) = current_hour {
+                if hour_ok {
+                    new_watermark = prev;
+                } else {
+                    return new_watermark;
+                }
+            }
+            current_hour = Some(*hour);
+            hour_ok = true;
+        }
+        if row.events > 0 {
+            let event = MeterEvent {
+                event_name: meter::TELEMETRY_EVENTS,
+                tenant: *tenant,
+                value: row.events,
+                idempotency_key: format!("{}:{}:{}", meter::TELEMETRY_EVENTS, hex16(tenant), hour),
+                hour: *hour,
+            };
+            if sink.emit(&event).is_err() {
+                hour_ok = false;
+            }
+        }
+    }
+    if let (Some(h), true) = (current_hour, hour_ok) {
+        new_watermark = h;
+    }
+    new_watermark
+}
+
 /// One spooled-bundle occupancy record, as the relay writes it into the mailbox store: which
 /// tenant is billed, the sealed size, when it was spooled, and when it left the mailbox (delivered
 /// or TTL-expired) if it has. Still-held bundles have `delete_ms = None`.
@@ -326,6 +398,60 @@ mod tests {
             a.idempotency_key,
             format!("hop_backbone_delivery:{}:5", hex16(&A))
         );
+    }
+
+    #[test]
+    fn reconcile_telemetry_sums_collectors_and_emits_one_event_per_hour_tenant() {
+        // Two collectors reported for (hour 5, tenant A); one row for (hour 5, tenant B).
+        let rows = vec![
+            (5, A, TelemetryRow { events: 300 }),
+            (5, A, TelemetryRow { events: 120 }), // another collector
+            (5, B, TelemetryRow { events: 40 }),
+        ];
+        let mut sink = FakeSink::default();
+        let wm = reconcile_telemetry(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 5, "hour 5 fully reconciled");
+        assert_eq!(sink.emitted.len(), 2, "one event per tenant for the hour");
+        let a = sink.emitted.iter().find(|e| e.tenant == A).unwrap();
+        assert_eq!(a.value, 420, "300 + 120 summed across collectors");
+        assert_eq!(a.event_name, meter::TELEMETRY_EVENTS);
+        assert_eq!(
+            a.idempotency_key,
+            format!("hop_telemetry_events:{}:5", hex16(&A))
+        );
+    }
+
+    #[test]
+    fn reconcile_telemetry_holds_the_watermark_on_a_failed_emit() {
+        let rows = vec![
+            (4, A, TelemetryRow { events: 10 }),
+            (5, A, TelemetryRow { events: 20 }),
+        ];
+        let mut sink = FakeSink {
+            fail_hours: vec![5],
+            ..Default::default()
+        };
+        // hour 4 emits; hour 5 fails -> watermark stops at 4, retried next run (Stripe dedups).
+        let wm = reconcile_telemetry(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 4);
+        assert_eq!(sink.emitted.len(), 1);
+        assert_eq!(sink.emitted[0].hour, 4);
+    }
+
+    #[test]
+    fn reconcile_telemetry_skips_zero_and_out_of_window_hours() {
+        let rows = vec![
+            (3, A, TelemetryRow { events: 99 }), // <= watermark, skipped
+            (5, A, TelemetryRow { events: 0 }),  // zero -> no event
+            (5, B, TelemetryRow { events: 7 }),
+            (6, A, TelemetryRow { events: 5 }), // current hour, still open
+        ];
+        let mut sink = FakeSink::default();
+        let wm = reconcile_telemetry(&rows, 3, 6, &mut sink);
+        assert_eq!(wm, 5);
+        assert_eq!(sink.emitted.len(), 1, "only (5,B) with non-zero events");
+        assert_eq!(sink.emitted[0].tenant, B);
+        assert_eq!(sink.emitted[0].value, 7);
     }
 
     #[test]
