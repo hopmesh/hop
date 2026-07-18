@@ -5,6 +5,10 @@ Terraform (Stripe provider) that defines the **billing catalog**: one product, a
 Pricing model and rationale: [`docs/pricing-cost-model.md`](../../docs/pricing-cost-model.md).
 Metering pipeline: `DESIGN.md` §37.
 
+Hop bills for **reach, not device count**: a device with connectivity direct-connects to the
+endpoint for free, so you pay only when the backbone delivers to an **offline** recipient.
+Metrics carry their own COGS (BigQuery), so observability is a separate meter, not a per-device fee.
+
 This is a **separate root module** from the relay fleet (`infra/`), its own state, its
 own provider, so a relay apply never needs Stripe credentials.
 
@@ -29,8 +33,8 @@ a break-glass local fallback only.
 | Resource | Purpose |
 |---|---|
 | `stripe_product.backbone` | "Hop Backbone" |
-| `stripe_price.base` | Flat monthly platform fee (licensed); `$0` default |
-| `stripe_billing_meter.* / stripe_price.*` | Metered usage: active devices, data carried (chunks), egress (GB), mailbox (GB-month) |
+| `stripe_price.base` | Flat monthly platform fee (licensed); `$0` default (free tier) |
+| `stripe_billing_meter.* / stripe_price.*` | Metered usage: backbone reach (offline deliveries), telemetry events, egress (GB), mailbox (GB-month) |
 
 ## The contract with the runtime
 
@@ -69,11 +73,11 @@ state prefix).
 Override indicative rates with `-var` / a (gitignored) `terraform.tfvars`, e.g.:
 
 ```hcl
-base_fee_cents                 = 0
-price_per_1k_devices_cents     = 2500   # $25 / 1,000 active devices
-price_per_million_chunks_cents = 1500   # $15 / 1M chunks
-price_per_gb_egress_cents      = 18      # $0.18 / GB
-price_per_gb_month_mailbox_cents = 75    # $0.75 / GB-month
+base_fee_cents                   = 0     # free tier, revenue is metered reach
+price_per_1k_deliveries_cents    = 200   # $2.00 / 1,000 offline deliveries ($0.002 each)
+price_per_million_events_cents   = 30    # $0.30 / 1M telemetry events
+price_per_gb_egress_cents        = 15    # $0.15 / GB
+price_per_gb_month_mailbox_cents = 40    # $0.40 / GB-month
 ```
 
 ## Caveats

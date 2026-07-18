@@ -7,10 +7,11 @@
 
 resource "stripe_product" "backbone" {
   name        = "Hop Backbone"
-  description = "Hosted delay-tolerant mesh backbone: relay, mailbox, and egress."
+  description = "Delay-tolerant mesh backbone: reach offline devices, plus telemetry, egress, and mailbox."
 }
 
-# Base platform fee (flat, recurring, licensed). $0 by default (free-tier compatible).
+# Base platform fee (flat, recurring, licensed). $0 by default: the free tier keeps the
+# barrier to entry at zero, revenue comes from metered reach.
 resource "stripe_price" "base" {
   product     = stripe_product.backbone.id
   currency    = var.currency
@@ -22,29 +23,29 @@ resource "stripe_price" "base" {
   }
 }
 
-# Active devices, per device (priced per 1,000 MAD → divide by 1,000).
-resource "stripe_price" "active_devices" {
+# Backbone reach, per offline delivery (priced per 1,000 deliveries, so divide by 1,000).
+resource "stripe_price" "reach" {
   product             = stripe_product.backbone.id
   currency            = var.currency
-  unit_amount_decimal = tostring(var.price_per_1k_devices_cents / 1000)
+  unit_amount_decimal = tostring(var.price_per_1k_deliveries_cents / 1000)
 
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_billing_meter.active_devices.id
+    meter      = stripe_billing_meter.backbone_delivery.id
   }
 }
 
-# Data carried, per chunk (priced per 1,000,000 chunks → divide by 1e6).
-resource "stripe_price" "data_carried" {
+# Observability, per telemetry event (priced per 1,000,000 events, so divide by 1e6).
+resource "stripe_price" "observability" {
   product             = stripe_product.backbone.id
   currency            = var.currency
-  unit_amount_decimal = tostring(var.price_per_million_chunks_cents / 1000000)
+  unit_amount_decimal = tostring(var.price_per_million_events_cents / 1000000)
 
   recurring {
     interval   = "month"
     usage_type = "metered"
-    meter      = stripe_billing_meter.data_carried.id
+    meter      = stripe_billing_meter.telemetry_events.id
   }
 }
 

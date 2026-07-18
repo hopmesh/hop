@@ -40,7 +40,8 @@ pub type TenantId = [u8; 16];
 /// value). Additive across regions for one (hour, tenant).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LedgerRow {
-    /// Carriage/delivery atoms billed to `hop_data_carried_chunks`.
+    /// Backbone-assisted deliveries to offline recipients, billed to `hop_backbone_delivery`.
+    /// Online devices direct-connect (no backbone), so they never add here.
     pub bundles: u64,
     /// Sealed payload bytes carried (informational today; a future GB dimension).
     pub payload_bytes: u64,
@@ -61,10 +62,12 @@ impl LedgerRow {
 /// with `infra/billing/meters.tf`; they must match exactly and never change once live (Stripe
 /// meters are append-only).
 pub mod meter {
-    pub const DATA_CARRIED_CHUNKS: &str = "hop_data_carried_chunks";
+    /// Billable offline delivery (Hop bills for reach, not device count).
+    pub const BACKBONE_DELIVERY: &str = "hop_backbone_delivery";
     pub const MAILBOX_GB_MONTH: &str = "hop_mailbox_gb_month";
     pub const EGRESS_GB: &str = "hop_egress_gb";
-    pub const ACTIVE_DEVICE: &str = "hop_active_device";
+    /// OTel-over-Hop telemetry events (carries its own BigQuery COGS).
+    pub const TELEMETRY_EVENTS: &str = "hop_telemetry_events";
 }
 
 /// One Stripe meter event the reconciler wants emitted. `idempotency_key` makes a re-run a no-op
@@ -268,7 +271,7 @@ fn events_for(hour: u64, tenant: &TenantId, row: &LedgerRow) -> Vec<MeterEvent> 
             });
         }
     };
-    push(meter::DATA_CARRIED_CHUNKS, row.bundles);
+    push(meter::BACKBONE_DELIVERY, row.bundles);
     // storage_byte_ms -> GB-month is a scaling the storage-floor increment will define; kept out of
     // the emit until that lands so we never bill an unfinished dimension.
     out
@@ -318,10 +321,10 @@ mod tests {
         assert_eq!(sink.emitted.len(), 2, "one event per (tenant) for the hour");
         let a = sink.emitted.iter().find(|e| e.tenant == A).unwrap();
         assert_eq!(a.value, 7, "3 + 4 summed across regions");
-        assert_eq!(a.event_name, meter::DATA_CARRIED_CHUNKS);
+        assert_eq!(a.event_name, meter::BACKBONE_DELIVERY);
         assert_eq!(
             a.idempotency_key,
-            format!("hop_data_carried_chunks:{}:5", hex16(&A))
+            format!("hop_backbone_delivery:{}:5", hex16(&A))
         );
     }
 

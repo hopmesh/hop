@@ -12,33 +12,35 @@ variable "currency" {
 }
 
 # --- Pricing (indicative; see docs/pricing-cost-model.md). All in *cents*. ---
+# Hop bills for REACH, not devices: you pay when the backbone delivers to an offline
+# recipient. Online devices direct-connect for free. Metrics carry their own COGS.
 
 variable "base_fee_cents" {
-  description = "Flat recurring platform fee per month (licensed). 0 keeps the free tier at $0; set a committed minimum for paid plans."
+  description = "Flat recurring platform fee per month (licensed). 0 keeps the free tier at $0; set a committed minimum for Enterprise."
   type        = number
   default     = 0
 }
 
-variable "price_per_1k_devices_cents" {
-  description = "Monthly Active Devices: price per 1,000 MAD (metered). Default $25.00."
+variable "price_per_1k_deliveries_cents" {
+  description = "Backbone reach: price per 1,000 offline deliveries (metered). Default $2.00, so $0.002 per delivery."
   type        = number
-  default     = 2500
+  default     = 200
 }
 
-variable "price_per_million_chunks_cents" {
-  description = "Data carried: price per 1,000,000 chunks (metered). Default $15.00. A large message is many chunks (DESIGN.md §31/§37)."
+variable "price_per_million_events_cents" {
+  description = "Observability: price per 1,000,000 OTel-over-Hop telemetry events (metered). Default $0.30. Carries the BigQuery COGS."
   type        = number
-  default     = 1500
+  default     = 30
 }
 
 variable "price_per_gb_egress_cents" {
-  description = "Internet egress: price per GB (metered). Default $0.18."
+  description = "Internet egress: price per GB (metered). Default $0.15."
   type        = number
-  default     = 18
+  default     = 15
 }
 
 variable "price_per_gb_month_mailbox_cents" {
-  description = "Mailbox storage: price per GB-month (metered). Default $0.75."
+  description = "Mailbox storage: price per GB-month (metered). Default $0.40."
   type        = number
-  default     = 75
+  default     = 40
 }
