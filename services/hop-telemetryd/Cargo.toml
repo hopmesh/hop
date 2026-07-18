@@ -1,0 +1,22 @@
+[package]
+name = "hop-telemetryd"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license-file = "LICENSE.md"
+description = "Hop telemetry collector (OTel-over-Hop, DESIGN.md §40): a mesh leaf that receives sealed hop.telemetry batches and forwards them to a sink. Internal, Apache-2.0."
+
+[[bin]]
+name = "hop-telemetryd"
+path = "src/main.rs"
+
+[dependencies]
+hop-core.workspace = true
+# Lib-only (default features) for the shared relay-degrade precedence (resolve_relay), the same one
+# the endpoint and gateway use; no reqwest/tungstenite pulled in transitively.
+hop-gateway = { path = "../hop-gateway" }
+# rustls so the collector can DIAL a relay over wss:// to become mesh-routable.
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+bs58 = "0.5"
+# Base64 (std alphabet) for the `reach` field of the /.well-known/hop body, matching the endpoint SDK.
+base64 = "0.22"
