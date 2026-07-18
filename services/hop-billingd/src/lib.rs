@@ -33,6 +33,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod stripe;
+
 /// A billed tenant (app/org), 16 bytes. Matches `hop_core::access::TenantId`.
 pub type TenantId = [u8; 16];
 
@@ -92,7 +94,7 @@ pub trait MeterSink {
     fn emit(&mut self, event: &MeterEvent) -> Result<(), String>;
 }
 
-fn hex16(t: &TenantId) -> String {
+pub(crate) fn hex16(t: &TenantId) -> String {
     t.iter().map(|b| format!("{b:02x}")).collect()
 }
 
