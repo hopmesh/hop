@@ -33,6 +33,35 @@ resource "google_secret_manager_secret" "stripe_api_key" {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Stripe ACCOUNT key, for the invoice/account backend (the console's native invoice rendering,
+# previous payments, signup-time customer + subscription creation). A separate key from the
+# reconciler's on purpose: a leaked account key can read billing history but cannot fabricate
+# usage or rewrite the catalog, and vice versa. Same discipline: empty container only, seeded
+# out-of-band:
+#
+#   pbpaste | tr -d '\n' \
+#     | gcloud secrets versions add stripe-account-key --project hop-mesh --data-file=-
+#
+# RESTRICTED key scopes: Invoices WRITE (render + Pay now), Customers WRITE, Subscriptions WRITE,
+# SetupIntents WRITE (card onboarding), PaymentIntents READ, Charges READ, Payment methods READ,
+# Credit notes READ, Billing Meters READ (usage cross-check only; dashboards read BigQuery).
+# NO Products/Prices/Meters write (catalog key) and NO Meter Events write (reconciler key).
+# The consuming service's SA binding is added when that service lands.
+resource "google_secret_manager_secret" "stripe_account_key" {
+  secret_id = "stripe-account-key"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.this]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# ---------------------------------------------------------------------------------------------
 # Dedicated runtime identity for the reconciler. Least privilege: read Firestore (the usage ledger
 # + metered markers the relays write), read the Stripe secret, write BigQuery, write logs.
 resource "google_service_account" "billingd" {
