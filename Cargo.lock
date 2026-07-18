@@ -965,6 +965,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hop-telemetryd"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "bs58",
+ "hop-core",
+ "hop-gateway",
+ "tungstenite",
+]
+
+[[package]]
 name = "hop-wasm"
 version = "0.0.1"
 dependencies = [
