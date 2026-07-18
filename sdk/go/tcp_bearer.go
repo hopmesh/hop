@@ -112,6 +112,8 @@ func Dial(e *Endpoint, host string, port int) (net.Conn, error) {
 
 // ConnectInProcess wires two endpoints directly (in-process bearer), no sockets.
 func ConnectInProcess(a, b *Endpoint) {
-	a.registerLink(11, "dialer", func(buf []byte) { b.deliver(22, buf) })
+	// The dialer can emit Noise message 1 as soon as its link is registered.
+	// Install the acceptor first so the direct callback cannot drop it.
 	b.registerLink(22, "acceptor", func(buf []byte) { a.deliver(11, buf) })
+	a.registerLink(11, "dialer", func(buf []byte) { b.deliver(22, buf) })
 }
