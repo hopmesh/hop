@@ -35,10 +35,10 @@ fn main() {
 
 #[cfg(feature = "live")]
 mod live {
-    use hop_billingd::bq::{self, BqTransport, DIM_CARRIAGE, DIM_TELEMETRY};
+    use hop_billingd::bq::{self, BqTransport, HistorySink, DIM_CARRIAGE, DIM_TELEMETRY};
     use hop_billingd::ledger::{collect_rows, LedgerSource};
     use hop_billingd::stripe::{CustomerMap, ReqwestTransport, StripeSink};
-    use hop_billingd::{reconcile, reconcile_telemetry};
+    use hop_billingd::{reconcile, reconcile_telemetry, BillAndRecord};
     use hop_store_firestore::KvReader;
 
     /// The ledger source over the shared Firestore kv reader.
@@ -125,6 +125,7 @@ mod live {
         let project = env_or("HOP_FIRESTORE_PROJECT", "hop-mesh");
         let dataset = env_or("HOP_BQ_DATASET", "hop_usage");
         let wm_table = env_or("HOP_BQ_WATERMARKS", "reconcile_watermarks");
+        let usage_table = env_or("HOP_BQ_USAGE", "usage_history");
 
         let customers = std::env::var("HOP_CUSTOMER_MAP")
             .ok()
@@ -143,7 +144,7 @@ mod live {
                 std::process::exit(1);
             }
         };
-        let mut sink = StripeSink::new(transport, customers);
+        let stripe = StripeSink::new(transport, customers);
 
         let bq_client = ReqwestBq {
             http: reqwest::blocking::Client::builder()
@@ -181,15 +182,36 @@ mod live {
             );
         }
 
-        // 3. Reconcile into Stripe. now_hour excludes the still-accumulating current hour.
+        // 3. Reconcile: bill Stripe (authoritative, drives the watermark) and record usage history
+        // in our own BigQuery as a BEST-EFFORT side effect (the console dashboards read our data,
+        // never Stripe). A history failure is counted, never propagated, so a dashboards-store
+        // outage can never freeze revenue. now_hour excludes the still-accumulating current hour.
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let now_hour = now_ms / 3_600_000;
+        let mut sink = BillAndRecord::new(
+            stripe,
+            HistorySink {
+                transport: &bq_client,
+                project: project.clone(),
+                dataset: dataset.clone(),
+                table: usage_table,
+                updated_ms: now_ms,
+            },
+        );
         let new_carriage = reconcile(&rows.usage, wm.carriage_hour, now_hour, &mut sink);
         let new_telemetry =
             reconcile_telemetry(&rows.telemetry, wm.telemetry_hour, now_hour, &mut sink);
+        let record_failures = sink.record_failures;
+        if record_failures > 0 {
+            eprintln!(
+                "hop-billingd: {record_failures} usage_history append(s) failed (best-effort; \
+                 billing unaffected, dashboard rows may lag)"
+            );
+        }
+        drop(sink); // release the &bq_client borrow before the watermark appends
 
         // 4. Persist only what ADVANCED, and only from a complete fleet read.
         let mut ok = true;
@@ -211,9 +233,10 @@ mod live {
         }
 
         println!(
-            "hop-billingd: run complete. carriage {} -> {}, telemetry {} -> {}, partitions_failed={}, watermarks_persisted={}",
+            "hop-billingd: run complete. carriage {} -> {}, telemetry {} -> {}, partitions_failed={}, history_failures={}, watermarks_persisted={}",
             wm.carriage_hour, new_carriage, wm.telemetry_hour, new_telemetry,
             rows.failed_nodes.len(),
+            record_failures,
             if complete && ok { "yes" } else { "no" },
         );
     }

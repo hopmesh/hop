@@ -157,6 +157,73 @@ pub fn append_watermark<T: BqTransport>(
     }
 }
 
+/// The `insertAll` body for one usage-history row. This is the console dashboards' data source: we
+/// record every billed (event_name, tenant, hour, value) in OUR BigQuery, never reading it back
+/// from Stripe. `insert_id` is the meter event's OWN idempotency key (`{event_name}:{tenant}:{hour}`).
+///
+/// Streaming `insertId` dedup is BEST-EFFORT within a short (~1 minute) window, NOT the durable
+/// exactly-once Stripe gives its meter events, so it only collapses same-run/rapid retries. A
+/// scheduled re-run of a held hour (Stripe retry, or a partial-fleet read that held the watermark)
+/// lands outside that window and appends a SECOND physical row. So the base table is append-only
+/// WITH POSSIBLE DUPLICATES; the authoritative "one row per (event_name, tenant, hour)" is provided
+/// by the `usage_history_current` dedup view (latest `updated_ms` wins), which is what dashboards
+/// read. See `infra/billing_runtime.tf`.
+pub fn usage_row_body(
+    event_name: &str,
+    tenant_hex: &str,
+    hour: u64,
+    value: u64,
+    updated_ms: u64,
+    insert_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "rows": [{
+            "insertId": insert_id,
+            "json": {
+                "event_name": event_name,
+                "tenant": tenant_hex,
+                "hour": hour.to_string(),
+                "value": value.to_string(),
+                "updated_ms": updated_ms.to_string(),
+            }
+        }]
+    })
+}
+
+/// A [`MeterSink`](crate::MeterSink) that records each billed event as a usage-history row in
+/// BigQuery. Composed with the Stripe sink via [`BillAndRecord`](crate::BillAndRecord) in the live
+/// reconciler as the BEST-EFFORT secondary, so every billed event is also captured in our own store
+/// for the console dashboards without ever gating revenue. `updated_ms` is the run timestamp (all of
+/// one run's rows share it: "when reconciled") and is the tiebreaker the dedup view uses to pick the
+/// authoritative row, not part of the append key.
+pub struct HistorySink<'a, T: BqTransport> {
+    pub transport: &'a T,
+    pub project: String,
+    pub dataset: String,
+    pub table: String,
+    pub updated_ms: u64,
+}
+
+impl<T: BqTransport> crate::MeterSink for HistorySink<'_, T> {
+    fn emit(&mut self, event: &crate::MeterEvent) -> Result<(), String> {
+        let url = insert_url(&self.project, &self.dataset, &self.table);
+        let body = usage_row_body(
+            event.event_name,
+            &crate::hex16(&event.tenant),
+            event.hour,
+            event.value,
+            self.updated_ms,
+            &event.idempotency_key,
+        );
+        let (status, resp) = self.transport.post(&url, &body)?;
+        if insert_ok(status, &resp) {
+            Ok(())
+        } else {
+            Err(format!("usage insertAll {status}: {resp}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +316,62 @@ mod tests {
             serde_json::json!({ "insertErrors": [ {"index": 0, "errors": [{"reason": "invalid"}]} ] }),
         );
         assert!(append_watermark(&bq, "p", "d", "t", DIM_TELEMETRY, 5, 0).is_err());
+    }
+
+    fn sample_meter_event() -> crate::MeterEvent {
+        crate::MeterEvent {
+            event_name: crate::meter::BACKBONE_DELIVERY,
+            tenant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            value: 42,
+            idempotency_key: "hop_backbone_delivery:000102030405060708090a0b0c0d0e0f:402".into(),
+            hour: 402,
+        }
+    }
+
+    #[test]
+    fn history_sink_appends_a_usage_row_keyed_by_the_meter_idempotency_key() {
+        use crate::MeterSink;
+        let bq = FakeBq::with_pages(vec![]);
+        let mut sink = HistorySink {
+            transport: &bq,
+            project: "p".into(),
+            dataset: "hop_usage".into(),
+            table: "usage_history".into(),
+            updated_ms: 999,
+        };
+        sink.emit(&sample_meter_event()).unwrap();
+        let posts = bq.posts.borrow();
+        assert_eq!(posts.len(), 1);
+        assert!(posts[0].0.ends_with("/tables/usage_history/insertAll"));
+        let r = &posts[0].1["rows"][0];
+        // insertId IS the meter idempotency key: a re-run appends the same id and dedups.
+        assert_eq!(
+            r["insertId"],
+            "hop_backbone_delivery:000102030405060708090a0b0c0d0e0f:402"
+        );
+        assert_eq!(r["json"]["event_name"], "hop_backbone_delivery");
+        assert_eq!(r["json"]["tenant"], "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(r["json"]["hour"], "402");
+        assert_eq!(r["json"]["value"], "42");
+        assert_eq!(r["json"]["updated_ms"], "999");
+    }
+
+    #[test]
+    fn history_sink_surfaces_row_level_insert_errors() {
+        use crate::MeterSink;
+        let mut bq = FakeBq::with_pages(vec![]);
+        bq.post_resp = (
+            200,
+            serde_json::json!({ "insertErrors": [ {"index": 0, "errors": [{"reason": "invalid"}]} ] }),
+        );
+        let mut sink = HistorySink {
+            transport: &bq,
+            project: "p".into(),
+            dataset: "hop_usage".into(),
+            table: "usage_history".into(),
+            updated_ms: 0,
+        };
+        // A failed history append must Err so the reconciler holds the watermark and retries.
+        assert!(sink.emit(&sample_meter_event()).is_err());
     }
 }

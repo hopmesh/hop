@@ -96,6 +96,50 @@ pub trait MeterSink {
     fn emit(&mut self, event: &MeterEvent) -> Result<(), String>;
 }
 
+/// Bill the primary sink (Stripe, authoritative) and record usage history on the secondary as a
+/// BEST-EFFORT side effect. The primary's result ALONE is returned, so it alone drives the
+/// reconcile watermark.
+///
+/// This asymmetry is deliberate and load-bearing. History is our own dashboards store (the console
+/// reads our data, never Stripe); it must NEVER gate revenue. A symmetric "fail if either fails"
+/// tee would freeze the single per-dimension watermark the moment the history table hiccuped (a 404
+/// on a not-yet-warm streaming buffer, a quota blip, a transient 5xx), and because `reconcile`
+/// advances the watermark only for fully-emitted hours, every later hour would stop reaching Stripe
+/// too. So a dashboards outage would halt live invoicing. Here, a history failure is counted and
+/// swallowed; only the Stripe result propagates.
+///
+/// History records only events that actually BILLED (`billed.is_ok()`), so the usage/invoice views
+/// mirror billed usage. Tradeoff: an event that bills on the same run whose history append fails is
+/// not retried (its hour's watermark advances on the Stripe success), so a rare history hiccup can
+/// leave a single hour's dashboard row missing for one tenant. That is an acceptable gap for a
+/// best-effort analytics store; a durable-history upgrade would give `record` its own watermark.
+pub struct BillAndRecord<P: MeterSink, H: MeterSink> {
+    pub bill: P,
+    pub record: H,
+    /// How many history appends failed this run (surfaced by the caller for observability).
+    pub record_failures: u64,
+}
+
+impl<P: MeterSink, H: MeterSink> BillAndRecord<P, H> {
+    pub fn new(bill: P, record: H) -> Self {
+        Self {
+            bill,
+            record,
+            record_failures: 0,
+        }
+    }
+}
+
+impl<P: MeterSink, H: MeterSink> MeterSink for BillAndRecord<P, H> {
+    fn emit(&mut self, event: &MeterEvent) -> Result<(), String> {
+        let billed = self.bill.emit(event);
+        if billed.is_ok() && self.record.emit(event).is_err() {
+            self.record_failures = self.record_failures.saturating_add(1);
+        }
+        billed
+    }
+}
+
 pub(crate) fn hex16(t: &TenantId) -> String {
     t.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -374,6 +418,63 @@ mod tests {
 
     const A: TenantId = [1u8; 16];
     const B: TenantId = [2u8; 16];
+
+    fn sample_event() -> MeterEvent {
+        MeterEvent {
+            event_name: meter::BACKBONE_DELIVERY,
+            tenant: A,
+            value: 7,
+            idempotency_key: "hop_backbone_delivery:0101...:5".into(),
+            hour: 5,
+        }
+    }
+
+    #[test]
+    fn bill_and_record_bills_and_records_when_both_are_up() {
+        let mut sink = BillAndRecord::new(FakeSink::default(), FakeSink::default());
+        assert!(sink.emit(&sample_event()).is_ok());
+        assert_eq!(sink.bill.emitted.len(), 1);
+        assert_eq!(sink.record.emitted.len(), 1);
+        assert_eq!(sink.record_failures, 0);
+    }
+
+    #[test]
+    fn a_history_failure_never_fails_the_emit_so_revenue_is_never_frozen() {
+        // History (secondary) down: the emit still SUCCEEDS (Stripe billed), so the watermark
+        // advances and billing keeps making progress. The failure is counted, not propagated.
+        let mut sink = BillAndRecord::new(
+            FakeSink::default(),
+            FakeSink {
+                fail_hours: vec![5],
+                ..Default::default()
+            },
+        );
+        assert!(
+            sink.emit(&sample_event()).is_ok(),
+            "a dashboards-store failure must NEVER gate revenue"
+        );
+        assert_eq!(sink.bill.emitted.len(), 1, "Stripe still billed");
+        assert_eq!(sink.record_failures, 1, "history failure is counted");
+    }
+
+    #[test]
+    fn a_billing_failure_propagates_and_skips_the_history_record() {
+        // Stripe down: emit fails (holds the watermark, retried next run), and history is NOT
+        // recorded for an event that did not bill (the usage view mirrors billed usage).
+        let mut sink = BillAndRecord::new(
+            FakeSink {
+                fail_hours: vec![5],
+                ..Default::default()
+            },
+            FakeSink::default(),
+        );
+        assert!(sink.emit(&sample_event()).is_err());
+        assert_eq!(
+            sink.record.emitted.len(),
+            0,
+            "unbilled usage is not recorded"
+        );
+    }
 
     fn row(bundles: u64) -> LedgerRow {
         LedgerRow {
