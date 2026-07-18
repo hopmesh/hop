@@ -36,8 +36,10 @@ guard let msgId = a.send(to: bAddr, body: Data(text.utf8), requestAck: true) els
 }
 
 var received: HopMessage?
+var accepted = false
 let ok = pump(rounds: 400) {
     b.pollInbox { received = $0 }
+    if let message = received, !accepted { accepted = b.acceptInbox(message.id) }
     return received != nil && a.status(of: msgId).delivered
 }
 

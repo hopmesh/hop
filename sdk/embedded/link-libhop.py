@@ -1,36 +1,63 @@
-# link-libhop.py: link the correct prebuilt libhop.a into the firmware.
-#
-# libhop is the Hop protocol core (Rust, the `hop-core` / `libhop` project) exposed as a flat C ABI.
-# The wrapper in src/ calls that ABI; the actual code lives in a static archive that must be
-# cross-compiled for the target chip. The release workflow (.github/workflows/release.yml) builds it
-# with hop-core's `minimal` feature (no UniFFI, no SQLite) once per ESP32 architecture and commits the
-# result, plus the C ABI header, under this library:
-#
-#   prebuilt/xtensa/libhop.a   for esp32, esp32-s2, esp32-s3   (esp-rs Xtensa toolchain, a Rust fork)
-#   prebuilt/riscv/libhop.a    for esp32-c3, esp32-c6, esp32-h2 (stock Rust, the *-esp-espidf target)
-#   include/hop.h              the generated C ABI header, shared by every arch
-#
-# Xtensa is a Rust fork, so that archive is the one to sanity check after any core change; see
-# include/README.md. This script picks the archive by the board's MCU and adds it to the link.
-
+# link-libhop.py: verify and extract the one exact libhop archive for this board before linking.
 import os
+import shutil
+import subprocess
+import sys
 
 Import("env")
 
-lib_dir = os.path.dirname(os.path.abspath(__file__))
+lib_dir = env.Dir(".").srcnode().get_abspath()
 mcu = env.BoardConfig().get("build.mcu", "esp32")
+targets = {
+    "esp32": "xtensa-esp32-espidf",
+    "esp32s2": "xtensa-esp32s2-espidf",
+    "esp32s3": "xtensa-esp32s3-espidf",
+    "esp32c2": "riscv32imc-esp-espidf",
+    "esp32c3": "riscv32imc-esp-espidf",
+    "esp32c6": "riscv32imac-esp-espidf",
+    "esp32h2": "riscv32imac-esp-espidf",
+}
+target = targets.get(mcu)
+if target is None:
+    raise RuntimeError("Hop: no signed libhop target is declared for MCU '%s'" % mcu)
 
-# RISC-V ESP32 parts use stock Rust; everything else on this platform is Xtensa.
-riscv_mcus = ("esp32c2", "esp32c3", "esp32c6", "esp32h2")
-arch = "riscv" if mcu in riscv_mcus else "xtensa"
+native = os.path.join(lib_dir, "native")
+helper = os.path.join(native, "native-artifacts.py")
+manifest = os.path.join(native, "native-artifacts.json")
+signature = os.path.join(native, "native-artifacts.json.sig")
+public_key = os.path.join(native, "native-artifacts-public.pem")
+artifacts = os.path.join(native, "artifacts")
+for required in (helper, manifest, signature, public_key):
+    if not os.path.isfile(required):
+        raise RuntimeError("Hop: signed native release file is missing: %s" % required)
 
-archive = os.path.join(lib_dir, "prebuilt", arch, "libhop.a")
-header_dir = os.path.join(lib_dir, "include")
+destination = os.path.join(lib_dir, ".native", target)
+if os.path.isdir(destination):
+    shutil.rmtree(destination)
+subprocess.run(
+    [
+        sys.executable,
+        helper,
+        "extract",
+        "--manifest",
+        manifest,
+        "--signature",
+        signature,
+        "--public-key",
+        public_key,
+        "--directory",
+        artifacts,
+        "--target",
+        target,
+        "--destination",
+        destination,
+    ],
+    check=True,
+)
 
-if os.path.isfile(archive):
-    # Pass the archive straight to the linker, and expose the C ABI header for anyone including it.
-    env.Append(LINKFLAGS=[archive])
-    env.Append(CPPPATH=[header_dir])
-else:
-    print("Hop: prebuilt libhop.a for arch '%s' (mcu '%s') not found at %s" % (arch, mcu, archive))
-    print("Hop: it is produced by the release workflow; see include/README.md for how to stage it.")
+archive = os.path.join(destination, "lib", "libhop.a")
+header_dir = os.path.join(destination, "include")
+if not os.path.isfile(archive) or not os.path.isfile(os.path.join(header_dir, "hop.h")):
+    raise RuntimeError("Hop: verified target archive has an incomplete layout for %s" % target)
+env.Append(LIBS=[env.File(archive)])
+env.Append(CPPPATH=[header_dir])

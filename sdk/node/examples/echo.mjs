@@ -24,6 +24,7 @@ console.log(`  [client] <- ${res.status}`, res.body.toString())
 
 const body = JSON.parse(res.body.toString())
 const passed = res.status === 200 && body.ok === true && body.item === 'widget'
+res.accept()
 server.close()
 client.close()
 console.log(passed ? '\nPASS: hop.on(service, handler) + reply(status, body) over real hop-core.' : '\nFAIL')

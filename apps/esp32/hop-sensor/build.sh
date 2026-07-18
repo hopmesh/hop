@@ -7,7 +7,8 @@ ROOT="$(cd "$HERE/../../.." && pwd)"
 LIBDIR="$ROOT/target/debug"
 
 cargo build -p hop --manifest-path "$ROOT/Cargo.toml"
-"$ROOT/core/hop/regen-header.sh" >/dev/null
 
-clang "$HERE/main.c" -I "$ROOT/sdk" -L "$LIBDIR" -lhop -Wl,-rpath,"$LIBDIR" -o "$HERE/hop-sensor"
+clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+  "$HERE/main.c" -I "$ROOT/sdk" -L "$LIBDIR" -lhop \
+  -Wl,-rpath,"$LIBDIR" -o "$HERE/hop-sensor"
 "$HERE/hop-sensor"

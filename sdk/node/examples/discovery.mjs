@@ -32,6 +32,7 @@ const res = await client.request(address, 'acme/orders', 'create', 'widget')
 console.log(`  [client] <- ${res.status} ${res.body}`)
 
 const ok = res.status === 201 && res.body.toString() === 'widget'
+res.accept()
 server.close()
 client.close()
 httpsServer.close()

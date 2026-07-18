@@ -61,6 +61,7 @@ pump(a, b)
 # A drains the response
 resps = ffi.take_service_responses(a)
 r_from, for_id, status, body = resps[0]
+ffi.accept_service_response(a, for_id)
 print("A got response:", status, body.decode(), " ties to reqId:", for_id == req_id)
 
 passed = service == "weather" and status == 200 and body == b"stored" and for_id == req_id

@@ -9,6 +9,7 @@ export class ChannelMsg {
     free(): void;
     [Symbol.dispose](): void;
     readonly body: Uint8Array;
+    readonly id: Uint8Array;
     readonly path: string;
     /**
      * The POSTING member's address, every post is verified against its writer (§32).
@@ -69,6 +70,11 @@ export class Transfer {
 export class WasmNode {
     free(): void;
     [Symbol.dispose](): void;
+    accept_channel(id: Uint8Array): boolean;
+    /**
+     * Accept a processed durable inbox item. ACK/vaccine emission follows only after persistence.
+     */
+    accept_inbox(id: Uint8Array): boolean;
     /**
      * Post to a channel we're a member of, ONE message, every member receives it (real fan-out).
      * Returns the broadcast bundle's id so the sim can trace its flood.
@@ -117,11 +123,11 @@ export class WasmNode {
      */
     held_ids(): Uint8Array;
     /**
-     * Messages addressed to this node that arrived since the last call (decrypted).
+     * Durable decrypted messages awaiting host processing. Non-destructive until `accept_inbox`.
      */
     inbox(): Delivered[];
     /**
-     * Debug: take the inbox and report raw bundle count + per-bundle read result.
+     * Debug: report and accept every durable decrypted inbox item.
      */
     inbox_debug(): string;
     /**
@@ -186,7 +192,7 @@ export class WasmNode {
      */
     set_observe(on: boolean): void;
     /**
-     * Channel posts that arrived since the last call (decrypted + writer-verified).
+     * Poll channel posts. Rows repeat until `accept_channel` durably removes them.
      */
     take_channel(): ChannelMsg[];
     /**
@@ -199,11 +205,39 @@ export class WasmNode {
     readonly address: Uint8Array;
 }
 
+/**
+ * Decode and verify one committed bundle vector through the WASM boundary. The returned fixed-width
+ * metadata lets JavaScript independently compare stable fields rather than merely reading a fixture.
+ * The exact input bytes must also be the bundle's canonical re-encoding.
+ */
+export function validate_wire_bundle(bytes: Uint8Array, expected_id: Uint8Array): Uint8Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_channelmsg_free: (a: number, b: number) => void;
+    readonly __wbg_delivered_free: (a: number, b: number) => void;
+    readonly __wbg_outpacket_free: (a: number, b: number) => void;
+    readonly __wbg_transfer_free: (a: number, b: number) => void;
+    readonly channelmsg_body: (a: number) => [number, number];
+    readonly channelmsg_id: (a: number) => [number, number];
+    readonly channelmsg_path: (a: number) => [number, number];
+    readonly channelmsg_sender: (a: number) => [number, number];
+    readonly delivered_body: (a: number) => [number, number];
+    readonly delivered_bundle: (a: number) => [number, number];
+    readonly delivered_content_type: (a: number) => [number, number];
+    readonly delivered_from: (a: number) => [number, number];
+    readonly delivered_hops: (a: number) => number;
+    readonly outpacket_data: (a: number) => [number, number];
+    readonly outpacket_link: (a: number) => number;
+    readonly transfer_bundle: (a: number) => [number, number];
+    readonly transfer_delivered: (a: number) => number;
+    readonly validate_wire_bundle: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly transfer_link: (a: number) => number;
     readonly __wbg_wasmnode_free: (a: number, b: number) => void;
+    readonly wasmnode_accept_channel: (a: number, b: number, c: number) => [number, number, number];
+    readonly wasmnode_accept_inbox: (a: number, b: number, c: number) => [number, number, number];
     readonly wasmnode_address: (a: number) => [number, number];
     readonly wasmnode_channel_publish: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly wasmnode_channel_subscribe: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -232,29 +266,12 @@ export interface InitOutput {
     readonly wasmnode_set_observe: (a: number, b: number) => void;
     readonly wasmnode_take_channel: (a: number) => [number, number];
     readonly wasmnode_tick: (a: number, b: number) => void;
-    readonly __wbg_channelmsg_free: (a: number, b: number) => void;
-    readonly __wbg_delivered_free: (a: number, b: number) => void;
-    readonly __wbg_outpacket_free: (a: number, b: number) => void;
-    readonly __wbg_transfer_free: (a: number, b: number) => void;
-    readonly channelmsg_body: (a: number) => [number, number];
-    readonly channelmsg_path: (a: number) => [number, number];
-    readonly channelmsg_sender: (a: number) => [number, number];
-    readonly delivered_body: (a: number) => [number, number];
-    readonly delivered_bundle: (a: number) => [number, number];
-    readonly delivered_content_type: (a: number) => [number, number];
-    readonly delivered_from: (a: number) => [number, number];
-    readonly delivered_hops: (a: number) => number;
-    readonly outpacket_data: (a: number) => [number, number];
-    readonly outpacket_link: (a: number) => number;
-    readonly transfer_bundle: (a: number) => [number, number];
-    readonly transfer_delivered: (a: number) => number;
-    readonly transfer_link: (a: number) => number;
+    readonly __wbindgen_malloc: (a: number, b: number) => number;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;

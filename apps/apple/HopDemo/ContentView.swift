@@ -218,6 +218,18 @@ struct ContentView: View {
                     }
                 } header: { Text("Privacy") }
 
+                Section("Local history") {
+                    if let error = bearer.persistenceError {
+                        Text(error).font(.caption).foregroundStyle(.red)
+                    }
+                    Button(role: .destructive) { bearer.deleteMedia() } label: {
+                        Text("Delete all media")
+                    }
+                    Button(role: .destructive) { bearer.deleteHistory() } label: {
+                        Text("Delete all history")
+                    }
+                }
+
                 Section {
                     HStack {
                         TextField("host:port or wss://relay.hopme.sh/", text: $relayField)
@@ -549,7 +561,7 @@ struct ChatView: View {
                     var loaded: [Data] = []
                     for item in items {
                         if let data = try? await item.loadTransferable(type: Data.self),
-                           let jpeg = HopImages.downscaledJPEG(data) {
+                           let jpeg = HopImages.downscaledJPEG(data), jpeg.count <= 8 * 1024 * 1024 {
                             loaded.append(jpeg)
                         }
                     }
@@ -571,6 +583,16 @@ struct ChatView: View {
                         FaIcon(name: "ic_fa_lock", size: 13).foregroundStyle(.green)
                     }
                 }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button(role: .destructive) { bearer.deleteMedia(for: peer) } label: {
+                        Label("Delete media", image: "ic_fa_trash")
+                    }
+                    Button(role: .destructive) { bearer.deleteConversation(peer) } label: {
+                        Label("Delete conversation", image: "ic_fa_trash")
+                    }
+                } label: { FaIcon(name: "ic_fa_trash", size: 16) }
             }
         }
     }

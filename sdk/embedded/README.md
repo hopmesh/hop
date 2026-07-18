@@ -9,26 +9,11 @@
   A small Arduino / ESP-IDF C++ class over the <code>libhop</code> C ABI, for ESP32 and friends.
 </p>
 
-<p align="center">
-  <a href="https://registry.platformio.org/libraries/hopmesh/Hop"><img src="https://img.shields.io/badge/PlatformIO-Hop-orange" alt="PlatformIO"></a>
-  <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
-  <img src="https://img.shields.io/badge/platform-ESP32-6ea8fe" alt="ESP32">
-</p>
-
----
-
-Hop is a **delay-tolerant mesh**: end-to-end encrypted datagrams that hop device to device, over BLE,
-LoRa, and Wi-Fi, until they reach the person or service you meant. Held, never dropped.
-
-**Hop for Embedded** puts a real Hop node on a microcontroller. It wraps the same `libhop` C ABI every
-Hop SDK binds in a tiny C++ class: `begin()` opens a node, `tick()` pumps it, `send()` addresses a
-message, `onMessage()` hands you what arrives. The library owns no radio, you feed it link events and
-ship its outbound bytes over whatever bearer you have, so it drops onto BLE, a LoRa module, or Wi-Fi
-without caring which. ESP32 today; more MCUs as the cross-compiles land.
+Hop for Embedded runs a real Hop node on a microcontroller. It exposes forward-secret user messaging,
+addressed `hops://` RPC, identity persistence, and a radio-neutral bearer seam over the same `libhop`
+C ABI used by the other SDKs.
 
 ## Install
-
-In your `platformio.ini`:
 
 ```ini
 [env:esp32dev]
@@ -37,92 +22,162 @@ framework = arduino
 lib_deps = hopmesh/Hop
 ```
 
-The library ships `Hop.h` plus a prebuilt `libhop` static archive per ESP32 architecture (xtensa and
-riscv), so there is no Rust toolchain to install on your machine.
+The package supplies `Hop.h` and a prebuilt `libhop` archive for each exact supported Rust target.
+Each archive is bound to the canonical repository, full source SHA, tag/version, builder workflow/run,
+target, size, and SHA-256 by a detached-signed manifest. `link-libhop.py` verifies the signature and
+archive inventory before extracting only the target mapped to the selected MCU. The PlatformIO build
+does not need the network after the signed package has been installed.
 
-## Quick start
+For a source checkout or an offline mirror, stage the same verified release payload with:
+
+```sh
+python3 install-libhop.py --version v0.0.1
+# or: python3 install-libhop.py --bundle /path/to/release-assets
+```
+
+Use repeated `--target <exact-triple>` options to install only the boards this checkout builds.
+
+## Clock Contract
+
+Hop protocol time is authenticated data. Bundle creation, advert expiry, rotating prekeys, mailbox
+epochs, and receiver beacons require plausible Unix epoch milliseconds. Device uptime is not Unix
+time.
+
+After `begin()`, the node is initialized but intentionally not protocol-ready. Supply time in one of
+two ways:
 
 ```cpp
-#include <Hop.h>
+node.setUnixTimeProvider([](uint64_t &unixEpochMs) {
+  // Return false until SNTP, GNSS, a trusted host, or an RTC has synchronized.
+  return readTrustedUnixEpochMilliseconds(unixEpochMs);
+});
+```
 
-hop::Hop node;
+or anchor a one-time trusted sample for offline operation:
 
-void setup() {
-  Serial.begin(115200);
-  node.begin();                          // fresh identity, in-memory (the minimal build has no SQLite)
-  node.subscribe("chat");                // deliver "chat" requests to onMessage
-  node.onOutgoing([](uint64_t link, const uint8_t *data, size_t len) {
-    radioSend(link, data, len);          // ship this frame over YOUR bearer (BLE / LoRa / Wi-Fi)
-  });
-  node.onMessage([](const hop::Message &m) {
-    Serial.printf("from %.8s: %.*s\n", m.service, (int)m.payload_len, m.payload);
-  });
-  Serial.println(node.address().c_str()); // publish this; peers reach you by it
-}
+```cpp
+node.synchronizeClock(trustedUnixEpochMs, static_cast<uint32_t>(millis()));
+```
 
-void loop() {
-  // feed inbound bytes from your radio: node.bytesReceived(link, buf, n);
-  node.tick(millis());                    // poll-model: everything happens here, ~1 Hz
-  delay(1000);
+Then pump with a local monotonic counter:
+
+```cpp
+hop::ClockStatus status = node.tick(static_cast<uint32_t>(millis()));
+if (status != hop::ClockStatus::Ready) {
+  // Keep transports initialized, but wait. No authenticated Hop state is emitted.
 }
 ```
 
-`req.from` is a **cryptographically verified** identity, not a spoofable header, and delivery is durable
-store-and-forward, so a message sent to a peer that is not currently connected is held and delivered when
-a path appears.
+`millis()` is used only to advance elapsed local time and remains safe across rollover. It is never
+used as the Unix epoch origin. A provider sample outside 2020 through 2099, behind the last accepted
+time, or stale relative to monotonic progress closes the gate. A later valid sample reopens it. Every
+restart begins in `WaitingForSync`; a prior process's clock anchor is not trusted implicitly.
 
-## The bearer seam
+For ESP32, obtain epoch time from `gettimeofday()` only after an explicit SNTP/RTC synchronization
+gate. Do not use `esp_timer_get_time()`, FreeRTOS ticks, or Arduino uptime as protocol epoch time.
 
-Hop does not touch your radio. As links form, carry frames, and drop, you call:
+## Forward-Secret Messaging
+
+User content uses `sendMessage`, which calls `hop_send_message`. It never falls back to statically
+sealed service requests.
 
 ```cpp
-node.linkUp(linkId, hop::LinkRole::Dialer);   // you dialed out (BLE central, Wi-Fi inviter)
-node.bytesReceived(linkId, frame, frameLen);  // an inbound frame arrived
-node.linkDown(linkId);                         // the link dropped
+node.onMessage([](const hop::Message &message) {
+  consume(message.from, message.contentType, message.body);
+  return true; // synchronous acceptance; false requests redelivery
+});
+
+hop::SendResult result = node.sendMessage(peerAddress, "hello", true);
+if (result.status == hop::OperationStatus::Deferred) {
+  // Accepted locally, waiting for the peer prekey and a Double Ratchet session.
+}
 ```
 
-and the `onOutgoing` handler receives the frames Hop wants sent. The core owns all crypto; you move
-opaque bytes.
+`Ok` means a ratcheted bundle was emitted. `Deferred` means libhop accepted the message into its local
+queue but has not emitted user content because no peer prekey/session is available yet. The minimal
+embedded store is in-memory, so deferred state does not survive a device restart.
 
-## Keeping your address across reboots
+Every `Message` owns copies of its id, sender, content type, and body. Retaining or copying it after the
+callback returns is safe.
 
-`begin()` mints a fresh identity. To keep the same mesh address, save the secret once and restore it:
+## Addressed RPC
+
+`hops://` service RPC is statically sealed by design and has explicit names so it cannot be mistaken
+for chat:
+
+```cpp
+node.subscribe("weather");
+
+node.onServiceRequest([](const hop::ServiceRequest &request) {
+  // request.from and request.requestId are owned 32-byte values.
+  node.sendServiceResponse(request, 202, "stored ok");
+});
+
+hop::SendResult request =
+    node.sendServiceRequest(serviceAddress, "weather", "report", "{\"tempF\":72}");
+
+node.onServiceResponse([](const hop::ServiceResponse &response) {
+  // response.from, response.status, response.body, and response.correlationId are owned values.
+  return true; // synchronous processing is complete
+});
+```
+
+For asynchronous work, copy the response and return `false`; call
+`node.acceptServiceResponse(response)` only after that work is durable.
+
+See `examples/service_rpc` for the complete caller and service flow. Use `examples/blink_send` for
+forward-secret user messaging.
+
+## Bearer Seam
+
+Hop does not own a radio. Once `ready()` is true, report links and frames:
+
+```cpp
+node.linkUp(linkId, hop::LinkRole::Dialer);
+node.bytesReceived(linkId, frame, frameLen);
+node.linkDown(linkId);
+```
+
+`onOutgoing` receives opaque frames to transmit. `linkUp` and `bytesReceived` return
+`ClockNotReady` before trusted epoch time, preventing inbound work from creating near-zero protocol
+records. `linkDown` remains available for cleanup after a later clock fault.
+
+## Identity Persistence
 
 ```cpp
 uint8_t secret[32];
-node.secret(secret);            // save these 32 bytes to NVS / flash
-// next boot:
+node.secret(secret); // save to NVS or flash
+
+// On the next boot, before supplying a fresh trusted clock:
 node.begin(secret, sizeof(secret));
 ```
 
-## How it maps to the core
+## C ABI Mapping
 
-This is a `hop-core` node in client mode, over the same C ABI (`hop.h`) that binds every other Hop SDK,
-with zero core changes. `send` is `hop_send_service_request`, `onMessage` is `hop_subscribe` +
-`hop_poll_service_requests`, the bearer seam is `hop_link_up` / `hop_bytes_received` /
-`hop_drain_outgoing`, and `tick` is `hop_node_tick`. `begin()` asserts `hop_abi_version()` matches, so a
-wrapper paired with a mismatched prebuilt archive fails loudly at startup.
+| C++ surface | C ABI |
+| --- | --- |
+| `sendMessage` / `onMessage` | `hop_send_message` / `hop_poll_inbox` |
+| `sendServiceRequest` | `hop_send_service_request` |
+| `sendServiceResponse` | `hop_send_service_response` |
+| `acceptServiceResponse` | `hop_accept_service_response` |
+| `onServiceRequest` / `onServiceResponse` | `hop_poll_service_requests` / `hop_poll_service_responses` |
+| `tick` after clock validation | `hop_node_tick` |
+| bearer seam | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing` |
 
-## Status
+`begin()` asserts ABI 4 through `hop_abi_version()` so a stale prebuilt archive fails at startup.
+Every wrapper input consumed by C as exactly 32 bytes is size-checked before that pointer enters C.
 
-Prototype. The wrapper surface (node lifecycle, send, receive, the bearer seam, identity persistence) is
-built against the real C ABI. ESP32 (xtensa and riscv) is the first target; the cross-compile pipeline
-brings other MCUs as it grows. LoRa and BLE bearers are yours to wire to the seam today.
+## Host Tests
 
-## The Hop family
+The mock-C host suite compiles the wrapper with strict warnings and proves clock gating, rollover,
+restart behavior, exact symbol routing, complete RPC correlation, fixed-width rejection, and callback
+byte ownership:
 
-`Hop for Embedded` is one of several SDKs over the same C ABI. Same protocol, your platform:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
-[go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
-[crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
-[apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [libhop](https://github.com/hopmesh/libhop) / [hop-core](https://github.com/hopmesh/hop-core).
+```sh
+bash test/run-host-tests.sh
+```
 
 ## License
 
-[Apache-2.0](./LICENSE.md), use it freely. Only the protocol core (`hop-core`) is FSL-1.1-ALv2,
-source-available and converting to Apache-2.0 after two years.
+[Apache-2.0](./LICENSE.md). The protocol core (`hop-core`) is FSL-1.1-ALv2 and converts to Apache-2.0
+after two years.

@@ -1,8 +1,8 @@
 """Receive Hop messages in Python: an embeddable endpoint over the libhop C ABI (via ctypes)."""
-from .endpoint import HopEndpoint, HopRequest
+from .endpoint import HopEndpoint, HopRequest, HopResponse
 from .tcp_bearer import dial, listen
 
-__all__ = ["HopEndpoint", "HopRequest", "listen", "dial", "connect_in_process"]
+__all__ = ["HopEndpoint", "HopRequest", "HopResponse", "listen", "dial", "connect_in_process"]
 
 
 def connect_in_process(a: HopEndpoint, b: HopEndpoint, la: int = 11, lb: int = 22):

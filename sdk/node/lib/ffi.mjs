@@ -36,20 +36,20 @@ const HopNode = 'void *'
 // JS function passed at the call site is exactly right (no persistent registration needed).
 export const DrainSink = koffi.proto('void DrainSink(void *ctx, uint64_t link, uint8_t *bytes, size_t len)')
 export const InboxSink = koffi.proto(
-  'void InboxSink(void *ctx, uint8_t *from, const char *content_type, uint8_t *body, size_t body_len, uint8_t hops, uint64_t created_at)',
+  'bool InboxSink(void *ctx, uint8_t *inbox_id, uint8_t *from, const char *content_type, uint8_t *body, size_t body_len, uint8_t hops, uint64_t created_at)',
 )
 export const SvcReqSink = koffi.proto(
   'void SvcReqSink(void *ctx, uint8_t *from, uint8_t *request_id, const char *service, const char *method, uint8_t *args, size_t args_len)',
 )
 export const SvcRespSink = koffi.proto(
-  'void SvcRespSink(void *ctx, uint8_t *from, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
+  'bool SvcRespSink(void *ctx, uint8_t *from, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
 )
 export const ReachSignSink = koffi.proto('void ReachSignSink(void *ctx, uint8_t *bytes, size_t len)')
 export const ReachVerifySink = koffi.proto(
   'void ReachVerifySink(void *ctx, uint8_t *address, const char *endpoint, uint64_t issued_at, uint32_t ttl_secs)',
 )
 
-export const hop = {
+const rawHop = {
   abi_version: lib.func('uint32_t hop_abi_version()'),
   node_new: lib.func('void *hop_node_new()'),
   node_with_secret: lib.func('void *hop_node_with_secret(uint8_t *secret, size_t secret_len)'),
@@ -68,6 +68,7 @@ export const hop = {
   subscribe: lib.func('void hop_subscribe(void *node, const char *topic)'),
   publish_prekey: lib.func('bool hop_publish_prekey(void *node)'),
   poll_inbox: lib.func('void hop_poll_inbox(void *node, InboxSink *sink, void *ctx)'),
+  accept_inbox: lib.func('bool hop_accept_inbox(void *node, uint8_t *inbox_id)'),
   send_message: lib.func(
     'bool hop_send_message(void *node, uint8_t *dst, const char *content_type, uint8_t *body, size_t body_len, bool request_ack, uint8_t *out_id)',
   ),
@@ -79,6 +80,7 @@ export const hop = {
   ),
   poll_service_requests: lib.func('void hop_poll_service_requests(void *node, SvcReqSink *sink, void *ctx)'),
   poll_service_responses: lib.func('void hop_poll_service_responses(void *node, SvcRespSink *sink, void *ctx)'),
+  accept_service_response: lib.func('bool hop_accept_service_response(void *node, uint8_t *request_id)'),
   address_to_base58: lib.func('size_t hop_address_to_base58(uint8_t *addr, char *out, size_t out_cap)'),
   address_from_base58: lib.func('bool hop_address_from_base58(const char *text, uint8_t *out32)'),
   sign_reach_record: lib.func(
@@ -96,7 +98,65 @@ export const hop = {
   cluster_set_quorum: lib.func('void hop_cluster_set_quorum(void *node, uint32_t min_live_members)'),
 }
 
-const ABI_EXPECTED = 3
+export function require32(value, name) {
+  if (!Buffer.isBuffer(value) && !(value instanceof Uint8Array)) {
+    throw new TypeError(`${name} must be a 32-byte Buffer or Uint8Array`)
+  }
+  if (value.byteLength !== 32) {
+    throw new RangeError(`${name} must be exactly 32 bytes, got ${value.byteLength}`)
+  }
+  return value
+}
+
+// Fixed-width C arguments have no length in the ABI. Keep the raw symbols private and expose guarded
+// calls so neither the endpoint facade nor a consumer of `raw` can trigger an out-of-bounds native read
+// or write with a short Buffer.
+export const hop = {
+  ...rawHop,
+  node_address: (node, out) => rawHop.node_address(node, require32(out, 'address output')),
+  node_secret: (node, out) => rawHop.node_secret(node, require32(out, 'secret output')),
+  accept_inbox: (node, id) => rawHop.accept_inbox(node, require32(id, 'inbox id')),
+  accept_service_response: (node, requestId) =>
+    rawHop.accept_service_response(node, require32(requestId, 'request id')),
+  send_message: (node, dst, contentType, body, bodyLen, requestAck, outId) => {
+    require32(dst, 'destination')
+    if (outId != null) require32(outId, 'bundle id output')
+    return rawHop.send_message(node, dst, contentType, body, bodyLen, requestAck, outId)
+  },
+  send_service_request: (node, dst, service, method, args, argsLen, outId) => {
+    require32(dst, 'destination')
+    if (outId != null) require32(outId, 'request id output')
+    return rawHop.send_service_request(node, dst, service, method, args, argsLen, outId)
+  },
+  send_service_response: (node, to, forRequestId, status, body, bodyLen) =>
+    rawHop.send_service_response(
+      node,
+      require32(to, 'response destination'),
+      require32(forRequestId, 'request id'),
+      status,
+      body,
+      bodyLen,
+    ),
+  address_to_base58: (address, out, outCap) =>
+    rawHop.address_to_base58(require32(address, 'address'), out, outCap),
+  address_from_base58: (text, out) =>
+    rawHop.address_from_base58(text, require32(out, 'address output')),
+  cluster_join: (node, secret) => rawHop.cluster_join(node, require32(secret, 'cluster secret')),
+  cluster_mark_done: (node, from, requestId) =>
+    rawHop.cluster_mark_done(
+      node,
+      require32(from, 'request sender'),
+      require32(requestId, 'request id'),
+    ),
+  cluster_would_drop: (node, from, requestId) =>
+    rawHop.cluster_would_drop(
+      node,
+      require32(from, 'request sender'),
+      require32(requestId, 'request id'),
+    ),
+}
+
+const ABI_EXPECTED = 4
 export function assertAbi() {
   const got = hop.abi_version()
   if (got !== ABI_EXPECTED) {
@@ -108,6 +168,7 @@ export function assertAbi() {
 export const bytes = (ptr, len) => (len === 0 ? Buffer.alloc(0) : Buffer.from(koffi.decode(ptr, 'uint8_t', len)))
 export const addr = (ptr) => Buffer.from(koffi.decode(ptr, 'uint8_t', 32))
 export const b58 = (addr32) => {
+  require32(addr32, 'address')
   const out = Buffer.alloc(64)
   const n = hop.address_to_base58(addr32, out, out.length)
   return out.toString('utf8', 0, n)

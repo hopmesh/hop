@@ -15,9 +15,8 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 crate="$here/../core/hop-wasm"
-root="$(cd "$here/.." && pwd)"
 
-command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
+command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (run core/hop-wasm/install-wasm-pack.sh)"; exit 1; }
 
 # legal-01 backstop: wasm-pack copies the crate's license-file into --out-dir, joining the manifest's
 # raw relative path onto the out-dir to pick the destination. If that path ever contained `../` (e.g. a
@@ -31,11 +30,11 @@ license_before=""
 [ -f "$license" ] && license_before="$(cksum < "$license")"
 
 echo "==> building sim/pkg (target web)"
-wasm-pack build "$crate" --target web --out-dir "$here/pkg"
+wasm-pack build "$crate" --mode no-install --target web --out-dir "$here/pkg"
 # The committed pkg carries only the wasm-bindgen interface + wasm, not npm/license side files
 # (it's not an npm package, just static assets the site copies). LICENSE.md is the crate license
 # wasm-pack copies in; drop it so the committed pkg stays minimal and its tracked set doesn't drift.
-rm -f "$here/pkg/package.json" "$here/pkg/.gitignore" "$here/pkg/LICENSE.md"
+rm -f "$here/pkg/package.json" "$here/pkg/.gitignore" "$here/pkg/LICENSE.md" "$here/pkg/README.md"
 
 # sim-wasm-r2-02: stamp the wire version the committed pkg was built against. The wasm-bindgen
 # interface (.d.ts/.js) does NOT change on a same-API BUNDLE_VERSION bump, so the interface diff alone
@@ -49,7 +48,7 @@ if [ -n "$wire_version" ]; then
 fi
 
 echo "==> building core/hop-wasm/pkg-node (target nodejs)"
-wasm-pack build "$crate" --target nodejs --out-dir "$crate/pkg-node"
+wasm-pack build "$crate" --mode no-install --target nodejs --out-dir "$crate/pkg-node"
 
 # legal-01 backstop (see the snapshot above): core/hop-wasm/LICENSE.md must be non-empty and
 # byte-for-byte unchanged by this build. If it was truncated or altered, fail loudly instead of letting

@@ -15,6 +15,7 @@ required-features = ["reqwest"]
 [dependencies]
 hop-core.workspace = true
 bs58 = "0.5"
+url = "2"
 # The production egress HTTP client (services-02): blocking reqwest with connect/read timeouts, no
 # redirects, and a streaming response cap. Optional so the trait-only lib stays lean.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }

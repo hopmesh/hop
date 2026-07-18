@@ -1,0 +1,54 @@
+{
+  "packages": [
+    {
+      "filename": "espressif32-7.0.1.tar.gz",
+      "kind": "platform",
+      "metadata": "https://api.registry.platformio.org/v3/packages/platformio/platform/espressif32",
+      "reference": "platformio/espressif32@7.0.1",
+      "sha256": "1b8ea7073dbc550c55c367d877daf749694a3a8ce7bf04f3baeafaf69c966c45",
+      "url": "https://dl.registry.platformio.org/platforms/7e/0e/9d5fa6e2ce749030f43acdce802391b0ac5d9e2153dcaba58a99390c4f32/espressif32-7.0.1.tar.gz"
+    },
+    {
+      "filename": "framework-arduinoespressif32-3.20017.241212+sha.dcc1105b.tar.gz",
+      "kind": "package",
+      "metadata": "https://api.registry.platformio.org/v3/packages/platformio/tool/framework-arduinoespressif32",
+      "reference": "platformio/framework-arduinoespressif32@3.20017.241212+sha.dcc1105b",
+      "sha256": "7dbcfb86f9dfd5ecf6c881ed8226239d9ef63f27e1e1a2ddd87a87762e2ffbc9",
+      "url": "https://usc1.contabostorage.com/250040e607e8431abaff8727621872f9:pioregmirrorus/tools/7d/27/65c8307ca9af8e7f653da8375459ebf0566a70a79e8dc3fe8134897ba296/framework-arduinoespressif32-3.20017.241212+sha.dcc1105b.tar.gz"
+    },
+    {
+      "filename": "toolchain-xtensa-esp32-linux_x86_64-8.4.0+2021r2-patch5.tar.gz",
+      "kind": "package",
+      "metadata": "https://api.registry.platformio.org/v3/packages/espressif/tool/toolchain-xtensa-esp32",
+      "reference": "espressif/toolchain-xtensa-esp32@8.4.0+2021r2-patch5",
+      "sha256": "d356109e30ed9cbcfaba5fdee821b188fbc0781f5843aad490e20e9ac7b228dc",
+      "url": "https://usc1.contabostorage.com/250040e607e8431abaff8727621872f9:pioregmirrorus/tools/58/c9/d6f867f93b6e55491c200cb539274c8ae3dccf76daf29428aa64dd54d727/toolchain-xtensa-esp32-linux_x86_64-8.4.0+2021r2-patch5.tar.gz"
+    },
+    {
+      "filename": "toolchain-riscv32-esp-linux_x86_64-8.4.0+2021r2-patch5.tar.gz",
+      "kind": "package",
+      "metadata": "https://api.registry.platformio.org/v3/packages/espressif/tool/toolchain-riscv32-esp",
+      "reference": "espressif/toolchain-riscv32-esp@8.4.0+2021r2-patch5",
+      "sha256": "525205ae3bb69937863d4d787818dd4f3c373c8d242da4aa22b220b12c7ed4c9",
+      "url": "https://usc1.contabostorage.com/250040e607e8431abaff8727621872f9:pioregmirrorus/tools/3a/b0/f76083b7ba0655783dfdf9a511ff0d8bfbf205d4506d172a3b06d60e7bcb/toolchain-riscv32-esp-linux_x86_64-8.4.0+2021r2-patch5.tar.gz"
+    },
+    {
+      "filename": "tool-esptoolpy-2.41100.0.tar.gz",
+      "kind": "package",
+      "metadata": "https://api.registry.platformio.org/v3/packages/platformio/tool/tool-esptoolpy",
+      "reference": "platformio/tool-esptoolpy@2.41100.0",
+      "sha256": "ec80a347efa02e64706075575fbe07b32d3140f4c4aaa7002350ea7d9f71b826",
+      "url": "https://usc1.contabostorage.com/250040e607e8431abaff8727621872f9:pioregmirrorus/tools/41/6e/902b89be540081ec73998d0e236e80c342b64edd2cfef5797e6ce9660587/tool-esptoolpy-2.41100.0.tar.gz"
+    },
+    {
+      "filename": "tool-scons-4.40801.0.tar.gz",
+      "kind": "package",
+      "metadata": "https://api.registry.platformio.org/v3/packages/platformio/tool/tool-scons",
+      "reference": "platformio/tool-scons@4.40801.0",
+      "sha256": "289b1abf389b730ab5a1018ed9fc84e22d301e0d16c64548eb9db5bf8ba59d06",
+      "url": "https://usc1.contabostorage.com/250040e607e8431abaff8727621872f9:pioregmirrorus/tools/7d/42/b0fefe6c6223b85c3e0375d07c400e0548dfbbfa2445860fcc475f37c909/tool-scons-4.40801.0.tar.gz"
+    }
+  ],
+  "schema": 1,
+  "system": "linux_x86_64"
+}

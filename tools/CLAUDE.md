@@ -7,7 +7,7 @@ runs in CI BEFORE the guard itself, so a change to a guard proves it still flags
 docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity incl. no-semicolon, \u/CSS
                            escape) + removed terms (InternetEgress, Wi-Fi Direct) + bare "Bluetooth" in
                            docs/site copy. Self-test: docs-token-guard.test.sh.
-check-required-checks.sh   asserts ci.yml job names == the deploy-gate _REQUIRED_CHECKS allowlist. Fails
+check-required-checks.sh   asserts ci.yml job names == the bootstrap trusted-gate allowlist. Fails
                            on a nameless job, an anchor/inline job, or a ${{ }}-templated name (all of
                            which could gate deploys while hiding from the sync).
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the ci.yml
@@ -18,7 +18,9 @@ repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs,
                            "January 2004", since FSL text references "Apache License"), no cross-tiers.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
-require-ci-verdict.py       the runtime deploy-gate logic (Cloud Build). Tested by require-ci-gate.test.sh.
+require-ci-verdict.py       exact GitHub Actions workflow, App, repository, attempt, SHA, and job gate.
+deploy-provenance.py        signed build manifest, immutable archive/image verification, and global lease.
+infra-authority-guard.py    forbids bootstrap authority in the runtime root and broad build/deploy grants.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.
 check-web-links.mjs         internal-link checker for apps/web/site/dist.

@@ -30,6 +30,15 @@ export class ChannelMsg {
         return v1;
     }
     /**
+     * @returns {Uint8Array}
+     */
+    get id() {
+        const ret = wasm.channelmsg_id(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * @returns {string}
      */
     get path() {
@@ -233,6 +242,33 @@ export class WasmNode {
         wasm.__wbg_wasmnode_free(ptr, 0);
     }
     /**
+     * @param {Uint8Array} id
+     * @returns {boolean}
+     */
+    accept_channel(id) {
+        const ptr0 = passArray8ToWasm0(id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmnode_accept_channel(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Accept a processed durable inbox item. ACK/vaccine emission follows only after persistence.
+     * @param {Uint8Array} id
+     * @returns {boolean}
+     */
+    accept_inbox(id) {
+        const ptr0 = passArray8ToWasm0(id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmnode_accept_inbox(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
      * This node's 32-byte public address, use it as a `dst` for `send`.
      * @returns {Uint8Array}
      */
@@ -357,7 +393,7 @@ export class WasmNode {
         return v1;
     }
     /**
-     * Messages addressed to this node that arrived since the last call (decrypted).
+     * Durable decrypted messages awaiting host processing. Non-destructive until `accept_inbox`.
      * @returns {Delivered[]}
      */
     inbox() {
@@ -367,7 +403,7 @@ export class WasmNode {
         return v1;
     }
     /**
-     * Debug: take the inbox and report raw bundle count + per-bundle read result.
+     * Debug: report and accept every durable decrypted inbox item.
      * @returns {string}
      */
     inbox_debug() {
@@ -529,7 +565,7 @@ export class WasmNode {
         wasm.wasmnode_set_observe(this.__wbg_ptr, on);
     }
     /**
-     * Channel posts that arrived since the last call (decrypted + writer-verified).
+     * Poll channel posts. Rows repeat until `accept_channel` durably removes them.
      * @returns {ChannelMsg[]}
      */
     take_channel() {
@@ -547,9 +583,38 @@ export class WasmNode {
     }
 }
 if (Symbol.dispose) WasmNode.prototype[Symbol.dispose] = WasmNode.prototype.free;
+
+/**
+ * Decode and verify one committed bundle vector through the WASM boundary. The returned fixed-width
+ * metadata lets JavaScript independently compare stable fields rather than merely reading a fixture.
+ * The exact input bytes must also be the bundle's canonical re-encoding.
+ * @param {Uint8Array} bytes
+ * @param {Uint8Array} expected_id
+ * @returns {Uint8Array}
+ */
+export function validate_wire_bundle(bytes, expected_id) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(expected_id, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_wire_bundle(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_debug_string_8a447059637473e2: function(arg0, arg1) {
+            const ret = debugString(arg1);
+            const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
         __wbg___wbindgen_is_function_acc5528be2b923f2: function(arg0) {
             const ret = typeof(arg0) === 'function';
             return ret;
@@ -613,6 +678,10 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
+        __wbg_kvBatch_12805a3a8b73bd9e: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = arg0.kvBatch(getArrayU8FromWasm0(arg1, arg2));
+            return ret;
+        }, arguments); },
         __wbg_kvGet_6f03bbf8eef1b6ef: function(arg0, arg1, arg2, arg3) {
             const ret = arg1.kvGet(getStringFromWasm0(arg2, arg3));
             var ptr1 = isLikeNone(ret) ? 0 : passArray8ToWasm0(ret, wasm.__wbindgen_malloc);
@@ -620,19 +689,21 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
-        __wbg_kvList_f2ae384d8b7d0bbe: function(arg0, arg1, arg2, arg3) {
-            const ret = arg1.kvList(getStringFromWasm0(arg2, arg3));
+        __wbg_kvListPage_6c91c87710408735: function(arg0, arg1, arg2, arg3, arg4, arg5, arg6) {
+            const ret = arg1.kvListPage(getStringFromWasm0(arg2, arg3), getStringFromWasm0(arg4, arg5), arg6 >>> 0);
             const ptr1 = passArray8ToWasm0(ret, wasm.__wbindgen_malloc);
             const len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
-        __wbg_kvPut_3e0d517d69083817: function(arg0, arg1, arg2, arg3, arg4) {
-            arg0.kvPut(getStringFromWasm0(arg1, arg2), getArrayU8FromWasm0(arg3, arg4));
-        },
-        __wbg_kvRemove_91cafbbe021efe30: function(arg0, arg1, arg2) {
-            arg0.kvRemove(getStringFromWasm0(arg1, arg2));
-        },
+        __wbg_kvPut_a22bd27480b471e0: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            const ret = arg0.kvPut(getStringFromWasm0(arg1, arg2), getArrayU8FromWasm0(arg3, arg4));
+            return ret;
+        }, arguments); },
+        __wbg_kvRemove_3f8b074cefb9421b: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = arg0.kvRemove(getStringFromWasm0(arg1, arg2));
+            return ret;
+        }, arguments); },
         __wbg_length_589238bdcf171f0e: function(arg0) {
             const ret = arg0.length;
             return ret;
@@ -762,6 +833,71 @@ function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
     return idx;
+}
+
+function debugString(val) {
+    // primitive types
+    const type = typeof val;
+    if (type == 'number' || type == 'boolean' || val == null) {
+        return  `${val}`;
+    }
+    if (type == 'string') {
+        return `"${val}"`;
+    }
+    if (type == 'symbol') {
+        const description = val.description;
+        if (description == null) {
+            return 'Symbol';
+        } else {
+            return `Symbol(${description})`;
+        }
+    }
+    if (type == 'function') {
+        const name = val.name;
+        if (typeof name == 'string' && name.length > 0) {
+            return `Function(${name})`;
+        } else {
+            return 'Function';
+        }
+    }
+    // objects
+    if (Array.isArray(val)) {
+        const length = val.length;
+        let debug = '[';
+        if (length > 0) {
+            debug += debugString(val[0]);
+        }
+        for(let i = 1; i < length; i++) {
+            debug += ', ' + debugString(val[i]);
+        }
+        debug += ']';
+        return debug;
+    }
+    // Test for built-in
+    const builtInMatches = /\[object ([^\]]+)\]/.exec(toString.call(val));
+    let className;
+    if (builtInMatches && builtInMatches.length > 1) {
+        className = builtInMatches[1];
+    } else {
+        // Failed to match the standard '[object ClassName]'
+        return toString.call(val);
+    }
+    if (className == 'Object') {
+        // we're a user defined class or Object
+        // JSON.stringify avoids problems with cycles, and is generally much
+        // easier than looping through ownProperties of `val`.
+        try {
+            return 'Object(' + JSON.stringify(val) + ')';
+        } catch (_) {
+            return 'Object';
+        }
+    }
+    // errors
+    if (val instanceof Error) {
+        return `${val.name}: ${val.message}\n${val.stack}`;
+    }
+    // TODO we could test for more things here, like `Set`s and `Map`s.
+    return className;
 }
 
 function getArrayJsValueFromWasm0(ptr, len) {

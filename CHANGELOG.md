@@ -32,6 +32,10 @@ ABI (`HOP_ABI_VERSION`) versions are tracked separately (see
 
 ### Security
 
+- Wire v9: preserve the already-shipped v8 carriage-stamp envelope while adding the
+  authenticated HPS reach-ACK MAC layout and full publication signing context. The
+  deterministic corpus now covers stamped and unstamped access plus canonical native
+  C and WASM re-encoding.
 - Audit remediation pass: closed the two critical findings (the Android db-key /
   quarantine-wipe divergence and the §39 private-path sender-spoofing), pinned the
   wire format against silent drift, and made the store open path fail safe. See the
@@ -57,4 +61,4 @@ ABI (`HOP_ABI_VERSION`) versions are tracked separately (see
     peer can still be reached via its later want-beacon pull.
   - **Android mirror sealing:** driver mirror payloads are sealed via `MirrorCrypto`.
 
-[Unreleased]: https://github.com/jwaldrip/hop/commits/main
+[Unreleased]: https://github.com/hopmesh/hop/commits/main

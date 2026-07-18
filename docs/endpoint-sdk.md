@@ -144,6 +144,16 @@ distinct leaks, and only one is irreducible:
 So the dial: max privacy (no published endpoint, mesh plus optional relay, recipient anonymous) is the
 default; publish an endpoint to trade for reachability and lower cost. The recipient sets it.
 
+## Preauthentication resource boundary
+
+Every server WSS bearer rejects request headers above 16 KiB and single or fragmented messages above
+1 MiB before assembling the payload. Each listener admits at most 64 unauthenticated links, bounds
+blocking handshake work, and applies a 5 second handshake deadline plus a 15 second message-read
+deadline. Android and Apple LAN bearers cap frame bodies at 1 MiB, admit at most 32 links process-wide,
+and retain at most about 4 MiB of partial-frame bytes across all links. The bearer layer cannot observe
+Noise authentication completion, so link admission remains charged until socket teardown; byte
+reservations remain charged until parsing and delivery finish.
+
 ## Prototype scope and follow-ups
 
 Built and working (`sdk/node`): the handler/reply surface, client `request()`, in-process, TCP, and

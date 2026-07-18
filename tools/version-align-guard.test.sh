@@ -10,13 +10,11 @@ GUARD="$HERE/version-align-guard.sh"
 pass=0
 fail=0
 
-# lay_down DIR ANCHOR NODE PY RUBY [PREAMBLE]: a fixture with the anchor + SDK manifests at the given
-# versions. If PREAMBLE (6th arg) is set, also write a copy.bara.sky whose mirror preamble carries that
-# version; if absent, no copy.bara.sky is written (the guard then skips that check, as for a tag-versioned
-# package).
+# lay_down DIR ANCHOR NODE PY RUBY [PREAMBLE] [ELIXIR_WORKSPACE] [GO_INSTALLER]: a fixture with the
+# anchor + SDK manifests at the given versions. Optional values cover generated release contracts.
 lay_down() {
-  local d="$1" anchor="$2" node="$3" py="$4" ruby="$5" pre="${6:-}"
-  mkdir -p "$d/tools" "$d/sdk/node" "$d/sdk/python" "$d/sdk/ruby" "$d/sdk/crystal" "$d/sdk/elixir"
+  local d="$1" anchor="$2" node="$3" py="$4" ruby="$5" pre="${6:-}" elixir_workspace="${7:-}" go_installer="${8:-$2}"
+  mkdir -p "$d/tools" "$d/sdk/node" "$d/sdk/python" "$d/sdk/ruby" "$d/sdk/crystal" "$d/sdk/elixir" "$d/sdk/go/cmd/hop-install"
   cp "$GUARD" "$d/tools/version-align-guard.sh"
   printf '[workspace.package]\nversion = "%s"\nedition = "2021"\n' "$anchor" > "$d/Cargo.toml"
   printf '{\n  "name": "@hop-mesh/endpoint",\n  "version": "%s"\n}\n' "$node" > "$d/sdk/node/package.json"
@@ -24,9 +22,11 @@ lay_down() {
   printf 'Gem::Specification.new do |spec|\n  spec.version     = "%s"\nend\n' "$ruby" > "$d/sdk/ruby/hop-endpoint.gemspec"
   printf 'name: hop\nversion: %s\n' "$anchor" > "$d/sdk/crystal/shard.yml"
   printf 'defmodule Hop.MixProject do\n  def project, do: [version: "%s"]\nend\n' "$anchor" > "$d/sdk/elixir/mix.exs"
-  if [ -n "$pre" ]; then
+  printf 'package main\nconst currentVersion = "v%s"\n' "$go_installer" > "$d/sdk/go/cmd/hop-install/main.go"
+  if [ -n "$pre" ] || [ -n "$elixir_workspace" ]; then
     mkdir -p "$d/tools/copybara"
-    printf 'WORKSPACE_PREAMBLE = """\n[workspace.package]\nversion = "%s"\n"""\n' "$pre" > "$d/tools/copybara/copy.bara.sky"
+    [ -n "$pre" ] && printf 'WORKSPACE_PREAMBLE = """\n[workspace.package]\nversion = "%s"\n"""\n' "$pre" > "$d/tools/copybara/copy.bara.sky"
+    [ -n "$elixir_workspace" ] && printf '[workspace.package]\nversion = "%s"\n' "$elixir_workspace" > "$d/tools/copybara/elixir-native-Cargo.toml"
   fi
 }
 
@@ -58,6 +58,15 @@ expect "$TMP/absent" pass "absent_manifest_skipped"
 lay_down "$TMP/pre_ok" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.5"; expect "$TMP/pre_ok" pass "preamble_aligned"
 # the preamble drifted a MINOR behind the anchor (0.1.x != 0.2) -> fail.
 lay_down "$TMP/pre_drift" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.1.0"; expect "$TMP/pre_drift" fail "preamble_drift"
+# the Elixir mirror's vendored native workspace shares the anchor major.minor -> aligned.
+lay_down "$TMP/elixir_dep_ok" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.9"
+expect "$TMP/elixir_dep_ok" pass "elixir_dependency_aligned"
+# an older native-workspace major.minor in the mirror template is rejected.
+lay_down "$TMP/elixir_dep_drift" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.1.9"
+expect "$TMP/elixir_dep_drift" fail "elixir_dependency_drift"
+# the Go installer default must move with the protocol release line.
+lay_down "$TMP/go_installer_drift" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.1.9"
+expect "$TMP/go_installer_drift" fail "go_installer_drift"
 
 echo
 if [ "$fail" -eq 0 ]; then

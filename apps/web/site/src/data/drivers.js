@@ -12,7 +12,7 @@ export const drivers = [
       'Embeds hop-core through UniFFI and drives BLE via CoreBluetooth, central and peripheral at once, with an L2CAP channel for bulk and background operation within iOS limits.',
     bearers: ['BLE, GATT + L2CAP CoC', 'LAN, Wi-Fi'],
     notes: [
-      'UniFFI Swift bindings wrap the Rust core: hand it a key, address bundles, drain the inbox.',
+      'UniFFI Swift bindings wrap the Rust core: hand it a key, address bundles, poll the durable inbox.',
       'CoreBluetooth runs as both central and peripheral so any two devices can relay through each other.',
       'Background BLE within iOS constraints, beaconing, state restoration, wake on connection events. Designing around iOS background is the hardest platform constraint in the project.',
       'L2CAP connection-oriented channel carries bulk; GATT carries control and small frames.',

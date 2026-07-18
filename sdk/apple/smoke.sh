@@ -8,6 +8,5 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Ensure the xcframework exists (first run / after editing cabi.rs cross-compiles all slices).
 [ -d "$HERE/Frameworks/libhop.xcframework" ] || "$HERE/build-xcframework.sh"
 
-cd "$HERE"
-swift run HopSmoke       # Swift wrapper -> C ABI -> protocol
-swift run RuntimeSmoke   # HopRuntime + a Bearer -> node seam -> protocol
+bash "$HERE/with-local-framework.sh" swift run HopSmoke       # Swift wrapper -> C ABI -> protocol
+bash "$HERE/with-local-framework.sh" swift run RuntimeSmoke   # HopRuntime + a Bearer -> node seam -> protocol

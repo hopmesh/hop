@@ -64,8 +64,10 @@ guard let id = rtA.node.send(to: bAddr, body: Data(text.utf8), requestAck: true)
 }
 
 var got: HopMessage?
+var accepted = false
 let ok = pump(400) {
     rtB.node.pollInbox { got = $0 }
+    if let message = got, !accepted { accepted = rtB.node.acceptInbox(message.id) }
     return got != nil && rtA.node.status(of: id).delivered
 }
 

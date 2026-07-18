@@ -5,9 +5,9 @@ This monorepo is the source of truth. Copybara mirrors a component subtree to it
 forking. It is the Meta react-native / relay pattern, done with [Copybara](https://github.com/google/copybara)
 instead of fbshipit.
 
-Every component is wired up: `tools/copybara/copy.bara.sky` holds a `COMPONENTS` list (the 8 SDK repos
-plus the core, service, bearer, and driver repos) and a loop that generates an export + import workflow
-for each. Adding a new one is a single line in that list.
+Every component is wired up: `tools/copybara/components.json` is the dispatch allowlist and
+`tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an export and
+import workflow for each. Their CI self-test rejects any drift between the two.
 
 ## What it does
 
@@ -44,18 +44,38 @@ state tracking so it can run continuously.
    gh repo create hopmesh/hop-sdk-node --public --description "Hop endpoint SDK for Node (mirror of hopmesh/hop:sdk/node)"
    ```
 
-2. **Create a token** with `repo` scope on BOTH `hopmesh/hop` and `hopmesh/hop-sdk-node` (a classic PAT,
-   a fine-grained PAT scoped to both, or a GitHub App installation token). The default `GITHUB_TOKEN` is
-   scoped to this repo only and cannot push to the mirror. Add it as a repo secret on `hopmesh/hop`:
+2. **Create the sync GitHub App.** Install it on `hopmesh/hop` and every mirror. Grant Actions
+   read/write, Contents read/write, and Pull requests read. In `hopmesh/hop`, create a protected
+   `component-sync` environment restricted to `main`, require a reviewer other than the dispatcher,
+   enable prevention of self-review, and store `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` only as
+   environment secrets. Mirror dispatch workflows that retain these credentials need the same protected
+   environment. Do not create repository or organization copies of these secrets, a shared PAT, or a
+   `COPYBARA_TOKEN`. Repository administrators configure these settings; the workflow only references
+   them and does not create or verify the environment policy.
 
-   ```sh
-   gh secret set COPYBARA_TOKEN --repo hopmesh/hop --body "<token>"
-   ```
+3. **Create the source-verifier GitHub App.** Install this separate read-only App on
+   `hopmesh/hop` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as
+   `HOP_SOURCE_APP_ID` and `HOP_SOURCE_APP_PRIVATE_KEY` in each publishing mirror's `release`
+   environment. Release jobs use it to prove that the mirror tag exactly matches a successful canonical
+   `main` commit before any registry or GitHub publish step runs.
 
-   Steps 1 and 2 (create the mirror repos + set `COPYBARA_TOKEN`) are automated by
-   `tools/copybara/bootstrap-mirrors.sh`, which you run yourself.
+4. **Protect releases.** In every mirror that carries `.github/workflows/release.yml`, create an
+   environment named `release`, add a required reviewer, and configure each registry trusted publisher
+   with environment `release`. The canonical monorepo `release` environment needs
+   `NATIVE_ARTIFACT_SIGNING_KEY`, whose public half is committed as
+   `tools/native-artifacts-public.pem`. Native wrapper releases download the successful canonical
+   native workflow by immutable run and artifact ID, verify that signature and every archive digest,
+   then verify GitHub's build-provenance attestation before publishing.
 
-3. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
+   The canonical environment also needs `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
+   from a separate App installed only on `hopmesh/libhop` with Contents write.
+
+   Android additionally needs `MAVEN_USERNAME`, `MAVEN_PASSWORD`, `MAVEN_GPG_KEY`, and
+   `MAVEN_GPG_PASSPHRASE` in its protected release environment. Embedded
+   needs `PLATFORMIO_AUTH_TOKEN`; Elixir needs `HEX_API_KEY`. The standalone Node CI still needs its
+   legacy libhop checksum variables until it is moved to the shared native manifest installer.
+
+5. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
    so the FIRST export passes `init_history=true`:
 
    ```sh
@@ -82,13 +102,13 @@ record; the monorepo PR is the merge of record.
 
 Every component subtree ships a `.github/workflows/sync-back.yml` (carried out to each mirror by the
 export). It fires on a mirror **pull request** and asks the monorepo to import it (Copybara
-`CHANGE_REQUEST`), which opens the matching monorepo PR. It derives its own component name from the
-mirror repo, so the one file is identical everywhere; edit it in the monorepo, never in a mirror.
+`CHANGE_REQUEST`), which opens the matching monorepo PR. Each file carries a literal allowlisted
+component name; edit it in the monorepo, never in a mirror.
 
 No loop guard is needed: the export cascades out as a **push**, and a push does not fire pull-request
-events, so the sync-back never sees the export's own commits. It runs under `pull_request_target` (so the
-token is available even on a fork PR) and only dispatches, never checking out PR code. It needs an **org
-secret `HOP_SYNC_TOKEN`** shared to the mirrors, a token with push access to `hopmesh/hop`.
+events, so the sync-back never sees the export's own commits. It runs under `pull_request_target` and
+only dispatches, never checking out PR code. It mints a token scoped only to `hopmesh/hop` with
+Actions write from the sync App credentials; fork code never executes in the privileged job.
 
 ### Confidentiality (what the export publishes)
 
@@ -115,11 +135,12 @@ git init --bare /tmp/hop-sdk-node.git
 # point a scratch config at file:// URLs, then:
 docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
   -v ~/.gitconfig:/root/.gitconfig \
-  <copybara-image> copybara tools/copybara/copy.bara.sky export --init-history --force
+  olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 \
+  copybara tools/copybara/copy.bara.sky export --init-history --force
 ```
 
-(Any maintained Copybara image works; the CI uses `olivr/copybara-action`, which wraps the container and
-the git-credential setup for you.)
+CI uses the digest-pinned `olivr/copybara:20230129` image with a read-only filesystem, isolated
+credentials, and a fixed dispatch map. Local tests should use that same digest.
 
 ## The standalone repo needs libhop
 
@@ -130,10 +151,10 @@ its consumers) must provide `libhop`: either a published prebuilt binary the pac
 
 ## Adding another component
 
-Add one line, `("<monorepo/subtree>", "<mirror-repo-name>")`, to the `COMPONENTS` list in
-`copy.bara.sky`. The loop generates its export + import workflows automatically, and the single
-`sync-components.yml` dispatch already handles any component by name. Then create + seed its mirror
-(add it to `bootstrap-mirrors.sh`, run that, then the seed command above).
+Add the component to `components.json`, the matching tuple to `copy.bara.sky`, the fixed workflow
+choice to `sync-components.yml`, and its literal component name to the subtree's `sync-back.yml`.
+The dispatch self-test enforces the first three mappings. Then add the mirror to
+`bootstrap-mirrors.sh`, create it, and run the seed command above.
 
 The components wired today: the 8 SDKs, plus `hop-core`, `libhop`, `hop-wasm`, the two stores, the two
 bearer repos, the two driver repos, and the three services. Each already carries its own `LICENSE.md`

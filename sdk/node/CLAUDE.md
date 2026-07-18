@@ -39,7 +39,7 @@ examples/           raw-roundtrip, echo, tcp, server/client, discovery (HTTPS we
   mount `wellKnownHandler()` and pass `serveWellKnown:false` (a WS upgrade is a server-level hook, not
   an app route, which is why `attach` takes the server).
 - **koffi sink callbacks** decode pointers that are valid ONLY during the call (see `bytes`/`addr` in
-  ffi.mjs); copy anything you keep. `assertAbi()` fails loudly if `hop_abi_version()` drifts from 3.
+  ffi.mjs); copy anything you keep. `assertAbi()` fails loudly if `hop_abi_version()` drifts from 4.
 
 ## Verify
 

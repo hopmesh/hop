@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	hop "github.com/hopmesh/hop/sdk/go"
+	hop "github.com/hopmesh/hop-sdk-go"
 )
 
 func main() {

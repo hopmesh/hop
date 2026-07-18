@@ -35,8 +35,9 @@
       "src",
       "include",
       "examples",
-      "prebuilt",
+      "native",
       "library.json",
+      "install-libhop.py",
       "link-libhop.py",
       "README.md",
       "LICENSE.md"

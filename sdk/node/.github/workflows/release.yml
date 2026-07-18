@@ -1,8 +1,4 @@
-# release: publish @hop-mesh/endpoint to npm on a semver tag.
-#
-# In the monorepo this file is inert (GitHub only runs root .github/workflows).
-# Copybara mirrors sdk/node to its own repo, where package.json sits at the repo
-# root and this becomes the repo-root release workflow.
+# Build and publish @hop-mesh/endpoint from one verified npm tarball.
 name: release
 
 on:
@@ -10,48 +6,78 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-# OIDC trusted publishing: id-token lets the npm CLI authenticate to the registry via GitHub OIDC, so
-# there is no long-lived token. Configure the trusted publisher on npmjs.com first (package
-# @hop-mesh/endpoint, org hop-mesh, repository hopmesh/hop-sdk-node, workflow release.yml). To use a
-# token instead, set the NPM_TOKEN secret and swap the publish step for the commented NODE_AUTH_TOKEN form.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-
-      # Guard: the tag (minus its leading v) must equal package.json's version, so a
-      # mistyped tag can never publish the wrong version.
-      - name: Verify tag matches package version
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.23.1'
+      - name: Install, verify version, and pack
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "tag $tag does not match package.json version $pkg" >&2
-            exit 1
-          fi
+          set -euo pipefail
+          test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+          npm ci
+          mkdir "$RUNNER_TEMP/release"
+          npm pack --pack-destination "$RUNNER_TEMP/release"
+          python3 .github/release-artifact.py create --directory "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
 
-      - name: Install dependencies
-        run: npm ci
-
-      # OIDC trusted publishing needs a recent npm (>= 11.5.1); node 22 ships an older one.
-      - name: Update npm for OIDC
-        run: npm install -g npm@latest
-
-      # @hop-mesh/endpoint is scoped, so --access public makes it a public publish. --provenance
-      # attaches a signed build-provenance statement (also via OIDC).
-      - name: Publish to npm (OIDC trusted publishing)
-        run: npm publish --access public --provenance
-        # Token fallback (if you did not set up a trusted publisher): drop --provenance, drop the
-        # id-token permission, and add:  env: { NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} }
+  publish:
+    needs: build
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint canonical-source read token
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
+          private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+      - name: Verify canonical source provenance
+        id: provenance
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: python3 .github/release-provenance.py --component hop-sdk-node --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release
+      - name: Verify immutable npm artifact
+        run: >-
+          python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
+          --canonical-source-sha '${{ steps.provenance.outputs.source_sha }}'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.23.1'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install OIDC-capable npm after verification
+        run: npm install -g npm@11.5.1
+      - name: Publish verified npm tarball
+        run: npm publish "$RUNNER_TEMP/release/"*.tgz --access public --provenance

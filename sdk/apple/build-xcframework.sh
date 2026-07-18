@@ -50,4 +50,8 @@ xcodebuild -create-xcframework \
   -library "$SIM/$LIB"                         -headers "$HDR" \
   -library "$MAC/$LIB"                         -headers "$HDR" \
   -output "$DEST" >/dev/null
+python3 "$ROOT/tools/native-artifacts.py" apple-manifest \
+  --xcframework "$DEST" --output "$DEST/architecture-manifest.json"
+python3 "$ROOT/tools/native-artifacts.py" apple-verify \
+  --xcframework "$DEST" --manifest "$DEST/architecture-manifest.json"
 echo "✓ $DEST"

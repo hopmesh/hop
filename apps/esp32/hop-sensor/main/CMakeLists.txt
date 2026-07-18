@@ -3,5 +3,5 @@
 idf_component_register(
     SRCS "hop_main.c"
     INCLUDE_DIRS "."
-    REQUIRES libhop
+    REQUIRES libhop lwip
 )

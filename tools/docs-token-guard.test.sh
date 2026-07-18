@@ -99,6 +99,7 @@ expect_fail "$TMP/css-emzero.css"
 printf 'const t = "x \\u{2014} y";\n' > "$TMP/esc-brace.ts"       # \u{...} brace form
 expect_fail "$TMP/esc-brace.ts"
 # clean copy with a dollar-number and ampersands must NOT false-positive on the encoded scan
+# shellcheck disable=SC2016
 printf 'Cost is $20140 and AT&T covers R&D.\n' > "$TMP/clean3.md"
 expect_pass "$TMP/clean3.md"
 

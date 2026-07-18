@@ -95,6 +95,11 @@ func New(opts ...Option) (*Endpoint, error) {
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if cfg.key != nil {
+		if err := require32(cfg.key, "identity key"); err != nil {
+			return nil, err
+		}
+	}
 	var n *node
 	if cfg.key != nil {
 		n = nodeWithSecret(cfg.key)
@@ -159,6 +164,17 @@ func (e *Endpoint) Request(dst, service, method string, args []byte) (uint16, []
 	return e.RequestTimeout(dst, service, method, args, DefaultRequestTimeout)
 }
 
+// AcceptServiceResponse durably accepts a previously-polled response by its correlation request id.
+// Asynchronous consumers call this only after their own processing has completed.
+func (e *Endpoint) AcceptServiceResponse(requestID []byte) (bool, error) {
+	var accepted bool
+	var err error
+	if !e.withNode(func(n *node) { accepted, err = n.acceptServiceResponse(requestID) }) {
+		return false, fmt.Errorf("endpoint is closed")
+	}
+	return accepted, err
+}
+
 // RequestTimeout is Request with an explicit timeout.
 func (e *Endpoint) RequestTimeout(dst, service, method string, args []byte, timeout time.Duration) (uint16, []byte, error) {
 	dstBytes, err := fromB58(dst)
@@ -189,6 +205,13 @@ func (e *Endpoint) RequestTimeout(dst, service, method string, args []byte, time
 	key := string(reqID)
 	select {
 	case r := <-ch:
+		accepted, err := e.AcceptServiceResponse(reqID)
+		if err != nil || !accepted {
+			if err == nil {
+				err = fmt.Errorf("service response acceptance failed")
+			}
+			return 0, nil, err
+		}
 		return r[0].(uint16), r[1].([]byte), nil
 	case <-e.done: // Close() fires this, so an in-flight caller fails fast instead of blocking the full timeout
 		e.mu.Lock()

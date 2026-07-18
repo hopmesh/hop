@@ -20,10 +20,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CRATE=hop
-OUT=apps/android/HopDemo/generated   # gradle sourceSets read ../generated from :app
+OUT="${HOP_ANDROID_OUT:-apps/android/HopDemo/generated}" # gradle sourceSets read ../generated from :app
 T=target
 
-command -v cargo-ndk >/dev/null || { echo "missing: cargo install cargo-ndk"; exit 1; }
+command -v cargo-ndk >/dev/null || { echo "missing: cargo-ndk"; exit 1; }
 : "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to your NDK path}"
 
 rm -rf "$OUT"; mkdir -p "$OUT/kotlin"
@@ -40,14 +40,19 @@ else
 fi
 
 echo "▸ building libhop.so for each ABI"
-cargo ndk -t arm64-v8a -t x86_64 -t armeabi-v7a -o "$OUT/jniLibs" \
-  build -p "$CRATE" --release "${FEAT[@]}"
+cargo ndk -t arm64-v8a -t x86_64 -t x86 -t armeabi-v7a -o "$OUT/jniLibs" \
+  build -p "$CRATE" --release --locked "${FEAT[@]}"
 # ONE libhop.so per ABI now serves both the C ABI (sh.hop loads "hop") and UniFFI (component "hop").
 
 echo "▸ generating Kotlin bindings"
-cargo build -p "$CRATE"   # host lib for bindgen metadata
-cargo run -p "$CRATE" --features cli --bin uniffi-bindgen -- \
-  generate --library "$T/debug/libhop.dylib" --language kotlin --out-dir "$OUT/kotlin"
+cargo build -p "$CRATE" --locked   # host lib for bindgen metadata
+case "$(uname -s)" in
+  Darwin) HOST_LIB="$T/debug/libhop.dylib" ;;
+  Linux) HOST_LIB="$T/debug/libhop.so" ;;
+  *) echo "unsupported bindgen host: $(uname -s)" >&2; exit 1 ;;
+esac
+cargo run -p "$CRATE" --locked --features cli --bin uniffi-bindgen -- \
+  generate --library "$HOST_LIB" --language kotlin --out-dir "$OUT/kotlin"
 
 echo "✓ $OUT/jniLibs/<abi>/libhop.so"
 echo "✓ $OUT/kotlin/uniffi/hop/hop.kt"

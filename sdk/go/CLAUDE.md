@@ -16,9 +16,9 @@ discovery_test.go reach record sign/verify + the full HTTPS well-known + WSS dis
 examples/tcp/     a runnable demo
 ```
 
-Reachable-by-name: `Attach(mux, publicURL)` wires `/_hop` (WSS) + `/.well-known/hop` in one call. In Go
-a WS upgrade is a plain `http.Handler`, so both are mux routes (unlike Node, where the upgrade is a
-server-level hook). `DialByName` fetches the well-known (TLS proves the domain), verifies the
+Reachable-by-name: create a `NewHTTPServer`, then `endpoint.Attach(server, publicURL)` before serving.
+Attach wires `/_hop` (WSS) + `/.well-known/hop` and makes raw connection admission, TLS/header
+deadlines, parser caps, and worker limits mandatory. `DialByName` fetches the well-known (TLS proves the domain), verifies the
 self-certifying reach record, dials the WSS, and the Noise handshake confirms the address.
 The reach cgo bindings reuse the trampoline + `runtime/cgo.Handle` pattern from the sink callbacks.
 
@@ -29,10 +29,11 @@ The reach cgo bindings reuse the trampoline + `runtime/cgo.Handle` pattern from 
   Go functions (`goDrainSink`, ...). The collector is passed through as a `uintptr`-encoded
   `runtime/cgo.Handle` in the `ctx` arg (encoded as `uintptr_t`, not `void*`, to keep cgo happy), and
   decoded via `cgo.Handle(ctx).Value()`. Each call makes + deletes its own handle.
-- **`#cgo CFLAGS` include path is `${SRCDIR}/..`** (to reach `sdk/hop.h`), and `LDFLAGS` `-L` +
-  `-Wl,-rpath` point at `${SRCDIR}/../../target/debug`. libhop's install name is absolute, so it also
-  resolves without the rpath, but the rpath makes a relocated build dir work. Override with
-  `CGO_LDFLAGS` if libhop lives elsewhere.
+- **Copybara rewrites cgo paths for the public module.** In the monorepo, `hop.go` reaches the canonical
+  `sdk/hop.h` and `target/debug`. The exact export keeps a root-level standalone `hop.h` in the module
+  archive but rewrites cgo to `pkg-config: hop`. `go run github.com/hopmesh/hop-sdk-go/cmd/hop-install@VERSION`
+  verifies and installs one signed target under a stable user prefix, then emits the exact
+  `PKG_CONFIG_PATH` and loader environment. It never writes the Go module cache.
 - **Binary in-params via `C.CBytes` (copy + `C.free`); out-params via `&slice[0]` + `runtime.KeepAlive`.**
   Do not pass a Go slice pointer into a call that may retain it; core copies synchronously so it is safe
   here, but keep the slice alive across the call.

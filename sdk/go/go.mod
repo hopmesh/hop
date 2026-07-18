@@ -1,4 +1,4 @@
-module github.com/hopmesh/hop/sdk/go
+module github.com/hopmesh/hop-sdk-go
 
 go 1.21
 

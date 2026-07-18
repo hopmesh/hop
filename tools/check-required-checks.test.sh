@@ -1,73 +1,119 @@
 #!/usr/bin/env bash
-# Self-test for tools/check-required-checks.sh (aggregate-gate model). Drives the guard against crafted
-# ci.yml + trigger fixtures via the CI_FILE / TRIGGER_FILE env overrides. Covers:
-#   - happy path: gate needs every product job, allowlist == [CI gate]        -> pass
-#   - allowlist not exactly [CI gate] (lists the jobs)                        -> fail
-#   - a product job left OUT of the gate's needs (the fail-open blind spot)   -> fail
-#   - a job with no explicit name:                                           -> fail
-#   - a templated ${{ }} job name                                            -> fail
-#   - no CI gate job at all                                                  -> fail
-#   - a two-space job-level comment is skipped, not read as a job            -> pass
+# Self-test both required-check contracts with isolated CI, bootstrap, and README fixtures.
 set -u
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HERE/check-required-checks.sh"
-pass=0; fail=0
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+pass=0
+fail=0
 
-# run_case LABEL WANT(pass|fail) CI_JOBS_BODY REQUIRED_BLOCK
 run_case() {
-  local label="$1" want="$2" ci_body="$3" req="$4" got
-  local d; d="$(mktemp -d "$TMP/c.XXXXXX")"
-  { printf 'name: CI\non: [push]\njobs:\n'; printf '%s' "$ci_body"; } > "$d/ci.yml"
-  { printf 'substitutions:\n  _REQUIRED_CHECKS: |\n'; printf '%s' "$req"; } > "$d/trigger.yaml"
-  if CI_FILE="$d/ci.yml" TRIGGER_FILE="$d/trigger.yaml" bash "$GUARD" >/dev/null 2>&1; then got=pass; else got=fail; fi
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); echo "ok   [$label]: guard $got as expected"
+  local label="$1" want="$2" ci_body="$3" allowlist="$4"
+  local documented="${5:-$allowlist}" got output
+  local dir
+  dir="$(mktemp -d "$TMP/case.XXXXXX")"
+
+  {
+    printf 'name: CI\n'
+    printf "'on': [push]\n"
+    printf 'jobs:\n'
+    printf '%s' "$ci_body"
+  } > "$dir/ci.yml"
+  {
+    printf 'variable "github_required_checks" {\n'
+    printf '  type = list(string)\n'
+    printf '  default = [\n'
+    while IFS= read -r name; do
+      [ -n "$name" ] && printf '    "%s",\n' "$name"
+    done <<< "$allowlist"
+    printf '  ]\n}\n'
+  } > "$dir/variables.tf"
+  {
+    printf 'The authenticated deploy-provenance job set currently requires:\n\n'
+    while IFS= read -r name; do
+      [ -n "$name" ] && printf -- "- \`%s\`\n" "$name"
+    done <<< "$documented"
+    printf '\n## Next section\n'
+  } > "$dir/README.md"
+
+  if output="$(CI_FILE="$dir/ci.yml" BOOTSTRAP_FILE="$dir/variables.tf" \
+      README_FILE="$dir/README.md" bash "$GUARD" 2>&1)"; then
+    got=pass
   else
-    fail=$((fail + 1)); echo "FAIL [$label]: expected $want, guard $got"
-    CI_FILE="$d/ci.yml" TRIGGER_FILE="$d/trigger.yaml" bash "$GUARD" 2>&1 | sed 's/^/    /' | head -4
+    got=fail
+  fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+    printf 'ok   [%s]: guard %s as expected\n' "$label" "$got"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL [%s]: expected %s, guard %s\n%s\n' "$label" "$want" "$got" "$output"
   fi
 }
 
 CHANGES=$'  changes:\n    name: Detect changed areas\n    steps:\n      - run: echo changes\n'
-RUST=$'  rust:\n    name: Rust checks\n    needs: changes\n    steps:\n      - run: echo hi\n'
-WEB=$'  web:\n    name: Web build\n    needs: changes\n    steps:\n      - run: echo hi\n'
-REQ_GATE=$'    CI gate\n'
-# a gate that needs both product jobs + changes (correct)
-gate_needs() { printf '  gate:\n    name: CI gate\n    needs:\n%s      - changes\n    steps:\n      - run: echo gate\n' "$1"; }
-GATE_OK="$(gate_needs $'      - rust\n      - web\n')"
+RUST=$'  rust:\n    name: Rust checks\n    needs: changes\n    steps:\n      - run: echo rust\n'
+WEB=$'  web:\n    name: Web build\n    needs: changes\n    steps:\n      - run: echo web\n'
+AUTOMATION=$'  automation:\n    name: Automation authority guards\n    steps:\n      - run: echo automation\n'
+TRUSTED=$'Detect changed areas\nRust checks\nWeb build\nAutomation authority guards\nCI gate'
 
-# 1) happy path
-run_case "in_sync" pass "$CHANGES$RUST$WEB$GATE_OK" "$REQ_GATE"
+gate() {
+  printf '%s' $'  gate:\n    name: CI gate\n    runs-on: ubuntu-latest\n    if: always()\n    needs:\n'
+  printf '%s' "$1"
+  printf '%s' $'    steps:\n      - name: Fail closed\n        if: contains(needs.*.result, '\''failure'\'') || contains(needs.*.result, '\''cancelled'\'') || needs.changes.result != '\''success'\'' || needs.automation.result != '\''success'\''\n        run: exit 1\n'
+}
 
-# 2) allowlist lists the jobs instead of just the gate
-run_case "allowlist_not_just_gate" fail "$CHANGES$RUST$WEB$GATE_OK" $'    Rust checks\n    Web build\n'
+GATE_OK="$(gate $'      - rust\n      - web\n      - automation\n      - changes\n')"
 
-# 3) fail-open: the gate does not `needs:` web
-GATE_NO_WEB="$(gate_needs $'      - rust\n')"
-run_case "job_missing_from_gate_needs" fail "$CHANGES$RUST$WEB$GATE_NO_WEB" "$REQ_GATE"
+run_case "both_contracts_in_sync" pass "$CHANGES$RUST$WEB$AUTOMATION$GATE_OK" "$TRUSTED"
+run_case "deploy_allowlist_not_replaced_by_gate" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_OK" "CI gate"
+run_case "renamed_internal_job" fail "$CHANGES$RUST${WEB/Web build/Web build renamed}$AUTOMATION$GATE_OK" "$TRUSTED"
 
-# 4) a job with no explicit name: (gate DOES need it, so only the missing name fails)
-NONAME=$'  sneaky:\n    needs: changes\n    steps:\n      - run: echo no-name\n'
-GATE_SNEAKY="$(gate_needs $'      - rust\n      - web\n      - sneaky\n')"
-run_case "job_without_name" fail "$CHANGES$RUST$WEB$NONAME$GATE_SNEAKY" "$REQ_GATE"
+GATE_NO_WEB="$(gate $'      - rust\n      - automation\n      - changes\n')"
+run_case "internal_job_missing_from_gate" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_NO_WEB" "$TRUSTED"
 
-# 5) a templated ${{ }} job name (gate DOES need it, so only the templated name fails)
-MATRIX=$'  matrixed:\n    name: Test (${{ matrix.os }})\n    needs: changes\n    steps:\n      - run: echo hi\n'
-GATE_MATRIX="$(gate_needs $'      - rust\n      - web\n      - matrixed\n')"
-run_case "templated_name" fail "$CHANGES$RUST$WEB$MATRIX$GATE_MATRIX" "$REQ_GATE"
+GATE_NO_CHANGES="$(gate $'      - rust\n      - web\n      - automation\n')"
+run_case "change_detector_missing_from_gate" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_NO_CHANGES" "$TRUSTED"
 
-# 6) no CI gate job at all
-run_case "no_gate_job" fail "$CHANGES$RUST$WEB" "$REQ_GATE"
+GATE_NO_ALWAYS="${GATE_OK/    if: always()$'\n'/}"
+run_case "gate_without_always" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_NO_ALWAYS" "$TRUSTED"
 
-# 7) a two-space job-level comment must be skipped, not read as a nameless job
-COMMENT=$'  # CI gate: the single required check for branch protection.\n'
-run_case "comment_skipped" pass "$COMMENT$CHANGES$RUST$WEB$GATE_OK" "$REQ_GATE"
+GATE_NO_VERDICT="${GATE_OK/failure/success}"
+run_case "gate_without_failure_verdict" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_NO_VERDICT" "$TRUSTED"
 
-echo
+GATE_ALLOWS_SKIPPED_AUTOMATION="${GATE_OK/needs.automation.result/needs.automation.outcome}"
+run_case "gate_allows_skipped_automation" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_ALLOWS_SKIPPED_AUTOMATION" "$TRUSTED"
+
+AUTOMATION_IF="${AUTOMATION/    steps:/    if: false$'\n'    steps:}"
+run_case "automation_has_condition" fail "$CHANGES$RUST$WEB$AUTOMATION_IF$GATE_OK" "$TRUSTED"
+
+AUTOMATION_NEEDS="${AUTOMATION/    steps:/    needs: changes$'\n'    steps:}"
+run_case "automation_has_dependency" fail "$CHANGES$RUST$WEB$AUTOMATION_NEEDS$GATE_OK" "$TRUSTED"
+
+NONAME=$'  sneaky:\n    needs: changes\n    steps:\n      - run: echo hidden\n'
+GATE_SNEAKY="$(gate $'      - rust\n      - web\n      - automation\n      - sneaky\n      - changes\n')"
+run_case "job_without_name" fail "$CHANGES$RUST$WEB$AUTOMATION$NONAME$GATE_SNEAKY" "$TRUSTED"
+
+MATRIX=$'  matrixed:\n    name: Test (${{ matrix.os }})\n    needs: changes\n    steps:\n      - run: echo matrix\n'
+GATE_MATRIX="$(gate $'      - rust\n      - web\n      - automation\n      - matrixed\n      - changes\n')"
+run_case "templated_job_name" fail "$CHANGES$RUST$WEB$AUTOMATION$MATRIX$GATE_MATRIX" "$TRUSTED"
+
+run_case "no_gate_job" fail "$CHANGES$RUST$WEB$AUTOMATION" "$TRUSTED"
+
+ANCHOR_WEB="${WEB/  web:/  web: &web_anchor}"
+run_case "anchored_job_visible" pass "$CHANGES$RUST$ANCHOR_WEB$AUTOMATION$GATE_OK" "$TRUSTED"
+
+COMMENT=$'  # CI gate: live branch protection requires this aggregate.\n'
+run_case "job_level_comment_ignored" pass "$COMMENT$CHANGES$RUST$WEB$AUTOMATION$GATE_OK" "$TRUSTED"
+
+run_case "readme_list_drift" fail "$CHANGES$RUST$WEB$AUTOMATION$GATE_OK" "$TRUSTED" "Rust checks"
+
+printf '\n'
 if [ "$fail" -eq 0 ]; then
-  echo "check-required-checks.test: all $pass cases passed"
+  printf 'check-required-checks.test: all %s cases passed\n' "$pass"
 else
-  echo "check-required-checks.test: $fail case(s) FAILED"
+  printf 'check-required-checks.test: %s case(s) FAILED\n' "$fail"
   exit 1
 fi

@@ -27,13 +27,29 @@ ratchet, and delivery is durable and store-and-forward.
 
 ## Install
 
+Install the signed native core to a stable user prefix, export the emitted environment, then add the
+same module version:
+
 ```sh
-go get github.com/hopmesh/hop-sdk-go
+go run github.com/hopmesh/hop-sdk-go/cmd/hop-install@v0.0.1 --version v0.0.1
+
+export HOP_PREFIX="$HOME/.local/hop/v0.0.1"
+export PKG_CONFIG_PATH="$HOP_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+# macOS
+export DYLD_LIBRARY_PATH="$HOP_PREFIX/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+# Linux
+export LD_LIBRARY_PATH="$HOP_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+go get github.com/hopmesh/hop-sdk-go@v0.0.1
 ```
 
-cgo links `libhop`, the Rust protocol core, at build time. Grab a prebuilt binary or build it from
-[libhop](https://github.com/hopmesh/libhop), then point `CGO_LDFLAGS` at it (or drop it on your loader
-path). The first cgo build is slow; later ones cache.
+The versioned command runs directly from Go's read-only module cache but writes only to
+`$HOME/.local/hop/v0.0.1` (override the base with `--prefix`). It verifies the detached signature over
+the canonical native manifest, canonical builder identity, release tag, source SHA, exact host target,
+archive inventory, size, and every SHA-256 before installation. The installed `hop.pc` supplies both
+`hop.h` and `libhop`; cgo has no parent-checkout or writable-module-cache assumption. The release job
+also verifies GitHub build attestations before publishing these signed assets.
 
 ## Quick start
 
@@ -71,10 +87,17 @@ Make an endpoint reachable at `myaddress.com` with no new port. In Go a WS upgra
 into your mux in one call:
 
 ```go
-mux := http.NewServeMux()
-hop.Attach(mux, "wss://myaddress.com/_hop")
-http.ListenAndServeTLS(":443", cert, key, mux)
+httpsServer := hop.NewHTTPServer(":443", appHandler)
+if err := server.Attach(httpsServer, "wss://myaddress.com/_hop"); err != nil {
+    log.Fatal(err)
+}
+log.Fatal(httpsServer.ListenAndServeTLS(cert, key))
 ```
+
+`(*Endpoint).Attach` is mandatory and must run before any serve method. The returned server path installs
+raw `ConnState` admission before TLS, one absolute five-second TLS plus HTTP-head deadline, a 16 KiB
+header cap, and bounded pending and WebSocket workers. Starting an unattached server or attaching after
+start returns an error; these limits cannot be left as optional caller configuration.
 
 A client reaches it by name, verified end to end:
 
@@ -101,7 +124,7 @@ cgo), with zero core changes:
 
 ## Examples
 
-Build or fetch `libhop` (point `CGO_LDFLAGS` at it), then:
+Install `libhop` and export the `HOP_PREFIX` environment shown above, then:
 
 ```sh
 go test ./...               # raw ABI + in-process + TCP + reach record + WSS discovery, all pass

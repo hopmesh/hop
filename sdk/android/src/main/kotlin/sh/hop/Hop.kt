@@ -11,6 +11,8 @@ import com.sun.jna.NativeLong
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.ByteByReference
 import com.sun.jna.ptr.IntByReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** Which side opened a bearer link (the Noise role). */
 enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
@@ -28,7 +30,8 @@ enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
 // driver bindings expose the equivalent field as UByte; a signed Byte would render a hop count >= 128
 // as a negative number. The FFI boundary itself (InboxSink.invoke, hop_message_status) keeps Byte for
 // correct JNA marshalling of a native uint8_t; we reinterpret to UByte at this public surface.
-data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: UByte, val createdAt: Long) {
+data class HopMessage(val from: ByteArray, val contentType: String, val body: ByteArray, val hops: UByte, val createdAt: Long,
+                      val id: ByteArray = ByteArray(32)) {
     /** A defensive copy of the sender address (mutate this freely without affecting the message). */
     fun fromCopy(): ByteArray = from.copyOf()
     /** A defensive copy of the body bytes (mutate this freely without affecting the message). */
@@ -38,7 +41,8 @@ data class HopMessage(val from: ByteArray, val contentType: String, val body: By
         if (this === other) return true
         if (other !is HopMessage) return false
         return from.contentEquals(other.from) && contentType == other.contentType &&
-            body.contentEquals(other.body) && hops == other.hops && createdAt == other.createdAt
+            body.contentEquals(other.body) && hops == other.hops && createdAt == other.createdAt &&
+            id.contentEquals(other.id)
     }
     override fun hashCode(): Int {
         var r = from.contentHashCode()
@@ -46,6 +50,7 @@ data class HopMessage(val from: ByteArray, val contentType: String, val body: By
         r = 31 * r + body.contentHashCode()
         r = 31 * r + hops.toInt()
         r = 31 * r + createdAt.hashCode()
+        r = 31 * r + id.contentHashCode()
         return r
     }
 }
@@ -89,6 +94,7 @@ internal interface CHop : Library {
     fun hop_drain_outgoing(node: Pointer?, sink: DrainSink, ctx: Pointer?)
     fun hop_send_message(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Byte
     fun hop_poll_inbox(node: Pointer?, sink: InboxSink, ctx: Pointer?)
+    fun hop_accept_inbox(node: Pointer?, inboxId: ByteArray): Byte
     fun hop_message_status(node: Pointer?, id: ByteArray, relayed: IntByReference?, delivered: ByteByReference?, hops: ByteByReference?, ms: IntByReference?): Byte
     fun hop_address_to_base58(addr: ByteArray, out: ByteArray, outCap: NativeLong): NativeLong
     fun hop_address_from_base58(text: String, out32: ByteArray): Byte
@@ -105,6 +111,7 @@ internal interface CHop : Library {
     fun hop_send_service_response(node: Pointer?, to: ByteArray, forRequestId: ByteArray, status: Short, body: ByteArray?, bodyLen: NativeLong): Byte
     fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
     fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
+    fun hop_accept_service_response(node: Pointer?, requestId: ByteArray): Byte
 }
 
 /** Read a JNA byte-width C `bool` return: libhop returns 0/1 in the low byte; any non-zero is true.
@@ -128,7 +135,7 @@ private fun require32(bytes: ByteArray, name: String): ByteArray {
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
-const val HOP_ABI_VERSION = 3
+const val HOP_ABI_VERSION = 4
 
 /** hops:// request callback (D-wrappers), one per queued inbound request during pollServiceRequests. */
 internal fun interface ServiceReqSink : Callback {
@@ -137,7 +144,7 @@ internal fun interface ServiceReqSink : Callback {
 
 /** hops:// response callback (D-wrappers), one per queued inbound response during pollServiceResponses. */
 internal fun interface ServiceRespSink : Callback {
-    fun invoke(ctx: Pointer?, from: Pointer?, forRequestId: Pointer?, status: Short, body: Pointer?, bodyLen: NativeLong)
+    fun invoke(ctx: Pointer?, from: Pointer?, forRequestId: Pointer?, status: Short, body: Pointer?, bodyLen: NativeLong): Byte
 }
 
 /** A hops:// request delivered to this node acting as a service.
@@ -200,37 +207,62 @@ internal fun interface DrainSink : Callback {
 
 /** Inbox callback: invoked once per received message during `pollInbox`. */
 internal fun interface InboxSink : Callback {
-    fun invoke(ctx: Pointer?, from: Pointer?, contentType: String?, body: Pointer?, bodyLen: NativeLong, hops: Byte, createdAt: Long)
+    fun invoke(ctx: Pointer?, inboxId: Pointer?, from: Pointer?, contentType: String?, body: Pointer?, bodyLen: NativeLong, hops: Byte, createdAt: Long): Byte
+}
+
+/** One owner for native handle acquisition, calls, reentrant callbacks, and destruction. */
+internal class NativeHandleLifecycle(
+    raw: Pointer,
+    private val freeNative: (Pointer) -> Unit,
+) : Runnable {
+    private val lock = ReentrantLock(true)
+    private var pointer: Pointer? = raw
+    private var closed = false
+    private var activeCalls = 0
+
+    fun <T> call(block: (Pointer) -> T): T = lock.withLock {
+        check(!closed) { "HopNode used after close()" }
+        val handle = checkNotNull(pointer) { "HopNode used after close()" }
+        activeCalls += 1
+        try {
+            block(handle)
+        } finally {
+            activeCalls -= 1
+            if (closed && activeCalls == 0) freeLocked()
+        }
+    }
+
+    fun close() = lock.withLock {
+        if (closed) return@withLock
+        closed = true
+        if (activeCalls == 0) freeLocked()
+    }
+
+    override fun run() = close()
+
+    private fun freeLocked() {
+        val handle = pointer ?: return
+        pointer = null
+        freeNative(handle)
+    }
 }
 
 /** A running Hop node. Owns the libhop handle.
  *
- * F-27: `AutoCloseable` with an idempotent `close()` that frees the native handle exactly once and
- * nulls it (so a post-free call is a safe no-op, not a use-after-free of a dangling pointer). A
- * `Cleaner` is registered as a backstop for a dropped-without-close node. Use it with `.use { ... }`.
- * The C ABI exposes no retain/clone, so `close()` must not race other calls on the same node.
+ * `AutoCloseable` with one reentrant lifecycle owner around every native call and free. A concurrent
+ * close waits for an active call; a close from a synchronous C callback marks the node closed and
+ * defers free until that outer call returns. A `Cleaner` is the dropped-without-close backstop.
  */
 class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
-    @Volatile
-    internal var raw: Pointer? = rawPtr
-        private set
+    private val lifecycle = NativeHandleLifecycle(rawPtr) { C.hop_node_free(it) }
+    private val cleanable = cleaner.register(this, lifecycle)
 
-    /** The live handle, or an error if this node has been closed. */
-    private val handle: Pointer get() = raw ?: error("HopNode used after close()")
-
-    private val cleanable = cleaner.register(this, FreeAction(rawPtr))
+    private fun <T> native(block: (Pointer) -> T): T = lifecycle.call(block)
 
     /** Frees the native node. Idempotent; safe to call more than once. */
     override fun close() {
-        if (raw != null) {
-            raw = null
-            cleanable.clean() // runs FreeAction exactly once (Cleaner de-dupes)
-        }
-    }
-
-    private class FreeAction(private val ptr: Pointer) : Runnable {
-        private val done = java.util.concurrent.atomic.AtomicBoolean(false)
-        override fun run() { if (done.compareAndSet(false, true)) C.hop_node_free(ptr) }
+        lifecycle.close()
+        cleanable.clean()
     }
 
     companion object {
@@ -264,36 +296,59 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
                 ?.let { HopNode(it) }
     }
 
-    fun address(): ByteArray = ByteArray(32).also { C.hop_node_address(handle, it) }
-    fun tick(nowMs: Long) = C.hop_node_tick(handle, nowMs)
-    fun publishPrekey(): Boolean = C.hop_publish_prekey(handle).toBool()
+    fun address(): ByteArray = native { handle -> ByteArray(32).also { C.hop_node_address(handle, it) } }
+    fun tick(nowMs: Long) = native { handle -> C.hop_node_tick(handle, nowMs) }
+    fun publishPrekey(): Boolean = native { handle -> C.hop_publish_prekey(handle).toBool() }
 
-    fun linkUp(link: Long, role: HopRole) = C.hop_link_up(handle, link, role.c)
-    fun linkDown(link: Long) = C.hop_link_down(handle, link)
-    fun bytesReceived(link: Long, bytes: ByteArray) = C.hop_bytes_received(handle, link, bytes, NativeLong(bytes.size.toLong()))
+    fun linkUp(link: Long, role: HopRole) = native { handle -> C.hop_link_up(handle, link, role.c) }
+    fun linkDown(link: Long) = native { handle -> C.hop_link_down(handle, link) }
+    fun bytesReceived(link: Long, bytes: ByteArray) = native { handle ->
+        C.hop_bytes_received(handle, link, bytes, NativeLong(bytes.size.toLong()))
+    }
 
     fun drainOutgoing(sink: (Long, ByteArray) -> Unit) {
-        C.hop_drain_outgoing(handle, DrainSink { _, link, bytes, len ->
-            sink(link, bytes?.getByteArray(0, len.toInt()) ?: ByteArray(0))
-        }, null)
+        native { handle ->
+            C.hop_drain_outgoing(handle, DrainSink { _, link, bytes, len ->
+                sink(link, bytes?.getByteArray(0, len.toInt()) ?: ByteArray(0))
+            }, null)
+        }
     }
 
     /** Send an untraceable (§39) HDP datagram. Returns the 32-byte bundle id, or null on error. */
     fun send(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
         require32(dst, "dst")
         val id = ByteArray(32)
-        return if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
+        return native { handle ->
+            if (C.hop_send_message(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
+        }
     }
 
+    /** Poll durable messages without accepting them. Items repeat until [acceptInbox] succeeds. */
     fun pollInbox(sink: (HopMessage) -> Unit) {
-        C.hop_poll_inbox(handle, InboxSink { _, from, ct, body, blen, hops, created ->
-            sink(HopMessage(
-                from = from?.getByteArray(0, 32) ?: ByteArray(32),
-                contentType = ct ?: "",
-                body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0),
-                hops = hops.toUByte(), createdAt = created))
-        }, null)
+        pollInboxAccepting { message ->
+            sink(message)
+            false
+        }
     }
+
+    /** Poll durable inbox items, accepting each only when [sink] returns true. */
+    fun pollInboxAccepting(sink: (HopMessage) -> Boolean) {
+        native { handle ->
+            C.hop_poll_inbox(handle, InboxSink { _, inboxId, from, ct, body, blen, hops, created ->
+                val accepted = sink(HopMessage(
+                    from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                    contentType = ct ?: "",
+                    body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0),
+                    hops = hops.toUByte(), createdAt = created,
+                    id = inboxId?.getByteArray(0, 32) ?: ByteArray(32)))
+                if (accepted) 1 else 0
+            }, null)
+        }
+    }
+
+    /** Durably accept one item returned by [pollInbox]. The id must be exactly 32 bytes. */
+    fun acceptInbox(id: ByteArray): Boolean =
+        native { handle -> C.hop_accept_inbox(handle, require32(id, "inbox id")).toBool() }
 
     fun delivered(id: ByteArray): Boolean = status(id).delivered
 
@@ -305,7 +360,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
         val delivered = ByteByReference()
         val hops = ByteByReference()
         val ms = IntByReference()
-        C.hop_message_status(handle, id, relayed, delivered, hops, ms)
+        native { handle -> C.hop_message_status(handle, id, relayed, delivered, hops, ms) }
         return HopStatus(
             relayed = relayed.value,
             delivered = delivered.value.toInt() != 0,
@@ -317,64 +372,90 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     // ---- D-wrappers: identity/status + the hops:// request/response surface (hop.h parity) ----
 
     /** Whether this node has durable storage (false ⇒ ephemeral fallback; F-26). */
-    fun isPersistent(): Boolean = C.hop_node_is_persistent(handle).toBool()
+    fun isPersistent(): Boolean = native { handle -> C.hop_node_is_persistent(handle).toBool() }
 
     /** How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade. */
-    fun rehydrateDropped(): Int = C.hop_node_rehydrate_dropped(handle)
+    fun rehydrateDropped(): Int = native { handle -> C.hop_node_rehydrate_dropped(handle) }
 
     /** Export this node's 32-byte identity secret (persist it in the Keystore). */
-    fun secret(): ByteArray = ByteArray(32).also { C.hop_node_secret(handle, it) }
+    fun secret(): ByteArray = native { handle -> ByteArray(32).also { C.hop_node_secret(handle, it) } }
 
     /** Set the display name reported via presence / hop.identify. */
-    fun setName(name: String) = C.hop_node_set_name(handle, name)
+    fun setName(name: String) = native { handle -> C.hop_node_set_name(handle, name) }
 
     /** Whether we hold a forward-secret session with `addr` (content is ratcheted, not static-sealed). */
-    fun isSecured(addr: ByteArray): Boolean = C.hop_is_secured(handle, require32(addr, "addr")).toBool()
+    fun isSecured(addr: ByteArray): Boolean = native { handle ->
+        C.hop_is_secured(handle, require32(addr, "addr")).toBool()
+    }
 
     /** Subscribe to an hps:// topic. */
-    fun subscribe(topic: String) = C.hop_subscribe(handle, topic)
+    fun subscribe(topic: String) = native { handle -> C.hop_subscribe(handle, topic) }
 
     /** Send a device-addressed (traced) message. Returns the bundle id, or null on error. */
     fun sendTo(dst: ByteArray, contentType: String = "text/plain", body: ByteArray, requestAck: Boolean = false): ByteArray? {
         require32(dst, "dst")
         val id = ByteArray(32)
-        return if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
+        return native { handle ->
+            if (C.hop_send_to(handle, dst, contentType, body, NativeLong(body.size.toLong()), requestAck, id).toBool()) id else null
+        }
     }
 
     /** Send an hops:// service request. Returns the request id, or null on error. */
     fun sendServiceRequest(dst: ByteArray, service: String, method: String, args: ByteArray): ByteArray? {
         require32(dst, "dst")
         val id = ByteArray(32)
-        return if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id).toBool()) id else null
+        return native { handle ->
+            if (C.hop_send_service_request(handle, dst, service, method, args, NativeLong(args.size.toLong()), id).toBool()) id else null
+        }
     }
 
     /** Reply to an hops:// service request. */
     fun sendServiceResponse(to: ByteArray, forRequestId: ByteArray, status: Int, body: ByteArray): Boolean {
         require32(to, "to")
         require32(forRequestId, "forRequestId")
-        return C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong())).toBool()
+        return native { handle ->
+            C.hop_send_service_response(handle, to, forRequestId, status.toShort(), body, NativeLong(body.size.toLong())).toBool()
+        }
     }
 
     /** Drain inbound hops:// requests addressed to this node (acting as a service). */
     fun pollServiceRequests(sink: (HopServiceRequest) -> Unit) {
-        C.hop_poll_service_requests(handle, ServiceReqSink { _, from, reqId, service, method, args, alen ->
-            sink(HopServiceRequest(
-                from = from?.getByteArray(0, 32) ?: ByteArray(32),
-                requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
-                service = service ?: "", method = method ?: "",
-                args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
-        }, null)
+        native { handle ->
+            C.hop_poll_service_requests(handle, ServiceReqSink { _, from, reqId, service, method, args, alen ->
+                sink(HopServiceRequest(
+                    from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                    requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
+                    service = service ?: "", method = method ?: "",
+                    args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
+            }, null)
+        }
     }
 
-    /** Drain inbound hops:// responses to requests this node made. */
+    /** Poll inbound hops:// responses without accepting them. */
     fun pollServiceResponses(sink: (HopServiceResponse) -> Unit) {
-        C.hop_poll_service_responses(handle, ServiceRespSink { _, from, forId, status, body, blen ->
-            sink(HopServiceResponse(
-                from = from?.getByteArray(0, 32) ?: ByteArray(32),
-                forRequestId = forId?.getByteArray(0, 32) ?: ByteArray(32),
-                status = status.toInt() and 0xffff,
-                body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0)))
-        }, null)
+        pollServiceResponsesAccepting { response ->
+            sink(response)
+            false
+        }
+    }
+
+    /** Poll responses, accepting each only when [sink] returns true synchronously. */
+    fun pollServiceResponsesAccepting(sink: (HopServiceResponse) -> Boolean) {
+        native { handle ->
+            C.hop_poll_service_responses(handle, ServiceRespSink { _, from, forId, status, body, blen ->
+                val accepted = sink(HopServiceResponse(
+                    from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                    forRequestId = forId?.getByteArray(0, 32) ?: ByteArray(32),
+                    status = status.toInt() and 0xffff,
+                    body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0)))
+                if (accepted) 1 else 0
+            }, null)
+        }
+    }
+
+    /** Durably accept a previously-polled response by its 32-byte correlation request id. */
+    fun acceptServiceResponse(forRequestId: ByteArray): Boolean = native { handle ->
+        C.hop_accept_service_response(handle, require32(forRequestId, "request id")).toBool()
     }
 
     /** Deprecated: prefer `close()` / `.use { }`. Kept for source compatibility; now idempotent. */

@@ -53,6 +53,21 @@ internal fun jpegDownscale(raw: ByteArray, maxDim: Int = 1280, quality: Int = 80
     return out.toByteArray()
 }
 
+/** Stream a picked attachment with a hard cap, returning null before an oversized body is buffered. */
+internal fun readCapped(input: java.io.InputStream, maximum: Int = 32 * 1024 * 1024): ByteArray? {
+    val output = java.io.ByteArrayOutputStream(minOf(maximum, 8 * 1024))
+    val buffer = ByteArray(8 * 1024)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        if (count > maximum - total) return null
+        output.write(buffer, 0, count)
+        total += count
+    }
+    return output.toByteArray()
+}
+
 /// One-line metadata under a chat bubble (mirrors the iOS app).
 internal fun messageMeta(m: HopBearer.Message): String {
     if (m.incoming) {
@@ -76,8 +91,40 @@ internal fun messageMeta(m: HopBearer.Message): String {
 /// strip an http(s):// prefix and re-scheme it to hops://.
 internal fun normalizeHops(s: String): String {
     val t = s.trim()
-    return if (t.startsWith("hops://")) t else "hops://" + t.removePrefix("https://").removePrefix("http://")
+    val lower = t.lowercase()
+    return when {
+        lower.startsWith("hops://") -> "hops://" + t.substring(7)
+        lower.startsWith("https://") -> "hops://" + t.substring(8)
+        lower.startsWith("http://") -> "hops://" + t.substring(7)
+        else -> "hops://$t"
+    }
 }
+
+/** True only for a canonical hierarchical hops URL, plus the explicit local `about:blank` bootstrap. */
+internal fun browserAllowsURL(raw: String, relativeTo: String? = null): Boolean {
+    val input = raw.trim()
+    if (input.equals("about:blank", ignoreCase = true)) return true
+    if (input.isEmpty() || input.contains('\\')) return false
+    val parsed = runCatching { java.net.URI(input) }.getOrNull() ?: return false
+    val uri = if (parsed.isAbsolute) parsed else {
+        val base = relativeTo?.let { runCatching { java.net.URI(it) }.getOrNull() } ?: return false
+        runCatching { base.resolve(parsed) }.getOrNull() ?: return false
+    }
+    if (!uri.scheme.equals("hops", ignoreCase = true) || uri.isOpaque || uri.userInfo != null ||
+        uri.port != -1 || uri.fragment != null) return false
+    val host = uri.host?.lowercase() ?: return false
+    if (host.length !in 1..253 || host.endsWith('.')) return false
+    return host.split('.').all { label ->
+        label.length in 1..63 && label.first() != '-' && label.last() != '-' &&
+            label.all { it.isLetterOrDigit() || it == '-' }
+    }
+}
+
+/** Defense in depth for subresources that a WebView may resolve without a client callback. */
+internal const val HOPS_CONTENT_SECURITY_POLICY =
+    "default-src 'none'; img-src hops:; style-src hops:; font-src hops:; frame-src hops:; " +
+        "media-src hops:; connect-src hops:; script-src 'none'; object-src 'none'; " +
+        "base-uri 'none'; form-action 'none'"
 
 /// HTTP status reason phrase for the small set of codes the mesh browser surfaces.
 internal fun statusText(code: Int): String = when (code) {

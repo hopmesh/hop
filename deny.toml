@@ -38,21 +38,63 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
     "0BSD",
+    "CDLA-Permissive-2.0",
+    "LicenseRef-FSL-1.1-ALv2",
 ]
 # A crate missing usable license metadata falls below this and fails the check, which is what we want
 # for THIRD-PARTY crates (unknown terms should not ship). First-party crates carry FSL via license-file.
 confidence-threshold = 0.9
+
+# FSL is not an SPDX-listed license. Bind the custom identifier to the byte-identical license file
+# carried by every core crate; repo-integrity-guard.sh separately enforces that these copies stay in
+# lockstep. Any text change invalidates the hash and forces a deliberate clarification update.
+[[licenses.clarify]]
+crate = "hop"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-core"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-endpoint-core"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-sim"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-store-firestore"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-store-sqlite"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-wasm"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
 
 [bans]
 # Warn on duplicate versions of the same crate so tree bloat and skew stay visible;
 # deny wildcard version requirements in first-party crates.
 multiple-versions = "warn"
 wildcards = "deny"
+# Local workspace crates are intentionally path-only and never resolved from a registry. Keep the
+# wildcard ban for external dependencies without misclassifying these first-party paths.
+allow-wildcard-paths = true
 # Keep the crypto and store backends single-sourced. Add a specific ban here (with a
 # comment) if a dependency reintroduces something we removed on purpose.
 deny = []

@@ -107,12 +107,17 @@ extra="$(comm -13 <(printf '%s\n' "$exp_sorted") <(printf '%s\n' "$act_sorted") 
 fail=0
 if [ -n "$missing" ]; then
   echo "::error:: main is NOT requiring these CI checks (a failing one could land):"
-  printf '  - %s\n' $missing
+  while IFS= read -r check; do
+    printf '  - %s\n' "$check"
+  done <<< "$missing"
   fail=1
 fi
 if [ -n "$extra" ]; then
-  echo "::warning:: main requires status checks not produced by ci.yml (stale name?):"
-  printf '  - %s\n' $extra
+  echo "::error:: main requires status checks not produced by ci.yml (stale name?):"
+  while IFS= read -r check; do
+    printf '  - %s\n' "$check"
+  done <<< "$extra"
+  fail=1
 fi
 if [ "$fail" -ne 0 ]; then
   exit 1

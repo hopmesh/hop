@@ -23,7 +23,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 # Default scan set: markdown docs at the repo root + docs/, the Astro site copy, and the
 # sim/ + learn/ trees. apps/web/site/package.json's `sync-sim`/`sync-learn` copy ../sim and ../learn

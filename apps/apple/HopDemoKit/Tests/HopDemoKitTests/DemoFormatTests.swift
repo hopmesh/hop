@@ -176,6 +176,8 @@ final class DemoFormatTests: XCTestCase {
 
     func testNormalizeHopsURLKeepsExistingScheme() {
         XCTAssertEqual(DemoFormat.normalizeHopsURL("hops://foo.hopme.sh"), "hops://foo.hopme.sh")
+        XCTAssertEqual(DemoFormat.normalizeHopsURL("HOPS://foo.hopme.sh"), "hops://foo.hopme.sh")
+        XCTAssertEqual(DemoFormat.normalizeHopsURL("HTTPS://foo.hopme.sh"), "hops://foo.hopme.sh")
     }
 
     func testNormalizeHopsURLTrimsWhitespace() {
@@ -192,6 +194,82 @@ final class DemoFormatTests: XCTestCase {
 
     func testNormalizeHopsURLEmptyWithoutDefaultHost() {
         XCTAssertEqual(DemoFormat.normalizeHopsURL(""), "hops://")
+    }
+
+    func testBrowserPolicyAllowsHopsBootstrapAndRelativeResources() {
+        XCTAssertTrue(DemoFormat.browserAllowsURL("hops://example.hop/page"))
+        XCTAssertTrue(DemoFormat.browserAllowsURL("HOPS://EXAMPLE.HOP/page"))
+        XCTAssertTrue(DemoFormat.browserAllowsURL("about:blank"))
+        XCTAssertTrue(DemoFormat.browserAllowsURL("/image.png", relativeTo: "hops://example.hop/page"))
+        XCTAssertTrue(DemoFormat.browserAllowsURL("//other.hop/frame", relativeTo: "hops://example.hop/page"))
+    }
+
+    func testBrowserPolicyDeniesTopLevelAndEveryActiveSubresourceScheme() {
+        let blocked = [
+            "http://evil.test/", "HTTPS://evil.test/script.js", "ws://evil.test/socket",
+            "WSS://evil.test/socket", "data:text/html,boom", "blob:hops://example.hop/id",
+            "file:///etc/passwd", "content://authority/item", "intent://evil/#Intent;scheme=https;end",
+            "javascript:alert(1)", "custom://evil/path",
+        ]
+        for url in blocked { XCTAssertFalse(DemoFormat.browserAllowsURL(url), "must block \(url)") }
+    }
+
+    func testBrowserPolicyRejectsAmbiguousAuthoritiesAndSmuggling() {
+        let blocked = [
+            "hops://user@example.hop/", "hops://example.hop:443/", "hops:opaque",
+            "hops://example.hop/#fragment", "hops://example.hop\\@evil.test/",
+            "https:relative.js", "//evil.test/x",
+        ]
+        for url in blocked { XCTAssertFalse(DemoFormat.browserAllowsURL(url), "must block \(url)") }
+    }
+
+    func testBrowserPolicyCoversScriptImageFrameFetchAndWebSocketForms() {
+        let base = "hops://site.hop/index.html"
+        for relative in ["script.js", "./image.png", "../frame.html", "/api/fetch", "socket"] {
+            XCTAssertTrue(DemoFormat.browserAllowsURL(relative, relativeTo: base))
+        }
+        for external in [
+            "https://cdn.test/script.js", "http://img.test/a.png", "data:text/html,<iframe>",
+            "https://api.test/fetch", "wss://socket.test/chat",
+        ] {
+            XCTAssertFalse(DemoFormat.browserAllowsURL(external, relativeTo: base))
+        }
+        XCTAssertTrue(DemoFormat.hopsContentSecurityPolicy.contains("script-src 'none'"))
+        XCTAssertTrue(DemoFormat.hopsContentSecurityPolicy.contains("connect-src hops:"))
+    }
+
+    func testBrowserPolicyLifecycleRejectsStaleAttachmentCompletion() {
+        var lifecycle = BrowserPolicyLifecycle()
+        let generationA = lifecycle.attach(101)
+        XCTAssertFalse(lifecycle.policyReady)
+        XCTAssertFalse(lifecycle.allows("hops://a.hop", attachment: 101))
+
+        lifecycle.detach(101)
+        let generationB = lifecycle.attach(202)
+        XCTAssertFalse(lifecycle.complete(attachment: 101, generation: generationA, installed: true))
+        XCTAssertFalse(lifecycle.policyReady)
+
+        XCTAssertFalse(lifecycle.complete(attachment: 202, generation: generationB, installed: false))
+        XCTAssertFalse(lifecycle.allows("hops://b.hop", attachment: 202))
+        XCTAssertTrue(lifecycle.complete(attachment: 202, generation: generationB, installed: true))
+        XCTAssertTrue(lifecycle.allows("hops://b.hop", attachment: 202))
+        XCTAssertFalse(lifecycle.allows("hops://a.hop", attachment: 101))
+    }
+
+    func testReadyLifecycleStillRejectsEveryNonHopsScheme() {
+        var lifecycle = BrowserPolicyLifecycle()
+        let generation = lifecycle.attach(7)
+        XCTAssertTrue(lifecycle.complete(attachment: 7, generation: generation, installed: true))
+        let blocked = [
+            "http://x.test", "https://x.test", "ws://x.test", "wss://x.test",
+            "ftp://x.test", "file:///tmp/x", "data:text/plain,x", "blob:hops://x.hop/id",
+            "javascript:alert(1)", "about:srcdoc", "mailto:x@test", "tel:+15551212",
+            "sms:+15551212", "facetime:x@test", "cid:x", "content://x/y", "intent://x",
+            "webkit-fake-url://x", "x-apple-data-detectors://x", "custom://x",
+        ]
+        for url in blocked {
+            XCTAssertFalse(lifecycle.allows(url, attachment: 7), "must block \(url)")
+        }
     }
 
     // MARK: requestPath

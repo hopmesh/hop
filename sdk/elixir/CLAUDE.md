@@ -26,9 +26,10 @@ test/ examples/               the round-trip + discovery ExUnit tests + a runnab
 - **`native/hop_endpoint` is EXCLUDED from the root workspace** (it has its own empty `[workspace]`, and
   is in the root `Cargo.toml` `exclude` list). So the main Rust CI job (`cargo ... --workspace`) never
   touches it, no tax, no cdylib-link risk on the main job. It builds only via Rustler/mix (or an explicit
-  `cargo build --manifest-path`). `hop`'s `workspace = true` deps still resolve for this out-of-workspace
-  consumer (cargo finds `hop`'s own workspace root). When the Elixir SDK gets its own CI job, that job
-  builds the NIF and runs `mix test`.
+  `cargo build --manifest-path`). In the Copybara export, the empty workspace marker is removed and
+  `hop`, `hop-core`, `hop-endpoint-core`, and `hop-store-sqlite` are vendored under `native/vendor` in a
+  package-local workspace. Hex checksums that source and the root `Cargo.lock`; no exported dependency
+  path leaves the package.
 - **core is poll-model.** `Hop.Endpoint` pumps via `:timer.send_interval` (tick, drain outbound to the
   bearer, take requests -> handlers, take responses -> reply to callers). Handlers currently run inline
   in the pump; a slow handler stalls the pump (a known prototype simplification, spawn for real work).

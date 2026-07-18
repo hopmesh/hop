@@ -23,6 +23,7 @@ console.log(`  [client] <- ${res.status}`, res.body.toString())
 
 const body = JSON.parse(res.body.toString())
 const passed = res.status === 201 && body.ok === true && body.item === 'widget'
+res.accept()
 server.close()
 client.close()
 console.log(passed ? '\nPASS: hops:// round trip over a real TCP Internet bearer.' : '\nFAIL')

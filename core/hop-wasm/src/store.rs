@@ -12,7 +12,7 @@
 
 use crate::wasm_glue::StoreBridge;
 use hop_core::bundle::{Bundle, BundleId};
-use hop_core::store::{HaveSet, Store};
+use hop_core::store::{HaveSet, KvMutation, Store};
 
 /// Clamp on a retained dedup window (F-07): an attacker-set (and, for §39 private bundles,
 /// unauthenticated) `lifetime_ms` can't pin a `seen` row open for longer than a week.
@@ -22,7 +22,8 @@ const MAX_SEEN_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// is the wasm-bindgen [`StoreBridge`] (SQLite/OPFS in a Worker; the forwarding `impl` lives in
 /// [`crate::wasm_glue`], which is wasm-only); the trait exists so the same `JsStore` logic can run on
 /// the host target against an in-memory fake for unit tests. Every method mirrors a `StoreBridge`
-/// method one-to-one, so the production impl is a pure forward with no behavior change.
+/// method one-to-one. KV mutations additionally carry the bridge's synchronous acknowledgement so
+/// security-critical callers can distinguish acceptance from a rejected or thrown host operation.
 pub(crate) trait Bridge {
     fn put(&self, id: &[u8], data: &[u8], expires_at: f64) -> bool;
     fn get(&self, id: &[u8]) -> Option<Vec<u8>>;
@@ -33,10 +34,11 @@ pub(crate) trait Bridge {
     fn have(&self) -> Vec<u8>;
     fn prune(&self, now_ms: f64);
     fn set_data(&self, id: &[u8], data: &[u8]);
-    fn kv_put(&self, key: &str, value: &[u8]);
+    fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String>;
+    fn kv_batch(&self, mutations: &[KvMutation]) -> std::result::Result<(), String>;
     fn kv_get(&self, key: &str) -> Option<Vec<u8>>;
-    fn kv_remove(&self, key: &str);
-    fn kv_list(&self, prefix: &str) -> Vec<u8>;
+    fn kv_remove(&self, key: &str) -> std::result::Result<(), String>;
+    fn kv_list_page(&self, prefix: &str, after: &str, limit: u32) -> Vec<u8>;
 }
 
 /// A `Store` that delegates every operation to a host [`Bridge`] (one per node). In production the
@@ -126,7 +128,15 @@ impl<B: Bridge> Store for JsStore<B> {
     }
 
     fn put_kv(&mut self, key: &str, value: Vec<u8>) {
-        self.bridge.kv_put(key, &value);
+        let _ = self.bridge.kv_put(key, &value);
+    }
+
+    fn apply_kv_batch(&mut self, mutations: &[KvMutation]) -> std::result::Result<(), String> {
+        self.bridge.kv_batch(mutations)
+    }
+
+    fn put_kv_critical(&mut self, key: &str, value: Vec<u8>) -> std::result::Result<(), String> {
+        self.bridge.kv_put(key, &value)
     }
 
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
@@ -134,11 +144,24 @@ impl<B: Bridge> Store for JsStore<B> {
     }
 
     fn remove_kv(&mut self, key: &str) {
-        self.bridge.kv_remove(key);
+        let _ = self.bridge.kv_remove(key);
     }
 
-    fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
-        decode_kv_pairs(&self.bridge.kv_list(prefix))
+    fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
+        self.bridge.kv_remove(key)
+    }
+
+    fn list_kv_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, Vec<u8>)> {
+        decode_kv_pairs(&self.bridge.kv_list_page(
+            prefix,
+            after.unwrap_or(""),
+            limit.min(u32::MAX as usize) as u32,
+        ))
     }
 }
 
@@ -179,17 +202,20 @@ mod tests {
     use hop_core::node::Node;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     /// Host-side stand-in for the real `StoreBridge`, faithful to its documented two-table model:
     /// a `seen` dedup index (id -> expiry ms) plus a `bundles` data table. It exists only so the
     /// exact `JsStore` -> `Bridge` code path (postcard (de)serialize, TTL clamp, copy-budget writes,
     /// kv flat encoding) runs on the host. Semantics mirror `store.rs`'s module doc and
     /// `hop-store-sqlite`: `put` dedups, `remove` keeps the dedup row, `prune` drops both by expiry.
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct FakeBridge {
-        inner: RefCell<Fake>,
+        inner: Rc<RefCell<Fake>>,
+        fail_kv: bool,
+        fail_kv_batch_at: Option<usize>,
     }
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct Fake {
         seen: HashMap<Vec<u8>, u64>,
         bundles: HashMap<Vec<u8>, Vec<u8>>,
@@ -255,29 +281,79 @@ mod tests {
                 f.bundles.insert(id.to_vec(), data.to_vec());
             }
         }
-        fn kv_put(&self, key: &str, value: &[u8]) {
+        fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
+            if self.fail_kv {
+                return Err("injected JavaScript bridge failure".into());
+            }
             self.inner
                 .borrow_mut()
                 .kv
                 .insert(key.to_string(), value.to_vec());
+            Ok(())
+        }
+        fn kv_batch(&self, mutations: &[KvMutation]) -> std::result::Result<(), String> {
+            if self.fail_kv {
+                return Err("injected JavaScript bridge failure".into());
+            }
+            let mut inner = self.inner.borrow_mut();
+            let mut candidate = inner.clone();
+            for (index, mutation) in mutations.iter().enumerate() {
+                if self.fail_kv_batch_at == Some(index) {
+                    return Err(format!(
+                        "injected JavaScript bridge failure at mutation {index}"
+                    ));
+                }
+                match mutation {
+                    KvMutation::Put { key, value } => {
+                        candidate.kv.insert(key.clone(), value.clone());
+                    }
+                    KvMutation::Remove { key } => {
+                        candidate.kv.remove(key);
+                    }
+                    KvMutation::PutBundle { bundle, now_ms } => {
+                        let id = bundle.id().to_vec();
+                        if candidate.seen.contains_key(&id) {
+                            return Err("critical batch bundle put was deduplicated".into());
+                        }
+                        let data = bundle.to_bytes().map_err(|e| e.to_string())?;
+                        let lifetime = (bundle.inner.lifetime_ms as u64).min(MAX_SEEN_LIFETIME_MS);
+                        candidate
+                            .seen
+                            .insert(id.clone(), now_ms.saturating_add(lifetime));
+                        candidate.bundles.insert(id, data);
+                    }
+                    KvMutation::RemoveBundle { id } => {
+                        candidate.bundles.remove(id.as_slice());
+                    }
+                }
+            }
+            *inner = candidate;
+            Ok(())
         }
         fn kv_get(&self, key: &str) -> Option<Vec<u8>> {
             self.inner.borrow().kv.get(key).cloned()
         }
-        fn kv_remove(&self, key: &str) {
+        fn kv_remove(&self, key: &str) -> std::result::Result<(), String> {
+            if self.fail_kv {
+                return Err("injected JavaScript bridge failure".into());
+            }
             self.inner.borrow_mut().kv.remove(key);
+            Ok(())
         }
-        fn kv_list(&self, prefix: &str) -> Vec<u8> {
+        fn kv_list_page(&self, prefix: &str, after: &str, limit: u32) -> Vec<u8> {
             // Same flat [u32 LE klen][key][u32 LE vlen][val] layout the real bridge emits.
             let f = self.inner.borrow();
             let mut out = Vec::new();
-            for (k, v) in f.kv.iter() {
-                if k.starts_with(prefix) {
-                    out.extend_from_slice(&(k.len() as u32).to_le_bytes());
-                    out.extend_from_slice(k.as_bytes());
-                    out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                    out.extend_from_slice(v);
-                }
+            let mut pairs: Vec<_> =
+                f.kv.iter()
+                    .filter(|(key, _)| key.starts_with(prefix) && key.as_str() > after)
+                    .collect();
+            pairs.sort_by_key(|(key, _)| *key);
+            for (k, v) in pairs.into_iter().take(limit as usize) {
+                out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+                out.extend_from_slice(k.as_bytes());
+                out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                out.extend_from_slice(v);
             }
             out
         }
@@ -318,6 +394,100 @@ mod tests {
         s.remove_kv("session/alice");
         assert_eq!(s.get_kv("session/alice"), None);
         assert_eq!(s.list_kv("session/").len(), 1);
+    }
+
+    #[test]
+    fn critical_kv_propagates_the_synchronous_bridge_result() {
+        let mut ok = store();
+        ok.put_kv_critical("session/alice", vec![1])
+            .expect("acknowledged bridge write succeeds");
+        ok.remove_kv_critical("session/alice")
+            .expect("acknowledged bridge delete succeeds");
+
+        let mut failing = JsStore::new(FakeBridge {
+            fail_kv: true,
+            ..Default::default()
+        });
+        assert!(failing.put_kv_critical("session/alice", vec![1]).is_err());
+        assert!(failing.remove_kv_critical("session/alice").is_err());
+        assert_eq!(failing.get_kv("session/alice"), None);
+    }
+
+    #[test]
+    fn critical_kv_batch_is_all_or_nothing() {
+        let mut ok = store();
+        ok.apply_kv_batch(&[
+            KvMutation::Put {
+                key: "session/alice".into(),
+                value: vec![1],
+            },
+            KvMutation::Put {
+                key: "inbox/one".into(),
+                value: vec![2],
+            },
+        ])
+        .unwrap();
+        assert_eq!(ok.get_kv("session/alice"), Some(vec![1]));
+        assert_eq!(ok.get_kv("inbox/one"), Some(vec![2]));
+
+        let mut failing = JsStore::new(FakeBridge {
+            fail_kv: true,
+            ..Default::default()
+        });
+        assert!(failing
+            .apply_kv_batch(&[
+                KvMutation::Put {
+                    key: "session/alice".into(),
+                    value: vec![1],
+                },
+                KvMutation::Put {
+                    key: "inbox/one".into(),
+                    value: vec![2],
+                },
+            ])
+            .is_err());
+        assert!(failing.list_kv("").is_empty());
+    }
+
+    #[test]
+    fn mixed_bundle_and_session_batch_rolls_back_when_the_second_mutation_fails() {
+        use hop_core::bundle::{Bundle, BundleOpts, Destination, Payload};
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let bundle = Bundle::create(
+            &alice,
+            Destination::Device(bob.address()),
+            &bob.address(),
+            &Payload::PeerMessage {
+                content_type: "text/plain".into(),
+                body: b"atomic".to_vec(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+        let id = bundle.id();
+        let mut store = JsStore::new(FakeBridge {
+            fail_kv_batch_at: Some(1),
+            ..Default::default()
+        });
+
+        let error = store
+            .apply_kv_batch(&[
+                KvMutation::PutBundle {
+                    bundle: Box::new(bundle),
+                    now_ms: 1_000,
+                },
+                KvMutation::Put {
+                    key: "session/alice".into(),
+                    value: vec![4, 5, 6],
+                },
+            ])
+            .expect_err("the injected second bridge mutation must fail");
+
+        assert!(error.contains("mutation 1"));
+        assert!(!store.contains(&id), "bundle candidate was not published");
+        assert!(!store.seen(&id), "seen candidate was not published");
+        assert_eq!(store.get_kv("session/alice"), None);
     }
 
     #[test]
@@ -654,6 +824,52 @@ mod tests {
             a.sends_status().iter().any(|(id, _, _)| *id == sent_id),
             "a tracks the send it just made"
         );
+    }
+
+    #[test]
+    fn wasm_store_reconstruction_redelivers_a_staged_decrypted_inbox() {
+        let mut a = node(31);
+        let bridge = FakeBridge::default();
+        let secret = [32u8; 32];
+        let identity = Identity::from_secret_bytes(&secret);
+        let mut b = Node::with_store(identity, JsStore::new(bridge.clone()));
+        let (la, lb) = (41u64, 42u64);
+        a.handle(BearerEvent::Connected(la, Role::Initiator));
+        b.handle(BearerEvent::Connected(lb, Role::Responder));
+        pump(&mut a, la, &mut b, lb);
+        a.publish_prekey().unwrap();
+        b.publish_prekey().unwrap();
+        pump(&mut a, la, &mut b, lb);
+
+        let id = a
+            .send_message_traced(
+                b.address(),
+                "text/plain".into(),
+                b"survive wasm".to_vec(),
+                true,
+            )
+            .unwrap();
+        pump(&mut a, la, &mut b, lb);
+        assert_eq!(b.inbox_items()[0].id, id);
+
+        let mut restored = Node::with_store(
+            Identity::from_secret_bytes(&secret),
+            JsStore::new(bridge.clone()),
+        );
+        let first = restored.inbox_items();
+        let second = restored.inbox_items();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, id);
+        assert_eq!(first[0].body, b"survive wasm");
+        assert_eq!(
+            second[0].id, id,
+            "polling remains non-destructive after reconstruction"
+        );
+
+        assert!(restored.accept_inbox(&id).unwrap());
+        let restored_again =
+            Node::with_store(Identity::from_secret_bytes(&secret), JsStore::new(bridge));
+        assert!(restored_again.inbox_items().is_empty());
     }
 
     #[test]

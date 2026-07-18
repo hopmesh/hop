@@ -6,12 +6,12 @@
 # advertising an older contract. This guard fails CI if any SDK's DECLARED version drifts in major or
 # minor from the anchor.
 #
-# Packages with no in-tree version (Go, Swift/SPM, Android, anything consumed purely by git tag) are
+# Packages with no in-tree version (Swift/SPM, Android, anything consumed purely by git tag) are
 # versioned by their release TAG; the per-repo release workflow checks that tag against this same anchor
 # at publish time, so there is nothing to read here for them.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 # ver_in FILE REGEX -> the first x.y.z on the first line matching REGEX (empty if the file or match is
 # absent, which the caller treats as "tag-versioned, skip").
@@ -44,10 +44,18 @@ check "sdk/python (pyproject.toml)" "$(ver_in sdk/python/pyproject.toml '^versio
 check "sdk/ruby (gemspec)"          "$(ver_in sdk/ruby/hop-endpoint.gemspec 'spec\.version')"
 check "sdk/crystal (shard.yml)"     "$(ver_in sdk/crystal/shard.yml '^version:')"
 check "sdk/elixir (mix.exs)"        "$(ver_in sdk/elixir/mix.exs 'version:')"
+# The release-consumable Go installer carries a default tag because `go run ...@VERSION` must select
+# the exact matching native manifest and artifact. Keep its embedded default on the protocol line.
+check "sdk/go installer (cmd/hop-install)" \
+  "$(ver_in sdk/go/cmd/hop-install/main.go 'currentVersion *=')"
 # The Copybara Rust-mirror preamble bakes the anchor version into each standalone mirror's [workspace.
 # package] (tools/copybara/copy.bara.sky WORKSPACE_PREAMBLE), so the crate mirrors publish at that
 # version. Guard it against the anchor so a bump can't silently leave the mirrors a version behind.
 check "copybara mirror preamble (copy.bara.sky)" "$(ver_in tools/copybara/copy.bara.sky '^version = ')"
+# The Elixir mirror builds its vendored Rustler crates in a package-local workspace. Keep that
+# workspace version on the same protocol line as the package and Rust mirrors.
+check "copybara Elixir native workspace (elixir-native-Cargo.toml)" \
+  "$(ver_in tools/copybara/elixir-native-Cargo.toml '^version = ')"
 
 if [ "$fail" -ne 0 ]; then
   echo "version-align-guard: FAIL (a package's major.minor drifted from the anchor $anchor_mm)" >&2

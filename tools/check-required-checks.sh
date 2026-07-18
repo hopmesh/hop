@@ -1,121 +1,200 @@
 #!/usr/bin/env bash
-# Keep the deploy gate honest in the aggregate-gate model (infra-r2-02).
+# Validate the two independent required-check contracts.
 #
-# The single required check is `CI gate`: branch protection on `main` and the Cloud Build deploy gate
-# (infra/cloudbuild.trigger.yaml _REQUIRED_CHECKS) both require only it, and the gate passes iff every
-# CI job that needed to run passed (a path-filtered skip is fine). This guard asserts the invariants
-# that keep that single gate trustworthy, so a drift fails the same PR:
+# Branch protection requires the single aggregate `CI gate`. That gate must run
+# after every other CI job, even after failures, and reject failed or cancelled
+# dependencies while allowing path-filtered skips.
 #
-#   1. _REQUIRED_CHECKS in cloudbuild.trigger.yaml is EXACTLY [CI gate].
-#   2. ci.yml has a job whose name is "CI gate".
-#   3. that gate job `needs:` EVERY other ci.yml job except `changes` (the path-filter job). Otherwise a
-#      newly added job could fail-open: it runs and fails, but the gate never waited for it, so the gate
-#      stays green and the failure reaches main / a deploy.
-#   4. every job sets an explicit, literal (non-templated) `name:` (so it is visible to humans + the
-#      branch-protection audit; a ${{ }} name never matches a real check-run).
-#
-# self-tested by tools/check-required-checks.test.sh.
+# Trusted deployment separately authenticates the complete CI job set listed in
+# infra/bootstrap/variables.tf: path detector, every product job, and aggregate gate.
+# The README list is kept exact too.
 set -euo pipefail
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CI="${CI_FILE:-$ROOT/.github/workflows/ci.yml}"
-TRIGGER="${TRIGGER_FILE:-$ROOT/infra/cloudbuild.trigger.yaml}"
+BOOTSTRAP="${BOOTSTRAP_FILE:-$ROOT/infra/bootstrap/variables.tf}"
+README="${README_FILE:-$ROOT/infra/README.md}"
 
-python3 - "$CI" "$TRIGGER" <<'PY'
-import sys, re
+python3 - "$CI" "$BOOTSTRAP" "$README" <<'PY'
+import re
+import sys
 
-ci_path, trigger_path = sys.argv[1], sys.argv[2]
 
-# ---- parse ci.yml: ordered job ids, id->name, and the gate job's `needs:` ids -----------------------
-lines = open(ci_path).read().splitlines()
-in_jobs = False
+ci_path, bootstrap_path, readme_path = sys.argv[1:]
+ci_lines = open(ci_path, encoding="utf-8").read().splitlines()
+
+
+def job_blocks(lines):
+    in_jobs = False
+    starts = []
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"jobs:\s*", line):
+            in_jobs = True
+            continue
+        if not in_jobs or line.lstrip().startswith("#"):
+            continue
+        match = re.match(r"^  (\S[^:]*):(\s|$)", line)
+        if match:
+            starts.append((match.group(1), index))
+    blocks = []
+    for offset, (job_id, start) in enumerate(starts):
+        end = starts[offset + 1][1] if offset + 1 < len(starts) else len(lines)
+        blocks.append((job_id, lines[start:end]))
+    return blocks
+
+
+def parse_needs(block):
+    for index, line in enumerate(block):
+        match = re.match(r"^    needs:\s*(.*)$", line)
+        if not match:
+            continue
+        inline = match.group(1).split("#", 1)[0].strip()
+        if inline.startswith("["):
+            return set(re.findall(r"[A-Za-z0-9_-]+", inline))
+        if inline:
+            if re.fullmatch(r"[A-Za-z0-9_-]+", inline):
+                return {inline}
+            return {"<invalid-needs>"}
+        needs = set()
+        for nested in block[index + 1 :]:
+            item = re.match(r"^      -\s+([A-Za-z0-9_-]+)\s*$", nested)
+            if not item:
+                break
+            needs.add(item.group(1))
+        return needs
+    return set()
+
+
+blocks = job_blocks(ci_lines)
+errors = []
+if not blocks:
+    errors.append(f"could not parse any jobs from {ci_path}")
+
 job_ids = []
 names = {}
 templated = []
-gate_needs = set()
-cur = None
-i, n = 0, len(lines)
-while i < n:
-    line = lines[i]
-    if re.match(r'^jobs:\s*$', line):
-        in_jobs = True; i += 1; continue
-    if not in_jobs:
-        i += 1; continue
-    # Skip YAML comments so a two-space job-level comment ("  # CI gate: ...") is not read as a job id.
-    if line.lstrip().startswith('#'):
-        i += 1; continue
-    # A job key: two-space indent then "<id>:" plus whitespace/anchor/inline-map/EOL. Matching ":(\s|$)"
-    # (not ":\s*$") so an anchor/inline-defined job is still seen as a job boundary (pass-18 F-CI-2).
-    m = re.match(r'^  (\S[^:]*):(\s|$)', line)
-    if m:
-        cur = m.group(1)
-        job_ids.append(cur)
-        i += 1; continue
-    m = re.match(r'^    name:\s*(.+?)\s*$', line)
-    if m and cur is not None:
-        nm = m.group(1)
-        if '${{' in nm:               # F-CI-6: a templated name never equals a real check-run name.
-            templated.append(cur)
-        names[cur] = nm
-        i += 1; continue
-    # Capture the gate job's needs list (only the job literally named "CI gate").
-    m = re.match(r'^    needs:\s*(.*)$', line)
-    if m and cur is not None and names.get(cur) == "CI gate":
-        inline = m.group(1).strip()
-        if inline.startswith('['):    # inline form: needs: [a, b]
-            gate_needs.update(re.findall(r'[A-Za-z0-9_-]+', inline))
-            i += 1; continue
-        i += 1                        # block form: following "      - <id>" lines
-        while i < n and re.match(r'^      - \S', lines[i]):
-            gate_needs.add(lines[i].split('- ', 1)[1].strip())
-            i += 1
+duplicate_ids = []
+for job_id, block in blocks:
+    if job_id in job_ids:
+        duplicate_ids.append(job_id)
+    job_ids.append(job_id)
+    matches = [
+        match.group(1).strip()
+        for line in block
+        if (match := re.match(r"^    name:\s*(.+?)\s*$", line))
+    ]
+    if len(matches) != 1:
+        errors.append(f"job {job_id!r} must set exactly one explicit literal name")
         continue
-    i += 1
+    name = matches[0]
+    names[job_id] = name
+    if "${{" in name:
+        templated.append(job_id)
 
-nameless = [j for j in job_ids if j not in names]
-
-# ---- parse _REQUIRED_CHECKS block scalar from the trigger --------------------------------------------
-req = []
-tl = open(trigger_path).read().splitlines()
-j = 0
-while j < len(tl):
-    if re.match(r'^\s*_REQUIRED_CHECKS:\s*\|\s*$', tl[j]):
-        j += 1
-        while j < len(tl) and (tl[j].strip() == "" or tl[j].startswith("    ")):
-            if tl[j].strip():
-                req.append(tl[j].strip())
-            else:
-                break
-            j += 1
-        break
-    j += 1
-
-# ---- assert the invariants --------------------------------------------------------------------------
-errs = []
-if nameless:
-    errs.append("every job must set an explicit literal name:; nameless: " + ", ".join(nameless))
+if duplicate_ids:
+    errors.append("duplicate CI job ids: " + ", ".join(sorted(set(duplicate_ids))))
 if templated:
-    errs.append("job names must be literal (a ${{ }} template never matches a check-run): " + ", ".join(templated))
+    errors.append("templated CI job names cannot be authenticated: " + ", ".join(templated))
 
-gate_id = next((jid for jid, nm in names.items() if nm == "CI gate"), None)
-if gate_id is None:
-    errs.append("ci.yml has no job named 'CI gate' (the single required check)")
+name_values = list(names.values())
+duplicate_names = sorted({name for name in name_values if name_values.count(name) > 1})
+if duplicate_names:
+    errors.append("duplicate CI job names: " + ", ".join(duplicate_names))
 
-if req != ["CI gate"]:
-    errs.append("_REQUIRED_CHECKS must be exactly [CI gate], got: %r" % (req,))
-
-if gate_id is not None:
-    should = set(job_ids) - {gate_id, "changes"}
-    missing = sorted(should - gate_needs)
+gate_ids = [job_id for job_id, name in names.items() if name == "CI gate"]
+gate_id = gate_ids[0] if len(gate_ids) == 1 else None
+automation_ids = [job_id for job_id, name in names.items() if name == "Automation authority guards"]
+if len(automation_ids) != 1:
+    errors.append(
+        "ci.yml must define exactly one job named 'Automation authority guards', "
+        f"found {len(automation_ids)}"
+    )
+else:
+    automation_block = next(block for job_id, block in blocks if job_id == automation_ids[0])
+    if parse_needs(automation_block):
+        errors.append("Automation authority guards must not depend on a path-filtered job")
+    if any(re.match(r"^    if:\s*", line) for line in automation_block):
+        errors.append("Automation authority guards must not have a job-level condition")
+if len(gate_ids) != 1:
+    errors.append(f"ci.yml must define exactly one job named 'CI gate', found {len(gate_ids)}")
+else:
+    gate_block = next(block for job_id, block in blocks if job_id == gate_id)
+    gate_needs = parse_needs(gate_block)
+    expected_needs = set(job_ids) - {gate_id}
+    missing = sorted(expected_needs - gate_needs)
+    extra = sorted(gate_needs - expected_needs)
     if missing:
-        errs.append("the 'CI gate' job must `needs:` every other job so it waits for them (else a "
-                    "failing new job fails open); missing from its needs: " + ", ".join(missing))
+        errors.append("CI gate is missing needs: " + ", ".join(missing))
+    if extra:
+        errors.append("CI gate has unknown needs: " + ", ".join(extra))
+    gate_text = "\n".join(gate_block)
+    if not re.search(r"^    if:\s*always\(\)\s*$", gate_text, re.MULTILINE):
+        errors.append("CI gate must use job-level `if: always()`")
+    verdict_tokens = (
+        "contains(needs.*.result, 'failure')",
+        "contains(needs.*.result, 'cancelled')",
+        "needs.changes.result != 'success'",
+        "needs.automation.result != 'success'",
+        "exit 1",
+    )
+    if any(token not in gate_text for token in verdict_tokens):
+        errors.append("CI gate must fail on failed or cancelled dependencies")
 
-if errs:
-    for e in errs:
-        sys.stderr.write("::error:: " + e + "\n")
-    sys.exit(1)
+bootstrap_lines = open(bootstrap_path, encoding="utf-8").read().splitlines()
+allowlist = []
+in_variable = False
+in_default = False
+for line in bootstrap_lines:
+    if re.fullmatch(r'variable\s+"github_required_checks"\s*\{\s*', line):
+        in_variable = True
+        continue
+    if in_variable and re.match(r"^\s*default\s*=\s*\[\s*$", line):
+        in_default = True
+        continue
+    if in_default and re.match(r"^\s*\]\s*$", line):
+        break
+    if in_default:
+        match = re.match(r'^\s*"(.*)",\s*$', line)
+        if match:
+            allowlist.append(match.group(1))
 
-other = len(set(job_ids) - {gate_id, "changes"})
-print("required-check model OK: deploy gate requires exactly [CI gate]; the gate needs all %d other "
-      "jobs; every job literally named" % other)
+trusted_names = [names[job_id] for job_id in job_ids if job_id in names]
+if not allowlist:
+    errors.append(f"could not parse github_required_checks from {bootstrap_path}")
+elif allowlist != trusted_names:
+    missing = [name for name in trusted_names if name not in allowlist]
+    extra = [name for name in allowlist if name not in trusted_names]
+    if missing:
+        errors.append("deploy-provenance allowlist is missing: " + ", ".join(missing))
+    if extra:
+        errors.append("deploy-provenance allowlist has stale names: " + ", ".join(extra))
+    if not missing and not extra:
+        errors.append("deploy-provenance allowlist order differs from ci.yml")
+
+readme_lines = open(readme_path, encoding="utf-8").read().splitlines()
+documented = []
+in_documented_list = False
+for line in readme_lines:
+    if "authenticated deploy-provenance job set currently requires" in line:
+        in_documented_list = True
+        continue
+    if in_documented_list and line.startswith("## "):
+        break
+    if in_documented_list:
+        match = re.fullmatch(r"- `(.+)`", line)
+        if match:
+            documented.append(match.group(1))
+if documented != trusted_names:
+    errors.append("infra/README.md trusted-job list differs from ci.yml")
+
+if errors:
+    for error in errors:
+        print(f"::error:: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(
+    "required-check contracts OK: branch protection uses CI gate over "
+    f"{len(job_ids) - 1} dependencies; deploy provenance authenticates "
+    f"all {len(trusted_names)} workflow jobs"
+)
 PY

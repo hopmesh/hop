@@ -21,7 +21,9 @@ cd "$PKG"
 swift test --enable-code-coverage
 
 BIN=$(swift build --show-bin-path)
-XCTEST=$(ls -d "$BIN"/*.xctest | head -1)
+XCTESTS=("$BIN"/*.xctest)
+XCTEST="${XCTESTS[0]}"
+[ -d "$XCTEST" ] || { echo "FAIL: no .xctest bundle found under $BIN"; exit 1; }
 BINARY="$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)"
 PROFDATA="$BIN/codecov/default.profdata"
 

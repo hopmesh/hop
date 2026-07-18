@@ -27,6 +27,7 @@
 #   tools/copybara/bootstrap-packages.sh
 set -euo pipefail
 ORG="hopmesh"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -47,9 +48,8 @@ echo "  crates.io     a crates.io account (sign in with GitHub) + a VERIFIED ema
 echo "                Names hop-core and hop are taken on crates.io, so the crates publish as hop-mesh-core / libhop /"
 echo "                hop-mesh-store-* (the Copybara transform renames the package; monorepo + 'use hop_core' unchanged)."
 echo "  Maven Central a Sonatype Central account + a VERIFIED namespace (e.g. sh.hop) + a published GPG key"
-echo "  PlatformIO    a registry.platformio.org account + token, for the Hop embedded library (hop-embedded). NOTE:"
-echo "                the publish also needs the prebuilt ESP32 libhop.a archives from a hopmesh/libhop release, which"
-echo "                do NOT exist yet (no ESP32 cross-compile producer). The token alone cannot publish."
+echo "  PlatformIO    a registry.platformio.org account + token, for the Hop embedded library (hop-embedded)."
+echo "                The release consumes the signed exact-target outputs from hopmesh/hop's canonical native workflow."
 echo "  Go / Swift / Crystal  NO account: they publish by pushing a git tag (the repo IS the package)"
 echo
 
@@ -59,17 +59,30 @@ echo "== 2. create each package locally (first publish reserves the name + makes
 create_npm() {
   repo="$1"
   [ -n "${NPM_TOKEN:-}" ] || { echo "  $repo (npm): skip, NPM_TOKEN not set"; return; }
-  have npm && have node || { echo "  $repo (npm): skip, need node + npm on PATH"; return; }
+  if ! have npm || ! have node; then
+    echo "  $repo (npm): skip, need node + npm on PATH"
+    return
+  fi
   d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (npm): skip, clone failed (mirror seeded yet?)"; return; }
   npmrc="$WORK/npmrc"; printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" >"$npmrc"; chmod 600 "$npmrc"
   (
     cd "$d"
     if [ "$repo" = "hop-wasm" ]; then
-      have wasm-pack || { echo "  $repo (npm): skip, wasm-pack not installed (cargo install wasm-pack)"; exit 0; }
-      wasm-pack build --release --scope hop-mesh --target bundler >/dev/null || { echo "  $repo (npm): wasm-pack build failed"; exit 0; }
+      if ! have wasm-pack || ! have wasm-bindgen || ! have wasm-opt; then
+        echo "  $repo (npm): skip, exact wasm tools are not installed"
+        exit 0
+      fi
+      [ "$(wasm-pack --version)" = "wasm-pack 0.15.0" ] \
+        || { echo "  $repo (npm): skip, wasm-pack must be 0.15.0"; exit 0; }
+      [ "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.125" ] \
+        || { echo "  $repo (npm): skip, wasm-bindgen must be 0.2.125"; exit 0; }
+      wasm-opt --version | grep -Fq "version 117" \
+        || { echo "  $repo (npm): skip, wasm-opt must be 117"; exit 0; }
+      wasm-pack build --mode no-install --release --scope hop-mesh --target bundler >/dev/null \
+        || { echo "  $repo (npm): wasm-pack build failed"; exit 0; }
       cd pkg
     else
-      npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1 || true
+      npm ci >/dev/null 2>&1 || { echo "  $repo (npm): npm ci failed"; exit 0; }
     fi
     name="$(node -p "require('./package.json').name")"
     ver="$(node -p "require('./package.json').version")"
@@ -90,11 +103,11 @@ create_pypi() {  # hop-sdk-python -> hop-endpoint on PyPI (build + twine live in
   d="$(clone "$repo")"; [ -n "$d" ] || { echo "  $repo (PyPI): skip, clone failed"; return; }
   venv="$WORK/pyvenv"
   python3 -m venv "$venv" >/dev/null 2>&1 || { echo "  $repo (PyPI): skip, python venv unavailable"; return; }
-  "$venv/bin/pip" install -q --upgrade build twine >/dev/null 2>&1 \
+  "$venv/bin/pip" install -q --require-hashes -r "$HERE/requirements-bootstrap-publish.txt" >/dev/null 2>&1 \
     || { echo "  $repo (PyPI): skip, could not install build+twine into the venv (offline?)"; return; }
   (
     cd "$d"
-    "$venv/bin/python" -m build >/dev/null || { echo "  $repo (PyPI): build failed"; exit 0; }
+    "$venv/bin/python" -m build --no-isolation >/dev/null || { echo "  $repo (PyPI): build failed"; exit 0; }
     # --skip-existing makes re-runs idempotent; errors are shown (not swallowed).
     if TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" \
         "$venv/bin/twine" upload --skip-existing dist/*; then
@@ -191,14 +204,14 @@ echo
 
 echo "== 3. turn on trusted publishing (GitHub OIDC, no token) for every release after the first =="
 # For each OIDC registry, configure a Trusted Publisher in the package's registry settings with EXACTLY
-# these values. Provider = GitHub Actions; leave the environment field blank (the workflows use none).
-echo "  npm  @hop-mesh/endpoint   settings 'Trusted Publisher': owner hopmesh, repo hop-sdk-node, workflow release.yml"
-echo "  npm  @hop-mesh/wasm       settings 'Trusted Publisher': owner hopmesh, repo hop-wasm,     workflow release.yml"
-echo "  PyPI hop-endpoint         'Publishing' > 'Trusted Publishers': owner hopmesh, repo hop-sdk-python, workflow release.yml"
-echo "  RubyGems hop-endpoint     gem 'Trusted publishers': owner hopmesh, repo hop-sdk-ruby, workflow release.yml"
-echo "  crates.io hop-mesh-core             'Trusted Publishing': owner hopmesh, repo hop-core,             workflow release.yml"
-echo "  crates.io hop-mesh-store-sqlite     'Trusted Publishing': owner hopmesh, repo hop-store-sqlite,     workflow release.yml"
-echo "  crates.io hop-mesh-store-firestore  'Trusted Publishing': owner hopmesh, repo hop-store-firestore,  workflow release.yml"
+# these values. Provider = GitHub Actions; set the environment field to `release`.
+echo "  npm  @hop-mesh/endpoint   settings 'Trusted Publisher': owner hopmesh, repo hop-sdk-node, workflow release.yml, environment release"
+echo "  npm  @hop-mesh/wasm       settings 'Trusted Publisher': owner hopmesh, repo hop-wasm,     workflow release.yml, environment release"
+echo "  PyPI hop-endpoint         'Publishing' > 'Trusted Publishers': owner hopmesh, repo hop-sdk-python, workflow release.yml, environment release"
+echo "  RubyGems hop-endpoint     gem 'Trusted publishers': owner hopmesh, repo hop-sdk-ruby, workflow release.yml, environment release"
+echo "  crates.io hop-mesh-core             'Trusted Publishing': owner hopmesh, repo hop-core,             workflow release.yml, environment release"
+echo "  crates.io hop-mesh-store-sqlite     'Trusted Publishing': owner hopmesh, repo hop-store-sqlite,     workflow release.yml, environment release"
+echo "  crates.io hop-mesh-store-firestore  'Trusted Publishing': owner hopmesh, repo hop-store-firestore,  workflow release.yml, environment release"
 echo "     (the crate name is hop-mesh-*, the source repo is the mirror it publishes from)"
 echo "  (Hex + Maven Central have no OIDC path yet: they stay token-published, see section 4.)"
 echo "  Each release.yml already declares 'permissions: id-token: write'; nothing else in CI to change."
@@ -216,9 +229,8 @@ set_secret() {
 }
 # Hex is always token-published (no OIDC). Maven Central is token + GPG. Set these for real releases.
 set_secret hop-sdk-elixir HEX_API_KEY "${HEX_API_KEY:-}" HEX_API_KEY
-# PlatformIO (hop-embedded): the release.yml publishes on a vX.Y.Z tag, but ONLY after fetching the
-# prebuilt ESP32 libhop.a archives from a hopmesh/libhop release. Those archives + their cross-compile
-# producer do not exist yet, so setting this token wires the secret but cannot publish on its own.
+# PlatformIO (hop-embedded): release.yml publishes only after downloading and verifying the signed
+# exact-target archives from hopmesh/hop's successful canonical native-artifacts workflow.
 set_secret hop-embedded PLATFORMIO_AUTH_TOKEN "${PLATFORMIO_AUTH_TOKEN:-}" PLATFORMIO_AUTH_TOKEN
 for r in hop-sdk-android hop-bearers-android hop-driver-android; do
   set_secret "$r" MAVEN_USERNAME       "${MAVEN_USERNAME:-}"       MAVEN_USERNAME
@@ -239,8 +251,9 @@ echo "  (Go, Swift/SPM, Crystal shards need no token: a git tag is the publish.)
 echo
 
 echo "== 5. cut every release after the first with a tag (publishes over OIDC) =="
-echo "  Each mirror's release.yml fires on a vX.Y.Z tag, checks the tag's major.minor against the anchor,"
-echo "  builds, and publishes. Section 2 created v0.0.1, so the next release is v0.0.2:"
+echo "  Each mirror's release.yml fires on a newly created vX.Y.Z tag at mirror main, verifies the exact"
+echo "  canonical source tree and successful required checks, then builds and publishes. Section 2"
+echo "  created v0.0.1, so the next release is v0.0.2:"
 echo "      gh release create v0.0.2 --repo $ORG/hop-sdk-node   --title v0.0.2 --generate-notes"
 echo "      gh release create v0.0.2 --repo $ORG/hop-sdk-python --title v0.0.2 --generate-notes"
 echo "      ... one per package ..."

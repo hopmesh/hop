@@ -1,13 +1,22 @@
 #!/usr/bin/env python
 """Assemble preview.html: lottie-web + the animation JSON, fully inlined."""
+import hashlib
 from pathlib import Path
 
 HERE = Path(__file__).parent
 ljs = HERE / "lottie.min.js"
+LOTTIE_SHA256 = "a0757321f974527bda3cc2593bf56cc7ffe4578421249ced6ae49ffb1c529f90"
 if not ljs.exists():
     import urllib.request
+    download = ljs.with_suffix(".js.tmp")
     urllib.request.urlretrieve(
-        "https://unpkg.com/lottie-web@5.12.2/build/player/lottie.min.js", ljs)
+        "https://unpkg.com/lottie-web@5.12.2/build/player/lottie.min.js", download)
+    if hashlib.sha256(download.read_bytes()).hexdigest() != LOTTIE_SHA256:
+        download.unlink(missing_ok=True)
+        raise RuntimeError("lottie-web download failed SHA-256 verification")
+    download.replace(ljs)
+if hashlib.sha256(ljs.read_bytes()).hexdigest() != LOTTIE_SHA256:
+    raise RuntimeError("lottie.min.js does not match pinned lottie-web 5.12.2")
 player = ljs.read_text()
 anim = (HERE / "hop-wordmark-drawon.json").read_text()
 

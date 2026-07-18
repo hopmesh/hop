@@ -35,6 +35,9 @@ module Hop
 
     def initialize(secret : Bytes? = nil, tick_ms : Int32 = 50, cluster : String | Bytes | Nil = nil, quorum : Int? = nil)
       Hop::FFI.assert_abi!
+      if secret && secret.size != 32
+        raise ArgumentError.new("identity key must be exactly 32 bytes, got #{secret.size}")
+      end
       @node = secret ? Hop::FFI.node_with_secret(secret) : Hop::FFI.node_new
       Hop::FFI.tick(@node, now_ms)
       Hop::FFI.publish_prekey(@node)
@@ -128,6 +131,8 @@ module Hop
       begin
         select
         when res = ch.receive
+          accepted = with_node { |n| Hop::FFI.accept_service_response(n, req_id) }
+          raise "service response acceptance failed" unless accepted
           res
         when timeout(timeout)
           @node_lock.synchronize { @pending.delete(req_id) } # under the node lock, like register + pump

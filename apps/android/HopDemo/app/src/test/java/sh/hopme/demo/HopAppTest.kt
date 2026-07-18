@@ -2,6 +2,7 @@ package sh.hopme.demo
 
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,14 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(application = HopApp::class)
 class HopAppTest {
+
+    @Test fun applicationDisablesPlatformBackup() {
+        val app = ApplicationProvider.getApplicationContext<HopApp>()
+        assertFalse(
+            "history and attachments must not enter Android backup",
+            app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_ALLOW_BACKUP != 0,
+        )
+    }
 
     /** Records the last exception it was handed instead of failing the test the way Robolectric's does. */
     private class Recorder : Thread.UncaughtExceptionHandler {

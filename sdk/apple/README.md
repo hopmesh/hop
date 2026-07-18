@@ -40,8 +40,16 @@ Then depend on the `Hop` product:
 .target(name: "MyApp", dependencies: [.product(name: "Hop", package: "hop-sdk-apple")])
 ```
 
-The package carries `libhop.xcframework` as a binary target, so there's nothing to compile or link by
-hand. To rebuild the framework from source (after changing the core), run `./build-xcframework.sh`.
+The published manifest uses the immutable `v0.0.1/libhop.xcframework.zip` release URL and its SwiftPM
+checksum. That archive is produced by the protected canonical native-artifact workflow, carries an
+architecture manifest with per-slice SHA-256 values, and is verified again before the SDK release is
+created.
+
+For local development in the standalone package, run
+`python3 install-local-xcframework.py --version v0.0.1`, then temporarily use `Package.local.swift` as
+`Package.swift` while building. The installer applies the same signature, digest, checksum, and slice
+checks as the release job. In the monorepo, `./build-xcframework.sh` remains the source-build path.
+The published manifest never consults environment variables or silently selects local files.
 
 ## Quick start
 
@@ -60,9 +68,10 @@ node.publishPrekey()
 let dst = HopAddress.fromBase58("7Yc9…")!
 node.send(to: dst, body: Data("meet at the ridge".utf8), requestAck: true)
 
-// Core is poll-model: drain what arrived on your run loop.
+// Polling is non-destructive. Accept only after your app has persisted the message.
 node.pollInbox { msg in
     print(HopAddress.base58(msg.from), String(decoding: msg.body, as: UTF8.self))
+    if appStore.save(msg) { node.acceptInbox(msg.id) }
 }
 ```
 
