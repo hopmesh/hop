@@ -1,0 +1,23 @@
+[package]
+name = "hop-accountd"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license-file = "LICENSE.md"
+description = "Hop account/invoice backend: serves the console's native invoice rendering, payment history, and card display from Stripe (the stripe-account-key consumer). Internal, Apache-2.0."
+
+[[bin]]
+name = "hop-accountd"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The live Stripe read path is behind `live` so the pure request-builders/parsers/routing build and
+# test with no network deps (the hop-billingd discipline).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
+
+[features]
+default = []
+live = ["dep:reqwest"]

@@ -13,6 +13,7 @@ members = [
     "services/hop-endpoint",
     "services/hop-billingd",
     "services/hop-telemetryd",
+    "services/hop-accountd",
     "examples/hop-example-origin",
 ]
 exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz"]
