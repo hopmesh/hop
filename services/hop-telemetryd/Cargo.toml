@@ -26,8 +26,17 @@ hop-store-sqlite = { workspace = true, features = ["bundled"] }
 hop-store-firestore = { workspace = true, optional = true }
 # SIGTERM handler so a Cloud Run shutdown drains the meter + store before the instance is reaped.
 libc = "0.2"
+# Building the OTLP/HTTP JSON bodies for the export sink (pure; the reqwest POST is live-gated below).
+serde_json = "1"
+# OTLP export transport (managed telemetry forwarding to a tenant's own OTel endpoint), live-only like
+# hop-billingd's Stripe path so the default build has no outbound-HTTP surface. blocking, matching the
+# daemon's single-owner threading model.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
 
 [features]
 # Off by default so a plain build stays lean. Enable for the Cloud Run deploy that needs the durable
 # Firestore-backed telemetry_usage ledger the §37 reconciler reads.
 firestore = ["dep:hop-store-firestore"]
+# The live OTLP-export path (translate + forward telemetry to a tenant's OTel endpoint). Gated so unit
+# tests build the pure JSON builders + routing with no network dep.
+live = ["dep:reqwest"]

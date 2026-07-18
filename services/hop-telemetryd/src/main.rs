@@ -30,6 +30,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// The OTLP-export module is consumed only by the `live` forwarding path and its own unit tests, so a
+// default (non-live) BINARY build has no use for it; compile it only where it's actually referenced.
+#[cfg(any(feature = "live", test))]
+mod otlp;
+
 use base64::Engine;
 use hop_core::node::TelemetryIn;
 use hop_core::prelude::*;
@@ -336,6 +341,9 @@ struct CliConfig {
     firestore: Option<String>,
     /// Local SQLite path used when Firestore is not configured.
     db: String,
+    /// Per-tenant OTLP endpoint file (`<tenant-hex> <base-url> [auth]` lines) for managed telemetry
+    /// export (needs `--features live`). Env fallback: `HOP_OTLP_MAP`.
+    otlp_map_file: Option<String>,
 }
 
 /// Parse the CLI flags. Pure over its `args` iterator (no env, no I/O), so every flag/default is
@@ -350,6 +358,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
     let mut key_server_file: Option<String> = None;
     let mut firestore: Option<String> = None;
     let mut db = "hop-telemetryd.db".to_string();
+    let mut otlp_map_file: Option<String> = None;
     let mut args = args;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -367,6 +376,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
             "--key-server" => key_server_file = args.next(),
             "--firestore" => firestore = args.next(), // GCP project id, durable ledger
             "--db" => db = args.next().unwrap_or(db),
+            "--otlp-map" => otlp_map_file = args.next(),
             "--print-address" => print_address = true,
             other => eprintln!("ignoring unknown arg: {other}"),
         }
@@ -381,6 +391,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
         key_server_file,
         firestore,
         db,
+        otlp_map_file,
     }
 }
 
@@ -395,6 +406,7 @@ fn main() {
         key_server_file,
         firestore,
         db,
+        otlp_map_file,
     } = parse_args(std::env::args().skip(1));
 
     // Graceful degrade when the relay fleet is off: infra can set HOP_NO_RELAY=1 so the instance
@@ -495,7 +507,78 @@ fn main() {
         );
     }
 
-    run(node, domain, rx);
+    // Managed OTLP export (best-effort, off the driver thread). Spawns an export worker draining a
+    // bounded queue, so a slow/down tenant endpoint drops rather than stalling the meter (see below).
+    let otlp_tx = setup_otlp(otlp_map_file);
+
+    run(node, domain, rx, otlp_tx);
+}
+
+/// One queued OTLP export: an attributed tenant + its batch, handed to the export worker off-thread.
+type OtlpItem = (TenantId, TelemetryBatch);
+
+/// Build the OTLP export queue + worker if a per-tenant endpoint map is configured. Live-only (the
+/// POST needs reqwest); without the feature there is no export and this always returns `None`, so
+/// `forward_telemetry` skips OTLP entirely. Best-effort: the worker POSTs on its own thread and counts
+/// failures, never touching the meter/ledger path.
+#[cfg(feature = "live")]
+fn setup_otlp(file: Option<String>) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
+    let text = file
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .or_else(|| {
+            std::env::var("HOP_OTLP_MAP")
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        })?;
+    let map = otlp::OtlpEndpointMap::parse(&text);
+    if map.is_empty() {
+        eprintln!("hop-telemetryd: OTLP endpoint map empty or unreadable; OTLP export off");
+        return None;
+    }
+    let transport = match otlp::ReqwestOtlpTransport::new() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hop-telemetryd: {e}; OTLP export off");
+            return None;
+        }
+    };
+    let mapped = map.len();
+    let sink = otlp::OtlpSink::new(transport, map);
+    // Bounded: under a slow/down endpoint the queue fills and `forward_telemetry` drops (counted),
+    // rather than blocking the single-owner driver on the POST.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<OtlpItem>(4096);
+    std::thread::spawn(move || {
+        let mut fails = 0u64;
+        for (tenant, batch) in rx {
+            // Panic-isolate each export so one bad batch can't permanently kill the worker (which
+            // would silently disable export for the process and mislabel the resulting drops as
+            // "endpoint slow"). The driver + meter already survive independently; this keeps the
+            // worker alive too.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sink.export(&tenant, &batch)
+            }));
+            let reason = match outcome {
+                Ok(otlp::ExportOutcome::Failed(e)) => Some(e),
+                Ok(_) => None,
+                Err(_) => Some("export panicked (isolated)".to_string()),
+            };
+            if let Some(e) = reason {
+                fails = fails.saturating_add(1);
+                if fails % 100 == 1 {
+                    // Aggregate only (services-03): a count + a non-tenant-identifying reason.
+                    eprintln!("hop-telemetryd: OTLP export failing ({fails} so far): {e}");
+                }
+            }
+        }
+    });
+    println!("hop-telemetryd: OTLP export on ({mapped} tenant endpoint(s))");
+    Some(tx)
+}
+
+/// Without the `live` feature there is no OTLP export path at all.
+#[cfg(not(feature = "live"))]
+fn setup_otlp(_file: Option<String>) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
+    None
 }
 
 // --- driver ------------------------------------------------------------------------------------
@@ -510,10 +593,16 @@ enum Ev {
 /// The driver: sole owner of the node. Drives the mesh link, drains received telemetry into the sink,
 /// and re-signs the reach record before it expires. Every core call on attacker-controlled bytes runs
 /// under [`guard_core`] so a malformed-bundle panic is a logged skip, not process death.
-fn run<S: Store>(mut node: Node<S>, domain: Option<String>, rx: Receiver<Ev>) {
+fn run<S: Store>(
+    mut node: Node<S>,
+    domain: Option<String>,
+    rx: Receiver<Ev>,
+    otlp_tx: Option<std::sync::mpsc::SyncSender<OtlpItem>>,
+) {
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
     let mut sink = AggregateSink::default();
     let mut meter = TelemetryMeter::default();
+    let mut otlp_dropped: u64 = 0;
     let public_url = domain.as_deref().map(public_url_for);
     let mut last_wk = Instant::now();
     let mut last_stats = Instant::now();
@@ -571,7 +660,12 @@ fn run<S: Store>(mut node: Node<S>, domain: Option<String>, rx: Receiver<Ev>) {
         // Drain received telemetry into the sink. The batch was already decoded + DoS-bounded by the
         // core on receipt; take_telemetry itself parses no attacker bytes but is guarded for symmetry.
         let received = guard_core("take-telemetry", || node.take_telemetry()).unwrap_or_default();
-        forward_telemetry(&mut sink, &mut meter, received);
+        otlp_dropped = otlp_dropped.saturating_add(forward_telemetry(
+            &mut sink,
+            &mut meter,
+            otlp_tx.as_ref(),
+            received,
+        ));
 
         // Aggregate throughput line (counts only, services-03).
         if last_stats.elapsed() >= STATS_LOG_INTERVAL {
@@ -580,6 +674,12 @@ fn run<S: Store>(mut node: Node<S>, domain: Option<String>, rx: Receiver<Ev>) {
                 println!(
                     "hop-telemetryd: {batches} batches, {events} events forwarded this window"
                 );
+            }
+            if otlp_dropped > 0 {
+                eprintln!(
+                    "hop-telemetryd: {otlp_dropped} batch(es) dropped from the OTLP export queue this window (endpoint slow or down); billing unaffected"
+                );
+                otlp_dropped = 0;
             }
             last_stats = Instant::now();
         }
@@ -608,17 +708,32 @@ fn run<S: Store>(mut node: Node<S>, domain: Option<String>, rx: Receiver<Ev>) {
     }
 }
 
-/// Hand each received batch to the sink (throughput) and the meter (per-tenant billing). Split out of
-/// `run` so it's unit-testable without the driver.
+/// Hand each received batch to the sink (throughput), the meter (per-tenant billing), and, for
+/// attributed batches, the OTLP export queue (managed forwarding). Split out of `run` so it's
+/// unit-testable without the driver. Returns the number of batches DROPPED from the OTLP queue.
+///
+/// Ordering is load-bearing: `meter.add` (the authoritative billing path, feeding the durable ledger)
+/// runs FIRST and unconditionally. The OTLP enqueue is a non-blocking `try_send`; a full queue (a
+/// slow/down tenant endpoint backing up the export worker) drops the batch and is counted, never
+/// blocking the meter. Same asymmetry as hop-billingd's `BillAndRecord`. Only attributed batches
+/// (`tenant.is_some()`) can be routed, since an OTLP endpoint is resolved per tenant.
 fn forward_telemetry(
     sink: &mut dyn TelemetrySink,
     meter: &mut TelemetryMeter,
+    otlp_tx: Option<&std::sync::mpsc::SyncSender<OtlpItem>>,
     received: Vec<TelemetryIn>,
-) {
+) -> u64 {
+    let mut dropped = 0u64;
     for t in &received {
         sink.record(t.from, &t.batch);
-        meter.add(t.tenant, t.batch.billable_events());
+        meter.add(t.tenant, t.batch.billable_events()); // authoritative; always runs first
+        if let (Some(tx), Some(tenant)) = (otlp_tx, t.tenant) {
+            if tx.try_send((tenant, t.batch.clone())).is_err() {
+                dropped = dropped.saturating_add(1); // queue full or worker gone: best-effort drop
+            }
+        }
     }
+    dropped
 }
 
 /// Run a node call that touches attacker-controlled bytes under catch_unwind, so a core panic (e.g.
@@ -1042,10 +1157,66 @@ mod tests {
                 tenant: None, // unattributed
             },
         ];
-        forward_telemetry(&mut sink, &mut meter, received);
+        let dropped = forward_telemetry(&mut sink, &mut meter, None, received);
+        assert_eq!(dropped, 0);
         assert_eq!(sink.take(), (2, 3)); // throughput: 2 batches, 3 events
         assert_eq!(meter.counts.get(&tenant), Some(&1)); // 1 billable event to the tenant
         assert_eq!(meter.take_unattributed(), 2); // 2 unattributed events
+    }
+
+    #[test]
+    fn forward_telemetry_enqueues_only_attributed_batches_for_otlp() {
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        let tenant = [9u8; 16];
+        let (tx, rx) = std::sync::mpsc::sync_channel::<OtlpItem>(16);
+        let received = vec![
+            TelemetryIn {
+                from: [1u8; 32],
+                batch: TelemetryBatch::new().counter("a", 1, 0),
+                tenant: Some(tenant),
+            },
+            TelemetryIn {
+                from: [2u8; 32],
+                batch: TelemetryBatch::new().counter("b", 1, 0),
+                tenant: None, // unattributed: metered aggregate-only, NOT forwarded
+            },
+        ];
+        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received);
+        assert_eq!(dropped, 0);
+        drop(tx);
+        let queued: Vec<OtlpItem> = rx.iter().collect();
+        assert_eq!(
+            queued.len(),
+            1,
+            "only the attributed batch is queued for OTLP"
+        );
+        assert_eq!(queued[0].0, tenant);
+    }
+
+    #[test]
+    fn forward_telemetry_drops_and_counts_when_the_otlp_queue_is_full() {
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        let tenant = [9u8; 16];
+        // Capacity 1, never drained: the second attributed batch has nowhere to go.
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<OtlpItem>(1);
+        let received = vec![
+            TelemetryIn {
+                from: [1u8; 32],
+                batch: TelemetryBatch::new().counter("a", 1, 0),
+                tenant: Some(tenant),
+            },
+            TelemetryIn {
+                from: [2u8; 32],
+                batch: TelemetryBatch::new().counter("b", 1, 0),
+                tenant: Some(tenant),
+            },
+        ];
+        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received);
+        assert_eq!(dropped, 1, "full queue drops the overflow, best-effort");
+        // Billing is unaffected: BOTH events still metered to the tenant.
+        assert_eq!(meter.counts.get(&tenant), Some(&2));
     }
 
     #[test]
