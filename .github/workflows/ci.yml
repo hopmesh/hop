@@ -177,6 +177,11 @@ jobs:
       - name: Test relayd (firestore feature)
         run: cargo test -p hop-relayd --features firestore
 
+      # hop-telemetryd's durable telemetry_usage ledger (what the §37 reconciler bills from) is behind
+      # the same optional `firestore` feature, so the default workspace run never compiles that path.
+      - name: Test telemetryd (firestore feature)
+        run: cargo test -p hop-telemetryd --features firestore
+
       # At-rest encryption (F-25) is behind the `sqlcipher` feature (SQLite + SQLCipher, vendored
       # OpenSSL) which the default workspace run doesn't build. This exercises open_keyed end-to-end.
       - name: Test store (sqlcipher feature)

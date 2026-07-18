@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,6 +35,9 @@ use hop_core::node::TelemetryIn;
 use hop_core::prelude::*;
 use hop_core::telemetry::TelemetryBatch;
 use hop_gateway::resolve_relay;
+#[cfg(feature = "firestore")]
+use hop_store_firestore::FirestoreStore;
+use hop_store_sqlite::SqliteStore;
 use tungstenite::Message;
 
 static NEXT_LINK: AtomicU64 = AtomicU64::new(1);
@@ -67,6 +70,23 @@ const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// the §37 reconciler reads. A crash loses at most one interval; the hour bucket bounds granularity.
 const TELEMETRY_FLUSH: Duration = Duration::from_secs(30);
 
+/// Set by SIGTERM/SIGINT so the driver drains the meter into the durable ledger and flushes the store
+/// before the instance is reaped, instead of losing the window's billable usage (the relay's F-21).
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_sig: libc::c_int) {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
+fn install_shutdown_handler() {
+    // Coerce to a fn pointer before the numeric cast (fn *item* to integer is a clippy lint).
+    let handler = on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+    }
+}
+
 /// Decrements the active-connection count when a handler thread finishes (including on panic unwind).
 struct ConnGuard;
 impl Drop for ConnGuard {
@@ -97,7 +117,7 @@ fn well_known_body() -> &'static Mutex<Vec<u8>> {
 /// The `reach` field is the base64-std postcard record (SDKs decode exactly this); `address` +
 /// `endpoint` are informational. All three are base58 / base64 / a bare wss URL, so the JSON is safe
 /// to build by hand (no embedded quotes to escape).
-fn sign_well_known(node: &Node<MemoryStore>, public_url: &str) -> Vec<u8> {
+fn sign_well_known<S: Store>(node: &Node<S>, public_url: &str) -> Vec<u8> {
     let rec = node.sign_reach_record(public_url.to_string(), WELL_KNOWN_TTL_SECS);
     let reach = base64::engine::general_purpose::STANDARD.encode(rec.to_bytes());
     let address = bs58::encode(node.address()).into_string();
@@ -107,6 +127,35 @@ fn sign_well_known(node: &Node<MemoryStore>, public_url: &str) -> Vec<u8> {
 
 fn public_url_for(domain: &str) -> String {
     format!("wss://{domain}/")
+}
+
+// --- durable store ------------------------------------------------------------------------------
+
+/// Pick the collector's durable store: Firestore on the cloud deploy (so the `telemetry_usage` ledger
+/// survives a restart and the §37 reconciler can read it), else a local SQLite file. Mirrors the
+/// relay's `build_store`. Without a durable store the ledger dies with the process and nothing bills.
+#[cfg(feature = "firestore")]
+fn build_store(firestore: &Option<String>, db: &str, addr: &[u8]) -> Box<dyn Store> {
+    if let Some(project) = firestore {
+        match FirestoreStore::open(project, addr) {
+            Ok(s) => {
+                println!("hop-telemetryd: store = firestore (project {project})");
+                return Box::new(s);
+            }
+            Err(e) => eprintln!("firestore open failed ({e}); falling back to sqlite"),
+        }
+    }
+    Box::new(SqliteStore::open(db).expect("open sqlite store"))
+}
+
+#[cfg(not(feature = "firestore"))]
+fn build_store(firestore: &Option<String>, db: &str, _addr: &[u8]) -> Box<dyn Store> {
+    if firestore.is_some() {
+        eprintln!(
+            "firestore support not compiled in (build with --features firestore); using sqlite"
+        );
+    }
+    Box::new(SqliteStore::open(db).expect("open sqlite store"))
 }
 
 /// Normalize an operator-supplied domain to a safe hostname: lowercase, no trailing dot, and only
@@ -283,6 +332,10 @@ struct CliConfig {
     print_address: bool,
     /// Tenant KeyServer file (`<tenant-hex> <pubkey-b58>` lines) for telemetry attribution + billing.
     key_server_file: Option<String>,
+    /// GCP project for the durable Firestore-backed ledger (needs `--features firestore`).
+    firestore: Option<String>,
+    /// Local SQLite path used when Firestore is not configured.
+    db: String,
 }
 
 /// Parse the CLI flags. Pure over its `args` iterator (no env, no I/O), so every flag/default is
@@ -295,6 +348,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
     let mut relay_cli_set = false;
     let mut print_address = false;
     let mut key_server_file: Option<String> = None;
+    let mut firestore: Option<String> = None;
+    let mut db = "hop-telemetryd.db".to_string();
     let mut args = args;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -310,6 +365,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
                 relay_cli_set = true;
             }
             "--key-server" => key_server_file = args.next(),
+            "--firestore" => firestore = args.next(), // GCP project id, durable ledger
+            "--db" => db = args.next().unwrap_or(db),
             "--print-address" => print_address = true,
             other => eprintln!("ignoring unknown arg: {other}"),
         }
@@ -322,6 +379,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
         relay_cli_set,
         print_address,
         key_server_file,
+        firestore,
+        db,
     }
 }
 
@@ -334,6 +393,8 @@ fn main() {
         relay_cli_set,
         print_address,
         key_server_file,
+        firestore,
+        db,
     } = parse_args(std::env::args().skip(1));
 
     // Graceful degrade when the relay fleet is off: infra can set HOP_NO_RELAY=1 so the instance
@@ -356,7 +417,11 @@ fn main() {
         .map(|d| sanitize_domain(&d))
         .filter(|d| !d.is_empty());
 
-    let mut node: Node<MemoryStore> = Node::new(identity);
+    // Durable store: the telemetry_usage ledger must survive a restart for the §37 reconciler to read
+    // it, so the collector runs on SQLite (local) or Firestore (cloud), never an in-memory store.
+    install_shutdown_handler();
+    let store = build_store(&firestore, &db, &identity.address());
+    let mut node = Node::with_store(identity, store);
     node.set_kind(NodeKind::Endpoint);
     node.set_name(domain.clone());
     node.set_max_relayed(0); // a leaf: routable by address, relays nothing
@@ -445,7 +510,7 @@ enum Ev {
 /// The driver: sole owner of the node. Drives the mesh link, drains received telemetry into the sink,
 /// and re-signs the reach record before it expires. Every core call on attacker-controlled bytes runs
 /// under [`guard_core`] so a malformed-bundle panic is a logged skip, not process death.
-fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
+fn run<S: Store>(mut node: Node<S>, domain: Option<String>, rx: Receiver<Ev>) {
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
     let mut sink = AggregateSink::default();
     let mut meter = TelemetryMeter::default();
@@ -455,6 +520,17 @@ fn run(mut node: Node<MemoryStore>, domain: Option<String>, rx: Receiver<Ev>) {
     let mut last_tick = Instant::now();
     let mut last_flush = Instant::now();
     loop {
+        // Cloud Run is about to reap us: drain the meter into the ledger BEFORE flushing the store, so
+        // the window's billable usage rides the same durable drain out instead of being lost (F-21).
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            meter.flush_to_store(&mut node.store, now_ms());
+            let flushed = node.store.flush(Duration::from_secs(8));
+            println!(
+                "hop-telemetryd: SIGTERM: ledger flush {}, exiting",
+                if flushed { "drained" } else { "timed out" }
+            );
+            return;
+        }
         match rx.recv_timeout(Duration::from_millis(1000)) {
             Ok(Ev::Up(link, role, out)) => {
                 writers.insert(link, out);
@@ -989,6 +1065,60 @@ mod tests {
         meter.add(Some(tenant), 4);
         meter.flush_to_store(&mut store, now);
         assert_eq!(store.get_kv(&key).map(|b| decode_events(&b)), Some(19));
+    }
+
+    fn tmp_db(tag: &str) -> String {
+        format!(
+            "{}/hop-telemetryd-test-{tag}.db",
+            std::env::temp_dir().display()
+        )
+    }
+
+    #[test]
+    fn build_store_opens_a_usable_local_sqlite_store() {
+        let db = tmp_db("plain");
+        let _ = std::fs::remove_file(&db);
+        let addr = Identity::generate().address();
+        let store = build_store(&None, &db, &addr);
+        let _node = Node::with_store(Identity::generate(), store);
+        assert!(std::fs::metadata(&db).is_ok(), "sqlite db file created");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[cfg(not(feature = "firestore"))]
+    #[test]
+    fn build_store_falls_back_to_sqlite_without_the_firestore_feature() {
+        // A mis-flagged plain build must still come up with a working store, not fail.
+        let db = tmp_db("fallback");
+        let _ = std::fs::remove_file(&db);
+        let addr = Identity::generate().address();
+        let _store = build_store(&Some("some-gcp-project".to_string()), &db, &addr);
+        assert!(std::fs::metadata(&db).is_ok(), "fell back to local sqlite");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn telemetry_ledger_round_trips_through_the_durable_store() {
+        // The point of the durable store: a flushed telemetry_usage row is readable back out, so the
+        // §37 reconciler can bill it. (Firestore adds cross-instance durability; SQLite proves the
+        // same kv path, which an in-memory store would silently no-op.)
+        let db = tmp_db("ledger");
+        let _ = std::fs::remove_file(&db);
+        let addr = Identity::generate().address();
+        let mut store = build_store(&None, &db, &addr);
+        let tenant = [3u8; 16];
+        let now = 9 * 3_600_000;
+        let mut meter = TelemetryMeter::default();
+        meter.add(Some(tenant), 42);
+        meter.flush_to_store(&mut store, now);
+        assert_eq!(
+            store
+                .get_kv(&telemetry_usage_key(9, &tenant))
+                .map(|b| decode_events(&b)),
+            Some(42),
+            "the ledger row survives the durable store round trip"
+        );
+        let _ = std::fs::remove_file(&db);
     }
 
     #[test]
