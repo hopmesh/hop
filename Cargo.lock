@@ -838,6 +838,7 @@ dependencies = [
 name = "hop-billingd"
 version = "0.0.1"
 dependencies = [
+ "hop-store-firestore",
  "reqwest",
  "serde",
  "serde_json",
