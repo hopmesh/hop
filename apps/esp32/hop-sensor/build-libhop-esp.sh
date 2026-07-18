@@ -37,13 +37,15 @@ cp -f "$ROOT/sdk/hop.h" "$COMP/include/hop.h"
 echo "==> building minimal libhop for $CHIP ($TARGET)"
 # The `minimal` feature excludes uniffi + sqlite. -Zbuild-std builds std for the espidf tier (the esp
 # channel wires this up automatically). ESP_IDF_VERSION is honored by the esp-idf-sys sysroot if pulled.
-cargo build \
+cargo +esp build \
   --manifest-path "$ROOT/Cargo.toml" \
   -p hop \
   --no-default-features \
   --features minimal \
   --target "$TARGET" \
-  --release
+  --release \
+  --locked \
+  -Zbuild-std=std,panic_abort
 
 ARCHIVE="$ROOT/target/$TARGET/release/libhop.a"
 if [[ ! -f "$ARCHIVE" ]]; then

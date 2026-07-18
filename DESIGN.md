@@ -1794,6 +1794,12 @@ any `hdp` bundle); non-members carry it but can't read it. Each member that decr
 back to the host**, and the host tallies **unique acking addresses** as its delivery count /
 sense of reach, **no subscriber registry required** (for open mode).
 
+On a subscriber, a verified publication is staged in a durable app inbox and repeats on poll until
+the app explicitly accepts it. The inbox holds at most 256 publications. An unaccepted row expires
+with the publication's receiver-anchored lifetime, clamped to seven days; acceptance removes the
+payload row but retains its bounded replay identifier until that same deadline. Replay state is capped
+at 1,024 identifiers per topic generation and 4,096 across the node.
+
 ### Revocation (current limit + future)
 
 **Implemented as selective forward rotation:** the host mints a fresh content key (and, for a
@@ -1841,7 +1847,7 @@ equal under GDPR:
 ### The actual exposures
 
 1. **International transfer (Chapter V).** The durable store is a **single Firestore database in
-   one location**, default `nam5`, a **US** multi-region (`infra/variables.tf`). Every region's
+   one location**, default `nam5`, a **US** multi-region (`infra/bootstrap/variables.tf`). Every region's
    partition (including EU nodes') is just a collection in that one US database, so EU users'
    personal data (addresses, presence, metadata) is **transferred to and stored in the US**. Post
    *Schrems II* that needs a mechanism: the **EU-US Data Privacy Framework** (Google Cloud is
@@ -2139,7 +2145,7 @@ billing identity.)
 
 ### The carriage stamp, bundle-level attribution (built)
 
-> **Status: built** (`hop-core/src/access.rs`, `Envelope::access`, wire v8; relayd
+> **Status: built** (`hop-core/src/access.rs`, `Envelope::access`, wire v9; carriage stamps were introduced in v8; relayd
 > `--require-stamps` / `--billing-root` / `--deny-tenant`). The link-RAT admission above and the
 > Stage-1 edge gate remain design.
 
@@ -2838,4 +2844,3 @@ into a per-device fee.
 user-anonymous; the collector sees per-app aggregates, never a per-user identity. `region` is only ever
 knowable for relay-carried or self-reported traffic, consistent with §39: the backbone does not learn a
 pure-P2P device's location, the device discloses a coarse label or nothing.
-

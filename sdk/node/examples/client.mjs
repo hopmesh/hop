@@ -16,6 +16,7 @@ dial(client, host, Number(port))
 try {
   const res = await client.request(address, 'acme/orders', 'create', { item: 'widget', qty: 3 })
   console.log(`<- ${res.status}`, res.body.toString())
+  res.accept()
 } catch (e) {
   console.error('request failed:', e.message)
   process.exitCode = 1

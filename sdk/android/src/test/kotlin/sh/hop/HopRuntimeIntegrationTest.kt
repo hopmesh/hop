@@ -56,8 +56,14 @@ class HopRuntimeIntegrationTest {
             assertNotNull(id)
 
             var got: HopMessage? = null
-            val ok = pump(400) { rtB.node.pollInbox { got = it }; got != null && rtA.node.delivered(id!!) }
+            var accepted = false
+            val ok = pump(400) {
+                rtB.node.pollInbox { got = it }
+                if (!accepted) got?.let { accepted = rtB.node.acceptInbox(it.id) }
+                got != null && rtA.node.delivered(id!!)
+            }
             assertTrue(ok, "the runtime + bearer should deliver and ack")
+            assertTrue(accepted, "the host accepted the persisted message")
             assertEquals(text, String(got!!.body))
 
             // The BearerManager minted a process-global LinkId (base 1_000_000) and knows its transport.

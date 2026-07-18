@@ -27,6 +27,79 @@ mod wasm_glue;
 use wasm_bindgen::prelude::*;
 pub use wasm_glue::{StoreBridge, WasmNode};
 
+/// Decode and verify one committed bundle vector through the WASM boundary. The returned fixed-width
+/// metadata lets JavaScript independently compare stable fields rather than merely reading a fixture.
+/// The exact input bytes must also be the bundle's canonical re-encoding.
+#[wasm_bindgen]
+pub fn validate_wire_bundle(bytes: &[u8], expected_id: &[u8]) -> Result<Vec<u8>, JsValue> {
+    let bundle = hop_core::bundle::Bundle::from_bytes(bytes)
+        .map_err(|error| JsValue::from_str(&format!("bundle decode failed: {error}")))?;
+    bundle
+        .verify()
+        .map_err(|error| JsValue::from_str(&format!("bundle verify failed: {error}")))?;
+    let canonical = bundle
+        .to_bytes()
+        .map_err(|error| JsValue::from_str(&format!("bundle encode failed: {error}")))?;
+    if canonical != bytes {
+        return Err(JsValue::from_str("bundle bytes are not canonical"));
+    }
+    if expected_id != bundle.id() {
+        return Err(JsValue::from_str("bundle id does not match the vector"));
+    }
+
+    let destination = match &bundle.inner.dst {
+        hop_core::bundle::Destination::Device(_) => 0,
+        hop_core::bundle::Destination::AckTo(_, _) => 1,
+        hop_core::bundle::Destination::Broadcast => 2,
+        hop_core::bundle::Destination::Vaccine(_) => 3,
+    };
+    let wire_len = u32::try_from(bytes.len())
+        .map_err(|_| JsValue::from_str("bundle length does not fit metadata"))?;
+    let ciphertext_len = u32::try_from(bundle.inner.payload.ciphertext.len())
+        .map_err(|_| JsValue::from_str("ciphertext length does not fit metadata"))?;
+    let trace_len = u8::try_from(bundle.trace().len())
+        .map_err(|_| JsValue::from_str("trace length does not fit metadata"))?;
+    let signature_len = u16::try_from(bundle.sig.len())
+        .map_err(|_| JsValue::from_str("signature length does not fit metadata"))?;
+    if bundle.sig.len() > 64 {
+        return Err(JsValue::from_str(
+            "bundle signature exceeds metadata capacity",
+        ));
+    }
+
+    let mut metadata = vec![0u8; 211];
+    metadata[0] = bundle.inner.version;
+    metadata[1] = destination;
+    metadata[2] = u8::from(bundle.is_private());
+    metadata[3] = u8::from(bundle.inner.flags.is_ack);
+    metadata[4..8].copy_from_slice(&wire_len.to_le_bytes());
+    metadata[8..12].copy_from_slice(&ciphertext_len.to_le_bytes());
+    metadata[12..14].copy_from_slice(&bundle.env.copies.to_le_bytes());
+    metadata[14] = bundle.env.hops;
+    metadata[15] = trace_len;
+    metadata[16..24].copy_from_slice(&bundle.inner.created_at.to_le_bytes());
+    metadata[24..28].copy_from_slice(&bundle.inner.lifetime_ms.to_le_bytes());
+    metadata[28] = bundle.env.hop_limit;
+    metadata[29..61].copy_from_slice(&bundle.id());
+    if let Some(content_id) = bundle.private_content_id() {
+        metadata[61..93].copy_from_slice(&content_id);
+    }
+    if let Some(header) = &bundle.inner.private {
+        metadata[93..109].copy_from_slice(&header.tag);
+        metadata[109..141].copy_from_slice(&header.ephemeral);
+        if let Some(mailbox) = header.mailbox {
+            metadata[141] = 1;
+            metadata[142..144].copy_from_slice(&mailbox);
+        }
+        metadata[144] = 1;
+    } else if matches!(&bundle.inner.dst, hop_core::bundle::Destination::Vaccine(_)) {
+        metadata[144] = 2;
+    }
+    metadata[145..147].copy_from_slice(&signature_len.to_le_bytes());
+    metadata[147..147 + bundle.sig.len()].copy_from_slice(&bundle.sig);
+    Ok(metadata)
+}
+
 /// One frame's worth of bytes a node wants to ship to a peer, tagged with the link.
 #[wasm_bindgen]
 pub struct OutPacket {
@@ -108,12 +181,17 @@ impl Delivered {
 /// A channel (hps://) post that arrived for this node, group messaging (§32).
 #[wasm_bindgen]
 pub struct ChannelMsg {
+    pub(crate) id: Vec<u8>,
     pub(crate) path: String,
     pub(crate) body: Vec<u8>,
     pub(crate) sender: Vec<u8>,
 }
 #[wasm_bindgen]
 impl ChannelMsg {
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> Vec<u8> {
+        self.id.clone()
+    }
     #[wasm_bindgen(getter)]
     pub fn path(&self) -> String {
         self.path.clone()
@@ -165,6 +243,7 @@ pub(crate) fn encode_gradient(rows: Vec<([u8; 16], u64, u8)>) -> Vec<u8> {
 #[cfg(test)]
 mod codec_tests {
     use super::store::decode_kv_pairs;
+    use super::validate_wire_bundle;
     use super::{encode_gradient, encode_sends_status, ChannelMsg, Delivered, OutPacket, Transfer};
 
     // Reference JS decoders re-implemented in Rust, matching sim/mesh.js byte-for-byte, so a layout
@@ -351,6 +430,29 @@ mod codec_tests {
     }
 
     #[test]
+    fn wire_vector_validator_returns_fixed_metadata() {
+        let bundle = hop_core::bundle::Bundle::create_vaccine(
+            [7u8; 32],
+            hop_core::bundle::BundleOpts {
+                created_at: 123,
+                copies: 5,
+                hop_limit: 6,
+                ..Default::default()
+            },
+        );
+        let bytes = bundle.to_bytes().unwrap();
+        let metadata = validate_wire_bundle(&bytes, &bundle.id()).unwrap();
+        assert_eq!(metadata.len(), 211);
+        assert_eq!(metadata[0], hop_core::bundle::BUNDLE_VERSION);
+        assert_eq!(metadata[1], 3);
+        assert_eq!(metadata[2], 0);
+        assert_eq!(metadata[3], 1);
+        assert_eq!(&metadata[29..61], &bundle.id());
+        assert_eq!(metadata[144], 2);
+        assert_eq!(u16::from_le_bytes([metadata[145], metadata[146]]), 0);
+    }
+
+    #[test]
     fn kv_pairs_truncated_value_length_drops_trailing_record() {
         // A valid key but a value-length that overruns the buffer must drop that trailing record
         // rather than read past the end.
@@ -433,10 +535,12 @@ mod codec_tests {
     #[test]
     fn channel_msg_getters_return_the_fields() {
         let m = ChannelMsg {
+            id: vec![0xdd; 32],
             path: "hps://room".to_string(),
             body: b"gm".to_vec(),
             sender: vec![0xcc; 32],
         };
+        assert_eq!(m.id(), vec![0xdd; 32]);
         assert_eq!(m.path(), "hps://room");
         assert_eq!(m.body(), b"gm".to_vec());
         assert_eq!(m.sender(), vec![0xcc; 32]);

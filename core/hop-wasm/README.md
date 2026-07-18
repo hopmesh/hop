@@ -81,10 +81,11 @@ methods (`register_channel`, `channel_subscribe`, `channel_publish`, `take_chann
 
 ## The shape of it
 
-- **Poll-model.** `tick(nowMs)` the clock, `drain()` outbound packets to the bearer, `inbox()` what
-  arrived. Nothing pushes asynchronously.
+- **Poll-model.** `tick(nowMs)` the clock, `drain()` outbound packets to the bearer, and poll `inbox()`.
+  Inbox polling is non-destructive; call `accept_inbox(id)` after local persistence. Nothing pushes
+  asynchronously.
 - **Host-owned storage.** You implement `StoreBridge` (put/get/remove/seen/have/prune plus a small kv
-  side store). The core reads and writes it; bundles never live in wasm memory.
+  side store with atomic `kvBatch`). The core reads and writes it; bundles never live in wasm memory.
 - **JS is the bearer.** `connected` / `receive` / `drain` / `disconnected` move opaque bytes over
   whatever transport you have (a mock link, WebRTC, a WebSocket). The core owns all crypto.
 - **Deterministic identity.** A node built from the same 32-byte seed keeps its address across reloads.

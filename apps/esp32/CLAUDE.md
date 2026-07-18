@@ -9,6 +9,9 @@ first-class Hop client, not just a bearer host.
 - Host smoke (what CI runs, proves `hop.h` is consumable from embedded-style C): `apps/esp32/hop-sensor/build.sh`. It builds libhop (`cargo build -p hop`) and compiles `main.c` against the generated header, then runs it end to end (expects `PASS: [sensor] hops:// response status=202`).
 - Real ESP-IDF firmware build: see the app's `README.md`. `build-libhop-esp.sh` cross-compiles libhop for the chip; the `minimal` cargo feature drops UniFFI + the SQLite store for the embedded target.
 - The host smoke binary (`hop-sensor`) is a build artifact and gitignored.
+- `hop_node_tick` requires plausible, non-regressing Unix epoch milliseconds from synchronized wall
+  time. `main/hop_main.c` gates every time-dependent protocol operation on `gettimeofday()` and uses
+  FreeRTOS ticks only for local scheduling and stale-clock detection. Never substitute uptime.
 
 Because this app talks only to `sdk/hop.h`, a change to the C ABI header (`HOP_ABI_VERSION`, a signature)
 can break it silently; the contract-purity + header-drift CI job guards the header, and this smoke build

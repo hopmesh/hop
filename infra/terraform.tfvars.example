@@ -1,17 +1,22 @@
-# Copy to terraform.tfvars (gitignored) for a LOCAL `tofu apply`. The GitOps deploy path (a push to
-# main -> Cloud Build -> tofu apply, see cloudbuild.trigger.yaml) does NOT read this file: it injects
-# the same values as TF_VAR_* env vars. terraform.tfvars is only for a hand-run apply from your machine.
+# Local emergency apply inputs. Normal deployments receive these values only from
+# the verified KMS-signed provenance manifest in the trusted deployment trigger.
 
 project_id = "hop-mesh"
 
-# Build & push first, then paste the immutable tag here (see infra/README.md).
-relay_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest"
+# Replace every zero value below with one coherent, verified build provenance set.
+# Digest references are mandatory; tags, including full-SHA tags, are rejected here.
+relay_image   = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+example_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-example@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-# infra-r2-05: pin the deploy to a curated region set. Empty (the default) = all available regions
-# minus excluded_regions (needs ~43-region Cloud Run quota). The variable is `region_allowlist`.
+deployment_source_sha      = "0000000000000000000000000000000000000000"
+deployment_build_id        = "00000000-0000-0000-0000-000000000000"
+deployment_manifest_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+deployment_environment     = "production"
+relay_identity_version     = "1"
+example_identity_version   = "1"
+
+# Empty uses all supported regions minus excluded_regions. A curated list avoids
+# requiring quota for every Cloud Run region.
 region_allowlist = ["us-central1", "europe-west1", "asia-southeast1"]
 
 domain = "relay.hopme.sh"
-
-# hopme.sh DNS is always managed by this module (see dns.tf); delegate the registrar's nameservers to
-# the `name_servers` output. There is no manage_dns toggle (it was a no-op; removed in infra-r2-03).

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # Hop test harness primitives. Uniform send/verify/fg-bg/log across Android (adb) and iOS (devicectl).
 #   Android send : hopdemo://send deep link (am start)         : fires bearer.sendTo, no UI taps
 #   iOS send     : hopdemo://send via devicectl --payload-url  : onOpenURL -> sendTo (env fallback)
@@ -9,7 +10,9 @@
 # Source devices.sh first. addrs.env (name->addr) is produced by refresh-addrs.sh.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=devices.sh
 source "$HERE/devices.sh"
+# shellcheck disable=SC1091
 [ -f "$HERE/addrs.env" ] && source "$HERE/addrs.env"
 # quality-net-10: scratch dir defaults under the OS temp dir (portable), not a hardcoded absolute path
 # into one machine's session scratch. Override with TK_WORK.

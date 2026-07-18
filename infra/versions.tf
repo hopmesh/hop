@@ -1,6 +1,6 @@
 terraform {
   # Floor matches the version that writes this module's state and the version every runner is
-  # pinned to (CI setup-opentofu + the cloudbuild.trigger.yaml _TOFU image are both 1.12.3, whose
+  # pinned to (CI setup-opentofu + the bootstrap inline deploy image are both 1.12.3, whose
   # comment already notes the runner "must be >= the version that wrote the state"). Enforcing that
   # here means an older tofu can't fmt/validate/plan/apply against 1.12-written state and hit a
   # confusing state-version error; it fails fast with a clear "requires >= 1.12" instead.
@@ -9,11 +9,11 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 6.0"
+      version = "~> 7.7.0"
     }
     google-beta = {
       source  = "hashicorp/google-beta"
-      version = "~> 6.0"
+      version = "~> 7.7.0"
     }
     time = {
       source  = "hashicorp/time"

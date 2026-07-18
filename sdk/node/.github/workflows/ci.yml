@@ -15,11 +15,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/ci
         with:
           pkg-dir: "."
           libhop-source: download
+          libhop-sha256: ${{ matrix.os == 'ubuntu-24.04' && vars.LIBHOP_LINUX_X64_SHA256 || vars.LIBHOP_MACOS_X64_SHA256 }}

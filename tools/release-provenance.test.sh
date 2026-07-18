@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+python3 - "$root" <<'PY'
+import importlib.util
+import json
+import re
+import tempfile
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("provenance", root / "tools/release-provenance.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def rejected(call, label):
+    try:
+        call()
+    except module.ProvenanceError:
+        return
+    raise AssertionError(f"expected rejection: {label}")
+
+
+source = "1" * 40
+message = f"publish\n\nGitOrigin-RevId: {source}\n"
+assert module.parse_source_revision(message) == source
+rejected(lambda: module.parse_source_revision("publish\n"), "absent source metadata")
+rejected(
+    lambda: module.parse_source_revision(message + f"GitOrigin-RevId: {'2' * 40}\n"),
+    "duplicate source metadata",
+)
+rejected(
+    lambda: module.parse_source_revision("GitOrigin-RevId: ../main\n"),
+    "malformed source metadata",
+)
+
+sha = "a" * 40
+event = {
+    "created": True,
+    "deleted": False,
+    "forced": False,
+    "before": "0" * 40,
+    "after": sha,
+    "ref": "refs/tags/v1.2.3",
+}
+assert module.validate_tag_state("refs/tags/v1.2.3", sha, event, sha, sha, sha, sha) == "v1.2.3"
+rejected(
+    lambda: module.validate_tag_state(
+        "refs/tags/v1.2.3", sha, event, sha, sha, sha, "b" * 40
+    ),
+    "off-main tag",
+)
+moved = dict(event, created=False, forced=True, before="c" * 40)
+rejected(
+    lambda: module.validate_tag_state(
+        "refs/tags/v1.2.3", sha, moved, sha, sha, sha, sha
+    ),
+    "moved tag",
+)
+rejected(
+    lambda: module.validate_tag_state(
+        "refs/tags/not-semver", sha, event, sha, sha, sha, sha
+    ),
+    "invalid tag",
+)
+replayed = dict(event, after="b" * 40)
+rejected(
+    lambda: module.validate_tag_state(
+        "refs/tags/v1.2.3", sha, replayed, sha, sha, "b" * 40, sha
+    ),
+    "event after mismatch",
+)
+
+run = {
+    "id": 42,
+    "head_sha": source,
+    "head_branch": "main",
+    "event": "push",
+    "path": ".github/workflows/ci.yml",
+    "status": "completed",
+    "conclusion": "success",
+}
+assert module.select_workflow_run([run], source)["id"] == 42
+rejected(lambda: module.select_workflow_run([], source), "absent CI run")
+rejected(lambda: module.select_workflow_run([run, run], source), "duplicate CI run")
+
+native_run = dict(
+    run,
+    id=84,
+    event="workflow_run",
+    path=".github/workflows/native-artifacts.yml",
+    display_title=f"Native artifacts for {source}",
+    head_sha="f" * 40,
+    run_attempt=3,
+)
+assert module.select_native_run([native_run], source)["id"] == 84
+rejected(lambda: module.select_native_run([], source), "absent native artifact run")
+newer_native_run = dict(native_run, id=85, run_attempt=1)
+assert module.select_native_run([native_run, newer_native_run], source)["id"] == 85
+rejected(
+    lambda: module.select_native_run([dict(native_run, display_title="Native artifacts")], source),
+    "native artifact run without source identity",
+)
+rejected(
+    lambda: module.select_native_run([dict(native_run, run_attempt=0)], source),
+    "native artifact run without a valid attempt",
+)
+
+check = {
+    "name": "Rust",
+    "details_url": "https://github.com/hopmesh/hop/actions/runs/42/job/1",
+    "status": "completed",
+    "conclusion": "success",
+}
+module.verify_required_checks(["Rust"], [check], 42)
+rejected(lambda: module.verify_required_checks(["Rust"], [], 42), "absent required check")
+rejected(
+    lambda: module.verify_required_checks(["Rust"], [check, check], 42),
+    "duplicate required check",
+)
+skipped = dict(check, conclusion="skipped")
+module.verify_required_checks(["Rust"], [skipped], 42)
+gate = dict(check, name="CI gate")
+rejected(
+    lambda: module.verify_required_checks(["CI gate"], [dict(gate, conclusion="skipped")], 42),
+    "skipped aggregate gate",
+)
+automation = dict(check, name="Automation authority guards")
+rejected(
+    lambda: module.verify_required_checks(
+        ["Automation authority guards"], [dict(automation, conclusion="skipped")], 42
+    ),
+    "skipped automation guards",
+)
+rejected(
+    lambda: module.verify_required_checks(["Rust"], [check, dict(check, name="Extra")], 42),
+    "unexpected workflow check",
+)
+
+expected = {"a": ("100644", b"canonical")}
+module.compare_trees(expected, dict(expected))
+rejected(
+    lambda: module.compare_trees(expected, {"a": ("100644", b"forged")}),
+    "metadata tree mismatch",
+)
+
+with tempfile.TemporaryDirectory() as temp:
+    policy = Path(temp) / "variables.tf"
+    policy.write_text('variable "github_required_checks" {\n  default = [\n    "Rust",\n    "Web",\n  ]\n}\n')
+    assert module.parse_required_checks(policy) == ["Rust", "Web"]
+    policy.write_text('variable "github_required_checks" {\n  default = [\n    "Rust",\n    "Rust",\n  ]\n}\n')
+    rejected(lambda: module.parse_required_checks(policy), "duplicate policy check")
+
+components = json.loads((root / "tools/copybara/components.json").read_text())
+expected_workflows = {
+    root / entry["prefix"] / ".github/workflows/release.yml": name
+    for name, entry in components.items()
+    if (root / entry["prefix"] / ".github/workflows/release.yml").is_file()
+}
+actual_workflows = set(root.glob("**/.github/workflows/release.yml"))
+assert actual_workflows == set(expected_workflows), "release workflow is outside the component map"
+
+token_action_v2 = (
+    "actions/create-github-app-token@"
+    "fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2"
+)
+token_action_v3 = (
+    "actions/create-github-app-token@"
+    "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0"
+)
+publish_markers = (
+    "cargo publish",
+    "crates-publish.py publish",
+    "npm publish",
+    "pypa/gh-action-pypi-publish@",
+    "gem push",
+    "mix hex.publish",
+    "hex.pm/api/packages/",
+    "softprops/action-gh-release@",
+    "pio pkg publish",
+)
+native_components = {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"}
+for workflow, component in expected_workflows.items():
+    text = workflow.read_text()
+    verify = re.compile(r"release-provenance\.py(?:\s|\\\n)+--component\s+" + re.escape(component))
+    expected_environments = 2 if component in native_components else 1
+    assert text.count("environment: release") == expected_environments, f"release environment drifted: {workflow}"
+    expected_token_action = token_action_v3 if component in {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"} else token_action_v2
+    assert text.count(expected_token_action) == 1, f"source token action drifted: {workflow}"
+    assert len(verify.findall(text)) == 1, f"provenance invocation drifted: {workflow}"
+    assert "fetch-depth: 0" in text and "persist-credentials: false" in text
+    assert "HOP_SOURCE_APP_ID" in text and "HOP_SOURCE_APP_PRIVATE_KEY" in text
+    assert "permission-actions: read" in text
+    assert "permission-checks: read" in text
+    assert "permission-contents: read" in text
+    assert "repositories: hop" in text and "hopmesh/monorepo" not in text
+    lines = text.splitlines()
+    verify_line = next(index for index, line in enumerate(lines) if "release-provenance.py" in line)
+    publish_lines = [
+        index
+        for index, line in enumerate(lines)
+        if not line.lstrip().startswith("#")
+        and any(marker in line for marker in publish_markers)
+    ]
+    assert publish_lines, f"publish step was not recognized: {workflow}"
+    assert verify_line < min(publish_lines), f"publish precedes provenance: {workflow}"
+
+copybara = (root / "tools/copybara/copy.bara.sky").read_text()
+assert 'core.move(PROVENANCE_HELPER, ".github/release-provenance.py")' in copybara
+assert 'core.move(RELEASE_ARTIFACT_HELPER, ".github/release-artifact.py")' in copybara
+assert 'core.move(CRATES_PUBLISH_HELPER, ".github/crates-publish.py")' in copybara
+assert 'core.move(COMPONENT_MAP, ".github/components.json")' in copybara
+assert 'core.move(EXPORT_SMOKE, ".github/package-export-smoke.py")' in copybara
+assert 'core.move(NATIVE_HELPER, "native/native-artifacts.py")' in copybara
+
+for workflow, component in expected_workflows.items():
+    if component in native_components:
+        workflow_text = workflow.read_text()
+        assert "--require-native-artifacts" in workflow_text, f"native provenance not required: {workflow}"
+        assert "permission-attestations: read" in workflow_text, f"native attestation access absent: {workflow}"
+        assert workflow_text.count("native_run_attempt") >= 2, f"native run attempt not bound: {workflow}"
+
+native_workflow = (root / ".github/workflows/native-artifacts.yml").read_text()
+assert "native-release-bundle-${{ github.run_attempt }}" in native_workflow
+assert "native-*-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}" in native_workflow
+
+print("release provenance tests passed")
+PY

@@ -1,0 +1,53 @@
+[package]
+name = "hop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+hop-core = { path = "../core/hop-core", features = ["fuzzing"] }
+hop = { path = "../core/hop", default-features = false, features = ["minimal"] }
+hop-store-sqlite = { path = "../core/stores/hop-store-sqlite" }
+
+[[bin]]
+name = "bundle_parse_verify"
+path = "fuzz_targets/bundle_parse_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link_framing_reassembly"
+path = "fuzz_targets/link_framing_reassembly.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ratchet_message"
+path = "fuzz_targets/ratchet_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_operations"
+path = "fuzz_targets/store_operations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "c_abi_adversarial"
+path = "fuzz_targets/c_abi_adversarial.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

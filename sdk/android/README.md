@@ -6,11 +6,10 @@
 
 <p align="center">
   <b>Run a real Hop node on Android.</b><br>
-  The Kotlin client SDK for the <a href="https://hopme.sh">Hop</a> mesh, over the <code>libhop</code> C ABI, shipped as a Maven AAR.
+  The Kotlin client SDK for the <a href="https://hopme.sh">Hop</a> mesh, over the <code>libhop</code> C ABI, packaged as a Maven AAR.
 </p>
 
 <p align="center">
-  <a href="https://search.maven.org/artifact/sh.hop/hop"><img src="https://img.shields.io/maven-central/v/sh.hop/hop?color=3ddc84&label=maven%20central" alt="maven central"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/kotlin-2.4-7f52ff" alt="kotlin 2.4">
 </p>
@@ -25,7 +24,20 @@ peer that relays for everyone else. `HopNode` is a thin, type-safe Kotlin face o
 ABI every Hop SDK binds) via JNA, with identity, forward secrecy, and the untraceable send path already
 inside. The AAR bundles the native `libhop.so` for every ABI, so there's no NDK build to wire up.
 
-## Install
+Each release is built from the canonical native-artifact workflow, not from files left on a mirror
+runner. `build-aar.sh` verifies the signed source-SHA manifest and independently hashed archives for
+`arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` before producing the AAR. The Maven publication includes
+Prefab metadata and `hop.h`, JNA as an AAR runtime dependency, sources and documentation jars, a full
+POM, SHA-256/SHA-512 sidecars, optional in-memory PGP signing, and GitHub provenance attestations.
+
+## Package availability
+
+The source and package pipeline is ready: it publishes the exact standalone export to a clean temporary
+Maven repository, resolves the AAR from a separate Android Gradle Plugin application, merges its manifest
+and native ABI slices, and assembles an APK offline. Public v0.0.1 publication remains post-merge external state.
+This source tree does not assert that a public Maven coordinate or GitHub release exists yet.
+
+## Install after publication
 
 ```kotlin
 // build.gradle.kts
@@ -55,9 +67,10 @@ HopNode.openKeyed(dbPath, keystoreKey)!!.use { node ->
     val dst = HopAddress.fromBase58("7Yc9…")!!
     node.send(dst, body = "meet at the ridge".toByteArray(), requestAck = true)
 
-    // Core is poll-model: drain what arrived on your loop.
+    // Polling is non-destructive. Accept only after your app has persisted the message.
     node.pollInbox { msg ->
         Log.d("hop", "${HopAddress.base58(msg.from)}: ${String(msg.body)}")
+        if (appStore.save(msg)) node.acceptInbox(msg.id)
     }
 }
 ```
@@ -68,7 +81,7 @@ request/response surface.
 
 ## The bearer seam
 
-A node moves opaque bytes; a **bearer** (BLE, LAN, Wi-Fi Direct) owns the radio and nothing else. The core
+A node moves opaque bytes; a **bearer** (BLE, LAN, or relay) owns the transport and nothing else. The core
 owns all crypto, framing, and routing. Wire a bearer to the node with four calls:
 
 ```kotlin

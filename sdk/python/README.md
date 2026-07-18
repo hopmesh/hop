@@ -72,7 +72,10 @@ A client reaches it by name, verified end to end:
 
 ```python
 address = client.dial_by_name("https://myaddress.com")
-status, body = client.request(address, "acme/orders", "create", order)
+response = client.request(address, "acme/orders", "create", order)
+persist_result(response)
+response.accept()  # remove the durable response only after local work succeeds
+status, body = response.status, response.body
 ```
 
 TLS proves the domain, a signed **reach record** proves the address, and the Noise handshake confirms it.
@@ -88,7 +91,7 @@ zero core changes:
 | --------------------- | ---------------------------------------------------------- |
 | `hop.on(svc, fn)`     | `hop_subscribe` + `hop_poll_service_requests`              |
 | `reply(status, body)` | `hop_send_service_response` (status is a `uint16`)         |
-| `hop.request(...)`    | `hop_send_service_request` + `hop_poll_service_responses`  |
+| `hop.request(...)`    | `hop_send_service_request` + durable response poll/accept  |
 | the Internet bearer   | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing`|
 
 ## Examples

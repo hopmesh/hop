@@ -1,13 +1,14 @@
-// hop-sensor — an EXAMPLE full Hop client in pure C, the kind an ESP32 IoT device would run: it
+// hop-sensor: an EXAMPLE full Hop client in pure C, the kind an ESP32 IoT device would run: it
 // makes a node, reaches the mesh over a bearer, and POSTs a sensor reading to a hops:// service,
-// then reads the response. It binds ONLY libhop's C ABI (hop.h) — no UniFFI, no Rust on the call
-// site — which is exactly why an embedded target can be a first-class client.
+// then reads the response. It binds ONLY libhop's C ABI (hop.h), with no UniFFI or Rust on the call
+// site, which is exactly why an embedded target can be a first-class client.
 //
 // On a real ESP32 (ESP-IDF) you would: (1) build libhop for the Xtensa/RISC-V target and link it;
 // (2) plug in a real bearer (BLE and/or LoRa) that calls hop_link_up / hop_bytes_received /
 // hop_link_down and ships hop_drain_outgoing's bytes over the radio; (3) keep the loop below. See
 // README.md. HERE, so the example RUNS on a dev host, the "cloud service" is a second in-process node
-// wired by a loopback bearer — the only difference from a deployment is where the bytes travel.
+// wired by a loopback bearer. The only difference from a deployment is where the bytes travel. The
+// fixed epoch below simulates already-synchronized wall time; it is deliberately not host uptime.
 
 #include "hop.h"
 #include <stdio.h>
@@ -27,10 +28,11 @@ static void on_request(void *ctx, const uint8_t *from, const uint8_t *rid, const
     printf("[cloud] request %s/%s args=\"%.*s\"\n", svc, method, (int)alen, (const char *)args);
 }
 typedef struct { int got; uint16_t status; char body[128]; } Resp;
-static void on_response(void *ctx, const uint8_t *from, const uint8_t *rid, uint16_t status, const uint8_t *b, size_t n) {
+static bool on_response(void *ctx, const uint8_t *from, const uint8_t *rid, uint16_t status, const uint8_t *b, size_t n) {
     (void)from; (void)rid; Resp *r = (Resp *)ctx;
     size_t k = n < sizeof(r->body) - 1 ? n : sizeof(r->body) - 1; memcpy(r->body, b, k); r->body[k] = 0;
     r->status = status; r->got = 1;
+    return true;
 }
 
 int main(void) {

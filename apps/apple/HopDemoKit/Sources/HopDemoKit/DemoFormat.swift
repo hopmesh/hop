@@ -122,10 +122,42 @@ public enum DemoFormat {
     /// default an empty input yields the bare scheme "hops://" (matching the browser's go() field).
     public static func normalizeHopsURL(_ raw: String, defaultHost: String? = nil) -> String {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.hasPrefix("hops://") { return s }
+        let lower = s.lowercased()
+        if lower.hasPrefix("hops://") { return "hops://" + s.dropFirst(7) }
+        if lower.hasPrefix("https://") { return "hops://" + s.dropFirst(8) }
+        if lower.hasPrefix("http://") { return "hops://" + s.dropFirst(7) }
         let host = s.isEmpty ? (defaultHost ?? "") : s
         return "hops://\(host)"
     }
+
+    /// The browser's complete URL policy. Only hierarchical, credential-free `hops` URLs and the
+    /// explicit local `about:blank` bootstrap are allowed. Relative URLs inherit their supplied hops base.
+    public static func browserAllowsURL(_ raw: String, relativeTo base: String? = nil) -> Bool {
+        let input = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if input.lowercased() == "about:blank" { return true }
+        guard !input.isEmpty, !input.contains("\\") else { return false }
+        let baseURL = base.flatMap(URL.init(string:))
+        guard let url = URL(string: input, relativeTo: baseURL)?.absoluteURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "hops",
+              components.user == nil, components.password == nil, components.port == nil,
+              components.fragment == nil,
+              let rawHost = components.host else { return false }
+        let host = rawHost.lowercased()
+        guard (1...253).contains(host.count), !host.hasSuffix("."), host.unicodeScalars.allSatisfy({
+            (0x21...0x7e).contains(Int($0.value))
+        }) else { return false }
+        return host.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { label in
+            (1...63).contains(label.count) && label.first != "-" && label.last != "-" &&
+                label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
+        }
+    }
+
+    /// Defense in depth for active content and subresources that bypass navigation callbacks.
+    public static let hopsContentSecurityPolicy =
+        "default-src 'none'; img-src hops:; style-src hops:; font-src hops:; frame-src hops:; " +
+        "media-src hops:; connect-src hops:; script-src 'none'; object-src 'none'; " +
+        "base-uri 'none'; form-action 'none'"
 
     // MARK: - hops:// scheme-handler request shaping
 
@@ -204,6 +236,48 @@ public enum DemoFormat {
         return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
     }
     #endif
+}
+
+/// Fail-closed state for one currently attached browser view. The caller supplies an attachment token
+/// and carries the returned generation into asynchronous rule-list completion.
+public struct BrowserPolicyLifecycle {
+    public private(set) var generation: UInt64 = 0
+    public private(set) var attachment: UInt64?
+    public private(set) var policyReady = false
+
+    public init() {}
+
+    @discardableResult
+    public mutating func attach(_ token: UInt64) -> UInt64 {
+        generation &+= 1
+        attachment = token
+        policyReady = false
+        return generation
+    }
+
+    public mutating func detach(_ token: UInt64) {
+        guard attachment == token else { return }
+        generation &+= 1
+        attachment = nil
+        policyReady = false
+    }
+
+    public func isCurrent(attachment token: UInt64, generation expected: UInt64) -> Bool {
+        attachment == token && generation == expected
+    }
+
+    /// Returns true only when this completion installed rules for the current attachment.
+    @discardableResult
+    public mutating func complete(attachment token: UInt64, generation expected: UInt64,
+                                  installed: Bool) -> Bool {
+        guard isCurrent(attachment: token, generation: expected) else { return false }
+        policyReady = installed
+        return installed
+    }
+
+    public func allows(_ rawURL: String, attachment token: UInt64) -> Bool {
+        attachment == token && policyReady && DemoFormat.browserAllowsURL(rawURL)
+    }
 }
 
 /// QR identity-exchange payload, shared with Android: "<base58 address>|<name>". The name is

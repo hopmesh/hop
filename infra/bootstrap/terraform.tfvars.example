@@ -1,0 +1,26 @@
+# Required external identifiers. Obtain repository and workflow ids from the GitHub
+# API, and the Actions App id from the workflow run's authenticated check suite.
+build_connection_name = "hop-github"
+github_repository     = "hopmesh/hop" # also scopes billing-catalog WIF tokens and impersonation
+github_repository_id  = 0 # replace; bootstrap validation rejects zero
+github_actions_app_id = 0 # replace; bootstrap validation rejects zero
+github_ci_workflow_id = 0 # replace; bootstrap validation rejects zero
+# Hash the separately reviewed workflow bytes. A CI workflow change is not deployable until an
+# administrator updates this value and reapplies bootstrap.
+github_ci_workflow_sha256 = "0b69204f35ef858ff4cd417d5ec00ad7e0671f85f2040f05efbb7fc308fb474d"
+
+# Pin the current versions after seeding each secret out of band.
+ci_token_secret_version  = "1"
+relay_identity_version   = "1"
+example_identity_version = "1"
+
+deployment_environment = "production"
+deploy_approver_group   = "platform-approvers@example.com" # replace with the real restricted group
+control_bucket_name     = "hop-mesh-deploy-control"
+# This bucket also hosts the condition-scoped billing/ state prefix.
+runtime_state_bucket = "hop-mesh-tfstate"
+firestore_location   = "nam5"
+
+# The relay fleet remains off during the P2P-only phase. Changing this control-plane
+# value requires a separately reviewed bootstrap apply.
+relays_enabled = false

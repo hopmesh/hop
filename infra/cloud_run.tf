@@ -1,13 +1,28 @@
 # One relay per region. Scale-to-zero (min = 0): an idle region costs nothing and
 # spins up on the first WebSocket connection, then back to zero when the last one
 # drops (the user's "go offline automatically if no nodes are connected"). Ingress
-# is var.cloud_run_ingress: open while testing via *.run.app, LB-only once DNS lands.
+# is restricted to internal and load-balancer traffic; the default service URI is disabled.
 resource "google_cloud_run_v2_service" "relay" {
   for_each = local.regions
 
   name     = "hop-relay-${each.value}"
   location = each.value
   ingress  = var.cloud_run_ingress
+  # The global external Application Load Balancer is the only public front door.
+  default_uri_disabled = true
+
+  # Public invocation is an explicit service setting, not a runtime IAM mutation.
+  # Hop authenticates links with Noise XX after ingress.
+  invoker_iam_disabled = true
+
+  labels = {
+    "hop-source-sha" = var.deployment_source_sha
+  }
+  annotations = {
+    "hopmesh.dev/build-id"        = var.deployment_build_id
+    "hopmesh.dev/environment"     = var.deployment_environment
+    "hopmesh.dev/manifest-sha256" = var.deployment_manifest_sha256
+  }
 
   deletion_protection = false
 
@@ -19,7 +34,7 @@ resource "google_cloud_run_v2_service" "relay" {
   }
 
   template {
-    service_account = google_service_account.relay.email
+    service_account = local.relay_service_account
     timeout         = "${var.ws_request_timeout_seconds}s"
 
     scaling {
@@ -28,7 +43,7 @@ resource "google_cloud_run_v2_service" "relay" {
     }
 
     containers {
-      image = local.relay_image
+      image = var.relay_image
 
       # Explicit command/args (overrides the Dockerfile CMD) so each region runs as a
       # distinct backbone node: --region derives a per-region identity, --advertise is
@@ -84,14 +99,15 @@ resource "google_cloud_run_v2_service" "relay" {
         cpu_idle = true # bill CPU only while requests/connections are in flight
       }
 
-      # F-17: container-level health probes tied to the driver loop's heartbeat (serve_healthz).
+      # F-17: container-level liveness probes tied only to the driver loop heartbeat. Durable
+      # readiness remains on /healthz so a Firestore outage stops traffic without a restart loop.
       # Without these Cloud Run's default TCP check passes for a WEDGED instance forever, and with
       # one instance per region a wedged instance IS the region. These are internal to Cloud Run —
       # do NOT add an external uptime check against the region endpoints (DESIGN.md §1436: it wakes
       # scaled-to-zero instances).
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/livez"
           port = 8080
         }
         initial_delay_seconds = 5
@@ -100,7 +116,7 @@ resource "google_cloud_run_v2_service" "relay" {
       }
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/livez"
           port = 8080
         }
         period_seconds    = 30
@@ -111,12 +127,10 @@ resource "google_cloud_run_v2_service" "relay" {
     volumes {
       name = "identity"
       secret {
-        secret = google_secret_manager_secret.relay_identity.secret_id
+        secret = "hop-relay-identity"
         items {
-          # F-23: pin an explicit secret version in production (var.relay_identity_version) rather than
-          # "latest". "latest" silently re-keys each region on its next COLD start when a new version is
-          # added, split-braining the fleet and orphaning Firestore partitions/registry entries. Set the
-          # var to the numeric version that was seeded; keep "latest" only for throwaway dev.
+          # F-23: pin the exact version seeded during bootstrap. A mutable alias can re-key regions on
+          # different cold starts, split-braining the fleet and orphaning Firestore partitions.
           version = var.relay_identity_version
           path    = "identity"
         }
@@ -124,19 +138,4 @@ resource "google_cloud_run_v2_service" "relay" {
     }
   }
 
-  depends_on = [
-    google_project_service.this,
-    google_secret_manager_secret_iam_member.relay_identity,
-  ]
-}
-
-# The LB front-end authenticates Hop links itself via Noise XX, so the Cloud Run
-# invoker is public; access control is the handshake, not IAM.
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  for_each = google_cloud_run_v2_service.relay
-
-  location = each.value.location
-  name     = each.value.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
 }

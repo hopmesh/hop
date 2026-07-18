@@ -34,8 +34,10 @@ fun main() {
         ?: run { println("FAIL: send null"); exitProcess(1) }
 
     var got: HopMessage? = null
+    var accepted = false
     val ok = pump(400) {
         b.pollInbox { got = it }
+        if (!accepted) got?.let { accepted = b.acceptInbox(it.id) }
         got != null && a.delivered(id)
     }
 
@@ -86,7 +88,12 @@ private fun runtimeSmoke(): Boolean {
     val text = "hello through Kotlin HopRuntime + a Bearer"
     val id = rtA.node.send(bAddr, body = text.toByteArray(), requestAck = true) ?: return false
     var got: HopMessage? = null
-    val ok = pump(400) { rtB.node.pollInbox { got = it }; got != null && rtA.node.delivered(id) }
+    var accepted = false
+    val ok = pump(400) {
+        rtB.node.pollInbox { got = it }
+        if (!accepted) got?.let { accepted = rtB.node.acceptInbox(it.id) }
+        got != null && rtA.node.delivered(id)
+    }
     val body = got?.let { String(it.body) } ?: ""
     val pass = ok && body == text && rtA.node.delivered(id)
     println("${if (pass) "PASS" else "FAIL"}: runtime+bearer delivered=${rtA.node.delivered(id)} via ${rtB.bearers.transportNameOf(1_000_000)}")

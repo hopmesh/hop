@@ -1,8 +1,4 @@
-# Publish the Hop PlatformIO library on a semver tag. This library ships a prebuilt libhop static archive
-# per ESP32 arch, so the release fetches those from the libhop repo's own Releases (libhop is the upstream
-# that cross-compiles hop-core for embedded targets), stages them, and runs `pio pkg publish`.
-#
-# Carried in from the Hop monorepo subtree (sdk/embedded) by Copybara; edit it there, never in a mirror.
+# Build one PlatformIO archive from signed exact-target libhop inputs, then publish that exact archive.
 name: release
 
 on:
@@ -14,41 +10,199 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  prepare:
+    environment: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.provenance.outputs.source_sha }}
     steps:
-      - name: Check out the tagged commit
-        uses: actions/checkout@v4
-
-      - name: Verify the tag matches library.json
-        # A mistyped tag must not publish the wrong version. library.json is plain JSON.
-        run: |
-          declared="v$(python3 -c "import json;print(json.load(open('library.json'))['version'])")"
-          if [ "$declared" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match library.json version ($declared)"; exit 1
-          fi
-
-      - name: Fetch the prebuilt libhop archives for ESP32
-        # libhop (github.com/hopmesh/libhop) cross-compiles hop-core (minimal feature) to a static
-        # archive per arch and attaches them to its Release for the SAME vX.Y.Z. We stage hop.h + the
-        # per-arch libhop.a into place; link-libhop.py points the linker at the right one per board.
-        # NOTE: this depends on the libhop release producer running first. The two hard arches are
-        # xtensa (ESP32/S-series, built with the esp-rs Rust fork) and riscv (C3/C6, stock Rust); the
-        # xtensa cross-compile is the part to validate on the first real libhop release.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint canonical-source read token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
+          private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-actions: read
+          permission-attestations: read
+          permission-checks: read
+          permission-contents: read
+      - name: Verify canonical source, tag, tree, CI, and native provenance
+        id: provenance
         env:
-          GH_TOKEN: ${{ github.token }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: >-
+          python3 .github/release-provenance.py
+          --component hop-embedded
+          --require-native-artifacts
+          --github-output "$GITHUB_OUTPUT"
+      - name: Download canonical native bundle by run and artifact ID
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: >-
+          python3 native/native-artifacts.py download-github
+          --run-id '${{ steps.provenance.outputs.native_run_id }}'
+          --run-attempt '${{ steps.provenance.outputs.native_run_attempt }}'
+          --source-sha '${{ steps.provenance.outputs.source_sha }}'
+          --output "$RUNNER_TEMP/native-release"
+      - name: Verify signed embedded inputs and canonical attestations
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
-          set -e
-          mkdir -p include prebuilt/xtensa prebuilt/riscv
-          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'hop.h' --dir include || {
-            echo "no libhop release ${GITHUB_REF_NAME} yet; cut the libhop release first"; exit 1; }
-          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'libhop-esp32-xtensa.a' --output prebuilt/xtensa/libhop.a
-          gh release download "${GITHUB_REF_NAME}" --repo hopmesh/libhop --pattern 'libhop-esp32-riscv.a'  --output prebuilt/riscv/libhop.a
+          python3 native/native-artifacts.py verify \
+            --manifest "$RUNNER_TEMP/native-release/native-artifacts.json" \
+            --signature "$RUNNER_TEMP/native-release/native-artifacts.json.sig" \
+            --public-key native/native-artifacts-public.pem \
+            --directory "$RUNNER_TEMP/native-release" --strict \
+            --source-sha '${{ steps.provenance.outputs.source_sha }}' \
+            --tag "$GITHUB_REF_NAME" --run-id '${{ steps.provenance.outputs.native_run_id }}' \
+            --run-attempt '${{ steps.provenance.outputs.native_run_attempt }}'
+          gh attestation verify "$RUNNER_TEMP/native-release/native-artifacts.json" --repo hopmesh/hop
+          for target in xtensa-esp32-espidf xtensa-esp32s2-espidf xtensa-esp32s3-espidf riscv32imc-esp-espidf riscv32imac-esp-espidf; do
+            archive="$(python3 - "$RUNNER_TEMP/native-release/native-artifacts.json" "$target" <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1]))
+          print(next(item["filename"] for item in manifest["artifacts"] if item["target"] == sys.argv[2]))
+          PY
+          )"
+            gh attestation verify "$RUNNER_TEMP/native-release/$archive" --repo hopmesh/hop
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-release/*
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Set up PlatformIO
-        run: pipx install platformio
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-input-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-release
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.13'
+      - name: Install hash-locked PlatformIO
+        run: |
+          python3 -m pip install --require-hashes -r requirements-platformio.txt
+          python3 -m pip download --require-hashes --only-binary=:all: -r requirements-platformio.txt --dest "$RUNNER_TEMP/platformio-wheels"
+      - name: Verify and stage exact embedded native targets
+        run: |
+          set -euo pipefail
+          declared="v$(python3 -c "import json; print(json.load(open('library.json'))['version'])")"
+          test "$declared" = "$GITHUB_REF_NAME"
+          python3 native/native-artifacts.py verify \
+            --manifest "$RUNNER_TEMP/native-release/native-artifacts.json" \
+            --signature "$RUNNER_TEMP/native-release/native-artifacts.json.sig" \
+            --public-key native/native-artifacts-public.pem \
+            --directory "$RUNNER_TEMP/native-release" --strict \
+            --source-sha '${{ needs.prepare.outputs.source_sha }}' --tag "$GITHUB_REF_NAME"
+          python3 install-libhop.py --version "$GITHUB_REF_NAME" --bundle "$RUNNER_TEMP/native-release"
+          bash test/run-host-tests.sh
+      - name: Fetch and render checksum-verified PlatformIO inputs
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/platformio-cache"
+          python3 tools/platformio-offline.py fetch --cache "$cache"
+          python3 tools/platformio-offline.py config --cache "$cache" \
+            --input examples/blink_send/platformio.ini \
+            --output "$RUNNER_TEMP/blink-platformio.ini"
+          python3 tools/platformio-offline.py config --cache "$cache" \
+            --input examples/service_rpc/platformio.ini \
+            --output "$RUNNER_TEMP/service-platformio.ini"
+      - name: Build representative exact targets from local archives
+        env:
+          PIP_FIND_LINKS: ${{ runner.temp }}/platformio-wheels
+          PIP_NO_INDEX: '1'
+          PLATFORMIO_CORE_DIR: ${{ runner.temp }}/platformio-core
+        run: |
+          pio run -d examples/blink_send -c "$RUNNER_TEMP/blink-platformio.ini" -e esp32dev
+          pio run -d examples/service_rpc -c "$RUNNER_TEMP/service-platformio.ini" -e esp32dev
+      - name: Pack and inspect the release archive
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          mkdir -p "$release/native/artifacts"
+          package="$release/hop-embedded-${GITHUB_REF_NAME}.tar.gz"
+          pio pkg pack --output "$package"
+          tar -tzf "$package" > "$RUNNER_TEMP/package-files.txt"
+          if grep -Fq 'platformio.offline.ini' "$RUNNER_TEMP/package-files.txt"; then
+            exit 1
+          fi
+          grep -Eq '(^|/)native/native-artifacts.json$' "$RUNNER_TEMP/package-files.txt"
+          grep -Eq '(^|/)native/native-artifacts.json.sig$' "$RUNNER_TEMP/package-files.txt"
+          grep -Eq '(^|/)native/native-artifacts.py$' "$RUNNER_TEMP/package-files.txt"
+          for target in xtensa-esp32-espidf xtensa-esp32s2-espidf xtensa-esp32s3-espidf riscv32imc-esp-espidf riscv32imac-esp-espidf; do
+            grep -Eq "(^|/)native/artifacts/libhop-$target\\.tar\\.gz$" "$RUNNER_TEMP/package-files.txt"
+          done
+          cp native/native-artifacts.json native/native-artifacts.json.sig "$release/native/"
+          cp native/artifacts/*.tar.gz "$release/native/artifacts/"
+          python3 .github/release-artifact.py create --directory "$release" \
+            --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
 
-      - name: Publish to the PlatformIO registry
+  publish:
+    needs: [prepare, build]
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release
+      - name: Verify immutable embedded release bundle
+        run: >-
+          python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
+          --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+      - name: Attest verified PlatformIO archive
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release/hop-embedded-${{ github.ref_name }}.tar.gz
+      - name: Publish immutable source-install assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            ${{ runner.temp }}/release/hop-embedded-${{ github.ref_name }}.tar.gz
+            ${{ runner.temp }}/release/native/native-artifacts.json
+            ${{ runner.temp }}/release/native/native-artifacts.json.sig
+            ${{ runner.temp }}/release/native/artifacts/*.tar.gz
+            ${{ runner.temp }}/release/release-manifest.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.13'
+      - name: Install hash-locked PlatformIO publisher after verification
+        run: python3 -m pip install --require-hashes -r requirements-platformio.txt
+      - name: Publish the verified PlatformIO archive
         env:
           PLATFORMIO_AUTH_TOKEN: ${{ secrets.PLATFORMIO_AUTH_TOKEN }}
-        run: pio pkg publish --no-interactive
+        run: pio pkg publish "$RUNNER_TEMP/release/hop-embedded-${GITHUB_REF_NAME}.tar.gz" --no-interactive

@@ -46,11 +46,13 @@ func (e *Endpoint) WellKnownHandler(publicURL string, ttlSecs uint32) http.Handl
 	})
 }
 
-// Attach wires this endpoint into a mux IN ONE CALL: the WSS bearer at /_hop and the /.well-known/hop
-// discovery responder. publicURL is where senders reach the endpoint, e.g. "wss://myaddress.com/_hop".
-func (e *Endpoint) Attach(mux *http.ServeMux, publicURL string) {
-	mux.Handle("/_hop", e.wssHandler())
-	mux.Handle(wellKnownPath, e.WellKnownHandler(publicURL, 3600))
+// Attach wires the WSS bearer and discovery responder into an unstarted HTTPServer and atomically
+// installs acceptance-time admission, TLS/header deadlines, parser caps, and worker limits.
+func (e *Endpoint) Attach(server *HTTPServer, publicURL string) error {
+	if server == nil {
+		return fmt.Errorf("Hop HTTP server is nil")
+	}
+	return server.attach(e, publicURL)
 }
 
 // Resolve fetches + verifies baseURL's well-known, returning the reachable address (base58) + wss URL.

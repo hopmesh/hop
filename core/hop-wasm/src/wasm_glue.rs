@@ -22,7 +22,7 @@
 //! - `node sim/wasm-glue-check.mjs` directly drives the four methods no scenario script ever calls
 //!   (F-5): `publish_recv_beacon` (an explicit call, not the tick timer, the §39 P4 receiver-beacon
 //!   itself), `send_traced`, `set_default_lifetime_ms`, and `inbox_debug`, each asserted against a real
-//!   observable effect (a formed gradient, a real delivery, a shortened-TTL prune, a drained inbox).
+//!   observable effect (a formed gradient, a real delivery, a shortened-TTL prune, an accepted inbox).
 //!
 //! Both run in CI's `web` job (see `.github/workflows/ci.yml`) plus the Pages deploy workflow, against
 //! the same `core/hop-wasm/pkg-node` build the CI `wasm` job's
@@ -36,9 +36,11 @@
 use crate::store::{Bridge, JsStore};
 use crate::{encode_gradient, encode_sends_status};
 use crate::{ChannelMsg, Delivered, OutPacket, Transfer};
+use hop_core::bundle::BundleId;
 use hop_core::crypto::{Identity, PubKeyBytes};
 use hop_core::link::{BearerEvent, Role};
 use hop_core::node::Node;
+use hop_core::store::KvMutation;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -78,21 +80,25 @@ extern "C" {
     /// Overwrite the held data for `id` (copy-budget mutation). No-op if not held.
     #[wasm_bindgen(method, js_name = setData)]
     fn set_data(this: &StoreBridge, id: &[u8], data: &[u8]);
-    #[wasm_bindgen(method, js_name = kvPut)]
-    fn kv_put(this: &StoreBridge, key: &str, value: &[u8]);
+    #[wasm_bindgen(method, catch, js_name = kvPut)]
+    fn kv_put(this: &StoreBridge, key: &str, value: &[u8]) -> Result<bool, JsValue>;
+    /// Atomically apply flat-encoded bundle custody and KV mutations. Returns only after the host
+    /// transaction commits the entire batch.
+    #[wasm_bindgen(method, catch, js_name = kvBatch)]
+    fn kv_batch(this: &StoreBridge, mutations: &[u8]) -> Result<bool, JsValue>;
     #[wasm_bindgen(method, js_name = kvGet)]
     fn kv_get(this: &StoreBridge, key: &str) -> Option<Vec<u8>>;
-    #[wasm_bindgen(method, js_name = kvRemove)]
-    fn kv_remove(this: &StoreBridge, key: &str);
-    /// Every `(key, value)` whose key starts with `prefix`, flat-encoded as repeated
-    /// `[u32 LE keylen][key utf8][u32 LE vallen][val]` records.
-    #[wasm_bindgen(method, js_name = kvList)]
-    fn kv_list(this: &StoreBridge, prefix: &str) -> Vec<u8>;
+    #[wasm_bindgen(method, catch, js_name = kvRemove)]
+    fn kv_remove(this: &StoreBridge, key: &str) -> Result<bool, JsValue>;
+    /// One ordered page of `(key, value)` rows after the exclusive `after` cursor, flat-encoded as
+    /// repeated `[u32 LE keylen][key utf8][u32 LE vallen][val]` records.
+    #[wasm_bindgen(method, js_name = kvListPage)]
+    fn kv_list_page(this: &StoreBridge, prefix: &str, after: &str, limit: u32) -> Vec<u8>;
 }
 
-/// The production [`Bridge`]: a pure forward onto the wasm-bindgen [`StoreBridge`] host object
-/// (SQLite/OPFS in a Worker). Every method is a one-to-one passthrough, no behavior change, so the
-/// host tests against an in-memory `Bridge` fake exercise identical `JsStore` logic.
+/// The production [`Bridge`]: a thin forward onto the wasm-bindgen [`StoreBridge`] host object
+/// (SQLite/OPFS in a Worker). KV mutations normalize the host's boolean acknowledgement or thrown
+/// exception into a Rust result; host tests exercise the same `JsStore` result handling.
 impl Bridge for StoreBridge {
     fn put(&self, id: &[u8], data: &[u8], expires_at: f64) -> bool {
         StoreBridge::put(self, id, data, expires_at)
@@ -121,17 +127,62 @@ impl Bridge for StoreBridge {
     fn set_data(&self, id: &[u8], data: &[u8]) {
         StoreBridge::set_data(self, id, data)
     }
-    fn kv_put(&self, key: &str, value: &[u8]) {
-        StoreBridge::kv_put(self, key, value)
+    fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
+        match StoreBridge::kv_put(self, key, value) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("JavaScript kvPut rejected the write".into()),
+            Err(e) => Err(format!("JavaScript kvPut failed: {e:?}")),
+        }
+    }
+    fn kv_batch(&self, mutations: &[KvMutation]) -> std::result::Result<(), String> {
+        // Version marker keeps the source bridge compatible with the committed pre-regeneration wasm,
+        // whose KV-only batches begin directly with operation kind 0/1 and carry no expiry trailer.
+        let mut encoded = vec![0x84];
+        for mutation in mutations {
+            let (kind, key, value, expires_at): (u8, Vec<u8>, Vec<u8>, u64) = match mutation {
+                KvMutation::Put { key, value } => (1, key.as_bytes().to_vec(), value.clone(), 0),
+                KvMutation::Remove { key } => (0, key.as_bytes().to_vec(), Vec::new(), 0),
+                KvMutation::PutBundle { bundle, now_ms } => {
+                    let lifetime = (bundle.inner.lifetime_ms as u64)
+                        .min(hop_core::store::MAX_SEEN_LIFETIME_MS);
+                    (
+                        2,
+                        bundle.id().to_vec(),
+                        bundle.to_bytes().map_err(|e| e.to_string())?,
+                        now_ms.saturating_add(lifetime),
+                    )
+                }
+                KvMutation::RemoveBundle { id } => (3, id.to_vec(), Vec::new(), 0),
+            };
+            let key_len = u32::try_from(key.len())
+                .map_err(|_| "JavaScript kvBatch key is too large".to_string())?;
+            let value_len = u32::try_from(value.len())
+                .map_err(|_| "JavaScript kvBatch value is too large".to_string())?;
+            encoded.push(kind);
+            encoded.extend_from_slice(&key_len.to_le_bytes());
+            encoded.extend_from_slice(&key);
+            encoded.extend_from_slice(&value_len.to_le_bytes());
+            encoded.extend_from_slice(&value);
+            encoded.extend_from_slice(&expires_at.to_le_bytes());
+        }
+        match StoreBridge::kv_batch(self, &encoded) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("JavaScript kvBatch rejected the transaction".into()),
+            Err(e) => Err(format!("JavaScript kvBatch failed: {e:?}")),
+        }
     }
     fn kv_get(&self, key: &str) -> Option<Vec<u8>> {
         StoreBridge::kv_get(self, key)
     }
-    fn kv_remove(&self, key: &str) {
-        StoreBridge::kv_remove(self, key)
+    fn kv_remove(&self, key: &str) -> std::result::Result<(), String> {
+        match StoreBridge::kv_remove(self, key) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("JavaScript kvRemove rejected the delete".into()),
+            Err(e) => Err(format!("JavaScript kvRemove failed: {e:?}")),
+        }
     }
-    fn kv_list(&self, prefix: &str) -> Vec<u8> {
-        StoreBridge::kv_list(self, prefix)
+    fn kv_list_page(&self, prefix: &str, after: &str, limit: u32) -> Vec<u8> {
+        StoreBridge::kv_list_page(self, prefix, after, limit)
     }
 }
 
@@ -333,17 +384,27 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Channel posts that arrived since the last call (decrypted + writer-verified).
+    /// Poll channel posts. Rows repeat until `accept_channel` durably removes them.
     pub fn take_channel(&mut self) -> Vec<ChannelMsg> {
         self.node
             .take_hps_messages()
             .into_iter()
             .map(|m| ChannelMsg {
+                id: m.id.to_vec(),
                 path: m.path,
                 body: m.body,
                 sender: m.sender.to_vec(),
             })
             .collect()
+    }
+
+    pub fn accept_channel(&mut self, id: &[u8]) -> Result<bool, JsValue> {
+        let id: BundleId = id
+            .try_into()
+            .map_err(|_| JsValue::from_str("publication id must be 32 bytes"))?;
+        self.node
+            .accept_hps_message(&id)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Send a real message to a 32-byte destination address (private/untraceable path, ACK requested).
@@ -369,39 +430,45 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Debug: take the inbox and report raw bundle count + per-bundle read result.
+    /// Debug: report and accept every durable decrypted inbox item.
     pub fn inbox_debug(&mut self) -> String {
-        let bundles = self.node.take_inbox();
-        let mut s = format!("n={}", bundles.len());
-        for b in &bundles {
-            match self.node.read_message(b) {
-                Ok(Some(rm)) => s.push_str(&format!(
-                    " [ok type={} len={}]",
-                    rm.content_type,
-                    rm.body.len()
-                )),
-                Ok(None) => s.push_str(" [None]"),
-                Err(e) => s.push_str(&format!(" [Err {e:?}]")),
+        let items = self.node.inbox_items();
+        let mut s = format!("n={}", items.len());
+        for item in items {
+            s.push_str(&format!(
+                " [ok type={} len={}]",
+                item.content_type,
+                item.body.len()
+            ));
+            if let Err(error) = self.node.accept_inbox(&item.id) {
+                s.push_str(&format!(" [accept Err {error:?}]"));
             }
         }
         s
     }
 
-    /// Messages addressed to this node that arrived since the last call (decrypted).
-    pub fn inbox(&mut self) -> Vec<Delivered> {
-        let bundles = self.node.take_inbox();
-        let mut out = Vec::new();
-        for b in &bundles {
-            if let Ok(Some(rm)) = self.node.read_message(b) {
-                out.push(Delivered {
-                    from: rm.from.to_vec(),
-                    content_type: rm.content_type,
-                    body: rm.body,
-                    bundle: b.id().to_vec(),
-                    hops: b.env.hops,
-                });
-            }
-        }
-        out
+    /// Durable decrypted messages awaiting host processing. Non-destructive until `accept_inbox`.
+    pub fn inbox(&self) -> Vec<Delivered> {
+        self.node
+            .inbox_items()
+            .into_iter()
+            .map(|item| Delivered {
+                from: item.from.to_vec(),
+                content_type: item.content_type,
+                body: item.body,
+                bundle: item.id.to_vec(),
+                hops: item.hops,
+            })
+            .collect()
+    }
+
+    /// Accept a processed durable inbox item. ACK/vaccine emission follows only after persistence.
+    pub fn accept_inbox(&mut self, id: &[u8]) -> Result<bool, JsValue> {
+        let id: [u8; 32] = id
+            .try_into()
+            .map_err(|_| JsValue::from_str("inbox id must be 32 bytes"))?;
+        self.node
+            .accept_inbox(&id)
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 }

@@ -19,10 +19,10 @@ name: CI
 #   - infra       : tofu fmt/validate + a read-only plan on infra/** (infra-10), so a TF error is
 #                   caught pre-merge instead of mid-apply against prod state.
 #
-# DEPLOY GATE (infra-01 / quality-net-09): the Cloud Build trigger (infra/cloudbuild.trigger.yaml)
-# gates its `tofu apply` on this workflow. GitHub branch protection on `main` must ALSO require the
-# "CI / ..." checks so a red commit can't land in the first place. Branch protection cannot be set
-# from repo files; see infra/README.md ("Deploy gate + branch protection") for the required settings.
+# DEPLOY GATE (infra-01 / quality-net-09): bootstrap-owned inline Cloud Build triggers authenticate
+# this workflow and its internal job allowlist before `tofu apply`. GitHub branch protection on `main`
+# independently requires the aggregate `CI gate`, so path-filtered jobs may skip without leaving a
+# required context pending. See infra/README.md for both contracts.
 
 on:
   push:
@@ -38,6 +38,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_FUZZ_VERSION: "0.13.2"
+  CARGO_FUZZ_TOOLCHAIN: nightly-2026-07-07
   # cbindgen is pinned so an upstream release can't churn the header-drift gate (infra-13). This is
   # the version that produced the committed sdk/hop.h. When bumping, regenerate the header with the
   # same cbindgen version (core/hop/regen-header.sh) in the same PR so the drift check stays green.
@@ -76,8 +78,8 @@ jobs:
       sdk_crystal: ${{ steps.f.outputs.sdk_crystal }}
       sdk_elixir: ${{ steps.f.outputs.sdk_elixir }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
         id: f
         with:
           filters: |
@@ -121,12 +123,15 @@ jobs:
             infra:
               - 'infra/**'
             docs:
+              - '.github/workflows/**'
+              - '**/.github/workflows/**'
               - 'docs/**'
               - 'learn/**'
               - 'README.md'
               - '**/README.md'
               - 'LICENSE.md'
               - '**/LICENSE.md'
+              - 'tools/copybara/**'
             sdk_node:
               - 'sdk/node/**'
             sdk_python:
@@ -146,13 +151,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
-        run: rustup component add clippy rustfmt
+        run: rustup component add clippy rustfmt --toolchain 1.97.0
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -171,6 +178,30 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Self-test wire version guard
+        run: bash tools/wire-version-guard.test.sh
+
+      - name: Fetch canonical main and enforce wire version bump
+        env:
+          WIRE_BASE_REF: ${{ github.event_name == 'push' && github.event.before || 'refs/remotes/origin/main' }}
+        run: |
+          git fetch --no-tags --prune --force origin "+refs/heads/main:refs/remotes/origin/main"
+          bash tools/wire-version-guard.sh
+
+      - name: Check deterministic v9 wire corpus
+        run: cargo run -p hop-core --example wire-vectors --features wire-vectors
+
+      - name: Install pinned fuzz toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install "$CARGO_FUZZ_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+
+      - name: Deterministic fuzz smoke (all targets)
+        env:
+          FUZZ_RUNS: "256"
+          FUZZ_SEED: "424242"
+        run: bash tools/fuzz-smoke.sh
 
       # hop-relayd's cloud path (handoff/spool/want-beacon worker + F-18 cross-region test) is behind
       # the optional `firestore` feature, which the default workspace test run doesn't enable.
@@ -202,14 +233,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.kotlin == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 17.0.19+10
       # infra-14: this module has no gradle wrapper, so pin gradle via the setup action instead
       # of relying on whatever version the runner image happens to ship (which drifts over time).
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
         with:
           gradle-version: "8.9"
       # cov/kotlin: the SDK's JNA/native surface (HopNode + its Companion + FreeAction + HopRuntime +
@@ -217,9 +248,9 @@ jobs:
       # and point JNA at it via HOP_LIBDIR. Without the lib those tests self-skip (assumeLibhop) and only
       # the pure-Kotlin suite runs; the 80% coverage gate below would then fail, keeping the grade honest.
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -244,18 +275,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.android == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 17.0.19+10
       # The Android SDK + the AGP/platform packages the bearer + driver modules compile against.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -341,7 +372,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # The daemon runner has no login-keychain session, so the HopDriver Keychain + Secure-Enclave tests
       # (SecItemAdd/Copy) fail and fall back to in-memory. Create + unlock a dedicated CI keychain and make
@@ -362,17 +393,17 @@ jobs:
       # On GitHub-hosted macos-14 the default Xcode is 15.4, too old for xcodegen's project format, so
       # select the latest-stable. The self-hosted runner already defaults to a current Xcode and its user
       # cannot `sudo xcode-select`, so this step (which shells out to sudo) is skipped there.
-      - name: Select the latest-stable Xcode
+      - name: Select Xcode 16.2
         if: runner.environment == 'github-hosted'
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: latest-stable
+          xcode-version: 16.2
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -392,14 +423,16 @@ jobs:
         run: |
           bash sdk/apple/build-xcframework.sh
           bash tools/build-xcframework.sh
+          # Every in-tree Apple package resolves sdk/apple by path. Keep the published manifest
+          # remote-only, but use the verified local artifact throughout this disposable CI checkout.
+          cp sdk/apple/Package.local.swift sdk/apple/Package.swift
 
       # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
       # runs the BearerManager multiplexer + full HopRuntime deliver/ACK tests (core-ffi-09); the BLE
       # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
       # (sec-priv-02). `swift test` also builds, so these subsume the build-only step for those packages.
       - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
-        working-directory: sdk/apple
-        run: swift test
+        run: bash sdk/apple/with-local-framework.sh swift test
 
       # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at
       # >=80% line coverage of their testable (radio-free) source. LAN + Relay run REAL loopback-socket
@@ -468,7 +501,14 @@ jobs:
       - name: Build HopDemo (no signing)
         working-directory: apps/apple/HopDemo
         run: |
-          brew install xcodegen
+          archive="$RUNNER_TEMP/xcodegen-2.46.0.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            --output "$archive"
+          printf '%s  %s\n' 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806 "$archive" \
+            | shasum -a 256 -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/xcodegen-2.46.0"
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
           xcodegen generate
           xcodebuild \
             -project HopDemo.xcodeproj \
@@ -484,15 +524,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.wasm == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Rust + wasm32 target
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add wasm32-unknown-unknown
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.0
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -507,9 +547,9 @@ jobs:
       - name: Build hop-wasm for wasm32
         run: cargo build -p hop-wasm --target wasm32-unknown-unknown
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 20
+          node-version: 20.20.2
 
       # The DOM-free swarm sim core has an invariant test harness (street-graph connectivity,
       # building setbacks, on-street placement over thousands of ticks across regenerated worlds).
@@ -528,7 +568,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.web == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # web-04 / quality-net-05 / infra-12: the marketing site + the homepage sim had NO PR-time gate;
       # a broken Astro build, a dead internal link, or a sim-scenario regression only surfaced as a
@@ -537,14 +577,14 @@ jobs:
 
       - name: Install Rust + wasm32 target
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add wasm32-unknown-unknown
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.0
 
       - name: Install wasm-pack
-        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+        run: bash core/hop-wasm/install-wasm-pack.sh
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -567,6 +607,9 @@ jobs:
       - name: Guard sim/pkg against drift from core
         run: bash sim/check-pkg-fresh.sh
 
+      - name: Deterministic wire vectors through WASM
+        run: node sim/wire-vector-check.mjs
+
       # simwasm-02: the sim's end-to-end validator (every homepage scenario actually completes: each
       # scripted send delivers AND its ACK returns within budget). Runs against the pkg-node just built.
       - name: Sim scenario-check (all scenarios complete)
@@ -580,9 +623,9 @@ jobs:
         run: node sim/wasm-glue-check.mjs
 
       # Astro 7 requires Node >=22.12 (dropped Node 20 support).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 22.23.1
           cache: npm
           cache-dependency-path: apps/web/site/package-lock.json
 
@@ -605,11 +648,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.contract == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Rust + cbindgen (pinned)
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install 1.97.0 --profile minimal
           # infra-13: pin cbindgen so an upstream release can't change the emitted header format
           # and break (or mask) the drift check for every PR at once.
           cargo install cbindgen --locked --version "$CBINDGEN_VERSION"
@@ -622,6 +665,9 @@ jobs:
       # number, so the ABI-drift safety net (F-28) silently stops working. Fails on any disagreement.
       - name: ABI version consistency (cabi.rs ↔ headers ↔ Swift/Kotlin)
         run: bash tools/codegen/check-abi-version.sh
+
+      - name: Embedded C++ wrapper host tests (strict warnings)
+        run: bash sdk/embedded/test/run-host-tests.sh
 
       - name: Header drift (sdk/hop.h matches cabi.rs)
         run: |
@@ -637,6 +683,9 @@ jobs:
       # smokes need hardware/macOS); it drives a real §39 send -> deliver + ACK from clang.
       - name: C-ABI smoke (smoke.c end-to-end)
         run: bash core/hop/examples/smoke.sh
+
+      - name: Committed wire vectors through native C ABI
+        run: bash core/hop/examples/wire_vectors.sh
 
       # quality-net-r2-06: the "libhop is a first-class client from embedded C" claim (apps/esp32/
       # hop-sensor/main.c) had NO compile check at all. The on-device ESP-IDF build needs hardware, but
@@ -657,11 +706,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.infra == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # infra-10: run the same OpenTofu version that writes the state (pinned in
-      # cloudbuild.trigger.yaml), so fmt/validate/plan here match the prod apply.
-      - uses: opentofu/setup-opentofu@v2
+      # infra-10: run the same OpenTofu version pinned in the bootstrap-owned inline
+      # deployment trigger, so fmt/validate here match the production apply.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: "1.12.3"
 
@@ -680,23 +729,38 @@ jobs:
         working-directory: infra
         run: tofu validate
 
-      # A real read-only plan against prod state requires the deploy SA's credentials, which are not
-      # available to CI (and must not be, per infra-02). That plan runs inside the Cloud Build trigger
-      # right before apply. Here we assert the config is well-formed and internally consistent; the
-      # billing root module gets the same fmt/validate treatment.
+      - name: tofu init + validate (administrator-only bootstrap root)
+        working-directory: infra/bootstrap
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate
+
+      # A real plan against production state runs under the constrained deploy identity only after the
+      # trusted CI, provenance, approval, ordering, and lease gates. CI validates both roots without
+      # cloud credentials; the billing root gets the same static treatment.
       - name: tofu validate (billing module)
         working-directory: infra/billing
         run: |
           tofu init -backend=false -input=false
           tofu validate
 
-      # infra-r2-02 / infra-r2-07 / infra-r2-08: the runtime deploy gate (require-ci in
-      # cloudbuild.trigger.yaml) only runs on Cloud Build, never in CI. Unit-test its verdict logic
-      # here so a regression (all-skipped passing, a missing required job passing, an unrelated Pages
-      # failure blocking) is caught pre-merge.
+      # The gate itself is snapshotted into the applied control-plane triggers. Exercise its exact
+      # repository, workflow, App, attempt, ref, SHA, and duplicate handling here without network.
       - name: Deploy-gate verdict tests (require-ci)
         working-directory: ${{ github.workspace }}
         run: bash tools/require-ci-gate.test.sh
+
+      - name: Build provenance + deployment lease tests
+        working-directory: ${{ github.workspace }}
+        run: bash tools/deploy-provenance.test.sh
+
+      - name: Self-test the runtime/bootstrap authority guard
+        working-directory: ${{ github.workspace }}
+        run: bash tools/infra-authority-guard.test.sh
+
+      - name: Runtime/bootstrap authority boundary
+        working-directory: ${{ github.workspace }}
+        run: python3 tools/infra-authority-guard.py
 
       # infra-r2-02: keep the deploy gate's required-check allowlist in sync with the actual CI job
       # names, so a renamed/added/dropped job forces a matching allowlist edit in the same PR. First
@@ -710,13 +774,53 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash tools/check-required-checks.sh
 
+  automation:
+    name: Automation authority guards
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Self-test executable-reference policy
+        run: bash tools/executable-reference-guard.test.sh
+      - name: Enforce immutable executable and publication references
+        run: python3 tools/executable-reference-guard.py
+      - name: Self-test exact branch-protection policy
+        run: bash tools/check-branch-protection.test.sh
+      - name: Self-test canonical sync authority
+        run: bash tools/sync-authority-guard.test.sh
+      - name: Enforce canonical sync authority
+        run: python3 tools/sync-authority-guard.py
+      - name: Self-test fixed Copybara mapping
+        run: bash tools/copybara/dispatch.test.sh
+      - name: Self-test Pages dependency graph
+        run: bash tools/pages-path-guard.test.sh
+      - name: Enforce Pages dependency graph
+        run: python3 tools/pages-path-guard.py
+      - name: Self-test immutable release artifacts
+        run: bash tools/release-artifact.test.sh
+      - name: Self-test exact crates.io publication payloads
+        run: bash tools/crates-publish.test.sh
+      - name: Self-test verified PlatformIO inputs
+        run: bash sdk/embedded/tools/platformio-offline.test.sh
+
   docs-tokens:
     name: Docs token guard (banned copy)
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Self-test mirror release provenance
+        run: bash tools/release-provenance.test.sh
+      - name: Self-test clean package exports and signed native artifacts
+        run: bash tools/package-export-smoke.test.sh
+      - name: Generate every exact Copybara export in isolated directories
+        run: |
+          mkdir "$RUNNER_TEMP/package-exports"
+          python3 tools/package-export-smoke.py check --output-root "$RUNNER_TEMP/package-exports"
       # First prove the guard itself still flags what it should and ignores legit API identifiers /
       # removal notes, then run it against the tree.
       - name: Self-test the docs token guard
@@ -757,7 +861,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_node == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       # The CANONICAL sdk/node CI, shared verbatim with the standalone hop-sdk-node repo (one composite
       # action, no drift). Here it builds libhop from the in-tree Rust core; the standalone downloads a
       # prebuilt from the hopmesh/libhop release. See sdk/node/.github/ + tools/copybara/.
@@ -772,14 +876,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_python == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.12"
+          python-version: "3.12.13"
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -794,8 +898,7 @@ jobs:
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: |
-          python -m pip install --upgrade pip
-          pip install cryptography            # dev/example dep for the in-process discovery cert
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
           python -m unittest discover -s tests
           python examples/discovery.py
 
@@ -805,14 +908,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_go == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.22"
+          go-version: "1.22.12"
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -838,14 +941,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_ruby == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
         with:
-          ruby-version: "3.3"
+          ruby-version: "3.3.12"
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -866,17 +969,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_crystal == 'true'
-    container: crystallang/crystal:1.17.1
     steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust toolchain + build deps
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends build-essential curl pkg-config libssl-dev
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@d8ef131ecec0352ce0e39b81b0a6d95def58fe2f # v1.9.2
+        with:
+          crystal: 1.17.1
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -900,15 +1002,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_elixir == 'true'
     steps:
-      - uses: actions/checkout@v7
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "27"
-          elixir-version: "1.18"
+          otp-version: "27.3.4.3"
+          elixir-version: "1.18.4"
+          rebar3-version: "3.27.0"
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -919,19 +1022,22 @@ jobs:
       - name: mix format check + test (compiles the Rustler NIF)
         working-directory: sdk/elixir
         run: |
-          mix local.hex --force
-          mix local.rebar --force
+          mix local.hex 2.2.1 --force
           mix deps.get
           mix format --check-formatted
           mix test
+      - name: Clean Elixir export, Hex archive, and consumer
+        run: |
+          mkdir "$RUNNER_TEMP/package-validation"
+          python3 tools/package-export-smoke.py validate \
+            --component hop-sdk-elixir --work-root "$RUNNER_TEMP/package-validation"
 
-  # Aggregate gate: the intended SINGLE required check for branch protection AND the deploy gate. It
+  # Aggregate gate: the intended single required check for branch protection. The authenticated deploy
+  # gate separately verifies the internal job allowlist, workflow, App, ref, attempt, and source SHA. It
   # `needs:` every other job and, via `if: always()`, runs even when one failed. It passes iff no job
   # FAILED or was CANCELLED; a job that was SKIPPED by a path filter is fine. Collapsing the required
   # set to this one check lets jobs skip on unrelated PRs without leaving a required check stuck pending
   # (a skipped required check does not reliably satisfy branch protection; a green gate always does).
-  # Until branch protection + the deploy allowlist are repointed at "CI gate" alone, every job still
-  # runs on every PR, so this is inert-but-green today.
   gate:
     name: CI gate
     runs-on: ubuntu-latest
@@ -945,6 +1051,7 @@ jobs:
       - web
       - contract
       - infra
+      - automation
       - docs-tokens
       - node-sdk
       - python-sdk
@@ -957,7 +1064,9 @@ jobs:
       - name: Results
         run: echo "job results:${{ format(' {0}', join(needs.*.result, ' ')) }}"
       - name: Fail if any required job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: >-
+          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
+          needs.changes.result != 'success' || needs.automation.result != 'success'
         run: |
           echo "::error::a required CI job did not pass (see the results above)"
           exit 1

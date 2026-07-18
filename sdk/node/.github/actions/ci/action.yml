@@ -10,27 +10,27 @@ inputs:
   pkg-dir:
     description: "Directory of the SDK package. '.' in the standalone repo; 'sdk/node' in the monorepo."
     default: "."
-  node-version:
-    description: "Node version to test against."
-    default: "20"
   libhop-source:
     description: "How to obtain libhop: build | download | auto. auto = build if the Rust core is present, else download."
     default: "auto"
   libhop-version:
-    description: "Release tag of libhop to download when not building from source (e.g. v0.1.0). 'latest' allowed."
-    default: "latest"
+    description: "Exact libhop release tag to download when not building from source."
+    default: "v0.0.1"
+  libhop-sha256:
+    description: "Expected SHA-256 of the selected libhop release archive."
+    default: ""
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
-        node-version: ${{ inputs.node-version }}
+        node-version: 20.20.2
 
     # Cache the cargo build (only relevant when building libhop from source; harmless otherwise).
     - name: Cache cargo
       if: inputs.libhop-source != 'download'
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry
@@ -53,7 +53,7 @@ runs:
         fi
         echo "mode=$mode"
         if [ "$mode" = "build" ]; then
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install 1.97.0 --profile minimal
           cargo build -p hop --locked
           echo "dir=$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_OUTPUT"
         else
@@ -66,12 +66,21 @@ runs:
             *) echo "no prebuilt libhop for $RUNNER_OS-$RUNNER_ARCH; set HOP_LIBDIR to a local build" >&2; exit 1 ;;
           esac
           ver="${{ inputs.libhop-version }}"
+          LIBHOP_SHA256="${{ inputs.libhop-sha256 }}"
+          if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "libhop-version must be an exact semver tag" >&2
+            exit 1
+          fi
+          if [[ ! "$LIBHOP_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "libhop-sha256 must be an independently configured lowercase SHA-256" >&2
+            exit 1
+          fi
           base="https://github.com/hopmesh/libhop/releases"
-          url="$base/$([ "$ver" = latest ] && echo latest/download || echo download/$ver)/$asset.tar.gz"
+          url="$base/download/$ver/$asset.tar.gz"
           mkdir -p "$GITHUB_WORKSPACE/.libhop"
           echo "downloading $url"
           curl -fsSL "$url" -o /tmp/libhop.tar.gz
-          curl -fsSL "$url.sha256" -o /tmp/libhop.sha256 && (cd /tmp && sha256sum -c libhop.sha256)
+          printf '%s  %s\n' "$LIBHOP_SHA256" /tmp/libhop.tar.gz | sha256sum -c -
           tar -xzf /tmp/libhop.tar.gz -C "$GITHUB_WORKSPACE/.libhop"
           echo "dir=$GITHUB_WORKSPACE/.libhop" >> "$GITHUB_OUTPUT"
         fi
@@ -82,5 +91,5 @@ runs:
       env:
         HOP_LIBDIR: ${{ steps.libhop.outputs.dir }}
       run: |
-        npm install
+        npm ci
         npm test

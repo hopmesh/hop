@@ -25,6 +25,7 @@ export function makeMesh(WasmNode, bridgeFor) {
     senderAcks: [],        // bundle hexes the SENDER just confirmed delivered (via a returning ACK)
     beaconEvents: [],      // node ids that emitted a §39 recv-beacon this frame (for the ripple viz)
     hpsDeliveries: [],     // channel posts received: { to, path, text, from, at }
+    hpsAccepted: new Set(), // stable publication ids already projected into the simulation
     lastPrune: 0,
 
     add(id, seed) {
@@ -120,6 +121,9 @@ export function makeMesh(WasmNode, bridgeFor) {
           while (pm && pm.has(cur) && guard++ < 60) { const prev = pm.get(cur); path.unshift([prev, cur]); cur = prev; }
           this.delivered.add(bundle); this.parent.delete(bundle);
           this.deliveries.push({ to: id, from: this.addrToId.get(_hex(d.from)), bundle, text: _dec(d.body), path, hops: d.hops, at: now });
+          // Retry acceptance even when this stable id was already projected into deliveries. A failed
+          // host-store delete must not leave the durable core inbox pinned forever.
+          node.accept_inbox(d.bundle);
         }
       }
       // 6) sends WE (the sender) just confirmed delivered, via a returning ACK, the sender's ONLY
@@ -129,9 +133,19 @@ export function makeMesh(WasmNode, bridgeFor) {
       // 7) §39 recv-beacons emitted this frame, pulse those nodes in the viz (their reachability advert)
       for (const [id, { node }] of this.nodes) if (node.drain_beaconed()) this.beaconEvents.push(id);
       // 8) channel posts that arrived (group fan-out)
-      for (const [id, { node }] of this.nodes)
-        for (const cm of node.take_channel())
-          this.hpsDeliveries.push({ to: id, path: cm.path, text: _dec(cm.body), from: this.addrToId.get(_hex(cm.sender)), at: now });
+      for (const [id, { node }] of this.nodes) {
+        for (const cm of node.take_channel()) {
+          const deliveryId = `${id}:${_hex(cm.id)}`;
+          if (!this.hpsAccepted.has(deliveryId)) {
+            this.hpsAccepted.add(deliveryId);
+            this.hpsDeliveries.push({ to: id, path: cm.path, text: _dec(cm.body), from: this.addrToId.get(_hex(cm.sender)), at: now });
+          }
+          try {
+            node.accept_channel(cm.id);
+            this.hpsAccepted.delete(deliveryId);
+          } catch {}
+        }
+      }
     },
 
     // Which nodes currently hold each message bundle, straight from the real stores. As the

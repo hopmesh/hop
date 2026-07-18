@@ -1,15 +1,14 @@
-# Build & push the hop-relayd image, then apply the fleet.
-# Local runs use OpenTofu (TF=tofu) against the GCS backend; CI uses the same on
-# Cloud Build. Override with `make TF=terraform ...` if you must.
+# Manual low-privilege image build helpers and emergency runtime plan/apply.
+# Normal production deploys use the bootstrap-owned inline Cloud Build triggers.
 PROJECT ?= hop-mesh
 REGION  ?= us-central1
 REPO    ?= $(REGION)-docker.pkg.dev/$(PROJECT)/hop
-TAG     ?= $(shell git rev-parse --short HEAD)
+TAG     ?= $(shell git rev-parse HEAD)
 IMAGE   ?= $(REPO)/hop-relayd:$(TAG)
 ROOT    := $(shell git rev-parse --show-toplevel)
 TF      ?= tofu
 
-.PHONY: auth image push deploy plan apply seed-identity
+.PHONY: auth image push plan apply seed-identity
 
 auth:
 	gcloud auth configure-docker $(REGION)-docker.pkg.dev --quiet
@@ -31,7 +30,9 @@ seed-identity:
 	  | gcloud secrets versions add hop-relay-identity --project $(PROJECT) --data-file=-
 
 plan:
-	$(TF) plan -var relay_image=$(IMAGE)
+	@test -n "$(TFVARS)" || { echo "set TFVARS to a verified provenance tfvars file" >&2; exit 1; }
+	$(TF) plan -var-file="$(TFVARS)"
 
-apply: push
-	$(TF) apply -var relay_image=$(IMAGE)
+apply:
+	@test -n "$(TFVARS)" || { echo "set TFVARS to a verified provenance tfvars file" >&2; exit 1; }
+	$(TF) apply -var-file="$(TFVARS)"

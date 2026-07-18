@@ -1,7 +1,9 @@
 package sh.hop
 
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * quality/kotlin: the C ABI reads EXACTLY 32 bytes from an address / bundle-id / request-id pointer,
@@ -17,14 +19,20 @@ import kotlin.test.assertFailsWith
  */
 class HopAddressGuardTest {
 
-    private val short = ByteArray(5) // deliberately not 32
-    private val ok = ByteArray(32)   // a correctly-sized (zero) address/id
+    private val invalidSizes = listOf(0, 1, 31, 33)
+    private val ok = ByteArray(32)
+
+    private fun assertEveryInvalidSizeRejected(call: (ByteArray) -> Unit) {
+        for (size in invalidSizes) {
+            assertFailsWith<IllegalArgumentException>("accepted $size bytes") { call(ByteArray(size)) }
+        }
+    }
 
     @Test
     fun sendRejectsAMisSizedDestination() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            assertFailsWith<IllegalArgumentException> { n.send(short, body = ByteArray(1)) }
+            assertEveryInvalidSizeRejected { n.send(it, body = ByteArray(1)) }
         }
     }
 
@@ -32,7 +40,7 @@ class HopAddressGuardTest {
     fun sendToRejectsAMisSizedDestination() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            assertFailsWith<IllegalArgumentException> { n.sendTo(short, body = ByteArray(1)) }
+            assertEveryInvalidSizeRejected { n.sendTo(it, body = ByteArray(1)) }
         }
     }
 
@@ -40,7 +48,7 @@ class HopAddressGuardTest {
     fun isSecuredRejectsAMisSizedAddress() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            assertFailsWith<IllegalArgumentException> { n.isSecured(short) }
+            assertEveryInvalidSizeRejected { n.isSecured(it) }
         }
     }
 
@@ -48,7 +56,7 @@ class HopAddressGuardTest {
     fun statusRejectsAMisSizedBundleId() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            assertFailsWith<IllegalArgumentException> { n.status(short) }
+            assertEveryInvalidSizeRejected { n.status(it) }
         }
     }
 
@@ -56,7 +64,7 @@ class HopAddressGuardTest {
     fun sendServiceRequestRejectsAMisSizedDestination() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            assertFailsWith<IllegalArgumentException> { n.sendServiceRequest(short, "svc", "m", ByteArray(0)) }
+            assertEveryInvalidSizeRejected { n.sendServiceRequest(it, "svc", "m", ByteArray(0)) }
         }
     }
 
@@ -64,9 +72,19 @@ class HopAddressGuardTest {
     fun sendServiceResponseRejectsAMisSizedIdentifier() {
         assumeLibhop()
         HopNode.ephemeral().use { n ->
-            // A bad `to` and, separately, a bad `for_request_id` are each rejected.
-            assertFailsWith<IllegalArgumentException> { n.sendServiceResponse(short, ok, 200, ByteArray(0)) }
-            assertFailsWith<IllegalArgumentException> { n.sendServiceResponse(ok, short, 200, ByteArray(0)) }
+            assertEveryInvalidSizeRejected { n.sendServiceResponse(it, ok, 200, ByteArray(0)) }
+            assertEveryInvalidSizeRejected { n.sendServiceResponse(ok, it, 200, ByteArray(0)) }
+        }
+    }
+
+    @Test
+    fun inboxAcceptanceAndBase58RejectMisSizedBuffers() {
+        assumeLibhop()
+        HopNode.ephemeral().use { n ->
+            assertEveryInvalidSizeRejected { n.acceptInbox(it) }
+            assertEveryInvalidSizeRejected { HopAddress.base58(it) }
+            assertFalse(n.acceptInbox(ok))
+            assertTrue(HopAddress.base58(ok).isNotEmpty())
         }
     }
 

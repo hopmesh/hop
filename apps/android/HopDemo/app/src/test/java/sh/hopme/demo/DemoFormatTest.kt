@@ -1,8 +1,10 @@
 package sh.hopme.demo
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -45,6 +47,45 @@ class DemoFormatTest {
     @Test fun normalizeHops_keepsExplicitHopsScheme() {
         assertEquals("hops://example.hopme.sh", normalizeHops("hops://example.hopme.sh"))
         assertEquals("hops://example.hopme.sh", normalizeHops("  hops://example.hopme.sh  ")) // trims
+        assertEquals("hops://example.hopme.sh", normalizeHops("HOPS://example.hopme.sh"))
+    }
+
+    @Test fun browserPolicyAllowsOnlyHopsAndLocalBootstrap() {
+        assertTrue(browserAllowsURL("hops://example.hop/page"))
+        assertTrue(browserAllowsURL("HOPS://EXAMPLE.HOP/page"))
+        assertTrue(browserAllowsURL("about:blank"))
+        assertTrue(browserAllowsURL("/image.png", relativeTo = "hops://example.hop/page"))
+        assertTrue(browserAllowsURL("//other.hop/frame", relativeTo = "hops://example.hop/page"))
+    }
+
+    @Test fun browserPolicyDeniesTopLevelAndEveryActiveSubresourceScheme() {
+        val blocked = listOf(
+            "http://evil.test/", "HTTPS://evil.test/script.js", "ws://evil.test/socket",
+            "WSS://evil.test/socket", "data:text/html,boom", "blob:hops://example.hop/id",
+            "file:///etc/passwd", "content://authority/item", "intent://evil/#Intent;scheme=https;end",
+            "javascript:alert(1)", "custom://evil/path",
+        )
+        for (url in blocked) assertFalse("must block $url", browserAllowsURL(url))
+    }
+
+    @Test fun browserPolicyRejectsCredentialsPortsOpaqueAndSchemeSmuggling() {
+        val blocked = listOf(
+            "hops://user@example.hop/", "hops://example.hop:443/", "hops:opaque",
+            "hops://example.hop/#fragment", "hops://example.hop\\@evil.test/",
+            "https:relative.js", "  //evil.test/x  ",
+        )
+        for (url in blocked) assertFalse("must block $url", browserAllowsURL(url))
+    }
+
+    @Test fun browserPolicyAppliesToScriptImageFrameFetchAndWebSocketForms() {
+        val base = "hops://site.hop/index.html"
+        for (relative in listOf("script.js", "./image.png", "../frame.html", "/api/fetch", "socket")) {
+            assertTrue("relative hops resource $relative", browserAllowsURL(relative, relativeTo = base))
+        }
+        for (external in listOf(
+            "https://cdn.test/script.js", "http://img.test/a.png", "data:text/html,<iframe>",
+            "https://api.test/fetch", "wss://socket.test/chat",
+        )) assertFalse("active resource must be blocked: $external", browserAllowsURL(external, relativeTo = base))
     }
 
     @Test fun normalizeHops_reschemesHttpAndBareHost() {
@@ -60,6 +101,12 @@ class DemoFormatTest {
         assertEquals("Unavailable", statusText(503))
         assertEquals("Timeout", statusText(504))
         assertEquals("Status", statusText(418)) // fallback
+    }
+
+    @Test fun cappedAttachmentReadAcceptsBoundaryAndRejectsOneByteOver() {
+        val boundary = ByteArray(16) { it.toByte() }
+        assertEquals(boundary.toList(), readCapped(boundary.inputStream(), maximum = 16)?.toList())
+        assertNull(readCapped(ByteArray(17).inputStream(), maximum = 16))
     }
 
     // --- messageMeta: every branch -------------------------------------------------------------

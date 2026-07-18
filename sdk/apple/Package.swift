@@ -14,7 +14,9 @@ import PackageDescription
 //   • Hop         — the libhop node (HopNode over CHop) + HopRuntime. For standalone clients (ESP32,
 //     the smokes) that want the C-ABI node directly.
 //
-// First build / after editing cabi.rs: run build-xcframework.sh (regenerates the gitignored xcframework).
+// Published packages always resolve this immutable release asset. Local source development uses
+// Package.local.swift through the documented local validation command; the published manifest never
+// selects a machine-local or unverified framework.
 let package = Package(
     name: "Hop",
     platforms: [.macOS(.v13), .iOS(.v16)],
@@ -24,7 +26,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "HopContract"),   // pure Swift — no libhop
-        .binaryTarget(name: "CHop", path: "Frameworks/libhop.xcframework"),
+        .binaryTarget(
+            name: "CHop",
+            url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.1/libhop.xcframework.zip",
+            checksum: "feb6e3e636a3e40c9b21487ced872b0edcd04122e70373484c406e4f51be43df"
+        ),
         .target(name: "Hop", dependencies: ["CHop", "HopContract"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),
         .executableTarget(name: "RuntimeSmoke", dependencies: ["Hop", "HopContract"]),

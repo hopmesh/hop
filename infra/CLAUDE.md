@@ -1,24 +1,57 @@
 # infra/
 
-GitOps deploy: OpenTofu state in GCS (`gs://hop-mesh-tfstate`), applied by a Cloud Build trigger. There
-is no Spacelift, no GitHub Actions deploy. **Push to main = build images + `tofu apply` in one run**,
-gated on CI being green for the commit.
+GCP production infrastructure is split across two OpenTofu roots. The Stripe
+catalog is isolated in the third root at `infra/billing/`:
 
-## The pieces
+- `infra/bootstrap/` is manually invoked from a reviewed checkout. It owns APIs,
+  IAM, service accounts, secrets, Firestore policy, Artifact Registry, KMS,
+  provenance and lease storage, Pub/Sub, billing WIF and state authority, and
+  both trusted inline Cloud Build triggers.
+- `infra/` is the automatically applied runtime root. It owns services, load
+  balancing, DNS, certificates, and observability. It must never contain project
+  IAM, service-account IAM, secret IAM, custom roles, triggers, API enablement, or
+  bootstrap resources.
 
-- `cloudbuild.trigger.yaml` builds the relay + endpoint images, runs the `require-ci` deploy gate, then `tofu apply`. `cloudbuild_trigger.tf` defines the build SA + IAM. The fleet is currently OFF (`relays_enabled=false`); flip that one var to re-enable (same anycast IP/cert kept).
-- Vars come from `TF_VAR_*` env on the apply step (`terraform.tfvars` is gitignored).
+## Deployment path
 
-## Rules learned the hard way (the deploy was red for 40+ builds from these)
+`hop-source-build` runs candidate Docker builds as the low-privilege
+`hop-cloudbuild` identity. Its build definition is stored inline in the applied
+trigger. `infra/cloudbuild.trigger.yaml` is a retired fail-closed sentinel and is
+not an active security boundary.
 
-- **Cloud Build substitutions:** every shell `$var` inside a `- |` step script must be `$$`-escaped, or Cloud Build tries to resolve it as a build substitution at submit and hard-fails the build. Only genuine substitutions stay single-`$` (`$COMMIT_SHA`, `$SHORT_SHA`, `${_...}`). This applies to shell-`#`-comment lines inside a block scalar too.
-- **`for_each` over an apply-time-unknown value fails to plan.** Use a MAP with STATIC keys; put the unknown (a created resource's id) on the value side only.
-- **`prevent_destroy`** guards the anycast IPs + the relay-identity secret; a destroy+recreate there hands out a new public IP or loses the seed. They are not count-gated, so this does not fight the enable/disable cycle.
-- **The deploy gate needs a token.** The repo is PRIVATE, so `require-ci` polls the check-runs API with a Secret Manager token (`hop-ci-readtoken`, resource-scoped IAM so the build SA still cannot read the relay seed). The `BRANCH_PROTECTION_TOKEN` PAT arms the branch-protection drift-detector.
+The trusted source definition validates the exact GitHub Actions workflow run,
+builds full-SHA tags, resolves digests, signs a provenance manifest, and publishes
+a deployment request. `hop-runtime-deploy` runs as the separate `hop-deploy`
+identity after control-plane approval. It revalidates CI, build provenance,
+canonical main, and the global GCS lease before applying the runtime archive with
+digest-only image references.
 
-## Verify before merging infra
+The fleet remains off with `relays_enabled=false` in bootstrap. The aggregate
+`/healthz` readiness smoke runs only when it is enabled. Cloud Run liveness remains
+on `/livez`; do not collapse readiness and liveness or add recurring external
+region probes.
 
-`tofu -chdir=infra fmt -check -recursive` + `tofu -chdir=infra init -backend=false && tofu validate`.
-Preview a real apply with a local `tofu plan` using the build's exact `TF_VAR_*` (needs ADC). A green
-first apply after a red streak shows the stale `secretmanager.admin` grant being removed (infra-02).
-`tools/check-required-checks.sh` keeps the CI job names, the gate allowlist, and branch protection in sync.
+## Rules
+
+- Never add `filename` or `git_file_source` to an active trigger.
+- Never execute a candidate checkout under the deploy identity before the trusted
+  gate and signed provenance verification.
+- Never grant build or deploy `Editor`, Project IAM Admin, Service Account Admin,
+  Run Admin, Storage Admin, Secret Manager Admin, or role mutation permissions.
+- IAM and secret policy changes belong only in bootstrap.
+- Workload Identity Federation pools and providers belong only in bootstrap.
+- Build tags use the full 40-character SHA. Runtime images use only `@sha256:`.
+- The deploy lease is separate from OpenTofu state locking. Preserve both
+  canonical-main checks and generation preconditions.
+- Cloud Build substitutions still scan shell scripts. Escape shell dollars as
+  doubled dollars in inline HCL scripts. Escape Terraform template percent markers
+  where needed.
+- `prevent_destroy` protects identity secrets, provenance keys, and the bootstrap
+  contract.
+
+## Verification
+
+Run `tofu -chdir=infra fmt -check -recursive`, validate both roots with
+`-backend=false`, run every `tools/*guard*.test.sh` relevant to the change, then run
+the live guards. The required-check guard keeps CI job names synchronized with
+`github_required_checks` in `infra/bootstrap/variables.tf`.

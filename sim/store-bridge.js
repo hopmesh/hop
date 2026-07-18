@@ -16,8 +16,10 @@
 //   have() -> Uint8Array                all held ids, concatenated 32-byte chunks
 //   prune(nowMs)                        drop held + dedup entries whose window closed
 //   setData(id, data)                   overwrite held data (copy-budget mutation)
-//   kvPut/kvGet/kvRemove(key[,val])     durable key→bytes
-//   kvList(prefix) -> Uint8Array        [u32LE keylen][key][u32LE vallen][val]... records
+//   kvPut/kvRemove(key[,val]) -> bool   synchronously acknowledged durable key→bytes mutation
+//   kvBatch(bytes) -> bool               atomically commit bundle custody + KV mutations
+//   kvGet(key) -> Uint8Array|undefined  durable key→bytes lookup
+//   kvListPage(prefix,after,limit)       one ordered, bounded page of encoded KV records
 
 const _hex = u => { let s = ''; for (const b of u) s += b.toString(16).padStart(2, '0'); return s; };
 const _idBytes = h => { const a = new Uint8Array(32); for (let i = 0; i < 32; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; };
@@ -35,8 +37,38 @@ function _encodeKv(pairs) {
   return out;
 }
 
+function _decodeKvBatch(encoded) {
+  const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = [];
+  const versioned = bytes[0] === 0x84;
+  let offset = versioned ? 1 : 0;
+  while (offset < bytes.length) {
+    if (offset + 5 > bytes.length) throw new Error('truncated kvBatch header');
+    const kind = bytes[offset++];
+    const keyLen = view.getUint32(offset, true); offset += 4;
+    if (offset + keyLen + 4 > bytes.length) throw new Error('truncated kvBatch key');
+    const key = bytes.slice(offset, offset + keyLen); offset += keyLen;
+    const valueLen = view.getUint32(offset, true); offset += 4;
+    if (offset + valueLen > bytes.length) throw new Error('truncated kvBatch value');
+    const value = bytes.slice(offset, offset + valueLen); offset += valueLen;
+    let expiresAt = 0;
+    if (versioned) {
+      if (offset + 8 > bytes.length) throw new Error('truncated kvBatch expiry');
+      expiresAt = Number(view.getBigUint64(offset, true)); offset += 8;
+    }
+    if (kind < 0 || kind > (versioned ? 3 : 1)) throw new Error('invalid kvBatch operation');
+    if ((kind === 0 || kind === 3) && valueLen !== 0) throw new Error('kvBatch remove carried a value');
+    if ((kind === 2 || kind === 3) && keyLen !== 32) throw new Error('kvBatch bundle id must be 32 bytes');
+    out.push({ kind, key, value, expiresAt });
+  }
+  return out;
+}
+
+const _kvKey = bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+
 // In-memory backend, one Map set per node.
-export function makeMapBridge() {
+export function makeMapBridge({ failBatchMutation = -1 } = {}) {
   const seen = new Map();   // idHex -> expiresAt
   const held = new Map();   // idHex -> Uint8Array
   const kv = new Map();     // key -> Uint8Array
@@ -50,10 +82,41 @@ export function makeMapBridge() {
     have() { const out = new Uint8Array(held.size * 32); let o = 0; for (const h of held.keys()) { out.set(_idBytes(h), o); o += 32; } return out; },
     prune(nowMs) { for (const [h, e] of seen) if (e <= nowMs) { seen.delete(h); held.delete(h); } },
     setData(id, data) { const h = _hex(id); if (held.has(h)) held.set(h, data.slice()); },
-    kvPut(key, value) { kv.set(key, value.slice()); },
+    kvPut(key, value) { kv.set(key, value.slice()); return true; },
+    kvBatch(encoded) {
+      const candidateSeen = new Map(seen);
+      const candidateHeld = new Map(held);
+      const candidateKv = new Map(kv);
+      const operations = _decodeKvBatch(encoded);
+      for (let index = 0; index < operations.length; index++) {
+        if (index === failBatchMutation) throw new Error(`injected kvBatch failure at mutation ${index}`);
+        const op = operations[index];
+        if (op.kind === 1) candidateKv.set(_kvKey(op.key), op.value);
+        else if (op.kind === 0) candidateKv.delete(_kvKey(op.key));
+        else {
+          const id = _hex(op.key);
+          if (op.kind === 2) {
+            if (candidateSeen.has(id)) return false;
+            candidateSeen.set(id, op.expiresAt);
+            candidateHeld.set(id, op.value);
+          } else candidateHeld.delete(id);
+        }
+      }
+      seen.clear(); for (const [key, value] of candidateSeen) seen.set(key, value);
+      held.clear(); for (const [key, value] of candidateHeld) held.set(key, value);
+      kv.clear(); for (const [key, value] of candidateKv) kv.set(key, value);
+      return true;
+    },
     kvGet(key) { return kv.get(key); },
-    kvRemove(key) { kv.delete(key); },
+    kvRemove(key) { kv.delete(key); return true; },
     kvList(prefix) { const out = []; for (const [k, v] of kv) if (k.startsWith(prefix)) out.push([k, v]); return _encodeKv(out); },
+    kvListPage(prefix, after, limit) {
+      const out = [...kv]
+        .filter(([key]) => key.startsWith(prefix) && key > after)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .slice(0, limit);
+      return _encodeKv(out);
+    },
   };
 }
 
@@ -73,9 +136,16 @@ export function makeSqliteBridge(db, ns) {
     put(id, data, expiresAt) {
       const idc = id.slice();
       if (one(`SELECT 1 FROM seen WHERE ns=? AND id=?`, [ns, idc])) return false;
-      db.exec({ sql: `INSERT INTO seen(ns,id,expires_at) VALUES(?,?,?)`, bind: [ns, idc, expiresAt] });
-      db.exec({ sql: `INSERT OR REPLACE INTO bundles(ns,id,data) VALUES(?,?,?)`, bind: [ns, idc, data.slice()] });
-      return true;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec({ sql: `INSERT INTO seen(ns,id,expires_at) VALUES(?,?,?)`, bind: [ns, idc, expiresAt] });
+        db.exec({ sql: `INSERT INTO bundles(ns,id,data) VALUES(?,?,?)`, bind: [ns, idc, data.slice()] });
+        db.exec('COMMIT');
+        return true;
+      } catch (error) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        throw error;
+      }
     },
     get(id) { const r = one(`SELECT data FROM bundles WHERE ns=? AND id=?`, [ns, id.slice()]); return r ? new Uint8Array(r[0]) : undefined; },
     remove(id) { const idc = id.slice(); const r = one(`SELECT data FROM bundles WHERE ns=? AND id=?`, [ns, idc]); db.exec({ sql: `DELETE FROM bundles WHERE ns=? AND id=?`, bind: [ns, idc] }); return r ? new Uint8Array(r[0]) : undefined; },
@@ -89,9 +159,34 @@ export function makeSqliteBridge(db, ns) {
       db.exec({ sql: `DELETE FROM seen WHERE ns=? AND expires_at<=?`, bind: [ns, nowMs] });
     },
     setData(id, data) { db.exec({ sql: `UPDATE bundles SET data=? WHERE ns=? AND id=?`, bind: [data.slice(), ns, id.slice()] }); },
-    kvPut(key, value) { db.exec({ sql: `INSERT OR REPLACE INTO kv(ns,key,value) VALUES(?,?,?)`, bind: [ns, key, value.slice()] }); },
+    kvPut(key, value) { db.exec({ sql: `INSERT OR REPLACE INTO kv(ns,key,value) VALUES(?,?,?)`, bind: [ns, key, value.slice()] }); return true; },
+    kvBatch(encoded) {
+      const operations = _decodeKvBatch(encoded);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const op of operations) {
+          if (op.kind === 1) db.exec({ sql: `INSERT OR REPLACE INTO kv(ns,key,value) VALUES(?,?,?)`, bind: [ns, _kvKey(op.key), op.value] });
+          else if (op.kind === 0) db.exec({ sql: `DELETE FROM kv WHERE ns=? AND key=?`, bind: [ns, _kvKey(op.key)] });
+          else if (op.kind === 2) {
+            if (one(`SELECT 1 FROM seen WHERE ns=? AND id=?`, [ns, op.key])) throw new Error('critical bundle put was deduplicated');
+            db.exec({ sql: `INSERT INTO seen(ns,id,expires_at) VALUES(?,?,?)`, bind: [ns, op.key, op.expiresAt] });
+            db.exec({ sql: `INSERT INTO bundles(ns,id,data) VALUES(?,?,?)`, bind: [ns, op.key, op.value] });
+          } else db.exec({ sql: `DELETE FROM bundles WHERE ns=? AND id=?`, bind: [ns, op.key] });
+        }
+        db.exec('COMMIT');
+        return true;
+      } catch (error) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        throw error;
+      }
+    },
     kvGet(key) { const r = one(`SELECT value FROM kv WHERE ns=? AND key=?`, [ns, key]); return r ? new Uint8Array(r[0]) : undefined; },
-    kvRemove(key) { db.exec({ sql: `DELETE FROM kv WHERE ns=? AND key=?`, bind: [ns, key] }); },
+    kvRemove(key) { db.exec({ sql: `DELETE FROM kv WHERE ns=? AND key=?`, bind: [ns, key] }); return true; },
     kvList(prefix) { const out = []; db.exec({ sql: `SELECT key,value FROM kv WHERE ns=? AND key LIKE ?`, bind: [ns, prefix + '%'], rowMode: 'array', callback: r => out.push([r[0], new Uint8Array(r[1])]) }); return _encodeKv(out); },
+    kvListPage(prefix, after, limit) {
+      const out = [];
+      db.exec({ sql: `SELECT key,value FROM kv WHERE ns=? AND substr(key,1,length(?))=? AND key>? ORDER BY key LIMIT ?`, bind: [ns, prefix, prefix, after, limit], rowMode: 'array', callback: r => out.push([r[0], new Uint8Array(r[1])]) });
+      return _encodeKv(out);
+    },
   };
 }

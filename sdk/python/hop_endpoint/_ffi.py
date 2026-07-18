@@ -12,7 +12,7 @@ from ctypes import CFUNCTYPE, POINTER, c_char_p, c_size_t, c_uint8, c_uint16, c_
 from pathlib import Path
 
 _EXT = {"darwin": "dylib", "win32": "dll"}.get(sys.platform, "so")
-_ABI_EXPECTED = 3
+_ABI_EXPECTED = 4
 
 
 def _resolve_lib() -> str:
@@ -35,7 +35,7 @@ _lib = C.CDLL(_resolve_lib())
 # ---- callback prototypes (invoked synchronously during the poll/drain call) ----
 DRAIN_SINK = CFUNCTYPE(None, c_void_p, c_uint64, POINTER(c_uint8), c_size_t)
 SVCREQ_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_char_p, c_char_p, POINTER(c_uint8), c_size_t)
-SVCRESP_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_uint16, POINTER(c_uint8), c_size_t)
+SVCRESP_SINK = CFUNCTYPE(c_bool, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_uint16, POINTER(c_uint8), c_size_t)
 REACH_SIGN_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_size_t)
 REACH_VERIFY_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint64, c_uint32)
 
@@ -55,12 +55,16 @@ _lib.hop_drain_outgoing.argtypes = [c_void_p, DRAIN_SINK, c_void_p]
 _lib.hop_subscribe.argtypes = [c_void_p, c_char_p]
 _lib.hop_publish_prekey.argtypes = [c_void_p]
 _lib.hop_publish_prekey.restype = c_bool
+_lib.hop_accept_inbox.argtypes = [c_void_p, c_char_p]
+_lib.hop_accept_inbox.restype = c_bool
 _lib.hop_send_service_request.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p, c_char_p, c_size_t, c_char_p]
 _lib.hop_send_service_request.restype = c_bool
 _lib.hop_send_service_response.argtypes = [c_void_p, c_char_p, c_char_p, c_uint16, c_char_p, c_size_t]
 _lib.hop_send_service_response.restype = c_bool
 _lib.hop_poll_service_requests.argtypes = [c_void_p, SVCREQ_SINK, c_void_p]
 _lib.hop_poll_service_responses.argtypes = [c_void_p, SVCRESP_SINK, c_void_p]
+_lib.hop_accept_service_response.argtypes = [c_void_p, c_char_p]
+_lib.hop_accept_service_response.restype = c_bool
 _lib.hop_address_to_base58.argtypes = [c_char_p, c_char_p, c_size_t]
 _lib.hop_address_to_base58.restype = c_size_t
 _lib.hop_address_from_base58.argtypes = [c_char_p, c_char_p]
@@ -80,6 +84,12 @@ def assert_abi() -> None:
     got = _lib.hop_abi_version()
     if got != _ABI_EXPECTED:
         raise RuntimeError(f"libhop ABI mismatch: header expects {_ABI_EXPECTED}, library reports {got}")
+
+
+def _require32(value: bytes, name: str) -> bytes:
+    if len(value) != 32:
+        raise ValueError(f"{name} must be exactly 32 bytes, got {len(value)}")
+    return value
 
 
 # ---- thin wrappers ----
@@ -125,6 +135,10 @@ def publish_prekey(node) -> bool:
     return bool(_lib.hop_publish_prekey(node))
 
 
+def accept_inbox(node, inbox_id: bytes) -> bool:
+    return bool(_lib.hop_accept_inbox(node, _require32(inbox_id, "inbox id")))
+
+
 def drain_outgoing(node) -> list[tuple[int, bytes]]:
     out: list[tuple[int, bytes]] = []
 
@@ -138,14 +152,29 @@ def drain_outgoing(node) -> list[tuple[int, bytes]]:
 
 def send_service_request(node, dst: bytes, service: str, method: str, args: bytes) -> bytes:
     out = C.create_string_buffer(32)
-    ok = _lib.hop_send_service_request(node, dst, service.encode(), method.encode(), args, len(args), out)
+    ok = _lib.hop_send_service_request(
+        node, _require32(dst, "destination"), service.encode(), method.encode(), args, len(args), out
+    )
     if not ok:
         raise RuntimeError("hop_send_service_request failed")
     return out.raw[:32]
 
 
 def send_service_response(node, to: bytes, for_request_id: bytes, status: int, body: bytes) -> bool:
-    return bool(_lib.hop_send_service_response(node, to, for_request_id, status, body, len(body)))
+    return bool(
+        _lib.hop_send_service_response(
+            node,
+            _require32(to, "response destination"),
+            _require32(for_request_id, "request id"),
+            status,
+            body,
+            len(body),
+        )
+    )
+
+
+def accept_service_response(node, request_id: bytes) -> bool:
+    return bool(_lib.hop_accept_service_response(node, _require32(request_id, "request id")))
 
 
 def take_service_requests(node) -> list[tuple[bytes, bytes, str, str, bytes]]:
@@ -173,6 +202,7 @@ def take_service_responses(node) -> list[tuple[bytes, bytes, int, bytes]]:
     @SVCRESP_SINK
     def sink(_ctx, frm, for_id, status, body, body_len):
         out.append((C.string_at(frm, 32), C.string_at(for_id, 32), int(status), C.string_at(body, body_len) if body_len else b""))
+        return False
 
     _lib.hop_poll_service_responses(node, sink, None)
     return out
@@ -180,7 +210,7 @@ def take_service_responses(node) -> list[tuple[bytes, bytes, int, bytes]]:
 
 def to_b58(addr32: bytes) -> str:
     out = C.create_string_buffer(64)
-    n = _lib.hop_address_to_base58(addr32, out, 64)
+    n = _lib.hop_address_to_base58(_require32(addr32, "address"), out, 64)
     return out.raw[:n].decode()
 
 
@@ -217,7 +247,7 @@ def verify_reach(record: bytes, now_secs: int) -> dict | None:
 
 
 def cluster_join(node, secret: bytes) -> None:
-    _lib.hop_cluster_join(node, secret)
+    _lib.hop_cluster_join(node, _require32(secret, "cluster secret"))
 
 
 def cluster_join_passphrase(node, passphrase: bytes) -> None:

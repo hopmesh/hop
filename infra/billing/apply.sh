@@ -49,5 +49,5 @@ tofu output -json price_ids | sed 's/^/      /'
 echo "    product id:"
 tofu output -raw product_id | sed 's/^/      /'
 echo
-echo "Next: seed the RUNTIME key for the reconciler (a DIFFERENT restricted key, Meter events write):"
+echo "Next: seed the bootstrap-owned reconciler key (a DIFFERENT restricted key, Meter events write):"
 echo "  printf '%s' 'rk_live_...' | gcloud secrets versions add stripe-api-key --project hop-mesh --data-file=-"

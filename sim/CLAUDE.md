@@ -7,7 +7,7 @@ scenario player. `apps/web/site` syncs this whole directory into its `public/sim
 ## The committed pkg + the freshness guard
 
 - `sim/pkg/` is a COMMITTED build output of `core/hop-wasm` (browser target), so the Astro site builds without a wasm toolchain. `sim/build-wasm.sh` regenerates it (browser `pkg/` + node `pkg-node/`).
-- **Any wire bump (`BUNDLE_VERSION`) requires rebuilding + committing `sim/pkg`**, or `sim/check-pkg-fresh.sh` reddens CI. That guard diffs the COMMITTED pkg blob (via `git show HEAD:...`), not the working tree, so a CI rebuild cannot mask committed drift; a committed pkg file missing from HEAD is itself DRIFT. `--committed-only` mode checks just the wire stamp without a rebuild.
+- **Any wire bump (`BUNDLE_VERSION`) requires rebuilding + committing `sim/pkg`**, or `sim/check-pkg-fresh.sh` reddens CI. That guard diffs the COMMITTED pkg blob (via `git show HEAD:...`), not the working tree, so a CI rebuild cannot mask committed drift; a committed pkg file missing from HEAD is itself DRIFT. `--committed-only` mode checks just the wire stamp without a rebuild. `--working-tree` compares a fresh build and source stamp with the current generated files for local no-commit verification.
 
 ## Checks
 

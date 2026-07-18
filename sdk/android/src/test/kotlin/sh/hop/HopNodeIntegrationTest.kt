@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 
 /**
  * cov/kotlin: drives the REAL libhop through [HopNode] over an in-memory loopback, covering the
- * JNA/native surface (HopNode + its Companion + FreeAction + HopAddress base58) that the radio-free
+ * JNA/native surface (HopNode + its Companion + lifecycle owner + HopAddress base58) that the radio-free
  * unit tests deliberately can't reach. Each native-touching test skips (assumeLibhop) when the lib
  * isn't built, so the pure-Kotlin suite still runs standalone.
  */
@@ -90,11 +90,29 @@ class HopNodeIntegrationTest {
                 assertNotNull(id)
                 assertEquals(32, id!!.size)
 
+                var rejected: HopMessage? = null
+                val sawRejected = loop.pump(400) {
+                    b.pollInboxAccepting {
+                        rejected = it
+                        false
+                    }
+                    rejected != null
+                }
+                assertTrue(sawRejected, "the host should see the durable inbox item")
+                assertFalse(a.delivered(id), "a rejected host write must not emit the ACK")
+
                 var got: HopMessage? = null
-                val ok = loop.pump(400) { b.pollInbox { got = it }; got != null && a.delivered(id) }
+                var accepted = false
+                val ok = loop.pump(400) {
+                    b.pollInbox { got = it }
+                    if (!accepted) got?.let { accepted = b.acceptInbox(it.id) }
+                    got != null && a.delivered(id)
+                }
                 assertTrue(ok, "the message should deliver and ack over loopback")
+                assertTrue(accepted, "host acceptance should succeed after persistence")
 
                 val msg = got!!
+                assertTrue(msg.id.contentEquals(rejected!!.id), "redelivery keeps the stable inbox id")
                 assertEquals(text, String(msg.body))
                 assertTrue(msg.hops >= 0u)
                 assertEquals(msg.body.toList(), msg.bodyCopy().toList()) // defensive-copy accessors
@@ -106,6 +124,8 @@ class HopNodeIntegrationTest {
                 assertTrue(st.relayed >= 1, "at least one peer was handed a copy")
                 assertTrue(st.forwardHops >= 0u)
                 assertTrue(st.forwardMs >= 0)
+                assertFailsWith<IllegalArgumentException> { b.acceptInbox(ByteArray(31)) }
+                assertFailsWith<IllegalArgumentException> { b.acceptInbox(ByteArray(33)) }
 
                 // a forward-secret ratchet session now exists to B (the lock indicator).
                 assertTrue(a.isSecured(bAddr))
@@ -170,6 +190,13 @@ class HopNodeIntegrationTest {
                 assertEquals(32, rr.fromCopy().size)
                 assertEquals(32, rr.forRequestIdCopy().size)
                 assertEquals("sunny", String(rr.bodyCopy()))
+                var redelivered: HopServiceResponse? = null
+                a.pollServiceResponses { redelivered = it }
+                assertNotNull(redelivered, "a non-accepting callback must leave the response queued")
+                assertTrue(a.acceptServiceResponse(rr.forRequestId))
+                var afterAcceptance: HopServiceResponse? = null
+                a.pollServiceResponses { afterAcceptance = it }
+                assertNull(afterAcceptance, "explicit acceptance must stop redelivery")
             }
         }
     }

@@ -1,8 +1,4 @@
-# release: build the wasm package and publish @hop-mesh/wasm to npm on a semver tag.
-#
-# Inert in the monorepo (GitHub runs only root .github/workflows). Copybara mirrors
-# core/hop-wasm to its own repo, where Cargo.toml is at the repo root and this becomes
-# the repo-root release workflow.
+# Build and publish @hop-mesh/wasm from verified wasm tools and one npm tarball.
 name: release
 
 on:
@@ -10,62 +6,86 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-# OIDC trusted publishing (no long-lived token). Configure the trusted publisher on npmjs.com first:
-# package @hop-mesh/wasm, org hop-mesh, repository hopmesh/hop-wasm, workflow release.yml.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Rust plus the wasm target that wasm-pack compiles into.
-      - name: Set up Rust (stable, wasm target)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.0
           targets: wasm32-unknown-unknown
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack
-
-      # Build the bundler-target npm package. --scope hop-mesh makes wasm-pack emit a
-      # pkg/ whose package name is @hop-mesh/<crate>, i.e. @hop-mesh/hop-wasm (the
-      # published name follows the crate name unless renamed). The README ships it as
-      # @hop-mesh/wasm, so the next step renames the built package to match.
-      - name: Build wasm package
-        run: wasm-pack build --release --target bundler --scope hop-mesh
-
-      - name: Rename package to @hop-mesh/wasm
+          node-version: '20.20.2'
+      - name: Install checksum-verified wasm-pack, wasm-bindgen, and Binaryen
+        run: bash install-wasm-pack.sh
+      - name: Build and inspect npm package
         run: |
+          set -euo pipefail
+          wasm-pack build --mode no-install --release --target bundler --scope hop-mesh -- --locked
           node -e "const f='pkg/package.json',p=require('./'+f);p.name='@hop-mesh/wasm';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./pkg/package.json').version")"
+          mkdir "$RUNNER_TEMP/release"
+          npm pack ./pkg --pack-destination "$RUNNER_TEMP/release"
+          cp Cargo.lock "$RUNNER_TEMP/release/Cargo.lock"
+          python3 .github/release-artifact.py create --directory "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
 
-      # Guard: the crate inherits its version from the workspace (version.workspace = true),
-      # so the concrete version only materializes in pkg/package.json after the build.
-      # Compare the tag (minus its leading v) to that and fail a mistyped tag before publish.
-      - name: Verify tag matches package version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./pkg/package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "tag $tag does not match pkg/package.json version $pkg" >&2
-            exit 1
-          fi
-
-      # OIDC trusted publishing needs a recent npm (>= 11.5.1).
-      - name: Update npm for OIDC
-        run: npm install -g npm@latest
-      # Scoped package, so --access public. Publish from pkg/ (wasm-pack's output dir).
-      # Token fallback: drop --provenance + id-token, add env NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}.
-      - name: Publish to npm (OIDC trusted publishing)
-        run: npm publish --access public --provenance
-        working-directory: pkg
+  publish:
+    needs: build
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint canonical-source read token
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
+          private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+      - name: Verify canonical source provenance
+        id: provenance
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: python3 .github/release-provenance.py --component hop-wasm --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release
+      - name: Verify immutable npm artifact
+        run: >-
+          python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
+          --canonical-source-sha '${{ steps.provenance.outputs.source_sha }}'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20.20.2'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install OIDC-capable npm after verification
+        run: npm install -g npm@11.5.1
+      - name: Publish verified npm tarball
+        run: npm publish "$RUNNER_TEMP/release/"*.tgz --access public --provenance

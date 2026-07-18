@@ -24,6 +24,9 @@ cargo build -p "$CRATE"
 rm -rf "$OUT"; mkdir -p "$OUT/Sources" "$OUT/Headers"
 cargo run -p "$CRATE" --features cli --bin uniffi-bindgen -- \
   generate --library "$T/debug/$LIB" --language swift --out-dir "$OUT/Sources"
+# UniFFI emits trailing blanks in generated Swift and headers. Normalize them before these tracked
+# artifacts are copied so regenerating the framework keeps `git diff --check` clean.
+perl -pi -e 's/[[:blank:]]+$//' "$OUT/Sources/hop.swift" "$OUT/Sources/hopFFI.h"
 cp "$OUT/Sources/hopFFI.h" "$OUT/Headers/"
 cp "$OUT/Sources/hopFFI.modulemap" "$OUT/Headers/module.modulemap"
 

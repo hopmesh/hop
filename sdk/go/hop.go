@@ -8,14 +8,14 @@ package hop
 #cgo LDFLAGS: -L${SRCDIR}/../../target/debug -lhop -Wl,-rpath,${SRCDIR}/../../target/debug -Wl,-rpath,${SRCDIR}/../../target/debug/deps
 #include <stdlib.h>
 #include <string.h>
-#include "hop.h"
+#include <hop.h>
 
 // core's drain/poll take C function pointers. cgo can't pass a Go func as one directly, so we use
 // tiny C trampolines that call back into exported Go functions, carrying the collector as a
 // uintptr-encoded cgo.Handle in ctx.
 extern void goDrainSink(uintptr_t ctx, uint64_t link, uint8_t *bytes, size_t len);
 extern void goSvcReqSink(uintptr_t ctx, uint8_t *from, uint8_t *rid, char *service, char *method, uint8_t *args, size_t arglen);
-extern void goSvcRespSink(uintptr_t ctx, uint8_t *from, uint8_t *forid, uint16_t status, uint8_t *body, size_t bodylen);
+extern bool goSvcRespSink(uintptr_t ctx, uint8_t *from, uint8_t *forid, uint16_t status, uint8_t *body, size_t bodylen);
 
 static void drain_tramp(void *ctx, uint64_t link, const uint8_t *b, size_t n) {
     goDrainSink((uintptr_t)ctx, link, (uint8_t *)b, n);
@@ -23,8 +23,8 @@ static void drain_tramp(void *ctx, uint64_t link, const uint8_t *b, size_t n) {
 static void svcreq_tramp(void *ctx, const uint8_t *f, const uint8_t *r, const char *s, const char *m, const uint8_t *a, size_t n) {
     goSvcReqSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, (char *)s, (char *)m, (uint8_t *)a, n);
 }
-static void svcresp_tramp(void *ctx, const uint8_t *f, const uint8_t *r, uint16_t st, const uint8_t *b, size_t n) {
-    goSvcRespSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, st, (uint8_t *)b, n);
+static bool svcresp_tramp(void *ctx, const uint8_t *f, const uint8_t *r, uint16_t st, const uint8_t *b, size_t n) {
+    return goSvcRespSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, st, (uint8_t *)b, n);
 }
 
 static void call_drain(const HopNode *node, uintptr_t ctx) { hop_drain_outgoing(node, drain_tramp, (void *)ctx); }
@@ -53,7 +53,7 @@ import (
 	"unsafe"
 )
 
-const abiExpected = 3
+const abiExpected = 4
 
 // OutPacket is one drained outbound frame for a link.
 type OutPacket struct {
@@ -84,6 +84,13 @@ type node struct{ p *C.HopNode }
 func assertABI() error {
 	if got := uint32(C.hop_abi_version()); got != abiExpected {
 		return fmt.Errorf("libhop ABI mismatch: header expects %d, library reports %d", abiExpected, got)
+	}
+	return nil
+}
+
+func require32(value []byte, name string) error {
+	if len(value) != 32 {
+		return fmt.Errorf("%s must be exactly 32 bytes, got %d", name, len(value))
 	}
 	return nil
 }
@@ -133,11 +140,24 @@ func (n *node) subscribe(topic string) {
 
 func (n *node) publishPrekey() bool { return bool(C.hop_publish_prekey(n.p)) }
 
+func (n *node) acceptInbox(id []byte) (bool, error) {
+	if err := require32(id, "inbox id"); err != nil {
+		return false, err
+	}
+	cid := C.CBytes(id)
+	defer C.free(cid)
+	return bool(C.hop_accept_inbox(n.p, (*C.uint8_t)(cid))), nil
+}
+
 // Endpoint clustering (DESIGN.md §40): join a cluster and dedup applies transparently to the poll.
-func (n *node) clusterJoin(secret []byte) {
+func (n *node) clusterJoin(secret []byte) error {
+	if err := require32(secret, "cluster secret"); err != nil {
+		return err
+	}
 	cb := C.CBytes(secret)
 	defer C.free(cb)
 	C.hop_cluster_join(n.p, (*C.uint8_t)(cb))
+	return nil
 }
 
 func (n *node) clusterJoinPassphrase(pass []byte) {
@@ -159,6 +179,9 @@ func (n *node) drainOutgoing() []OutPacket {
 }
 
 func (n *node) sendServiceRequest(dst []byte, service, method string, args []byte) ([]byte, error) {
+	if err := require32(dst, "destination"); err != nil {
+		return nil, err
+	}
 	cdst, cargs := C.CBytes(dst), C.CBytes(args)
 	cs, cm := C.CString(service), C.CString(method)
 	defer func() { C.free(cdst); C.free(cargs); C.free(unsafe.Pointer(cs)); C.free(unsafe.Pointer(cm)) }()
@@ -172,6 +195,9 @@ func (n *node) sendServiceRequest(dst []byte, service, method string, args []byt
 }
 
 func (n *node) sendServiceResponse(to, forRequestID []byte, status uint16, body []byte) bool {
+	if require32(to, "response destination") != nil || require32(forRequestID, "request id") != nil {
+		return false
+	}
 	cto, cfor, cbody := C.CBytes(to), C.CBytes(forRequestID), C.CBytes(body)
 	defer func() { C.free(cto); C.free(cfor); C.free(cbody) }()
 	return bool(C.hop_send_service_response(n.p, (*C.uint8_t)(cto), (*C.uint8_t)(cfor), C.uint16_t(status), (*C.uint8_t)(cbody), C.size_t(len(body))))
@@ -193,7 +219,19 @@ func (n *node) takeServiceResponses() []ServiceResp {
 	return out
 }
 
+func (n *node) acceptServiceResponse(requestID []byte) (bool, error) {
+	if err := require32(requestID, "request id"); err != nil {
+		return false, err
+	}
+	id := C.CBytes(requestID)
+	defer C.free(id)
+	return bool(C.hop_accept_service_response(n.p, (*C.uint8_t)(id))), nil
+}
+
 func toB58(addr []byte) string {
+	if require32(addr, "address") != nil {
+		return ""
+	}
 	cb := C.CBytes(addr)
 	defer C.free(cb)
 	out := make([]byte, 64)
@@ -278,7 +316,7 @@ func goSvcReqSink(ctx C.uintptr_t, from, rid *C.uint8_t, service, method *C.char
 }
 
 //export goSvcRespSink
-func goSvcRespSink(ctx C.uintptr_t, from, forid *C.uint8_t, status C.uint16_t, body *C.uint8_t, bodylen C.size_t) {
+func goSvcRespSink(ctx C.uintptr_t, from, forid *C.uint8_t, status C.uint16_t, body *C.uint8_t, bodylen C.size_t) C.bool {
 	out := cgo.Handle(ctx).Value().(*[]ServiceResp)
 	*out = append(*out, ServiceResp{
 		From:         C.GoBytes(unsafe.Pointer(from), 32),
@@ -286,4 +324,5 @@ func goSvcRespSink(ctx C.uintptr_t, from, forid *C.uint8_t, status C.uint16_t, b
 		Status:       uint16(status),
 		Body:         C.GoBytes(unsafe.Pointer(body), C.int(bodylen)),
 	})
+	return C.bool(false)
 }

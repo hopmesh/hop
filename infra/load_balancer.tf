@@ -198,7 +198,6 @@ resource "google_compute_managed_ssl_certificate" "relay" {
 # the Certificate Manager resources on the API enable + a short wait (avoids the
 # "API has not been used before" 403 on a cold project).
 resource "time_sleep" "certmanager_ready" {
-  depends_on      = [google_project_service.this]
   create_duration = "120s"
 }
 

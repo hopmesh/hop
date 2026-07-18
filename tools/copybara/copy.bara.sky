@@ -15,6 +15,17 @@
 
 MONOREPO = "https://github.com/hopmesh/hop.git"
 BOT = "hop-sync <sync@hopme.sh>"
+PROVENANCE_HELPER = "tools/release-provenance.py"
+RELEASE_ARTIFACT_HELPER = "tools/release-artifact.py"
+CRATES_PUBLISH_HELPER = "tools/crates-publish.py"
+COMPONENT_MAP = "tools/copybara/components.json"
+EXPORT_SMOKE = "tools/package-export-smoke.py"
+NATIVE_HELPER = "tools/native-artifacts.py"
+NATIVE_SCHEMA = "tools/native-artifacts.schema.json"
+NATIVE_PUBLIC_KEY = "tools/native-artifacts-public.pem"
+HOP_HEADER = "sdk/hop.h"
+ELIXIR_WORKSPACE = "tools/copybara/elixir-native-Cargo.toml"
+ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"
 
 # (monorepo subtree prefix, standalone repo name). SDKs are Apache-2.0; core/services/bearers/drivers
 # are FSL-1.1-ALv2. All public. Keep this list in sync with tools/copybara/bootstrap-mirrors.sh and
@@ -83,6 +94,71 @@ CRATE_RENAMES = {
     "hop-store-firestore": ("hop-store-firestore", "hop-mesh-store-firestore"),
 }
 
+# Native wrappers receive the same verifier, schema, and public signing key. Release jobs download the
+# canonical native-artifacts workflow output by immutable run and artifact ID, then this verifier checks
+# the signed manifest, target, archive inventory, size, and digest before any extraction.
+NATIVE_COMPONENTS = ["hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"]
+
+# Go uses monorepo-relative header and target paths while it is in this tree. The public module keeps a
+# standalone hop.h contract and resolves the installed header and library through the versioned hop.pc.
+GO_CGO_MONOREPO = """#cgo CFLAGS: -I$${SRCDIR}/..
+#cgo LDFLAGS: -L$${SRCDIR}/../../target/debug -lhop -Wl,-rpath,$${SRCDIR}/../../target/debug -Wl,-rpath,$${SRCDIR}/../../target/debug/deps
+"""
+GO_CGO_EXPORT = """#cgo pkg-config: hop
+"""
+
+def _go_export_paths():
+    return core.replace(
+        before = GO_CGO_MONOREPO,
+        after = GO_CGO_EXPORT,
+        paths = glob(["hop.go"]),
+        first_only = True,
+        multiline = True,
+    )
+
+def _go_import_paths():
+    return core.replace(
+        before = GO_CGO_EXPORT,
+        after = GO_CGO_MONOREPO,
+        paths = glob(["hop.go"]),
+        first_only = True,
+        multiline = True,
+    )
+
+# The Hex package vendors the four Rust crates needed by its Rustler NIF. This avoids an unpublished
+# path dependency and keeps every Rust source file under native/vendor, inside Hex's package checksum.
+ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop" }
+
+[workspace]
+"""
+ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true }\n'
+
+def _elixir_vendor_export():
+    return [
+        core.move(ELIXIR_WORKSPACE, "native/Cargo.toml"),
+        core.move("core/hop-core", "native/vendor/hop-core"),
+        core.move("core/hop-endpoint", "native/vendor/hop-endpoint-core"),
+        core.move("core/stores/hop-store-sqlite", "native/vendor/hop-store-sqlite"),
+        core.move("core/hop", "native/vendor/libhop"),
+        core.move(ELIXIR_LOCK, "native/Cargo.lock"),
+        core.replace(
+            before = ELIXIR_HOP_PATH_DEP,
+            after = ELIXIR_HOP_VENDOR_DEP,
+            paths = glob(["native/hop_endpoint/Cargo.toml"]),
+            first_only = True,
+            multiline = True,
+        ),
+    ]
+
+def _elixir_vendor_import():
+    return core.replace(
+        before = ELIXIR_HOP_VENDOR_DEP,
+        after = ELIXIR_HOP_PATH_DEP,
+        paths = glob(["native/hop_endpoint/Cargo.toml"]),
+        first_only = True,
+        multiline = True,
+    )
+
 # Rewrite the mirror's [package] name to its crates.io name (export) and back (import). Anchored on
 # "[package]\\nname = ..." so it targets the package section, never a [lib]/[[bin]] name or a dep.
 def _rename_pkg(old, new):
@@ -149,27 +225,110 @@ def _strip_workspace():
 def _register(prefix, name):
     internal = internal_files(prefix)
     is_rust = name in RUST_MIRRORS
+    is_elixir = name == "hop-sdk-elixir"
+    is_native = name in NATIVE_COMPONENTS
+    carries_header = name in ["hop-sdk-go", "hop-sdk-android"]
     rename = CRATE_RENAMES.get(name)  # (old, new) crates.io package name, or None
     # export: strip the prefix, then (Rust only) rename the crates.io package + inject the [workspace]
     # preamble. Rename BEFORE inject so it anchors on the original "[package]\nname" at the file top.
-    export_transforms = [core.move(prefix, "")]
+    export_transforms = [
+        core.move(prefix, ""),
+        core.move(PROVENANCE_HELPER, ".github/release-provenance.py"),
+        core.move(RELEASE_ARTIFACT_HELPER, ".github/release-artifact.py"),
+        core.move(COMPONENT_MAP, ".github/components.json"),
+        core.move(EXPORT_SMOKE, ".github/package-export-smoke.py"),
+    ]
+    if is_native:
+        export_transforms.extend([
+            core.move(NATIVE_HELPER, "native/native-artifacts.py"),
+            core.move(NATIVE_SCHEMA, "native/native-artifacts.schema.json"),
+            core.move(NATIVE_PUBLIC_KEY, "native/native-artifacts-public.pem"),
+        ])
+    if is_rust:
+        export_transforms.append(core.move(CRATES_PUBLISH_HELPER, ".github/crates-publish.py"))
+    if name == "hop-sdk-go":
+        export_transforms.append(core.move(HOP_HEADER, "hop.h"))
+    if name == "hop-sdk-android":
+        export_transforms.append(core.move(HOP_HEADER, "include/hop.h"))
     if rename:
         export_transforms.append(_rename_pkg(rename[0], rename[1]))
     if is_rust:
         export_transforms.append(_inject_workspace())
+    if is_elixir:
+        export_transforms.extend(_elixir_vendor_export())
+    if name == "hop-sdk-go":
+        export_transforms.append(_go_export_paths())
     # import: reverse order: strip the preamble, un-rename the package, then re-add the prefix.
     import_transforms = []
     if is_rust:
         import_transforms.append(_strip_workspace())
     if rename:
         import_transforms.append(_rename_pkg(rename[1], rename[0]))
+    if is_elixir:
+        import_transforms.append(_elixir_vendor_import())
+    if name == "hop-sdk-go":
+        import_transforms.append(_go_import_paths())
     import_transforms.append(core.move("", prefix))
+    origin_paths = [
+        prefix + "/**",
+        PROVENANCE_HELPER,
+        RELEASE_ARTIFACT_HELPER,
+        COMPONENT_MAP,
+        EXPORT_SMOKE,
+    ]
+    if is_native:
+        origin_paths.extend([NATIVE_HELPER, NATIVE_SCHEMA, NATIVE_PUBLIC_KEY])
+    if is_rust:
+        origin_paths.append(CRATES_PUBLISH_HELPER)
+    if carries_header:
+        origin_paths.append(HOP_HEADER)
+    if is_elixir:
+        origin_paths.extend([
+            ELIXIR_WORKSPACE,
+            ELIXIR_LOCK,
+            "core/hop-core/**",
+            "core/hop-endpoint/**",
+            "core/stores/hop-store-sqlite/**",
+            "core/hop/**",
+        ])
+    export_excludes = internal[:]
+    if is_elixir:
+        export_excludes.extend([
+            prefix + "/native/hop_endpoint/Cargo.lock",
+            "core/hop-core/CLAUDE.md",
+            "core/hop-endpoint/CLAUDE.md",
+            "core/stores/hop-store-sqlite/CLAUDE.md",
+            "core/hop/CLAUDE.md",
+        ])
+    import_excludes = [
+        ".github/release-provenance.py",
+        ".github/release-artifact.py",
+        ".github/components.json",
+        ".github/package-export-smoke.py",
+    ]
+    if is_native:
+        import_excludes.extend([
+            "native/native-artifacts.py",
+            "native/native-artifacts.schema.json",
+            "native/native-artifacts-public.pem",
+        ])
+    if is_rust:
+        import_excludes.append(".github/crates-publish.py")
+    if name == "hop-sdk-go":
+        import_excludes.append("hop.h")
+    if name == "hop-sdk-android":
+        import_excludes.append("include/hop.h")
+    if is_elixir:
+        import_excludes.extend(["native/Cargo.toml", "native/Cargo.lock", "native/vendor/**"])
     core.workflow(
         name = name + "_export",
         origin = git.origin(url = MONOREPO, ref = "main"),
         destination = git.destination(url = mirror_url(name), push = "main"),
         # Only this subtree travels out, minus the internal files.
-        origin_files = glob([prefix + "/**"], exclude = internal),
+        origin_files = glob(
+            origin_paths,
+            exclude = export_excludes,
+        ),
         destination_files = glob(["**"]),
         authoring = authoring.pass_thru(default = BOT),
         # ITERATIVE replays every monorepo commit that touches the subtree as its OWN commit in the
@@ -188,7 +347,10 @@ def _register(prefix, name):
             destination_ref = "main",
             pr_branch = "copybara/import/" + name,
         ),
-        origin_files = glob(["**"]),
+        origin_files = glob(
+            ["**"],
+            exclude = import_excludes,
+        ),
         # The change lands ONLY under this subtree, and never rewrites the monorepo-internal files.
         destination_files = glob([prefix + "/**"], exclude = internal),
         authoring = authoring.pass_thru(default = BOT),
@@ -196,5 +358,28 @@ def _register(prefix, name):
         transformations = import_transforms,
     )
 
-# Register all components (a comprehension is allowed at the top level; a bare for loop is not).
-[_register(prefix, name) for prefix, name in COMPONENTS]
+# This pinned Copybara runtime does not support tuple-unpacking comprehensions. Keep these explicit
+# registrations in the same order as COMPONENTS; dispatch.test.sh rejects drift between them.
+REGISTERED = [
+    _register("sdk/node", "hop-sdk-node"),
+    _register("sdk/python", "hop-sdk-python"),
+    _register("sdk/go", "hop-sdk-go"),
+    _register("sdk/ruby", "hop-sdk-ruby"),
+    _register("sdk/crystal", "hop-sdk-crystal"),
+    _register("sdk/elixir", "hop-sdk-elixir"),
+    _register("sdk/apple", "hop-sdk-apple"),
+    _register("sdk/android", "hop-sdk-android"),
+    _register("sdk/embedded", "hop-embedded"),
+    _register("core/hop-core", "hop-core"),
+    _register("core/hop", "libhop"),
+    _register("core/hop-wasm", "hop-wasm"),
+    _register("core/stores/hop-store-sqlite", "hop-store-sqlite"),
+    _register("core/stores/hop-store-firestore", "hop-store-firestore"),
+    _register("bearers/apple", "hop-bearers-apple"),
+    _register("bearers/android", "hop-bearers-android"),
+    _register("drivers/apple/HopDriver", "hop-driver-apple"),
+    _register("drivers/android/hop-driver", "hop-driver-android"),
+    _register("services/hop-relayd", "hop-relayd"),
+    _register("services/hop-endpoint", "hop-endpoint"),
+    _register("services/hop-gateway", "hop-gateway"),
+]

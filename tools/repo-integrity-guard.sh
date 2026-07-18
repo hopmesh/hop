@@ -10,7 +10,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 # Tracked files that must always carry content (paths relative to repo root). There is no repo-wide
 # root license: this is a monorepo, and each component carries its OWN FSL-1.1-ALv2 LICENSE.md (the

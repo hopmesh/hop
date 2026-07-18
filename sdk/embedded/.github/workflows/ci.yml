@@ -1,6 +1,4 @@
-# Light CI for the Hop PlatformIO library: lint the manifest and confirm the package packs. A full
-# on-device build needs the prebuilt libhop archive (produced by the libhop release), so that is not
-# gated here. Carried in from the Hop monorepo subtree by Copybara; edit it there, never in a mirror.
+# Validate the C++ wrapper, package layout, and every hash-locked PlatformIO input.
 name: ci
 
 on:
@@ -15,10 +13,27 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: library.json is valid JSON
-        run: python3 -c "import json; json.load(open('library.json'))"
-      - name: Set up PlatformIO
-        run: pipx install platformio
-      - name: Pack the library (manifest + layout sanity)
-        run: pio pkg pack --output /tmp/hop-pkg.tar.gz
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: C++ wrapper host tests
+        run: bash test/run-host-tests.sh
+      - name: Validate manifest and offline input policy
+        run: |
+          python3 -c "import json; json.load(open('library.json'))"
+          python3 tools/platformio-offline.py verify
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.13'
+      - name: Install hash-locked PlatformIO
+        run: python3 -m pip install --require-hashes -r requirements-platformio.txt
+      - name: Verify all PlatformIO package archives
+        run: |
+          cache="$RUNNER_TEMP/platformio-cache"
+          python3 tools/platformio-offline.py fetch --cache "$cache"
+          python3 tools/platformio-offline.py config --cache "$cache" \
+            --input examples/blink_send/platformio.ini --output "$RUNNER_TEMP/blink.ini"
+          python3 tools/platformio-offline.py config --cache "$cache" \
+            --input examples/service_rpc/platformio.ini --output "$RUNNER_TEMP/service.ini"
+      - name: Pack the library
+        run: pio pkg pack --output "$RUNNER_TEMP/hop-pkg.tar.gz"

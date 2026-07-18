@@ -396,6 +396,13 @@ fun StatusScreen(bearer: HopBearer) {
                     style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(16.dp))
+            Text("Local history", style = MaterialTheme.typography.titleMedium)
+            bearer.persistenceError.value?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Row {
+                TextButton(onClick = { bearer.deleteMedia() }) { Text("Delete all media") }
+                TextButton(onClick = { bearer.deleteHistory() }) { Text("Delete all history") }
+            }
+            Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Relay queue (${bearer.queue.size})", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.weight(1f))
@@ -789,8 +796,9 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
     // Pick one OR MORE images, downscale to JPEG, and stage them; Send fires one multipart (§20).
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         for (uri in uris) {
+            if (attached.size >= 8) break
             runCatching {
-                val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                val raw = context.contentResolver.openInputStream(uri)?.use { readCapped(it) }
                 if (raw != null) attached.add(jpegDownscale(raw))
             }
         }
@@ -803,6 +811,11 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
             if (locked) {
                 Spacer(Modifier.width(6.dp))
                 FaIcon(sh.hopme.demo.R.drawable.ic_fa_lock, MaterialTheme.colorScheme.primary, 16.dp)
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { bearer.deleteMedia(peer) }) { Text("Clear media") }
+            TextButton(onClick = { bearer.deleteConversation(peer); onBack() }) {
+                FaIcon(sh.hopme.demo.R.drawable.ic_fa_trash, MaterialTheme.colorScheme.error, 16.dp)
             }
         }
         LazyColumn(Modifier.weight(1f)) {
@@ -896,19 +909,42 @@ fun HopBrowser(bearer: HopBearer, start: String, onBack: () -> Unit) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹") }
             OutlinedTextField(bar, { bar = it }, singleLine = true, modifier = Modifier.weight(1f))
-            TextButton(onClick = { webRef?.loadUrl(normalizeHops(bar)) }) { Text("Go") }
+            TextButton(onClick = {
+                val target = normalizeHops(bar)
+                if (browserAllowsURL(target)) webRef?.loadUrl(target)
+            }) { Text("Go") }
         }
         AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
             WebView(ctx).apply {
                 webRef = this
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
+                settings.javaScriptEnabled = false
+                settings.domStorageEnabled = false
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.setSupportMultipleWindows(false)
+                settings.javaScriptCanOpenWindowsAutomatically = false
+                settings.blockNetworkLoads = true
                 webViewClient = object : WebViewClient() {
+                    private fun denied(code: Int = 403, text: String = "blocked"): WebResourceResponse =
+                        WebResourceResponse(
+                            "text/plain", "utf-8", code, statusText(code),
+                            mapOf(
+                                "Content-Security-Policy" to HOPS_CONTENT_SECURITY_POLICY,
+                                "X-Content-Type-Options" to "nosniff",
+                            ),
+                            ByteArrayInputStream(text.toByteArray()),
+                        )
+
+                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                        !browserAllowsURL(request.url.toString())
+
                     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                        if (request.url.scheme != "hops") return null
+                        val requestUrl = request.url.toString()
+                        if (requestUrl.equals("about:blank", ignoreCase = true)) return denied(204, "")
+                        if (!browserAllowsURL(requestUrl)) return denied()
                         val latch = CountDownLatch(1)
                         var status = 504; var ctype = "text/plain; charset=utf-8"; var body = ByteArray(0)
-                        bearer.hopsFetch(request.url.toString()) { s, c, b ->
+                        bearer.hopsFetch(requestUrl) { s, c, b ->
                             status = s; ctype = c; body = b; latch.countDown()
                         }
                         if (!latch.await(30, TimeUnit.SECONDS)) {
@@ -916,11 +952,14 @@ fun HopBrowser(bearer: HopBearer, start: String, onBack: () -> Unit) {
                         }
                         val mime = ctype.substringBefore(';').trim().ifEmpty { "text/plain" }
                         val enc = ctype.substringAfter("charset=", "utf-8").trim()
-                        return WebResourceResponse(mime, enc, status, statusText(status), emptyMap(),
+                        return WebResourceResponse(mime, enc, status, statusText(status), mapOf(
+                            "Content-Security-Policy" to HOPS_CONTENT_SECURITY_POLICY,
+                            "X-Content-Type-Options" to "nosniff",
+                        ),
                             ByteArrayInputStream(body))
                     }
                 }
-                loadUrl(normalizeHops(start))
+                normalizeHops(start).takeIf(::browserAllowsURL)?.let(::loadUrl)
             }
         })
     }

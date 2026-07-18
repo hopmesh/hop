@@ -9,8 +9,10 @@ Hop bills for **reach, not device count**: a device with connectivity direct-con
 endpoint for free, so you pay only when the backbone delivers to an **offline** recipient.
 Metrics carry their own COGS (BigQuery), so observability is a separate meter, not a per-device fee.
 
-This is a **separate root module** from the relay fleet (`infra/`), its own state, its
-own provider, so a relay apply never needs Stripe credentials.
+This is a **separate root module** from the relay fleet (`infra/`), with its own state
+and provider, so a relay apply never needs Stripe credentials. GCP billing control-plane
+resources live in the manually applied `infra/bootstrap/` root. The runtime root owns
+only the BigQuery usage dataset.
 
 ## How it is applied (CI/CD, not a local run)
 
@@ -23,10 +25,12 @@ owns this module:
   gated behind a deliberate click rather than firing on every push.
 
 Auth is keyless: GitHub OIDC → Workload Identity Federation → the `billing-catalog-apply` service
-account (`infra/wif_github.tf`), scoped to the `billing/` state prefix only. The Stripe key is the
-`STRIPE_API_KEY` repo secret. One-time setup: apply the fleet root (which creates WIF), then set the
-`GCP_PROJECT_NUMBER` repo variable so the workflow can construct the WIF provider path. `apply.sh` is
-a break-glass local fallback only.
+account (`infra/bootstrap/billing.tf`), scoped to the `billing/` state prefix only. The Stripe key
+is the `STRIPE_API_KEY` repo secret. One-time setup: manually apply the reviewed bootstrap root,
+then set `GCP_BILLING_WIF_PROVIDER` and `GCP_BILLING_SERVICE_ACCOUNT` to its
+`github_wif_provider` and `github_wif_service_account` outputs. The authority state migration and
+exact `gh variable set` commands are in [`infra/README.md`](../README.md#one-time-billing-authority-migration).
+`apply.sh` is a break-glass local fallback only.
 
 ## What it creates
 

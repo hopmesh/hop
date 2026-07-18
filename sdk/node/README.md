@@ -66,11 +66,17 @@ hop.attach(server, { publicUrl: 'wss://myaddress.com/_hop' }) // serves GET /.we
 server.listen(443)
 ```
 
+`attach` must run before `server.listen()`. It installs raw-socket admission and one absolute TLS plus
+HTTP-header deadline before Node allocates or parses a Hop upgrade. Servers configured with an HTTP
+header limit above Node's documented 16 KiB default are rejected instead of being silently weakened.
+
 A client reaches it by name, verified end to end:
 
 ```js
 const address = await client.dialByName('https://myaddress.com') // WebPKI + self-certifying reach record
 const res = await client.request(address, 'acme/orders', 'create', order)
+await persistResult(res)
+res.accept() // remove the durable response only after local work succeeds
 ```
 
 TLS proves the domain, a signed **reach record** proves the address, and the Noise handshake confirms
@@ -86,7 +92,7 @@ with zero core changes:
 | ----------------- | --------------------------------------------------------- |
 | `hop.on(svc, fn)` | `hop_subscribe` + `hop_poll_service_requests`             |
 | `reply(status,b)` | `hop_send_service_response`                               |
-| `hop.request(…)`  | `hop_send_service_request` + `hop_poll_service_responses` |
+| `hop.request(…)`  | `hop_send_service_request` + durable response poll/accept |
 | Internet bearer   | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing`|
 
 ## Examples

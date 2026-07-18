@@ -11,16 +11,64 @@ variable "excluded_regions" {
   default = ["me-central2"]
 }
 
-variable "build_connection_name" {
-  description = "Cloud Build 2nd-gen GitHub connection name. Empty disables the GitOps build trigger."
+variable "relay_image" {
+  description = "Immutable hop-relayd image reference produced by the trusted build, including an exact sha256 digest."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.relay_image))
+    error_message = "relay_image must be an immutable Artifact Registry reference ending in @sha256:<64 lowercase hex>."
+  }
 }
 
-variable "deploy_image_sha" {
-  description = "Commit short-sha to deploy. Passed by the Cloud Build apply step as -var deploy_image_sha=$SHORT_SHA so the relay + example images match the just-built commit. Empty falls back to :latest."
+variable "example_image" {
+  description = "Immutable hop-example image reference produced by the trusted build, including an exact sha256 digest."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.example_image))
+    error_message = "example_image must be an immutable Artifact Registry reference ending in @sha256:<64 lowercase hex>."
+  }
+}
+
+variable "deployment_source_sha" {
+  description = "Exact source revision authorized by the trusted CI and provenance gates."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.deployment_source_sha))
+    error_message = "deployment_source_sha must be exactly 40 lowercase hexadecimal characters."
+  }
+}
+
+variable "deployment_build_id" {
+  description = "Cloud Build id bound into the signed provenance manifest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.deployment_build_id))
+    error_message = "deployment_build_id must be a Cloud Build UUID."
+  }
+}
+
+variable "deployment_manifest_sha256" {
+  description = "SHA-256 of the KMS-signed build provenance manifest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.deployment_manifest_sha256))
+    error_message = "deployment_manifest_sha256 must be 64 lowercase hexadecimal characters."
+  }
+}
+
+variable "deployment_environment" {
+  description = "Externally configured deployment environment bound into bootstrap and build provenance."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.deployment_environment)) > 0
+    error_message = "deployment_environment must not be empty."
+  }
 }
 
 variable "region_allowlist" {
@@ -39,27 +87,17 @@ variable "relays_enabled" {
     services (nor their per-region NEGs / backends / IAM) are deployed and any existing ones are
     torn down. The anycast LB, wildcard cert, DNS, Firestore, and the example endpoint stay up, so
     flipping this back to true (and re-applying) restores the fleet on the SAME IP/cert/DNS.
-    Currently false in cloudbuild.trigger.yaml (P2P-only test phase); flip that line to re-enable.
+    Currently false in the trusted bootstrap trigger configuration (P2P-only test phase); update the
+    bootstrap variable and re-apply that separately to re-enable.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "domain" {
   description = "DNS name clients connect to (anycast across all regions)."
   type        = string
   default     = "relay.hopme.sh"
-}
-
-variable "relay_image" {
-  description = <<-EOT
-    Full container image reference for hop-relayd, e.g.
-    us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd:latest. Build & push with
-    `make -C infra image` (see infra/README.md). The container runs the relay's
-    WebSocket bearer on $PORT so Cloud Run can front it.
-  EOT
-  type        = string
-  default     = ""
 }
 
 variable "max_instances_per_region" {
@@ -95,19 +133,11 @@ variable "example_region" {
 
 variable "cloud_run_ingress" {
   description = <<-EOT
-    Who may reach the Cloud Run services directly. "INGRESS_TRAFFIC_ALL" exposes the
-    *.run.app URL (valid Google TLS, no custom DNS needed) — use this to test before
-    DNS exists. Switch to "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" once the LB +
-    relay.hopme.sh are the front door. Auth is the Noise handshake either way.
+    Who may reach the Cloud Run services. Production uses only internal and load-balancer
+    ingress; the default run.app URI is disabled on each service.
   EOT
   type        = string
-  default     = "INGRESS_TRAFFIC_ALL"
-}
-
-variable "firestore_location" {
-  description = "Firestore location. Use a multi-region (nam5, eur3) for the durable store."
-  type        = string
-  default     = "nam5"
+  default     = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 }
 
 variable "ws_request_timeout_seconds" {
@@ -168,10 +198,24 @@ variable "google_dkim_txt" {
   default     = ""
 }
 
-# F-23: the relay identity secret VERSION each region mounts. "latest" silently re-keys the fleet on
-# a rotation (Cloud Run resolves it at cold start); pin the numeric version that was seeded for prod.
+# F-23: the relay identity secret version each region mounts. A mutable alias can silently re-key the
+# fleet on a cold start, so the trusted deployment must pass a positive numeric version.
 variable "relay_identity_version" {
-  description = "Secret Manager version of the relay identity to mount ('latest' for dev; a pinned number for prod). See cloud_run.tf / docs/audits/GAP-ANALYSIS.md F-23."
+  description = "Pinned numeric Secret Manager version of the relay identity to mount."
   type        = string
-  default     = "latest"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.relay_identity_version))
+    error_message = "relay_identity_version must be a positive numeric Secret Manager version."
+  }
+}
+
+variable "example_identity_version" {
+  description = "Pinned Secret Manager version for the public example identity."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.example_identity_version))
+    error_message = "example_identity_version must be a positive numeric Secret Manager version."
+  }
 }

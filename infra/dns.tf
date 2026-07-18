@@ -6,8 +6,6 @@ resource "google_dns_managed_zone" "hopme" {
   dns_name    = var.dns_zone_dns_name # "hopme.sh."
   description = "Hop public DNS zone (hopme.sh)"
   visibility  = "public"
-
-  depends_on = [google_project_service.this]
 }
 
 # relay.hopme.sh → the global LB's anycast IPs (dual-stack). Once these resolve, the

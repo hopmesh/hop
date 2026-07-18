@@ -21,10 +21,12 @@ lib LibHop
   fun drain_outgoing = hop_drain_outgoing(node : Void*, sink : (Void*, UInt64, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
   fun subscribe = hop_subscribe(node : Void*, topic : LibC::Char*) : Void
   fun publish_prekey = hop_publish_prekey(node : Void*) : Bool
+  fun accept_inbox = hop_accept_inbox(node : Void*, inbox_id : UInt8*) : Bool
+  fun accept_service_response = hop_accept_service_response(node : Void*, request_id : UInt8*) : Bool
   fun send_service_request = hop_send_service_request(node : Void*, dst : UInt8*, service : LibC::Char*, method : LibC::Char*, args : UInt8*, args_len : LibC::SizeT, out_id : UInt8*) : Bool
   fun send_service_response = hop_send_service_response(node : Void*, to : UInt8*, for_request_id : UInt8*, status : UInt16, body : UInt8*, body_len : LibC::SizeT) : Bool
   fun poll_service_requests = hop_poll_service_requests(node : Void*, sink : (Void*, UInt8*, UInt8*, LibC::Char*, LibC::Char*, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
-  fun poll_service_responses = hop_poll_service_responses(node : Void*, sink : (Void*, UInt8*, UInt8*, UInt16, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
+  fun poll_service_responses = hop_poll_service_responses(node : Void*, sink : (Void*, UInt8*, UInt8*, UInt16, UInt8*, LibC::SizeT -> Bool), ctx : Void*) : Void
   fun address_to_base58 = hop_address_to_base58(addr : UInt8*, out_buf : LibC::Char*, out_cap : LibC::SizeT) : LibC::SizeT
   fun address_from_base58 = hop_address_from_base58(text : LibC::Char*, out32 : UInt8*) : Bool
   fun sign_reach_record = hop_sign_reach_record(node : Void*, endpoint : LibC::Char*, ttl_secs : UInt32, sink : (Void*, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
@@ -40,7 +42,7 @@ module Hop
   # Thin, one-to-one helpers over LibHop: turn raw pointers + synchronous sink callbacks into Crystal
   # Bytes/String/arrays. Everything ergonomic lives in Hop::Endpoint.
   module FFI
-    ABI_EXPECTED = 3_u32
+    ABI_EXPECTED = 4_u32
 
     # Verified reach record fields (mirrors ReachInfo on the Rust side).
     record Reach, address : Bytes, endpoint : String, issued_at : UInt64, ttl_secs : UInt32
@@ -48,6 +50,11 @@ module Hop
     def self.assert_abi!
       got = LibHop.abi_version
       raise "libhop ABI mismatch: wrapper expects #{ABI_EXPECTED}, library reports #{got}" if got != ABI_EXPECTED
+    end
+
+    private def self.require_32(bytes : Bytes, name : String) : Bytes
+      raise ArgumentError.new("#{name} must be exactly 32 bytes, got #{bytes.size}") unless bytes.size == 32
+      bytes
     end
 
     # ---- read C memory that is valid only during a call ----
@@ -95,7 +102,7 @@ module Hop
     end
 
     def self.cluster_join(node : Void*, secret : Bytes) : Nil
-      LibHop.cluster_join(node, secret.to_unsafe)
+      LibHop.cluster_join(node, require_32(secret, "cluster secret").to_unsafe)
     end
 
     def self.cluster_join_passphrase(node : Void*, pass : Bytes) : Nil
@@ -112,6 +119,14 @@ module Hop
 
     def self.publish_prekey(node : Void*) : Bool
       LibHop.publish_prekey(node)
+    end
+
+    def self.accept_inbox(node : Void*, inbox_id : Bytes) : Bool
+      LibHop.accept_inbox(node, require_32(inbox_id, "inbox id").to_unsafe)
+    end
+
+    def self.accept_service_response(node : Void*, request_id : Bytes) : Bool
+      LibHop.accept_service_response(node, require_32(request_id, "request id").to_unsafe)
     end
 
     def self.address(node : Void*) : Bytes
@@ -132,13 +147,14 @@ module Hop
 
     def self.send_service_request(node : Void*, dst : Bytes, service : String, method : String, args : Bytes) : Bytes
       buf = Bytes.new(32)
-      ok = LibHop.send_service_request(node, dst.to_unsafe, service, method, args.to_unsafe, args.size, buf.to_unsafe)
+      ok = LibHop.send_service_request(node, require_32(dst, "destination").to_unsafe, service, method, args.to_unsafe, args.size, buf.to_unsafe)
       raise "hop_send_service_request failed" unless ok
       buf
     end
 
     def self.send_service_response(node : Void*, to : Bytes, for_request_id : Bytes, status : UInt16, body : Bytes) : Bool
-      LibHop.send_service_response(node, to.to_unsafe, for_request_id.to_unsafe, status, body.to_unsafe, body.size)
+      LibHop.send_service_response(node, require_32(to, "response destination").to_unsafe,
+        require_32(for_request_id, "request id").to_unsafe, status, body.to_unsafe, body.size)
     end
 
     # [{from32, request_id32, service, method, args}]
@@ -161,14 +177,15 @@ module Hop
       LibHop.poll_service_responses(node, ->(ctx : Void*, frm : UInt8*, for_id : UInt8*, status : UInt16, body : UInt8*, body_len : LibC::SizeT) {
         Box(Array({Bytes, Bytes, UInt16, Bytes})).unbox(ctx) <<
         {Hop::FFI.read_bytes(frm, LibC::SizeT.new(32)), Hop::FFI.read_bytes(for_id, LibC::SizeT.new(32)), status, Hop::FFI.read_bytes(body, body_len)}
-        nil
+        false
       }, boxed)
       buf
     end
 
     def self.to_b58(addr32 : Bytes) : String
       buf = Bytes.new(64)
-      n = LibHop.address_to_base58(addr32.to_unsafe, buf.to_unsafe.as(LibC::Char*), 64)
+      n = LibHop.address_to_base58(require_32(addr32, "address").to_unsafe,
+        buf.to_unsafe.as(LibC::Char*), 64)
       String.new(buf.to_unsafe, n)
     end
 

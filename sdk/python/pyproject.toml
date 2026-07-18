@@ -3,7 +3,8 @@ name = "hop-endpoint"
 version = "0.0.1"
 description = "Receive Hop messages in Python: an embeddable endpoint over the libhop C ABI (ctypes)."
 requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE.md"]
 # The endpoint SDK itself has ZERO runtime dependencies (ctypes is stdlib). `cryptography` is a
 # dev/example-only extra, used solely to generate the in-process self-signed cert for the discovery
 # example + test (hop_endpoint.dev_tls); it is never imported at runtime.
@@ -13,7 +14,7 @@ dependencies = []
 dev = ["cryptography>=41"]
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

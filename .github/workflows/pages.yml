@@ -1,111 +1,230 @@
 name: Deploy marketing site (Pages)
 
-# Build the Astro marketing site in web/ and publish it to GitHub Pages.
-# Pages must be enabled with "Source: GitHub Actions" once in repo settings
-# (Settings → Pages). The custom domain hopme.sh is carried by apps/web/site/public/CNAME.
-
+# Pages must use GitHub Actions as its source. The custom domain is carried by public/CNAME.
 on:
   push:
     branches: [main]
     paths:
-      - 'apps/web/site/**'
-      - 'sim/**'
       - '.github/workflows/pages.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'apps/web/site/**'
+      - 'core/hop-core/**'
+      - 'core/hop-wasm/**'
+      - 'learn/**'
+      - 'rust-toolchain.toml'
+      - 'sim/**'
+      - 'tools/check-web-links.mjs'
+      - 'tools/pages-path-guard.py'
+      - 'tools/release-artifact.py'
   workflow_dispatch:
 
-# Allow the workflow to publish to Pages via OIDC.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# One in-flight Pages deploy at a time; don't cancel a running publish.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.pages.outputs.artifact_id }}
     defaults:
       run:
         working-directory: apps/web/site
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-      # web-05 / simwasm-02: rebuild the sim wasm FROM SOURCE (core/hop-wasm at HEAD) before the Astro
-      # build, so what deploys to hopme.sh always matches the shipping core. The committed sim/pkg is a
-      # convenience for local builds without a wasm toolchain; the public site is built from source.
-      - name: Install Rust + wasm32 target
+      - name: Authorize canonical main deployment source
+        working-directory: .
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = hopmesh/hop
+          test "$REF" = refs/heads/main
+          test "$REF_PROTECTED" = true
+          case "$EVENT_NAME" in push|workflow_dispatch) ;; *) exit 1 ;; esac
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          request = urllib.request.Request(
+              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "User-Agent": "hop-pages",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response).get("object", {}).get("sha")
+          if current != os.environ["SOURCE_SHA"]:
+              raise SystemExit("Pages source is not current canonical main")
+          PY
+
+      - name: Guard Pages trigger paths against the complete build graph
+        working-directory: .
+        run: python3 tools/pages-path-guard.py
+
+      - name: Install Rust and wasm32 target
         working-directory: .
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add wasm32-unknown-unknown
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.0
 
-      - name: Install wasm-pack
+      - name: Install verified wasm tools
         working-directory: .
-        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+        run: bash core/hop-wasm/install-wasm-pack.sh
 
-      - name: Build sim wasm (browser + node) from core/hop-wasm
+      - name: Build sim wasm from canonical source
         working-directory: .
         run: bash sim/build-wasm.sh
 
-      # infra-r2-01: gate the PUBLISH on the same guards the CI `web` job runs, so hopme.sh can't ship
-      # a stale/broken sim or a dead internal link even though pages.yml rebuilds independently on the
-      # main push. These run BEFORE upload, so a failure blocks the deploy job (needs: build).
-
-      # sim/pkg must still match a fresh build from core (no stale committed artifact on the live site).
-      - name: Guard sim/pkg against drift from core
+      - name: Guard sim package against source drift
         working-directory: .
         run: bash sim/check-pkg-fresh.sh
 
-      # Astro 7 requires Node >=22.12 (dropped Node 20 support).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 22.23.1
           cache: npm
           cache-dependency-path: apps/web/site/package-lock.json
 
-      # Every homepage scenario must actually complete (each scripted send delivers AND its ACK returns).
-      # After setup-node so it runs on the pinned Node 20, against the pkg-node just built above.
-      - name: Sim scenario-check (all scenarios complete)
+      - name: Verify every sim scenario
         working-directory: .
         run: node sim/scenario-check.mjs
 
-      # F-5: direct coverage for the WasmNode methods no scenario script calls (publish_recv_beacon,
-      # send_traced, set_default_lifetime_ms, inbox_debug) against the same real wasm build.
-      - name: Sim wasm-glue check (direct WasmNode API coverage)
+      - name: Verify direct WasmNode API glue
         working-directory: .
         run: node sim/wasm-glue-check.mjs
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
-
-      - name: Install dependencies
+      - name: Install site dependencies
         run: npm ci
 
-      # prebuild runs `npm run sync`, which copies the freshly-built ../sim (incl. sim/pkg) into public/.
-      - name: Build
+      - name: Build site
         run: npm run build
 
-      # infra-r2-01: dead-internal-link gate over the built site, same as the CI `web` job. Blocks the
-      # publish on a broken link instead of shipping it live.
-      - name: Internal link check (apps/web/site/dist)
+      - name: Check internal links
         working-directory: .
         run: node tools/check-web-links.mjs apps/web/site/dist
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+      - name: Bind every deployed byte to this source and workflow run
+        working-directory: .
+        run: >-
+          python3 tools/release-artifact.py create
+          --directory apps/web/site/dist
+          --canonical-source-sha "$GITHUB_SHA"
+
+      - name: Upload immutable Pages artifact
+        id: pages
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: apps/web/site/dist
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Download the exact Pages artifact by ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/pages-download
+          merge-multiple: true
+
+      - name: Verify artifact inventory, digests, source SHA, and run identity
+        env:
+          ARTIFACT_ROOT: ${{ runner.temp }}/pages-download
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/pages-verified"
+          tar -xf "$ARTIFACT_ROOT/artifact.tar" -C "$RUNNER_TEMP/pages-verified"
+          python3 - "$RUNNER_TEMP/pages-verified" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          manifest = json.loads((root / "release-manifest.json").read_text())
+          expected = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_sha": os.environ["GITHUB_SHA"],
+              "canonical_source_sha": os.environ["GITHUB_SHA"],
+              "source_ref": os.environ["GITHUB_REF"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"Pages manifest mismatch: {key}")
+          declared = {item["path"]: item for item in manifest["files"]}
+          actual = {
+              path.relative_to(root).as_posix(): path
+              for path in root.rglob("*")
+              if path.is_file() and path.name != "release-manifest.json"
+          }
+          if set(actual) != set(declared):
+              raise SystemExit("Pages artifact inventory changed")
+          for name, path in actual.items():
+              data = path.read_bytes()
+              if len(data) != declared[name]["size"]:
+                  raise SystemExit(f"Pages artifact size changed: {name}")
+              if hashlib.sha256(data).hexdigest() != declared[name]["sha256"]:
+                  raise SystemExit(f"Pages artifact digest changed: {name}")
+          print(f"Pages artifact verified: files={len(actual)} source={expected['source_sha']}")
+          PY
+
+      - name: Reject a superseded main commit before deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          request = urllib.request.Request(
+              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "User-Agent": "hop-pages",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response).get("object", {}).get("sha")
+          if current != os.environ["SOURCE_SHA"]:
+              raise SystemExit("Pages deployment source was superseded on canonical main")
+          PY
+
+      - name: Configure Pages after artifact verification
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Deploy verified artifact to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

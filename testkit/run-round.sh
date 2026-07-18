@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # run-round.sh: one round of cross-device P2P send scenarios with fg/bg permutations.
 # Drives every ordered device pair, verifies receipt + end-to-end ack, measures latency,
 # snapshots per-device node state, and emits one JSON line per scenario to results/<round>.jsonl.
@@ -12,6 +13,7 @@
 # sender holds an end-to-end delivery ack. Timeouts are recorded as delivered=false with elapsed.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
 source "$HERE/lib.sh"
 
 ROUND="${1:?round-id}"; RESULTS="${2:?results-dir}"; PROFILE="${3:-fgfg}"; PAIRS_IN="${4:-}"
@@ -24,7 +26,7 @@ POLL="${TK_POLL:-2}"
 # (tk_send -> devicectl --payload-url), so the iPads (jpad and the second iPad `ipad`, plus BushidoPhone
 # `bush`) are first-class members of the automated matrix, not just receivers. Override with the
 # TK_CORE_IDS env or the <pairs> arg to scope to whatever is physically connected this run.
-CORE_IDS=(${TK_CORE_IDS:-pixel tab xr jpad ipad bush})
+read -r -a CORE_IDS <<< "${TK_CORE_IDS:-pixel tab xr jpad ipad bush}"
 # Build the ordered-pair list unless overridden.
 PAIRS=()
 if [ -n "$PAIRS_IN" ]; then
@@ -49,7 +51,7 @@ i=0
 for pair in "${PAIRS[@]}"; do
   from="${pair%%:*}"; to="${pair##*:}"
   eval "toaddr=\"\${ADDR_$to:-}\""
-  read fs ts <<< "$(perm_for $i)"; i=$((i+1))
+  read -r fs ts <<< "$(perm_for "$i")"; i=$((i+1))
   if [ -z "$toaddr" ]; then
     printf '{"round":"%s","from":"%s","to":"%s","skip":"no-addr"}\n' "$ROUND" "$from" "$to" >> "$OUT"
     continue
@@ -66,7 +68,7 @@ for pair in "${PAIRS[@]}"; do
   if [ "$fs" = bg ]; then sleep 2; tk_bg "$from"; fi
   # Poll for delivery.
   delivered=false; received=0; elapsed=0
-  while [ $elapsed -lt $MAXWAIT ]; do
+  while [ "$elapsed" -lt "$MAXWAIT" ]; do
     sleep "$POLL"; elapsed=$(( $(now_s) - t0 ))
     received=$(tk_verify "$to" "$mark" 2>/dev/null || echo 0)
     ack=$(tk_delivered "$from" "$mark" 2>/dev/null || echo false)

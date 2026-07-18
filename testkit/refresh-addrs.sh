@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # Discover each device's stable base58 self-address and write testkit/addrs.env.
 # Run after a (re)deploy. Identity is device-seed-derived, so addresses are durable across wipes.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
 source "$HERE/lib.sh"
 
 OUT="$HERE/addrs.env"

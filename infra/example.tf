@@ -11,15 +11,10 @@
 # so it costs one Cloud Run service, not a second load balancer.
 
 locals {
-  example_domain   = "example.${trimsuffix(var.dns_zone_dns_name, ".")}" # example.hopme.sh
-  example_ar_image = "us-central1-docker.pkg.dev/${var.project_id}/hop/hop-example"
-  example_image = (
-    length(var.deploy_image_sha) >= 7 ? "${local.example_ar_image}:${substr(var.deploy_image_sha, 0, 7)}" :
-    "${local.example_ar_image}:latest"
-  )
+  example_domain = "example.${trimsuffix(var.dns_zone_dns_name, ".")}" # example.hopme.sh
   # The endpoint's published Hop address (base58), computed once from its identity seed via
   # `hop-endpoint --print-address`. This is a public key, safe to commit; the seed itself
-  # lives only in Secret Manager (see data.google_secret_manager_secret.example_identity).
+  # lives only in Secret Manager and is provisioned by infra/bootstrap.
   example_endpoint_address = "J8XGeYT2VA3aq6KeP85LEujpAjg3LBbLLvivyoNFWTFr"
 }
 
@@ -32,23 +27,26 @@ locals {
 #   gcloud secrets versions add hop-example-identity --project hop-mesh --data-file=/tmp/seed
 #   hop-endpoint --print-address --identity-file /tmp/seed
 #
-# Terraform only reads it (a data source) so it never holds the private key.
-data "google_secret_manager_secret" "example_identity" {
-  secret_id = "hop-example-identity"
-}
-
-resource "google_secret_manager_secret_iam_member" "example_identity" {
-  secret_id = data.google_secret_manager_secret.example_identity.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.relay.email}"
-}
-
 # The endpoint service. Always-on (min=1); one region is plenty for a demo. (F-39: NOT scale-to-zero
 # like the relays — the endpoint must stay relay-connected to be routable, so min_instance_count=1.)
 resource "google_cloud_run_v2_service" "example" {
   name     = "hop-example"
   location = var.example_region
-  ingress  = var.cloud_run_ingress
+  # The endpoint trusts the load balancer's exact XFF suffix only for internal Cloud Run proxy peers.
+  # Prevent direct *.run.app ingress from bypassing that topology and supplying its own chain.
+  ingress              = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+  default_uri_disabled = true
+
+  invoker_iam_disabled = true
+
+  labels = {
+    "hop-source-sha" = var.deployment_source_sha
+  }
+  annotations = {
+    "hopmesh.dev/build-id"        = var.deployment_build_id
+    "hopmesh.dev/environment"     = var.deployment_environment
+    "hopmesh.dev/manifest-sha256" = var.deployment_manifest_sha256
+  }
 
   deletion_protection = false
 
@@ -57,7 +55,7 @@ resource "google_cloud_run_v2_service" "example" {
   }
 
   template {
-    service_account = google_service_account.relay.email
+    service_account = local.example_service_account
     timeout         = "${var.ws_request_timeout_seconds}s"
 
     # Always-on (min = 1): the endpoint must stay connected to the relay to be routable by
@@ -69,7 +67,7 @@ resource "google_cloud_run_v2_service" "example" {
     }
 
     containers {
-      image = local.example_image
+      image = var.example_image
 
       ports {
         container_port = 8080
@@ -82,6 +80,22 @@ resource "google_cloud_run_v2_service" "example" {
       env {
         name  = "HOP_IDENTITY_FILE"
         value = "/etc/hop/identity"
+      }
+      env {
+        name  = "HOP_TRUSTED_PROXY"
+        value = "google-cloud-run"
+      }
+      env {
+        name  = "HOP_TRUSTED_PROXY_HOPS"
+        value = "1"
+      }
+      env {
+        name  = "HOP_TRUSTED_PROXY_PEER_CIDRS"
+        value = "169.254.8.129/32"
+      }
+      env {
+        name  = "HOP_TRUSTED_PROXY_SUFFIX_CIDRS"
+        value = "${google_compute_global_address.relay.address}/32,${google_compute_global_address.relay_v6.address}/128"
       }
       # services-r2-01: actually ACTIVATE the coded graceful-degrade path. When the relay fleet is
       # torn down (var.relays_enabled = false) the always-on (min=1) example instance would otherwise
@@ -116,9 +130,9 @@ resource "google_cloud_run_v2_service" "example" {
     volumes {
       name = "identity"
       secret {
-        secret = data.google_secret_manager_secret.example_identity.secret_id
+        secret = "hop-example-identity"
         items {
-          # PINNED to version 1 (the single version created by the seeding recipe above), NOT "latest".
+          # PINNED to the bootstrap-selected numeric version, NOT "latest".
           # The endpoint's published address (local.example_endpoint_address, in DNS + the HNS TXT
           # record) is derived from THIS seed, so the seed must never silently change. With "latest",
           # anyone adding a new secret version would swap the identity out from under the mount on the
@@ -126,25 +140,13 @@ resource "google_cloud_run_v2_service" "example" {
           # makes the identity, and therefore the published address, immutable across deploys. If the
           # identity is ever intentionally rotated, bump both this version and
           # local.example_endpoint_address together.
-          version = "1"
+          version = var.example_identity_version
           path    = "identity"
         }
       }
     }
   }
 
-  depends_on = [
-    google_project_service.this,
-    google_secret_manager_secret_iam_member.example_identity,
-  ]
-}
-
-# Public invoker — access control is the Noise handshake, not IAM (same as the relays).
-resource "google_cloud_run_v2_service_iam_member" "example_public" {
-  location = google_cloud_run_v2_service.example.location
-  name     = google_cloud_run_v2_service.example.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
 }
 
 # --- Plumb example.hopme.sh through the shared global LB ------------------------------

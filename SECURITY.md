@@ -102,3 +102,40 @@ here so a reporter does not spend effort on already-known items:
   Accepted for the pre-production phase; the fix is to self-host the used FA subset.
 
 If you find something outside this list, we want to hear about it.
+
+## Wire vectors and adversarial-input testing
+
+The committed `core/hop-core/vectors/bundle-v9.json` corpus locks complete encoded bytes for every
+current bundle destination and payload variant, plus stamped and unstamped carriage access, signed
+adverts, reach records, private envelopes, ratchet layouts, stream layouts, HPS reach-ACK MACs and
+publication signatures, and ID derivations. Fixed keys and nonces in that corpus are test data only.
+Production sealing, recognition, signing-key generation, and ratchet steps still use the operating
+system CSPRNG.
+
+Check the corpus without changing files:
+
+```sh
+cargo run -p hop-core --example wire-vectors --features wire-vectors
+```
+
+Regeneration is intentionally separate and must follow a review of `BUNDLE_VERSION` and the exact byte
+diff:
+
+```sh
+cargo run -p hop-core --example wire-vectors --features wire-vectors -- --generate
+```
+
+Run the deterministic, iteration-bounded fuzz smoke lane for all five targets:
+
+```sh
+cargo install cargo-fuzz --locked --version 0.13.2
+rustup toolchain install nightly-2026-07-07 --profile minimal
+FUZZ_RUNS=256 FUZZ_SEED=424242 bash tools/fuzz-smoke.sh
+```
+
+The targets cover bundle decode and verification, link packet/frame/fragment reassembly, Double Ratchet
+header and ciphertext authentication, store mutation and atomic batch sequences, and adversarial C ABI
+pointer/length combinations. Crashes, unbounded allocation, authentication state advancement after a
+failed decrypt, partial store commits, or accepted malformed wire records are security issues and should
+be reported through the private channels above. Corpus improvements and non-security coverage gaps may
+use a normal pull request.

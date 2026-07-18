@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# bootstrap-mirrors.sh: create (or make public) the standalone component repos and wire the sync token.
+# bootstrap-mirrors.sh: create or update the standalone component repositories.
 # Covers the Apache-2.0 SDKs and the FSL-1.1-ALv2 core, service, bearer, and driver components (FSL is
-# source-available, so those are public too). RUN THIS YOURSELF: it publishes repos to the world and sets
-# a secret, which is a human action, not something CI or an agent does for you. Idempotent, safe to re-run.
+# source-available, so those are public too). RUN THIS YOURSELF: creating public repositories is a human
+# action, not something CI or an agent does for you. Idempotent and safe to re-run.
 #
 # Requires: `gh` authenticated with repo + admin rights on the hopmesh org.
 #
@@ -56,27 +56,28 @@ printf '%s\n' "$MIRRORS" | while IFS='|' read -r repo desc; do
 done
 
 echo
-echo "== 2. set the Copybara sync token =="
-# A classic PAT or GitHub App token with 'repo' scope on ${ORG}/hop AND every mirror. The default
-# GITHUB_TOKEN is scoped to one repo and cannot push to the mirrors. Read from an env var so the value
-# is never printed or stored in shell history via an argument.
-if [ -n "${COPYBARA_PAT:-}" ]; then
-  gh secret set COPYBARA_TOKEN --repo "$ORG/hop" --body "$COPYBARA_PAT"
-  echo "  set COPYBARA_TOKEN on $ORG/hop"
-else
-  echo "  COPYBARA_PAT not exported; skipping. To set it:"
-  echo "      export COPYBARA_PAT=ghp_xxx   # do NOT commit this"
-  echo "      COPYBARA_PAT=\$COPYBARA_PAT tools/copybara/bootstrap-mirrors.sh"
-fi
+echo "== 2. configure the three GitHub Apps =="
+echo "  Sync App: install on $ORG/hop and every mirror; Actions read/write, Contents read/write, Pull requests read."
+echo "  Store HOP_SYNC_APP_ID and HOP_SYNC_APP_PRIVATE_KEY only in protected component-sync environments."
+echo "  Source App: install only on $ORG/hop; Actions, Attestations, Checks, and Contents read."
+echo "  Store HOP_SOURCE_APP_ID and HOP_SOURCE_APP_PRIVATE_KEY in each publishing mirror's release environment."
+echo "  Release App: install only on $ORG/libhop with Contents write; store its credentials in $ORG/hop's release environment."
+echo "  Do not create COPYBARA_TOKEN or HOP_SYNC_TOKEN PAT secrets."
 
 echo
-echo "== 3. seed each mirror (one-time, per component) =="
+echo "== 3. protect authority environments =="
+echo "  Create component-sync on $ORG/hop and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
+echo "  For every mirror with release.yml, create environment 'release' with a required reviewer."
+echo "  Configure registry trusted publishers with environment 'release'."
+
+echo
+echo "== 4. seed each mirror (one-time, per component) =="
 echo "  The FIRST export of a component passes init_history=true:"
 echo "      gh workflow run sync-components.yml -f component=hop-sdk-node -f direction=export -f init_history=true"
 echo "  Repeat per component (hop-sdk-python, hop-core, libhop, hop-relayd, ...); later exports omit it."
 
 echo
-echo "== 4. enable security features on every repo =="
+echo "== 5. enable security features on every repo =="
 # All free on public repos, idempotent, and tolerant: a repo whose only language CodeQL does not support
 # (Crystal, Elixir) simply skips the code-scanning step. Run this after the repos exist.
 printf '%s\n' "$MIRRORS" | while IFS='|' read -r repo _; do

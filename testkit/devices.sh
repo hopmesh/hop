@@ -9,7 +9,7 @@
 # (Android: logcat "HOPAUTO self=" ; iOS: automation.json .self). Identity is device-seed-derived
 # and STABLE across reinstalls/data-wipes, so the map is durable.
 
-BUNDLE=sh.hopme.demo
+export BUNDLE=sh.hopme.demo
 
 # id        platform  handle                                  transport  displayname
 # The 6-device fleet (BushidoPhone + the second iPad were re-added, commit 91b663a).
@@ -24,15 +24,15 @@ DEVICES=(
 
 # --- accessors: field <id> <col 2=platform 3=handle 4=transport 5=name> ---
 dev_field() {
-  local want="$1" col="$2" row
+  local want="$1" col="$2" row id platform handle transport name
   for row in "${DEVICES[@]}"; do
-    set -- $row
-    if [ "$1" = "$want" ]; then
+    read -r id platform handle transport name <<< "$row"
+    if [ "$id" = "$want" ]; then
       case "$col" in
-        platform) echo "$2";;
-        handle)   echo "$3";;
-        transport) echo "$4";;
-        name)     shift 4; echo "$*";;
+        platform) echo "$platform";;
+        handle)   echo "$handle";;
+        transport) echo "$transport";;
+        name)     echo "$name";;
       esac
       return 0
     fi
@@ -43,4 +43,4 @@ dev_platform() { dev_field "$1" platform; }
 dev_handle()   { dev_field "$1" handle; }
 dev_transport(){ dev_field "$1" transport; }
 dev_name()     { dev_field "$1" name; }
-dev_ids()      { local row; for row in "${DEVICES[@]}"; do set -- $row; echo "$1"; done; }
+dev_ids()      { local row id rest; for row in "${DEVICES[@]}"; do read -r id rest <<< "$row"; echo "$id"; done; }

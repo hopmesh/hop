@@ -10,6 +10,7 @@ import HopContract   // HopRole + the Bearer contract (pure Swift, no libhop)
 
 /// A decrypted message delivered to this node.
 public struct HopMessage {
+    public let id: Data            // stable 32-byte inbox id
     public let from: Data          // sender's 32-byte address
     public let contentType: String
     public let body: Data
@@ -46,7 +47,7 @@ public struct HopServiceResponse {
 public final class HopNode {
     /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted once on first use so a
     /// wrapper built against a newer header fails loudly instead of drifting (F-28).
-    public static let expectedABIVersion: UInt32 = 3
+    public static let expectedABIVersion: UInt32 = 4
     private static let abiChecked: Bool = {
         precondition(hop_abi_version() == HopNode.expectedABIVersion,
                      "libhop ABI mismatch: wrapper expects \(HopNode.expectedABIVersion), library is \(hop_abi_version())")
@@ -176,6 +177,7 @@ public final class HopNode {
     }
 
     private func send(dst: Data, contentType: String, body: Data, requestAck: Bool, direct: Bool) -> Data? {
+        guard dst.count == 32 else { return nil }
         var id = Data(count: 32)
         let ok: Bool = dst.withUnsafeBytes { d in
             body.withUnsafeBytes { b in
@@ -194,23 +196,44 @@ public final class HopNode {
         return ok ? id : nil
     }
 
-    /// Drain newly-received messages; `sink(message)` is called once per message, synchronously.
+    /// Poll durable messages without accepting them. Items repeat until `acceptInbox` succeeds.
     public func pollInbox(_ sink: (HopMessage) -> Void) {
+        pollInboxAccepting { message in
+            sink(message)
+            return false
+        }
+    }
+
+    /// Poll durable inbox items, accepting each only when `sink(message)` returns true.
+    public func pollInboxAccepting(_ sink: (HopMessage) -> Bool) {
         withoutActuallyEscaping(sink) { escaping in
             var local = escaping
             withUnsafeMutablePointer(to: &local) { ctx in
-                hop_poll_inbox(raw, { rawCtx, from, ct, body, blen, hops, created in
-                    let cb = rawCtx!.assumingMemoryBound(to: ((HopMessage) -> Void).self).pointee
-                    cb(HopMessage(from: Data(bytes: from!, count: 32),
-                                  contentType: ct != nil ? String(cString: ct!) : "",
-                                  body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen)),
-                                  hops: hops, createdAt: created))
+                hop_poll_inbox(raw, { rawCtx, inboxId, from, ct, body, blen, hops, created in
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopMessage) -> Bool).self).pointee
+                    return cb(HopMessage(id: Data(bytes: inboxId!, count: 32),
+                                         from: Data(bytes: from!, count: 32),
+                                         contentType: ct != nil ? String(cString: ct!) : "",
+                                         body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen)),
+                                         hops: hops, createdAt: created))
                 }, UnsafeMutableRawPointer(ctx))
             }
         }
     }
 
+    /// Durably accept one item returned by `pollInbox`. IDs other than exactly 32 bytes are rejected.
+    @discardableResult
+    public func acceptInbox(_ id: Data) -> Bool {
+        guard id.count == 32 else { return false }
+        return id.withUnsafeBytes {
+            hop_accept_inbox(raw, $0.bindMemory(to: UInt8.self).baseAddress)
+        }
+    }
+
     public func status(of id: Data) -> HopStatus {
+        guard id.count == 32 else {
+            return HopStatus(relayed: 0, delivered: false, forwardHops: 0, forwardMs: 0)
+        }
         var relayed: UInt32 = 0, ms: UInt32 = 0
         var delivered = false
         var hops: UInt8 = 0
@@ -219,7 +242,8 @@ public final class HopNode {
     }
 
     public func isSecured(_ addr: Data) -> Bool {
-        addr.withUnsafeBytes { hop_is_secured(raw, $0.bindMemory(to: UInt8.self).baseAddress) }
+        guard addr.count == 32 else { return false }
+        return addr.withUnsafeBytes { hop_is_secured(raw, $0.bindMemory(to: UInt8.self).baseAddress) }
     }
 
     // MARK: persistence signals (D-wrappers / hop.h parity)
@@ -236,6 +260,7 @@ public final class HopNode {
     /// Send an hops:// service request to `dst`. Returns the request id, or nil on error.
     @discardableResult
     public func sendServiceRequest(to dst: Data, service: String, method: String, args: Data) -> Data? {
+        guard dst.count == 32 else { return nil }
         var id = Data(count: 32)
         let ok: Bool = dst.withUnsafeBytes { d in
             args.withUnsafeBytes { a in
@@ -256,7 +281,8 @@ public final class HopNode {
     /// Reply to an hops:// service request.
     @discardableResult
     public func sendServiceResponse(to: Data, forRequestId: Data, status: UInt16, body: Data) -> Bool {
-        to.withUnsafeBytes { t in
+        guard to.count == 32, forRequestId.count == 32 else { return false }
+        return to.withUnsafeBytes { t in
             forRequestId.withUnsafeBytes { r in
                 body.withUnsafeBytes { b in
                     hop_send_service_response(raw, t.bindMemory(to: UInt8.self).baseAddress,
@@ -284,19 +310,36 @@ public final class HopNode {
         }
     }
 
-    /// Drain inbound hops:// responses to requests this node made.
+    /// Poll inbound hops:// responses without accepting them.
     public func pollServiceResponses(_ sink: (HopServiceResponse) -> Void) {
+        pollServiceResponsesAccepting { response in
+            sink(response)
+            return false
+        }
+    }
+
+    /// Poll responses, accepting each only when `sink(response)` returns true synchronously.
+    public func pollServiceResponsesAccepting(_ sink: (HopServiceResponse) -> Bool) {
         withoutActuallyEscaping(sink) { escaping in
             var local = escaping
             withUnsafeMutablePointer(to: &local) { ctx in
                 hop_poll_service_responses(raw, { rawCtx, from, forId, status, body, blen in
-                    let cb = rawCtx!.assumingMemoryBound(to: ((HopServiceResponse) -> Void).self).pointee
-                    cb(HopServiceResponse(from: Data(bytes: from!, count: 32),
-                                          forRequestId: Data(bytes: forId!, count: 32),
-                                          status: status,
-                                          body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen))))
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopServiceResponse) -> Bool).self).pointee
+                    return cb(HopServiceResponse(from: Data(bytes: from!, count: 32),
+                                                 forRequestId: Data(bytes: forId!, count: 32),
+                                                 status: status,
+                                                 body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen))))
                 }, UnsafeMutableRawPointer(ctx))
             }
+        }
+    }
+
+    /// Durably accept a previously-polled response by its 32-byte correlation request id.
+    @discardableResult
+    public func acceptServiceResponse(forRequestId: Data) -> Bool {
+        guard forRequestId.count == 32 else { return false }
+        return forRequestId.withUnsafeBytes {
+            hop_accept_service_response(raw, $0.bindMemory(to: UInt8.self).baseAddress)
         }
     }
 }
@@ -305,6 +348,7 @@ public final class HopNode {
 
 public enum HopAddress {
     public static func base58(_ addr: Data) -> String {
+        guard addr.count == 32 else { return "" }
         var buf = [CChar](repeating: 0, count: 64)
         let n = addr.withUnsafeBytes { hop_address_to_base58($0.bindMemory(to: UInt8.self).baseAddress, &buf, UInt(buf.count)) }
         return n > 0 ? String(cString: buf) : ""

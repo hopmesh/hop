@@ -101,14 +101,15 @@ func TestDiscoveryRoundTrip(t *testing.T) {
 	defer server.Close()
 	server.On("acme/orders", func(req *Request, reply Reply) { reply(201, req.Args) })
 
-	mux := http.NewServeMux()
-	server.Attach(mux, publicURL) // wires /_hop (WSS) + /.well-known/hop in one call
+	httpsSrv := NewHTTPServer("", nil)
+	if err := server.Attach(httpsSrv, publicURL); err != nil {
+		t.Fatal(err)
+	}
 
 	ln, err := tls.Listen("tcp", fmt.Sprintf(":%d", port), &tls.Config{Certificates: []tls.Certificate{selfSignedCert(t)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpsSrv := &http.Server{Handler: mux}
 	go httpsSrv.Serve(ln) //nolint:errcheck
 	defer httpsSrv.Close()
 

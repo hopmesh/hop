@@ -25,15 +25,21 @@
 # step ordering:
 #   * `--committed-only` mode: skip the rebuild entirely and cross-check ONLY the wire stamp. A CI or
 #     pre-commit step can run this BEFORE build-wasm.sh to guard the committed artifact.
+#   * `--working-tree` mode: compare a fresh build and source stamp with the current generated files.
+#     This supports local no-commit verification without weakening the default committed-object check.
 #   * the wire-stamp cross-check reads the stamp from `git show HEAD:sim/pkg/.wire-version` when the tree
 #     is a git repo, so a working-tree rebuild (build-wasm.sh re-stamp) cannot mask committed drift even
 #     in full mode. It falls back to the working-tree file outside a git checkout.
 set -uo pipefail
 
 committed_only=0
-if [ "${1:-}" = "--committed-only" ]; then
-  committed_only=1
-fi
+working_tree=0
+case "${1:-}" in
+  "") ;;
+  --committed-only) committed_only=1 ;;
+  --working-tree) working_tree=1 ;;
+  *) echo "usage: $0 [--committed-only|--working-tree]" >&2; exit 2 ;;
+esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 crate="$here/../core/hop-wasm"
@@ -52,8 +58,8 @@ in_git=0
 git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1 && in_git=1
 
 if [ "$committed_only" -eq 0 ]; then
-  command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (cargo install wasm-pack)"; exit 1; }
-  wasm-pack build "$crate" --target web --out-dir "$tmp" >/dev/null 2>&1
+  command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (run core/hop-wasm/install-wasm-pack.sh)"; exit 1; }
+  wasm-pack build "$crate" --mode no-install --target web --out-dir "$tmp" >/dev/null 2>&1
 fi
 if [ "$committed_only" -eq 0 ]; then
   for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do
@@ -67,7 +73,9 @@ if [ "$committed_only" -eq 0 ]; then
     # only in the excluded nondeterministic .wasm binary and is exercised by scenario-check on a fresh
     # build.) Falls back to the working tree ONLY outside a git checkout (a tarball export).
     committed_f="$tmp/committed-$f"
-    if [ "$in_git" -eq 1 ]; then
+    if [ "$working_tree" -eq 1 ]; then
+      cmp_target="$here/pkg/$f"
+    elif [ "$in_git" -eq 1 ]; then
       if git -C "$here" show "HEAD:sim/pkg/$f" >"$committed_f" 2>/dev/null; then
         cmp_target="$committed_f"
       else
@@ -101,7 +109,9 @@ fi
 src_wire="$(grep -oE 'BUNDLE_VERSION: *u8 *= *[0-9]+' "$here/../core/hop-core/src/bundle.rs" | grep -oE '=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
 committed_wire=""
 stamp_untracked=0
-if [ "$in_git" -eq 1 ]; then
+if [ "$working_tree" -eq 1 ]; then
+  committed_wire="$(cat "$here/pkg/.wire-version" 2>/dev/null || echo "")"
+elif [ "$in_git" -eq 1 ]; then
   if git -C "$here" cat-file -e HEAD:sim/pkg/.wire-version 2>/dev/null; then
     committed_wire="$(git -C "$here" show HEAD:sim/pkg/.wire-version 2>/dev/null | head -1 || true)"
   else
@@ -131,6 +141,8 @@ if [ "$drift" -ne 0 ]; then
 fi
 if [ "$committed_only" -eq 1 ]; then
   echo "sim/pkg committed .wire-version matches source BUNDLE_VERSION=$src_wire (fresh)"
+elif [ "$working_tree" -eq 1 ]; then
+  echo "sim/pkg working-tree interface and .wire-version match a fresh core/hop-wasm build (fresh)"
 else
   echo "sim/pkg interface matches a fresh core/hop-wasm build (fresh)"
 fi

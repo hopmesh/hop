@@ -1,0 +1,298 @@
+name: Native artifacts
+run-name: Native artifacts for ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: '1.97.0'
+
+jobs:
+  authorize:
+    name: Authorize canonical green main
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.repository.full_name == 'hopmesh/hop'
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      source_run_id: ${{ steps.source.outputs.source_run_id }}
+    steps:
+      - name: Bind source workflow identity
+        id: source
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$SOURCE_PATH" = ".github/workflows/ci.yml"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+
+  host-linux:
+    name: Build Linux host artifact
+    needs: authorize
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --target '${{ matrix.target }}'
+      - name: Build and package Linux libhop
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo build -p hop --release --locked --target "$TARGET"
+          stage="$RUNNER_TEMP/$TARGET"
+          mkdir -p "$stage/lib" "$stage/include" "$RUNNER_TEMP/out"
+          cp "target/$TARGET/release/libhop.so" "$stage/lib/libhop.so"
+          cp sdk/hop.h "$stage/include/hop.h"
+          python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
+            --output "$RUNNER_TEMP/out/libhop-$TARGET.tar.gz"
+      - name: Upload immutable Linux partial
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-${{ matrix.target }}-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  apple:
+    name: Build Apple host and xcframework artifacts
+    needs: authorize
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: 16.2
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Build exact Apple artifacts
+        env:
+          HOP_SQLCIPHER: '0'
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/out"
+          bash sdk/apple/build-xcframework.sh
+          apple_stage="$RUNNER_TEMP/apple-xcframework"
+          mkdir "$apple_stage"
+          cp -R sdk/apple/Frameworks/libhop.xcframework "$apple_stage/libhop.xcframework"
+          python3 tools/native-artifacts.py pack --root "$apple_stage" --path libhop.xcframework \
+            --format zip --output "$RUNNER_TEMP/out/libhop.xcframework.zip"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build -p hop --release --locked --target "$target"
+            stage="$RUNNER_TEMP/$target"
+            mkdir -p "$stage/lib" "$stage/include"
+            cp "target/$target/release/libhop.dylib" "$stage/lib/libhop.dylib"
+            cp sdk/hop.h "$stage/include/hop.h"
+            python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
+              --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
+          done
+      - name: Upload immutable Apple partials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-apple-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Build Android ABI artifacts
+    needs: authorize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install exact NDK and Rust builders
+        run: |
+          sdkmanager "ndk;26.3.11579264"
+          rustup toolchain install 1.97.0 --profile minimal
+          cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Invoke the canonical Android native builder
+        env:
+          HOP_ANDROID_OUT: ${{ runner.temp }}/android-generated
+          HOP_SQLCIPHER: '0'
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
+          bash tools/build-aar.sh
+      - name: Package each exact Android target
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/out"
+          for mapping in \
+            arm64-v8a=aarch64-linux-android \
+            armeabi-v7a=armv7-linux-androideabi \
+            x86=i686-linux-android \
+            x86_64=x86_64-linux-android; do
+            abi="${mapping%%=*}"
+            target="${mapping#*=}"
+            stage="$RUNNER_TEMP/$target"
+            mkdir -p "$stage/lib" "$stage/include"
+            cp "$RUNNER_TEMP/android-generated/jniLibs/$abi/libhop.so" "$stage/lib/libhop.so"
+            cp sdk/hop.h "$stage/include/hop.h"
+            case "$target" in
+              aarch64-linux-android) machine='AArch64' ;;
+              armv7-linux-androideabi) machine='ARM' ;;
+              i686-linux-android) machine='Intel 80386' ;;
+              x86_64-linux-android) machine='Advanced Micro Devices X86-64' ;;
+              *) exit 1 ;;
+            esac
+            readelf -h "$stage/lib/libhop.so" | grep -Eq "Machine:[[:space:]]+$machine$"
+            python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
+              --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
+          done
+      - name: Upload immutable Android partials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-android-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  embedded:
+    name: Build exact ESP-IDF target artifacts
+    needs: authorize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Install pinned ESP Rust toolchain manager and linker proxy
+        run: |
+          cargo install espup --version 0.17.1 --locked
+          cargo install ldproxy --version 0.3.5 --locked
+          espup install --targets esp32,esp32s2,esp32s3,esp32c3,esp32c6,esp32h2 \
+            --toolchain-version 1.95.0.0 --stable-version 1.95.0 --std
+      - name: Build and package each exact embedded target
+        run: |
+          set -euo pipefail
+          source "$HOME/export-esp.sh"
+          mkdir "$RUNNER_TEMP/out"
+          for target in \
+            xtensa-esp32-espidf \
+            xtensa-esp32s2-espidf \
+            xtensa-esp32s3-espidf \
+            riscv32imc-esp-espidf \
+            riscv32imac-esp-espidf; do
+            cargo +esp build -p hop --no-default-features --features minimal \
+              --target "$target" --release --locked -Zbuild-std=std,panic_abort
+            stage="$RUNNER_TEMP/$target"
+            mkdir -p "$stage/lib" "$stage/include"
+            cp "target/$target/release/libhop.a" "$stage/lib/libhop.a"
+            cp sdk/hop.h "$stage/include/hop.h"
+            python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
+              --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
+          done
+      - name: Upload immutable embedded partials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-embedded-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  attest:
+    name: Sign and attest native release bundle
+    needs: [authorize, host-linux, apple, android, embedded]
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download partials by this workflow run identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-*-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/parts
+          merge-multiple: true
+      - name: Create and sign the canonical manifest
+        env:
+          NATIVE_ARTIFACT_SIGNING_KEY: ${{ secrets.NATIVE_ARTIFACT_SIGNING_KEY }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/bundle"
+          mkdir "$bundle"
+          cp "$RUNNER_TEMP/parts"/* "$bundle/"
+          version="$(python3 -c 'import re; print(re.search(r"version = \"([^\"]+)\"", open("Cargo.toml").read()).group(1))')"
+          arguments=()
+          for archive in "$bundle"/*.tar.gz "$bundle"/*.zip; do
+            filename="$(basename "$archive")"
+            if [[ "$filename" = "libhop.xcframework.zip" ]]; then
+              target="apple-xcframework"
+            else
+              target="${filename#libhop-}"
+              target="${target%.tar.gz}"
+            fi
+            arguments+=(--artifact "$target=$archive")
+          done
+          python3 tools/native-artifacts.py create \
+            --output "$bundle/native-artifacts.json" \
+            --version "$version" --tag "v$version" --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            "${arguments[@]}"
+          test -n "$NATIVE_ARTIFACT_SIGNING_KEY"
+          key="$RUNNER_TEMP/native-signing-key.pem"
+          umask 077
+          printf '%s\n' "$NATIVE_ARTIFACT_SIGNING_KEY" > "$key"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/native-public.pem"
+          cmp "$RUNNER_TEMP/native-public.pem" tools/native-artifacts-public.pem
+          openssl dgst -sha256 -sign "$key" \
+            -out "$bundle/native-artifacts.json.sig" "$bundle/native-artifacts.json"
+          python3 tools/native-artifacts.py verify \
+            --manifest "$bundle/native-artifacts.json" \
+            --signature "$bundle/native-artifacts.json.sig" \
+            --public-key tools/native-artifacts-public.pem \
+            --directory "$bundle" --strict --source-sha "$SOURCE_SHA" \
+            --tag "v$version" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Attest every manifest and binary archive
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/bundle/*
+      - name: Upload immutable signed release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-release-bundle-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bundle/*
+          if-no-files-found: error
+          retention-days: 90

@@ -47,26 +47,46 @@ class HopRequest:
         return self.args.decode()
 
 
+@dataclass
+class HopResponse:
+    status: int
+    body: bytes
+    request_id: bytes
+    _accept: Callable[[], bool]
+
+    def __iter__(self):
+        # Keep the established ``status, body = request(...)`` surface while making acceptance explicit.
+        yield self.status
+        yield self.body
+        self.accept()
+
+    def accept(self) -> bool:
+        return self._accept()
+
+
 class HopEndpoint:
     def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50, cluster=None, quorum=None):
         ffi.assert_abi()
+        if key is not None and len(key) != 32:
+            raise ValueError(f"identity key must be exactly 32 bytes, got {len(key)}")
+        # Reentrant because a synchronous ctypes sink can call back into the endpoint. _native_calls
+        # keeps a callback-reentrant close from freeing the node until the outer native call returns.
+        self._lock = threading.RLock()
+        self._closed = False
+        self._native_calls = 0
+        self._node_freed = False
         self._node = ffi.node_with_secret(key) if key else ffi.node_new()
+        self._handlers: dict[str, Callable] = {}
+        self._links: dict[int, Callable[[bytes], None]] = {}
+        self._pending: dict[bytes, tuple[threading.Event, dict]] = {}
+        self._closers: list[Callable[[], None]] = []
         # Cluster with sibling replicas (same identity, no shared datastore) if configured: dedup then
         # applies transparently to inbound requests. See cluster() below.
         if cluster is not None:
             self.cluster(cluster)
         if quorum is not None:
             self.cluster_quorum(quorum)
-        ffi.tick(self._node, _now_ms())
-        ffi.publish_prekey(self._node)
-        self._handlers: dict[str, Callable] = {}
-        self._links: dict[int, Callable[[bytes], None]] = {}
-        self._pending: dict[bytes, tuple[threading.Event, dict]] = {}
-        self._closers: list[Callable[[], None]] = []
-        # Reentrant: the pump never holds the lock across a handler, but a reply issued from a handler
-        # (or a handler that calls back into the endpoint) still re-enters cleanly.
-        self._lock = threading.RLock()
-        self._closed = False
+        self._with_node(lambda n: (ffi.tick(n, _now_ms()), ffi.publish_prekey(n)))
         self._thread = threading.Thread(target=self._pump_loop, args=(tick_ms / 1000.0,), daemon=True)
         self._thread.start()
 
@@ -75,34 +95,63 @@ class HopEndpoint:
         handle a given request once. Pass a ``str`` passphrase (interops with the standalone service's
         ``HOP_CLUSTER_SECRET``) or 32 raw bytes. Dedup then applies transparently. Returns self."""
         if isinstance(secret_or_passphrase, str):
-            ffi.cluster_join_passphrase(self._node, secret_or_passphrase.encode("utf-8"))
+            self._with_node(
+                lambda n: ffi.cluster_join_passphrase(n, secret_or_passphrase.encode("utf-8"))
+            )
         else:
             b = bytes(secret_or_passphrase)
             if len(b) != 32:
                 raise ValueError("cluster secret must be 32 bytes or a passphrase string")
-            ffi.cluster_join(self._node, b)
+            self._with_node(lambda n: ffi.cluster_join(n, b))
         return self
 
     @property
     def cluster_members(self) -> int:
         """Live replica count (self + peers within the membership TTL); 1 if not clustered."""
-        return ffi.cluster_members(self._node)
+        return self._with_node(ffi.cluster_members)
 
     def cluster_quorum(self, min_live_members: int) -> "HopEndpoint":
         """Require at least ``min_live_members`` live cluster members visible before this replica will
         process a request. This is a TTL-based visibility threshold and conservative failover
         heuristic, not consensus or an at-most-once guarantee. 0 or 1 disables the hold (the default). Also settable via the ``quorum``
         constructor argument. Returns self."""
-        ffi.cluster_set_quorum(self._node, int(min_live_members))
+        self._with_node(lambda n: ffi.cluster_set_quorum(n, int(min_live_members)))
         return self
 
+    def _call_node_locked(self, fn):
+        self._native_calls += 1
+        try:
+            return fn(self._node)
+        finally:
+            self._native_calls -= 1
+            if self._closed and self._native_calls == 0:
+                self._free_node_locked()
+
+    def _free_node_locked(self) -> None:
+        if self._node_freed:
+            return
+        ffi.node_free(self._node)
+        self._node_freed = True
+        self._node = None
+
     def _with_node(self, fn):
-        """Run a libhop call on the node under the lock, unless closed (the node may already be freed, so
-        we must not touch it). Returns fn's result, or None when closed."""
+        """Own the node for one complete native call. Public calls after close fail consistently."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("endpoint is closed")
+            return self._call_node_locked(fn)
+
+    def _try_with_node(self, fn):
+        """Internal bearer/pump variant: late teardown callbacks become no-ops after close."""
         with self._lock:
             if self._closed:
                 return None
-            return fn(self._node)
+            return self._call_node_locked(fn)
+
+    def _ensure_open(self) -> None:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("endpoint is closed")
 
     def _register_closer(self, fn: Callable[[], None]) -> None:
         """Record a bearer teardown hook (e.g. a listening socket); close() runs it before freeing the
@@ -138,11 +187,12 @@ class HopEndpoint:
         ev, holder = threading.Event(), {}
         # Send + register the waiter atomically so the pump can't deliver the response before _pending
         # knows to route it, and so a concurrent close() cannot free the node mid-send.
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("endpoint is closed")
-            req_id = ffi.send_service_request(self._node, dst_bytes, service, method, _to_bytes(args))
+        def send_and_register(node):
+            req_id = ffi.send_service_request(node, dst_bytes, service, method, _to_bytes(args))
             self._pending[req_id] = (ev, holder)
+            return req_id
+
+        req_id = self._with_node(send_and_register)
         if not ev.wait(timeout):
             with self._lock:
                 self._pending.pop(req_id, None)
@@ -150,7 +200,16 @@ class HopEndpoint:
         if holder.get("closed"):
             # close() woke us instead of a response: fail fast rather than KeyError on holder["status"].
             raise RuntimeError("endpoint is closed")
-        return holder["status"], holder["body"]
+        return HopResponse(
+            holder["status"],
+            holder["body"],
+            req_id,
+            lambda: self.accept_service_response(req_id),
+        )
+
+    def accept_service_response(self, request_id: bytes) -> bool:
+        """Durably accept a response after local processing has completed."""
+        return bool(self._with_node(lambda n: ffi.accept_service_response(n, request_id)))
 
     def sign_reach(self, endpoint: str, ttl_secs: int = 3600) -> bytes:
         """Sign a self-certifying reachability record for this endpoint's address bound to `endpoint`."""
@@ -161,6 +220,7 @@ class HopEndpoint:
         /.well-known/hop discovery responder. Returns the listen socket. `public_url` is where senders
         reach it, e.g. "wss://myaddress.com/_hop". (Python has no standard existing-server object, so
         attach starts the server; run it on 443 or behind a reverse proxy.)"""
+        self._ensure_open()
         from .wss_bearer import serve
 
         return serve(self, host, port, ssl_context, public_url, ttl_secs)
@@ -168,6 +228,7 @@ class HopEndpoint:
     def dial_by_name(self, base_url, insecure_tls: bool = False):
         """Resolve a base HTTPS URL to a verified endpoint, dial its WSS, and return the reachable
         address (then use request()). Set insecure_tls only for a dev/self-signed cert."""
+        self._ensure_open()
         from .discovery import _ssl_context, resolve
         from .wss_bearer import dial
 
@@ -177,24 +238,21 @@ class HopEndpoint:
 
     # ---- bearer seam (used by tcp_bearer) ----
     def _register_link(self, link: int, role: str, send_fn: Callable[[bytes], None]) -> None:
-        with self._lock:
-            if self._closed:
-                return
+        def register(node):
             self._links[link] = send_fn
-            ffi.connected(self._node, link, role == "dialer")
+            ffi.connected(node, link, role == "dialer")
+
+        self._try_with_node(register)
 
     def _deliver(self, link: int, data: bytes) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            ffi.received(self._node, link, data)
+        self._try_with_node(lambda n: ffi.received(n, link, data))
 
     def _link_down(self, link: int) -> None:
-        with self._lock:
-            if self._closed:
-                return
+        def disconnect(node):
             self._links.pop(link, None)
-            ffi.disconnected(self._node, link)
+            ffi.disconnected(node, link)
+
+        self._try_with_node(disconnect)
 
     def _pump_loop(self, dt: float) -> None:
         while not self._closed:
@@ -209,29 +267,29 @@ class HopEndpoint:
     def _pump(self) -> None:
         # Collect under the lock (fast native calls); run bearer sends + handlers OUTSIDE it, so a slow
         # handler never blocks close() or another link, and a reply re-enters via its own _with_node.
-        with self._lock:
-            if self._closed:
-                return
-            ffi.tick(self._node, _now_ms())
-            outgoing = ffi.drain_outgoing(self._node)
+        def tick_and_drain(node):
+            ffi.tick(node, _now_ms())
+            return ffi.drain_outgoing(node)
+
+        outgoing = self._try_with_node(tick_and_drain)
+        if outgoing is None:
+            return
         for link, data in outgoing:
             fn = self._links.get(link)
             if fn:
                 fn(data)
-        with self._lock:
-            if self._closed:
-                return
-            reqs = ffi.take_service_requests(self._node)
+        reqs = self._try_with_node(ffi.take_service_requests)
+        if reqs is None:
+            return
         for frm, rid, service, method, args in reqs:
             handler = self._handlers.get(service)
             if handler:
                 req = HopRequest(ffi.to_b58(frm), frm, service, method, args)
                 reply = _Reply(self, frm, rid)
                 handler(req, reply)
-        with self._lock:
-            if self._closed:
-                return
-            resps = ffi.take_service_responses(self._node)
+        resps = self._try_with_node(ffi.take_service_responses)
+        if resps is None:
+            return
         for _frm, for_id, status, body in resps:
             with self._lock:
                 p = self._pending.pop(for_id, None)
@@ -245,6 +303,7 @@ class HopEndpoint:
             if self._closed:
                 return
             self._closed = True
+            reentrant = self._native_calls > 0
             closers, self._closers = self._closers, []
             # Wake in-flight request() waiters so they fail fast instead of blocking their full timeout.
             for ev, holder in self._pending.values():
@@ -256,12 +315,13 @@ class HopEndpoint:
                 c()
             except Exception:
                 pass
-        if threading.current_thread() is not self._thread:
+        if not reentrant and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
-        # Free under the lock: a late bearer-thread seam call now short-circuits on _closed instead of
-        # touching a freed node, and the join timeout can no longer let the pump race the free.
+        # An ordinary close acquired the ownership lock after all in-flight calls. A close invoked by a
+        # synchronous native callback cannot wait for itself, so _call_node_locked frees on unwind.
         with self._lock:
-            ffi.node_free(self._node)
+            if self._native_calls == 0:
+                self._free_node_locked()
 
 
 class _Reply:
@@ -272,7 +332,8 @@ class _Reply:
     def __call__(self, status: int, body=b"") -> bool:
         if self._sent:
             raise RuntimeError("reply already sent")
-        self._sent = True
-        return bool(
-            self._ep._with_node(lambda n: ffi.send_service_response(n, self._to, self._for, status, _to_bytes(body)))
+        sent = self._ep._with_node(
+            lambda n: ffi.send_service_response(n, self._to, self._for, status, _to_bytes(body))
         )
+        self._sent = True
+        return bool(sent)

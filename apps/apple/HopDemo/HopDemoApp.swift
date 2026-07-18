@@ -9,15 +9,20 @@ extension HopBearer {
     /// dev app secret "H"×32, the anycast cloud relay, full role). One instance shared by the app's
     /// background tasks and `ContentView`, so there's exactly one `HopNode` open on the db.
     static let shared: HopBearer = {
-        let db = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("hop.db").path
-        return HopBearer(config: .init(
-            dbPath: db,
-            deviceSeed: IdentityStore.deviceSeed(),
-            appSecret: HopBearer.appSecret,
-            displayName: HopBearer.savedName(default: UIDevice.current.name),
-            defaultRelay: HopBearer.defaultRelay,   // cloud relay re-enabled (wss://relay.hopme.sh)
-            role: .full))
+        do {
+            let secrets = try IdentityStore.secrets()
+            let db = try HopStorage.applicationSupportURL(fileName: "hop.db").path
+            return HopBearer(config: .init(
+                dbPath: db,
+                deviceSeed: secrets.identity,
+                appSecret: HopBearer.appSecret,
+                displayName: HopBearer.savedName(default: UIDevice.current.name),
+                defaultRelay: HopBearer.defaultRelay,
+                role: .full,
+                dbKey: secrets.database))
+        } catch {
+            fatalError("Hop startup stopped because secure identity storage failed: \(error)")
+        }
     }()
 }
 

@@ -60,6 +60,7 @@ pump(a, b)
 let resp
 hop.poll_service_responses(a, (_ctx, from, forId, status, bodyPtr, bodyLen) => {
   resp = { from: addr(from), forId: addr(forId), status, body: bytes(bodyPtr, Number(bodyLen)) }
+  return true
 }, null)
 console.log('A got response:', resp.status, resp.body.toString(), ' ties to reqId:', resp.forId.equals(reqId))
 

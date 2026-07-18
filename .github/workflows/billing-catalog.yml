@@ -5,9 +5,9 @@
 #   consequential and meters are append-only, so it is gated behind a deliberate click, not a push).
 #
 # Auth is keyless: GitHub OIDC -> Workload Identity Federation -> the billing-catalog-apply service
-# account (infra/wif_github.tf), which can reach ONLY the billing/ Terraform state prefix. The Stripe
-# key is the STRIPE_API_KEY repo secret. The job is skipped until GCP_PROJECT_NUMBER (a repo variable)
-# is set, so it stays neutral until WIF has been applied and wired.
+# account (infra/bootstrap/billing.tf), which can reach ONLY the billing/ Terraform state prefix. The
+# Stripe key is the STRIPE_API_KEY repo secret. The job stays neutral until its two repository
+# variables have been populated from the reviewed bootstrap outputs.
 name: Billing catalog (Stripe)
 
 on:
@@ -28,23 +28,25 @@ concurrency: billing-catalog # never two catalog applies at once
 
 jobs:
   catalog:
-    # Neutral (skipped) until WIF is applied and its project number is wired as a repo variable.
-    if: vars.GCP_PROJECT_NUMBER != ''
+    # Neutral until bootstrap is applied and both exact output values are wired as repo variables.
+    if: vars.GCP_BILLING_WIF_PROVIDER != '' && vars.GCP_BILLING_SERVICE_ACCOUNT != ''
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: infra/billing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - id: auth
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           project_id: hop-mesh
-          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions/providers/github
-          service_account: billing-catalog-apply@hop-mesh.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.GCP_BILLING_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
 
-      - uses: opentofu/setup-opentofu@v2
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: "1.12.3"
 

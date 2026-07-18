@@ -14,11 +14,10 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"net/http"
 	"os"
 	"time"
 
-	hop "github.com/hopmesh/hop/sdk/go"
+	hop "github.com/hopmesh/hop-sdk-go"
 )
 
 const port = 8443
@@ -57,15 +56,17 @@ func main() {
 		fmt.Printf("  [server] %s/%s from %s: %s\n", req.Service, req.Method, req.From[:10], req.Args)
 		reply(201, req.Args)
 	})
-	mux := http.NewServeMux()
-	server.Attach(mux, publicURL)
+	httpsSrv := hop.NewHTTPServer("", nil)
+	if err := server.Attach(httpsSrv, publicURL); err != nil {
+		fmt.Println("attach:", err)
+		os.Exit(1)
+	}
 
 	ln, err := tls.Listen("tcp", fmt.Sprintf(":%d", port), &tls.Config{Certificates: []tls.Certificate{selfSignedCert()}})
 	if err != nil {
 		fmt.Println("listen tls:", err)
 		os.Exit(1)
 	}
-	httpsSrv := &http.Server{Handler: mux}
 	go httpsSrv.Serve(ln) //nolint:errcheck
 	defer httpsSrv.Close()
 	fmt.Printf("endpoint on https://localhost:%d (well-known + wss)  addr=%s\n", port, server.Address()[:12])

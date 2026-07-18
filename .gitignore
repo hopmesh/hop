@@ -3,7 +3,13 @@ drivers/apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
 drivers/apple/HopDriver/.build-staging/
 # ---- Rust ----
 /target
+/fuzz/target
+/fuzz/artifacts
+/fuzz/coverage
 **/*.rs.bk
+# Python verification helpers
+__pycache__/
+*.py[cod]
 # relay identity seeds + on-disk stores (never commit secrets/state)
 *.db
 *.db.key
