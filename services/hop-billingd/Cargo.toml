@@ -17,7 +17,9 @@ serde_json = "1"
 # The live Firestore-read + Stripe-emit path is behind `live` so unit tests build the pure
 # reconciler with no network deps. Wiring is credential-gated (STRIPE_API_KEY, a BigQuery dataset).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
+# The shared Firestore kv reader (ledger rows) + its token machinery, live-only like reqwest.
+hop-store-firestore = { workspace = true, optional = true }
 
 [features]
 default = []
-live = ["dep:reqwest"]
+live = ["dep:reqwest", "dep:hop-store-firestore"]
