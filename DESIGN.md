@@ -2799,3 +2799,43 @@ regions (§28), regional spools + online-only relay epidemic (§28/§34), and §
 catch-up. Supersedes the §10 metadata-privacy non-goal for unicast content; keeps §28's regional DBs
 unchanged (no global/continental store).
 
+## 40. OTel-over-Hop, telemetry that rides the mesh to a collector
+
+Observability is a paid surface (§37), but there is a hard constraint the transport has to respect:
+**pure-P2P traffic never touches a server**, so the only telemetry a collector can ever see is what a
+device chooses to self-report. And the devices that most need Hop are exactly the ones with no internet
+to POST OTLP over. So telemetry itself has to be a first-class Hop payload: an OpenTelemetry-shaped
+batch carried as an addressed, sealed bundle to a collector, not OTLP-over-HTTP.
+
+**Wire.** A telemetry batch rides the built-in `hop.telemetry` service (a `ServiceRequest` whose `args`
+are a postcard-encoded `TelemetryBatch`). Because `args` is an opaque `Vec<u8>`, this adds **no new
+`Payload`/`Destination` variant and does not bump `BUNDLE_VERSION`**. Like every addressed service it is
+**statically sealed to the collector's key** (§29), not ratcheted: it is data *about* the app, not user
+content, so the static-seal class is the correct one. If any telemetry field were sensitive user content
+it must instead be carried as a ratcheted `PeerMessage` (the §29 boundary).
+
+**Delay tolerance is the whole point.** The batch is an ordinary bundle: if the collector is unreachable
+it spools and delivers when a path opens (§28/§34), so a field device that was offline for hours still
+lands its telemetry once it comes back into range. This is what makes P2P observability possible at all.
+
+**Model (`core/hop-core/src/telemetry.rs`).** `TelemetryBatch { resource, records }` maps 1:1 onto OTLP:
+`resource` is an OTLP Resource (coarse, opt-in labels such as `platform`, `app`, `region`), and each
+`Record { signal, name, value, unit, attrs, time_ms }` is a metric point or log record. `Signal` is
+`Counter` (OTLP Sum), `Gauge`, or `Event` (LogRecord). `value` is a **fixed-point integer** so the wire
+is byte-identical across every SDK (no cross-language float wobble); the collector scales by `unit`.
+
+**Bounds.** Decode enforces `MAX_RECORDS` / `MAX_ATTRS` / `MAX_STR`; a malformed or oversized batch is
+dropped rather than trusted, so a device cannot shape telemetry into a collector-side DoS.
+
+**Receive + meter.** The receiving node decodes `hop.telemetry` as a built-in and surfaces the typed,
+bounds-checked batch via `Node::take_telemetry`; it is one-way (no service response). A collector (a node
+that serves a reach record per §30 and drains `take_telemetry`) forwards each batch to an OTel collector
+or a warehouse, and meters `batch.billable_events()` (the record count) to the `hop_telemetry_events`
+observability dimension (§37). Metrics therefore carry their own COGS on their own meter, never folded
+into a per-device fee.
+
+**Privacy.** Resource and record labels are opt-in and coarse by construction and must stay
+user-anonymous; the collector sees per-app aggregates, never a per-user identity. `region` is only ever
+knowable for relay-carried or self-reported traffic, consistent with §39: the backbone does not learn a
+pure-P2P device's location, the device discloses a coarse label or nothing.
+
