@@ -968,6 +968,8 @@ dependencies = [
  "hop-store-firestore",
  "hop-store-sqlite",
  "libc",
+ "reqwest",
+ "serde_json",
  "tungstenite",
 ]
 

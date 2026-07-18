@@ -214,6 +214,12 @@ jobs:
       - name: Test telemetryd (firestore feature)
         run: cargo test -p hop-telemetryd --features firestore
 
+      # hop-telemetryd's OTLP-export path (translate + forward telemetry to a tenant's OTel endpoint)
+      # is behind the `live` feature (reqwest). The pure builders/routing are tested in the default
+      # run; this compiles the reqwest transport shim so a live-build break is caught in CI.
+      - name: Test telemetryd (live feature)
+        run: cargo test -p hop-telemetryd --features live
+
       # At-rest encryption (F-25) is behind the `sqlcipher` feature (SQLite + SQLCipher, vendored
       # OpenSSL) which the default workspace run doesn't build. This exercises open_keyed end-to-end.
       - name: Test store (sqlcipher feature)
