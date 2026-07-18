@@ -70,23 +70,27 @@ def main():
                 base = f"https://github.com/{REPOSITORY}/releases/download/{args.version}"
                 download(base + "/native-artifacts.json", bundle / "native-artifacts.json")
                 download(base + "/native-artifacts.json.sig", bundle / "native-artifacts.json.sig")
-                helper.verify_signature(
-                    bundle / "native-artifacts.json",
-                    bundle / "native-artifacts.json.sig",
-                    public_key,
+                download(
+                    base + "/native-artifacts.provenance.sigstore.json",
+                    bundle / "native-artifacts.provenance.sigstore.json",
                 )
-                manifest = helper.load_manifest(bundle / "native-artifacts.json")
-                if manifest["tag"] != args.version:
-                    fail("signed manifest tag does not match the requested version")
-                for target in selected_targets:
-                    artifact = helper.select_artifact(manifest, target)
-                    download(base + "/" + artifact["filename"], bundle / artifact["filename"])
             manifest_path = bundle / "native-artifacts.json"
             signature_path = bundle / "native-artifacts.json.sig"
+            provenance_path = bundle / "native-artifacts.provenance.sigstore.json"
             helper.verify_signature(manifest_path, signature_path, public_key)
             manifest = helper.load_manifest(manifest_path)
             if manifest["tag"] != args.version:
                 fail("signed manifest tag does not match the requested version")
+            helper.verify_sigstore_provenance(
+                manifest,
+                manifest_path,
+                signature_path,
+                provenance_path,
+            )
+            if not args.bundle:
+                for target in selected_targets:
+                    artifact = helper.select_artifact(manifest, target)
+                    download(base + "/" + artifact["filename"], bundle / artifact["filename"])
             staged_artifacts = temporary / "artifacts"
             staged_artifacts.mkdir()
             for target in selected_targets:
@@ -99,6 +103,7 @@ def main():
             shutil.copytree(staged_artifacts, artifacts_dir)
             shutil.copy2(manifest_path, native_dir / "native-artifacts.json")
             shutil.copy2(signature_path, native_dir / "native-artifacts.json.sig")
+            shutil.copy2(provenance_path, native_dir / "native-artifacts.provenance.sigstore.json")
             print(f"installed {len(selected_targets)} signed embedded target archive(s) in {artifacts_dir}")
     except (helper.ArtifactError, OSError, ValueError) as error:
         fail(str(error))

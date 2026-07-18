@@ -3,6 +3,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$root" <<'PY'
 import argparse
+import copy
 import importlib.util
 import io
 import json
@@ -223,6 +224,8 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
 
     embedded = output / "hop-embedded"
     assert os.access(embedded / "install-libhop.py", os.X_OK)
+    embedded_installer = (embedded / "install-libhop.py").read_text()
+    assert "verify_sigstore_provenance" in embedded_installer
     embedded_exports = json.loads((embedded / "library.json").read_text())["export"]["include"]
     assert "native" in embedded_exports and "install-libhop.py" in embedded_exports
     embedded_linker = (embedded / "link-libhop.py").read_text()
@@ -252,6 +255,155 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     ):
         assert target in native_workflow
     assert native_workflow.count("-Zbuild-std=std,panic_abort") == 1
+    assert "workflow_run" not in native_workflow
+    assert "run-name: Native artifacts for ${{ github.sha }}" in native_workflow
+    assert "native-artifacts.py authorize-ci" in native_workflow
+    assert "needs: [authorize, host-linux, apple, android, embedded, authorize-ci]" in native_workflow
+    native_schema = json.loads((root / "tools/native-artifacts.schema.json").read_text())
+    assert native_schema["properties"]["artifacts"]["minItems"] == len(native.NATIVE_TARGET_FILENAMES)
+    assert native_schema["properties"]["artifacts"]["maxItems"] == len(native.NATIVE_TARGET_FILENAMES)
+
+    source_sha = "1" * 40
+    ci_run = {
+        "id": 42,
+        "head_sha": source_sha,
+        "head_branch": "main",
+        "event": "push",
+        "path": native.CI_WORKFLOW,
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 2,
+        "repository": {"full_name": native.CANONICAL_GITHUB_REPOSITORY},
+        "head_repository": {"full_name": native.CANONICAL_GITHUB_REPOSITORY},
+    }
+    ci_runs = {"total_count": 1, "workflow_runs": [ci_run]}
+    ci_jobs = {
+        "total_count": 2,
+        "jobs": [
+            {
+                "name": name,
+                "head_sha": source_sha,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in sorted(native.CI_AUTHORIZATION_JOBS)
+        ],
+    }
+    assert native.validate_ci_authorization(ci_runs, ci_jobs, source_sha)["id"] == 42
+    wrong_ci = copy.deepcopy(ci_runs)
+    wrong_ci["workflow_runs"][0]["head_sha"] = "2" * 40
+    rejected(lambda: native.validate_ci_authorization(wrong_ci, ci_jobs, source_sha), "wrong CI source")
+    duplicate_ci = copy.deepcopy(ci_runs)
+    duplicate_ci["workflow_runs"].append(copy.deepcopy(ci_run))
+    duplicate_ci["total_count"] = 2
+    rejected(lambda: native.validate_ci_authorization(duplicate_ci, ci_jobs, source_sha), "duplicate CI run")
+    failed_jobs = copy.deepcopy(ci_jobs)
+    failed_jobs["jobs"][0]["conclusion"] = "failure"
+    rejected(lambda: native.validate_ci_authorization(ci_runs, failed_jobs, source_sha), "failed CI gate")
+    stale_jobs = copy.deepcopy(ci_jobs)
+    stale_jobs["jobs"][0]["run_attempt"] = 1
+    rejected(lambda: native.validate_ci_authorization(ci_runs, stale_jobs, source_sha), "stale CI gate")
+    original_gh_json = native.gh_json
+    original_subprocess_run = native.subprocess.run
+    watched_ci = []
+    responses = iter((ci_runs, ci_runs, ci_jobs))
+    try:
+        native.gh_json = lambda _path: next(responses)
+
+        def fake_watch(command, **_kwargs):
+            watched_ci.extend(command)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        native.subprocess.run = fake_watch
+        native.authorize_ci(types.SimpleNamespace(source_sha=source_sha))
+    finally:
+        native.gh_json = original_gh_json
+        native.subprocess.run = original_subprocess_run
+    assert watched_ci[:3] == ["gh", "run", "watch"]
+    assert "--exit-status" in watched_ci
+
+    partials = []
+    artifact_id = 100
+    for base in native.PARTIAL_ARTIFACT_TARGETS:
+        partials.append({
+            "id": artifact_id,
+            "name": f"{base}-{source_sha}-1",
+            "expired": False,
+        })
+        artifact_id += 1
+    partials.append({
+        "id": artifact_id,
+        "name": f"native-apple-{source_sha}-2",
+        "expired": False,
+    })
+    partial_listing = {"total_count": len(partials), "artifacts": partials}
+    selected_partials = native.select_partial_artifacts(partial_listing, source_sha, 2)
+    selected_attempts = {base: attempt for base, attempt, _artifact, _files in selected_partials}
+    assert selected_attempts["native-apple"] == 2
+    assert all(
+        attempt == 1 for base, attempt in selected_attempts.items() if base != "native-apple"
+    )
+    missing_partial = copy.deepcopy(partial_listing)
+    missing_partial["artifacts"] = [
+        artifact for artifact in missing_partial["artifacts"]
+        if not artifact["name"].startswith("native-embedded-")
+    ]
+    missing_partial["total_count"] = len(missing_partial["artifacts"])
+    rejected(lambda: native.select_partial_artifacts(missing_partial, source_sha, 2), "missing partial producer")
+    duplicate_partial = copy.deepcopy(partial_listing)
+    duplicate_partial["artifacts"].append(copy.deepcopy(duplicate_partial["artifacts"][-1]))
+    duplicate_partial["artifacts"][-1]["id"] += 1
+    duplicate_partial["total_count"] += 1
+    rejected(lambda: native.select_partial_artifacts(duplicate_partial, source_sha, 2), "duplicate partial attempt")
+    future_partial = copy.deepcopy(partial_listing)
+    future_partial["artifacts"].append({
+        "id": 999,
+        "name": f"native-android-{source_sha}-3",
+        "expired": False,
+    })
+    future_partial["total_count"] += 1
+    rejected(lambda: native.select_partial_artifacts(future_partial, source_sha, 2), "future partial attempt")
+    partial_zip_payloads = {}
+    for _base, _attempt, artifact, expected_files in selected_partials:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive_zip:
+            for filename in expected_files:
+                archive_zip.writestr(filename, b"producer artifact")
+        partial_zip_payloads[artifact["id"]] = buffer.getvalue()
+    partial_run = {
+        "id": 77,
+        "run_attempt": 2,
+        "head_sha": source_sha,
+        "head_branch": "main",
+        "event": "push",
+        "path": native.NATIVE_WORKFLOW,
+        "repository": {"full_name": native.CANONICAL_GITHUB_REPOSITORY},
+    }
+    original_gh_json = native.gh_json
+    original_subprocess_run = native.subprocess.run
+    try:
+        native.gh_json = lambda path: partial_run if path.endswith("/actions/runs/77") else partial_listing
+
+        def fake_partial_download(command, **kwargs):
+            artifact_id = int(command[-1].split("/")[-2])
+            kwargs["stdout"].write(partial_zip_payloads[artifact_id])
+            return types.SimpleNamespace(returncode=0, stderr=b"")
+
+        native.subprocess.run = fake_partial_download
+        partial_output = temporary / "producer-bound-partials"
+        native.download_partials(types.SimpleNamespace(
+            repository=native.CANONICAL_GITHUB_REPOSITORY,
+            run_id=77,
+            run_attempt=2,
+            source_sha=source_sha,
+            output=str(partial_output),
+        ))
+    finally:
+        native.gh_json = original_gh_json
+        native.subprocess.run = original_subprocess_run
+    assert {path.name for path in partial_output.iterdir()} == set(native.NATIVE_TARGET_FILENAMES.values())
+
     esp_release = (root / ".github/workflows/libhop-esp-release.yml").read_text()
     assert esp_release.count("-Zbuild-std=std,panic_abort") == 2
     esp_builder = (root / "apps/esp32/hop-sensor/build-libhop-esp.sh").read_text()
@@ -265,8 +417,13 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     (stage / "include").mkdir()
     (stage / "lib/libhop.so").write_bytes(b"fixture-libhop")
     (stage / "include/hop.h").write_bytes(b"#define HOP_ABI_VERSION 4\n")
-    archive = fixture / "libhop-x86_64-unknown-linux-gnu.tar.gz"
-    native.pack_archive(stage, [], archive, "tar.gz")
+    archives = {}
+    for target, filename in native.NATIVE_TARGET_FILENAMES.items():
+        archive_path = fixture / filename
+        archive_format = "zip" if filename.endswith(".zip") else "tar.gz"
+        native.pack_archive(stage, [], archive_path, archive_format)
+        archives[target] = archive_path
+    archive = archives["x86_64-unknown-linux-gnu"]
     key = temporary / "key.pem"
     public = temporary / "public.pem"
     subprocess.run(["openssl", "genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", key], check=True)
@@ -282,9 +439,13 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         workflow=native.NATIVE_WORKFLOW,
         run_id=7,
         run_attempt=1,
-        artifact=[f"x86_64-unknown-linux-gnu={archive}"],
+        artifact=[f"{target}={archives[target]}" for target in native.NATIVE_TARGET_FILENAMES],
     )
     native.create_manifest(args)
+    incomplete = types.SimpleNamespace(**vars(args))
+    incomplete.output = str(temporary / "incomplete-native-artifacts.json")
+    incomplete.artifact = [f"x86_64-unknown-linux-gnu={archive}"]
+    rejected(lambda: native.create_manifest(incomplete), "incomplete native target inventory")
     signature = fixture / "native-artifacts.json.sig"
     subprocess.run(["openssl", "dgst", "-sha256", "-sign", key, "-out", signature, manifest], check=True)
     native.verify_release(
@@ -295,6 +456,135 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         strict=True,
         expected_run_id=7,
         expected_run_attempt=1,
+    )
+    provenance = fixture / native.PROVENANCE_FILENAME
+    provenance.write_text('{"fixture":"sigstore"}\n')
+    native.verify_release(
+        manifest,
+        signature,
+        public,
+        fixture,
+        strict=True,
+        expected_run_id=7,
+        expected_run_attempt=1,
+        provenance_bundle=provenance,
+    )
+    subjects = native.attestation_subjects(native.load_manifest(manifest), manifest, signature, fixture)
+    assert native.expected_attestation_subjects(native.load_manifest(manifest), manifest, signature) == subjects
+    verification = [{
+        "verificationResult": {
+            "signature": {
+                "certificate": {
+                    "subjectAlternativeName": native.NATIVE_CERT_IDENTITY,
+                    "buildSignerURI": native.NATIVE_CERT_IDENTITY,
+                    "buildSignerDigest": "1" * 40,
+                    "runnerEnvironment": "github-hosted",
+                    "sourceRepositoryURI": native.CANONICAL_REPOSITORY,
+                    "sourceRepositoryDigest": "1" * 40,
+                    "sourceRepositoryRef": "refs/heads/main",
+                    "buildConfigURI": native.NATIVE_CERT_IDENTITY,
+                    "buildConfigDigest": "1" * 40,
+                    "buildTrigger": "push",
+                    "runInvocationURI": "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/1",
+                }
+            },
+            "statement": {
+                "subject": subjects,
+                "predicateType": native.SLSA_PROVENANCE_TYPE,
+                "predicate": {
+                    "buildDefinition": {
+                        "buildType": native.GITHUB_WORKFLOW_BUILD_TYPE,
+                        "externalParameters": {
+                            "workflow": {
+                                "ref": "refs/heads/main",
+                                "repository": native.CANONICAL_REPOSITORY,
+                                "path": native.NATIVE_WORKFLOW,
+                            }
+                        },
+                        "internalParameters": {
+                            "github": {
+                                "event_name": "push",
+                                "runner_environment": "github-hosted",
+                            }
+                        },
+                        "resolvedDependencies": [{
+                            "uri": f"git+{native.CANONICAL_REPOSITORY}@refs/heads/main",
+                            "digest": {"gitCommit": "1" * 40},
+                        }],
+                    },
+                    "runDetails": {
+                        "builder": {"id": native.NATIVE_CERT_IDENTITY},
+                        "metadata": {
+                            "invocationId": "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/1"
+                        },
+                    },
+                },
+            }
+        }
+    }]
+    native.validate_provenance_result(native.load_manifest(manifest), subjects, verification)
+    original_run = native.subprocess.run
+    captured_command = []
+    try:
+        def fake_run(command, **_kwargs):
+            captured_command.extend(command)
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(verification), stderr="")
+
+        native.subprocess.run = fake_run
+        native.verify_sigstore_provenance(
+            native.load_manifest(manifest),
+            manifest,
+            signature,
+            provenance,
+        )
+    finally:
+        native.subprocess.run = original_run
+    assert captured_command[:3] == ["gh", "attestation", "verify"]
+    assert "--bundle" in captured_command and "--deny-self-hosted-runners" in captured_command
+    wrong_certificate = json.loads(json.dumps(verification))
+    wrong_certificate[0]["verificationResult"]["signature"]["certificate"]["runInvocationURI"] = (
+        "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/2"
+    )
+    rejected(
+        lambda: native.validate_provenance_result(
+            native.load_manifest(manifest), subjects, wrong_certificate
+        ),
+        "wrong certificate run attempt",
+    )
+    wrong_provenance = json.loads(json.dumps(verification))
+    wrong_provenance[0]["verificationResult"]["statement"]["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = "2" * 40
+    rejected(
+        lambda: native.validate_provenance_result(native.load_manifest(manifest), subjects, wrong_provenance),
+        "wrong provenance source",
+    )
+    missing_provenance = temporary / "missing-provenance"
+    shutil.copytree(fixture, missing_provenance)
+    (missing_provenance / provenance.name).unlink()
+    rejected(
+        lambda: native.verify_release(
+            missing_provenance / manifest.name,
+            missing_provenance / signature.name,
+            public,
+            missing_provenance,
+            strict=True,
+            provenance_bundle=missing_provenance / provenance.name,
+        ),
+        "missing provenance bundle",
+    )
+    linked_provenance = temporary / "linked-provenance"
+    shutil.copytree(fixture, linked_provenance)
+    (linked_provenance / provenance.name).unlink()
+    (linked_provenance / provenance.name).symlink_to(linked_provenance / manifest.name)
+    rejected(
+        lambda: native.verify_release(
+            linked_provenance / manifest.name,
+            linked_provenance / signature.name,
+            public,
+            linked_provenance,
+            strict=True,
+            provenance_bundle=linked_provenance / provenance.name,
+        ),
+        "symlinked provenance bundle",
     )
     extracted = temporary / "extracted"
     selected = native.select_artifact(native.load_manifest(manifest), "x86_64-unknown-linux-gnu")
@@ -314,7 +604,17 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     unexpected = temporary / "unexpected"
     shutil.copytree(fixture, unexpected)
     (unexpected / "extra.bin").write_bytes(b"extra")
-    rejected(lambda: native.verify_release(unexpected / manifest.name, unexpected / signature.name, public, unexpected, strict=True), "unexpected asset")
+    rejected(
+        lambda: native.verify_release(
+            unexpected / manifest.name,
+            unexpected / signature.name,
+            public,
+            unexpected,
+            strict=True,
+            provenance_bundle=unexpected / provenance.name,
+        ),
+        "unexpected asset",
+    )
     wrong_digest = temporary / "wrong-digest"
     shutil.copytree(fixture, wrong_digest)
     with (wrong_digest / archive.name).open("ab") as output_file:

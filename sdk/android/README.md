@@ -29,6 +29,8 @@ runner. `build-aar.sh` verifies the signed source-SHA manifest and independently
 `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` before producing the AAR. The Maven publication includes
 Prefab metadata and `hop.h`, JNA as an AAR runtime dependency, sources and documentation jars, a full
 POM, SHA-256/SHA-512 sidecars, optional in-memory PGP signing, and GitHub provenance attestations.
+The release gate verifies the canonical workflow's attached GitHub OIDC SLSA bundle even when the
+canonical repository plan does not provide hosted attestation storage.
 
 ## Package availability
 

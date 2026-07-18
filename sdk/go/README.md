@@ -49,7 +49,7 @@ The versioned command runs directly from Go's read-only module cache but writes 
 the canonical native manifest, canonical builder identity, release tag, source SHA, exact host target,
 archive inventory, size, and every SHA-256 before installation. The installed `hop.pc` supplies both
 `hop.h` and `libhop`; cgo has no parent-checkout or writable-module-cache assumption. The release job
-also verifies GitHub build attestations before publishing these signed assets.
+also verifies the attached GitHub OIDC SLSA provenance bundle before publishing these signed assets.
 
 ## Quick start
 

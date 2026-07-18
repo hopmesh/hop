@@ -20,6 +20,7 @@ version-align-guard.sh     fails if an SDK's declared version drifts in major/mi
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 require-ci-verdict.py       exact GitHub Actions workflow, App, repository, attempt, SHA, and job gate.
 deploy-provenance.py        signed build manifest, immutable archive/image verification, and global lease.
+native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
 infra-authority-guard.py    forbids bootstrap authority in the runtime root and broad build/deploy grants.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.

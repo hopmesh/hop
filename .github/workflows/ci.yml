@@ -96,6 +96,7 @@ jobs:
               # top-level tool files + the codegen subdir. Add any NEW tools/ subdir (besides copybara) here.
               - 'tools/*'
               - 'tools/codegen/**'
+              - 'tools/native-attestation/**'
             rust:
               - 'services/**'
               - '**/*.rs'
@@ -783,6 +784,15 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: tools/native-attestation/package-lock.json
+      - name: Test the local native provenance signer
+        run: |
+          npm ci --ignore-scripts --omit=dev --prefix tools/native-attestation
+          npm test --prefix tools/native-attestation
       - name: Self-test executable-reference policy
         run: bash tools/executable-reference-guard.test.sh
       - name: Enforce immutable executable and publication references

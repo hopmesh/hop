@@ -15,7 +15,7 @@ Two versions travel independently and MUST NOT be conflated:
    - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
      format. A change here is a protocol break and needs the wire-stability test
      updated deliberately.
-   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently `2`): the C-ABI contract every
+   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently `4`): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
 
@@ -30,11 +30,9 @@ both in the release notes.
 - `sdk/apple/Sources/Hop/Hop.swift` (`expectedABIVersion`).
 - `sdk/android/.../Hop.kt` (`HOP_ABI_VERSION`).
 
-CI checks the `cabi.rs` -> `sdk/hop.h` leg (the header-drift job regenerates the
-header with cbindgen and diffs it). The Swift/Kotlin copies are NOT yet
-cross-checked in CI, so a `cabi.rs` bump without touching the wrappers ships green
-and only fails on-device via the runtime assert. Until a CI cross-check exists,
-bumping the ABI version is a THREE-FILE edit; do all three in the same commit.
+CI regenerates `sdk/hop.h` from `cabi.rs` and checks the Rust, header, Swift, and
+Kotlin values together. An ABI bump updates `cabi.rs`, regenerates the header, and
+updates both wrappers in the same commit.
 
 ## Git tag scheme
 
@@ -61,6 +59,17 @@ bumping the ABI version is a THREE-FILE edit; do all three in the same commit.
 Hop ships a Rust core plus per-platform wrappers and bearers. The publishing plan,
 per surface:
 
+### Canonical native provenance
+
+The canonical native workflow starts from each `main` push alongside CI and builds every platform
+without release secrets. Only after the exact source commit has a successful canonical CI gate can a
+separate release job load the native key, create the complete archive inventory, sign its manifest,
+and create a GitHub OIDC SLSA v1 Sigstore bundle over the manifest, signature, and every native archive.
+The local Sigstore bundle is part of the immutable release artifact and is verified against the exact
+canonical workflow, source SHA, ref, run attempt, GitHub-hosted runner, certificate invocation, and
+complete 14-target subject set before a mirror publishes. GitHub's attestation API is an additional
+storage mirror when the repository plan supports it, not the sole copy of provenance.
+
 ### C ABI header (`sdk/hop.h`)
 
 The universal contract. It is generated from `core/hop/src/cabi.rs` via cbindgen
@@ -80,13 +89,13 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
 - The three per-bearer SwiftPM packages (`bearers/apple/HopBearer{Ble,Lan,Relay}`; Multipeer /
   Wi-Fi P2P is an in-driver transport, not an extracted package)
   and the SDK wrapper are pitched as independently publishable. Each already carries its own
-  `LICENSE.md` so the FSL-1.1-ALv2 terms travel with the package (see the license note below).
+  `LICENSE.md` so the Apache-2.0 terms travel with the package (see the license note below).
 
 ### Android: AAR + Maven
 
 - Build the Kotlin SDK wrapper AAR from `sdk/android` (Gradle). Bundle the
-  `libhop` shared objects for the Android ABIs (`arm64-v8a`, `x86_64` for the
-  emulator) into the AAR's `jniLibs`.
+  `libhop` shared objects for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`
+  into the AAR's `jniLibs`.
 - Publish plan: publish to a Maven repository (GitHub Packages or Maven Central)
   under a stable group id, versioned to the release tag. Sign artifacts with the
   Gradle signing plugin (GPG) so consumers can verify. Use the Gradle WRAPPER for
@@ -102,15 +111,12 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
 
 ## License note (per-component)
 
-There is NO repo-wide root license. Every component (each Rust crate, each SDK, each
-service) carries its own `LICENSE.md`, all currently the identical FSL-1.1-ALv2 text,
-so the terms already travel with any package that is published or split into its own
-repository (the Font Awesome Pro caveat still applies separately to app assets). The
-`tools/repo-integrity-guard.sh` CI check enforces that every component LICENSE.md is
-present, above the size floor, carries the FSL signature line, and stays byte-identical
-to the others, so a copy cannot silently truncate or drift. When adding a new component,
-drop a copy of an existing component's `LICENSE.md` into its root (and, for a Rust crate,
-add `license-file = "LICENSE.md"`).
+There is no repo-wide root license. Each component carries its own `LICENSE.md` so its
+terms travel with any package or split repository. Components under `core/` use
+FSL-1.1-ALv2; SDKs, services, bearers, drivers, and apps use Apache-2.0. The
+`tools/repo-integrity-guard.sh` check enforces the exact text for each tier and rejects
+missing, truncated, or cross-tier copies. The Font Awesome asset license remains
+separate from these code licenses.
 
 ## Pre-release checklist
 
@@ -121,3 +127,5 @@ add `license-file = "LICENSE.md"`).
 5. `Cargo.toml` version bumped and the git tag matches it.
 6. For any wire/ABI change, the wire-stability test was updated deliberately and the
    release notes call out the break.
+7. The canonical native workflow succeeded and its attached Sigstore bundle verifies
+   the exact source SHA, run attempt, and complete release inventory.

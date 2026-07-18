@@ -1,10 +1,13 @@
 name: Native artifacts
-run-name: Native artifacts for ${{ github.event.workflow_run.head_sha }}
+run-name: Native artifacts for ${{ github.sha }}
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
+    branches: [main]
+
+concurrency:
+  group: native-artifacts-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -16,30 +19,29 @@ env:
 
 jobs:
   authorize:
-    name: Authorize canonical green main
+    name: Authorize canonical source
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.repository.full_name == 'hopmesh/monorepo'
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'hopmesh/monorepo'
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
-      source_run_id: ${{ steps.source.outputs.source_run_id }}
     steps:
-      - name: Bind source workflow identity
+      - name: Bind source identity
         id: source
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+          SOURCE_SHA: ${{ github.sha }}
+          EVENT_AFTER: ${{ github.event.after }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          test "$SOURCE_PATH" = ".github/workflows/ci.yml"
+          test "$SOURCE_SHA" = "$EVENT_AFTER"
+          test "$SOURCE_REF" = "refs/heads/main"
+          test "$SOURCE_REPOSITORY" = "hopmesh/monorepo"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
 
   host-linux:
     name: Build Linux host artifact
@@ -227,9 +229,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  authorize-ci:
+    name: Authorize successful canonical CI
+    needs: [authorize, host-linux, apple, android, embedded]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Require the successful CI gate for this exact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: python3 tools/native-artifacts.py authorize-ci --source-sha "$SOURCE_SHA"
+
   attest:
     name: Sign and attest native release bundle
-    needs: [authorize, host-linux, apple, android, embedded]
+    needs: [authorize, host-linux, apple, android, embedded, authorize-ci]
     environment: release
     runs-on: ubuntu-latest
     permissions:
@@ -242,12 +262,22 @@ jobs:
         with:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
-      - name: Download partials by this workflow run identity
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Set up Node for local provenance
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          pattern: native-*-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/parts
-          merge-multiple: true
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: tools/native-attestation/package-lock.json
+      - name: Install the hash-locked local provenance signer
+        run: npm ci --ignore-scripts --omit=dev --prefix tools/native-attestation
+      - name: Download latest producer-bound partials across run attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: >-
+          python3 tools/native-artifacts.py download-partials
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/parts"
       - name: Create and sign the canonical manifest
         env:
           NATIVE_ARTIFACT_SIGNING_KEY: ${{ secrets.NATIVE_ARTIFACT_SIGNING_KEY }}
@@ -288,10 +318,37 @@ jobs:
             --public-key tools/native-artifacts-public.pem \
             --directory "$bundle" --strict --source-sha "$SOURCE_SHA" \
             --tag "v$version" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
-      - name: Attest every manifest and binary archive
+          rm -f "$key"
+      - name: Create local OIDC provenance bundle
+        run: |
+          node tools/native-attestation/create.mjs \
+            --manifest "$RUNNER_TEMP/bundle/native-artifacts.json" \
+            --signature "$RUNNER_TEMP/bundle/native-artifacts.json.sig" \
+            --directory "$RUNNER_TEMP/bundle" \
+            --output "$RUNNER_TEMP/bundle/native-artifacts.provenance.sigstore.json"
+      - name: Verify local provenance and complete release inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          version="$(python3 -c 'import re; print(re.search(r"version = \"([^\"]+)\"", open("Cargo.toml").read()).group(1))')"
+          python3 tools/native-artifacts.py verify-provenance \
+            --manifest "$RUNNER_TEMP/bundle/native-artifacts.json" \
+            --signature "$RUNNER_TEMP/bundle/native-artifacts.json.sig" \
+            --public-key tools/native-artifacts-public.pem \
+            --directory "$RUNNER_TEMP/bundle" \
+            --provenance-bundle "$RUNNER_TEMP/bundle/native-artifacts.provenance.sigstore.json" \
+            --source-sha "$SOURCE_SHA" --tag "v$version" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Mirror provenance to GitHub attestation storage
+        if: github.event.repository.visibility == 'public' || github.event.enterprise != null
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/bundle/*
+          subject-path: |
+            ${{ runner.temp }}/bundle/native-artifacts.json
+            ${{ runner.temp }}/bundle/native-artifacts.json.sig
+            ${{ runner.temp }}/bundle/*.tar.gz
+            ${{ runner.temp }}/bundle/*.zip
       - name: Upload immutable signed release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

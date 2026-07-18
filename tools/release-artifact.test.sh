@@ -17,6 +17,13 @@ mkdir "$tmp/good"
 printf 'package bytes\n' > "$tmp/good/package.tgz"
 python3 "$helper" create --directory "$tmp/good" --canonical-source-sha "$canonical" >/dev/null
 python3 "$helper" verify --directory "$tmp/good" --canonical-source-sha "$canonical" >/dev/null
+export GITHUB_RUN_ATTEMPT=3
+if python3 "$helper" verify --directory "$tmp/good" --canonical-source-sha "$canonical" >/dev/null 2>&1; then
+  echo "release artifact verifier accepted the consumer attempt as its producer" >&2
+  exit 1
+fi
+python3 "$helper" verify --directory "$tmp/good" --canonical-source-sha "$canonical" --run-attempt 2 >/dev/null
+export GITHUB_RUN_ATTEMPT=2
 
 expect_bad() {
   name="$1"
