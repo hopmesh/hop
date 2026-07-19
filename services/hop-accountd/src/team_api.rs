@@ -10,8 +10,12 @@
 //!   POST /console/team/transfer {tenant,userId}       -> {ok}   (Owner only)
 
 use crate::auth_api::{authorize_tenant, json_field, AuthResponse};
-use crate::domain::{Permission, Role};
-use crate::store::Store;
+use crate::domain::{Invite, Membership, Permission, Role};
+use crate::email::{invite_email, invite_link_url, EmailSender};
+use crate::store::{Store, StoreError};
+
+/// How long a team invite is valid.
+pub const INVITE_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// The caller's role in `org_id`. They are already a confirmed member (authorize_tenant passed), so a
 /// missing membership here is an internal inconsistency, surfaced as `None` and refused fail-closed.
@@ -195,6 +199,125 @@ pub fn handle_transfer(
     }
 }
 
+/// POST /console/team/invite {tenant,email,role}. Invite someone by email (Resend link). ManageTeam,
+/// and can_assign_role bounds the invited role (an Admin can only invite Users). A re-invite replaces
+/// any pending invite for the same email with a fresh token.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_invite(
+    store: &dyn Store,
+    sender: &dyn EmailSender,
+    console_base: &str,
+    cookie: Option<&str>,
+    body: &str,
+    now_ms: u64,
+) -> AuthResponse {
+    let Some(tenant) = json_field(body, "tenant") else {
+        return AuthResponse::json(400, r#"{"error":"bad_request"}"#);
+    };
+    let (Some(email_raw), Some(role_str)) = (json_field(body, "email"), json_field(body, "role"))
+    else {
+        return AuthResponse::json(400, r#"{"error":"bad_request"}"#);
+    };
+    let Some(role) = Role::parse(&role_str) else {
+        return AuthResponse::json(400, r#"{"error":"invalid_role"}"#);
+    };
+    let email = crate::session::normalize_email(&email_raw);
+    if !crate::session::is_valid_email(&email) {
+        return AuthResponse::json(400, r#"{"error":"invalid_email"}"#);
+    }
+    let (user, org) = match authorize_tenant(store, cookie, &tenant, Permission::ManageTeam, now_ms)
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let Some(caller) = caller_role(store, &user.id, &org.id) else {
+        return AuthResponse::json(500, r#"{"error":"internal"}"#);
+    };
+    // An Admin cannot invite an Admin/Owner (no privilege escalation via invitation).
+    if !caller.can_assign_role(role) {
+        return AuthResponse::json(403, r#"{"error":"forbidden"}"#);
+    }
+    // A fresh invite replaces any pending one for this email (a new token supersedes the old).
+    let _ = store.delete_invite(&org.id, &email);
+    let raw = crate::auth::generate_token();
+    let invite = Invite {
+        org_id: org.id.clone(),
+        email: email.clone(),
+        role,
+        token_hash: crate::session::hash_token(&raw),
+        invited_by: user.id.clone(),
+        expires_ms: now_ms + INVITE_TTL_MS,
+    };
+    if store.create_invite(&invite).is_err() {
+        return AuthResponse::json(500, r#"{"error":"internal"}"#);
+    }
+    let url = invite_link_url(console_base, &raw);
+    let msg = invite_email(&email, &org.name, &user.email, &url);
+    if sender.send(&msg).is_err() {
+        // The invite row persists; the admin can re-invite to resend. Surface the failure.
+        return AuthResponse::json(502, r#"{"error":"email_failed"}"#);
+    }
+    AuthResponse::json(200, r#"{"ok":true}"#)
+}
+
+/// POST /console/team/accept {token}. The signed-in invitee joins the workspace the invite named. The
+/// invite must be unexpired and issued to THIS user's email (so a leaked token can't add a different
+/// account). Idempotent: already-a-member just clears the invite.
+pub fn handle_accept(
+    store: &dyn Store,
+    cookie: Option<&str>,
+    body: &str,
+    now_ms: u64,
+) -> AuthResponse {
+    let Some(token) = json_field(body, "token") else {
+        return AuthResponse::json(400, r#"{"error":"bad_request"}"#);
+    };
+    let raw = match crate::auth_api::session_from_cookie_header(cookie) {
+        Some(r) => r,
+        None => return AuthResponse::json(401, r#"{"error":"unauthenticated"}"#),
+    };
+    let user = match crate::session::validate_session(store, &raw, now_ms) {
+        Ok(Some(u)) => u,
+        _ => return AuthResponse::json(401, r#"{"error":"unauthenticated"}"#),
+    };
+    let invite = match store.invite_by_token_hash(&crate::session::hash_token(&token)) {
+        Ok(Some(i)) => i,
+        Ok(None) => return AuthResponse::json(410, r#"{"error":"invite_invalid"}"#),
+        Err(_) => return AuthResponse::json(500, r#"{"error":"internal"}"#),
+    };
+    if now_ms >= invite.expires_ms {
+        let _ = store.delete_invite(&invite.org_id, &invite.email);
+        return AuthResponse::json(410, r#"{"error":"invite_expired"}"#);
+    }
+    // The invite is for a specific email; only that account may accept it.
+    if crate::session::normalize_email(&user.email) != invite.email {
+        return AuthResponse::json(403, r#"{"error":"wrong_account"}"#);
+    }
+    match store.add_membership(&Membership {
+        user_id: user.id.clone(),
+        org_id: invite.org_id.clone(),
+        role: invite.role,
+    }) {
+        // Already a member: the invite is spent, treat as success (idempotent).
+        Ok(()) | Err(StoreError::Conflict(_)) => {}
+        Err(_) => return AuthResponse::json(500, r#"{"error":"internal"}"#),
+    }
+    let _ = store.delete_invite(&invite.org_id, &invite.email);
+    let tenant = store
+        .org_by_id(&invite.org_id)
+        .ok()
+        .flatten()
+        .map(|o| o.tenant_hex)
+        .unwrap_or_default();
+    AuthResponse::json(
+        200,
+        &format!(
+            r#"{{"ok":true,"tenant":{}}}"#,
+            serde_json::Value::String(tenant)
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +407,99 @@ mod tests {
         assert!(!s.try_remove_member(&owner_a, &org.id).unwrap()); // still the last owner
                                                                    // a non-member -> NotFound, never a silent success
         assert!(s.try_set_role("ghost", &org.id, Role::User).is_err());
+    }
+
+    struct FakeSender(std::sync::Mutex<Option<crate::email::OutboundEmail>>);
+    impl EmailSender for FakeSender {
+        fn send(&self, msg: &crate::email::OutboundEmail) -> Result<(), String> {
+            *self.0.lock().unwrap() = Some(msg.clone());
+            Ok(())
+        }
+    }
+    fn token_from(msg: &crate::email::OutboundEmail) -> String {
+        // the accept URL is {base}/invite#token={raw}
+        msg.text
+            .split("#token=")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn invite_then_accept_joins_the_workspace() {
+        let (s, owner_c, tenant, _oid) = org_with_owner();
+        let sender = FakeSender(std::sync::Mutex::new(None));
+        let base = "https://dashboard.hopme.sh";
+        // owner invites a new person as a User
+        let body = format!(r#"{{"tenant":"{tenant}","email":"New@X.co","role":"user"}}"#);
+        assert_eq!(
+            handle_invite(&s, &sender, base, Some(&owner_c), &body, T0).status,
+            200
+        );
+        let msg = sender.0.lock().unwrap().clone().unwrap();
+        assert!(msg.to == "new@x.co" && msg.subject.contains("workspace"));
+        let token = token_from(&msg);
+        // the invitee signs in with the invited email, then accepts
+        let invitee = login_or_create(&s, "new@x.co", T0).unwrap();
+        let ic = {
+            let c = set_cookie(&invitee.session_raw, 3600);
+            let raw = c.split(['=', ';']).nth(1).unwrap().to_string();
+            format!("__Host-hop_session={raw}")
+        };
+        let abody = format!(r#"{{"token":"{token}"}}"#);
+        let r = handle_accept(&s, Some(&ic), &abody, T0);
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains(&tenant));
+        let org = s.org_by_tenant(&tenant).unwrap().unwrap();
+        assert_eq!(
+            s.membership(&invitee.user.id, &org.id)
+                .unwrap()
+                .unwrap()
+                .role,
+            Role::User
+        );
+        // the invite is spent
+        assert!(s
+            .invite_by_token_hash(&crate::session::hash_token(&token))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn admin_cannot_invite_an_admin_and_wrong_account_cannot_accept() {
+        let (s, _oc, tenant, _oid) = org_with_owner();
+        let (_admin_uid, admin_c) = add(&s, &tenant, "admin@x.co", Role::Admin);
+        let sender = FakeSender(std::sync::Mutex::new(None));
+        // an Admin inviting an Admin is refused
+        let body = format!(r#"{{"tenant":"{tenant}","email":"x@x.co","role":"admin"}}"#);
+        assert_eq!(
+            handle_invite(&s, &sender, "https://d", Some(&admin_c), &body, T0).status,
+            403
+        );
+        // owner invites x@x.co as user; a DIFFERENT signed-in account cannot accept it
+        let (_owner2, owner_c, _t2, _o2) = org_with_owner();
+        let _ = owner_c;
+        let sender2 = FakeSender(std::sync::Mutex::new(None));
+        let ib = format!(r#"{{"tenant":"{tenant}","email":"x@x.co","role":"user"}}"#);
+        // re-authorize as the real owner of `tenant`
+        let owner = s.user_by_email("owner@x.co").unwrap().unwrap();
+        let osess = crate::session::login_or_create(&s, &owner.email, T0).unwrap();
+        let oc = {
+            let c = set_cookie(&osess.session_raw, 3600);
+            format!("__Host-hop_session={}", c.split(['=', ';']).nth(1).unwrap())
+        };
+        assert_eq!(
+            handle_invite(&s, &sender2, "https://d", Some(&oc), &ib, T0).status,
+            200
+        );
+        let token = token_from(&sender2.0.lock().unwrap().clone().unwrap());
+        // a different account (wrong email) tries to accept -> 403
+        let (_uid, wrong_c) = add(&s, &tenant, "someoneelse@x.co", Role::User);
+        let abody = format!(r#"{{"token":"{token}"}}"#);
+        assert_eq!(handle_accept(&s, Some(&wrong_c), &abody, T0).status, 403);
     }
 
     #[test]

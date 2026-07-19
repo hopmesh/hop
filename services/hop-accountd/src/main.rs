@@ -674,6 +674,12 @@ mod live {
             "/console/team/transfer" if is_post => {
                 team_api::handle_transfer(&st.store, cookie, body, now)
             }
+            "/console/team/invite" if is_post => {
+                team_api::handle_invite(&st.store, &st.sender, &st.console_base, cookie, body, now)
+            }
+            "/console/team/accept" if is_post => {
+                team_api::handle_accept(&st.store, cookie, body, now)
+            }
             // Near-realtime usage off the fleet Firestore ledgers. Only built + routed with the
             // firestore feature; the project is the fleet's (HOP_FIRESTORE_PROJECT).
             #[cfg(feature = "firestore")]

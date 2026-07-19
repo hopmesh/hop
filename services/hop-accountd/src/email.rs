@@ -32,6 +32,58 @@ pub fn login_link_url(base: &str, raw_token: &str) -> String {
     format!("{}/auth/link#token={raw_token}", base.trim_end_matches('/'))
 }
 
+/// The team-invite accept URL. Like the login link, the token rides the FRAGMENT (`#token=`), so it is
+/// never sent to a server or logged; the console page reads it and POSTs it to `/console/team/accept`.
+pub fn invite_link_url(base: &str, raw_token: &str) -> String {
+    format!("{}/invite#token={raw_token}", base.trim_end_matches('/'))
+}
+
+/// Compose a team-invite email: who invited them, to which workspace, and the accept link. The copy
+/// works whether or not the recipient already has a Hop account (accepting signs them in / creates the
+/// account first, then joins).
+pub fn invite_email(to: &str, workspace: &str, inviter: &str, accept_url: &str) -> OutboundEmail {
+    let ws = html_escape(workspace);
+    let inv = html_escape(inviter);
+    let subject = format!("{inviter} invited you to {workspace} on Hop");
+    let text = format!(
+        "You're invited to Hop\n\n\
+         {inviter} added you to the {workspace} workspace. Open this link to accept and sign in \
+         (it creates your account if you don't have one yet):\n\n\
+         {accept_url}\n\n\
+         If you weren't expecting this, you can ignore this email.\n"
+    );
+    let html = format!(
+        "<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;\
+         max-width:420px;margin:0 auto;padding:32px 20px;color:#0c1613;\">\
+         <h2 style=\"margin:0 0 12px;font-size:20px;\">You&rsquo;re invited to Hop</h2>\
+         <p style=\"margin:0 0 20px;color:#4a5a52;font-size:14px;line-height:1.6;\">\
+         <strong>{inv}</strong> added you to the <strong>{ws}</strong> workspace. Accept to join \
+         (we&rsquo;ll sign you in, or create your account first).</p>\
+         <p style=\"margin:0 0 24px;\"><a href=\"{accept_url}\" \
+         style=\"display:inline-block;background:#0f9d72;color:#ffffff;text-decoration:none;\
+         font-weight:600;font-size:14px;padding:12px 22px;border-radius:9px;\">Accept invite</a></p>\
+         <p style=\"margin:0;color:#7e8c85;font-size:12px;\">\
+         If you weren&rsquo;t expecting this, you can ignore this email.</p>\
+         </div>"
+    );
+    OutboundEmail {
+        to: to.to_string(),
+        subject,
+        html,
+        text,
+    }
+}
+
+/// Minimal HTML-escaping for the untrusted workspace name + inviter email interpolated into the invite
+/// HTML (an org name is user-chosen; never inject it raw into markup).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 /// Compose the magic-link email. Deliberately spare: one purpose, one button, an expiry note, and a
 /// "not you? ignore it" line. The copy never distinguishes new vs existing accounts (the flow does
 /// not either), and never includes the recipient's name (we may not have one).
