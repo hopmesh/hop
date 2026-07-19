@@ -1,0 +1,415 @@
+{
+  "schema_version": 2,
+  "audit": {
+    "id": "hop-2026-07-18-sample",
+    "title": "HOP Adversarial Audit Sample",
+    "date": "2026-07-18",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "branch": "main",
+    "remote": "git@github.com:hopmesh/monorepo.git",
+    "dirty": false,
+    "round": 1,
+    "mode": "baseline",
+    "classification": "internal",
+    "baseline": null,
+    "scope": "Representative technical, business, and operating evidence"
+  },
+  "contracts": [
+    {
+      "name": "wire",
+      "version": "10",
+      "location": "core/hop-core/src/bundle.rs"
+    },
+    {
+      "name": "c-abi",
+      "version": "0.2",
+      "location": "sdk/hop.h"
+    }
+  ],
+  "publication": {
+    "boundary": "private_repository",
+    "output_root": "business/audits",
+    "public_build_excluded": true,
+    "redaction_policy": "Remove confidential evidence before creating any public companion report."
+  },
+  "grades": {
+    "source_quality": {
+      "grade": "C",
+      "previous": null,
+      "visibility": "public",
+      "provenance": [
+        "repository"
+      ],
+      "rationale": "A material durable-acceptance boundary remains open.",
+      "evidence": [
+        "CORE-001"
+      ]
+    },
+    "validation_coverage": {
+      "grade": "B",
+      "previous": null,
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ],
+      "rationale": "Source checks passed, while physical radio evidence remains unavailable.",
+      "evidence": [
+        "verification:Core source suite",
+        "limit:physical Apple hardware"
+      ]
+    },
+    "business_readiness": {
+      "grade": "C-",
+      "previous": null,
+      "visibility": "internal",
+      "provenance": [
+        "repository",
+        "owner_claim"
+      ],
+      "rationale": "Pricing semantics are not yet reconciled across product surfaces.",
+      "evidence": [
+        "BIZ-001"
+      ]
+    },
+    "process_quality": {
+      "grade": "B+",
+      "previous": null,
+      "visibility": "internal",
+      "provenance": [
+        "repository",
+        "direct_observation"
+      ],
+      "rationale": "The audit preserves independent review and explicit evidence limits.",
+      "evidence": [
+        "coverage:core-hop-core",
+        "refuted:CAND-001"
+      ]
+    },
+    "operational_readiness": {
+      "grade": "Not validated",
+      "previous": null,
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ],
+      "rationale": "No production or physical-hardware evidence was authorized.",
+      "evidence": [
+        "limit:live and physical evidence unavailable"
+      ]
+    }
+  },
+  "executive_summary": {
+    "assessment": "Evidence <must> survive escaping, and source confidence must remain separate from live readiness.",
+    "assessment_visibility": "internal",
+    "assessment_provenance": [
+      "repository",
+      "direct_observation"
+    ],
+    "strengths": [
+      {
+        "claim": "The wire version is explicit and has a deterministic corpus.",
+        "visibility": "public",
+        "provenance": [
+          "repository"
+        ],
+        "evidence": [
+          "core/hop-core/src/bundle.rs",
+          "core/hop-core/vectors/bundle-v10.json"
+        ]
+      },
+      {
+        "claim": "Every inventoried component has a final coverage disposition.",
+        "visibility": "internal",
+        "provenance": [
+          "direct_observation"
+        ],
+        "evidence": [
+          "coverage ledger"
+        ]
+      }
+    ],
+    "lean_in": [
+      {
+        "finding_id": "CORE-001",
+        "why_now": "Acceptance semantics define the product reliability claim.",
+        "next_control": "Bind acknowledgement to atomic durable state advancement.",
+        "owner_class": "engineering",
+        "visibility": "public",
+        "provenance": [
+          "repository"
+        ],
+        "dependencies": [
+          "Store fault-injection harness"
+        ]
+      },
+      {
+        "finding_id": "BIZ-001",
+        "why_now": "A buyer cannot evaluate an inconsistent billable event.",
+        "next_control": "Choose one metering contract and reconcile every surface.",
+        "owner_class": "founder",
+        "visibility": "internal",
+        "provenance": [
+          "repository",
+          "owner_claim"
+        ],
+        "dependencies": [
+          "Owner pricing decision"
+        ]
+      }
+    ]
+  },
+  "inventory": [
+    {
+      "id": "core-hop-core",
+      "path": "core/hop-core",
+      "name": "hop-core",
+      "kind": "protocol-crate",
+      "classification": "public",
+      "owner_class": "engineering",
+      "evidence_sources": [
+        "Cargo.toml",
+        "core/hop-core/src"
+      ]
+    },
+    {
+      "id": "business-pricing",
+      "path": "business/pricing",
+      "name": "Pricing system",
+      "kind": "commercial-contract",
+      "classification": "internal",
+      "owner_class": "founder",
+      "evidence_sources": [
+        "business/pricing"
+      ]
+    },
+    {
+      "id": "apple-radio",
+      "path": "bearers/apple/HopBearerBle",
+      "name": "Apple BLE bearer",
+      "kind": "radio-bearer",
+      "classification": "public",
+      "owner_class": "engineering",
+      "evidence_sources": [
+        "bearers/apple/HopBearerBle/Package.swift"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "inventory_id": "core-hop-core",
+      "status": "reviewed",
+      "reviewers": [
+        "protocol-finder",
+        "durability-refuter"
+      ],
+      "vectors": [
+        "wire",
+        "durability",
+        "resource-bounds"
+      ],
+      "evidence": [
+        "core/hop-core/src/bundle.rs",
+        "cargo test -p hop-core"
+      ],
+      "rationale": ""
+    },
+    {
+      "inventory_id": "business-pricing",
+      "status": "reviewed",
+      "reviewers": [
+        "pricing-finder",
+        "business-refuter"
+      ],
+      "vectors": [
+        "pricing-consistency",
+        "unit-economics"
+      ],
+      "evidence": [
+        "business/pricing",
+        "apps/web/site/src/pages/pricing.astro"
+      ],
+      "rationale": ""
+    },
+    {
+      "inventory_id": "apple-radio",
+      "status": "scoped_out",
+      "reviewers": [],
+      "vectors": [],
+      "evidence": [],
+      "rationale": "Physical Apple hardware was unavailable; static source coverage is represented elsewhere."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CORE-001",
+      "domain": "technical",
+      "status": "open",
+      "previous_status": null,
+      "severity": "high",
+      "original_severity": "high",
+      "confidence": "high",
+      "visibility": "public",
+      "component": "core/hop-core",
+      "vector": "durability",
+      "title": "Acceptance can precede durable state advancement",
+      "invariant": "A message is accepted only after authenticated durable state advances atomically.",
+      "threat_model": "A local crash or store fault occurs between acknowledgement and state persistence.",
+      "impact": "The sender can observe success while restart loses accepted state.",
+      "business_impact": "The managed delivery guarantee remains unprovable.",
+      "scenario": "A receiver authenticates a message, acknowledges it, then crashes before the ratchet and inbox transaction commits.",
+      "root_cause": "Acknowledgement is not transactionally bound to every durable state mutation.",
+      "evidence": [
+        {
+          "kind": "source",
+          "provenance": "repository",
+          "location": "core/hop-core/src/node.rs:100-160",
+          "detail": "The acknowledgement path and durable mutation have separate failure boundaries."
+        },
+        {
+          "kind": "test",
+          "provenance": "direct_observation",
+          "location": "cargo test -p hop-core",
+          "detail": "The suite covers success but does not inject failure between each write."
+        }
+      ],
+      "coverage_gap": "No restart regression injects a fault between every durable write.",
+      "remediation_boundary": "Commit message, replay state, and ratchet state atomically before acknowledgement.",
+      "closure_contract": [
+        "Inject a fault at every durable write boundary.",
+        "Prove restart cannot roll back an accepted message.",
+        "Run the hostile regression against every supported durable store."
+      ],
+      "relationships": [],
+      "closure_evidence": [],
+      "closure_state": {
+        "source": "not_validated",
+        "deploy": "not_validated",
+        "live": "not_validated",
+        "registry": "not_validated",
+        "hardware": "not_validated",
+        "operational": "not_validated",
+        "business": "not_applicable"
+      },
+      "residual": [],
+      "owner_class": "engineering"
+    },
+    {
+      "id": "BIZ-001",
+      "domain": "business",
+      "status": "blocked",
+      "previous_status": null,
+      "severity": "medium",
+      "original_severity": "medium",
+      "confidence": "medium",
+      "visibility": "internal",
+      "component": "business/pricing",
+      "vector": "pricing-consistency",
+      "title": "The billable event differs across commercial surfaces",
+      "invariant": "Public pricing, billing enforcement, forecasts, and sales material define the same billable event.",
+      "threat_model": "A buyer, operator, or billing service interprets delivery units differently.",
+      "impact": "Invoices, forecasts, and customer expectations can diverge.",
+      "business_impact": "Sales cannot offer a precise or defensible commercial contract.",
+      "scenario": "The site quotes delivered messages while an internal model counts ingress submissions and retries.",
+      "root_cause": "No owner-approved canonical metering contract exists.",
+      "evidence": [
+        {
+          "kind": "document",
+          "provenance": "repository",
+          "location": "business/pricing",
+          "detail": "Internal pricing notes use multiple metering terms."
+        },
+        {
+          "kind": "public-copy",
+          "provenance": "repository",
+          "location": "apps/web/site/src/pages/pricing.astro",
+          "detail": "The public calculator uses delivered-message language."
+        }
+      ],
+      "coverage_gap": "No approved catalog-to-invoice reconciliation fixture exists.",
+      "remediation_boundary": "Choose one canonical billable event and encode it in copy, catalog, service, forecast, and contract fixtures.",
+      "closure_contract": [
+        "Record the owner-approved metering definition.",
+        "Reconcile all public and internal pricing surfaces.",
+        "Exercise a catalog-to-invoice fixture with retries and failed delivery."
+      ],
+      "relationships": [],
+      "closure_evidence": [],
+      "closure_state": {
+        "source": "not_applicable",
+        "deploy": "not_applicable",
+        "live": "not_applicable",
+        "registry": "not_applicable",
+        "hardware": "not_applicable",
+        "operational": "blocked",
+        "business": "blocked"
+      },
+      "residual": [
+        "Blocked on a founder decision about the canonical billable event."
+      ],
+      "owner_class": "founder"
+    }
+  ],
+  "refuted_candidates": [
+    {
+      "id": "CAND-001",
+      "title": "Wire version is implicit",
+      "component": "core/hop-core",
+      "hypothesis": "Peers cannot reject an unsupported wire layout before decoding it.",
+      "disproof": "The bundle prefix carries the explicit version and deterministic vectors bind the current value.",
+      "visibility": "public",
+      "provenance": [
+        "repository",
+        "direct_observation"
+      ],
+      "evidence": [
+        "core/hop-core/src/bundle.rs",
+        "core/hop-core/vectors/bundle-v10.json"
+      ]
+    }
+  ],
+  "verification": [
+    {
+      "name": "Core source suite",
+      "command": "cargo test -p hop-core",
+      "result": "passed",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": "source",
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ],
+      "notes": "Representative fixture evidence."
+    },
+    {
+      "name": "Physical Apple radio pass",
+      "command": "physical-device-matrix",
+      "result": "blocked",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": "hardware",
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ],
+      "notes": "No physical device was available."
+    }
+  ],
+  "limits": [
+    {
+      "text": "No live cloud, registry, customer, financial, legal, or physical-hardware evidence was authorized.",
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ]
+    }
+  ],
+  "operational_actions": [
+    {
+      "text": "Run the physical radio matrix when representative hardware is available.",
+      "visibility": "internal",
+      "provenance": [
+        "direct_observation"
+      ]
+    }
+  ],
+  "approvals": []
+}

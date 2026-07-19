@@ -825,6 +825,12 @@ jobs:
         run: bash tools/crates-publish.test.sh
       - name: Self-test verified PlatformIO inputs
         run: bash sdk/embedded/tools/platformio-offline.test.sh
+      - name: Test the portable HOP adversarial audit skill
+        run: |
+          python3 .agents/skills/hop-adversarial-audit/scripts/test_tools.py
+          python3 .agents/skills/hop-adversarial-audit/scripts/validate_ledger.py \
+            .agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json
+          bash tools/docs-token-guard.sh .agents/skills/hop-adversarial-audit
 
   docs-tokens:
     name: Docs token guard (banned copy)

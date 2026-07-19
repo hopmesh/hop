@@ -1,0 +1,82 @@
+[
+  {
+    "query": "Re-initiate the HOP adversarial audit from current main. Cover the protocol, every SDK and platform, CI, cloud deployment, pricing, sales, legal readiness, support, and internal operations, then give me the same graded report format as the last round.",
+    "should_trigger": true
+  },
+  {
+    "query": "The last HOP review left several B grades. Run another evidence-based pass, tell me what is keeping source quality and business readiness from A, and stop before fixes so I can approve the findings.",
+    "should_trigger": true
+  },
+  {
+    "query": "Use the latest canonical HOP audit. I approve CORE-001 and INFRA-004 only. Fan out isolated fix agents, attack their closure independently, and publish the closeout after protected CI passes.",
+    "should_trigger": true
+  },
+  {
+    "query": "Audit HOP's commercial readiness. I need a private assessment of the ICP, design partners, pricing metric, unit economics, enterprise funnel, contracts, support model, and founder key-person risk.",
+    "should_trigger": true
+  },
+  {
+    "query": "Do a full red-team review of hopmesh/monorepo. Trace forward secrecy, durable acceptance, resource exhaustion, wrapper parity, release provenance, live cloud authority, and every public product claim.",
+    "should_trigger": true
+  },
+  {
+    "query": "Get HOP to A. Re-run the technical and operating audit, use independent finders and refuters, grade each readiness axis separately, and show me exactly which finding IDs need approval.",
+    "should_trigger": true
+  },
+  {
+    "query": "We have a HOP baseline with approved High findings. Execute the remediation campaign in separate worktrees, preserve unapproved records, require hostile regressions, and keep source closure separate from hardware and production validation.",
+    "should_trigger": true
+  },
+  {
+    "query": "Review whether HOP is actually ready for enterprise pilots. Include technical proof, package consumers, security review, procurement, billing, legal documents, incident response, and second-operator coverage.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the HOP process-forensics audit again. I want evidence chronology, agent isolation, scope control, secret handling, protected CI provenance, and any place the prior remediation claimed more than it proved.",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a new immutable HOP audit baseline and a beautiful standalone HTML report. Inventory every component from live manifests, record refuted hypotheses, and include business, sales, finance, legal, and operations.",
+    "should_trigger": true
+  },
+  {
+    "query": "Fix the flaky Android inbox compaction test in HOP. Reproduce the race, make the smallest correct Kotlin change, run the Android unit tests, and open a PR.",
+    "should_trigger": false
+  },
+  {
+    "query": "Review PR 241 in hopmesh/monorepo for correctness regressions. Focus on the Rust retry loop and missing tests, and report findings with file and line references.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run a full-stack audit of the HOP marketing site at apps/web/site and grade performance, accessibility, SEO, security headers, links, and test coverage in the standard site-audit format.",
+    "should_trigger": false
+  },
+  {
+    "query": "Turn business/pitch-deck-plan.md into a concise investor deck with diagrams and speaker notes. Keep the current HOP visual identity and export a PowerPoint file.",
+    "should_trigger": false
+  },
+  {
+    "query": "Rewrite the HOP pricing page headline and plan descriptions so developers understand delivered messages and enterprise overages. Do not change the calculator implementation.",
+    "should_trigger": false
+  },
+  {
+    "query": "Audit AcmeMesh, a separate repository under ~/dev/src/github.com/acme/mesh. Check its Go protocol, AWS deployment, pricing, sales funnel, and legal readiness, then create a report.",
+    "should_trigger": false
+  },
+  {
+    "query": "Inspect this one HOP diff for a possible use-after-free in the C callback. Explain whether ownership is sound and add a focused regression if it is not.",
+    "should_trigger": false
+  },
+  {
+    "query": "Summarize docs/audits/adversarial-review-2026-07-18.html for a release note. I only need the five most important already-documented results; do not re-audit anything.",
+    "should_trigger": false
+  },
+  {
+    "query": "Rotate the compromised HOP release credential in GitHub and the package registries, verify the old credential is revoked, and update the owner runbook with non-secret evidence.",
+    "should_trigger": false
+  },
+  {
+    "query": "Update opencode.json so child processes cannot print environment variables, add bypass tests for wrapped shell commands, and run the automation authority suite.",
+    "should_trigger": false
+  }
+]
