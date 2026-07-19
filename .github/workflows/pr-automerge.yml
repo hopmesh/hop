@@ -1,0 +1,29 @@
+# Enable auto-merge on every non-draft PR as it opens (or leaves draft), so PRs merge themselves
+# ONCE the required CI gate passes. Branch protection still gates everything: a red or stale branch
+# never merges. This replaces dependabot-automerge.yml, which was broken in two ways:
+#   1. It requested SQUASH auto-merge, but this repo forbids squash merges, so every enablement
+#      failed and Dependabot PRs piled up unmerged.
+#   2. It used GITHUB_TOKEN. Auto-merge performs the merge AS the enabling actor, and pushes made
+#      by GITHUB_TOKEN do not trigger workflows, so the merge commit on main would skip ci.yml and
+#      pages.yml, and the Cloud Build deploy gate (which requires a green ci.yml run FOR the
+#      commit) would silently never deploy. HOP_SYNC_TOKEN (a real PAT) attributes the merge to a
+#      user, so push-triggered workflows and the deploy gate behave normally.
+# Nothing here runs untrusted PR code (API call only), so pull_request_target is safe.
+name: PR auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  enable-automerge:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable merge-commit auto-merge
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
