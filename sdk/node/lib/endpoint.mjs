@@ -105,6 +105,7 @@ export class HopEndpoint extends EventEmitter {
       const b = Buffer.isBuffer(secretOrPassphrase)
         ? secretOrPassphrase
         : Buffer.from(secretOrPassphrase)
+      // ADV18-06: hop_cluster_join reads a fixed 32 bytes from the secret with no length param.
       if (b.length !== 32) throw new Error('cluster secret must be a 32-byte Buffer or a string passphrase')
       this.#native((node) => hop.cluster_join(node, b))
     }
@@ -138,6 +139,7 @@ export class HopEndpoint extends EventEmitter {
   // response returns (delay-tolerant; times out after `timeoutMs`).
   request(dst, service, method, args = Buffer.alloc(0), { timeoutMs = 15000 } = {}) {
     const dstBytes = addrToBytes(dst)
+    require32(dstBytes, 'dst') // ADV18-06: send_service_request reads a fixed 32 bytes from dst
     const a = toBuf(args)
     const reqId = Buffer.alloc(32)
     const ok = this.#native((node) =>
@@ -335,6 +337,10 @@ export class HopEndpoint extends EventEmitter {
       if (sent) throw new Error('reply already sent')
       sent = true
       if (this.#closed) return false
+      // ADV18-06: send_service_response reads a fixed 32 bytes from `to` and `for_request_id`. These
+      // come from a decoded inbound request (already 32), but validate before the fixed-length read.
+      require32(req._raw, 'to')
+      require32(req._rid, 'forRequestId')
       const b = toBuf(body)
       return this.#native((node) =>
         hop.send_service_response(node, req._raw, req._rid, status, b, b.length),
