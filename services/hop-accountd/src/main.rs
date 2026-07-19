@@ -661,6 +661,9 @@ mod live {
             "/console/card" if is_get => {
                 console_api::handle_card(&st.store, &st.stripe, cookie, &tenant, now)
             }
+            "/console/subscription" if is_get => billing_call(&|bill, cat| {
+                console_api::handle_subscription(&st.store, bill, cat, cookie, &tenant, now)
+            }),
             "/console/team" if is_get => team_api::handle_list(&st.store, cookie, &tenant, now),
             "/console/team/role" if is_post => {
                 team_api::handle_set_role(&st.store, cookie, body, now)

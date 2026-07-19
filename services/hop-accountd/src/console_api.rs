@@ -92,6 +92,49 @@ pub fn handle_invoices(
     }
 }
 
+/// GET /console/subscription?tenant=.. The tenant's live plan + subscription status (Owner/Admin).
+/// A free/unbilled tenant (no customer, or no subscription) reads as the Developer plan with no
+/// status. The plan is derived live from Stripe; a stored copy (webhook) is a follow-up.
+pub fn handle_subscription(
+    store: &dyn Store,
+    billing: &crate::billing::StripeBilling,
+    catalog: &crate::billing::PlanCatalog,
+    cookie: Option<&str>,
+    tenant: &str,
+    now_ms: u64,
+) -> AuthResponse {
+    let customer = match billing_customer(store, cookie, tenant, now_ms) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return AuthResponse::json(
+                200,
+                r#"{"plan":"developer","status":"none","currentPeriodEnd":null,"active":false}"#,
+            )
+        }
+        Err(resp) => return resp,
+    };
+    match billing.current_subscription(catalog, &customer) {
+        Ok(Some(sub)) => {
+            let active = matches!(sub.status.as_str(), "active" | "trialing");
+            AuthResponse::json(
+                200,
+                &serde_json::json!({
+                    "plan": sub.plan.as_str(),
+                    "status": sub.status,
+                    "currentPeriodEnd": sub.current_period_end,
+                    "active": active,
+                })
+                .to_string(),
+            )
+        }
+        Ok(None) => AuthResponse::json(
+            200,
+            r#"{"plan":"developer","status":"none","currentPeriodEnd":null,"active":false}"#,
+        ),
+        Err(_) => AuthResponse::json(502, r#"{"error":"billing_upstream"}"#),
+    }
+}
+
 /// GET /console/card?tenant=.. The tenant's default card on file (Owner/Admin), or null. Used for the
 /// "Visa ending 4242" display; never returns the full PAN (Stripe only ever exposes brand + last4).
 pub fn handle_card(
@@ -234,5 +277,27 @@ mod tests {
         let r = handle_card(&s, &t, Some(&cookie), &tenant, T0);
         assert_eq!(r.status, 200);
         assert!(r.body.contains(r#""card":null"#));
+    }
+
+    #[test]
+    fn subscription_reads_developer_without_a_customer_and_the_plan_with_one() {
+        use crate::billing::{PlanCatalog, StripeBilling};
+        let (s, cookie, tenant) = signed_in();
+        let cat = PlanCatalog::parse("price_reach", "price_reach", "price_base").unwrap();
+        // no customer -> developer / not active, no upstream needed
+        let t = FakeTransport(200, "{}".into());
+        let bill = StripeBilling { transport: &t };
+        let r = handle_subscription(&s, &bill, &cat, Some(&cookie), &tenant, T0);
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains(r#""plan":"developer""#) && r.body.contains(r#""active":false"#));
+        // with a customer + an active Scale subscription -> plan scale, active
+        let org = s.org_by_tenant(&tenant).unwrap().unwrap();
+        s.set_org_stripe_customer(&org.id, "cus_live").unwrap();
+        let sub = r#"{"data":[{"status":"active","current_period_end":1893456000,"items":{"data":[{"price":{"id":"price_base"}}]}}]}"#;
+        let t2 = FakeTransport(200, sub.into());
+        let bill2 = StripeBilling { transport: &t2 };
+        let r2 = handle_subscription(&s, &bill2, &cat, Some(&cookie), &tenant, T0);
+        assert!(r2.body.contains(r#""plan":"scale""#) && r2.body.contains(r#""active":true"#));
+        assert!(r2.body.contains("1893456000"));
     }
 }

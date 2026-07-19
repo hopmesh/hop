@@ -108,6 +108,21 @@ impl PlanCatalog {
         })
     }
 
+    /// Derive the plan a set of subscribed price ids corresponds to: the committed base price present
+    /// means Scale; any metered price present (but no base) means Usage; neither means Developer.
+    pub fn plan_of(&self, price_ids: &[String]) -> Plan {
+        if let Some(base) = &self.scale_base {
+            if price_ids.iter().any(|p| p == base) {
+                return Plan::Scale;
+            }
+        }
+        let metered = |p: &String| self.usage_metered.contains(p) || self.scale_metered.contains(p);
+        if price_ids.iter().any(metered) {
+            return Plan::Usage;
+        }
+        Plan::Developer
+    }
+
     /// The Checkout line items for `plan`. Empty for Developer (no Checkout).
     pub fn line_items(&self, plan: Plan) -> Vec<LineItem> {
         let metered = |prices: &[String]| {
@@ -178,6 +193,22 @@ pub fn portal_sessions_url() -> String {
 /// validated `customer` as a Stripe id, so it cannot smuggle extra query parameters.
 pub fn subscriptions_active_url(customer: &str) -> String {
     format!("https://api.stripe.com/v1/subscriptions?customer={customer}&status=active&limit=1")
+}
+/// A customer's most recent subscription across ALL statuses (for the billing view: shows a past_due
+/// or canceled sub too, not only active). The caller validated `customer`.
+pub fn subscriptions_all_url(customer: &str) -> String {
+    format!("https://api.stripe.com/v1/subscriptions?customer={customer}&status=all&limit=1")
+}
+
+/// The console billing view's snapshot of a tenant's subscription.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscriptionState {
+    /// Stripe status (`active`, `trialing`, `past_due`, `canceled`, ...).
+    pub status: String,
+    /// Unix seconds when the current period ends (0 if absent).
+    pub current_period_end: i64,
+    /// The plan the subscribed prices map to.
+    pub plan: Plan,
 }
 
 // ---- bodies ----
@@ -286,6 +317,39 @@ impl StripeBilling<'_> {
         Ok(v["data"].as_array().is_some_and(|d| !d.is_empty()))
     }
 
+    /// The tenant's current subscription: status, period end, and the plan derived from the subscribed
+    /// price ids via `catalog`. `None` if the customer has no subscription (a fresh/free tenant). Used
+    /// by the console billing view; the live counterpart to a stored plan (a webhook is a follow-up).
+    pub fn current_subscription(
+        &self,
+        catalog: &PlanCatalog,
+        customer: &str,
+    ) -> Result<Option<SubscriptionState>, String> {
+        if !valid_stripe_id(customer) {
+            return Err("invalid customer id".into());
+        }
+        let (s, b) = self.transport.get(&subscriptions_all_url(customer))?;
+        let body = ok_or_err("subscriptions.list", s, &b)?;
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let Some(sub) = v["data"].as_array().and_then(|d| d.first()) else {
+            return Ok(None);
+        };
+        let price_ids: Vec<String> = sub["items"]["data"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i["price"]["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Some(SubscriptionState {
+            status: sub["status"].as_str().unwrap_or("unknown").to_string(),
+            current_period_end: sub["current_period_end"].as_i64().unwrap_or(0),
+            plan: catalog.plan_of(&price_ids),
+        }))
+    }
+
     /// Create a Checkout session for `plan` and return the hosted URL to redirect the browser to.
     /// Errors on the free plan (Developer needs no Checkout) or a missing customer.
     pub fn create_checkout(
@@ -339,6 +403,21 @@ mod tests {
             "price_commit",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn plan_of_derives_from_subscribed_prices() {
+        let c = catalog();
+        // the committed base present -> Scale
+        assert_eq!(
+            c.plan_of(&["price_commit".into(), "price_reach2".into()]),
+            Plan::Scale
+        );
+        // a metered price, no base -> Usage
+        assert_eq!(c.plan_of(&["price_reach".into()]), Plan::Usage);
+        // nothing recognizable / empty -> Developer
+        assert_eq!(c.plan_of(&["price_unknown".into()]), Plan::Developer);
+        assert_eq!(c.plan_of(&[]), Plan::Developer);
     }
 
     #[test]
