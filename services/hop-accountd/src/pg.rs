@@ -188,6 +188,26 @@ impl Store for PgStore {
         }
         Ok(())
     }
+    fn set_org_stripe_customer_if_absent(
+        &self,
+        org_id: &str,
+        customer: &str,
+    ) -> StoreResult<String> {
+        // Atomic conditional write: COALESCE keeps an already-set customer, so two racing first
+        // checkouts both land on whichever won, and RETURNING hands back that single winner. The
+        // WHERE has no IS NULL guard so a row always matches (distinguishing NotFound from a no-op).
+        let row = self
+            .conn()?
+            .query_opt(
+                "UPDATE orgs SET stripe_customer = COALESCE(stripe_customer, $2) \
+                 WHERE id=$1 RETURNING stripe_customer",
+                &[&org_id, &customer],
+            )
+            .map_err(be)?
+            .ok_or(StoreError::NotFound)?;
+        let persisted: Option<String> = row.get(0);
+        persisted.ok_or(StoreError::NotFound)
+    }
     fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()> {
         let n = self
             .conn()?

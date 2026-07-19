@@ -12,10 +12,17 @@
 
 use serde::Serialize;
 
-/// The Stripe API network seam: authenticated GET, or a form POST. Returns `(status, body)`.
+/// The Stripe API network seam: authenticated GET, or a form POST with an optional Stripe
+/// `Idempotency-Key` header (a deterministic key makes a retried or concurrent write collapse to a
+/// single Stripe object instead of duplicating it). Returns `(status, body)`.
 pub trait Transport {
     fn get(&self, url: &str) -> Result<(u16, String), String>;
-    fn post_form(&self, url: &str, body: &str) -> Result<(u16, String), String>;
+    fn post_form(
+        &self,
+        url: &str,
+        body: &str,
+        idempotency_key: Option<&str>,
+    ) -> Result<(u16, String), String>;
 }
 
 const BASE: &str = "https://api.stripe.com/v1";
@@ -220,7 +227,9 @@ impl<T: Transport> StripeReader<T> {
         if !valid_stripe_id(invoice) {
             return Err("invalid invoice id".into());
         }
-        let (s, b) = self.transport.post_form(&invoice_pay_url(invoice), "")?;
+        let (s, b) = self
+            .transport
+            .post_form(&invoice_pay_url(invoice), "", None)?;
         parse_invoice_detail(&ok_or_err("invoices.pay", s, &b)?)
     }
 

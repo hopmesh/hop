@@ -29,6 +29,11 @@ fn authorize_billing(
         .ok()
         .flatten()
         .ok_or_else(|| AuthResponse::json(401, r#"{"error":"unauthenticated"}"#))?;
+    // Reject a malformed tenant before it reaches the store. Checked AFTER the session so an
+    // unauthenticated caller always gets 401 and learns nothing about tenant shape or existence.
+    if !crate::api::valid_tenant_hex(tenant_hex) {
+        return Err(AuthResponse::json(400, r#"{"error":"bad_request"}"#));
+    }
     let org = store
         .org_by_tenant(tenant_hex)
         .ok()
@@ -71,10 +76,26 @@ pub fn handle_checkout(
         Err(resp) => return resp,
     };
     if !plan.is_paid() {
-        // Developer: nothing to charge. The customer is minted lazily on the first PAID checkout.
+        // Developer is free, but "downgrade to Developer" is not a no-op if the tenant is actively
+        // paying: cancelling a live subscription happens in the Billing Portal, so steer there
+        // instead of falsely reporting success while Stripe keeps billing.
+        if let Some(customer) = &org.stripe_customer {
+            match billing.has_active_subscription(customer) {
+                Ok(true) => {
+                    return AuthResponse::json(
+                        409,
+                        r#"{"error":"active_subscription","manage":"portal"}"#,
+                    )
+                }
+                Ok(false) => {}
+                Err(_) => return AuthResponse::json(502, r#"{"error":"billing_upstream"}"#),
+            }
+        }
         return AuthResponse::json(200, r#"{"ok":true,"plan":"developer","free":true}"#);
     }
-    // Ensure a Stripe customer, writing it into the registry the first time.
+    // Ensure a Stripe customer, writing it into the registry the first time. create_customer is
+    // idempotent per tenant and the write is set-if-absent, so racing first checkouts converge on a
+    // single customer and the checkout below is built against the one actually persisted.
     let customer = match org.stripe_customer.clone() {
         Some(c) => c,
         None => {
@@ -83,12 +104,22 @@ pub fn handle_checkout(
                 Ok(c) => c,
                 Err(_) => return AuthResponse::json(502, r#"{"error":"billing_upstream"}"#),
             };
-            if store.set_org_stripe_customer(&org.id, &created).is_err() {
-                return AuthResponse::json(500, r#"{"error":"internal"}"#);
+            match store.set_org_stripe_customer_if_absent(&org.id, &created) {
+                Ok(persisted) => persisted,
+                Err(_) => return AuthResponse::json(500, r#"{"error":"internal"}"#),
             }
-            created
         }
     };
+    // Refuse a second checkout that would stack a duplicate subscription and double-bill. Plan
+    // changes are a Portal action (Stripe prorates upgrades/downgrades natively). Fail closed on a
+    // read error: better to block one checkout than to risk a double subscription.
+    match billing.has_active_subscription(&customer) {
+        Ok(true) => {
+            return AuthResponse::json(409, r#"{"error":"active_subscription","manage":"portal"}"#)
+        }
+        Ok(false) => {}
+        Err(_) => return AuthResponse::json(502, r#"{"error":"billing_upstream"}"#),
+    }
     let base = console_base.trim_end_matches('/');
     let success = format!("{base}/billing?checkout=success");
     let cancel = format!("{base}/billing?checkout=cancel");
@@ -151,12 +182,27 @@ mod tests {
     struct FakeTransport {
         resp: (u16, String),
         posts: RefCell<usize>,
+        /// What GET /v1/subscriptions returns: an active sub (blocks a second checkout) or none.
+        subs_active: bool,
     }
     impl Transport for FakeTransport {
-        fn get(&self, _u: &str) -> Result<(u16, String), String> {
+        fn get(&self, url: &str) -> Result<(u16, String), String> {
+            if url.contains("/subscriptions") {
+                let body = if self.subs_active {
+                    r#"{"data":[{"id":"sub_1","status":"active"}]}"#
+                } else {
+                    r#"{"data":[]}"#
+                };
+                return Ok((200, body.into()));
+            }
             Ok((200, "{}".into()))
         }
-        fn post_form(&self, _u: &str, _b: &str) -> Result<(u16, String), String> {
+        fn post_form(
+            &self,
+            _u: &str,
+            _b: &str,
+            _key: Option<&str>,
+        ) -> Result<(u16, String), String> {
             *self.posts.borrow_mut() += 1;
             Ok(self.resp.clone())
         }
@@ -168,6 +214,13 @@ mod tests {
                 r#"{"id":"cus_new","url":"https://checkout.stripe.com/s"}"#.into(),
             ),
             posts: RefCell::new(0),
+            subs_active: false,
+        }
+    }
+    fn fake_subscribed() -> FakeTransport {
+        FakeTransport {
+            subs_active: true,
+            ..fake()
         }
     }
 
@@ -282,5 +335,94 @@ mod tests {
         let r = handle_portal(&s, &bill, BASE, Some(&cookie), &body, T0);
         assert_eq!(r.status, 200);
         assert!(r.body.contains("https://checkout.stripe.com/s"));
+    }
+
+    #[test]
+    fn active_subscription_blocks_a_second_checkout() {
+        // A tenant that already pays cannot start a second Checkout (that would double-subscribe);
+        // it is steered to the Portal for plan changes. No checkout post is made.
+        let (s, cookie, tenant) = signed_in();
+        let org = s.org_by_tenant(&tenant).unwrap().unwrap();
+        s.set_org_stripe_customer(&org.id, "cus_live").unwrap();
+        let t = fake_subscribed();
+        let bill = StripeBilling { transport: &t };
+        let body = format!(r#"{{"tenant":"{tenant}","plan":"scale"}}"#);
+        let r = handle_checkout(&s, &bill, &catalog(), BASE, Some(&cookie), &body, T0);
+        assert_eq!(r.status, 409);
+        assert!(r.body.contains("active_subscription") && r.body.contains("portal"));
+        assert_eq!(
+            *t.posts.borrow(),
+            0,
+            "no checkout created when already subscribed"
+        );
+    }
+
+    #[test]
+    fn developer_downgrade_while_subscribed_steers_to_portal() {
+        // "Downgrade to Developer" must not silently claim success while a paid subscription keeps
+        // billing: it 409s to the Portal (where cancellation actually happens).
+        let (s, cookie, tenant) = signed_in();
+        let org = s.org_by_tenant(&tenant).unwrap().unwrap();
+        s.set_org_stripe_customer(&org.id, "cus_live").unwrap();
+        let t = fake_subscribed();
+        let bill = StripeBilling { transport: &t };
+        let body = format!(r#"{{"tenant":"{tenant}","plan":"developer"}}"#);
+        let r = handle_checkout(&s, &bill, &catalog(), BASE, Some(&cookie), &body, T0);
+        assert_eq!(r.status, 409);
+        assert!(r.body.contains("active_subscription"));
+        // ...but with no active subscription, Developer is a clean free no-op.
+        let t2 = fake();
+        let bill2 = StripeBilling { transport: &t2 };
+        let r2 = handle_checkout(&s, &bill2, &catalog(), BASE, Some(&cookie), &body, T0);
+        assert_eq!(r2.status, 200);
+        assert!(r2.body.contains(r#""free":true"#));
+    }
+
+    #[test]
+    fn first_checkout_binds_to_the_persisted_customer_not_a_racing_duplicate() {
+        // Simulate a race that already wrote a customer: the set-if-absent write keeps the first one,
+        // and the checkout is built against THAT customer, never the just-created duplicate.
+        let (s, cookie, tenant) = signed_in();
+        let org = s.org_by_tenant(&tenant).unwrap().unwrap();
+        // A concurrent request won the race and persisted cus_first.
+        let persisted = s
+            .set_org_stripe_customer_if_absent(&org.id, "cus_first")
+            .unwrap();
+        assert_eq!(persisted, "cus_first");
+        // A second write (as our handler would attempt with its own created id) does NOT overwrite.
+        let still = s
+            .set_org_stripe_customer_if_absent(&org.id, "cus_second")
+            .unwrap();
+        assert_eq!(
+            still, "cus_first",
+            "set-if-absent never overwrites the winner"
+        );
+        // And a checkout now reuses cus_first (customer already set: no create post).
+        let t = fake();
+        let bill = StripeBilling { transport: &t };
+        let body = format!(r#"{{"tenant":"{tenant}","plan":"usage"}}"#);
+        assert_eq!(
+            handle_checkout(&s, &bill, &catalog(), BASE, Some(&cookie), &body, T0).status,
+            200
+        );
+        assert_eq!(
+            *t.posts.borrow(),
+            1,
+            "customer reused: only the checkout post"
+        );
+    }
+
+    #[test]
+    fn malformed_tenant_is_a_400() {
+        let (s, cookie, _tenant) = signed_in();
+        let t = fake();
+        let bill = StripeBilling { transport: &t };
+        // 'xyz' is not 32 lowercase-hex chars.
+        let body = r#"{"tenant":"xyz","plan":"usage"}"#;
+        assert_eq!(
+            handle_checkout(&s, &bill, &catalog(), BASE, Some(&cookie), body, T0).status,
+            400
+        );
+        assert_eq!(*t.posts.borrow(), 0, "no upstream on a malformed tenant");
     }
 }

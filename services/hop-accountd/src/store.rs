@@ -42,6 +42,22 @@ pub trait Store: Send + Sync {
     fn org_by_id(&self, id: &str) -> StoreResult<Option<Org>>;
     fn org_by_tenant(&self, tenant_hex: &str) -> StoreResult<Option<Org>>;
     fn set_org_stripe_customer(&self, org_id: &str, customer: &str) -> StoreResult<()>;
+    /// Bind a Stripe customer to the org ONLY if it has none yet, returning the customer id now
+    /// persisted (the one already stored if a concurrent caller won the race). This is what billing
+    /// must use so two racing first-checkouts converge on a single customer instead of overwriting
+    /// each other. The default is read-then-write (fine for a mutex-guarded in-memory store); a store
+    /// with real cross-connection concurrency (Postgres) overrides it with an atomic conditional write.
+    fn set_org_stripe_customer_if_absent(
+        &self,
+        org_id: &str,
+        customer: &str,
+    ) -> StoreResult<String> {
+        if let Some(existing) = self.org_by_id(org_id)?.and_then(|o| o.stripe_customer) {
+            return Ok(existing);
+        }
+        self.set_org_stripe_customer(org_id, customer)?;
+        Ok(customer.to_string())
+    }
     /// Set the tenant's carriage-stamp signing pubkey (hex) once the first key is issued.
     fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()>;
     /// Set the tenant's managed-OTLP forwarding endpoint.

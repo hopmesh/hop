@@ -174,6 +174,11 @@ pub fn checkout_sessions_url() -> String {
 pub fn portal_sessions_url() -> String {
     "https://api.stripe.com/v1/billing_portal/sessions".to_string()
 }
+/// Active subscriptions for a customer (limit 1: presence is all we need). The caller has already
+/// validated `customer` as a Stripe id, so it cannot smuggle extra query parameters.
+pub fn subscriptions_active_url(customer: &str) -> String {
+    format!("https://api.stripe.com/v1/subscriptions?customer={customer}&status=active&limit=1")
+}
 
 // ---- bodies ----
 
@@ -253,12 +258,32 @@ pub struct StripeBilling<'a> {
 }
 
 impl StripeBilling<'_> {
-    /// Create a Stripe customer for a tenant, returning its `cus_...` id.
+    /// Create a Stripe customer for a tenant, returning its `cus_...` id. The Stripe
+    /// `Idempotency-Key` is deterministic in the tenant, so two concurrent first checkouts (or a
+    /// retry after a timed-out-but-succeeded create) collapse to ONE customer instead of minting a
+    /// duplicate that the registry would then disagree with.
     pub fn create_customer(&self, email: &str, tenant_hex: &str) -> Result<String, String> {
-        let (s, b) = self
-            .transport
-            .post_form(&customers_url(), &customer_create_body(email, tenant_hex))?;
+        let key = format!("hop-customer:{tenant_hex}");
+        let (s, b) = self.transport.post_form(
+            &customers_url(),
+            &customer_create_body(email, tenant_hex),
+            Some(&key),
+        )?;
         parse_customer_id(&ok_or_err("customers.create", s, &b)?)
+    }
+
+    /// Whether `customer` already has an active subscription. Used to refuse a second Checkout that
+    /// would stack a duplicate subscription and double-bill; plan changes go through the Billing
+    /// Portal instead. A read error propagates so the caller can fail closed. (The plans carry no
+    /// Stripe trial: the free tier is the separate Developer plan, so `active` is the whole story.)
+    pub fn has_active_subscription(&self, customer: &str) -> Result<bool, String> {
+        if !valid_stripe_id(customer) {
+            return Err("invalid customer id".into());
+        }
+        let (s, b) = self.transport.get(&subscriptions_active_url(customer))?;
+        let body = ok_or_err("subscriptions.list", s, &b)?;
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        Ok(v["data"].as_array().is_some_and(|d| !d.is_empty()))
     }
 
     /// Create a Checkout session for `plan` and return the hosted URL to redirect the browser to.
@@ -280,7 +305,11 @@ impl StripeBilling<'_> {
             return Err("plan has no checkout (free tier)".into());
         }
         let body = checkout_session_body(customer, tenant_hex, &items, success_url, cancel_url);
-        let (s, b) = self.transport.post_form(&checkout_sessions_url(), &body)?;
+        // No idempotency key: each checkout attempt is its own intent, and the caller has already
+        // refused a second checkout when a subscription is active (has_active_subscription).
+        let (s, b) = self
+            .transport
+            .post_form(&checkout_sessions_url(), &body, None)?;
         parse_session_url(&ok_or_err("checkout.create", s, &b)?)
     }
 
@@ -292,6 +321,7 @@ impl StripeBilling<'_> {
         let (s, b) = self.transport.post_form(
             &portal_sessions_url(),
             &portal_session_body(customer, return_url),
+            None,
         )?;
         parse_session_url(&ok_or_err("portal.create", s, &b)?)
     }
@@ -393,17 +423,24 @@ mod tests {
         assert!(parse_session_url(r#"{"url":"javascript:alert(1)"}"#).is_err());
     }
 
-    /// Records the last posted (url, body) and replays a canned response.
+    /// Records the last posted (url, body) + idempotency key, and replays a canned response.
     struct FakeTransport {
         last: RefCell<(String, String)>,
+        last_key: RefCell<Option<String>>,
         resp: (u16, String),
     }
     impl Transport for FakeTransport {
         fn get(&self, _url: &str) -> Result<(u16, String), String> {
             Ok((200, "{}".into()))
         }
-        fn post_form(&self, url: &str, body: &str) -> Result<(u16, String), String> {
+        fn post_form(
+            &self,
+            url: &str,
+            body: &str,
+            idempotency_key: Option<&str>,
+        ) -> Result<(u16, String), String> {
             *self.last.borrow_mut() = (url.to_string(), body.to_string());
+            *self.last_key.borrow_mut() = idempotency_key.map(str::to_string);
             Ok(self.resp.clone())
         }
     }
@@ -412,6 +449,7 @@ mod tests {
     fn create_flows_hit_the_right_endpoints() {
         let t = FakeTransport {
             last: RefCell::new((String::new(), String::new())),
+            last_key: RefCell::new(None),
             resp: (
                 200,
                 r#"{"id":"cus_9","url":"https://checkout.stripe.com/s"}"#.into(),
@@ -420,6 +458,8 @@ mod tests {
         let b = StripeBilling { transport: &t };
         assert_eq!(b.create_customer("a@x.co", "t1").unwrap(), "cus_9");
         assert!(t.last.borrow().0.ends_with("/v1/customers"));
+        // customer creation is idempotent per tenant, so a retry cannot mint a duplicate
+        assert_eq!(t.last_key.borrow().as_deref(), Some("hop-customer:t1"));
 
         let url = b
             .create_checkout(
@@ -448,6 +488,7 @@ mod tests {
     fn non_2xx_surfaces_a_truncated_error() {
         let t = FakeTransport {
             last: RefCell::new((String::new(), String::new())),
+            last_key: RefCell::new(None),
             resp: (400, "{\"error\":{\"message\":\"no such price\"}}".into()),
         };
         let b = StripeBilling { transport: &t };

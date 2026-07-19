@@ -81,13 +81,22 @@ mod live {
                 .map_err(|e| format!("stripe request failed: {e}"))?;
             Ok((resp.status().as_u16(), resp.text().unwrap_or_default()))
         }
-        fn post_form(&self, url: &str, body: &str) -> Result<(u16, String), String> {
-            let resp = self
+        fn post_form(
+            &self,
+            url: &str,
+            body: &str,
+            idempotency_key: Option<&str>,
+        ) -> Result<(u16, String), String> {
+            let mut req = self
                 .http
                 .post(url)
                 .bearer_auth(&self.api_key)
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .body(body.to_string())
+                .body(body.to_string());
+            if let Some(key) = idempotency_key {
+                req = req.header("Idempotency-Key", key);
+            }
+            let resp = req
                 .send()
                 .map_err(|e| format!("stripe request failed: {e}"))?;
             Ok((resp.status().as_u16(), resp.text().unwrap_or_default()))
