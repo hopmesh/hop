@@ -12,6 +12,7 @@ pub mod billing;
 pub mod billing_api;
 pub mod domain;
 pub mod email;
+pub mod keys_api;
 pub mod oauth;
 pub mod orgs;
 pub mod pg;

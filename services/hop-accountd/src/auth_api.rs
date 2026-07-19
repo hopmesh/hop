@@ -80,6 +80,47 @@ pub fn session_from_cookie_header(header: Option<&str>) -> Option<String> {
     None
 }
 
+/// The shared tenant-scoped RBAC gate for the console's authenticated JSON endpoints (billing, keys,
+/// settings). Resolves the session cookie to a user, then to their membership in `tenant_hex`, and
+/// enforces `permission`. Returns the owning `(User, Org)` on success, or the ready [`AuthResponse`]:
+///   401 no/invalid session · 400 malformed tenant · 404 no such tenant OR not a member (a tenant
+///   the caller cannot see is indistinguishable from one that does not exist) · 403 lacks permission.
+/// One audited authorization path so every console endpoint gates identically.
+pub fn authorize_tenant(
+    store: &dyn Store,
+    cookie: Option<&str>,
+    tenant_hex: &str,
+    permission: crate::domain::Permission,
+    now_ms: u64,
+) -> Result<(crate::domain::User, crate::domain::Org), AuthResponse> {
+    let raw = session_from_cookie_header(cookie)
+        .ok_or_else(|| AuthResponse::json(401, r#"{"error":"unauthenticated"}"#))?;
+    let user = session::validate_session(store, &raw, now_ms)
+        .ok()
+        .flatten()
+        .ok_or_else(|| AuthResponse::json(401, r#"{"error":"unauthenticated"}"#))?;
+    // Reject a malformed tenant AFTER the session check, so an unauthenticated caller always gets 401
+    // and learns nothing about tenant shape or existence.
+    if !crate::api::valid_tenant_hex(tenant_hex) {
+        return Err(AuthResponse::json(400, r#"{"error":"bad_request"}"#));
+    }
+    let org = store
+        .org_by_tenant(tenant_hex)
+        .ok()
+        .flatten()
+        .ok_or_else(|| AuthResponse::json(404, r#"{"error":"not_found"}"#))?;
+    let role = store
+        .membership(&user.id, &org.id)
+        .ok()
+        .flatten()
+        .map(|m| m.role)
+        .ok_or_else(|| AuthResponse::json(404, r#"{"error":"not_found"}"#))?;
+    if !role.can(permission) {
+        return Err(AuthResponse::json(403, r#"{"error":"forbidden"}"#));
+    }
+    Ok((user, org))
+}
+
 /// The client identity used for per-peer limiting. On Cloud Run (and behind the LB) the platform
 /// APPENDS the real client address as the LAST `X-Forwarded-For` entry; anything earlier is
 /// client-supplied and spoofable, so only the last entry counts. Absent the header (direct/dev),

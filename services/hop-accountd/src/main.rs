@@ -37,6 +37,7 @@ mod live {
         REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
     };
     use hop_accountd::email::ResendSender;
+    use hop_accountd::keys_api;
     use hop_accountd::oauth::{self, OauthConfig, ReqwestOauth};
     use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
@@ -354,8 +355,10 @@ mod live {
             }
         }
 
-        // The user-facing auth surface (cookie sessions, no bearer). Bodies exist only here.
-        if path.starts_with("/auth/") {
+        // The user-facing console surface (cookie sessions, no bearer). Bodies exist only here:
+        // /auth/* (login), plus the authenticated tenant endpoints /keys/* and /settings/*.
+        let is_auth = path.starts_with("/auth/");
+        if is_auth || path.starts_with("/keys/") || path.starts_with("/settings/") {
             let Some(st) = app.auth.as_ref() else {
                 return write_response(&mut stream, 404, &[], "{\"error\":\"not found\"}");
             };
@@ -388,8 +391,11 @@ mod live {
                     .map(|a| a.to_string())
                     .unwrap_or_default(),
             );
-            let (status, headers, resp_body) =
-                dispatch_auth(st, &method, &path, cookie_hdr.as_deref(), &peer, &body);
+            let (status, headers, resp_body) = if is_auth {
+                dispatch_auth(st, &method, &path, cookie_hdr.as_deref(), &peer, &body)
+            } else {
+                dispatch_console(st, &method, &path, cookie_hdr.as_deref(), &body)
+            };
             return write_response(&mut stream, status, &headers, &resp_body);
         }
 
@@ -528,6 +534,30 @@ mod live {
             }
             (r.status, headers, r.body)
         }
+    }
+
+    /// Dispatch one authenticated console request (`/keys/*`, `/settings/*`) through the pure
+    /// handlers. Cookie-session RBAC lives inside each handler; responses are `Cache-Control:
+    /// no-store` and never set a cookie.
+    fn dispatch_console(
+        st: &AuthState,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        body: &str,
+    ) -> (u16, Vec<(String, String)>, String) {
+        let headers: Vec<(String, String)> = vec![("Cache-Control".into(), "no-store".into())];
+        let now = now_ms();
+        let bare = path.split(['?', '#']).next().unwrap_or(path);
+        let is_post = method.eq_ignore_ascii_case("POST");
+        let r: AuthResponse = match bare {
+            "/keys/carriage" if is_post => {
+                keys_api::handle_set_carriage_key(&st.store, cookie, body, now)
+            }
+            "/settings/otlp" if is_post => keys_api::handle_set_otlp(&st.store, cookie, body, now),
+            _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
+        };
+        (r.status, headers, r.body)
     }
 
     fn json_err(msg: &str) -> String {
