@@ -19,3 +19,5 @@ pub mod pg;
 pub mod session;
 pub mod store;
 pub mod stripe_api;
+#[cfg(feature = "firestore")]
+pub mod sync;

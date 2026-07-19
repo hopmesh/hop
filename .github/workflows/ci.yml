@@ -214,6 +214,12 @@ jobs:
       - name: Test telemetryd (firestore feature)
         run: cargo test -p hop-telemetryd --features firestore
 
+      # hop-accountd's tenant-registry Firestore projection (the fleet-sync writer) is behind the
+      # optional `firestore` feature (which pulls hop-store-firestore + reqwest), so the default
+      # workspace run never compiles the sync module. This exercises the projection + its tests.
+      - name: Test accountd (firestore feature)
+        run: cargo test -p hop-accountd --features firestore
+
       # hop-telemetryd's OTLP-export path (translate + forward telemetry to a tenant's OTel endpoint)
       # is behind the `live` feature (reqwest). The pure builders/routing are tested in the default
       # run; this compiles the reqwest transport shim so a live-build break is caught in CI.

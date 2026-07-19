@@ -375,6 +375,9 @@ mod tests {
         fn org_by_tenant(&self, t: &str) -> StoreResult<Option<crate::domain::Org>> {
             self.inner.org_by_tenant(t)
         }
+        fn all_orgs(&self) -> StoreResult<Vec<crate::domain::Org>> {
+            self.inner.all_orgs()
+        }
         fn set_org_stripe_customer(&self, o: &str, c: &str) -> StoreResult<()> {
             self.inner.set_org_stripe_customer(o, c)
         }

@@ -209,6 +209,25 @@ mod live {
                         std::process::exit(2);
                     }
                 };
+                // Fleet sync: when built with `--features firestore` AND HOP_TENANT_SYNC_PROJECT is
+                // set, project the Postgres tenant registry into Firestore on an interval so relays +
+                // collectors read live tenant keys / OTLP endpoints instead of static operator files.
+                #[cfg(feature = "firestore")]
+                if let Ok(project) = std::env::var("HOP_TENANT_SYNC_PROJECT") {
+                    let interval = std::env::var("HOP_TENANT_SYNC_SECS")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|s| *s >= 5)
+                        .unwrap_or(60);
+                    println!(
+                        "hop-accountd: tenant registry sync ON (project {project}, every {interval}s)"
+                    );
+                    hop_accountd::sync::spawn_sync(
+                        store.clone(),
+                        hop_store_firestore::TenantRegistry::new(&project),
+                        std::time::Duration::from_secs(interval),
+                    );
+                }
                 let http = reqwest::blocking::Client::builder()
                     .timeout(std::time::Duration::from_secs(15))
                     .build()

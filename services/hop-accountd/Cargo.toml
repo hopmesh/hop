@@ -35,6 +35,12 @@ r2d2_postgres = "0.18"
 # test with no network deps (the hop-billingd discipline).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
 
+# The tenant-registry Firestore projection (fleet sync) reuses the shared TenantRegistry type. Behind
+# `firestore` so a default/live build has no Firestore dependency; the projection LOGIC is pure and
+# tested under the feature, the periodic writer is live network glue.
+hop-store-firestore = { workspace = true, optional = true }
+
 [features]
 default = []
 live = ["dep:reqwest"]
+firestore = ["live", "dep:hop-store-firestore"]

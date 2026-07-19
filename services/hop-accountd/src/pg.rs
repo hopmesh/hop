@@ -23,6 +23,7 @@ fn be<E: std::fmt::Display>(e: E) -> StoreError {
 }
 
 /// A pooled Postgres-backed [`Store`].
+#[derive(Clone)]
 pub struct PgStore {
     pool: r2d2::Pool<Mgr>,
 }
@@ -174,6 +175,13 @@ impl Store for PgStore {
             )
             .map_err(be)?;
         Ok(row.as_ref().map(row_org))
+    }
+    fn all_orgs(&self) -> StoreResult<Vec<Org>> {
+        let rows = self
+            .conn()?
+            .query(&format!("SELECT {ORG_COLS} FROM orgs"), &[])
+            .map_err(be)?;
+        Ok(rows.iter().map(row_org).collect())
     }
     fn set_org_stripe_customer(&self, org_id: &str, customer: &str) -> StoreResult<()> {
         let n = self

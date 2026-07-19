@@ -41,6 +41,9 @@ pub trait Store: Send + Sync {
     fn create_org(&self, o: &Org) -> StoreResult<()>;
     fn org_by_id(&self, id: &str) -> StoreResult<Option<Org>>;
     fn org_by_tenant(&self, tenant_hex: &str) -> StoreResult<Option<Org>>;
+    /// Every org (tenant registry row). The fleet-sync projection reads this to push the registry to
+    /// Firestore. Ordering is unspecified.
+    fn all_orgs(&self) -> StoreResult<Vec<Org>>;
     fn set_org_stripe_customer(&self, org_id: &str, customer: &str) -> StoreResult<()>;
     /// Bind a Stripe customer to the org ONLY if it has none yet, returning the customer id now
     /// persisted (the one already stored if a concurrent caller won the race). This is what billing
@@ -166,6 +169,9 @@ impl Store for MemStore {
             .get(tenant_hex)
             .and_then(|id| g.orgs.get(id))
             .cloned())
+    }
+    fn all_orgs(&self) -> StoreResult<Vec<Org>> {
+        Ok(self.inner.lock().unwrap().orgs.values().cloned().collect())
     }
     fn set_org_stripe_customer(&self, org_id: &str, customer: &str) -> StoreResult<()> {
         let mut g = self.inner.lock().unwrap();
