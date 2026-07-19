@@ -42,7 +42,7 @@ mod live {
     use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
     use hop_accountd::{auth, session};
-    use hop_accountd::{billing_api, console_api, keys_api};
+    use hop_accountd::{billing_api, console_api, keys_api, team_api};
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -658,6 +658,16 @@ mod live {
             }
             "/console/card" if is_get => {
                 console_api::handle_card(&st.store, &st.stripe, cookie, &tenant, now)
+            }
+            "/console/team" if is_get => team_api::handle_list(&st.store, cookie, &tenant, now),
+            "/console/team/role" if is_post => {
+                team_api::handle_set_role(&st.store, cookie, body, now)
+            }
+            "/console/team/remove" if is_post => {
+                team_api::handle_remove(&st.store, cookie, body, now)
+            }
+            "/console/team/transfer" if is_post => {
+                team_api::handle_transfer(&st.store, cookie, body, now)
             }
             _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
         };

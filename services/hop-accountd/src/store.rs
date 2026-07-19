@@ -74,6 +74,17 @@ pub trait Store: Send + Sync {
     fn memberships_for_user(&self, user_id: &str) -> StoreResult<Vec<Membership>>;
     fn set_role(&self, user_id: &str, org_id: &str, role: Role) -> StoreResult<()>;
     fn remove_membership(&self, user_id: &str, org_id: &str) -> StoreResult<()>;
+    /// Set a member's role ATOMICALLY with the last-Owner floor: if this would demote the org's sole
+    /// Owner (target is Owner, new role is not, and no other Owner exists) it makes NO change and
+    /// returns `Ok(false)`; otherwise it sets the role and returns `Ok(true)`. The check + write are
+    /// one indivisible operation (a mutex span for the in-memory store, a single conditional statement
+    /// for Postgres), so two concurrent demotions can never both pass the floor and strand the org
+    /// ownerless. This is the ONLY role-change path team management should use. `NotFound` if the
+    /// target is not a member.
+    fn try_set_role(&self, user_id: &str, org_id: &str, role: Role) -> StoreResult<bool>;
+    /// Remove a member ATOMICALLY with the same last-Owner floor: `Ok(false)` (no change) if it would
+    /// remove the sole Owner, else remove and `Ok(true)`. `NotFound` if the target is not a member.
+    fn try_remove_member(&self, user_id: &str, org_id: &str) -> StoreResult<bool>;
 
     // ---- invites ----
     fn create_invite(&self, i: &Invite) -> StoreResult<()>;
@@ -239,6 +250,41 @@ impl Store for MemStore {
             .members
             .remove(&(user_id.to_string(), org_id.to_string()));
         Ok(())
+    }
+    fn try_set_role(&self, user_id: &str, org_id: &str, role: Role) -> StoreResult<bool> {
+        // One lock span covers the count + the write, so it is atomic against concurrent demotions.
+        let mut g = self.inner.lock().unwrap();
+        let key = (user_id.to_string(), org_id.to_string());
+        let cur = g.members.get(&key).ok_or(StoreError::NotFound)?.role;
+        if cur == Role::Owner && role != Role::Owner {
+            let owners = g
+                .members
+                .values()
+                .filter(|m| m.org_id == org_id && m.role == Role::Owner)
+                .count();
+            if owners <= 1 {
+                return Ok(false);
+            }
+        }
+        g.members.get_mut(&key).expect("checked above").role = role;
+        Ok(true)
+    }
+    fn try_remove_member(&self, user_id: &str, org_id: &str) -> StoreResult<bool> {
+        let mut g = self.inner.lock().unwrap();
+        let key = (user_id.to_string(), org_id.to_string());
+        let cur = g.members.get(&key).ok_or(StoreError::NotFound)?.role;
+        if cur == Role::Owner {
+            let owners = g
+                .members
+                .values()
+                .filter(|m| m.org_id == org_id && m.role == Role::Owner)
+                .count();
+            if owners <= 1 {
+                return Ok(false);
+            }
+        }
+        g.members.remove(&key);
+        Ok(true)
     }
 
     fn create_invite(&self, i: &Invite) -> StoreResult<()> {

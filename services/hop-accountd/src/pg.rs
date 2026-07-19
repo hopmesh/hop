@@ -309,6 +309,33 @@ impl Store for PgStore {
             .map_err(be)?;
         Ok(())
     }
+    fn try_set_role(&self, user_id: &str, org_id: &str, role: Role) -> StoreResult<bool> {
+        // One conditional statement: the WHERE refuses to demote the sole Owner (the count subquery
+        // sees the pre-update state), so the check + write are atomic. n=0 => the floor blocked it OR
+        // the target vanished (the caller pre-checked membership); either way it is "not applied".
+        let n = self
+            .conn()?
+            .execute(
+                "UPDATE memberships SET role=$3 WHERE user_id=$1 AND org_id=$2 \
+                 AND NOT (role='owner' AND $3 <> 'owner' \
+                 AND (SELECT count(*) FROM memberships WHERE org_id=$2 AND role='owner') <= 1)",
+                &[&user_id, &org_id, &role.as_str()],
+            )
+            .map_err(be)?;
+        Ok(n == 1)
+    }
+    fn try_remove_member(&self, user_id: &str, org_id: &str) -> StoreResult<bool> {
+        let n = self
+            .conn()?
+            .execute(
+                "DELETE FROM memberships WHERE user_id=$1 AND org_id=$2 \
+                 AND NOT (role='owner' \
+                 AND (SELECT count(*) FROM memberships WHERE org_id=$2 AND role='owner') <= 1)",
+                &[&user_id, &org_id],
+            )
+            .map_err(be)?;
+        Ok(n == 1)
+    }
 
     fn create_invite(&self, i: &Invite) -> StoreResult<()> {
         let expires = i.expires_ms as i64;

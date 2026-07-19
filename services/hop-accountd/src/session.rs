@@ -405,6 +405,12 @@ mod tests {
         fn remove_membership(&self, u: &str, o: &str) -> StoreResult<()> {
             self.inner.remove_membership(u, o)
         }
+        fn try_set_role(&self, u: &str, o: &str, r: crate::domain::Role) -> StoreResult<bool> {
+            self.inner.try_set_role(u, o, r)
+        }
+        fn try_remove_member(&self, u: &str, o: &str) -> StoreResult<bool> {
+            self.inner.try_remove_member(u, o)
+        }
         fn create_invite(&self, i: &crate::domain::Invite) -> StoreResult<()> {
             self.inner.create_invite(i)
         }
