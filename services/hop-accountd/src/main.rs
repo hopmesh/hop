@@ -42,7 +42,7 @@ mod live {
     use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
     use hop_accountd::{auth, session};
-    use hop_accountd::{billing_api, keys_api};
+    use hop_accountd::{billing_api, console_api, keys_api};
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -122,15 +122,12 @@ mod live {
         oauth_http: ReqwestOauth,
         console_base: String,
         github: Option<OauthConfig>,
-        /// Self-serve billing (Checkout + Portal). Present only when the Stripe price catalog is
-        /// configured; absent, `/billing/*` reports 503 while auth + key/settings endpoints still run.
-        billing: Option<BillingState>,
-    }
-
-    /// The Stripe write transport + resolved price catalog behind `/billing/*`.
-    struct BillingState {
+        /// The Stripe transport (restricted account key), always present — it powers the console's
+        /// invoice/card READS as well as the billing writes.
         stripe: ReqwestStripe,
-        catalog: PlanCatalog,
+        /// The resolved price catalog for self-serve Checkout. Present only when HOP_STRIPE_*_PRICES is
+        /// configured; absent, `/billing/*` reports 503 while reads + auth + keys still run.
+        catalog: Option<PlanCatalog>,
     }
 
     fn now_ms() -> u64 {
@@ -235,16 +232,27 @@ mod live {
                 // Self-serve billing activates only when the Stripe price catalog is fully set. A
                 // PARTIAL catalog is a hard startup error (a broken Checkout must never be offered);
                 // a fully-absent catalog just leaves /billing/* disabled (503) while the rest runs.
+                // The Stripe transport is always built (STRIPE_ACCOUNT_KEY is required at startup); it
+                // serves the console's invoice/card reads AND billing writes.
+                let stripe = ReqwestStripe {
+                    http: reqwest::blocking::Client::builder()
+                        .timeout(std::time::Duration::from_secs(30))
+                        .build()
+                        .expect("http client"),
+                    api_key: api_key.clone(),
+                };
+                // Self-serve Checkout activates only when the price catalog is fully set. A PARTIAL
+                // catalog is a hard startup error (a broken Checkout must never be offered); a
+                // fully-absent catalog just leaves /billing/* disabled (503) while the rest runs.
                 let usage_prices = std::env::var("HOP_STRIPE_USAGE_PRICES").unwrap_or_default();
                 let scale_metered =
                     std::env::var("HOP_STRIPE_SCALE_METERED_PRICES").unwrap_or_default();
                 let scale_base = std::env::var("HOP_STRIPE_SCALE_BASE_PRICE").unwrap_or_default();
-                let billing = if usage_prices.is_empty() && scale_metered.is_empty() {
+                let catalog = if usage_prices.is_empty() && scale_metered.is_empty() {
                     eprintln!("hop-accountd: HOP_STRIPE_*_PRICES unset; /billing/* disabled");
                     None
                 } else {
-                    let Some(catalog) =
-                        PlanCatalog::parse(&usage_prices, &scale_metered, &scale_base)
+                    let Some(c) = PlanCatalog::parse(&usage_prices, &scale_metered, &scale_base)
                     else {
                         eprintln!(
                             "hop-accountd: HOP_STRIPE_*_PRICES is set but malformed; refusing a \
@@ -252,21 +260,12 @@ mod live {
                         );
                         std::process::exit(2);
                     };
-                    Some(BillingState {
-                        stripe: ReqwestStripe {
-                            http: reqwest::blocking::Client::builder()
-                                .timeout(std::time::Duration::from_secs(30))
-                                .build()
-                                .expect("http client"),
-                            api_key: api_key.clone(),
-                        },
-                        catalog,
-                    })
+                    Some(c)
                 };
                 println!(
                     "hop-accountd: /auth/* enabled (github oauth: {}, billing: {})",
                     if github.is_some() { "on" } else { "off" },
-                    if billing.is_some() { "on" } else { "off" }
+                    if catalog.is_some() { "on" } else { "off" }
                 );
                 Some(AuthState {
                     store,
@@ -286,7 +285,8 @@ mod live {
                     oauth_http: ReqwestOauth { http },
                     console_base,
                     github,
-                    billing,
+                    stripe,
+                    catalog,
                 })
             }
         };
@@ -424,6 +424,7 @@ mod live {
             || path.starts_with("/keys/")
             || path.starts_with("/settings/")
             || path.starts_with("/billing/")
+            || path.starts_with("/console/")
         {
             let Some(st) = app.auth.as_ref() else {
                 return write_response(&mut stream, 404, &[], "{\"error\":\"not found\"}");
@@ -616,18 +617,22 @@ mod live {
         let now = now_ms();
         let bare = path.split(['?', '#']).next().unwrap_or(path);
         let is_post = method.eq_ignore_ascii_case("POST");
-        // Billing needs the Stripe write transport + price catalog; 503 when unconfigured.
+        let is_get = method.eq_ignore_ascii_case("GET");
+        // Checkout/portal need the price catalog too (503 when unconfigured); the Stripe transport
+        // itself is always present.
         let billing_call = |run: &dyn Fn(&StripeBilling, &PlanCatalog) -> AuthResponse| {
-            let Some(b) = st.billing.as_ref() else {
+            let Some(cat) = st.catalog.as_ref() else {
                 return AuthResponse::json(503, "{\"error\":\"billing_unavailable\"}");
             };
             run(
                 &StripeBilling {
-                    transport: &b.stripe,
+                    transport: &st.stripe,
                 },
-                &b.catalog,
+                cat,
             )
         };
+        // The tenant for a read is a query param (?tenant=..); validated downstream by authorize_tenant.
+        let tenant = auth_api::query_param(path, "tenant").unwrap_or_default();
         let r: AuthResponse = match bare {
             "/keys/carriage" if is_post => {
                 keys_api::handle_set_carriage_key(&st.store, cookie, body, now)
@@ -647,6 +652,13 @@ mod live {
             "/billing/portal" if is_post => billing_call(&|bill, _cat| {
                 billing_api::handle_portal(&st.store, bill, &st.console_base, cookie, body, now)
             }),
+            "/console/overview" if is_get => console_api::handle_overview(&st.store, cookie, now),
+            "/console/invoices" if is_get => {
+                console_api::handle_invoices(&st.store, &st.stripe, cookie, &tenant, now)
+            }
+            "/console/card" if is_get => {
+                console_api::handle_card(&st.store, &st.stripe, cookie, &tenant, now)
+            }
             _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
         };
         (r.status, headers, r.body)

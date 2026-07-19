@@ -147,6 +147,22 @@ pub fn json_field(body: &str, field: &str) -> Option<String> {
     v.as_object()?.get(field)?.as_str().map(str::to_string)
 }
 
+/// The raw value of a query-string parameter (`/console/invoices?tenant=ab..`). No percent-decoding:
+/// callers pass these straight to strict validators (e.g. `valid_tenant_hex`), which reject anything
+/// that would have needed decoding, so an encoded payload can never smuggle past the validator.
+pub fn query_param(path: &str, key: &str) -> Option<String> {
+    let query = path.split_once('?').map(|(_, q)| q)?;
+    let query = query.split('#').next().unwrap_or(query);
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// A fixed-window rate limiter, pure against an injected clock. One instance per (route, key kind);
 /// keys are normalized emails or peer addresses. HARD-bounded at `MAX_KEYS`: when the map is full,
 /// expired windows are pruned, and if the map is STILL full a brand-new key is denied outright
