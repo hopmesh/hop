@@ -7,7 +7,7 @@ import org.gradle.plugins.signing.Sign
 // Hop Kotlin SDK. JVM tests exercise the JNA wrapper against a host libhop. The publication is an
 // Android AAR with classes.jar, one libhop.so per supported ABI, and Prefab metadata/header content.
 plugins {
-    kotlin("jvm") version "2.4.0"
+    kotlin("jvm") version "2.4.10"
     application
     jacoco
     `maven-publish`
