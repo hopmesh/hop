@@ -15,7 +15,9 @@ COPY services ./services
 COPY examples ./examples
 # `live` pulls in reqwest (the Stripe transport). A default build has no network surface; the image
 # is the live path by definition.
-RUN cargo build --release -p hop-accountd --features live
+# live = the reqwest Stripe/Resend/OAuth transports; firestore = the tenant-registry projection
+# (HOP_TENANT_SYNC_PROJECT) + the near-realtime usage read off the fleet Firestore ledgers.
+RUN cargo build --release -p hop-accountd --features live,firestore
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 # ca-certificates: the service makes TLS calls to the Stripe API.
