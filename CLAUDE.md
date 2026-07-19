@@ -56,3 +56,5 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 ## Working with agents
 
 File-mutating work in parallel needs `isolation: "worktree"` on each agent, or they corrupt each other's HEAD in the shared checkout. Read-only fan-out is fine shared.
+
+Never enumerate environment values. For diagnostics, check fixed variable names and emit only `NAME=set` or `NAME=unset`; never print the value. The checked-in OpenCode policy blocks known environment dumps and clears recognized sensitive values before agent shell processes start.

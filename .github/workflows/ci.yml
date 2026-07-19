@@ -799,6 +799,10 @@ jobs:
         run: |
           npm ci --ignore-scripts --omit=dev --prefix tools/native-attestation
           npm test --prefix tools/native-attestation
+      - name: Self-test sensitive agent output policy
+        run: node --test tools/agent-output-guard.test.mjs
+      - name: Enforce sensitive agent output policy
+        run: node tools/agent-output-guard.mjs
       - name: Self-test executable-reference policy
         run: bash tools/executable-reference-guard.test.sh
       - name: Enforce immutable executable and publication references

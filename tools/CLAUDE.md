@@ -22,6 +22,7 @@ require-ci-verdict.py       exact GitHub Actions workflow, App, repository, atte
 deploy-provenance.py        signed build manifest, immutable archive/image verification, and global lease.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
 infra-authority-guard.py    forbids bootstrap authority in the runtime root and broad build/deploy grants.
+agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.
 check-web-links.mjs         internal-link checker for apps/web/site/dist.
