@@ -7,7 +7,9 @@
 
 pub mod api;
 pub mod auth;
+pub mod auth_api;
 pub mod domain;
+pub mod email;
 pub mod pg;
 pub mod session;
 pub mod store;
