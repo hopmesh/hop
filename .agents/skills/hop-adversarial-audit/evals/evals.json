@@ -1,0 +1,48 @@
+{
+  "skill_name": "hop-adversarial-audit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Re-initiate the full adversarial audit of HOP at the current main SHA. Cover every technical component plus product, pricing, sales, legal, finance, support, and internal operations. Produce the graded report and then immediately fix every Critical and High issue you find. For this evaluation, return the exact execution approach and user-facing handoff you would use, but do not run commands or edit files.",
+      "expected_output": "Freezes the evidence basis, builds a live inventory, uses independent finders and refuters, keeps independent grades, generates a validated internal ledger and HTML report, refuses to mix remediation into discovery, and stops at an explicit finding approval gate.",
+      "files": [],
+      "assertions": [
+        "The evidence freeze records the exact full SHA, branch, remote, dirty state, contract versions, authorized sources, and publication boundary before review.",
+        "Audit discovery produces an immutable baseline and stops at explicit finding approval before any source, business, infrastructure, or live-system remediation.",
+        "Inventory reconciliation derives stable rows from current manifests, workflows, deploy roots, release producers, and public surfaces, leaving no unexplained component.",
+        "First-pass-isolated component and vector finders feed different refuters, separate evidence, severity, and actionability judges, and a final completeness critic.",
+        "The canonical ledger tags claim provenance, generates report counts and HTML, and uses a verified private boundary excluded from public publication paths.",
+        "The stage-appropriate handoff includes independent grades, evidence limits, dependency-ordered priorities, and exact approval choices without claiming shipment."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Use .agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json as the exact HOP audit baseline. I approve CORE-001 only. Remediate that finding, but leave BIZ-001 and every other finding untouched. For this evaluation, read the baseline and describe the exact campaign and closure evidence without running commands or editing files.",
+      "expected_output": "Names and validates the supplied baseline, binds approval to CORE-001 and its recorded invariant and closure contract, isolates mutating work, adds hostile regressions, independently attacks closure, proves unapproved records are unchanged, runs focused and full exact-SHA verification, and does not claim live closure without direct evidence.",
+      "files": [
+        ".agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json"
+      ],
+      "assertions": [
+        "The response identifies the supplied audit ID and 40-character SHA, quotes CORE-001's invariant and closure contract, and refuses to infer missing baseline facts.",
+        "Only CORE-001 receives a UTC approval record; a constrained ledger diff must prove BIZ-001 and every other finding record stayed unchanged.",
+        "The mutator packet contains the pinned base SHA, dedicated branch and worktree, explicit path allowlist, recorded invariant, and full closure contract.",
+        "Hostile fault and restart regressions are followed by an independent closure auditor checking adjacent layers and every applicable backend.",
+        "Focused checks, the full repository suite, and protected CI are bound to the exact final SHA and invalidated by later branch changes.",
+        "A closure-state matrix keeps source, deploy, live, registry, hardware, operational, and business validation independent."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Audit HOP's business and sales readiness only. I need a private report on ICP, pricing, unit economics, design partners, enterprise sales, legal readiness, support, and founder operating risk. Do not inspect or modify product source. For this evaluation, return the review design and report handoff without running commands or editing files.",
+      "expected_output": "Runs a business-focused evidence review, marks technical domains scoped out with rationale, keeps confidential evidence private, distinguishes repository facts from assumptions and counsel-required conclusions, and stops at the approval gate without source mutation.",
+      "files": [],
+      "assertions": [
+        "Technical domains are explicitly scoped out with rationale rather than silently omitted.",
+        "Each business domain includes concrete evidence inputs, an adversarial falsification criterion, and a closure condition rather than a topic list.",
+        "The ledger explicitly tags repository evidence, external facts with retrieval dates, owner claims, assumptions, direct observations, and counsel-required conclusions.",
+        "The internal ledger and report use a verified private repository boundary excluded from public builds, or an authorized private external store if that cannot be proven.",
+        "Unsupported customer, legal, market, and financial assertions remain unverified, and business remediation waits for explicit approved finding IDs."
+      ]
+    }
+  ]
+}
