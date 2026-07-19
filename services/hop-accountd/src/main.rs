@@ -36,12 +36,13 @@ mod live {
         self, AuthResponse, AuthRoute, RateLimiter, REQUEST_LINK_MAX_PER_EMAIL,
         REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
     };
+    use hop_accountd::billing::{PlanCatalog, StripeBilling};
     use hop_accountd::email::ResendSender;
-    use hop_accountd::keys_api;
     use hop_accountd::oauth::{self, OauthConfig, ReqwestOauth};
     use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
     use hop_accountd::{auth, session};
+    use hop_accountd::{billing_api, keys_api};
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -121,6 +122,15 @@ mod live {
         oauth_http: ReqwestOauth,
         console_base: String,
         github: Option<OauthConfig>,
+        /// Self-serve billing (Checkout + Portal). Present only when the Stripe price catalog is
+        /// configured; absent, `/billing/*` reports 503 while auth + key/settings endpoints still run.
+        billing: Option<BillingState>,
+    }
+
+    /// The Stripe write transport + resolved price catalog behind `/billing/*`.
+    struct BillingState {
+        stripe: ReqwestStripe,
+        catalog: PlanCatalog,
     }
 
     fn now_ms() -> u64 {
@@ -203,9 +213,41 @@ mod live {
                     .timeout(std::time::Duration::from_secs(15))
                     .build()
                     .expect("http client");
+                // Self-serve billing activates only when the Stripe price catalog is fully set. A
+                // PARTIAL catalog is a hard startup error (a broken Checkout must never be offered);
+                // a fully-absent catalog just leaves /billing/* disabled (503) while the rest runs.
+                let usage_prices = std::env::var("HOP_STRIPE_USAGE_PRICES").unwrap_or_default();
+                let scale_metered =
+                    std::env::var("HOP_STRIPE_SCALE_METERED_PRICES").unwrap_or_default();
+                let scale_base = std::env::var("HOP_STRIPE_SCALE_BASE_PRICE").unwrap_or_default();
+                let billing = if usage_prices.is_empty() && scale_metered.is_empty() {
+                    eprintln!("hop-accountd: HOP_STRIPE_*_PRICES unset; /billing/* disabled");
+                    None
+                } else {
+                    let Some(catalog) =
+                        PlanCatalog::parse(&usage_prices, &scale_metered, &scale_base)
+                    else {
+                        eprintln!(
+                            "hop-accountd: HOP_STRIPE_*_PRICES is set but malformed; refusing a \
+                             half-configured billing surface"
+                        );
+                        std::process::exit(2);
+                    };
+                    Some(BillingState {
+                        stripe: ReqwestStripe {
+                            http: reqwest::blocking::Client::builder()
+                                .timeout(std::time::Duration::from_secs(30))
+                                .build()
+                                .expect("http client"),
+                            api_key: api_key.clone(),
+                        },
+                        catalog,
+                    })
+                };
                 println!(
-                    "hop-accountd: /auth/* enabled (github oauth: {})",
-                    if github.is_some() { "on" } else { "off" }
+                    "hop-accountd: /auth/* enabled (github oauth: {}, billing: {})",
+                    if github.is_some() { "on" } else { "off" },
+                    if billing.is_some() { "on" } else { "off" }
                 );
                 Some(AuthState {
                     store,
@@ -225,6 +267,7 @@ mod live {
                     oauth_http: ReqwestOauth { http },
                     console_base,
                     github,
+                    billing,
                 })
             }
         };
@@ -358,7 +401,11 @@ mod live {
         // The user-facing console surface (cookie sessions, no bearer). Bodies exist only here:
         // /auth/* (login), plus the authenticated tenant endpoints /keys/* and /settings/*.
         let is_auth = path.starts_with("/auth/");
-        if is_auth || path.starts_with("/keys/") || path.starts_with("/settings/") {
+        if is_auth
+            || path.starts_with("/keys/")
+            || path.starts_with("/settings/")
+            || path.starts_with("/billing/")
+        {
             let Some(st) = app.auth.as_ref() else {
                 return write_response(&mut stream, 404, &[], "{\"error\":\"not found\"}");
             };
@@ -550,11 +597,37 @@ mod live {
         let now = now_ms();
         let bare = path.split(['?', '#']).next().unwrap_or(path);
         let is_post = method.eq_ignore_ascii_case("POST");
+        // Billing needs the Stripe write transport + price catalog; 503 when unconfigured.
+        let billing_call = |run: &dyn Fn(&StripeBilling, &PlanCatalog) -> AuthResponse| {
+            let Some(b) = st.billing.as_ref() else {
+                return AuthResponse::json(503, "{\"error\":\"billing_unavailable\"}");
+            };
+            run(
+                &StripeBilling {
+                    transport: &b.stripe,
+                },
+                &b.catalog,
+            )
+        };
         let r: AuthResponse = match bare {
             "/keys/carriage" if is_post => {
                 keys_api::handle_set_carriage_key(&st.store, cookie, body, now)
             }
             "/settings/otlp" if is_post => keys_api::handle_set_otlp(&st.store, cookie, body, now),
+            "/billing/checkout" if is_post => billing_call(&|bill, cat| {
+                billing_api::handle_checkout(
+                    &st.store,
+                    bill,
+                    cat,
+                    &st.console_base,
+                    cookie,
+                    body,
+                    now,
+                )
+            }),
+            "/billing/portal" if is_post => billing_call(&|bill, _cat| {
+                billing_api::handle_portal(&st.store, bill, &st.console_base, cookie, body, now)
+            }),
             _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
         };
         (r.status, headers, r.body)
