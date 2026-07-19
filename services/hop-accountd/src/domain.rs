@@ -127,7 +127,13 @@ pub struct Org {
     pub name: String,
     /// 32-char lowercase-hex TenantId, this org's billing/attribution identity fleet-wide.
     pub tenant_hex: String,
+    /// The Stripe customer, set once signup provisions billing. `None` = free/unbilled.
     pub stripe_customer: Option<String>,
+    /// The tenant's carriage-stamp signing pubkey (hex), set when the first key is issued. The fleet's
+    /// KeyServer reads this to admit the tenant's paid-backbone traffic. `None` = no key yet.
+    pub carriage_pubkey: Option<String>,
+    /// The tenant's managed-OTLP forwarding endpoint, set when configured. `None` = no export.
+    pub otlp_endpoint: Option<String>,
     pub created_ms: u64,
 }
 

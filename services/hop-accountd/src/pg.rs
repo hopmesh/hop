@@ -62,14 +62,17 @@ fn row_user(r: &Row) -> User {
     }
 }
 
-const ORG_COLS: &str = "id, name, tenant_hex, stripe_customer, created_ms";
+const ORG_COLS: &str =
+    "id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, created_ms";
 fn row_org(r: &Row) -> Org {
     Org {
         id: r.get(0),
         name: r.get(1),
         tenant_hex: r.get(2),
         stripe_customer: r.get(3),
-        created_ms: r.get::<_, i64>(4) as u64,
+        carriage_pubkey: r.get(4),
+        otlp_endpoint: r.get(5),
+        created_ms: r.get::<_, i64>(6) as u64,
     }
 }
 
@@ -142,9 +145,9 @@ impl Store for PgStore {
         let n = self
             .conn()?
             .execute(
-                "INSERT INTO orgs (id, name, tenant_hex, stripe_customer, created_ms) \
-                 VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tenant_hex) DO NOTHING",
-                &[&o.id, &o.name, &o.tenant_hex, &o.stripe_customer, &created],
+                "INSERT INTO orgs (id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, created_ms) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_hex) DO NOTHING",
+                &[&o.id, &o.name, &o.tenant_hex, &o.stripe_customer, &o.carriage_pubkey, &o.otlp_endpoint, &created],
             )
             .map_err(be)?;
         if n == 0 {
@@ -185,6 +188,32 @@ impl Store for PgStore {
         }
         Ok(())
     }
+    fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()> {
+        let n = self
+            .conn()?
+            .execute(
+                "UPDATE orgs SET carriage_pubkey=$2 WHERE id=$1",
+                &[&org_id, &pubkey_hex],
+            )
+            .map_err(be)?;
+        if n == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+    fn set_org_otlp_endpoint(&self, org_id: &str, endpoint: &str) -> StoreResult<()> {
+        let n = self
+            .conn()?
+            .execute(
+                "UPDATE orgs SET otlp_endpoint=$2 WHERE id=$1",
+                &[&org_id, &endpoint],
+            )
+            .map_err(be)?;
+        if n == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
 
     fn add_membership(&self, m: &Membership) -> StoreResult<()> {
         let n = self
@@ -216,6 +245,16 @@ impl Store for PgStore {
             .query(
                 "SELECT user_id, org_id, role FROM memberships WHERE org_id=$1",
                 &[&org_id],
+            )
+            .map_err(be)?;
+        Ok(rows.iter().map(row_membership).collect())
+    }
+    fn memberships_for_user(&self, user_id: &str) -> StoreResult<Vec<Membership>> {
+        let rows = self
+            .conn()?
+            .query(
+                "SELECT user_id, org_id, role FROM memberships WHERE user_id=$1",
+                &[&user_id],
             )
             .map_err(be)?;
         Ok(rows.iter().map(row_membership).collect())

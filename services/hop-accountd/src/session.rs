@@ -158,6 +158,9 @@ pub fn login_or_create(store: &dyn Store, email: &str, now_ms: u64) -> StoreResu
         store.mark_email_verified(&user.id)?;
         user.email_verified = true;
     }
+    // Every signed-in user lands in a workspace they own (created on first login, no-op thereafter),
+    // so there is no empty-account state and no org setup step (the approachable flow).
+    crate::orgs::ensure_personal_workspace(store, &user.id, &user.email, now_ms)?;
     let session_raw = auth::generate_token();
     let sess = Session {
         id_hash: hash_token(&session_raw),
@@ -375,6 +378,12 @@ mod tests {
         fn set_org_stripe_customer(&self, o: &str, c: &str) -> StoreResult<()> {
             self.inner.set_org_stripe_customer(o, c)
         }
+        fn set_org_carriage_pubkey(&self, o: &str, k: &str) -> StoreResult<()> {
+            self.inner.set_org_carriage_pubkey(o, k)
+        }
+        fn set_org_otlp_endpoint(&self, o: &str, e: &str) -> StoreResult<()> {
+            self.inner.set_org_otlp_endpoint(o, e)
+        }
         fn add_membership(&self, m: &crate::domain::Membership) -> StoreResult<()> {
             self.inner.add_membership(m)
         }
@@ -383,6 +392,9 @@ mod tests {
         }
         fn members_of_org(&self, o: &str) -> StoreResult<Vec<crate::domain::Membership>> {
             self.inner.members_of_org(o)
+        }
+        fn memberships_for_user(&self, u: &str) -> StoreResult<Vec<crate::domain::Membership>> {
+            self.inner.memberships_for_user(u)
         }
         fn set_role(&self, u: &str, o: &str, r: crate::domain::Role) -> StoreResult<()> {
             self.inner.set_role(u, o, r)

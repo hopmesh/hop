@@ -42,11 +42,17 @@ pub trait Store: Send + Sync {
     fn org_by_id(&self, id: &str) -> StoreResult<Option<Org>>;
     fn org_by_tenant(&self, tenant_hex: &str) -> StoreResult<Option<Org>>;
     fn set_org_stripe_customer(&self, org_id: &str, customer: &str) -> StoreResult<()>;
+    /// Set the tenant's carriage-stamp signing pubkey (hex) once the first key is issued.
+    fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()>;
+    /// Set the tenant's managed-OTLP forwarding endpoint.
+    fn set_org_otlp_endpoint(&self, org_id: &str, endpoint: &str) -> StoreResult<()>;
 
     // ---- memberships ----
     fn add_membership(&self, m: &Membership) -> StoreResult<()>;
     fn membership(&self, user_id: &str, org_id: &str) -> StoreResult<Option<Membership>>;
     fn members_of_org(&self, org_id: &str) -> StoreResult<Vec<Membership>>;
+    /// Every org this user belongs to (with their role in each). Powers the org switcher.
+    fn memberships_for_user(&self, user_id: &str) -> StoreResult<Vec<Membership>>;
     fn set_role(&self, user_id: &str, org_id: &str, role: Role) -> StoreResult<()>;
     fn remove_membership(&self, user_id: &str, org_id: &str) -> StoreResult<()>;
 
@@ -151,6 +157,18 @@ impl Store for MemStore {
         o.stripe_customer = Some(customer.to_string());
         Ok(())
     }
+    fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()> {
+        let mut g = self.inner.lock().unwrap();
+        let o = g.orgs.get_mut(org_id).ok_or(StoreError::NotFound)?;
+        o.carriage_pubkey = Some(pubkey_hex.to_string());
+        Ok(())
+    }
+    fn set_org_otlp_endpoint(&self, org_id: &str, endpoint: &str) -> StoreResult<()> {
+        let mut g = self.inner.lock().unwrap();
+        let o = g.orgs.get_mut(org_id).ok_or(StoreError::NotFound)?;
+        o.otlp_endpoint = Some(endpoint.to_string());
+        Ok(())
+    }
 
     fn add_membership(&self, m: &Membership) -> StoreResult<()> {
         let mut g = self.inner.lock().unwrap();
@@ -172,6 +190,14 @@ impl Store for MemStore {
         Ok(g.members
             .values()
             .filter(|m| m.org_id == org_id)
+            .cloned()
+            .collect())
+    }
+    fn memberships_for_user(&self, user_id: &str) -> StoreResult<Vec<Membership>> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.members
+            .values()
+            .filter(|m| m.user_id == user_id)
             .cloned()
             .collect())
     }

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS orgs (
   name            TEXT NOT NULL,
   tenant_hex      TEXT NOT NULL UNIQUE,
   stripe_customer TEXT,                      -- set once signup creates the Stripe customer
+  carriage_pubkey TEXT,                      -- the tenant's carriage-stamp signing pubkey (hex), set on first key issue
+  otlp_endpoint   TEXT,                      -- the tenant's managed-OTLP forwarding endpoint, set when configured
   created_ms      BIGINT NOT NULL
 );
 
