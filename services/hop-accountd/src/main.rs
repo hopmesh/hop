@@ -41,6 +41,8 @@ mod live {
     use hop_accountd::oauth::{self, OauthConfig, ReqwestOauth};
     use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
+    #[cfg(feature = "firestore")]
+    use hop_accountd::usage;
     use hop_accountd::{auth, session};
     use hop_accountd::{billing_api, console_api, keys_api, team_api};
     use std::io::{ErrorKind, Read, Write};
@@ -669,6 +671,13 @@ mod live {
             "/console/team/transfer" if is_post => {
                 team_api::handle_transfer(&st.store, cookie, body, now)
             }
+            // Near-realtime usage off the fleet Firestore ledgers. Only built + routed with the
+            // firestore feature; the project is the fleet's (HOP_FIRESTORE_PROJECT).
+            #[cfg(feature = "firestore")]
+            "/console/usage" if is_get => match std::env::var("HOP_FIRESTORE_PROJECT") {
+                Ok(project) => usage::handle_usage(&st.store, &project, cookie, &tenant, now),
+                Err(_) => AuthResponse::json(503, "{\"error\":\"usage_unavailable\"}"),
+            },
             _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
         };
         (r.status, headers, r.body)

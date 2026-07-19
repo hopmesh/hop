@@ -23,3 +23,4 @@ pub mod stripe_api;
 #[cfg(feature = "firestore")]
 pub mod sync;
 pub mod team_api;
+pub mod usage;
