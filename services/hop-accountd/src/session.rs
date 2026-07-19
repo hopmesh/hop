@@ -123,25 +123,31 @@ pub fn redeem_login(
     if tok.expires_ms <= now_ms {
         return Ok(None);
     }
-    let (mut user, created) = match store.user_by_email(&tok.email)? {
+    login_or_create(store, &tok.email, now_ms).map(Some)
+}
+
+/// The shared create-or-sign-in core behind every VERIFIED identity proof (a clicked magic link, a
+/// completed OAuth exchange): find or race-safely create the user for `email` (already normalized),
+/// mark the address verified, and issue a session. Callers must only invoke this once the caller has
+/// PROVEN control of `email`; nothing here re-checks that.
+pub fn login_or_create(store: &dyn Store, email: &str, now_ms: u64) -> StoreResult<LoggedIn> {
+    let (mut user, created) = match store.user_by_email(email)? {
         Some(u) => (u, false),
         None => {
             let u = User {
                 id: auth::generate_token(),
-                email: tok.email.clone(),
+                email: email.to_string(),
                 password_hash: String::new(), // passwordless; a password may be set later, optionally
                 email_verified: true,
                 created_ms: now_ms,
             };
             match store.create_user(&u) {
                 Ok(()) => (u, true),
-                // Lost a create race: a concurrent redeem of another valid link for this same new
-                // address committed the account first. Continue idempotently as that existing user
-                // rather than surfacing the store's Conflict, which login must never leak (store.rs).
+                // Lost a create race: a concurrent login for this same new address committed the
+                // account first. Continue idempotently as that existing user rather than surfacing
+                // the store's Conflict, which login must never leak (store.rs).
                 Err(StoreError::Conflict(_)) => {
-                    let existing = store
-                        .user_by_email(&tok.email)?
-                        .ok_or(StoreError::NotFound)?;
+                    let existing = store.user_by_email(email)?.ok_or(StoreError::NotFound)?;
                     (existing, false)
                 }
                 Err(e) => return Err(e),
@@ -160,12 +166,12 @@ pub fn redeem_login(
         expires_ms: now_ms + SESSION_TTL_MS,
     };
     store.create_session(&sess)?;
-    Ok(Some(LoggedIn {
+    Ok(LoggedIn {
         user,
         session_raw,
         session_expires_ms: sess.expires_ms,
         created,
-    }))
+    })
 }
 
 /// Resolve a session cookie to its user, or `None` if the cookie is unknown or the session has

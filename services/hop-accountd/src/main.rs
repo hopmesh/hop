@@ -1,6 +1,7 @@
-//! hop-accountd: the console's billing backend, served over plain HTTP behind an authenticated
-//! front (Cloud Run/LB terminates TLS; every `/v1/*` request must carry the `HOP_API_TOKEN`
-//! bearer). Std-thread blocking like every Hop service; no tokio.
+//! hop-accountd: the console's account + billing backend, served over plain HTTP behind an
+//! authenticated front (Cloud Run/LB terminates TLS). Two surfaces: `/v1/*` (operator bearer via
+//! `HOP_API_TOKEN`) and the USER-facing `/auth/*` (cookie sessions; active only when DATABASE_URL
+//! is configured). Std-thread blocking like every Hop service; no tokio.
 //!
 //! The Stripe transport only compiles under `--features live` (the hop-billingd discipline), so a
 //! default build has no network surface and CI exercises all routing/parsing/ownership logic
@@ -31,11 +32,20 @@ fn main() {
 mod live {
     use super::*;
     use hop_accountd::api::{invoice_access, InvoiceAccess, Route};
+    use hop_accountd::auth_api::{
+        self, AuthResponse, AuthRoute, RateLimiter, REQUEST_LINK_MAX_PER_EMAIL,
+        REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
+    };
+    use hop_accountd::email::ResendSender;
+    use hop_accountd::oauth::{self, OauthConfig, ReqwestOauth};
+    use hop_accountd::pg::PgStore;
     use hop_accountd::stripe_api::{StripeReader, Transport};
-    use std::io::{BufRead, BufReader, Read, Write};
+    use hop_accountd::{auth, session};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// Caps mirroring the other services: bounded head read, bounded concurrent connections, and an
     /// ABSOLUTE head-read deadline. The 10s read timeout only bounds the gap between reads; without
@@ -43,7 +53,8 @@ mod live {
     /// for hours and, with only MAX_CONNS slots and no per-source cap, a few hundred such trickles
     /// starve the service (slowloris). The deadline caps total head-read time regardless of drip
     /// rate; the LB/Cloud Run front (request buffering, per-source limits) is the outer defense.
-    const MAX_REQ_HEAD_BYTES: u64 = 8 * 1024;
+    const MAX_REQ_HEAD_BYTES: u64 = 16 * 1024; // head + a bounded auth body fit inside this take()
+    const MAX_BODY_BYTES: usize = 8 * 1024;
     const MAX_CONNS: usize = 256;
     const HEAD_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
     static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
@@ -87,6 +98,26 @@ mod live {
         reader: StripeReader<ReqwestStripe>,
         tenants: TenantMap,
         token: String,
+        /// The user-facing auth surface; present only when DATABASE_URL (+ Resend config) is set,
+        /// so the invoice service still runs standalone without it.
+        auth: Option<AuthState>,
+    }
+
+    struct AuthState {
+        store: PgStore,
+        email_limiter: RateLimiter,
+        peer_limiter: RateLimiter,
+        sender: ResendSender,
+        oauth_http: ReqwestOauth,
+        console_base: String,
+        github: Option<OauthConfig>,
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     pub fn serve() {
@@ -114,6 +145,80 @@ mod live {
             .map(|p| format!("0.0.0.0:{p}"))
             .unwrap_or_else(|_| "0.0.0.0:9446".to_string());
 
+        // The auth surface activates only when its configuration is complete; a partial config is
+        // a hard startup error (a silently missing piece would strand users), absence is fine.
+        let auth_state = match std::env::var("DATABASE_URL") {
+            Err(_) => {
+                eprintln!("hop-accountd: DATABASE_URL unset; /auth/* disabled (invoice-only mode)");
+                None
+            }
+            Ok(db_url) => {
+                let (Ok(resend_key), Ok(resend_from), Ok(console_base)) = (
+                    std::env::var("RESEND_API_KEY"),
+                    std::env::var("RESEND_FROM"),
+                    std::env::var("HOP_CONSOLE_BASE"),
+                ) else {
+                    eprintln!(
+                        "hop-accountd: DATABASE_URL is set but RESEND_API_KEY / RESEND_FROM / \
+                         HOP_CONSOLE_BASE is missing; refusing a half-configured auth surface"
+                    );
+                    std::process::exit(2);
+                };
+                let github = match (
+                    std::env::var("GITHUB_CLIENT_ID"),
+                    std::env::var("GITHUB_CLIENT_SECRET"),
+                ) {
+                    (Ok(client_id), Ok(client_secret)) => Some(OauthConfig {
+                        client_id,
+                        client_secret,
+                        console_base: console_base.clone(),
+                    }),
+                    (Err(_), Err(_)) => None,
+                    _ => {
+                        eprintln!(
+                            "hop-accountd: exactly one of GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET \
+                             is set; refusing a half-configured OAuth client"
+                        );
+                        std::process::exit(2);
+                    }
+                };
+                let store = match PgStore::connect(&db_url) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("hop-accountd: postgres connect failed: {e}");
+                        std::process::exit(2);
+                    }
+                };
+                let http = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .build()
+                    .expect("http client");
+                println!(
+                    "hop-accountd: /auth/* enabled (github oauth: {})",
+                    if github.is_some() { "on" } else { "off" }
+                );
+                Some(AuthState {
+                    store,
+                    email_limiter: RateLimiter::new(
+                        REQUEST_LINK_MAX_PER_EMAIL,
+                        REQUEST_LINK_WINDOW_MS,
+                    ),
+                    peer_limiter: RateLimiter::new(
+                        REQUEST_LINK_MAX_PER_PEER,
+                        REQUEST_LINK_WINDOW_MS,
+                    ),
+                    sender: ResendSender {
+                        http: http.clone(),
+                        api_key: resend_key,
+                        from: resend_from,
+                    },
+                    oauth_http: ReqwestOauth { http },
+                    console_base,
+                    github,
+                })
+            }
+        };
+
         let app = Arc::new(App {
             reader: StripeReader {
                 transport: ReqwestStripe {
@@ -126,6 +231,7 @@ mod live {
             },
             tenants,
             token,
+            auth: auth_state,
         });
 
         let listener = TcpListener::bind(&listen).expect("bind listen address");
@@ -152,60 +258,267 @@ mod live {
         }
     }
 
+    /// First index of `needle` in `hay`.
+    fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() || hay.len() < needle.len() {
+            return None;
+        }
+        (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
+    }
+
+    /// Read into `out` under an ABSOLUTE wall-clock `deadline` enforced across EVERY read, until
+    /// `done(out)` returns `Some` (its returned length is the accepted prefix) or a hard limit / EOF /
+    /// error / the deadline is hit. Each read blocks at most `PER_READ_MS`, so a byte-dribble (within
+    /// OR between reads) is caught within that of the deadline rather than resetting an inter-read
+    /// timer forever (the slowloris the head loop's between-lines check alone did not stop). Returns
+    /// the accepted length, or None to drop the connection.
+    fn deadline_read(
+        sock: &mut TcpStream,
+        deadline: Instant,
+        out: &mut Vec<u8>,
+        cap: usize,
+        done: impl Fn(&[u8]) -> Option<usize>,
+    ) -> Option<usize> {
+        const PER_READ_MS: u64 = 500;
+        let mut tmp = [0u8; 2048];
+        loop {
+            if let Some(n) = done(out) {
+                return Some(n);
+            }
+            if out.len() > cap || Instant::now() >= deadline {
+                return None;
+            }
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(PER_READ_MS)));
+            match sock.read(&mut tmp) {
+                Ok(0) => return None, // EOF before the terminator / expected length
+                Ok(n) => out.extend_from_slice(&tmp[..n]),
+                // per-read timeout: loop back and re-check the ABSOLUTE deadline
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => return None,
+            }
+        }
+    }
+
     fn serve_conn(mut stream: TcpStream, app: &App) {
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
         let deadline = std::time::Instant::now() + HEAD_READ_DEADLINE;
-        let Ok(clone) = stream.try_clone() else {
+        let Ok(mut sock) = stream.try_clone() else {
             return;
         };
-        let mut reader = BufReader::new(clone.take(MAX_REQ_HEAD_BYTES));
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
+
+        // Read the request head (through the blank CRLF line) under the absolute deadline.
+        let mut buf: Vec<u8> = Vec::with_capacity(2048);
+        let head_cap = MAX_REQ_HEAD_BYTES as usize;
+        let Some(term) = deadline_read(&mut sock, deadline, &mut buf, head_cap, |b| {
+            find_sub(b, b"\r\n\r\n").map(|i| i + 4)
+        }) else {
             return;
-        }
-        let mut parts = line.split_whitespace();
-        let method = parts.next().unwrap_or("").to_string();
-        let path = parts.next().unwrap_or("").to_string();
-        // Headers: only Authorization matters; bodies are ignored (all POSTs here are empty).
-        let mut auth: Option<String> = None;
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return; // absolute head-read deadline: no trickle client holds a slot past this
+        };
+        let body_prefetch = buf.split_off(term); // bytes read past the head belong to the body
+        let head = String::from_utf8_lossy(&buf).into_owned();
+
+        let mut lines = head.split("\r\n");
+        let mut req = lines.next().unwrap_or("").split_whitespace();
+        let method = req.next().unwrap_or("").to_string();
+        let path = req.next().unwrap_or("").to_string();
+        let mut auth_hdr: Option<String> = None;
+        let mut cookie_hdr: Option<String> = None;
+        let mut xff_hdr: Option<String> = None;
+        let mut content_length: usize = 0;
+        for h in lines {
+            if h.is_empty() {
+                continue;
             }
-            let mut h = String::new();
-            if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" || h == "\n" {
-                break;
-            }
-            if let Some(v) = h
-                .to_ascii_lowercase()
-                .strip_prefix("authorization:")
-                .map(str::trim)
-            {
-                // Re-take the original-cased value (tokens are case-sensitive).
-                auth = Some(
-                    h[h.find(':').map(|i| i + 1).unwrap_or(0)..]
-                        .trim()
-                        .to_string(),
-                );
-                let _ = v;
+            let lower = h.to_ascii_lowercase();
+            let value = || {
+                h[h.find(':').map(|i| i + 1).unwrap_or(0)..]
+                    .trim()
+                    .to_string()
+            };
+            if lower.starts_with("authorization:") {
+                auth_hdr = Some(value());
+            } else if lower.starts_with("cookie:") {
+                cookie_hdr = Some(value());
+            } else if lower.starts_with("x-forwarded-for:") {
+                xff_hdr = Some(value());
+            } else if lower.starts_with("content-length:") {
+                content_length = value().parse().unwrap_or(0);
             }
         }
 
+        // The user-facing auth surface (cookie sessions, no bearer). Bodies exist only here.
+        if path.starts_with("/auth/") {
+            let Some(st) = app.auth.as_ref() else {
+                return write_response(&mut stream, 404, &[], "{\"error\":\"not found\"}");
+            };
+            if content_length > MAX_BODY_BYTES {
+                return write_response(&mut stream, 413, &[], "{\"error\":\"too_large\"}");
+            }
+            // Finish the body under the SAME absolute deadline, starting from whatever the head read
+            // already pulled in. A short/dribbled body cannot hold the slot past the deadline.
+            let mut body = body_prefetch;
+            if body.len() < content_length {
+                let want = content_length;
+                if deadline_read(
+                    &mut sock,
+                    deadline,
+                    &mut body,
+                    MAX_BODY_BYTES + 2048,
+                    move |b| (b.len() >= want).then_some(want),
+                )
+                .is_none()
+                {
+                    return;
+                }
+            }
+            body.truncate(content_length);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let peer = auth_api::peer_identity(
+                xff_hdr.as_deref(),
+                &stream
+                    .peer_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default(),
+            );
+            let (status, headers, resp_body) =
+                dispatch_auth(st, &method, &path, cookie_hdr.as_deref(), &peer, &body);
+            return write_response(&mut stream, status, &headers, &resp_body);
+        }
+
         let route = parse_route(&method, &path);
-        let (code, body) = respond(app, route, auth.as_deref());
+        let (code, body) = respond(app, route, auth_hdr.as_deref());
+        write_response(&mut stream, code, &[], &body);
+    }
+
+    /// Write one response and close. `extra` carries Set-Cookie / Location lines; auth responses
+    /// are marked no-store so a shared cache can never replay a session or user body.
+    fn write_response(stream: &mut TcpStream, code: u16, extra: &[(String, String)], body: &str) {
         let reason = match code {
             200 => "OK",
+            202 => "Accepted",
+            204 => "No Content",
+            302 => "Found",
+            400 => "Bad Request",
             401 => "Unauthorized",
             404 => "Not Found",
+            410 => "Gone",
+            413 => "Payload Too Large",
+            429 => "Too Many Requests",
             _ => "Error",
         };
-        let header = format!(
-            "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        let mut header = format!(
+            "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
             body.len()
         );
+        for (k, v) in extra {
+            header.push_str(&format!("{k}: {v}\r\n"));
+        }
+        header.push_str("\r\n");
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(body.as_bytes());
         let _ = stream.flush();
+    }
+
+    /// Dispatch one `/auth/*` request through the pure handlers. Returns (status, extra headers,
+    /// body); every response is `Cache-Control: no-store`.
+    fn dispatch_auth(
+        st: &AuthState,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        peer: &str,
+        body: &str,
+    ) -> (u16, Vec<(String, String)>, String) {
+        let mut headers: Vec<(String, String)> = vec![("Cache-Control".into(), "no-store".into())];
+        let now = now_ms();
+
+        // GitHub OAuth: browser navigations, not JSON fetches.
+        if path.split(['?', '#']).next() == Some("/auth/github/start")
+            && method.eq_ignore_ascii_case("GET")
+        {
+            let Some(gh) = st.github.as_ref() else {
+                return (404, headers, "{\"error\":\"not found\"}".into());
+            };
+            if !st.peer_limiter.allow(peer, now) {
+                return (429, headers, "{\"error\":\"slow_down\"}".into());
+            }
+            let state = auth::generate_token();
+            headers.push(("Set-Cookie".into(), oauth::state_cookie(&state)));
+            headers.push(("Location".into(), oauth::authorize_url(gh, &state)));
+            return (302, headers, String::new());
+        }
+        if path.split(['?', '#']).next() == Some("/auth/github/callback")
+            && method.eq_ignore_ascii_case("GET")
+        {
+            let Some(gh) = st.github.as_ref() else {
+                return (404, headers, "{\"error\":\"not found\"}".into());
+            };
+            // Whatever happens, the state cookie is spent.
+            headers.push(("Set-Cookie".into(), oauth::clear_state_cookie()));
+            let fail = |mut headers: Vec<(String, String)>, why: &str| {
+                eprintln!("hop-accountd: github callback rejected: {why}");
+                headers.push((
+                    "Location".into(),
+                    format!(
+                        "{}/?auth_error=github",
+                        st.console_base.trim_end_matches('/')
+                    ),
+                ));
+                (302, headers, String::new())
+            };
+            if !st.peer_limiter.allow(peer, now) {
+                return fail(headers, "rate limited");
+            }
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let Some((code, qstate)) = oauth::parse_callback_query(query) else {
+                return fail(headers, "malformed query");
+            };
+            if !oauth::state_matches(cookie, &qstate) {
+                return fail(headers, "state mismatch");
+            }
+            let email = match oauth::exchange_for_email(&st.oauth_http, gh, &code) {
+                Ok(e) => e,
+                Err(why) => return fail(headers, &why),
+            };
+            match session::login_or_create(&st.store, &email, now) {
+                Ok(out) => {
+                    headers.push((
+                        "Set-Cookie".into(),
+                        session::set_cookie(&out.session_raw, session::SESSION_TTL_MS / 1000),
+                    ));
+                    headers.push((
+                        "Location".into(),
+                        format!("{}/", st.console_base.trim_end_matches('/')),
+                    ));
+                    (302, headers, String::new())
+                }
+                Err(e) => fail(headers, &format!("login failed: {e}")),
+            }
+        } else {
+            let r: AuthResponse = match auth_api::parse_auth_route(method, path) {
+                AuthRoute::RequestLink => auth_api::handle_request_link(
+                    &st.store,
+                    &st.email_limiter,
+                    &st.peer_limiter,
+                    peer,
+                    &st.sender,
+                    &st.console_base,
+                    body,
+                    now,
+                ),
+                AuthRoute::Redeem => auth_api::handle_redeem(&st.store, body, now),
+                AuthRoute::Logout => auth_api::handle_logout(&st.store, cookie),
+                AuthRoute::Me => auth_api::handle_me(&st.store, cookie, now),
+                AuthRoute::NotFound => AuthResponse {
+                    status: 404,
+                    set_cookie: None,
+                    body: "{\"error\":\"not found\"}".into(),
+                },
+            };
+            if let Some(c) = r.set_cookie {
+                headers.push(("Set-Cookie".into(), c));
+            }
+            (r.status, headers, r.body)
+        }
     }
 
     fn json_err(msg: &str) -> String {

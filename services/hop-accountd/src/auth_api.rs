@@ -80,6 +80,25 @@ pub fn session_from_cookie_header(header: Option<&str>) -> Option<String> {
     None
 }
 
+/// The client identity used for per-peer limiting. On Cloud Run (and behind the LB) the platform
+/// APPENDS the real client address as the LAST `X-Forwarded-For` entry; anything earlier is
+/// client-supplied and spoofable, so only the last entry counts. Absent the header (direct/dev),
+/// fall back to the socket peer with its port stripped.
+pub fn peer_identity(xff: Option<&str>, socket_peer: &str) -> String {
+    if let Some(last) = xff
+        .and_then(|h| h.split(',').next_back())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return last.to_string();
+    }
+    socket_peer
+        .rsplit_once(':')
+        .map(|(host, _port)| host)
+        .unwrap_or(socket_peer)
+        .to_string()
+}
+
 /// Pull a single string field out of a small JSON body (`{"email": "..."}`) without exposing the
 /// whole serde surface to attacker-shaped input: parse strictly, reject non-objects.
 pub fn json_field(body: &str, field: &str) -> Option<String> {
@@ -622,5 +641,20 @@ mod tests {
         // refunding an unknown key or an expired window is a no-op, never a panic
         lim.refund("ghost", T0);
         lim.refund("k", T0 + 999_999);
+    }
+
+    #[test]
+    fn peer_identity_trusts_only_the_appended_xff_entry() {
+        // Cloud Run appends the REAL client last; spoofed leading entries are ignored.
+        assert_eq!(
+            peer_identity(Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:33112"),
+            "1.2.3.4"
+        );
+        assert_eq!(peer_identity(Some(" 1.2.3.4 "), "10.0.0.9:1"), "1.2.3.4");
+        // no header: socket peer, port stripped (IPv6 bracket form included)
+        assert_eq!(peer_identity(None, "9.9.9.9:5124"), "9.9.9.9");
+        assert_eq!(peer_identity(None, "[::1]:5124"), "[::1]");
+        // empty header falls back too
+        assert_eq!(peer_identity(Some(""), "9.9.9.9:5124"), "9.9.9.9");
     }
 }
