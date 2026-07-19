@@ -6,4 +6,8 @@
 //! `--features live`, to the real Stripe API with the restricted `stripe-account-key`.
 
 pub mod api;
+pub mod auth;
+pub mod domain;
+pub mod session;
+pub mod store;
 pub mod stripe_api;
