@@ -9,48 +9,10 @@
 //! Both are Owner-only (`Permission::ManageBilling`) and scoped to a tenant the caller owns, so a
 //! member cannot start billing for an org they do not control, nor for someone else's tenant.
 
-use crate::auth_api::{json_field, session_from_cookie_header, AuthResponse};
+use crate::auth_api::{authorize_tenant, json_field, AuthResponse};
 use crate::billing::{Plan, PlanCatalog, StripeBilling};
 use crate::domain::Permission;
 use crate::store::Store;
-
-/// Resolve the session to a user, then to their membership in the requested tenant, enforcing
-/// `ManageBilling` (Owner). Returns the owned [`Org`] on success, or the ready `AuthResponse` to
-/// return (401 unauthenticated, 400 bad tenant, 404 no such tenant / not a member, 403 not permitted).
-fn authorize_billing(
-    store: &dyn Store,
-    cookie: Option<&str>,
-    tenant_hex: &str,
-    now_ms: u64,
-) -> Result<(crate::domain::User, crate::domain::Org), AuthResponse> {
-    let raw = session_from_cookie_header(cookie)
-        .ok_or_else(|| AuthResponse::json(401, r#"{"error":"unauthenticated"}"#))?;
-    let user = crate::session::validate_session(store, &raw, now_ms)
-        .ok()
-        .flatten()
-        .ok_or_else(|| AuthResponse::json(401, r#"{"error":"unauthenticated"}"#))?;
-    // Reject a malformed tenant before it reaches the store. Checked AFTER the session so an
-    // unauthenticated caller always gets 401 and learns nothing about tenant shape or existence.
-    if !crate::api::valid_tenant_hex(tenant_hex) {
-        return Err(AuthResponse::json(400, r#"{"error":"bad_request"}"#));
-    }
-    let org = store
-        .org_by_tenant(tenant_hex)
-        .ok()
-        .flatten()
-        // A tenant the caller cannot see is indistinguishable from one that does not exist.
-        .ok_or_else(|| AuthResponse::json(404, r#"{"error":"not_found"}"#))?;
-    let role = store
-        .membership(&user.id, &org.id)
-        .ok()
-        .flatten()
-        .map(|m| m.role)
-        .ok_or_else(|| AuthResponse::json(404, r#"{"error":"not_found"}"#))?;
-    if !role.can(Permission::ManageBilling) {
-        return Err(AuthResponse::json(403, r#"{"error":"forbidden"}"#));
-    }
-    Ok((user, org))
-}
 
 /// POST /billing/checkout. Owner picks a plan; free lands instantly, paid returns a hosted Checkout
 /// URL. Ensures the tenant has a Stripe customer (creating + persisting one on first paid checkout),
@@ -71,10 +33,11 @@ pub fn handle_checkout(
     let Some(plan) = json_field(body, "plan").and_then(|p| Plan::parse(&p)) else {
         return AuthResponse::json(400, r#"{"error":"invalid_plan"}"#);
     };
-    let (user, org) = match authorize_billing(store, cookie, &tenant, now_ms) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let (user, org) =
+        match authorize_tenant(store, cookie, &tenant, Permission::ManageBilling, now_ms) {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     if !plan.is_paid() {
         // Developer is free, but "downgrade to Developer" is not a no-op if the tenant is actively
         // paying: cancelling a live subscription happens in the Billing Portal, so steer there
@@ -145,10 +108,11 @@ pub fn handle_portal(
     let Some(tenant) = json_field(body, "tenant") else {
         return AuthResponse::json(400, r#"{"error":"bad_request"}"#);
     };
-    let (_user, org) = match authorize_billing(store, cookie, &tenant, now_ms) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let (_user, org) =
+        match authorize_tenant(store, cookie, &tenant, Permission::ManageBilling, now_ms) {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     let Some(customer) = org.stripe_customer.clone() else {
         return AuthResponse::json(409, r#"{"error":"no_billing_yet"}"#);
     };
