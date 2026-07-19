@@ -248,11 +248,11 @@ pub fn parse_session_url(body: &str) -> Result<String, String> {
 // ---- high-level writes ----
 
 /// Stripe writes over any [`Transport`]. Validates ids before building URLs.
-pub struct StripeBilling<'a, T: Transport> {
-    pub transport: &'a T,
+pub struct StripeBilling<'a> {
+    pub transport: &'a dyn Transport,
 }
 
-impl<T: Transport> StripeBilling<'_, T> {
+impl StripeBilling<'_> {
     /// Create a Stripe customer for a tenant, returning its `cus_...` id.
     pub fn create_customer(&self, email: &str, tenant_hex: &str) -> Result<String, String> {
         let (s, b) = self

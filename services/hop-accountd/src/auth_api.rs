@@ -55,7 +55,7 @@ pub struct AuthResponse {
 }
 
 impl AuthResponse {
-    fn json(status: u16, body: &str) -> AuthResponse {
+    pub fn json(status: u16, body: &str) -> AuthResponse {
         AuthResponse {
             status,
             set_cookie: None,

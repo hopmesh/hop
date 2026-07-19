@@ -9,6 +9,7 @@ pub mod api;
 pub mod auth;
 pub mod auth_api;
 pub mod billing;
+pub mod billing_api;
 pub mod domain;
 pub mod email;
 pub mod oauth;
