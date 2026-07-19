@@ -12,7 +12,7 @@ COPYBARA_IMAGE = (
 )
 TOKEN_ACTION = (
     "actions/create-github-app-token@"
-    "fee1f7d63c2ff003460e3d139729b119787bc349"
+    "bcd2ba49218906704ab6c1aa796996da409d3eb1"
 )
 
 

@@ -173,11 +173,7 @@ actual_workflows = {
 }
 assert actual_workflows == set(expected_workflows), "release workflow is outside the component map"
 
-token_action_v2 = (
-    "actions/create-github-app-token@"
-    "fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2"
-)
-token_action_v3 = (
+token_action = (
     "actions/create-github-app-token@"
     "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0"
 )
@@ -198,8 +194,7 @@ for workflow, component in expected_workflows.items():
     verify = re.compile(r"release-provenance\.py(?:\s|\\\n)+--component\s+" + re.escape(component))
     expected_environments = 2 if component in native_components else 1
     assert text.count("environment: release") == expected_environments, f"release environment drifted: {workflow}"
-    expected_token_action = token_action_v3 if component in {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"} else token_action_v2
-    assert text.count(expected_token_action) == 1, f"source token action drifted: {workflow}"
+    assert text.count(token_action) == 1, f"source token action drifted: {workflow}"
     assert len(verify.findall(text)) == 1, f"provenance invocation drifted: {workflow}"
     assert "fetch-depth: 0" in text and "persist-credentials: false" in text
     assert "HOP_SOURCE_APP_ID" in text and "HOP_SOURCE_APP_PRIVATE_KEY" in text
