@@ -569,7 +569,11 @@ const MAP_STYLES={
 // The site theme drives the CITY basemap (dark-matter ⇄ positron). ?theme=light|dark seeds it, and a
 // {type:'theme'} postMessage from the embedding page flips it live. Wilderness stages pin their own
 // style (topo), which is terrain and stays the same in both themes.
-const THEME=(()=>{ const t=QP.get('theme'); return (t==='light'||t==='dark')?t:'dark'; })();
+const THEME=(()=>{ const t=QP.get('theme'); if(t==='light'||t==='dark') return t;
+  // Standalone (top-level, no embedder seeding ?theme): follow the OS. Embedded stays 'dark' until the
+  // same-origin parent postMessages its theme, so there is no flash before the parent drives it.
+  if(window.self===window.top && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+  return 'dark'; })();
 document.documentElement.dataset.theme=THEME;
 // Map labels are tuned for the dark basemap (light text + dark halo). On the light Positron basemap
 // they wash out, so flip label fills dark and halos white in light mode. Read live so a theme flip
@@ -710,6 +714,14 @@ window.addEventListener('message', e=>{
     applyBasemap();   // flips the default city map dark-matter ⇄ positron (topo stages are pinned)
   }
 });
+
+// Standalone (top-level, no embedder seeding ?theme): follow the OS live, same as the embed does via
+// postMessage. Guarded so an embedded sim never fights the parent's theme drive.
+if(!QP.get('theme') && window.self===window.top && window.matchMedia){
+  const _tmq=window.matchMedia('(prefers-color-scheme: light)');
+  const _tos=()=>{ document.documentElement.dataset.theme=_tmq.matches?'light':'dark'; applyBasemap(); };
+  if(_tmq.addEventListener) _tmq.addEventListener('change',_tos); else if(_tmq.addListener) _tmq.addListener(_tos);
+}
 
 // Mini mode (the homepage embed): hide the HUD, keep the map + a slim bar; the page scroll stays usable.
 function enterMini(){
