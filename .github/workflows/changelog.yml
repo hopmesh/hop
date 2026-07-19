@@ -1,0 +1,56 @@
+# Keep the monorepo CHANGELOG.md and every per-library CHANGELOG.md (public mirrors + private crates)
+# current from conventional commits (git-cliff, see cliff.toml + tools/gen-changelogs.sh).
+#
+# Scheduled + on-demand, NOT per-push: the Cloud Build trigger builds an image for EVERY commit to
+# main (the deploy tags by SHA), so committing a changelog on every merge would double the builds.
+# A daily run keeps them current within a day at one extra build; dispatch it manually for an
+# immediate refresh. The commit uses HOP_SYNC_TOKEN so it triggers CI + the image build like any
+# commit (keeping the every-commit-has-an-image invariant), and this workflow is not push-triggered,
+# so its own commit cannot loop back into it.
+name: Changelog
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # the commit authenticates with HOP_SYNC_TOKEN, not GITHUB_TOKEN
+
+concurrency:
+  group: changelog
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # git-cliff walks the whole history
+          token: ${{ secrets.HOP_SYNC_TOKEN }}
+
+      - name: Install git-cliff
+        env:
+          GIT_CLIFF_VERSION: "2.13.1"
+        run: |
+          set -euo pipefail
+          url="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "$url" | tar xz
+          echo "GIT_CLIFF=$PWD/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" >> "$GITHUB_ENV"
+
+      - name: Regenerate changelogs
+        run: bash tools/gen-changelogs.sh
+
+      - name: Commit if anything changed
+        run: |
+          set -euo pipefail
+          git config user.name "hop-sync"
+          git config user.email "sync@hopme.sh"
+          if git diff --quiet -- '**/CHANGELOG.md' CHANGELOG.md; then
+            echo "changelog: already current, nothing to commit"
+            exit 0
+          fi
+          git add -- CHANGELOG.md '**/CHANGELOG.md'
+          git commit -m "docs(changelog): regenerate from conventional commits"
+          git push
