@@ -30,6 +30,17 @@ impl Role {
             Role::User => "user",
         }
     }
+
+    /// Parse the stored lowercase form back into a [`Role`] (the inverse of [`Role::as_str`]). Used by
+    /// the Postgres binding when reading the `role` column.
+    pub fn parse(s: &str) -> Option<Role> {
+        match s {
+            "owner" => Some(Role::Owner),
+            "admin" => Some(Role::Admin),
+            "user" => Some(Role::User),
+            _ => None,
+        }
+    }
 }
 
 /// A discrete capability a request may require. Handlers ask `role.can(Permission::X)` rather than

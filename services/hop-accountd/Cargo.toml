@@ -23,6 +23,14 @@ rand = "0.8"
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 
+# Postgres binding for the console (Cloud SQL). The sync `postgres` client keeps the std-thread server
+# style; r2d2 pools connections per instance. These compile with no database present (only running
+# queries needs one), so CI type-checks the whole binding and the integration test self-skips when
+# HOP_TEST_DATABASE_URL is unset. NoTls is used behind the Cloud SQL Auth Proxy, which terminates TLS.
+postgres = "0.19"
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
+
 # The live Stripe read path is behind `live` so the pure request-builders/parsers/routing build and
 # test with no network deps (the hop-billingd discipline).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"], optional = true }
