@@ -3,16 +3,44 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<script>
+  /* Set theme before paint: a same-origin manual choice (hop-theme) wins, else follow the OS live. */
+  (function () {
+    try {
+      var t = localStorage.getItem('hop-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var onOs = function () {
+        var s = localStorage.getItem('hop-theme');
+        if (s === 'light' || s === 'dark') return;
+        document.documentElement.setAttribute('data-theme', mq.matches ? 'light' : 'dark');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onOs);
+      else if (mq.addListener) mq.addListener(onOs);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>
 <title>TCP, TLS &amp; Delay Tolerance, an interactive primer</title>
 <style>
   :root{
     --bg:#0b0f17; --panel:#121826; --panel2:#0e1420; --ink:#e6edf6; --muted:#9aa7bd;
     --line:#223049; --accent:#5ec8ff; --accent2:#8b7bff; --good:#37d39b; --warn:#ffcf5e;
     --bad:#ff6b6b; --client:#5ec8ff; --server:#8b7bff; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --glow:#16203a; --code-bg:#0c1322; --toc-bg:rgba(11,15,23,.82); --btn-bg:#13203a; --btn-hi:#16263f; --log-bg:#0a0f1a; --prose:#d4ddec; --code-fg:#cfe6ff;
+    color-scheme:dark;
   }
+  /* Light theme: follows the OS by default; a same-origin manual choice (hop-theme) still wins. */
+  :root[data-theme="light"]{ --bg:#f5f8fc; --panel:#ffffff; --panel2:#f1f5fb; --ink:#111a2b; --muted:#54627a; --line:#dbe4f0; --accent:#1f74d8; --accent2:#6f5ef0; --good:#0f9d72; --warn:#b07d15; --bad:#d64530; --client:#1f74d8; --server:#6f5ef0; --glow:#dce8fb; --code-bg:#eef2f9; --toc-bg:rgba(255,255,255,.85); --btn-bg:#eaf0fa; --btn-hi:#dce7f7; --log-bg:#f0f4fa; --prose:#2a3852; --code-fg:#1f4b7a; color-scheme:light; }
+  @media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){ --bg:#f5f8fc; --panel:#ffffff; --panel2:#f1f5fb; --ink:#111a2b; --muted:#54627a; --line:#dbe4f0; --accent:#1f74d8; --accent2:#6f5ef0; --good:#0f9d72; --warn:#b07d15; --bad:#d64530; --client:#1f74d8; --server:#6f5ef0; --glow:#dce8fb; --code-bg:#eef2f9; --toc-bg:rgba(255,255,255,.85); --btn-bg:#eaf0fa; --btn-hi:#dce7f7; --log-bg:#f0f4fa; --prose:#2a3852; --code-fg:#1f4b7a; color-scheme:light; } }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
-  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0,transparent 60%),var(--bg);
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,var(--glow) 0,transparent 60%),var(--bg);
     color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
   .wrap{max-width:880px;margin:0 auto;padding:0 22px 120px}
   header.hero{padding:74px 0 30px}
@@ -20,13 +48,13 @@
   h1{font-size:clamp(30px,5vw,46px);line-height:1.08;margin:14px 0 10px;letter-spacing:-.02em}
   h2{font-size:clamp(22px,3.4vw,30px);margin:0 0 6px;letter-spacing:-.01em}
   h3{font-size:17px;margin:26px 0 6px;color:var(--ink)}
-  p{color:#d4ddec}
+  p{color:var(--prose)}
   .lead{font-size:19px;color:var(--muted);max-width:60ch}
   section{padding:46px 0;border-top:1px solid var(--line)}
   .sec-no{font:600 12px/1 var(--mono);color:var(--muted);letter-spacing:.18em;text-transform:uppercase}
   .muted{color:var(--muted)}
-  code,.k{font-family:var(--mono);font-size:.92em;background:#0c1322;border:1px solid var(--line);
-    padding:.08em .4em;border-radius:6px;color:#cfe6ff}
+  code,.k{font-family:var(--mono);font-size:.92em;background:var(--code-bg);border:1px solid var(--line);
+    padding:.08em .4em;border-radius:6px;color:var(--code-fg)}
   .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
     border-radius:16px;padding:18px;margin:18px 0}
   .verdict{display:flex;gap:14px;align-items:flex-start;border-radius:14px;padding:14px 16px;margin:18px 0;
@@ -44,7 +72,7 @@
   .ends{display:flex;justify-content:space-between;font:600 13px/1 var(--mono)}
   .end{display:flex;flex-direction:column;align-items:center;gap:8px;width:120px;text-align:center}
   .node{width:74px;height:74px;border-radius:16px;display:grid;place-items:center;font-size:28px;
-    border:1px solid var(--line);background:#0c1322}
+    border:1px solid var(--line);background:var(--code-bg)}
   .node.client{box-shadow:0 0 0 1px rgba(94,200,255,.25),0 8px 30px rgba(94,200,255,.08)}
   .node.server{box-shadow:0 0 0 1px rgba(139,123,255,.25),0 8px 30px rgba(139,123,255,.08)}
   .end .label{color:var(--muted)}
@@ -54,20 +82,20 @@
   .lane{position:relative;height:62px;margin:10px 0}
   .lane:before{content:"";position:absolute;left:60px;right:60px;top:50%;height:2px;
     background:repeating-linear-gradient(90deg,var(--line) 0 8px,transparent 8px 16px)}
-  .pkt{position:absolute;top:50%;left:60px;transform:translate(0,-50%);background:#0c1322;border:1px solid var(--accent);
-    color:#dff1ff;font:600 12px/1 var(--mono);padding:7px 10px;border-radius:9px;white-space:nowrap;opacity:0;
+  .pkt{position:absolute;top:50%;left:60px;transform:translate(0,-50%);background:var(--code-bg);border:1px solid var(--accent);
+    color:var(--code-fg);font:600 12px/1 var(--mono);padding:7px 10px;border-radius:9px;white-space:nowrap;opacity:0;
     transition:left .9s cubic-bezier(.5,.05,.4,1),opacity .25s, top .9s;box-shadow:0 6px 20px rgba(0,0,0,.35)}
-  .pkt.s2c{border-color:var(--server);color:#ece8ff}
+  .pkt.s2c{border-color:var(--server);color:var(--code-fg)}
   .pkt.show{opacity:1}
-  .pkt.drop{border-color:var(--bad);color:#ffd9d9}
+  .pkt.drop{border-color:var(--bad);color:var(--code-fg)}
   .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
-  button{appearance:none;border:1px solid var(--line);background:#13203a;color:var(--ink);font:600 13px/1 inherit;
+  button{appearance:none;border:1px solid var(--line);background:var(--btn-bg);color:var(--ink);font:600 13px/1 inherit;
     padding:10px 14px;border-radius:10px;cursor:pointer;transition:.15s}
-  button:hover{border-color:var(--accent);background:#16263f}
+  button:hover{border-color:var(--accent);background:var(--btn-hi)}
   button:disabled{opacity:.4;cursor:not-allowed}
   button.primary{background:var(--accent);color:#04121d;border-color:transparent}
   button.ghost{background:transparent}
-  .log{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:#0a0f1a;border:1px solid var(--line);
+  .log{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--log-bg);border:1px solid var(--line);
     border-radius:10px;padding:10px 12px;margin-top:12px;min-height:46px;white-space:pre-wrap}
   .log b{color:var(--ink);font-weight:600}
   .row{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
@@ -75,12 +103,12 @@
   .pill{font:600 12px/1 var(--mono);padding:5px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
   .pill.live{color:var(--good);border-color:rgba(55,211,155,.4)}
   .pill.timeout{color:var(--bad);border-color:rgba(255,107,107,.4)}
-  ul{color:#d4ddec} li{margin:4px 0}
+  ul{color:var(--prose)} li{margin:4px 0}
   .legend{display:flex;gap:16px;flex-wrap:wrap;font:600 12px/1 var(--mono);color:var(--muted);margin-top:8px}
   .dot{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px;margin-right:6px}
   .twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px}
   @media(max-width:640px){.twocol{grid-template-columns:1fr}}
-  .toc{position:sticky;top:0;background:rgba(11,15,23,.82);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+  .toc{position:sticky;top:0;background:var(--toc-bg);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
     z-index:5;padding:10px 0}
   .toc .wrap{display:flex;gap:14px;overflow:auto;padding-top:0;padding-bottom:0;font:600 12px/1 var(--mono)}
   .toc a{color:var(--muted);text-decoration:none;white-space:nowrap;padding:6px 2px}

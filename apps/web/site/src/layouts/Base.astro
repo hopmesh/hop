@@ -26,6 +26,18 @@ const ogImageUrl = new URL(ogImage, Astro.site);
             t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
           }
           document.documentElement.setAttribute('data-theme', t);
+          // Follow the OS live: if the visitor has not made a manual choice, track system flips.
+          var mq = window.matchMedia('(prefers-color-scheme: light)');
+          var onOs = function () {
+            var stored = localStorage.getItem('hop-theme');
+            if (stored === 'light' || stored === 'dark') return;
+            var next = mq.matches ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute('content', next === 'light' ? '#ffffff' : '#07090b');
+          };
+          if (mq.addEventListener) mq.addEventListener('change', onOs);
+          else if (mq.addListener) mq.addListener(onOs);
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'dark');
         }
