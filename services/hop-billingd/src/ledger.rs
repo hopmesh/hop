@@ -5,6 +5,13 @@
 //! - relays:     `usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`bundles` u64, `payload_bytes` u64)
 //! - collectors: `telemetry_usage/{hour}/{tenant_hex32}` -> 8 bytes LE (`events` u64)
 //!
+//! Relays ALSO write `storage_usage/{hour}/{tenant_hex32}` -> 8 bytes LE (`byte_ms` u64), the
+//! mailbox-occupancy axis. It is deliberately NOT parsed here: the measurement is landing ahead of
+//! a pricing decision, so the rows accumulate durably while nothing collects or bills them. The
+//! unknown prefix falls through to `None` like any other kv key. Wiring it up is a one-arm change
+//! here plus a `reconcile_storage_rows` call in the driver, and it must not happen until storage
+//! is priced.
+//!
 //! The kv namespace is SHARED (sessions, prekeys, and other node state live beside the ledger
 //! rows), so parsing is strict: exactly three `/`-separated segments, a decimal hour, a 32-char
 //! lowercase-hex tenant. Anything malformed is SKIPPED, never an error: corrupt values decode as
@@ -198,6 +205,24 @@ mod tests {
         assert_eq!(parse_row(&format!("usage/402/{T}"), b"tooshort"), None);
         assert_eq!(parse_row(&format!("telemetry_usage/402/{T}"), b"xx"), None);
         assert_eq!(parse_row(&format!("usage/402/{T}"), &usage_val(0, 0)), None);
+    }
+
+    #[test]
+    fn storage_rows_are_written_but_never_collected_so_nothing_bills_storage() {
+        // The storage axis is measurement-only pending a pricing decision. Relays write these rows,
+        // but the collector must not turn them into a reconciler input: doing so would start
+        // billing hop_mailbox_gb_month with no priced meter behind it. If this test starts failing
+        // because storage was intentionally wired up, that is a pricing decision, not a bug fix.
+        assert_eq!(
+            parse_row(&format!("storage_usage/402/{T}"), &123u64.to_le_bytes()),
+            None,
+            "storage_usage must not parse into a billable row"
+        );
+        // And it must never be mistaken for the carriage row it sits beside.
+        assert_eq!(
+            parse_row(&format!("storage_usage/402/{T}"), &usage_val(3, 300)),
+            None
+        );
     }
 
     #[test]

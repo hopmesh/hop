@@ -8,9 +8,16 @@
 //! ## What it reads
 //!
 //! Each relay drains its in-memory meter into hour-bucketed rows in its region's durable store:
-//! `usage/{hour}/{tenant}` = a [`LedgerRow`] (carriage bundles + sealed payload bytes; storage
-//! GB-ms once the storage floor lands). Rows are per REGION already (each region's relay owns its
-//! partition), so aggregation is a sum across regions per (hour, tenant).
+//! `usage/{hour}/{tenant}` = a [`LedgerRow`] (carriage bundles + sealed payload bytes). Rows are
+//! per REGION already (each region's relay owns its partition), so aggregation is a sum across
+//! regions per (hour, tenant).
+//!
+//! Storage occupancy is a SEPARATE axis under its own `storage_usage/{hour}/{tenant}` prefix (a
+//! [`StorageRow`]). Carriage counts bytes a relay moved and is drained on read; storage measures
+//! bytes a relay is currently HOLDING and is sampled repeatedly without draining. They answer
+//! different questions and are never folded into one number. The storage rows are written by the
+//! relay today but are NOT yet collected or reconciled: [`reconcile_storage_rows`] exists and is
+//! tested, but nothing drives it, pending a pricing decision. Nothing bills storage yet.
 //!
 //! ## Cross-instance dedup lives HERE, not on the driver
 //!
@@ -49,8 +56,11 @@ pub struct LedgerRow {
     pub bundles: u64,
     /// Sealed payload bytes carried (informational today; a future GB dimension).
     pub payload_bytes: u64,
-    /// Durable storage occupancy in byte-milliseconds (the storage floor), billed to
-    /// `hop_mailbox_gb_month`. Zero until the storage-floor increment lands.
+    /// Vestigial: storage occupancy does NOT ride the carriage row. It is sampled separately and
+    /// written under the `storage_usage/` prefix as a [`StorageRow`], because occupancy is a
+    /// standing quantity (sampled, never drained) while carriage is a drained counter. Kept at zero
+    /// by the `usage/` decoder; do not populate it, or a tenant would be billed for the same
+    /// occupancy twice (once here, once via [`reconcile_storage_rows`]).
     pub storage_byte_ms: u64,
 }
 
@@ -270,99 +280,95 @@ pub fn reconcile_telemetry<S: MeterSink>(
     new_watermark
 }
 
-/// One spooled-bundle occupancy record, as the relay writes it into the mailbox store: which
-/// tenant is billed, the sealed size, when it was spooled, and when it left the mailbox (delivered
-/// or TTL-expired) if it has. Still-held bundles have `delete_ms = None`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpoolRecord {
-    pub tenant: TenantId,
-    pub size_bytes: u64,
-    pub spool_ms: u64,
-    pub delete_ms: Option<u64>,
-}
-
 /// Bytes per gigabyte (decimal GB, the storage-billing convention).
 pub const BYTES_PER_GB: u64 = 1_000_000_000;
 /// Milliseconds in a 30-day billing month.
 pub const MS_PER_MONTH: u64 = 30 * 24 * 60 * 60 * 1000;
 
-/// Per-tenant durable-storage occupancy in BYTE-MILLISECONDS accrued within the window
-/// `[lo_ms, hi_ms]`, the exact integral of `size x time held` clamped to that window. A bundle
-/// contributes `size x (min(hi, end) - max(lo, spool))` where `end` is its delete time if it has
-/// left the mailbox, else `hi_ms`; a record that overlaps the window not at all (or has a delete
-/// before its spool, or a spool in the future) contributes nothing (clock-skew safe). Windowing is
-/// what lets each reconcile run bill only the occupancy since the last storage watermark, so
-/// occupancy is never double-counted across runs.
-pub fn storage_byte_ms_interval(
-    records: &[SpoolRecord],
-    lo_ms: u64,
-    hi_ms: u64,
-) -> BTreeMap<TenantId, u64> {
-    let mut out: BTreeMap<TenantId, u64> = BTreeMap::new();
-    for r in records {
-        let end = r.delete_ms.unwrap_or(hi_ms);
-        let start = r.spool_ms.max(lo_ms);
-        let stop = end.min(hi_ms);
-        let held_ms = stop.saturating_sub(start);
-        if held_ms == 0 {
-            continue;
-        }
-        let contribution = (r.size_bytes as u128).saturating_mul(held_ms as u128);
-        let acc = out.entry(r.tenant).or_default();
-        *acc = acc.saturating_add(contribution.min(u64::MAX as u128) as u64);
+/// One hour-bucketed storage-occupancy row as written by a relay's meter flush (the
+/// `storage_usage/{hour}/{tenant}` value): mailbox occupancy accrued this hour in BYTE-MILLISECONDS.
+///
+/// The relay integrates `size x time held` IN MEMORY off the hot path (sampling held sealed bytes
+/// per tenant at each 30s flush and multiplying by the interval), so billingd only sums a
+/// pre-integrated scalar here, never per-bundle lifecycle records. That is deliberate: a durable
+/// per-object occupancy timeline per tenant would leak more metadata than carriage does (§39), and
+/// the sampled scalar is the same (hour, tenant) grain as the carriage row. It also means storage
+/// is billed only while the relay is warm: a bundle held across a relay restart is not re-attributed
+/// (the §39 mailbox is blind; tenant is known only via the in-memory custody stamp), so this
+/// UNDER-bills after a restart and never over-bills. Additive across a relay's flushes and across
+/// regions for one (hour, tenant).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRow {
+    /// Durable mailbox occupancy in byte-milliseconds, billed to `hop_mailbox_gb_month`.
+    pub byte_ms: u64,
+}
+
+impl StorageRow {
+    pub fn add(&mut self, other: &StorageRow) {
+        self.byte_ms = self.byte_ms.saturating_add(other.byte_ms);
     }
-    out
 }
 
-/// Total per-tenant occupancy up to `now_ms` (the window `[0, now_ms]`). The storage FLOOR: it
-/// prices real occupancy regardless of whether the bundle was ever delivered, so a never-delivered
-/// spool flood is not free (the DoS the review flagged), and the delivery dimension stays separate.
-pub fn storage_byte_ms(records: &[SpoolRecord], now_ms: u64) -> BTreeMap<TenantId, u64> {
-    storage_byte_ms_interval(records, 0, now_ms)
-}
-
-/// Reconcile the STORAGE dimension: bill each tenant for the mailbox occupancy accrued since the
-/// storage watermark, in `[storage_wm_ms, now_ms]`. Emits one `hop_mailbox_gb_month` event per
-/// tenant with non-zero occupancy, keyed by the window START (`mailbox:{tenant}:{storage_wm}`) so a
-/// retry of the same window dedups at Stripe. Returns the new watermark (`now_ms`) iff EVERY event
-/// was accepted, else the unchanged `storage_wm_ms` so the same window retries next run.
-pub fn reconcile_storage<S: MeterSink>(
-    records: &[SpoolRecord],
-    storage_wm_ms: u64,
-    now_ms: u64,
+/// Reconcile the STORAGE dimension (mailbox occupancy, §35 storage floor). Same hour-bucketed,
+/// watermarked, idempotent contract as [`reconcile`]/[`reconcile_telemetry`], over `storage_usage`
+/// rows: it sums byte-ms per (hour, tenant) for closed hours strictly after `watermark_hour`,
+/// converts each to scaled milli-GB-months via [`byte_ms_to_scaled_gb_months`], emits one
+/// `hop_mailbox_gb_month` event per (hour, tenant) whose scaled value is non-zero with a
+/// deterministic idempotency key, and returns the highest hour for which EVERY emit was accepted (a
+/// failed emit stops there so the next run retries; Stripe dedups the successes).
+///
+/// A sub-threshold hour (occupancy that scales to 0 milli-GB-months) emits nothing but STILL closes
+/// the hour and advances the watermark, so a tiny-occupancy hour never wedges the reconciler; that
+/// remainder is dropped rather than carried, an acceptable rounding for a floor priced in
+/// milli-GB-months.
+pub fn reconcile_storage_rows<S: MeterSink>(
+    rows: &[(u64, TenantId, StorageRow)],
+    watermark_hour: u64,
+    now_hour: u64,
     sink: &mut S,
 ) -> u64 {
-    if now_ms <= storage_wm_ms {
-        return storage_wm_ms;
-    }
-    let occ = storage_byte_ms_interval(records, storage_wm_ms, now_ms);
-    let mut all_ok = true;
-    for (tenant, byte_ms) in &occ {
-        let scaled = byte_ms_to_scaled_gb_months(*byte_ms);
-        if scaled == 0 {
-            continue; // below one milli-GB-month this window; carries into the next window's math
+    let mut agg: BTreeMap<(u64, TenantId), StorageRow> = BTreeMap::new();
+    for (hour, tenant, row) in rows {
+        if *hour <= watermark_hour || *hour >= now_hour {
+            continue;
         }
-        let event = MeterEvent {
-            event_name: meter::MAILBOX_GB_MONTH,
-            tenant: *tenant,
-            value: scaled,
-            idempotency_key: format!(
-                "{}:{}:{}",
-                meter::MAILBOX_GB_MONTH,
-                hex16(tenant),
-                storage_wm_ms
-            ),
-            hour: storage_wm_ms / 3_600_000,
-        };
-        if sink.emit(&event).is_err() {
-            all_ok = false;
+        agg.entry((*hour, *tenant)).or_default().add(row);
+    }
+
+    let mut new_watermark = watermark_hour;
+    let mut current_hour: Option<u64> = None;
+    let mut hour_ok = true;
+
+    for ((hour, tenant), row) in &agg {
+        if current_hour != Some(*hour) {
+            if let Some(prev) = current_hour {
+                if hour_ok {
+                    new_watermark = prev;
+                } else {
+                    return new_watermark;
+                }
+            }
+            current_hour = Some(*hour);
+            hour_ok = true;
+        }
+        let scaled = byte_ms_to_scaled_gb_months(row.byte_ms);
+        if scaled > 0 {
+            let event = MeterEvent {
+                event_name: meter::MAILBOX_GB_MONTH,
+                tenant: *tenant,
+                value: scaled,
+                idempotency_key: format!("{}:{}:{}", meter::MAILBOX_GB_MONTH, hex16(tenant), hour),
+                hour: *hour,
+            };
+            if sink.emit(&event).is_err() {
+                hour_ok = false;
+            }
         }
     }
-    if all_ok {
-        now_ms
-    } else {
-        storage_wm_ms
+    if let (Some(h), true) = (current_hour, hour_ok) {
+        new_watermark = h;
     }
+    new_watermark
 }
 
 /// Convert a byte-millisecond occupancy total to GB-months for the `hop_mailbox_gb_month` meter,
@@ -603,93 +609,94 @@ mod tests {
         assert!(sink.emitted.is_empty());
     }
 
-    fn spool(tenant: TenantId, size: u64, spool_ms: u64, delete_ms: Option<u64>) -> SpoolRecord {
-        SpoolRecord {
-            tenant,
-            size_bytes: size,
-            spool_ms,
-            delete_ms,
+    /// One hour's worth of byte-milliseconds for a tenant holding `gb` gigabytes for the whole hour.
+    fn gb_for_an_hour(gb: u64) -> StorageRow {
+        StorageRow {
+            byte_ms: gb.saturating_mul(BYTES_PER_GB).saturating_mul(3_600_000),
         }
     }
 
     #[test]
-    fn storage_integrates_size_times_held_for_deleted_and_still_held() {
-        let now = 10_000;
-        let records = vec![
-            spool(A, 100, 0, Some(1000)), // held 1000ms -> 100_000 byte-ms
-            spool(A, 50, 2000, None),     // still held: 2000..10000 = 8000ms -> 400_000
-            spool(B, 10, 9000, None),     // 1000ms -> 10_000
+    fn reconcile_storage_sums_relay_flushes_and_emits_one_event_per_hour_tenant() {
+        // Each relay flush writes its own accrual for (hour, tenant); they are additive, both
+        // across a single relay's 30s flushes and across regions. Two accruals for (5, A) sum.
+        let rows = vec![
+            (5, A, StorageRow { byte_ms: 300 }),
+            (5, A, StorageRow { byte_ms: 120 }), // a later flush, or another region
+            (5, B, gb_for_an_hour(1)),
         ];
-        let occ = storage_byte_ms(&records, now);
-        assert_eq!(occ[&A], 100 * 1000 + 50 * 8000);
-        assert_eq!(occ[&B], 10 * 1000);
-    }
-
-    #[test]
-    fn storage_is_clock_skew_safe() {
-        let now = 5000;
-        let records = vec![
-            spool(A, 100, 6000, None),       // spooled in the FUTURE vs now -> 0
-            spool(A, 100, 3000, Some(1000)), // delete BEFORE spool -> 0
-            spool(A, 100, 1000, Some(2000)), // normal: 1000ms -> 100_000
-        ];
-        assert_eq!(storage_byte_ms(&records, now)[&A], 100_000);
-    }
-
-    #[test]
-    fn a_never_delivered_spool_flood_is_not_free() {
-        // The DoS the review flagged: bundles that never deliver still accrue storage occupancy,
-        // so they are billed (or capped), not carried for free.
-        let now = 1_000_000;
-        let flood: Vec<SpoolRecord> = (0..100).map(|_| spool(A, 1_000_000, 0, None)).collect();
-        let occ = storage_byte_ms(&flood, now);
-        assert!(occ[&A] > 0, "undelivered occupancy is priced");
-    }
-
-    #[test]
-    fn storage_windowing_bills_only_the_interval_since_the_watermark() {
-        // A 1 GB bundle held [0, 3*month]. Reconciled in two windows: [0, month] then [month, 2*month].
-        let month = MS_PER_MONTH;
-        let recs = vec![spool(A, BYTES_PER_GB, 0, None)];
-        let w1 = storage_byte_ms_interval(&recs, 0, month);
-        let w2 = storage_byte_ms_interval(&recs, month, 2 * month);
-        assert_eq!(
-            w1[&A], w2[&A],
-            "each window bills exactly one month, no overlap, no gap"
-        );
-        // The two windows sum to the [0, 2*month] total.
-        assert_eq!(w1[&A] + w2[&A], storage_byte_ms(&recs, 2 * month)[&A]);
-    }
-
-    #[test]
-    fn reconcile_storage_emits_gb_month_and_advances_the_watermark() {
-        let month = MS_PER_MONTH;
-        let recs = vec![spool(A, BYTES_PER_GB, 0, None)]; // 1 GB held
         let mut sink = FakeSink::default();
-        let new_wm = reconcile_storage(&recs, 0, month, &mut sink); // one month elapsed
-        assert_eq!(new_wm, month, "watermark advanced to now");
-        assert_eq!(sink.emitted.len(), 1);
-        assert_eq!(sink.emitted[0].event_name, meter::MAILBOX_GB_MONTH);
-        assert_eq!(sink.emitted[0].value, GB_MONTH_SCALE, "1 GB-month");
+        let wm = reconcile_storage_rows(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 5, "hour 5 fully reconciled");
+        // A holds 420 byte-ms, far below one milli-GB-month, so it scales to 0 and emits nothing.
+        assert_eq!(sink.emitted.len(), 1, "only the non-zero scaled tenant");
+        let b = &sink.emitted[0];
+        assert_eq!(b.tenant, B);
+        assert_eq!(b.event_name, meter::MAILBOX_GB_MONTH);
         assert_eq!(
-            sink.emitted[0].idempotency_key,
-            format!("hop_mailbox_gb_month:{}:0", hex16(&A))
+            b.idempotency_key,
+            format!("hop_mailbox_gb_month:{}:5", hex16(&B))
+        );
+    }
+
+    #[test]
+    fn occupancy_that_never_delivered_is_still_priced() {
+        // The DoS the review flagged: bundles that never deliver still accrue storage occupancy.
+        // The storage axis is sampled from HELD bytes, so it is nonzero for a tenant that produced
+        // no delivery event at all this hour, which is exactly what carriage alone would miss.
+        let rows = vec![(5, A, gb_for_an_hour(10))];
+        let mut sink = FakeSink::default();
+        let wm = reconcile_storage_rows(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 5);
+        assert_eq!(sink.emitted.len(), 1, "undelivered occupancy is priced");
+        assert!(sink.emitted[0].value > 0);
+    }
+
+    #[test]
+    fn storage_hours_do_not_overlap_so_occupancy_is_never_double_counted() {
+        // Hour bucketing is what windowing used to do: each hour is billed exactly once, and the
+        // per-hour values sum to the total occupancy across both hours.
+        let rows = vec![(4, A, gb_for_an_hour(1)), (5, A, gb_for_an_hour(1))];
+        let mut sink = FakeSink::default();
+        let wm = reconcile_storage_rows(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 5);
+        assert_eq!(sink.emitted.len(), 2, "one event per closed hour");
+        assert_eq!(sink.emitted[0].value, sink.emitted[1].value, "equal hours");
+        // Re-running the same window from the advanced watermark emits nothing further.
+        let mut again = FakeSink::default();
+        assert_eq!(reconcile_storage_rows(&rows, wm, 6, &mut again), wm);
+        assert!(
+            again.emitted.is_empty(),
+            "no double count past the watermark"
         );
     }
 
     #[test]
     fn reconcile_storage_holds_the_watermark_on_a_failed_emit() {
-        let month = MS_PER_MONTH;
-        let recs = vec![spool(A, BYTES_PER_GB, 0, None)];
+        let rows = vec![(4, A, gb_for_an_hour(1)), (5, A, gb_for_an_hour(1))];
         let mut sink = FakeSink {
-            fail_hours: vec![0],
+            fail_hours: vec![5],
             ..Default::default()
         };
-        let new_wm = reconcile_storage(&recs, 0, month, &mut sink);
+        // hour 4 emits; hour 5 fails -> watermark stops at 4, retried next run (Stripe dedups).
+        let wm = reconcile_storage_rows(&rows, 0, 6, &mut sink);
         assert_eq!(
-            new_wm, 0,
-            "a failed emit leaves the window to retry (idempotent) next run"
+            wm, 4,
+            "a failed emit leaves the hour to retry (idempotent) next run"
         );
+        assert_eq!(sink.emitted.len(), 1);
+        assert_eq!(sink.emitted[0].hour, 4);
+    }
+
+    #[test]
+    fn a_sub_threshold_storage_hour_closes_without_wedging_the_reconciler() {
+        // Occupancy too small to scale to one milli-GB-month emits nothing but STILL advances the
+        // watermark, so a near-idle relay never parks the storage dimension forever.
+        let rows = vec![(5, A, StorageRow { byte_ms: 1 })];
+        let mut sink = FakeSink::default();
+        let wm = reconcile_storage_rows(&rows, 0, 6, &mut sink);
+        assert_eq!(wm, 5, "the hour closes even though nothing was billable");
+        assert!(sink.emitted.is_empty());
     }
 
     #[test]
