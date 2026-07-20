@@ -182,7 +182,10 @@ build identity.
 ## Required external configuration
 
 Bootstrap intentionally fails at plan time when the required ids or resource
-names are absent. Populate `infra/bootstrap/terraform.tfvars` from the example.
+names are absent. Populate `infra/bootstrap/terraform.tfvars` from the example, and
+store the same contents in the `BOOTSTRAP_TFVARS` repository secret, which is what
+the apply workflow writes to `ci.auto.tfvars` at run time. The two must be kept in
+step; the secret is the one the applies actually use.
 
 Required inputs and resources:
 
@@ -207,8 +210,13 @@ Required inputs and resources:
 8. The `GCP_BILLING_WIF_PROVIDER` and `GCP_BILLING_SERVICE_ACCOUNT` GitHub
    repository variables, populated exactly from the `github_wif_provider` and
    `github_wif_service_account` bootstrap outputs after a reviewed apply.
-9. GitHub branch protection on canonical `main`, requiring pull requests, an
-   up-to-date branch, and exactly the aggregate `CI gate` status context.
+9. The `GCP_BOOTSTRAP_WIF_PROVIDER` and `GCP_BOOTSTRAP_SERVICE_ACCOUNT` GitHub
+   repository variables, populated exactly from the `bootstrap_wif_provider` and
+   `bootstrap_wif_service_account` outputs, plus the `BOOTSTRAP_TFVARS` secret and a
+   `bootstrap-apply` GitHub environment whose required reviewer and branch policy are
+   configured by hand. Until the variables are set the apply workflow stays neutral.
+10. GitHub branch protection on canonical `main`, requiring pull requests, an
+    up-to-date branch, and exactly the aggregate `CI gate` status context.
 
 Retrieve immutable GitHub ids with an administrator-read token:
 
@@ -222,9 +230,9 @@ shasum -a 256 .github/workflows/ci.yml
 
 The workflow digest is an explicit bootstrap migration boundary. A change to
 `.github/workflows/ci.yml` remains ineligible for deployment until an administrator
-reviews the exact bytes, updates `github_ci_workflow_sha256` in the external bootstrap
-tfvars, and manually reapplies `infra/bootstrap`. The source or runtime deployment
-cannot authorize its own replacement workflow digest.
+reviews the exact bytes, updates `github_ci_workflow_sha256` in the `BOOTSTRAP_TFVARS`
+repository secret, and dispatches `bootstrap-apply.yml` with `confirm=apply`. The
+source or runtime deployment cannot authorize its own replacement workflow digest.
 
 GitHub Environment required reviewers are repository settings. This Terraform
 does not create or claim to create them. The enforced human gate here is Cloud
@@ -232,10 +240,74 @@ Build approval by `deploy_approver_group`. If policy also requires a GitHub
 `production` environment, create its reviewer rules manually in repository
 settings and audit them separately.
 
-The bootstrap operator itself needs administrator permissions to create APIs,
-service accounts, IAM and deny policy, secrets, KMS, Pub/Sub, Artifact Registry,
-Firestore policy, buckets, and triggers. Do not grant those roles to either build
-identity. Invoke bootstrap manually from a reviewed checkout.
+Applying bootstrap requires administrator permissions over APIs, service accounts,
+IAM and deny policy, secrets, KMS, Pub/Sub, Artifact Registry, Firestore policy,
+buckets, and triggers. Do not grant those roles to either build identity. That
+authority belongs to `bootstrap-apply` alone, and it is exercised only through
+`.github/workflows/bootstrap-apply.yml`.
+
+## Applying bootstrap
+
+Bootstrap is applied by manual dispatch of `.github/workflows/bootstrap-apply.yml`,
+never from a terminal:
+
+```sh
+gh workflow run bootstrap-apply.yml --ref main -f confirm=plan
+gh workflow run bootstrap-apply.yml --ref main -f confirm=apply
+```
+
+A local apply against this GCS-backed root is a destroy operation whenever the
+checkout is behind: every resource in remote state but absent from the local files
+is planned for deletion, and this root owns IAM, service accounts, secrets, and KMS
+keys. `prevent_destroy` does not prevent that plan, it only strands the apply part
+way through. The workflow always applies the exact bytes of a reviewed commit on
+canonical `main`.
+
+`bootstrap-apply` project roles:
+
+- `roles/serviceusage.serviceUsageAdmin`
+- `roles/iam.serviceAccountAdmin`
+- `roles/resourcemanager.projectIamAdmin`
+- `roles/iam.roleAdmin`
+- `roles/iam.denyAdmin`
+- `roles/iam.workloadIdentityPoolAdmin`
+- `roles/artifactregistry.admin`
+- `roles/datastore.owner`
+- `roles/cloudkms.admin`
+- `roles/pubsub.admin`
+- `roles/cloudbuild.builds.editor`
+- `roles/cloudbuild.connectionAdmin`
+- `projects/hop-mesh/roles/hopBootstrapApplySecrets`, a custom role covering secret
+  container create, update, get, list, and IAM policy. It has no version access and
+  no delete, so the CI identity can neither read a seeded secret nor destroy a
+  container.
+
+`bootstrap-apply` resource-scoped grants:
+
+- `roles/storage.admin` on the deploy control bucket only
+- `roles/storage.objectAdmin` on `hop-mesh-tfstate`, conditioned to the bucket
+  listing plus the `bootstrap/` state prefix
+
+This identity is a project IAM administrator. That is what applying this root
+requires and it is stated plainly rather than buried: it can grant itself any role
+in the project. It is therefore kept entirely separate from `hop-deploy`, which runs
+the automatic push-to-main runtime apply and holds no administrative authority, and
+from `hop-cloudbuild`. Neither of those accounts gains any permission from the
+bootstrap CI path. `roles/datastore.owner` is the one grant that is broader than the
+control plane it exists for: it is needed to create the Firestore database and its
+TTL field policies, and it also carries Firestore entity read and write.
+
+Impersonation is bound to two exact OIDC subjects rather than a repository-wide
+principal set:
+
+- `repo:hopmesh/monorepo:ref:refs/heads/main` for the plan job
+- `repo:hopmesh/monorepo:environment:bootstrap-apply` for the apply job
+
+A pull request ref cannot mint a token for this account, so a workflow added in a
+pull request cannot reach project-administrator authority. The pull-request path of
+the workflow is deliberately credential free: `fmt`, `validate`, and the authority
+guards only. The required reviewers and the branch policy on the `bootstrap-apply`
+environment are GitHub repository settings; this Terraform does not create them.
 
 ## One-time billing authority migration
 
@@ -329,14 +401,16 @@ succeeds. When import is used instead of `state mv` for a still-tracked object,
 import it first, verify the bootstrap plan, then run
 `tofu -chdir=infra state rm ADDRESS` for that address only.
 
-After the bootstrap apply, wire the billing workflow to exact bootstrap outputs
-and remove the superseded project-number variable if it exists:
+After the bootstrap apply, wire both workflows to exact bootstrap outputs and remove
+the superseded project-number variable if it exists. The apply job prints all four
+values in its final step, so copy them from that run log rather than reading remote
+state from a terminal:
 
 ```sh
-gh variable set GCP_BILLING_WIF_PROVIDER --repo hopmesh/monorepo \
-  --body "$(tofu -chdir=infra/bootstrap output -raw github_wif_provider)"
-gh variable set GCP_BILLING_SERVICE_ACCOUNT --repo hopmesh/monorepo \
-  --body "$(tofu -chdir=infra/bootstrap output -raw github_wif_service_account)"
+gh variable set GCP_BILLING_WIF_PROVIDER      --repo hopmesh/monorepo --body "<github_wif_provider>"
+gh variable set GCP_BILLING_SERVICE_ACCOUNT   --repo hopmesh/monorepo --body "<github_wif_service_account>"
+gh variable set GCP_BOOTSTRAP_WIF_PROVIDER    --repo hopmesh/monorepo --body "<bootstrap_wif_provider>"
+gh variable set GCP_BOOTSTRAP_SERVICE_ACCOUNT --repo hopmesh/monorepo --body "<bootstrap_wif_service_account>"
 gh variable delete GCP_PROJECT_NUMBER --repo hopmesh/monorepo 2>/dev/null || true
 ```
 
@@ -409,11 +483,11 @@ projects/hop-mesh/roles/hopCloudBuildSecrets
 ```
 
 Also remove its `roles/storage.objectAdmin` grant from `hop-mesh-tfstate`.
-Now apply bootstrap manually. Repository-scoped Artifact Registry write,
-provenance object creation, KMS signing, CI-token access, and Pub/Sub publication
-are installed in the same apply that creates the new triggers. Confirm both new
-triggers contain inline build definitions and confirm the deploy trigger requires
-approval before allowing another push to `main`.
+Now apply bootstrap by dispatching `bootstrap-apply.yml` with `confirm=apply`.
+Repository-scoped Artifact Registry write, provenance object creation, KMS signing,
+CI-token access, and Pub/Sub publication are installed in the same apply that creates
+the new triggers. Confirm both new triggers contain inline build definitions and
+confirm the deploy trigger requires approval before allowing another push to `main`.
 
 Move ownership out of the old runtime state without destroying remote resources:
 

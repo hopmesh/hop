@@ -42,6 +42,17 @@ variable "github_repository" {
   }
 }
 
+variable "github_bootstrap_environment" {
+  description = "GitHub environment declared by the bootstrap apply job. It becomes part of that job's OIDC subject, so it must match .github/workflows/bootstrap-apply.yml exactly."
+  type        = string
+  default     = "bootstrap-apply"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9 ._-]*$", var.github_bootstrap_environment))
+    error_message = "github_bootstrap_environment must be a valid GitHub environment name."
+  }
+}
+
 variable "github_repository_id" {
   description = "Immutable numeric GitHub repository id from GET /repos/{owner}/{repo}."
   type        = number

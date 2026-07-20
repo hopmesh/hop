@@ -1,5 +1,13 @@
-# Manual low-privilege image build helpers and emergency runtime plan/apply.
-# Normal production deploys use the bootstrap-owned inline Cloud Build triggers.
+# Manual low-privilege image build helpers and a break-glass runtime plan/apply.
+# Normal production deploys use the bootstrap-owned inline Cloud Build triggers, and
+# infra/bootstrap is applied only by .github/workflows/bootstrap-apply.yml. There is
+# deliberately no bootstrap target here.
+#
+# A local apply is dangerous, not merely unsupported: against GCS-backed state from a
+# checkout that is behind, everything in remote state but absent from your local files
+# is planned for DELETION. The apply target below therefore refuses unless you set
+# LOCAL_APPLY_ACK=1 in the same command, and you should reconcile with origin/main
+# first.
 PROJECT ?= hop-mesh
 REGION  ?= us-central1
 REPO    ?= $(REGION)-docker.pkg.dev/$(PROJECT)/hop
@@ -35,4 +43,9 @@ plan:
 
 apply:
 	@test -n "$(TFVARS)" || { echo "set TFVARS to a verified provenance tfvars file" >&2; exit 1; }
+	@test "$(LOCAL_APPLY_ACK)" = "1" || { \
+	  echo "refusing: a local apply from a stale checkout plans a partial DESTROY." >&2; \
+	  echo "normal path: push to main (runtime) or dispatch bootstrap-apply.yml (bootstrap)." >&2; \
+	  echo "break glass: git fetch && git status against origin/main, then re-run with LOCAL_APPLY_ACK=1." >&2; \
+	  exit 1; }
 	$(TF) apply -var-file="$(TFVARS)"

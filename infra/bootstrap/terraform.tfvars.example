@@ -1,3 +1,7 @@
+# Store the finished file in the BOOTSTRAP_TFVARS repository secret as well. That secret is what
+# .github/workflows/bootstrap-apply.yml writes to ci.auto.tfvars, and dispatching that workflow is the
+# only supported way to apply this root. Never run `tofu apply` here from a terminal.
+#
 # Required external identifiers. Obtain repository and workflow ids from the GitHub
 # API, and the Actions App id from the workflow run's authenticated check suite.
 build_connection_name = "hop-github"
@@ -13,6 +17,10 @@ github_ci_workflow_sha256 = "0b69204f35ef858ff4cd417d5ec00ad7e0671f85f2040f05efb
 ci_token_secret_version  = "1"
 relay_identity_version   = "1"
 example_identity_version = "1"
+
+# Must match the `environment:` of the apply job in .github/workflows/bootstrap-apply.yml. It is part
+# of that job's OIDC subject, so a mismatch means the apply cannot authenticate at all.
+github_bootstrap_environment = "bootstrap-apply"
 
 deployment_environment = "production"
 deploy_approver_group   = "platform-approvers@example.com" # replace with the real restricted group

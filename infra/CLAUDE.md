@@ -3,7 +3,8 @@
 GCP production infrastructure is split across two OpenTofu roots. The Stripe
 catalog is isolated in the third root at `infra/billing/`:
 
-- `infra/bootstrap/` is manually invoked from a reviewed checkout. It owns APIs,
+- `infra/bootstrap/` is applied by manual dispatch of
+  `.github/workflows/bootstrap-apply.yml`, never from a terminal. It owns APIs,
   IAM, service accounts, secrets, Firestore policy, Artifact Registry, KMS,
   provenance and lease storage, Pub/Sub, billing WIF and state authority, and
   both trusted inline Cloud Build triggers.
@@ -39,6 +40,10 @@ region probes.
 - Never grant build or deploy `Editor`, Project IAM Admin, Service Account Admin,
   Run Admin, Storage Admin, Secret Manager Admin, or role mutation permissions.
 - IAM and secret policy changes belong only in bootstrap.
+- No root is applied from a terminal. Bootstrap goes through
+  `bootstrap-apply.yml`, runtime through push to `main`, billing through
+  `billing-catalog.yml`. A local apply from a stale checkout plans a partial destroy
+  of whatever remote state holds and the local files no longer declare.
 - Workload Identity Federation pools and providers belong only in bootstrap.
 - Build tags use the full 40-character SHA. Runtime images use only `@sha256:`.
 - The deploy lease is separate from OpenTofu state locking. Preserve both
