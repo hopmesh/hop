@@ -2,7 +2,7 @@
 //! building and addressing logic is pure and unit-tested, and the real Resend call only compiles
 //! under `--features live`. The only email the console sends today is the magic sign-in link.
 //!
-//! The emailed URL points at the console PAGE (`{base}/auth/link#token=...`), never directly at the
+//! The emailed URL points at the console PAGE (`{base}/auth/verify#token=...`), never directly at the
 //! redeem API: mail scanners prefetch GETs, and the link is single-use, so the page must be a safe
 //! GET that then POSTs the token to `/auth/redeem` on a human click. The token rides the URL
 //! FRAGMENT, not a query string: fragments never leave the browser, so the raw bearer credential
@@ -28,8 +28,15 @@ pub trait EmailSender: Send + Sync {
 /// Build the sign-in link URL carried by the email. `base` is the console origin
 /// (e.g. `https://dashboard.hopme.sh`), with or without a trailing slash. The token is in the
 /// fragment (see the module doc): servers, proxies, and logs never see it.
+///
+/// The path MUST match the console page that redeems it (`apps/web/console/app/auth/verify/page.tsx`,
+/// the contract locked in that package's CLAUDE.md). These drifted once (this built `/auth/link` while
+/// the console served `/auth/verify`), which 404'd every emailed sign-in link; keep them in step.
 pub fn login_link_url(base: &str, raw_token: &str) -> String {
-    format!("{}/auth/link#token={raw_token}", base.trim_end_matches('/'))
+    format!(
+        "{}/auth/verify#token={raw_token}",
+        base.trim_end_matches('/')
+    )
 }
 
 /// The team-invite accept URL. Like the login link, the token rides the FRAGMENT (`#token=`), so it is
@@ -172,11 +179,11 @@ mod tests {
     fn link_url_joins_cleanly_and_keeps_the_token_in_the_fragment() {
         assert_eq!(
             login_link_url("https://dashboard.hopme.sh", "abc123"),
-            "https://dashboard.hopme.sh/auth/link#token=abc123"
+            "https://dashboard.hopme.sh/auth/verify#token=abc123"
         );
         assert_eq!(
             login_link_url("https://dashboard.hopme.sh/", "abc123"),
-            "https://dashboard.hopme.sh/auth/link#token=abc123"
+            "https://dashboard.hopme.sh/auth/verify#token=abc123"
         );
         // The credential must ride the fragment (never sent to a server), not a query string.
         assert!(!login_link_url("https://d.hopme.sh", "t").contains("?token="));
@@ -184,11 +191,11 @@ mod tests {
 
     #[test]
     fn magic_link_email_carries_the_link_in_both_bodies() {
-        let m = magic_link_email("a@x.co", "https://d.hopme.sh/auth/link#token=t1", 15);
+        let m = magic_link_email("a@x.co", "https://d.hopme.sh/auth/verify#token=t1", 15);
         assert_eq!(m.to, "a@x.co");
         assert!(m.subject.contains("sign-in"));
         for body in [&m.html, &m.text] {
-            assert!(body.contains("https://d.hopme.sh/auth/link#token=t1"));
+            assert!(body.contains("https://d.hopme.sh/auth/verify#token=t1"));
             assert!(body.contains("15 minutes"));
             assert!(body.contains("ignore this email"));
         }

@@ -388,7 +388,7 @@ mod tests {
         let text = &sent.last().expect("an email was sent").text;
         let url = text
             .lines()
-            .find(|l| l.contains("/auth/link#token="))
+            .find(|l| l.contains("/auth/verify#token="))
             .expect("link line");
         url.split("token=").nth(1).unwrap().trim().to_string()
     }
