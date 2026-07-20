@@ -20,6 +20,20 @@ init_fixture() {
   printf '%s\n' "$repo"
 }
 
+# The post-narrowing shape: the state machine (node.rs) is NOT declared; the extracted
+# wire-emitting module is.
+write_narrowed_manifest() {
+  local repo="$1"
+  {
+    printf '%s\n' \
+      '# retired: core/hop-core/src/node.rs -> core/hop-core/src/wire_emit.rs (extracted)' \
+      'core/hop-core/src/bundle.rs' \
+      'core/hop-core/src/store.rs' \
+      'core/hop-core/src/wire_emit.rs' \
+      'core/hop-core/src/wire_schema.rs'
+  } > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+}
+
 write_version() {
   local repo="$1" version="$2"
   printf 'pub const BUNDLE_VERSION: u8 = %s;\n' "$version" > "$repo/core/hop-core/src/bundle.rs"
@@ -59,9 +73,15 @@ base_v8_fixture() {
   printf '%s\n' "$repo"
 }
 
+# The fixture repos hold no Rust, so stub the live-corpus regeneration the guard runs on a
+# retirement. Default: the regenerated corpus matches (`true`). Set CORPUS_VERIFY=false for the
+# case where live code no longer produces the committed bytes.
+CORPUS_VERIFY=true
+
 expect_pass() {
   local label="$1" repo="$2" base="$3" output
-  if ! output="$(cd "$repo" && WIRE_BASE_REF="$base" bash "$GUARD" 2>&1)"; then
+  if ! output="$(cd "$repo" && WIRE_BASE_REF="$base" \
+    WIRE_CORPUS_VERIFY_CMD="$CORPUS_VERIFY" bash "$GUARD" 2>&1)"; then
     echo "FAIL ($label): expected success" >&2
     printf '%s\n' "$output" >&2
     exit 1
@@ -72,7 +92,8 @@ expect_pass() {
 
 expect_fail() {
   local label="$1" repo="$2" base="$3" output
-  if output="$(cd "$repo" && WIRE_BASE_REF="$base" bash "$GUARD" 2>&1)"; then
+  if output="$(cd "$repo" && WIRE_BASE_REF="$base" \
+    WIRE_CORPUS_VERIFY_CMD="$CORPUS_VERIFY" bash "$GUARD" 2>&1)"; then
     echo "FAIL ($label): expected failure" >&2
     printf '%s\n' "$output" >&2
     exit 1
@@ -194,5 +215,132 @@ fixture="$(canonical_v10_with_v9_fork stale-symbolic-base)"
 repo="${fixture%%$'\n'*}"
 expect_fail "stale v9 fork cannot substitute the merge base of canonical-main" "$repo" canonical-main
 
-[ "$PASSED" -eq 12 ] || { echo "FAIL: expected 12 fixtures, ran $PASSED" >&2; exit 1; }
+# --- manifest narrowing: node.rs retired in favour of the extracted wire_emit.rs -------------
+# These are the cases that would have caught the gap this guard change closes. Before it, ANY
+# edit to the 18k-line state machine, and even a manifest edit on its own, demanded a
+# BUNDLE_VERSION bump, which turns the wire version into a build counter.
+
+# Direction 1: the wire-neutral change that used to be blocked is now allowed.
+repo="$(base_v8_fixture retire-node-wire-neutral)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" retire-node
+expect_pass "retiring node.rs with an unchanged corpus needs no bump" "$repo" "$base"
+
+repo="$(base_v8_fixture narrowed-node-change)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" narrowed
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'node-wire\nfn peer_count(&self) -> usize { self.peers.len() }\n' \
+  > "$repo/core/hop-core/src/node.rs"
+commit_fixture "$repo" add-read-only-getter
+expect_pass "undeclared node.rs may add a read-only getter without a bump" "$repo" "$base"
+
+# Direction 2: a real wire change is still caught, through the narrowed manifest.
+repo="$(base_v8_fixture narrowed-wire-emit-drift)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" narrowed
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v8-reordered-variants\n' > "$repo/core/hop-core/src/wire_emit.rs"
+commit_fixture "$repo" wire-emit-drift
+expect_fail "declared wire_emit.rs drift without bump is still caught" "$repo" "$base"
+
+repo="$(base_v8_fixture narrowed-bundle-drift)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" narrowed
+base="$(git -C "$repo" rev-parse HEAD)"
+write_version "$repo" 8
+printf 'pub const BUNDLE_VERSION: u8 = 8;\nstruct Inner { b: u8, a: u8 }\n' \
+  > "$repo/core/hop-core/src/bundle.rs"
+commit_fixture "$repo" bundle-field-reorder
+expect_fail "field reorder in declared bundle.rs is still caught" "$repo" "$base"
+
+# The retirement escape hatch cannot be used to smuggle a wire change through.
+repo="$(base_v8_fixture retire-without-record)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf '%s\n' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+printf 'node-wire-drift\n' > "$repo/core/hop-core/src/node.rs"
+commit_fixture "$repo" silent-drop
+expect_fail "dropping a path with no retirement record fails closed" "$repo" "$base"
+
+repo="$(base_v8_fixture retire-to-undeclared)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf '%s\n' \
+  '# retired: core/hop-core/src/node.rs -> core/hop-core/src/nowhere.rs (bogus)' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+printf 'node-wire-drift\n' > "$repo/core/hop-core/src/node.rs"
+commit_fixture "$repo" retire-to-undeclared
+expect_fail "retiring to a path the manifest does not declare fails closed" "$repo" "$base"
+
+repo="$(base_v8_fixture retire-with-corpus-drift)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+write_corpus "$repo" 8 drifted
+commit_fixture "$repo" retire-with-corpus-drift
+expect_fail "a retirement that moves corpus bytes is not wire-neutral" "$repo" "$base"
+
+# The hole this gate exists to close: the replacement path is declared for the first time in the
+# retiring commit, so the file diff has no baseline for it. Without the live-corpus regeneration a
+# real wire change rides in unseen behind a retirement.
+repo="$(base_v8_fixture retire-hiding-a-wire-change)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v8-with-reordered-variants\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" retire-hiding-a-wire-change
+CORPUS_VERIFY=false
+expect_fail "a retirement whose live corpus drifts is caught" "$repo" "$base"
+CORPUS_VERIFY=true
+
+repo="$(base_v8_fixture retire-with-version-bump)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v9\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+write_version "$repo" 9
+write_corpus "$repo" 9 bumped
+printf '9\n' > "$repo/sim/pkg/.wire-version"
+commit_fixture "$repo" retire-with-bump
+expect_fail "a retirement cannot ride along with a BUNDLE_VERSION bump" "$repo" "$base"
+
+# Widening the manifest is a strengthening and must never demand a bump.
+repo="$(base_v8_fixture widen-manifest)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'another-wire\n' > "$repo/core/hop-core/src/wire_extra.rs"
+printf '%s\n' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/node.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_extra.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+commit_fixture "$repo" widen
+expect_pass "declaring another wire source needs no bump" "$repo" "$base"
+
+repo="$(base_v8_fixture widen-then-drift)"
+printf 'another-wire\n' > "$repo/core/hop-core/src/wire_extra.rs"
+printf '%s\n' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/node.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_extra.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+commit_fixture "$repo" widen
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'another-wire-drift\n' > "$repo/core/hop-core/src/wire_extra.rs"
+commit_fixture "$repo" drift
+expect_fail "a newly declared path is watched from then on" "$repo" "$base"
+
+[ "$PASSED" -eq 23 ] || { echo "FAIL: expected 23 fixtures, ran $PASSED" >&2; exit 1; }
 echo "wire version guard self-test passed: $PASSED fixtures"
