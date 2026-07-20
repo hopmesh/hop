@@ -5,6 +5,10 @@ VERSION_FILE="core/hop-core/src/bundle.rs"
 MANIFEST_FILE="core/hop-core/vectors/wire-source-manifest.txt"
 CORPUS_DIR="core/hop-core/vectors"
 STAMP_FILE="sim/pkg/.wire-version"
+# Regenerates the deterministic corpus from LIVE code and exits non-zero if it drifts from the
+# committed copy. Only invoked for a manifest retirement (see below). Injectable so the self-test
+# can stub it in a fixture repo that has no Rust toolchain.
+CORPUS_VERIFY_CMD="${WIRE_CORPUS_VERIFY_CMD:-cargo run -q -p hop-core --example wire-vectors --features wire-vectors}"
 BASE_REF="${WIRE_BASE_REF:-${1:-}}"
 HEAD_REF="${WIRE_HEAD_REF:-HEAD}"
 
@@ -60,6 +64,33 @@ normalize_manifest() {
   LC_ALL=C sort -u "$output" -o "$output"
 }
 
+# Collect `# retired: <old path> -> <new path>` records. A retirement narrows the guard's own
+# scope, so it must be stated in the manifest rather than inferred from a silent deletion.
+parse_retirements() {
+  local input="$1" output="$2" line body old new
+  : > "$output"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "# retired: "*) body="${line#\# retired: }" ;;
+      *) continue ;;
+    esac
+    case "$body" in
+      *" -> "*) ;;
+      *) fail "malformed retirement record (want '# retired: OLD -> NEW'): $line" ;;
+    esac
+    old="${body%% -> *}"
+    new="${body#* -> }"
+    new="${new%% *}"
+    for path in "$old" "$new"; do
+      [[ "$path" =~ ^[A-Za-z0-9_./-]+$ ]] || fail "invalid path in retirement record: $line"
+      case "$path" in
+        /*|../*|*/../*|*/..) fail "unsafe path in retirement record: $line" ;;
+      esac
+    done
+    printf '%s %s\n' "$old" "$new" >> "$output"
+  done < "$input"
+}
+
 snapshot_sources() {
   local revision="$1" destination="$2" path target
   mkdir -p "$destination"
@@ -73,13 +104,6 @@ snapshot_sources() {
       printf 'MISSING\n' > "$target"
     fi
   done < "$WORK/source-paths"
-  target="$destination/$MANIFEST_FILE"
-  mkdir -p "$(dirname "$target")"
-  if git cat-file -e "$revision:$MANIFEST_FILE" 2>/dev/null; then
-    git show "$revision:$MANIFEST_FILE" > "$target"
-  else
-    printf 'MISSING\n' > "$target"
-  fi
 }
 
 snapshot_corpus() {
@@ -106,7 +130,30 @@ fi
 normalize_manifest "$WORK/head-manifest" "$WORK/head-paths"
 normalize_manifest "$WORK/base-manifest" "$WORK/base-paths"
 [ -s "$WORK/head-paths" ] || fail "$MANIFEST_FILE declares no wire-affecting source"
-LC_ALL=C sort -u "$WORK/head-paths" "$WORK/base-paths" > "$WORK/source-paths"
+parse_retirements "$WORK/head-manifest" "$WORK/retirements"
+
+# The manifest is guard POLICY, not wire source. Widening it (declaring another file) must never
+# demand a BUNDLE_VERSION bump, or the guard punishes its own strengthening. NARROWING it is a
+# different matter: a path dropped from the manifest stops being watched, so it stays in the
+# content diff unless an explicit retirement record justifies it.
+LC_ALL=C comm -23 "$WORK/base-paths" "$WORK/head-paths" > "$WORK/dropped-paths"
+: > "$WORK/retired-paths"
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  replacement="$(awk -v old="$path" '$1 == old { print $2; exit }' "$WORK/retirements")"
+  [ -n "$replacement" ] ||
+    fail "$path left $MANIFEST_FILE with no '# retired: $path -> <replacement>' record"
+  grep -Fxq "$replacement" "$WORK/head-paths" ||
+    fail "$path retires to $replacement, which the head manifest does not declare"
+  printf '%s\n' "$path" >> "$WORK/retired-paths"
+done < "$WORK/dropped-paths"
+RETIRED_COUNT="$(grep -c . "$WORK/retired-paths" || true)"
+
+# Content is diffed for the paths declared at BOTH ends. A path newly declared at head has no
+# prior baseline to diff against (it was not watched before), so declaring it cannot itself fail
+# the guard; it is watched from the next commit onward. A path dropped at head is either an
+# unrecorded removal, already failed above, or a retirement excluded by construction.
+LC_ALL=C comm -12 "$WORK/base-paths" "$WORK/head-paths" > "$WORK/source-paths"
 
 while IFS= read -r path; do
   git cat-file -e "$HEAD_COMMIT:$path" 2>/dev/null ||
@@ -141,6 +188,30 @@ fi
 STAMP_CHANGED=false
 [ "$BASE_STAMP" = "$HEAD_STAMP" ] || STAMP_CHANGED=true
 
+# A retirement is only ever a wire-NEUTRAL refactor: the watched code moved to another file. If
+# any wire byte actually moved, the regenerated corpus differs (CI rebuilds it from live code and
+# byte-compares), so demanding an unchanged corpus makes "I moved it" checkable rather than
+# merely asserted. Retiring under a version bump is a contradiction: the bump requires the corpus
+# to change, which a retirement forbids. Split them into two changes.
+if [ "$RETIRED_COUNT" -gt 0 ]; then
+  [ "$BASE_VERSION" = "$HEAD_VERSION" ] ||
+    fail "manifest retirement must be wire-neutral, but BUNDLE_VERSION changed $BASE_VERSION -> $HEAD_VERSION"
+  [ "$CORPUS_CHANGED" = false ] ||
+    fail "manifest retirement must be wire-neutral, but the committed wire corpus changed"
+  # An unchanged committed corpus only proves the FILE did not change. A retirement moves watched
+  # code into a path that has no baseline at the merge base, so the file diff cannot see it: the
+  # replacement is declared here for the first time and is watched only from the NEXT commit. That
+  # one-commit blind spot is exactly where a real wire change could ride in, so close it by
+  # regenerating the corpus from live code and requiring it to still match.
+  echo "wire version guard: manifest retirement, regenerating the wire corpus from live code" >&2
+  $CORPUS_VERIFY_CMD >/dev/null 2>&1 ||
+    fail "retirement is not wire-neutral: the corpus regenerated from live code does not match the committed corpus"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    echo "wire version guard: retired $path from the manifest (regenerated corpus matches)" >&2
+  done < "$WORK/retired-paths"
+fi
+
 if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
   [ "$SOURCE_CHANGED" = false ] ||
     fail "declared wire source changed without a BUNDLE_VERSION bump (still $HEAD_VERSION)"
@@ -155,4 +226,4 @@ else
     fail "BUNDLE_VERSION changed $BASE_VERSION -> $HEAD_VERSION but $STAMP_FILE did not"
 fi
 
-echo "wire version guard passed: base=$BASE_COMMIT(v$BASE_VERSION) head=$HEAD_COMMIT(v$HEAD_VERSION) source_changed=$SOURCE_CHANGED corpus_changed=$CORPUS_CHANGED stamp_changed=$STAMP_CHANGED"
+echo "wire version guard passed: base=$BASE_COMMIT(v$BASE_VERSION) head=$HEAD_COMMIT(v$HEAD_VERSION) source_changed=$SOURCE_CHANGED corpus_changed=$CORPUS_CHANGED stamp_changed=$STAMP_CHANGED retired=$RETIRED_COUNT"
