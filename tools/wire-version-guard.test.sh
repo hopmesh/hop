@@ -342,5 +342,79 @@ printf 'another-wire-drift\n' > "$repo/core/hop-core/src/wire_extra.rs"
 commit_fixture "$repo" drift
 expect_fail "a newly declared path is watched from then on" "$repo" "$base"
 
-[ "$PASSED" -eq 23 ] || { echo "FAIL: expected 23 fixtures, ran $PASSED" >&2; exit 1; }
+# --- a SECOND narrowing, on top of one already in the manifest ------------------------------
+# The access.rs -> wire_stamp.rs split made the manifest carry two retirement records at once, and
+# wrote the new one as a wrapped multi-line comment. These are the cases that would have caught a
+# gap there: a stale record must not satisfy a fresh drop, a wrapped record must still yield a
+# checked replacement path, and the continuation lines must stay inert.
+
+# A historical record (node.rs, retired in an earlier commit) sits in the manifest while a second
+# path is retired now. The old record is inert; the new one is honoured.
+repo="$(base_v8_fixture second-retirement)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" first-narrowing
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-store-v8\n' > "$repo/core/hop-core/src/wire_store.rs"
+printf '%s\n' \
+  '# retired: core/hop-core/src/node.rs -> core/hop-core/src/wire_emit.rs (extracted)' \
+  '# retired: core/hop-core/src/store.rs -> core/hop-core/src/wire_store.rs (extracted)' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/wire_emit.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  'core/hop-core/src/wire_store.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+commit_fixture "$repo" second-narrowing
+expect_pass "a second retirement alongside a historical record is honoured" "$repo" "$base"
+
+# The stale record must not be usable as cover: dropping a THIRD path still needs its own record,
+# even though the manifest already carries two.
+repo="$(base_v8_fixture stale-record-is-not-cover)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+write_narrowed_manifest "$repo"
+commit_fixture "$repo" first-narrowing
+base="$(git -C "$repo" rev-parse HEAD)"
+printf '%s\n' \
+  '# retired: core/hop-core/src/node.rs -> core/hop-core/src/wire_emit.rs (extracted)' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/wire_emit.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+printf 'store-wire-drift\n' > "$repo/core/hop-core/src/store.rs"
+commit_fixture "$repo" drop-store-under-a-stale-record
+expect_fail "an existing retirement record does not cover a different dropped path" "$repo" "$base"
+
+# A wrapped record: prose trails the replacement path on the first line and spills onto '#'
+# continuation lines. The replacement must still parse, and the continuations must be inert.
+repo="$(base_v8_fixture wrapped-retirement-record)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf 'wire-emit-v8\n' > "$repo/core/hop-core/src/wire_emit.rs"
+printf '%s\n' \
+  '# retired: core/hop-core/src/node.rs -> core/hop-core/src/wire_emit.rs (the framing moved;' \
+  '# what remains in node.rs is state machine and bookkeeping that cannot move a wire byte,' \
+  '# core/hop-core/src/decoy.rs is named here only in prose and must stay undeclared)' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_emit.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+commit_fixture "$repo" wrapped-record
+expect_pass "a wrapped retirement record parses its replacement and ignores the prose" "$repo" "$base"
+
+# The same wrapping must not make the replacement check vacuous: trailing prose after an
+# UNDECLARED replacement still fails closed.
+repo="$(base_v8_fixture wrapped-retirement-to-undeclared)"
+base="$(git -C "$repo" rev-parse HEAD)"
+printf '%s\n' \
+  '# retired: core/hop-core/src/node.rs -> core/hop-core/src/nowhere.rs (bogus, but wrapped so' \
+  '# the trailing prose might have hidden the undeclared replacement)' \
+  'core/hop-core/src/bundle.rs' \
+  'core/hop-core/src/store.rs' \
+  'core/hop-core/src/wire_schema.rs' \
+  > "$repo/core/hop-core/vectors/wire-source-manifest.txt"
+printf 'node-wire-drift\n' > "$repo/core/hop-core/src/node.rs"
+commit_fixture "$repo" wrapped-retire-to-undeclared
+expect_fail "a wrapped record to an undeclared replacement still fails closed" "$repo" "$base"
+
+[ "$PASSED" -eq 27 ] || { echo "FAIL: expected 27 fixtures, ran $PASSED" >&2; exit 1; }
 echo "wire version guard self-test passed: $PASSED fixtures"
