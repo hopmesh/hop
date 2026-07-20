@@ -312,6 +312,45 @@ fn load_key_server(path: &str) -> Option<KeyServer> {
     Some(server)
 }
 
+/// Build the tenant `KeyServer` from the static `--key-server` file AND, when `--firestore` is set,
+/// the tenant registry the account service projects. Returns `None` only when NEITHER source is
+/// configured (so the collector runs Open / unattributed). When `--firestore` is set the collector is
+/// in keyed mode even if the registry is momentarily empty. A registry read error is logged and the
+/// file keys are kept: under-attributing some telemetry is a revenue concern, not a reason to drop ALL
+/// telemetry, so the collector stays up (unlike a relay, which fails closed and refuses).
+fn build_key_server(file: Option<&str>, firestore: Option<&str>) -> Option<KeyServer> {
+    #[cfg_attr(not(feature = "firestore"), allow(unused_mut))]
+    let mut server = file.and_then(load_key_server);
+    #[cfg(feature = "firestore")]
+    if let Some(project) = firestore {
+        let s = server.get_or_insert_with(KeyServer::new);
+        match load_registry_keys(project) {
+            Ok(keys) => {
+                for (tenant, pubkey) in keys {
+                    s.insert(tenant, pubkey);
+                }
+            }
+            Err(e) => {
+                eprintln!("hop-telemetryd: tenant registry read failed: {e}; keeping file keys")
+            }
+        }
+    }
+    #[cfg(not(feature = "firestore"))]
+    let _ = firestore;
+    server
+}
+
+/// The active, keyed, well-formed tenant carriage keys from the Firestore tenant registry. A read
+/// error propagates (the caller keeps the file keys); a malformed row is skipped by `carriage_key`.
+#[cfg(feature = "firestore")]
+fn load_registry_keys(project: &str) -> std::result::Result<Vec<(TenantId, [u8; 32])>, String> {
+    let registry = hop_store_firestore::TenantRegistry::new(project);
+    let records = registry
+        .all()
+        .map_err(|e| format!("tenant registry read: {e}"))?;
+    Ok(records.iter().filter_map(|r| r.carriage_key()).collect())
+}
+
 /// Parse a 32-char hex string into a 16-byte `TenantId`; `None` if it is not exactly 32 hex chars.
 fn parse_tenant_hex(s: &str) -> Option<TenantId> {
     if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -439,16 +478,17 @@ fn main() {
     node.set_max_relayed(0); // a leaf: routable by address, relays nothing
 
     // Attribution: run the SAME Keyed access policy as the billing relays so a received stamp resolves
-    // to a tenant. Without a key server the collector runs Open and telemetry is unattributed (counted
-    // in aggregate, not billed) until one is provided.
-    match key_server_file.as_deref().and_then(load_key_server) {
+    // to a tenant. Keys come from the static --key-server file PLUS, when --firestore is set, the
+    // tenant registry the account service projects. Without either, the collector runs Open and
+    // telemetry is unattributed (counted in aggregate, not billed) until a source is provided.
+    match build_key_server(key_server_file.as_deref(), firestore.as_deref()) {
         Some(server) => {
             node.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(server, HashSet::new())));
             node.refresh_access();
             println!("hop-telemetryd: keyed policy loaded; telemetry is tenant-attributed");
         }
         None => eprintln!(
-            "hop-telemetryd: no --key-server; telemetry is UNATTRIBUTED (not billable) until one is set"
+            "hop-telemetryd: no --key-server or tenant registry; telemetry is UNATTRIBUTED (not billable) until one is set"
         ),
     }
 
@@ -1290,6 +1330,12 @@ mod tests {
             "the ledger row survives the durable store round trip"
         );
         let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn build_key_server_is_none_without_any_source() {
+        // No file and no firestore project -> Open (unattributed), never a bogus empty keyed policy.
+        assert!(build_key_server(None, None).is_none());
     }
 
     #[test]
