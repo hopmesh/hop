@@ -61,11 +61,15 @@ This is the destroy-time-cycle failure mode. If a `tofu apply` errored partway a
 left the LB chain half-built:
 
 1. Do NOT push more changes on top.
-2. `cd infra && tofu init && tofu plan` to see the actual drift.
-3. Re-apply the SAME `relays_enabled` value you intended (do not toggle it mid-
-   recovery). The chain is designed to converge when the whole count-gated set is
-   applied together. See `docs/runbooks/relay-enable-disable.md` for the cycle
-   explanation.
+2. Read the drift without touching it: `git fetch origin main && git status` first,
+   so you are looking at canonical `main`, then `cd infra && tofu init && tofu plan`.
+   A plan from a stale checkout shows phantom destroys.
+3. Re-run the pipeline with the SAME `relays_enabled` value you intended (do not
+   toggle it mid-recovery): push an empty commit to `main` so Cloud Build re-applies.
+   The chain is designed to converge when the whole count-gated set is applied
+   together. See `docs/runbooks/relay-enable-disable.md` for the cycle explanation.
+   Only if Cloud Build itself is unavailable, use the break-glass `make apply` in
+   `infra/`, and only after step 2 confirms you are level with `origin/main`.
 
 ## Rollback
 
