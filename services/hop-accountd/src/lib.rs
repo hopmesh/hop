@@ -20,6 +20,7 @@ pub mod pg;
 pub mod session;
 pub mod store;
 pub mod stripe_api;
+pub mod stripe_webhook;
 #[cfg(feature = "firestore")]
 pub mod sync;
 pub mod team_api;

@@ -53,6 +53,8 @@ pub fn ensure_personal_workspace(
             stripe_customer: None,
             carriage_pubkey: None,
             otlp_endpoint: None,
+            plan: None,
+            subscription_status: None,
             created_ms: now_ms,
         };
         match store.create_org(&org) {

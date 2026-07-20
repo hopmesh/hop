@@ -387,6 +387,17 @@ mod tests {
         fn set_org_otlp_endpoint(&self, o: &str, e: &str) -> StoreResult<()> {
             self.inner.set_org_otlp_endpoint(o, e)
         }
+        fn org_by_stripe_customer(&self, c: &str) -> StoreResult<Option<crate::domain::Org>> {
+            self.inner.org_by_stripe_customer(c)
+        }
+        fn set_org_subscription(
+            &self,
+            o: &str,
+            plan: Option<&str>,
+            status: Option<&str>,
+        ) -> StoreResult<()> {
+            self.inner.set_org_subscription(o, plan, status)
+        }
         fn add_membership(&self, m: &crate::domain::Membership) -> StoreResult<()> {
             self.inner.add_membership(m)
         }

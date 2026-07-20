@@ -21,6 +21,9 @@ argon2 = "0.5"
 password-hash = { version = "0.5", features = ["getrandom"] }
 rand = "0.8"
 sha2 = { workspace = true }
+# HMAC-SHA256 for verifying Stripe webhook signatures (stripe_webhook.rs). 0.13 pairs with sha2 0.11
+# (both on digest 0.11) and is already in the lock via postgres-protocol, so it adds no new crate.
+hmac = "0.13"
 thiserror = { workspace = true }
 
 # Postgres binding for the console (Cloud SQL). The sync `postgres` client keeps the std-thread server

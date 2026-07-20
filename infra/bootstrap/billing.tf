@@ -34,6 +34,31 @@ resource "google_secret_manager_secret" "stripe_account_key" {
   depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
 }
 
+# Empty container for the Stripe webhook signing secret consumed by hop-accountd as
+# STRIPE_WEBHOOK_SECRET. The value comes from the isolated billing root's `webhook_signing_secret`
+# output (stripe_webhook_endpoint.secret) and is seeded here OUT OF BAND: the billing and bootstrap
+# roots keep separate state + providers (Stripe vs Google), so the secret is never wired across them,
+# and secret bytes never enter OpenTofu state (same discipline as the stripe_api_key / account_key
+# containers above).
+#
+# NOTE for the parallel console task (infra/console.tf, which owns the hop-accountd Cloud Run service):
+# the accountd service account needs `roles/secretmanager.secretAccessor` on THIS secret, and the
+# service env must set STRIPE_WEBHOOK_SECRET from it. Both live with the accountd service definition,
+# not here.
+resource "google_secret_manager_secret" "stripe_webhook_secret" {
+  secret_id = "stripe-webhook-secret"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
+}
+
 # Dedicated reconciler identity. It can read billing inputs and append usage history, but it cannot
 # mutate the relay bundle store or administer any billing control-plane resource.
 resource "google_service_account" "billingd" {

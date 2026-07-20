@@ -36,18 +36,21 @@ mod live {
         self, AuthResponse, AuthRoute, RateLimiter, REQUEST_LINK_MAX_PER_EMAIL,
         REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
     };
+    use hop_accountd::billing::Plan;
     use hop_accountd::billing::{PlanCatalog, StripeBilling};
     use hop_accountd::email::ResendSender;
     use hop_accountd::oauth::{self, OauthConfig, ReqwestOauth};
     use hop_accountd::pg::PgStore;
+    use hop_accountd::store::Store;
     use hop_accountd::stripe_api::{StripeReader, Transport};
+    use hop_accountd::stripe_webhook::{parse_event, verify_signature, WebhookEvent};
     #[cfg(feature = "firestore")]
     use hop_accountd::usage;
     use hop_accountd::{auth, session};
     use hop_accountd::{billing_api, console_api, keys_api, team_api};
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -62,6 +65,12 @@ mod live {
     const MAX_CONNS: usize = 256;
     const HEAD_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
     static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
+    /// One-shot log guards so a missing webhook signing secret / price catalog warns exactly once
+    /// instead of on every Stripe delivery.
+    static WEBHOOK_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
+    static WEBHOOK_CATALOG_WARNED: AtomicBool = AtomicBool::new(false);
+    /// Stripe's replay-guard window: reject a signed timestamp more than this from now.
+    const WEBHOOK_TOLERANCE_SECS: i64 = 300;
 
     struct ConnGuard;
     impl Drop for ConnGuard {
@@ -397,6 +406,7 @@ mod live {
         let mut auth_hdr: Option<String> = None;
         let mut cookie_hdr: Option<String> = None;
         let mut xff_hdr: Option<String> = None;
+        let mut sig_hdr: Option<String> = None;
         let mut content_length: usize = 0;
         for h in lines {
             if h.is_empty() {
@@ -414,9 +424,45 @@ mod live {
                 cookie_hdr = Some(value());
             } else if lower.starts_with("x-forwarded-for:") {
                 xff_hdr = Some(value());
+            } else if lower.starts_with("stripe-signature:") {
+                sig_hdr = Some(value());
             } else if lower.starts_with("content-length:") {
                 content_length = value().parse().unwrap_or(0);
             }
+        }
+
+        // The Stripe webhook: server-to-server, NOT session-gated (authenticated by the signature over
+        // the RAW body, not a cookie). It needs the EXACT received bytes, so it reads its own body here
+        // rather than the lossy-UTF8 console path below, and is handled before any prefix routing.
+        if path.split(['?', '#']).next() == Some("/webhooks/stripe") {
+            if !method.eq_ignore_ascii_case("POST") {
+                return write_response(&mut stream, 404, &[], "{\"error\":\"not found\"}");
+            }
+            let Some(st) = app.auth.as_ref() else {
+                return write_response(&mut stream, 503, &[], "{\"error\":\"unavailable\"}");
+            };
+            if content_length > MAX_BODY_BYTES {
+                return write_response(&mut stream, 413, &[], "{\"error\":\"too_large\"}");
+            }
+            // Finish the RAW body under the same absolute deadline, keeping bytes (never a String).
+            let mut body = body_prefetch;
+            if body.len() < content_length {
+                let want = content_length;
+                if deadline_read(
+                    &mut sock,
+                    deadline,
+                    &mut body,
+                    MAX_BODY_BYTES + 2048,
+                    move |b| (b.len() >= want).then_some(want),
+                )
+                .is_none()
+                {
+                    return;
+                }
+            }
+            body.truncate(content_length);
+            let (status, resp_body) = handle_stripe_webhook(st, sig_hdr.as_deref(), &body);
+            return write_response(&mut stream, status, &[], &resp_body);
         }
 
         // The user-facing console surface (cookie sessions, no bearer). Bodies exist only here:
@@ -690,6 +736,88 @@ mod live {
             _ => AuthResponse::json(404, "{\"error\":\"not found\"}"),
         };
         (r.status, headers, r.body)
+    }
+
+    /// Handle POST /webhooks/stripe. Verifies the Stripe signature over the RAW body FIRST (an
+    /// unverified body is never processed), then projects a subscription event onto the tenant's STORED
+    /// plan + status via the Store. It ALWAYS acks 200 for a verified event it understood (even a no-op
+    /// or an unknown customer) so Stripe stops retrying; only a signature/timestamp failure is 400, a
+    /// missing signing secret is 503, and a store error is 500 (which Stripe retries, as desired for a
+    /// transient DB blip). This route is NOT behind the session cookie.
+    fn handle_stripe_webhook(
+        st: &AuthState,
+        sig_header: Option<&str>,
+        body: &[u8],
+    ) -> (u16, String) {
+        let secret = match std::env::var("STRIPE_WEBHOOK_SECRET") {
+            Ok(s) if !s.is_empty() => s,
+            _ => {
+                if !WEBHOOK_SECRET_WARNED.swap(true, Ordering::SeqCst) {
+                    eprintln!(
+                        "hop-accountd: STRIPE_WEBHOOK_SECRET unset; POST /webhooks/stripe -> 503"
+                    );
+                }
+                return (503, r#"{"error":"webhook_unconfigured"}"#.to_string());
+            }
+        };
+        let Some(sig) = sig_header else {
+            return (400, r#"{"error":"bad_signature"}"#.to_string());
+        };
+        let now_unix = (now_ms() / 1000) as i64;
+        if verify_signature(&secret, sig, body, now_unix, WEBHOOK_TOLERANCE_SECS).is_err() {
+            return (400, r#"{"error":"bad_signature"}"#.to_string());
+        }
+        let event = match parse_event(body) {
+            Ok(e) => e,
+            Err(_) => return (400, r#"{"error":"bad_payload"}"#.to_string()),
+        };
+        let ack = || (200, r#"{"received":true}"#.to_string());
+        // Derive the (customer, plan, status) to store, or ack a recognized no-op. `plan` is a
+        // 'static str from Plan::as_str either way.
+        let (customer, plan, status): (String, &str, String) = match event {
+            WebhookEvent::Ignored => return ack(),
+            WebhookEvent::SubscriptionDeleted { customer } => {
+                (customer, Plan::Developer.as_str(), "canceled".to_string())
+            }
+            WebhookEvent::Subscription {
+                customer,
+                status,
+                price_ids,
+            } => {
+                // Mapping price ids -> plan needs the catalog; without it we cannot form a plan, so ack
+                // the (verified) event as a no-op rather than storing a wrong entitlement.
+                let Some(catalog) = st.catalog.as_ref() else {
+                    if !WEBHOOK_CATALOG_WARNED.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "hop-accountd: webhook received but price catalog unset; acking no-op"
+                        );
+                    }
+                    return ack();
+                };
+                (customer, catalog.plan_of(&price_ids).as_str(), status)
+            }
+        };
+        // Map the Stripe customer back to its tenant. Unknown customer -> ack (nothing to store; Stripe
+        // must not keep retrying an event for a customer this service does not own).
+        match st.store.org_by_stripe_customer(&customer) {
+            Ok(Some(org)) => {
+                match st
+                    .store
+                    .set_org_subscription(&org.id, Some(plan), Some(&status))
+                {
+                    Ok(()) => ack(),
+                    Err(e) => {
+                        eprintln!("hop-accountd: webhook store write failed: {e}");
+                        (500, r#"{"error":"store"}"#.to_string())
+                    }
+                }
+            }
+            Ok(None) => ack(),
+            Err(e) => {
+                eprintln!("hop-accountd: webhook customer lookup failed: {e}");
+                (500, r#"{"error":"store"}"#.to_string())
+            }
+        }
     }
 
     fn json_err(msg: &str) -> String {

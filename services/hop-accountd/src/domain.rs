@@ -134,6 +134,13 @@ pub struct Org {
     pub carriage_pubkey: Option<String>,
     /// The tenant's managed-OTLP forwarding endpoint, set when configured. `None` = no export.
     pub otlp_endpoint: Option<String>,
+    /// The tenant's current plan (`developer`/`usage`/`scale`), STORED from the Stripe webhook as a
+    /// durable entitlement so the console has a plan without a live Stripe query. `None` until the
+    /// first subscription event lands. Complements the live `current_subscription` read path.
+    pub plan: Option<String>,
+    /// The tenant's Stripe subscription status (`active`, `past_due`, `canceled`, ...), STORED from the
+    /// Stripe webhook. `None` until the first subscription event lands.
+    pub subscription_status: Option<String>,
     pub created_ms: u64,
 }
 

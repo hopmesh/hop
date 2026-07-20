@@ -78,6 +78,8 @@ mod tests {
             stripe_customer: None,
             carriage_pubkey: pk.map(str::to_string),
             otlp_endpoint: otlp.map(str::to_string),
+            plan: None,
+            subscription_status: None,
             created_ms: 0,
         }
     }

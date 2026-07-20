@@ -65,6 +65,19 @@ pub trait Store: Send + Sync {
     fn set_org_carriage_pubkey(&self, org_id: &str, pubkey_hex: &str) -> StoreResult<()>;
     /// Set the tenant's managed-OTLP forwarding endpoint.
     fn set_org_otlp_endpoint(&self, org_id: &str, endpoint: &str) -> StoreResult<()>;
+    /// The org owning a Stripe customer id, or `None` if none does. The Stripe webhook maps an
+    /// event's `customer` back to its tenant with this. (A customer is bound to exactly one org.)
+    fn org_by_stripe_customer(&self, customer_id: &str) -> StoreResult<Option<Org>>;
+    /// Store the tenant's plan + Stripe subscription status as durable entitlement (the Stripe webhook
+    /// writes this; the console can then read a plan without a live Stripe query). Idempotent and
+    /// unconditional: it overwrites both columns with the latest projection every time. `NotFound` if
+    /// the org does not exist.
+    fn set_org_subscription(
+        &self,
+        org_id: &str,
+        plan: Option<&str>,
+        status: Option<&str>,
+    ) -> StoreResult<()>;
 
     // ---- memberships ----
     fn add_membership(&self, m: &Membership) -> StoreResult<()>;
@@ -200,6 +213,25 @@ impl Store for MemStore {
         let mut g = self.inner.lock().unwrap();
         let o = g.orgs.get_mut(org_id).ok_or(StoreError::NotFound)?;
         o.otlp_endpoint = Some(endpoint.to_string());
+        Ok(())
+    }
+    fn org_by_stripe_customer(&self, customer_id: &str) -> StoreResult<Option<Org>> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.orgs
+            .values()
+            .find(|o| o.stripe_customer.as_deref() == Some(customer_id))
+            .cloned())
+    }
+    fn set_org_subscription(
+        &self,
+        org_id: &str,
+        plan: Option<&str>,
+        status: Option<&str>,
+    ) -> StoreResult<()> {
+        let mut g = self.inner.lock().unwrap();
+        let o = g.orgs.get_mut(org_id).ok_or(StoreError::NotFound)?;
+        o.plan = plan.map(str::to_string);
+        o.subscription_status = status.map(str::to_string);
         Ok(())
     }
 

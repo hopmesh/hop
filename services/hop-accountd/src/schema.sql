@@ -20,8 +20,14 @@ CREATE TABLE IF NOT EXISTS orgs (
   stripe_customer TEXT,                      -- set once signup creates the Stripe customer
   carriage_pubkey TEXT,                      -- the tenant's carriage-stamp signing pubkey (hex), set on first key issue
   otlp_endpoint   TEXT,                      -- the tenant's managed-OTLP forwarding endpoint, set when configured
+  plan            TEXT,                      -- durable entitlement: plan ('developer'|'usage'|'scale'), set from the Stripe webhook
+  subscription_status TEXT,                  -- durable entitlement: Stripe subscription status, set from the Stripe webhook
   created_ms      BIGINT NOT NULL
 );
+-- Migration for already-provisioned DBs (the CREATE TABLE above already carries these on a fresh DB;
+-- ADD COLUMN IF NOT EXISTS makes both paths converge, idempotent on every boot).
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan TEXT;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS subscription_status TEXT;
 
 CREATE TABLE IF NOT EXISTS memberships (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -63,8 +63,8 @@ fn row_user(r: &Row) -> User {
     }
 }
 
-const ORG_COLS: &str =
-    "id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, created_ms";
+const ORG_COLS: &str = "id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, \
+     created_ms, plan, subscription_status";
 fn row_org(r: &Row) -> Org {
     Org {
         id: r.get(0),
@@ -74,6 +74,8 @@ fn row_org(r: &Row) -> Org {
         carriage_pubkey: r.get(4),
         otlp_endpoint: r.get(5),
         created_ms: r.get::<_, i64>(6) as u64,
+        plan: r.get(7),
+        subscription_status: r.get(8),
     }
 }
 
@@ -146,9 +148,9 @@ impl Store for PgStore {
         let n = self
             .conn()?
             .execute(
-                "INSERT INTO orgs (id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, created_ms) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_hex) DO NOTHING",
-                &[&o.id, &o.name, &o.tenant_hex, &o.stripe_customer, &o.carriage_pubkey, &o.otlp_endpoint, &created],
+                "INSERT INTO orgs (id, name, tenant_hex, stripe_customer, carriage_pubkey, otlp_endpoint, created_ms, plan, subscription_status) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (tenant_hex) DO NOTHING",
+                &[&o.id, &o.name, &o.tenant_hex, &o.stripe_customer, &o.carriage_pubkey, &o.otlp_endpoint, &created, &o.plan, &o.subscription_status],
             )
             .map_err(be)?;
         if n == 0 {
@@ -235,6 +237,36 @@ impl Store for PgStore {
             .execute(
                 "UPDATE orgs SET otlp_endpoint=$2 WHERE id=$1",
                 &[&org_id, &endpoint],
+            )
+            .map_err(be)?;
+        if n == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+    fn org_by_stripe_customer(&self, customer_id: &str) -> StoreResult<Option<Org>> {
+        let row = self
+            .conn()?
+            .query_opt(
+                &format!("SELECT {ORG_COLS} FROM orgs WHERE stripe_customer=$1"),
+                &[&customer_id],
+            )
+            .map_err(be)?;
+        Ok(row.as_ref().map(row_org))
+    }
+    fn set_org_subscription(
+        &self,
+        org_id: &str,
+        plan: Option<&str>,
+        status: Option<&str>,
+    ) -> StoreResult<()> {
+        // Idempotent unconditional overwrite: the webhook is the source of truth for stored entitlement,
+        // and events arrive out of order, so it always writes the latest projection (no COALESCE).
+        let n = self
+            .conn()?
+            .execute(
+                "UPDATE orgs SET plan=$2, subscription_status=$3 WHERE id=$1",
+                &[&org_id, &plan, &status],
             )
             .map_err(be)?;
         if n == 0 {
