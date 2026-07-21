@@ -1,19 +1,18 @@
-# Local emergency apply inputs. Normal deployments receive these values only from
-# the verified KMS-signed provenance manifest in the trusted deployment trigger.
+# Local break-glass apply inputs. Normal deployments receive these values from the runtime-deploy
+# GitHub Actions workflow (.github/workflows/runtime-deploy.yml), which builds and pushes the images,
+# resolves their @sha256 digests, and passes them as TF_VARs while applying via WIF as hop-deploy.
 
 project_id = "hop-mesh"
 
-# Replace every zero value below with one coherent, verified build provenance set.
-# Digest references are mandatory; tags, including full-SHA tags, are rejected here.
+# Digest references are mandatory; tags, including full-SHA tags, are rejected here. The workflow
+# resolves these from the images it just pushed.
 relay_image   = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 example_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-example@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-deployment_source_sha      = "0000000000000000000000000000000000000000"
-deployment_build_id        = "00000000-0000-0000-0000-000000000000"
-deployment_manifest_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-deployment_environment     = "production"
-relay_identity_version     = "1"
-example_identity_version   = "1"
+deployment_source_sha    = "0000000000000000000000000000000000000000"
+deployment_environment   = "production"
+relay_identity_version   = "1"
+example_identity_version = "1"
 
 # Empty uses all supported regions minus excluded_regions. A curated list avoids
 # requiring quota for every Cloud Run region.

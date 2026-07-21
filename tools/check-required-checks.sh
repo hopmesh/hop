@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# Validate the two independent required-check contracts.
+# Validate the branch-protection required-check contract.
 #
-# Branch protection requires the single aggregate `CI gate`. That gate must run
-# after every other CI job, even after failures, and reject failed or cancelled
-# dependencies while allowing path-filtered skips.
+# GitHub is the only change-management gate. Branch protection on `main` requires the single aggregate
+# `CI gate` context (checked live by tools/check-branch-protection.sh). This guard keeps that aggregate
+# HONEST at the source: `CI gate` must run after every other CI job, even after failures, and reject
+# failed or cancelled dependencies while allowing path-filtered skips. It also refuses a CI job that a
+# renamed/anchored/templated name could hide, so a job cannot gate merges while dodging the aggregate.
 #
-# Trusted deployment separately authenticates the complete CI job set listed in
-# infra/bootstrap/variables.tf: path detector, every product job, and aggregate gate.
-# The README list is kept exact too.
+# There is no separate GCP deploy gate anymore: the runtime deploy (GitHub Actions, runtime-deploy.yml)
+# fires on the CI workflow's own success conclusion. But the canonical CI job set still has one live
+# consumer: tools/release-provenance.py verifies a mirror release tag's CI ran every one of these jobs,
+# and it reads them from tools/required-checks.json. So this guard ALSO pins that config to ci.yml (in
+# order), so a renamed/added/dropped job forces a matching config edit in the same PR.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CI="${CI_FILE:-$ROOT/.github/workflows/ci.yml}"
-BOOTSTRAP="${BOOTSTRAP_FILE:-$ROOT/infra/bootstrap/variables.tf}"
-README="${README_FILE:-$ROOT/infra/README.md}"
+REQUIRED="${REQUIRED_CHECKS_FILE:-$ROOT/tools/required-checks.json}"
 
-python3 - "$CI" "$BOOTSTRAP" "$README" <<'PY'
+python3 - "$CI" "$REQUIRED" <<'PY'
+import json
 import re
 import sys
 
 
-ci_path, bootstrap_path, readme_path = sys.argv[1:]
+ci_path, required_path = sys.argv[1:3]
 ci_lines = open(ci_path, encoding="utf-8").read().splitlines()
 
 
@@ -140,52 +144,26 @@ else:
     if any(token not in gate_text for token in verdict_tokens):
         errors.append("CI gate must fail on failed or cancelled dependencies")
 
-bootstrap_lines = open(bootstrap_path, encoding="utf-8").read().splitlines()
-allowlist = []
-in_variable = False
-in_default = False
-for line in bootstrap_lines:
-    if re.fullmatch(r'variable\s+"github_required_checks"\s*\{\s*', line):
-        in_variable = True
-        continue
-    if in_variable and re.match(r"^\s*default\s*=\s*\[\s*$", line):
-        in_default = True
-        continue
-    if in_default and re.match(r"^\s*\]\s*$", line):
-        break
-    if in_default:
-        match = re.match(r'^\s*"(.*)",\s*$', line)
-        if match:
-            allowlist.append(match.group(1))
-
+# Keep tools/required-checks.json (release-provenance's canonical job set) locked to ci.yml, in order.
 trusted_names = [names[job_id] for job_id in job_ids if job_id in names]
-if not allowlist:
-    errors.append(f"could not parse github_required_checks from {bootstrap_path}")
-elif allowlist != trusted_names:
-    missing = [name for name in trusted_names if name not in allowlist]
-    extra = [name for name in allowlist if name not in trusted_names]
-    if missing:
-        errors.append("deploy-provenance allowlist is missing: " + ", ".join(missing))
-    if extra:
-        errors.append("deploy-provenance allowlist has stale names: " + ", ".join(extra))
-    if not missing and not extra:
-        errors.append("deploy-provenance allowlist order differs from ci.yml")
-
-readme_lines = open(readme_path, encoding="utf-8").read().splitlines()
-documented = []
-in_documented_list = False
-for line in readme_lines:
-    if "authenticated deploy-provenance job set currently requires" in line:
-        in_documented_list = True
-        continue
-    if in_documented_list and line.startswith("## "):
-        break
-    if in_documented_list:
-        match = re.fullmatch(r"- `(.+)`", line)
-        if match:
-            documented.append(match.group(1))
-if documented != trusted_names:
-    errors.append("infra/README.md trusted-job list differs from ci.yml")
+try:
+    required_data = json.loads(open(required_path, encoding="utf-8").read())
+    canonical = required_data.get("required_checks")
+except (OSError, json.JSONDecodeError) as error:
+    canonical = None
+    errors.append(f"could not read required_checks from {required_path}: {error}")
+if canonical is not None:
+    if not isinstance(canonical, list):
+        errors.append("required_checks must be a JSON list of job names")
+    elif canonical != trusted_names:
+        missing = [name for name in trusted_names if name not in canonical]
+        extra = [name for name in canonical if name not in trusted_names]
+        if missing:
+            errors.append("required-checks config is missing: " + ", ".join(missing))
+        if extra:
+            errors.append("required-checks config has stale names: " + ", ".join(extra))
+        if not missing and not extra:
+            errors.append("required-checks config order differs from ci.yml")
 
 if errors:
     for error in errors:
@@ -193,8 +171,8 @@ if errors:
     raise SystemExit(1)
 
 print(
-    "required-check contracts OK: branch protection uses CI gate over "
-    f"{len(job_ids) - 1} dependencies; deploy provenance authenticates "
-    f"all {len(trusted_names)} workflow jobs"
+    "required-check contract OK: branch protection uses the aggregate CI gate over "
+    f"{len(job_ids) - 1} dependencies; tools/required-checks.json pins all "
+    f"{len(trusted_names)} job names for release-provenance"
 )
 PY

@@ -13,9 +13,10 @@
 #
 # Auth is keyless: GitHub OIDC -> Workload Identity Federation -> the bootstrap-apply service account
 # (infra/bootstrap/ci_apply.tf). That account is a project IAM administrator, because that is what
-# applying this root requires, so its two OIDC bindings are exact subjects: the plan job may run only
-# from refs/heads/main, and the apply job only through the bootstrap-apply GitHub environment. A pull
-# request ref can therefore mint NO credentials here at all, which is why the PR path is static.
+# applying this root requires, so its OIDC binding is a single exact subject: a workflow run on
+# refs/heads/main. Both the plan and apply jobs run from main; the apply is gated by the manual
+# confirm=apply dispatch, not by a GitHub environment. A pull request ref can therefore mint NO
+# credentials here at all, which is why the PR path is static.
 #
 # The job stays neutral until both repository variables are populated from the reviewed bootstrap
 # outputs (bootstrap_wif_provider, bootstrap_wif_service_account).
@@ -109,16 +110,29 @@ jobs:
         run: tofu init -input=false
 
       # One-time only. Resources created out of band (the bootstrap-apply identity itself cannot be
-      # created by the workflow that authenticates as it) are create-only, so an unimported one fails
-      # the apply with alreadyExists. Additive IAM bindings need no import. Import is not apply: it
-      # writes state, it never deletes a remote object.
+      # created by the workflow that authenticates as it, and WIF must exist before any workflow can
+      # authenticate) are create-only, so an unimported one fails the apply with alreadyExists. Additive
+      # IAM bindings need no import. Import is not apply: it writes state, it never deletes a remote
+      # object.
       - name: tofu import (seed only)
         if: github.event.inputs.confirm == 'seed'
         run: |
-          # Both are create-only and both are seeded out of band: the identity cannot create itself,
-          # and the custom role carrying its secret-container permissions must exist BEFORE the first
-          # apply, or that apply manages the 6 secret containers with a permission it is granting
-          # itself in the same run and fails 403 while the binding propagates.
+          # All are create-only for this identity and seeded out of band, so a first apply would
+          # otherwise fail create (403 for a missing permission) or alreadyExists (409):
+          #   - the identity cannot create itself;
+          #   - the two custom roles must exist BEFORE the first apply. The secret-container role: else
+          #     that apply manages the secret containers with a permission it is granting itself in the
+          #     same run and fails 403 while the binding propagates. The state-bucket IAM role: it
+          #     carries storage.buckets.setIamPolicy, which the applier needs to manage the three state-
+          #     bucket bindings it owns, and the applier cannot grant itself its first bucket-policy
+          #     permission;
+          #   - the state-bucket IAM self-binding is the owner-seeded first grant of that role on the
+          #     state bucket. It cannot be created by the applier (that needs the very setIamPolicy the
+          #     binding confers), so it is seeded and adopted here;
+          #   - the workload identity pool + provider are the federation root that had to exist before
+          #     this workflow could authenticate at all.
+          # Import is not apply: it writes state, it never deletes a remote object. Additive IAM bindings
+          # need no import.
           import_once() {
             if tofu state list | grep -Fxq "$1"; then
               echo "$1 already tracked, skipping import"
@@ -130,14 +144,23 @@ jobs:
             "projects/hop-mesh/serviceAccounts/bootstrap-apply@hop-mesh.iam.gserviceaccount.com"
           import_once "google_project_iam_custom_role.bootstrap_apply_secrets" \
             "projects/hop-mesh/roles/hopBootstrapApplySecrets"
+          import_once "google_project_iam_custom_role.bootstrap_apply_state_bucket_iam" \
+            "projects/hop-mesh/roles/hopBootstrapApplyStateBucketIam"
+          import_once "google_iam_workload_identity_pool.github" \
+            "projects/hop-mesh/locations/global/workloadIdentityPools/github-actions"
+          import_once "google_iam_workload_identity_pool_provider.github" \
+            "projects/hop-mesh/locations/global/workloadIdentityPools/github-actions/providers/github"
+          import_once "google_storage_bucket_iam_member.bootstrap_apply_state_bucket_iam" \
+            "b/hop-mesh-tfstate projects/hop-mesh/roles/hopBootstrapApplyStateBucketIam serviceAccount:bootstrap-apply@hop-mesh.iam.gserviceaccount.com"
 
       - name: tofu plan
         run: tofu plan -input=false -no-color
 
-  # Applying this root is administrative. It is gated by the bootstrap-apply GitHub environment, whose
-  # required reviewers and deployment-branch policy are repository settings a human configures once.
-  # The environment is also load bearing for auth: it changes the OIDC subject to the environment form,
-  # which is the only subject bound for this step.
+  # Applying this root is administrative, but the ONLY human gate is the pull request that merged these
+  # bytes to main (GitHub is change management). The apply itself is a deliberate manual dispatch with
+  # confirm=apply, run from main under the single refs/heads/main OIDC subject. There is no GitHub
+  # environment: the reviewed merge is the approval, and a second reviewer gate here would be a
+  # GCP-adjacent re-implementation of the same change control.
   apply:
     needs: plan
     if: >-
@@ -146,7 +169,6 @@ jobs:
       vars.GCP_BOOTSTRAP_WIF_PROVIDER != '' &&
       vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT != ''
     runs-on: ubuntu-latest
-    environment: bootstrap-apply
     defaults:
       run:
         working-directory: infra/bootstrap
@@ -181,7 +203,9 @@ jobs:
 
       - name: bootstrap outputs (wire these into repository variables)
         run: |
-          echo "billing WIF provider:  $(tofu output -raw github_wif_provider)"
-          echo "billing service acct:  $(tofu output -raw github_wif_service_account)"
-          echo "bootstrap WIF provider: $(tofu output -raw bootstrap_wif_provider)"
-          echo "bootstrap service acct: $(tofu output -raw bootstrap_wif_service_account)"
+          echo "billing WIF provider:    $(tofu output -raw github_wif_provider)"
+          echo "billing service acct:    $(tofu output -raw github_wif_service_account)"
+          echo "bootstrap WIF provider:  $(tofu output -raw bootstrap_wif_provider)"
+          echo "bootstrap service acct:  $(tofu output -raw bootstrap_wif_service_account)"
+          echo "runtime WIF provider:    $(tofu output -raw runtime_wif_provider)"
+          echo "runtime service acct:    $(tofu output -raw runtime_wif_service_account)"

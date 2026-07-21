@@ -144,7 +144,11 @@ resource "google_storage_bucket_iam_member" "billing_catalog_state" {
     expression  = "resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\")"
   }
 
-  depends_on = [google_project_service.this["storage.googleapis.com"]]
+  # Setting this member requires bootstrap-apply's bucket-policy grant (ci_apply.tf).
+  depends_on = [
+    google_project_service.this["storage.googleapis.com"],
+    google_storage_bucket_iam_member.bootstrap_apply_state_bucket_iam,
+  ]
 }
 
 output "github_wif_provider" {

@@ -18,13 +18,9 @@ spec.loader.exec_module(guard)
 
 def copy_fixture(destination):
     (destination / "infra" / "bootstrap").mkdir(parents=True)
-    (destination / "tools").mkdir(parents=True)
     for path in (root / "infra").glob("*.tf"):
         shutil.copy2(path, destination / "infra" / path.name)
-    for name in ("iam.tf", "triggers.tf"):
-        shutil.copy2(root / "infra" / "bootstrap" / name, destination / "infra" / "bootstrap" / name)
-    for name in ("require-ci-verdict.py", "deploy-provenance.py"):
-        shutil.copy2(root / "tools" / name, destination / "tools" / name)
+    shutil.copy2(root / "infra" / "bootstrap" / "iam.tf", destination / "infra" / "bootstrap" / "iam.tf")
 
 
 def expect_bad(label, mutate):
@@ -65,23 +61,17 @@ expect_bad("runtime_secret_iam", lambda f: append_runtime(f, 'resource "google_s
 expect_bad("runtime_service_account_iam", lambda f: append_runtime(f, 'resource "google_service_account_iam_member" "evil" {}\n'))
 expect_bad("runtime_workload_identity_pool", lambda f: append_runtime(f, 'resource "google_iam_workload_identity_pool" "evil" {}\n'))
 expect_bad("deploy_editor", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), '"roles/run.developer",', '"roles/editor",'))
-expect_bad("build_artifact_admin", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), '"roles/logging.logWriter",', '"roles/artifactregistry.admin",'))
 expect_bad("secret_set_policy", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), '"secretmanager.secrets.update",', '"secretmanager.secrets.setIamPolicy",'))
-expect_bad("relay_seed_to_builder", lambda f: replace(
+expect_bad("relay_seed_to_deployer", lambda f: replace(
     f,
     pathlib.Path("infra/bootstrap/iam.tf"),
     'secret_id = google_secret_manager_secret.relay_identity.secret_id\n  role      = "roles/secretmanager.secretAccessor"\n  member    = "serviceAccount:${google_service_account.relay.email}"',
-    'secret_id = google_secret_manager_secret.relay_identity.secret_id\n  role      = "roles/secretmanager.secretAccessor"\n  member    = "serviceAccount:${google_service_account.build.email}"',
+    'secret_id = google_secret_manager_secret.relay_identity.secret_id\n  role      = "roles/secretmanager.secretAccessor"\n  member    = "serviceAccount:${google_service_account.deploy.email}"',
 ))
 expect_bad("example_reuses_relay", lambda f: replace(f, pathlib.Path("infra/example.tf"), "service_account = local.example_service_account", "service_account = local.relay_service_account"))
 expect_bad("example_identity_version_unpinned", lambda f: replace(f, pathlib.Path("infra/example.tf"), "version = var.example_identity_version", 'version = "latest"'))
-expect_bad("revision_loaded_trigger", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), 'service_account = google_service_account.build.id', 'filename = "infra/cloudbuild.trigger.yaml"\n  service_account = google_service_account.build.id'))
-expect_bad("legacy_source_connector_reused", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), 'name              = "monorepo"', 'name              = "hop"'))
-expect_bad("short_sha", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), '$COMMIT_SHA', '$SHORT_SHA'))
 expect_bad("runtime_backend_retargeted", lambda f: replace(f, pathlib.Path("infra/versions.tf"), 'backend "gcs"', 'backend "local"'))
-expect_bad("untrusted_backend_init", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), "tofu init -input=false -backend-config=/workspace/runtime-backend.tfbackend", "tofu init -input=false"))
 expect_bad("bootstrap_state_writable", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), "objects/${var.runtime_state_prefix}/", "objects/bootstrap/"))
-expect_bad("lease_prefix_writable", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), "objects/${local.lease_object}'", "objects/leases/'"))
 expect_bad("provider_retargeted", lambda f: replace(f, pathlib.Path("infra/versions.tf"), "hashicorp/google", "attacker/google"))
 expect_bad("provider_custom_endpoint", lambda f: replace(f, pathlib.Path("infra/providers.tf"), "project = var.project_id", 'project = var.project_id\n  storage_custom_endpoint = "https://attacker.example"'))
 expect_bad("backend_custom_endpoint", lambda f: replace(f, pathlib.Path("infra/versions.tf"), 'prefix = "relay-fleet"', 'prefix = "relay-fleet"\n    storage_custom_endpoint = "https://attacker.example"'))
@@ -94,12 +84,5 @@ expect_bad("ephemeral_provider_resource", lambda f: append_runtime(f, 'ephemeral
 expect_bad("state_encryption_override", lambda f: append_runtime(f, "terraform { encryption {} }\n"))
 expect_bad("automatic_variable_override", lambda f: (f / "infra" / "evil.auto.tfvars").write_text("relays_enabled = true\n", encoding="utf-8"))
 expect_bad("json_terraform_config", lambda f: (f / "infra" / "evil.tf.json").write_text('{"resource": {}}\n', encoding="utf-8"))
-expect_bad("source_comparison_token_removed", lambda f: replace(
-    f,
-    pathlib.Path("infra/bootstrap/triggers.tf"),
-    'id         = "verify-provenance"\n      wait_for   = ["require-ci"]\n      script     = local.provenance_script\n      secret_env = ["GH_TOKEN"]',
-    'id         = "verify-provenance"\n      wait_for   = ["require-ci"]\n      script     = local.provenance_script',
-))
-expect_bad("repository_token_probe_removed", lambda f: replace(f, pathlib.Path("infra/bootstrap/triggers.tf"), "BUILD_REPOSITORY_RESOURCE=", "REMOVED_REPOSITORY_RESOURCE=",))
 print("infra authority guard tests passed")
 PY

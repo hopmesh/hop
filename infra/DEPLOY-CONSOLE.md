@@ -1,21 +1,20 @@
 # Deploying the console (hop-accountd + hop-console)
 
 This is the exact, ordered plan to deploy the two new runtime services to `hop-mesh`. It touches the
-**supply-chain trusted guards** (`tools/infra-authority-guard.py`, `tools/deploy-provenance.py`) and
-provisions **billed production infra** (Cloud SQL) on the same Cloud Build pipeline that ships the
-relay fleet, so **review the runtime plan + the guard diffs + the bootstrap plan before applying**.
-The Dockerfiles (accountd built `--features live,firestore`; the console standalone image) are already
-in this PR / #251.
+**runtime authority guard** (`tools/infra-authority-guard.py`) and provisions **billed production
+infra** (Cloud SQL) on the same GitHub Actions runtime-deploy path that ships the relay fleet, so
+**review the runtime plan + the guard diff + the bootstrap plan before applying**. The Dockerfiles
+(accountd built `--features live,firestore`; the console standalone image) are already in this PR / #251.
 
-**Nothing here is applied from a terminal.** Every apply is a workflow dispatch or a push to `main`.
+**Nothing here is applied from a terminal.** Every apply is a workflow dispatch or a merge to `main`.
 See "How each root gets applied" below before running a single command.
 
 ## How each root gets applied
 
 | Root | Applied by | Trigger |
 | --- | --- | --- |
-| `infra/bootstrap` | `.github/workflows/bootstrap-apply.yml` | manual dispatch, `confirm=apply`, reviewer-gated |
-| `infra/` (runtime) | `hop-runtime-deploy` Cloud Build trigger | automatic on push to `main`, after CI + provenance + approval |
+| `infra/bootstrap` | `.github/workflows/bootstrap-apply.yml` | manual dispatch, `confirm=apply` |
+| `infra/` (runtime) | `.github/workflows/runtime-deploy.yml` | automatic on merge to `main` after CI is green |
 | `infra/billing` | `.github/workflows/billing-catalog.yml` | manual dispatch, `confirm=apply` |
 
 A local `tofu apply` against any of these is a **destroy operation** whenever the checkout is behind:
@@ -57,8 +56,7 @@ gcloud iam service-accounts create bootstrap-apply --project "$PROJECT" \
 
 for role in serviceusage.serviceUsageAdmin iam.serviceAccountAdmin \
             resourcemanager.projectIamAdmin iam.roleAdmin iam.denyAdmin \
-            iam.workloadIdentityPoolAdmin artifactregistry.admin datastore.owner \
-            cloudkms.admin pubsub.admin cloudbuild.builds.editor cloudbuild.connectionAdmin; do
+            iam.workloadIdentityPoolAdmin artifactregistry.admin datastore.owner; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member "serviceAccount:$SA" --role "roles/$role" --condition None >/dev/null
 done
@@ -74,17 +72,32 @@ gcloud iam roles create hopBootstrapApplySecrets --project "$PROJECT" \
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:$SA" --role "projects/$PROJECT/roles/hopBootstrapApplySecrets" --condition None
 
-for sub in "ref:refs/heads/main" "environment:bootstrap-apply"; do
-  gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
-    --role roles/iam.workloadIdentityUser \
-    --member "principal://iam.googleapis.com/$POOL/subject/repo:hopmesh/monorepo:$sub"
-done
+# The state-bucket IAM permissions come from a second CUSTOM role this root declares
+# (google_project_iam_custom_role.bootstrap_apply_state_bucket_iam in ci_apply.tf). Seed it out of band
+# too: the applier holds no bucket-policy permission until its self-binding exists, and it cannot grant
+# itself its first storage.buckets.setIamPolicy. Creating the role and making the first grant below
+# means bootstrap-apply already holds setIamPolicy on the state bucket when confirm=apply manages the
+# three bindings it owns there (bootstrap_apply_state, deploy_state, billing_catalog_state). confirm=seed
+# imports both the role and the self-binding.
+gcloud iam roles create hopBootstrapApplyStateBucketIam --project "$PROJECT" \
+  --title "Hop bootstrap CI state-bucket IAM" \
+  --description "Manage IAM policy on the runtime state bucket only. No object data access." \
+  --permissions storage.buckets.get,storage.buckets.getIamPolicy,storage.buckets.setIamPolicy
 
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principal://iam.googleapis.com/$POOL/subject/repo:hopmesh/monorepo:ref:refs/heads/main"
+
+# The first grant of the state-bucket IAM custom role, owner-seeded out of band and bucket-scoped. This
+# is the storage.buckets.setIamPolicy the applier needs to manage the three bindings it owns on the
+# state bucket; it cannot make this grant for itself. Unconditional and bucket-scoped, matching
+# google_storage_bucket_iam_member.bootstrap_apply_state_bucket_iam in ci_apply.tf. confirm=seed imports
+# this self-binding. It must precede confirm=apply, which creates deploy_state and billing_catalog_state.
+gcloud storage buckets add-iam-policy-binding gs://hop-mesh-tfstate \
+  --member "serviceAccount:$SA" --role "projects/$PROJECT/roles/hopBootstrapApplyStateBucketIam"
 gcloud storage buckets add-iam-policy-binding gs://hop-mesh-tfstate \
   --member "serviceAccount:$SA" --role roles/storage.objectAdmin \
   --condition '^:^title=bootstrap-state-prefix-only:expression=resource.name == "projects/_/buckets/hop-mesh-tfstate" || resource.name.startsWith("projects/_/buckets/hop-mesh-tfstate/objects/bootstrap/")'
-gcloud storage buckets add-iam-policy-binding gs://hop-mesh-deploy-control \
-  --member "serviceAccount:$SA" --role roles/storage.admin
 ```
 
 Then, still without a local tofu run:
@@ -93,9 +106,12 @@ Then, still without a local tofu run:
    deployment-branch policy limited to `main`. Terraform does not create environments.
 2. Put the contents of the external `infra/bootstrap/terraform.tfvars` into the `BOOTSTRAP_TFVARS`
    repository secret.
-3. `gh workflow run bootstrap-apply.yml --ref main -f confirm=seed` imports the out-of-band service
-   account into state (import writes state, it never deletes a remote object) and then plans. The
-   additive IAM bindings above need no import; re-applying them is a no-op.
+3. `gh workflow run bootstrap-apply.yml --ref main -f confirm=seed` imports every create-only resource
+   seeded above into state (import writes state, it never deletes a remote object) and then plans. The
+   seed imports the service account, the `hopBootstrapApplySecrets` role, the
+   `hopBootstrapApplyStateBucketIam` role, the `github-actions` WIF pool and its `github` provider, and
+   the state-bucket IAM self-binding. The additive project-level IAM bindings above need no import;
+   re-applying them is a no-op. Read the plan: it must show zero destroys before you apply.
 4. Wire the two repository variables from the run's output, then dispatch `confirm=apply`.
 
 ```sh
@@ -146,26 +162,24 @@ The runtime guards FORBID `google_service_account`, `google_secret_manager_secre
 3. **console IAM**: `roles/logging.logWriter` only (it holds no secrets; HOP_ACCOUNTD_URL is plain env).
 4. **Secret containers**: the ones from Step 0 (`google_secret_manager_secret`).
 5. **Deploy attach**: `google_service_account_iam_member` `roles/iam.serviceAccountUser` for `hop-deploy`
-   on each new SA (mirror `bootstrap/iam.tf:102-112`), and add `deploy_uses_accountd`/`deploy_uses_console`
-   to the trigger `depends_on` (`bootstrap/triggers.tf:467-481`).
-6. **Image repos + build/push steps** in `bootstrap/triggers.tf` (mirror `build-relayd`/`push-relayd`,
-   `:65-113`): build `-f services/hop-accountd/Dockerfile` and `-f apps/web/console/Dockerfile`, tag
-   `:$COMMIT_SHA`, add to `images` (`:146`) + the `image_repositories` contract (`:207`). Add
-   `accountd_image_repository`/`console_image_repository` locals in `bootstrap/core.tf:24`.
+   on each new SA (mirror `bootstrap/iam.tf` `deploy_uses_relay`/`deploy_uses_example`).
+6. **Image build/push steps** in `.github/workflows/runtime-deploy.yml` (mirror the relay/example
+   build + push + digest-resolve block): build `-f services/hop-accountd/Dockerfile` and
+   `-f apps/web/console/Dockerfile`, tag `:$HEAD_SHA`, resolve each to `@sha256`, and pass the digests
+   as `TF_VAR_accountd_image` / `TF_VAR_console_image`. Bootstrap owns no image build steps anymore.
 
-## Step 2: the two trusted guards (BOTH files + their `.test.sh` fixtures, same PR)
+## Step 2: the runtime authority guard (the guard file + its `.test.sh` fixture, same PR)
 
-The allowlists are hardcoded Python sets mirrored in both guards. Extend each from 2 → 4:
+The allowlist is a hardcoded Python set. Extend it from 2 to 4 services:
 
-- `tools/infra-authority-guard.py`: the Cloud Run set (`:192-196`) → add `("google_cloud_run_v2_service","accountd")`, `(...,"console")`; image bindings (`:197-199`) → add `var.accountd_image`, `var.console_image`; SA set (`:200-207`) → add `local.accountd_service_account`, `local.console_service_account`; the `data.tf` local pins (`:224-229`).
-- `tools/deploy-provenance.py`: the identical mirror in `verify_runtime_archive()` (`:672-700`).
+- `tools/infra-authority-guard.py`: the Cloud Run set → add `("google_cloud_run_v2_service","accountd")`, `(...,"console")`; image bindings → add `var.accountd_image`, `var.console_image`; SA set → add `local.accountd_service_account`, `local.console_service_account`; the `data.tf` local pins.
 - **Price remote-state (a deliberate relaxation, review carefully):** to wire `HOP_STRIPE_*_PRICES`
   from `infra/billing`'s output, add `terraform_remote_state` to `ALLOWED_RUNTIME_DATA_SOURCES` and the
-  `terraform.io/builtin/terraform` provider to `EXPECTED_RUNTIME_PROVIDER_SOURCES` in BOTH guards.
-  Alternative (no relaxation): pass the 3 price ids as `TF_VAR_*` from the deploy trigger
-  (`bootstrap/triggers.tf:380-388`) instead of remote-state.
-- Update `tools/infra-authority-guard.test.sh` + `tools/deploy-provenance.test.sh` fixtures to the new
-  4-service allowlist (they assert it exactly; CI `ci.yml:768,772` runs them).
+  `terraform.io/builtin/terraform` provider to `EXPECTED_RUNTIME_PROVIDER_SOURCES` in the guard.
+  Alternative (no relaxation): pass the 3 price ids as `TF_VAR_*` from `runtime-deploy.yml` instead of
+  remote-state.
+- Update `tools/infra-authority-guard.test.sh` fixtures to the new 4-service allowlist (it asserts them
+  exactly; the CI `Terraform` job runs the guard + its self-test).
 
 ## Step 3: `infra/` runtime root
 
@@ -198,9 +212,9 @@ The allowlists are hardcoded Python sets mirrored in both guards. Extend each fr
    job pauses for the `bootstrap-apply` environment reviewer. This creates the SAs, secrets, and image
    build steps.
 2. Seed `console-db-url` after Cloud SQL exists (Step 0).
-3. The push-to-main deploy builds the images + runs the runtime apply under `hop-deploy` (review the
-   Cloud Build plan output: it should show the 2 services + Cloud SQL + the LB/DNS + `certificate`
-   pending validation, nothing destroyed).
+3. The merge-to-main runtime-deploy workflow builds the images + runs the runtime apply under
+   `hop-deploy` (review the tofu apply output in the run log: it should show the 2 services + Cloud SQL
+   + the LB/DNS + `certificate` pending validation, nothing destroyed).
 4. Point `dashboard.hopme.sh` and confirm the managed cert goes ACTIVE (DNS-auth CNAME must resolve).
 5. Register the GitHub OAuth app callback = `https://dashboard.hopme.sh/api/auth/github/callback`.
 6. Smoke: `https://dashboard.hopme.sh` → magic-link signup → dashboard loads → usage/billing populate.

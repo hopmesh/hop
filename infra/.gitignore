@@ -1,7 +1,7 @@
 # Terraform
 .terraform/
 # NOTE (infra-11): .terraform.lock.hcl is deliberately COMMITTED (not ignored) so provider
-# versions are pinned + identical between every CI validate, local run, and the Cloud Build
+# versions are pinned + identical between every CI validate, local run, and the runtime-deploy
 # apply. Do not re-add it here. Update it with `tofu providers lock` when bumping a provider.
 *.tfstate
 *.tfstate.*

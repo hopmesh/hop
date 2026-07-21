@@ -1,10 +1,10 @@
 locals {
-  build_project_roles = toset([
-    "roles/logging.logWriter",
-  ])
+  # hop-deploy is the runtime applier. GitHub Actions authenticates as it over WIF (runtime_deploy.tf)
+  # and it holds ONLY the project roles the runtime root needs. It has no administrative authority: no
+  # project/service-account/secret IAM admin, no API enablement, no role mutation.
   deploy_project_roles = toset([
+    "roles/bigquery.dataEditor",
     "roles/certificatemanager.editor",
-    "roles/cloudbuild.builds.viewer",
     "roles/compute.loadBalancerAdmin",
     "roles/dns.admin",
     "roles/logging.configWriter",
@@ -22,16 +22,22 @@ locals {
   ])
 }
 
-resource "google_service_account" "build" {
-  account_id   = "hop-cloudbuild"
-  display_name = "Hop untrusted source builder"
+# hop-cloudbuild was the low-privilege Cloud Build source builder. Cloud Build is deleted (images now
+# build in GitHub Actions, which applies the runtime root via WIF), so this identity is no longer
+# managed here. It is still live in the project, so it is dropped from management WITHOUT a destroy and
+# torn down out of band once the legacy trigger and its Cloud Build repository are removed. Never plan a
+# destroy on it from this reviewed apply.
+removed {
+  from = google_service_account.build
 
-  depends_on = [google_project_service.this["iam.googleapis.com"]]
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_service_account" "deploy" {
   account_id   = "hop-deploy"
-  display_name = "Hop trusted runtime deployer"
+  display_name = "Hop runtime deployer (GitHub Actions via WIF)"
 
   depends_on = [google_project_service.this["iam.googleapis.com"]]
 }
@@ -48,13 +54,6 @@ resource "google_service_account" "example" {
   display_name = "Hop public example runtime"
 
   depends_on = [google_project_service.this["iam.googleapis.com"]]
-}
-
-resource "google_project_iam_member" "build" {
-  for_each = local.build_project_roles
-  project  = var.project_id
-  role     = each.value
-  member   = "serviceAccount:${google_service_account.build.email}"
 }
 
 resource "google_project_iam_member" "deploy" {
@@ -78,26 +77,6 @@ resource "google_project_iam_member" "example" {
   member   = "serviceAccount:${google_service_account.example.email}"
 }
 
-resource "google_project_iam_member" "deploy_approver" {
-  project = var.project_id
-  role    = "roles/cloudbuild.builds.approver"
-  member  = "group:${var.deploy_approver_group}"
-}
-
-# Cloud Build's service agent may mint short-lived credentials for the two build
-# identities. Neither identity may impersonate the other.
-resource "google_service_account_iam_member" "cloudbuild_uses_build" {
-  service_account_id = google_service_account.build.name
-  role               = "roles/iam.serviceAccountTokenCreator"
-  member             = "serviceAccount:${local.cloudbuild_service_agent}"
-}
-
-resource "google_service_account_iam_member" "cloudbuild_uses_deploy" {
-  service_account_id = google_service_account.deploy.name
-  role               = "roles/iam.serviceAccountTokenCreator"
-  member             = "serviceAccount:${local.cloudbuild_service_agent}"
-}
-
 # The deployer may attach only the two pre-created runtime identities to Cloud Run.
 resource "google_service_account_iam_member" "deploy_uses_relay" {
   service_account_id = google_service_account.relay.name
@@ -111,12 +90,15 @@ resource "google_service_account_iam_member" "deploy_uses_example" {
   member             = "serviceAccount:${google_service_account.deploy.email}"
 }
 
-resource "google_artifact_registry_repository_iam_member" "build_writer" {
+# hop-deploy builds and pushes the relay + example images from the GitHub Actions runtime-deploy
+# workflow, then applies the runtime root, so it needs write on the hop repository (build/push) and
+# read (the Cloud Run apply resolves the pushed digests).
+resource "google_artifact_registry_repository_iam_member" "deploy_writer" {
   project    = var.project_id
   location   = google_artifact_registry_repository.hop.location
   repository = google_artifact_registry_repository.hop.repository_id
   role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${google_service_account.build.email}"
+  member     = "serviceAccount:${google_service_account.deploy.email}"
 }
 
 resource "google_artifact_registry_repository_iam_member" "deploy_reader" {
@@ -139,72 +121,8 @@ resource "google_secret_manager_secret_iam_member" "example_identity" {
   member    = "serviceAccount:${google_service_account.example.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "build_ci_token" {
-  secret_id = google_secret_manager_secret.ci_readtoken.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.build.email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "deploy_ci_token" {
-  secret_id = google_secret_manager_secret.ci_readtoken.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.deploy.email}"
-}
-
-resource "google_kms_crypto_key_iam_member" "build_signer" {
-  crypto_key_id = google_kms_crypto_key.provenance.id
-  role          = "roles/cloudkms.signerVerifier"
-  member        = "serviceAccount:${google_service_account.build.email}"
-}
-
-resource "google_kms_crypto_key_iam_member" "deploy_public_key" {
-  crypto_key_id = google_kms_crypto_key.provenance.id
-  role          = "roles/cloudkms.publicKeyViewer"
-  member        = "serviceAccount:${google_service_account.deploy.email}"
-}
-
-resource "google_pubsub_topic_iam_member" "build_handoff" {
-  topic  = google_pubsub_topic.deploy_requests.name
-  role   = "roles/pubsub.publisher"
-  member = "serviceAccount:${google_service_account.build.email}"
-}
-
-resource "google_storage_bucket_iam_member" "build_provenance_creator" {
-  bucket = google_storage_bucket.deploy_control.name
-  role   = "roles/storage.objectCreator"
-  member = "serviceAccount:${google_service_account.build.email}"
-
-  condition {
-    title       = "immutable-provenance-only"
-    description = "The source builder can create, but not read, replace, or delete, build provenance objects."
-    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.deploy_control.name}/objects/provenance/')"
-  }
-}
-
-resource "google_storage_bucket_iam_member" "deploy_provenance_viewer" {
-  bucket = google_storage_bucket.deploy_control.name
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.deploy.email}"
-
-  condition {
-    title       = "trusted-inputs-only"
-    description = "The deployer can read bootstrap and provenance inputs but cannot replace them."
-    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.deploy_control.name}/objects/provenance/') || resource.name == 'projects/_/buckets/${google_storage_bucket.deploy_control.name}/objects/${local.contract_object}'"
-  }
-}
-
-resource "google_storage_bucket_iam_member" "deploy_lease" {
-  bucket = google_storage_bucket.deploy_control.name
-  role   = "roles/storage.objectUser"
-  member = "serviceAccount:${google_service_account.deploy.email}"
-
-  condition {
-    title       = "global-deployment-lease-only"
-    description = "The deployer can mutate only the global control-plane lease object."
-    expression  = "resource.name == 'projects/_/buckets/${google_storage_bucket.deploy_control.name}/objects/${local.lease_object}'"
-  }
-}
-
+# The only storage authority the deployer has: list the backend bucket and mutate objects under the
+# runtime state prefix. It cannot reach the bootstrap or billing state prefixes.
 resource "google_storage_bucket_iam_member" "deploy_state" {
   bucket = var.runtime_state_bucket
   role   = "roles/storage.objectUser"
@@ -215,6 +133,9 @@ resource "google_storage_bucket_iam_member" "deploy_state" {
     description = "The deployer can list the backend bucket and mutate only runtime state objects."
     expression  = "resource.name == 'projects/_/buckets/${var.runtime_state_bucket}' || resource.name.startsWith('projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/')"
   }
+
+  # Setting this member requires bootstrap-apply's bucket-policy grant (ci_apply.tf).
+  depends_on = [google_storage_bucket_iam_member.bootstrap_apply_state_bucket_iam]
 }
 
 # Retain the legacy role id so bootstrap can remove its old setIamPolicy permission
@@ -235,29 +156,15 @@ resource "google_project_iam_custom_role" "build_secrets" {
   ]
 }
 
-# Defense in depth: every principal is denied relay seed bytes except the dedicated
-# relay runtime identity. Project administrators can change this only through the
-# separately invoked bootstrap process, not through the runtime deploy account.
-resource "google_iam_deny_policy" "relay_seed" {
-  parent       = urlencode("cloudresourcemanager.googleapis.com/projects/${var.project_id}")
-  name         = "deny-relay-seed"
-  display_name = "Only the Hop relay runtime may read the relay seed"
-
-  rules {
-    description = "Deny relay identity version access to every principal except hop-relay."
-    deny_rule {
-      denied_principals = ["principalSet://goog/public:all"]
-      exception_principals = [
-        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.relay.email}",
-      ]
-      denied_permissions = ["secretmanager.googleapis.com/versions.access"]
-
-      denial_condition {
-        title      = "relay-seed-only"
-        expression = "resource.name.endsWith('/secrets/hop-relay-identity') || resource.name.contains('/secrets/hop-relay-identity/')"
-      }
-    }
-  }
-
-  depends_on = [google_secret_manager_secret.relay_identity]
-}
+# The relay seed is protected by the allow-side restriction alone: the accessor binding
+# below grants secretmanager.secretAccessor on hop-relay-identity to the relay runtime
+# identity and to nothing else, and the runtime authority guard asserts that (including
+# that the deploy identity never gets it).
+#
+# A google_iam_deny_policy hard-deny used to sit here as defense in depth. It is removed
+# because GCP will not let this project's applier hold the permission to manage it:
+# roles/iam.denyAdmin is rejected at the project level ("not supported for this
+# resource"), and iam.denypolicies.create cannot be carried by a custom role. The only
+# way to enable it is granting the project-scoped applier ORG-level deny admin, which is
+# a wider privilege than the control it buys. The policy was never applied (absent from
+# bootstrap state), so nothing live changes.

@@ -1,0 +1,130 @@
+# Runtime deploy: GitHub is change management, GCP is plumbing.
+#
+# A merge to `main` runs the CI workflow. When CI COMPLETES SUCCESSFULLY on a push to main, this
+# workflow builds + pushes the relay and example images, resolves their immutable @sha256 digests, and
+# applies the runtime root (infra/) via Workload Identity Federation as hop-deploy. There is no GCP-side
+# re-verification of the change: CI going green on main IS the authorization.
+#
+# Keyless: GitHub OIDC -> WIF -> hop-deploy (infra/bootstrap/runtime_deploy.tf). The OIDC subject is the
+# exact push-on-main subject, so no other ref can mint these credentials. The job stays neutral until
+# both repository variables are populated from the reviewed bootstrap outputs.
+name: Runtime deploy (relay fleet)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write # required for the WIF OIDC token exchange
+
+# Serialize deploys so two merges in quick succession cannot apply concurrently. Do not cancel a
+# running apply midway.
+concurrency:
+  group: runtime-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy runtime (WIF apply)
+    # Only a successful CI run from a push to main. A PR CI run, a non-main branch, or a red CI run
+    # deploys nothing. Neutral until the runtime WIF repo variables are wired.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
+      vars.GCP_RUNTIME_WIF_PROVIDER != '' &&
+      vars.GCP_RUNTIME_SERVICE_ACCOUNT != ''
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'hop-mesh' }}
+      AR_REGION: us-central1
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      # Check out the exact commit CI validated. Keep the checkout credentials (default
+      # persist-credentials) so `git ls-remote origin` in the supersession guard can read the private
+      # repo's main tip.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # SUPERSESSION GUARD. If a newer commit is already main's tip, this build is stale: skip the whole
+      # deploy rather than apply an old tree over a newer one. This is a real skip (the job still
+      # SUCCEEDS but applies nothing), NOT `exit 0` mid-step: every subsequent step is gated on
+      # steps.guard.outputs.superseded so a superseded run no-ops cleanly.
+      - id: guard
+        name: Skip if a newer commit already superseded this one
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "current=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::main tip $tip supersedes build sha $HEAD_SHA; skipping deploy (a newer run will apply)"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            echo "deploying $HEAD_SHA (current main tip)"
+          fi
+
+      - id: auth
+        if: steps.guard.outputs.superseded != 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: hop-mesh
+          workload_identity_provider: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # Build + push both images tagged with the full source SHA, then resolve each pushed tag to an
+      # immutable @sha256 digest (the runtime variables reject anything that is not @sha256). The images
+      # are only built, pushed, and inspected here; none is executed on the runner.
+      - name: Build, push, and resolve image digests
+        if: steps.guard.outputs.superseded != 'true'
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          registry="${AR_REGION}-docker.pkg.dev"
+          relay_repo="${registry}/${PROJECT_ID}/hop/hop-relayd"
+          example_repo="${registry}/${PROJECT_ID}/hop/hop-example"
+
+          echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${registry}"
+
+          docker build -f services/hop-relayd/Dockerfile -t "${relay_repo}:${HEAD_SHA}" .
+          docker build -f services/hop-endpoint/Dockerfile -t "${example_repo}:${HEAD_SHA}" .
+          docker push "${relay_repo}:${HEAD_SHA}"
+          docker push "${example_repo}:${HEAD_SHA}"
+
+          relay_image="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${relay_repo}:${HEAD_SHA}" | grep "^${relay_repo}@sha256:" | head -n1)"
+          example_image="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${example_repo}:${HEAD_SHA}" | grep "^${example_repo}@sha256:" | head -n1)"
+          test -n "$relay_image" || { echo "could not resolve relay digest" >&2; exit 1; }
+          test -n "$example_image" || { echo "could not resolve example digest" >&2; exit 1; }
+          echo "relay:   $relay_image"
+          echo "example: $example_image"
+          echo "RELAY_IMAGE=$relay_image" >> "$GITHUB_ENV"
+          echo "EXAMPLE_IMAGE=$example_image" >> "$GITHUB_ENV"
+
+      - if: steps.guard.outputs.superseded != 'true'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+
+      - name: tofu init + apply (runtime root)
+        if: steps.guard.outputs.superseded != 'true'
+        working-directory: infra
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_relay_image: ${{ env.RELAY_IMAGE }}
+          TF_VAR_example_image: ${{ env.EXAMPLE_IMAGE }}
+          TF_VAR_deployment_source_sha: ${{ github.event.workflow_run.head_sha }}
+          TF_VAR_deployment_environment: ${{ vars.DEPLOYMENT_ENVIRONMENT || 'production' }}
+          TF_VAR_relay_identity_version: ${{ vars.RELAY_IDENTITY_VERSION || '1' }}
+          TF_VAR_example_identity_version: ${{ vars.EXAMPLE_IDENTITY_VERSION || '1' }}
+          TF_VAR_relays_enabled: ${{ vars.RELAYS_ENABLED || 'false' }}
+          TF_VAR_cloud_run_ingress: ${{ vars.CLOUD_RUN_INGRESS || 'INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER' }}
+          TF_VAR_max_instances_per_region: ${{ vars.MAX_INSTANCES_PER_REGION || '1' }}
+          TF_VAR_region_allowlist: ${{ vars.RELAY_REGION_ALLOWLIST || '[]' }}
+        run: |
+          tofu init -input=false
+          tofu apply -input=false -auto-approve -no-color

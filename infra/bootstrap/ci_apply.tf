@@ -3,21 +3,21 @@
 # WHY THIS EXISTS: bootstrap used to be applied from an operator's terminal. A local apply against
 # GCS-backed state is a destroy operation whenever the local checkout is behind: everything present in
 # remote state but absent from the local configuration is planned for deletion, and this root owns IAM,
-# service accounts, secrets, and KMS keys. `prevent_destroy` turns that into a half-applied root, not a
-# safe refusal. The workflow always applies the exact bytes of canonical `main`, so the plan is a
-# function of a reviewed commit rather than of whatever the operator last pulled.
+# service accounts, secrets, and WIF. `prevent_destroy` turns that into a half-applied root, not a safe
+# refusal. The workflow always applies the exact bytes of canonical `main`, so the plan is a function of
+# a reviewed commit rather than of whatever the operator last pulled.
 #
-# AUTHORITY: this identity is a project IAM administrator. That is not an oversight, it is what
-# applying this root requires. It is deliberately SEPARATE from `hop-deploy` (the automatic
-# push-to-main runtime applier), which must keep zero administrative authority, and from
-# `hop-cloudbuild`. Neither of those accounts gains a single permission from this file. The controls on
-# this identity are therefore: it is reachable only through GitHub OIDC, only from this repository,
-# only from the two exact token subjects below, and only from a manually dispatched workflow.
+# AUTHORITY: this identity is a project IAM administrator. That is not an oversight, it is what applying
+# this root requires. It is deliberately SEPARATE from `hop-deploy` (the automatic push-to-main runtime
+# applier, runtime_deploy.tf), which must keep zero administrative authority. hop-deploy gains no
+# permission from this file. The controls on this identity are: it is reachable only through GitHub
+# OIDC, only from this repository, only from the single exact token subject below (a push-driven run on
+# refs/heads/main), and only from a manually dispatched workflow.
 locals {
   # Predefined roles this root genuinely needs. Each is annotated with the resource that forces it.
   # Anything narrower fails the apply, which is a loud failure, not a silent one.
   bootstrap_apply_project_roles = toset([
-    # google_project_service.this, google_project_service_identity.cloudbuild
+    # google_project_service.this
     "roles/serviceusage.serviceUsageAdmin",
     # google_service_account.* and every google_service_account_iam_member
     "roles/iam.serviceAccountAdmin",
@@ -26,8 +26,6 @@ locals {
     "roles/resourcemanager.projectIamAdmin",
     # google_project_iam_custom_role.build_secrets and .bootstrap_apply_secrets
     "roles/iam.roleAdmin",
-    # google_iam_deny_policy.relay_seed
-    "roles/iam.denyAdmin",
     # google_iam_workload_identity_pool.github and its provider
     "roles/iam.workloadIdentityPoolAdmin",
     # google_artifact_registry_repository.hop and its repository IAM
@@ -35,24 +33,12 @@ locals {
     # google_firestore_database.relay and the four google_firestore_field TTL policies. Unavoidably
     # broad: it also carries Firestore entity read/write, so it can see the relay bundle store.
     "roles/datastore.owner",
-    # google_kms_key_ring.provenance and google_kms_crypto_key.provenance plus their IAM. Excludes the
-    # crypto operations themselves, so this role cannot sign a provenance manifest.
-    "roles/cloudkms.admin",
-    # google_pubsub_topic.deploy_requests and its IAM. Editor cannot setIamPolicy, so admin it is.
-    "roles/pubsub.admin",
-    # google_cloudbuild_trigger.source and .deploy
-    "roles/cloudbuild.builds.editor",
-    # google_cloudbuildv2_repository.hop, which is created under the existing GitHub App connection
-    "roles/cloudbuild.connectionAdmin",
   ])
 
-  # GitHub mints a different `sub` claim once a job declares an environment, so the plan job and the
-  # reviewer-gated apply job need separate bindings. Both are exact subjects, not principalSets: a
-  # workflow run on any other ref, or an apply job that did not go through the environment, gets no
-  # token at all.
-  bootstrap_apply_plan_subject  = "repo:${var.github_repository}:ref:refs/heads/main"
-  bootstrap_apply_apply_subject = "repo:${var.github_repository}:environment:${var.github_bootstrap_environment}"
-  bootstrap_apply_principal     = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject"
+  # A single exact OIDC subject: a push-driven workflow run on canonical main. It is an exact subject,
+  # not a principalSet: a workflow run on any other ref, or from a pull request, gets no token at all.
+  bootstrap_apply_subject   = "repo:${var.github_repository}:ref:refs/heads/main"
+  bootstrap_apply_principal = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject"
 }
 
 resource "google_service_account" "bootstrap_apply" {
@@ -62,20 +48,12 @@ resource "google_service_account" "bootstrap_apply" {
   depends_on = [google_project_service.this["iam.googleapis.com"]]
 }
 
-# The plan job runs without a GitHub environment, so its token subject is the ref form.
-resource "google_service_account_iam_member" "bootstrap_apply_wif_plan" {
+# Both the plan and apply jobs run from refs/heads/main (no GitHub environment), so one exact subject
+# binding covers them. The apply job is gated by workflow_dispatch confirm=apply, not by an environment.
+resource "google_service_account_iam_member" "bootstrap_apply_wif" {
   service_account_id = google_service_account.bootstrap_apply.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.bootstrap_apply_principal}/${local.bootstrap_apply_plan_subject}"
-}
-
-# The apply job declares the environment, so its token subject is the environment form. Required
-# reviewers and the environment's deployment-branch policy are GitHub repository settings; this root
-# does not create them and does not pretend to.
-resource "google_service_account_iam_member" "bootstrap_apply_wif_apply" {
-  service_account_id = google_service_account.bootstrap_apply.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.bootstrap_apply_principal}/${local.bootstrap_apply_apply_subject}"
+  member             = "${local.bootstrap_apply_principal}/${local.bootstrap_apply_subject}"
 }
 
 resource "google_project_iam_member" "bootstrap_apply" {
@@ -110,16 +88,6 @@ resource "google_project_iam_member" "bootstrap_apply_secrets" {
   member  = "serviceAccount:${google_service_account.bootstrap_apply.email}"
 }
 
-# The deploy control bucket is bootstrap-owned (bucket config, IAM conditions, and the bootstrap
-# contract object), so the grant is bucket-scoped rather than a project-wide storage role. Creating
-# the bucket from nothing needs project-level storage.buckets.create, which is intentionally NOT
-# granted: the bucket exists, and a CI identity should not be able to mint new buckets.
-resource "google_storage_bucket_iam_member" "bootstrap_apply_control" {
-  bucket = google_storage_bucket.deploy_control.name
-  role   = "roles/storage.admin"
-  member = "serviceAccount:${google_service_account.bootstrap_apply.email}"
-}
-
 # State access is the `bootstrap/` prefix only, matching this root's backend. The bucket itself is
 # allowed so the GCS backend can list; runtime (`relay-fleet/`) and `billing/` state stay unreachable.
 resource "google_storage_bucket_iam_member" "bootstrap_apply_state" {
@@ -132,6 +100,40 @@ resource "google_storage_bucket_iam_member" "bootstrap_apply_state" {
     description = "Only the backend bucket listing and objects under the bootstrap/ state prefix."
     expression  = "resource.name == \"projects/_/buckets/${var.runtime_state_bucket}\" || resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/bootstrap/\")"
   }
+
+  # Setting this member requires the bucket-policy grant below.
+  depends_on = [
+    google_project_service.this["storage.googleapis.com"],
+    google_storage_bucket_iam_member.bootstrap_apply_state_bucket_iam,
+  ]
+}
+
+# Managing IAM on the runtime state bucket needs storage.buckets.setIamPolicy, which neither
+# roles/storage.objectAdmin (bootstrap_apply_state above) nor roles/storage.objectUser carries, and no
+# project storage role is granted to this identity. Without it, the three bindings this root owns on the
+# state bucket (bootstrap_apply_state here, google_storage_bucket_iam_member.deploy_state in iam.tf, and
+# .billing_catalog_state in billing.tf) cannot be applied. A project-wide storage role would reach every
+# bucket, and bucket-scoped roles/storage.admin would also carry storage.objects.* across the runtime and
+# billing state prefixes this root deliberately keeps unreachable. So this is a bucket-policy-only custom
+# role, granted bucket-scoped on the state bucket: exactly setIamPolicy plus the reads it needs, no object
+# data access. Same pattern as bootstrap_apply_secrets. The first grant of this permission is owner-seeded
+# out of band, like this identity's baseline project roles, because a self-authenticating applier cannot
+# grant itself its first bucket-policy permission (see infra/DEPLOY-CONSOLE.md).
+resource "google_project_iam_custom_role" "bootstrap_apply_state_bucket_iam" {
+  role_id     = "hopBootstrapApplyStateBucketIam"
+  title       = "Hop bootstrap CI state-bucket IAM"
+  description = "Manage IAM policy on the runtime state bucket only. No object data access."
+  permissions = [
+    "storage.buckets.get",
+    "storage.buckets.getIamPolicy",
+    "storage.buckets.setIamPolicy",
+  ]
+}
+
+resource "google_storage_bucket_iam_member" "bootstrap_apply_state_bucket_iam" {
+  bucket = var.runtime_state_bucket
+  role   = google_project_iam_custom_role.bootstrap_apply_state_bucket_iam.id
+  member = "serviceAccount:${google_service_account.bootstrap_apply.email}"
 
   depends_on = [google_project_service.this["storage.googleapis.com"]]
 }

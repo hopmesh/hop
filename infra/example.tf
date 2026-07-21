@@ -43,9 +43,7 @@ resource "google_cloud_run_v2_service" "example" {
     "hop-source-sha" = var.deployment_source_sha
   }
   annotations = {
-    "hopmesh.dev/build-id"        = var.deployment_build_id
-    "hopmesh.dev/environment"     = var.deployment_environment
-    "hopmesh.dev/manifest-sha256" = var.deployment_manifest_sha256
+    "hopmesh.dev/environment" = var.deployment_environment
   }
 
   deletion_protection = false

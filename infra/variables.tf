@@ -32,7 +32,7 @@ variable "example_image" {
 }
 
 variable "deployment_source_sha" {
-  description = "Exact source revision authorized by the trusted CI and provenance gates."
+  description = "Exact source revision (the merged main commit) that GitHub Actions is deploying after CI went green."
   type        = string
 
   validation {
@@ -41,28 +41,8 @@ variable "deployment_source_sha" {
   }
 }
 
-variable "deployment_build_id" {
-  description = "Cloud Build id bound into the signed provenance manifest."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.deployment_build_id))
-    error_message = "deployment_build_id must be a Cloud Build UUID."
-  }
-}
-
-variable "deployment_manifest_sha256" {
-  description = "SHA-256 of the KMS-signed build provenance manifest."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[0-9a-f]{64}$", var.deployment_manifest_sha256))
-    error_message = "deployment_manifest_sha256 must be 64 lowercase hexadecimal characters."
-  }
-}
-
 variable "deployment_environment" {
-  description = "Externally configured deployment environment bound into bootstrap and build provenance."
+  description = "Deployment environment name (normally production), passed by the runtime-deploy workflow."
   type        = string
 
   validation {

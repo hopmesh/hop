@@ -1,130 +1,66 @@
 # Hop production infrastructure
 
 The runtime root in `infra/` manages the relay and public example services, load
-balancer, DNS, certificates, observability, and runtime datasets. The
+balancer, DNS, certificates, observability, and the BigQuery usage dataset. The
 administrator-only root in `infra/bootstrap/` manages APIs, IAM, service accounts,
-secrets, Workload Identity Federation, Firestore policy, Artifact Registry,
-provenance resources, and trusted Cloud Build triggers. The isolated
-`infra/billing/` root manages only the Stripe catalog.
+secrets, Workload Identity Federation, Firestore policy, and Artifact Registry. The
+isolated `infra/billing/` root manages only the Stripe catalog.
 
-## Trusted deployment architecture
+## GitHub is change management, GCP is plumbing
 
-The active source trigger is `hop-source-build`. Its build definition is stored
-inline in the already-applied Cloud Build trigger. It does not load
-`infra/cloudbuild.trigger.yaml` or any other build script from the candidate
-checkout. The checked-in YAML file is a fail-closed retired sentinel.
+The only human gate on any production change is the pull request that merges it to
+`main`. GitHub decides whether a change ships, what ships, and who approved it. Google
+Cloud runs what GitHub blessed and verifies nothing about the change: no signing, no
+second approval, no provenance re-check. Every apply is keyless (GitHub OIDC exchanged
+for short-lived credentials through Workload Identity Federation), so there are no
+service-account keys to store or rotate.
 
-The source trigger runs as `hop-cloudbuild`. Candidate Dockerfiles execute only
-under this low-privilege identity. Two images are built and pushed with the full
-40-character source SHA. No `latest` or short-SHA tag is published.
+Each root is applied by exactly one GitHub Actions workflow:
 
-The trusted inline source definition performs these steps:
+| Root | Workflow | Trigger |
+| --- | --- | --- |
+| `infra/bootstrap` | `.github/workflows/bootstrap-apply.yml` | manual dispatch, `confirm=apply` |
+| `infra/` (runtime) | `.github/workflows/runtime-deploy.yml` | automatic on merge to `main` after CI is green |
+| `infra/billing` | `.github/workflows/billing-catalog.yml` | manual dispatch, `confirm=apply` |
 
-1. Prove the effective build identity has no administrative, runtime-secret,
-   service-account-token, source-repository-token, or broad storage authority.
-2. Build the relay and example images under the source-build identity.
-3. Query GitHub by numeric repository and workflow id for the exact source SHA.
-4. Verify a `push` run on canonical `main`, the current run attempt, exact workflow
-   path and bootstrap-owned content digest, exact job set, repository identity, and
-   the GitHub Actions App id.
-5. Resolve both pushed tags to immutable `sha256:` digests.
-6. Archive only the runtime Terraform root, excluding `infra/bootstrap`.
-7. Create a canonical provenance manifest containing source SHA, image tags and
-   digests, repository id, builder identity, Cloud Build id, environment, runtime
-   archive hash, and KMS key version.
-8. Sign the manifest with the bootstrap KMS key and create immutable provenance
-   objects in the control bucket.
-9. Publish a wake-up message to the deployment topic.
+A local `tofu apply` against any of these is a destroy operation whenever the checkout
+is behind: everything in remote state but absent from the local files is planned for
+deletion, and bootstrap owns IAM, service accounts, and secrets. `prevent_destroy` does
+not save you there, it only strands the root half applied. Always apply through the
+workflow, where the input is a reviewed commit rather than whatever you last pulled.
 
-The message is not trusted. `hop-runtime-deploy` is a separate inline Pub/Sub
-trigger running as `hop-deploy`. It also requires control-plane approval from the
-configured approver group. After approval it independently validates GitHub CI,
-the source Build record, source trigger id, builder identity, signed manifest,
-archive hash, image digests, bootstrap contract, and canonical `main`. It also
-downloads GitHub's tarball for the exact gated SHA and requires every runtime
-archive path and byte to match that source tree. Before OpenTofu starts, it also
-rejects provider or backend credential endpoints, untrusted executable resources,
-and any Cloud Run image or identity not bound to the signed deployment inputs.
+## Runtime deployment
 
-Only then does it extract the runtime archive and invoke OpenTofu with digest-only
-image references. The deployment trigger never runs bootstrap. The runtime deploy
-identity has no permission to change project IAM, service-account IAM, custom
-roles, secret IAM, APIs, Cloud Build triggers, or the bootstrap state.
+A merge to `main` runs the `CI` workflow. When CI COMPLETES SUCCESSFULLY on that push,
+`runtime-deploy.yml` fires. It authenticates as `hop-deploy` over WIF, builds and pushes
+the `hop-relayd` and `hop-example` images tagged with the full source SHA, resolves each
+pushed tag to an immutable `@sha256` digest, and runs `tofu apply` on the runtime root
+with digest-only image references. The runtime `relay_image` / `example_image` variables
+reject anything that is not an `@sha256` reference.
 
-The authenticated deploy-provenance job set currently requires these exact jobs
-from `.github/workflows/ci.yml`:
+Before doing any of that, a supersession guard reads the current `main` tip with
+`git ls-remote`. If a newer commit already landed, the run SKIPS every remaining step
+(the job still succeeds and applies nothing) so a stale build cannot overwrite a newer
+tree. The `runtime-deploy` concurrency group serializes deploys so two quick merges
+cannot apply at once.
 
-- `Detect changed areas`
-- `Rust (test · clippy · fmt)`
-- `Kotlin SDK tests (BearerManager)`
-- `Android bearers + driver (JVM unit tests)`
-- `Apple bearers + driver + app (build-only)`
-- `WASM sim (wasm32 build + swarm invariants)`
-- `Web + sim (Astro build · scenario-check · link check)`
-- `Contract purity + header drift + C smoke`
-- `Terraform (fmt · validate · plan)`
-- `Automation authority guards`
-- `Docs token guard (banned copy)`
-- `Node endpoint SDK (proofs)`
-- `Python endpoint SDK (proofs)`
-- `Go endpoint SDK (race)`
-- `Ruby endpoint SDK (proofs)`
-- `Crystal endpoint SDK (spec)`
-- `Elixir endpoint SDK (mix test)`
-- `CI gate`
+## Branch protection
 
-This is intentionally separate from branch protection. GitHub branch protection
-on `main` requires the single `CI gate` context. That aggregate job depends on the
-change detector and every internal CI job, runs with `if: always()`, fails when any
-needed job fails or is cancelled, and accepts jobs skipped by a path filter. Using
-one live required context prevents an unrelated path-filtered job from remaining
-pending forever.
-
-The deploy path does not trust that display context by itself. Both inline triggers
-authenticate the numeric repository, workflow id and path, GitHub Actions App id,
-canonical `main` ref, source SHA, bootstrap-owned workflow digest, current run
-attempt, and the complete job set above. `tools/check-required-checks.sh` keeps the
-aggregate branch-protection contract and this deploy-provenance contract synchronized
-independently.
-
-## Global deployment lease
-
-The deployer atomically creates `leases/global.json` in the versioned control
-bucket with `ifGenerationMatch=0`. This lease is separate from the GCS OpenTofu
-state lock. It records the deploy build id, source SHA, manifest digest,
-acquisition time, and expiry.
-
-After acquiring the lease, the trigger re-reads canonical `main`. It repeats that
-check immediately before apply, verifies lease ownership, and renews the lease.
-An older delayed build therefore fails once a newer SHA is canonical. A live lease
-causes bounded contention. An expired lease is removed only with an exact GCS
-generation precondition. Malformed abandoned leases become recoverable after the
-same bounded TTL. Every acquire, contention, renewal, recovery, and release emits
-a structured Cloud Build log, and bucket versioning retains prior lease objects.
-
-The apply step is allowed to fail so the trusted release step still runs. A final
-trusted step restores the failed build verdict. A build-level timeout can still
-leave a lease, but it expires within the configured bound and is recovered with an
-audited generation check.
+GitHub branch protection on `main` requires the single `CI gate` context. That aggregate
+job depends on the change detector and every internal CI job, runs with `if: always()`,
+fails when any needed job fails or is cancelled, and accepts jobs skipped by a path
+filter. Using one live required context prevents an unrelated path-filtered job from
+remaining pending forever. `tools/check-required-checks.sh` keeps that aggregate honest
+(it must depend on every job and fail closed); `tools/check-branch-protection.sh` asserts
+the live rule requires exactly the `CI gate` context. CI going green on `main` is the
+deploy signal, so there is no separate GCP-side job allowlist to keep in sync.
 
 ## Service-account grants
 
-`hop-cloudbuild` project roles:
+`hop-deploy` (the runtime applier, impersonated by `runtime-deploy.yml`) project roles:
 
-- `roles/logging.logWriter`
-
-`hop-cloudbuild` resource-scoped grants:
-
-- `roles/artifactregistry.writer` on the `hop` repository
-- `roles/cloudkms.signerVerifier` on the provenance key
-- `roles/secretmanager.secretAccessor` on `hop-ci-readtoken` only
-- `roles/pubsub.publisher` on `hop-deploy-requests`
-- `roles/storage.objectCreator` on the control bucket's `provenance/` prefix
-
-`hop-deploy` project roles:
-
+- `roles/bigquery.dataEditor`
 - `roles/certificatemanager.editor`
-- `roles/cloudbuild.builds.viewer`
 - `roles/compute.loadBalancerAdmin`
 - `roles/dns.admin`
 - `roles/logging.configWriter`
@@ -135,13 +71,16 @@ audited generation check.
 
 `hop-deploy` resource-scoped grants:
 
-- `roles/artifactregistry.reader` on the `hop` repository
-- `roles/cloudkms.publicKeyViewer` on the provenance key
-- `roles/secretmanager.secretAccessor` on `hop-ci-readtoken` only
-- `roles/storage.objectViewer` on the bootstrap contract and provenance objects
-- `roles/storage.objectUser` on the single global lease object
-- `roles/storage.objectUser` on the runtime state prefix only
+- `roles/artifactregistry.writer` and `roles/artifactregistry.reader` on the `hop` repository
 - `roles/iam.serviceAccountUser` on `hop-relay` and `hop-example` only
+- `roles/storage.objectUser` on the runtime state prefix only
+- `roles/iam.workloadIdentityUser`, bound to the exact subject
+  `repo:hopmesh/monorepo:ref:refs/heads/main`
+
+`hop-deploy` has no project, service-account, or secret IAM admin, no API enablement, no
+role mutation, and no read of the bootstrap or billing state. The legacy `hop-cloudbuild`
+Cloud Build identity is retired: it is dropped from bootstrap management with a
+`removed {}` block (`destroy = false`) and torn down out of band.
 
 `hop-relay` project roles and secret grant:
 
@@ -164,359 +103,99 @@ audited generation check.
 `stripe-account-key` is bootstrap-owned and has no IAM accessor until its
 invoice/account service lands.
 
-`billing-catalog-apply` has no project role and no Stripe credential. GitHub OIDC
-may impersonate it only for the repository configured by `github_repository`. Its
-only GCP data permission is `roles/storage.objectAdmin` under the `billing/` prefix
-of `runtime_state_bucket`, enforced by an IAM condition.
+`billing-catalog-apply` has no project role and no Stripe credential. GitHub OIDC may
+impersonate it only for the repository configured by `github_repository`. Its only GCP
+data permission is `roles/storage.objectAdmin` under the `billing/` prefix of
+`runtime_state_bucket`, enforced by an IAM condition.
 
-The public example account has no relay seed access, Firestore role, fleet
-identity permission, or ability to impersonate the relay. A project IAM deny
-policy blocks relay seed version access for every principal except `hop-relay`.
+The public example account has no relay seed access, Firestore role, fleet identity
+permission, or ability to impersonate the relay. A project IAM deny policy blocks relay
+seed version access for every principal except `hop-relay`.
 
-Neither build identity has `Editor`, `Owner`, Project IAM Admin, Service Account
-Admin, Run Admin, Storage Admin, Secret Manager Admin, or a role-creation path.
-The legacy `hopCloudBuildSecrets` role remains only so bootstrap can remove its
-old `secretmanager.secrets.setIamPolicy` permission. It is not granted to either
-build identity.
+`bootstrap-apply` (impersonated by `bootstrap-apply.yml`) is a project IAM administrator,
+which is what applying that root requires. Its project roles are
+`serviceusage.serviceUsageAdmin`, `iam.serviceAccountAdmin`,
+`resourcemanager.projectIamAdmin`, `iam.roleAdmin`, `iam.denyAdmin`,
+`iam.workloadIdentityPoolAdmin`, `artifactregistry.admin`, `datastore.owner`, plus the
+custom `hopBootstrapApplySecrets` role (secret container create/update/get/list/IAM, no
+version access, no delete). Its only storage grant is `roles/storage.objectAdmin`
+conditioned to the `bootstrap/` state prefix. It is bound to a single exact OIDC subject,
+`repo:hopmesh/monorepo:ref:refs/heads/main`, so a pull request ref mints no credentials.
+It is kept entirely separate from `hop-deploy`, which gains no permission from that root.
 
 ## Required external configuration
 
-Bootstrap intentionally fails at plan time when the required ids or resource
-names are absent. Populate `infra/bootstrap/terraform.tfvars` from the example, and
-store the same contents in the `BOOTSTRAP_TFVARS` repository secret, which is what
-the apply workflow writes to `ci.auto.tfvars` at run time. The two must be kept in
-step; the secret is the one the applies actually use.
+Bootstrap intentionally fails at plan time when the required identifiers or resource
+names are absent. Populate `infra/bootstrap/terraform.tfvars` from the example, and store
+the same contents in the `BOOTSTRAP_TFVARS` repository secret, which is what the apply
+workflow writes to `ci.auto.tfvars` at run time. Keep the two in step; the secret is the
+one the applies actually use.
 
 Required inputs and resources:
 
-1. A versioned GCS state bucket named by `runtime_state_bucket`. The current
-   backend uses `hop-mesh-tfstate`, with `bootstrap`, `relay-fleet`, and `billing`
-   prefixes.
-2. A Cloud Build v2 GitHub App connection in `us-central1`. Set its connection
-   name in `build_connection_name`.
-3. The numeric GitHub repository id, GitHub Actions App id, CI workflow id, and the
-   SHA-256 of the separately reviewed `.github/workflows/ci.yml` bytes.
-4. A fine-grained GitHub token limited to `hopmesh/monorepo` with Actions read,
-   Checks read, Contents read, and Metadata read. Add it out of band to
-   `hop-ci-readtoken`, then pin its numeric version.
-5. Numeric versions for both identity secrets. The relay seed must be exactly 32
-   random bytes. The example identity must match the committed public address.
-6. A restricted Google group for `deploy_approver_group`. Bootstrap grants that
-   group `roles/cloudbuild.builds.approver`. Build and deploy service accounts must
-   not belong to it.
-7. A globally unique `control_bucket_name` distinct from the state bucket, a
-   runtime state prefix outside the reserved `bootstrap` and `billing`
-   namespaces, and a non-empty `deployment_environment`.
-8. The `GCP_BILLING_WIF_PROVIDER` and `GCP_BILLING_SERVICE_ACCOUNT` GitHub
-   repository variables, populated exactly from the `github_wif_provider` and
-   `github_wif_service_account` bootstrap outputs after a reviewed apply.
-9. The `GCP_BOOTSTRAP_WIF_PROVIDER` and `GCP_BOOTSTRAP_SERVICE_ACCOUNT` GitHub
-   repository variables, populated exactly from the `bootstrap_wif_provider` and
-   `bootstrap_wif_service_account` outputs, plus the `BOOTSTRAP_TFVARS` secret and a
-   `bootstrap-apply` GitHub environment whose required reviewer and branch policy are
-   configured by hand. Until the variables are set the apply workflow stays neutral.
-10. GitHub branch protection on canonical `main`, requiring pull requests, an
-    up-to-date branch, and exactly the aggregate `CI gate` status context.
-
-Retrieve immutable GitHub ids with an administrator-read token:
-
-```sh
-gh api repos/hopmesh/monorepo --jq .id
-gh api repos/hopmesh/monorepo/actions/workflows/ci.yml --jq .id
-gh api repos/hopmesh/monorepo/commits/main/check-suites \
-  --jq '.check_suites[] | select(.app.slug == "github-actions") | .app.id' | sort -u
-shasum -a 256 .github/workflows/ci.yml
-```
-
-The workflow digest is an explicit bootstrap migration boundary. A change to
-`.github/workflows/ci.yml` remains ineligible for deployment until an administrator
-reviews the exact bytes, updates `github_ci_workflow_sha256` in the `BOOTSTRAP_TFVARS`
-repository secret, and dispatches `bootstrap-apply.yml` with `confirm=apply`. The
-source or runtime deployment cannot authorize its own replacement workflow digest.
-
-GitHub Environment required reviewers are repository settings. This Terraform
-does not create or claim to create them. The enforced human gate here is Cloud
-Build approval by `deploy_approver_group`. If policy also requires a GitHub
-`production` environment, create its reviewer rules manually in repository
-settings and audit them separately.
-
-Applying bootstrap requires administrator permissions over APIs, service accounts,
-IAM and deny policy, secrets, KMS, Pub/Sub, Artifact Registry, Firestore policy,
-buckets, and triggers. Do not grant those roles to either build identity. That
-authority belongs to `bootstrap-apply` alone, and it is exercised only through
-`.github/workflows/bootstrap-apply.yml`.
+1. A versioned GCS state bucket named by `runtime_state_bucket`. The current backend uses
+   `hop-mesh-tfstate`, with `bootstrap`, `relay-fleet`, and `billing` prefixes.
+2. Numeric versions for both identity secrets. The relay seed must be exactly 32 random
+   bytes. The example identity must match the committed public address.
+3. A non-empty `deployment_environment`.
+4. The `github-actions` Workload Identity Federation pool and its `github` provider,
+   scoped to `github_repository`. These plus the three applier service accounts and their
+   OIDC bindings are the one-time owner seed below.
+5. Repository variables, populated exactly from the reviewed bootstrap outputs:
+   - `GCP_RUNTIME_WIF_PROVIDER` / `GCP_RUNTIME_SERVICE_ACCOUNT` from
+     `runtime_wif_provider` / `runtime_wif_service_account`.
+   - `GCP_BOOTSTRAP_WIF_PROVIDER` / `GCP_BOOTSTRAP_SERVICE_ACCOUNT` from
+     `bootstrap_wif_provider` / `bootstrap_wif_service_account`.
+   - `GCP_BILLING_WIF_PROVIDER` / `GCP_BILLING_SERVICE_ACCOUNT` from
+     `github_wif_provider` / `github_wif_service_account`.
+   Until the runtime pair is set, `runtime-deploy.yml` stays neutral and applies nothing.
+6. The `BOOTSTRAP_TFVARS` repository secret.
+7. GitHub branch protection on `main`, requiring pull requests, an up-to-date branch, and
+   exactly the aggregate `CI gate` status context.
 
 ## Applying bootstrap
 
-Bootstrap is applied by manual dispatch of `.github/workflows/bootstrap-apply.yml`,
-never from a terminal:
+Bootstrap is applied by manual dispatch of `.github/workflows/bootstrap-apply.yml`, never
+from a terminal:
 
 ```sh
-gh workflow run bootstrap-apply.yml --ref main -f confirm=plan
-gh workflow run bootstrap-apply.yml --ref main -f confirm=apply
+gh workflow run bootstrap-apply.yml --ref main -f confirm=plan   # review the plan in the run log
+gh workflow run bootstrap-apply.yml --ref main -f confirm=seed   # one-time state imports, then plan
+gh workflow run bootstrap-apply.yml --ref main -f confirm=apply  # apply the reviewed bytes
 ```
 
-A local apply against this GCS-backed root is a destroy operation whenever the
-checkout is behind: every resource in remote state but absent from the local files
-is planned for deletion, and this root owns IAM, service accounts, secrets, and KMS
-keys. `prevent_destroy` does not prevent that plan, it only strands the apply part
-way through. The workflow always applies the exact bytes of a reviewed commit on
-canonical `main`.
+`--ref main` is enforced, not a convention: `bootstrap-apply` is bound to the single OIDC
+subject `repo:hopmesh/monorepo:ref:refs/heads/main`. A dispatch from any other branch, or
+from a pull request, mints no credentials. Both the plan and apply jobs run from `main`;
+the apply is gated by the manual `confirm=apply`, not by a GitHub environment. The pull
+request path of the workflow is deliberately credential free: `fmt`, `validate`, and the
+authority guards only.
 
-`bootstrap-apply` project roles:
+## The one-time owner seed (gcloud + gh, never a local tofu apply)
 
-- `roles/serviceusage.serviceUsageAdmin`
-- `roles/iam.serviceAccountAdmin`
-- `roles/resourcemanager.projectIamAdmin`
-- `roles/iam.roleAdmin`
-- `roles/iam.denyAdmin`
-- `roles/iam.workloadIdentityPoolAdmin`
-- `roles/artifactregistry.admin`
-- `roles/datastore.owner`
-- `roles/cloudkms.admin`
-- `roles/pubsub.admin`
-- `roles/cloudbuild.builds.editor`
-- `roles/cloudbuild.connectionAdmin`
-- `projects/hop-mesh/roles/hopBootstrapApplySecrets`, a custom role covering secret
-  container create, update, get, list, and IAM policy. It has no version access and
-  no delete, so the CI identity can neither read a seeded secret nor destroy a
-  container.
+Federation cannot bootstrap itself. The WIF pool, its GitHub OIDC provider, and the three
+service accounts a workflow authenticates as (`bootstrap-apply`, `hop-deploy`,
+`billing-catalog-apply`) plus their OIDC bindings and repository variables must exist
+before any workflow can apply. There is no KMS key, deploy-control bucket, Pub/Sub topic,
+or approver group in the seed: those were part of the deleted GCP-side deploy trust
+apparatus.
 
-`bootstrap-apply` resource-scoped grants:
-
-- `roles/storage.admin` on the deploy control bucket only
-- `roles/storage.objectAdmin` on `hop-mesh-tfstate`, conditioned to the bucket
-  listing plus the `bootstrap/` state prefix
-
-This identity is a project IAM administrator. That is what applying this root
-requires and it is stated plainly rather than buried: it can grant itself any role
-in the project. It is therefore kept entirely separate from `hop-deploy`, which runs
-the automatic push-to-main runtime apply and holds no administrative authority, and
-from `hop-cloudbuild`. Neither of those accounts gains any permission from the
-bootstrap CI path. `roles/datastore.owner` is the one grant that is broader than the
-control plane it exists for: it is needed to create the Firestore database and its
-TTL field policies, and it also carries Firestore entity read and write.
-
-Impersonation is bound to two exact OIDC subjects rather than a repository-wide
-principal set:
-
-- `repo:hopmesh/monorepo:ref:refs/heads/main` for the plan job
-- `repo:hopmesh/monorepo:environment:bootstrap-apply` for the apply job
-
-A pull request ref cannot mint a token for this account, so a workflow added in a
-pull request cannot reach project-administrator authority. The pull-request path of
-the workflow is deliberately credential free: `fmt`, `validate`, and the authority
-guards only. The required reviewers and the branch policy on the `bootstrap-apply`
-environment are GitHub repository settings; this Terraform does not create them.
-
-## One-time billing authority migration
-
-The billing secrets, identities, IAM grants, and GitHub WIF resources were
-originally tracked by the automatically applied `relay-fleet` state. Move their
-state ownership to `bootstrap` before this revision reaches `main`. Do not let a
-runtime deploy or billing-catalog workflow run during the migration. The BigQuery
-dataset `google_bigquery_dataset.usage` stays in runtime state.
-
-The preferred path moves bindings between local snapshots of both remote states.
-It does not call a resource API or recreate a live object. Push the destination
-state first: a failure before the source push then leaves duplicate state bindings,
-which are recoverable, rather than an orphaned live resource.
+Create the pool, provider, and applier identities with an administrator credential, bind
+the exact OIDC subjects (`repo:hopmesh/monorepo:ref:refs/heads/main` for bootstrap-apply
+and hop-deploy; the repository attribute for billing-catalog-apply), then run
+`bootstrap-apply.yml -f confirm=seed` to import the create-only resources (the pool, the
+provider, the `bootstrap-apply` service account, and the `hopBootstrapApplySecrets` role)
+into state, review the plan, and dispatch `confirm=apply`. The apply job prints all six
+WIF outputs in its final step; wire them into the repository variables:
 
 ```sh
-tofu -chdir=infra init -input=false
-tofu -chdir=infra/bootstrap init -input=false
-
-migration_dir="$(mktemp -d)"
-tofu -chdir=infra state pull > "$migration_dir/runtime.tfstate"
-tofu -chdir=infra/bootstrap state pull > "$migration_dir/bootstrap.tfstate"
-
-for address in \
-  google_secret_manager_secret.stripe_api_key \
-  google_secret_manager_secret.stripe_account_key \
-  google_service_account.billingd \
-  google_secret_manager_secret_iam_member.billingd_stripe \
-  google_project_iam_member.billingd_firestore_read \
-  google_project_iam_member.billingd_logs \
-  google_project_iam_member.billingd_bigquery \
-  google_iam_workload_identity_pool.github \
-  google_iam_workload_identity_pool_provider.github \
-  google_service_account.billing_catalog_apply \
-  google_service_account_iam_member.billing_catalog_wif \
-  google_storage_bucket_iam_member.billing_catalog_state
-do
-  tofu -chdir=infra state mv \
-    -state="$migration_dir/runtime.tfstate" \
-    -state-out="$migration_dir/bootstrap.tfstate" \
-    "$address" "$address"
-done
-
-tofu -chdir=infra/bootstrap state push "$migration_dir/bootstrap.tfstate"
-tofu -chdir=infra state push "$migration_dir/runtime.tfstate"
-```
-
-Verify every listed address is present only in bootstrap state, then review both
-plans. The runtime plan must retain `google_bigquery_dataset.usage` and show none
-of the moved resources being destroyed. The bootstrap plan may update the pool
-description and provider condition, and replace only the old WIF IAM membership
-with the principal selected by the validated `github_repository` value. It must
-not replace either secret, either service account, the pool, or the provider. Apply
-bootstrap manually only after that review.
-
-If a listed source address is absent from runtime state, do not create a second
-object with the same name. Check whether the object exists in GCP. Import a live,
-untracked object directly into bootstrap; otherwise let the reviewed bootstrap
-apply create it. These are the import forms for the production defaults. Replace
-`PROJECT_NUMBER`, project, repository, or bucket values when external bootstrap
-tfvars differ.
-
-```sh
-tofu -chdir=infra/bootstrap import google_secret_manager_secret.stripe_api_key \
-  projects/hop-mesh/secrets/stripe-api-key
-tofu -chdir=infra/bootstrap import google_secret_manager_secret.stripe_account_key \
-  projects/hop-mesh/secrets/stripe-account-key
-tofu -chdir=infra/bootstrap import google_service_account.billingd \
-  projects/hop-mesh/serviceAccounts/hop-billingd@hop-mesh.iam.gserviceaccount.com
-tofu -chdir=infra/bootstrap import google_secret_manager_secret_iam_member.billingd_stripe \
-  "projects/hop-mesh/secrets/stripe-api-key roles/secretmanager.secretAccessor serviceAccount:hop-billingd@hop-mesh.iam.gserviceaccount.com"
-tofu -chdir=infra/bootstrap import google_project_iam_member.billingd_firestore_read \
-  "hop-mesh roles/datastore.viewer serviceAccount:hop-billingd@hop-mesh.iam.gserviceaccount.com"
-tofu -chdir=infra/bootstrap import google_project_iam_member.billingd_logs \
-  "hop-mesh roles/logging.logWriter serviceAccount:hop-billingd@hop-mesh.iam.gserviceaccount.com"
-tofu -chdir=infra/bootstrap import google_project_iam_member.billingd_bigquery \
-  "hop-mesh roles/bigquery.dataEditor serviceAccount:hop-billingd@hop-mesh.iam.gserviceaccount.com"
-tofu -chdir=infra/bootstrap import google_iam_workload_identity_pool.github \
-  projects/hop-mesh/locations/global/workloadIdentityPools/github-actions
-tofu -chdir=infra/bootstrap import google_iam_workload_identity_pool_provider.github \
-  projects/hop-mesh/locations/global/workloadIdentityPools/github-actions/providers/github
-tofu -chdir=infra/bootstrap import google_service_account.billing_catalog_apply \
-  projects/hop-mesh/serviceAccounts/billing-catalog-apply@hop-mesh.iam.gserviceaccount.com
-tofu -chdir=infra/bootstrap import google_service_account_iam_member.billing_catalog_wif \
-  "projects/hop-mesh/serviceAccounts/billing-catalog-apply@hop-mesh.iam.gserviceaccount.com roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.repository/hopmesh/monorepo"
-tofu -chdir=infra/bootstrap import google_storage_bucket_iam_member.billing_catalog_state \
-  "b/hop-mesh-tfstate roles/storage.objectAdmin serviceAccount:billing-catalog-apply@hop-mesh.iam.gserviceaccount.com billing-state-prefix-only"
-```
-
-Never remove a runtime state binding until the matching bootstrap `state show`
-succeeds. When import is used instead of `state mv` for a still-tracked object,
-import it first, verify the bootstrap plan, then run
-`tofu -chdir=infra state rm ADDRESS` for that address only.
-
-After the bootstrap apply, wire both workflows to exact bootstrap outputs and remove
-the superseded project-number variable if it exists. The apply job prints all four
-values in its final step, so copy them from that run log rather than reading remote
-state from a terminal:
-
-```sh
-gh variable set GCP_BILLING_WIF_PROVIDER      --repo hopmesh/monorepo --body "<github_wif_provider>"
-gh variable set GCP_BILLING_SERVICE_ACCOUNT   --repo hopmesh/monorepo --body "<github_wif_service_account>"
+gh variable set GCP_RUNTIME_WIF_PROVIDER      --repo hopmesh/monorepo --body "<runtime_wif_provider>"
+gh variable set GCP_RUNTIME_SERVICE_ACCOUNT   --repo hopmesh/monorepo --body "<runtime_wif_service_account>"
 gh variable set GCP_BOOTSTRAP_WIF_PROVIDER    --repo hopmesh/monorepo --body "<bootstrap_wif_provider>"
 gh variable set GCP_BOOTSTRAP_SERVICE_ACCOUNT --repo hopmesh/monorepo --body "<bootstrap_wif_service_account>"
-gh variable delete GCP_PROJECT_NUMBER --repo hopmesh/monorepo 2>/dev/null || true
+gh variable set GCP_BILLING_WIF_PROVIDER      --repo hopmesh/monorepo --body "<github_wif_provider>"
+gh variable set GCP_BILLING_SERVICE_ACCOUNT   --repo hopmesh/monorepo --body "<github_wif_service_account>"
 ```
-
-## One-time migration from the old trigger
-
-The old `hop-relayd-image` trigger executes a candidate-loaded filename. Neutralize
-it before applying any candidate revision: set its Cloud Build `disabled` field to
-`true` in the Cloud Console or trigger API. Confirm no build is running under
-`hop-cloudbuild` before changing its grants.
-
-Initialize bootstrap and import existing create-only resources before its first
-apply. Replace the connection name in the repository import id.
-
-```sh
-tofu -chdir=infra/bootstrap init
-tofu -chdir=infra/bootstrap import google_service_account.build \
-  projects/hop-mesh/serviceAccounts/hop-cloudbuild@hop-mesh.iam.gserviceaccount.com
-tofu -chdir=infra/bootstrap import google_service_account.relay \
-  projects/hop-mesh/serviceAccounts/hop-relay@hop-mesh.iam.gserviceaccount.com
-tofu -chdir=infra/bootstrap import google_artifact_registry_repository.hop \
-  projects/hop-mesh/locations/us-central1/repositories/hop
-tofu -chdir=infra/bootstrap import google_firestore_database.relay \
-  projects/hop-mesh/databases/'(default)'
-tofu -chdir=infra/bootstrap import google_firestore_field.bundle_ttl \
-  projects/hop-mesh/databases/'(default)'/collectionGroups/bundles/fields/expireAt
-tofu -chdir=infra/bootstrap import google_firestore_field.presence_ttl \
-  projects/hop-mesh/databases/'(default)'/collectionGroups/presence/fields/expireAt
-tofu -chdir=infra/bootstrap import google_firestore_field.registry_ttl \
-  projects/hop-mesh/databases/'(default)'/collectionGroups/registry/fields/expireAt
-tofu -chdir=infra/bootstrap import google_secret_manager_secret.relay_identity \
-  projects/hop-mesh/secrets/hop-relay-identity
-tofu -chdir=infra/bootstrap import google_secret_manager_secret.example_identity \
-  projects/hop-mesh/secrets/hop-example-identity
-tofu -chdir=infra/bootstrap import google_secret_manager_secret.ci_readtoken \
-  projects/hop-mesh/secrets/hop-ci-readtoken
-tofu -chdir=infra/bootstrap import google_project_iam_custom_role.build_secrets \
-  projects/hop-mesh/roles/hopCloudBuildSecrets
-```
-
-Do not import the legacy Cloud Build repository named `hop` into bootstrap.
-Bootstrap creates a parallel repository named `monorepo` for the trusted triggers.
-Keep the disabled old trigger and its `hop` repository intact until both trusted
-triggers have been applied and inspected.
-
-Import each already-enabled API tracked by the old runtime state with this form:
-
-```sh
-tofu -chdir=infra/bootstrap import \
-  'google_project_service.this["run.googleapis.com"]' \
-  hop-mesh/run.googleapis.com
-```
-
-After imports, review `tofu -chdir=infra/bootstrap plan` but do not apply it yet.
-While the old trigger is disabled and no build is running, remove the old broad
-grants from `hop-cloudbuild`. Remove every old role except
-`roles/logging.logWriter`:
-
-```text
-roles/cloudbuild.builds.builder
-roles/artifactregistry.writer
-roles/editor
-roles/resourcemanager.projectIamAdmin
-roles/iam.serviceAccountAdmin
-roles/iam.serviceAccountUser
-roles/run.admin
-roles/storage.admin
-roles/cloudbuild.connectionAdmin
-roles/logging.admin
-projects/hop-mesh/roles/hopCloudBuildSecrets
-```
-
-Also remove its `roles/storage.objectAdmin` grant from `hop-mesh-tfstate`.
-Now apply bootstrap by dispatching `bootstrap-apply.yml` with `confirm=apply`.
-Repository-scoped Artifact Registry write, provenance object creation, KMS signing,
-CI-token access, and Pub/Sub publication are installed in the same apply that creates
-the new triggers. Confirm both new triggers contain inline build definitions and
-confirm the deploy trigger requires approval before allowing another push to `main`.
-
-Move ownership out of the old runtime state without destroying remote resources:
-
-```sh
-tofu -chdir=infra state rm google_project_service.this
-tofu -chdir=infra state rm google_artifact_registry_repository.hop
-tofu -chdir=infra state rm google_firestore_database.relay
-tofu -chdir=infra state rm google_firestore_field.bundle_ttl
-tofu -chdir=infra state rm google_firestore_field.presence_ttl
-tofu -chdir=infra state rm google_firestore_field.registry_ttl
-tofu -chdir=infra state rm google_secret_manager_secret.relay_identity
-tofu -chdir=infra state rm google_service_account.relay
-tofu -chdir=infra state rm google_project_iam_member.relay_firestore
-tofu -chdir=infra state rm google_project_iam_member.relay_logs
-tofu -chdir=infra state rm google_secret_manager_secret_iam_member.relay_identity
-tofu -chdir=infra state rm 'google_cloudbuildv2_repository.hop[0]'
-tofu -chdir=infra state rm 'google_service_account.build[0]'
-tofu -chdir=infra state rm google_project_iam_member.build
-tofu -chdir=infra state rm 'google_project_iam_custom_role.build_secrets[0]'
-tofu -chdir=infra state rm 'google_storage_bucket_iam_member.build_state[0]'
-tofu -chdir=infra state rm 'google_secret_manager_secret.ci_readtoken[0]'
-tofu -chdir=infra state rm 'google_secret_manager_secret_iam_member.build_ci_readtoken[0]'
-tofu -chdir=infra state rm 'google_cloudbuild_trigger.image[0]'
-```
-
-Delete the disabled `hop-relayd-image` trigger and legacy `hop` repository only
-after `hop-source-build` and `hop-runtime-deploy` are applied and inspected. Run
-`tools/infra-authority-guard.py` and inspect the live IAM policy before re-enabling
-push-to-main builds.
 
 ## Verification
 
@@ -528,13 +207,11 @@ tofu -chdir=infra/bootstrap init -backend=false -input=false
 tofu -chdir=infra/bootstrap validate
 tofu -chdir=infra/billing init -backend=false -input=false
 tofu -chdir=infra/billing validate
-bash tools/require-ci-gate.test.sh
-bash tools/deploy-provenance.test.sh
 bash tools/infra-authority-guard.test.sh
 python3 tools/infra-authority-guard.py
 bash tools/executable-reference-guard.test.sh
 python3 tools/executable-reference-guard.py
-actionlint .github/workflows/billing-catalog.yml
+actionlint .github/workflows/runtime-deploy.yml .github/workflows/bootstrap-apply.yml
 bash tools/check-required-checks.test.sh
 bash tools/check-required-checks.sh
 ```

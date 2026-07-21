@@ -19,10 +19,11 @@ name: CI
 #   - infra       : tofu fmt/validate + a read-only plan on infra/** (infra-10), so a TF error is
 #                   caught pre-merge instead of mid-apply against prod state.
 #
-# DEPLOY GATE (infra-01 / quality-net-09): bootstrap-owned inline Cloud Build triggers authenticate
-# this workflow and its internal job allowlist before `tofu apply`. GitHub branch protection on `main`
-# independently requires the aggregate `CI gate`, so path-filtered jobs may skip without leaving a
-# required context pending. See infra/README.md for both contracts.
+# DEPLOY GATE (infra-01 / quality-net-09): GitHub is change management. Branch protection on `main`
+# requires the aggregate `CI gate`, so path-filtered jobs may skip without leaving a required context
+# pending. A merge to `main` that goes green then triggers `.github/workflows/runtime-deploy.yml`, which
+# builds + pushes the images and applies the runtime root via WIF as `hop-deploy`. GCP verifies nothing
+# about the change; it runs what GitHub blessed. See infra/README.md.
 
 on:
   push:
@@ -748,24 +749,14 @@ jobs:
           tofu init -backend=false -input=false
           tofu validate
 
-      # A real plan against production state runs under the constrained deploy identity only after the
-      # trusted CI, provenance, approval, ordering, and lease gates. CI validates both roots without
-      # cloud credentials; the billing root gets the same static treatment.
+      # The runtime apply runs in GitHub Actions (runtime-deploy.yml) under the constrained hop-deploy
+      # identity via WIF, only after this workflow goes green on main. CI validates all three roots
+      # without cloud credentials; the billing root gets the same static treatment.
       - name: tofu validate (billing module)
         working-directory: infra/billing
         run: |
           tofu init -backend=false -input=false
           tofu validate
-
-      # The gate itself is snapshotted into the applied control-plane triggers. Exercise its exact
-      # repository, workflow, App, attempt, ref, SHA, and duplicate handling here without network.
-      - name: Deploy-gate verdict tests (require-ci)
-        working-directory: ${{ github.workspace }}
-        run: bash tools/require-ci-gate.test.sh
-
-      - name: Build provenance + deployment lease tests
-        working-directory: ${{ github.workspace }}
-        run: bash tools/deploy-provenance.test.sh
 
       - name: Self-test the runtime/bootstrap authority guard
         working-directory: ${{ github.workspace }}
@@ -775,15 +766,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tools/infra-authority-guard.py
 
-      # infra-r2-02: keep the deploy gate's required-check allowlist in sync with the actual CI job
-      # names, so a renamed/added/dropped job forces a matching allowlist edit in the same PR. First
-      # self-test the sync guard (it must fail a drifted allowlist AND a job with no explicit name:, a
-      # deploy-gate blind spot: a nameless job still gates deploys but is invisible to this sync), then
-      # run it against the real tree.
-      - name: Self-test the required-check allowlist guard
+      # infra-r2-02: keep the aggregate CI gate honest (it must `needs:` every job and fail closed) and
+      # keep tools/required-checks.json (release-provenance's canonical job set) locked to the actual CI
+      # job names, so a renamed/added/dropped job forces a matching config edit in the same PR. First
+      # self-test the guard (it must fail a drifted gate, a nameless job, and a drifted config), then run
+      # it against the real tree.
+      - name: Self-test the required-check guard
         working-directory: ${{ github.workspace }}
         run: bash tools/check-required-checks.test.sh
-      - name: Required-check allowlist is in sync
+      - name: Required-check contract is in sync
         working-directory: ${{ github.workspace }}
         run: bash tools/check-required-checks.sh
 
@@ -1064,12 +1055,13 @@ jobs:
           python3 tools/package-export-smoke.py validate \
             --component hop-sdk-elixir --work-root "$RUNNER_TEMP/package-validation"
 
-  # Aggregate gate: the intended single required check for branch protection. The authenticated deploy
-  # gate separately verifies the internal job allowlist, workflow, App, ref, attempt, and source SHA. It
-  # `needs:` every other job and, via `if: always()`, runs even when one failed. It passes iff no job
-  # FAILED or was CANCELLED; a job that was SKIPPED by a path filter is fine. Collapsing the required
-  # set to this one check lets jobs skip on unrelated PRs without leaving a required check stuck pending
-  # (a skipped required check does not reliably satisfy branch protection; a green gate always does).
+  # Aggregate gate: the single required check for branch protection, and the only deploy trigger. The
+  # runtime-deploy workflow fires on THIS workflow's success conclusion, so "CI is green" is the deploy
+  # signal, no separate GCP-side re-verification. It `needs:` every other job and, via `if: always()`,
+  # runs even when one failed. It passes iff no job FAILED or was CANCELLED; a job SKIPPED by a path
+  # filter is fine. Collapsing the required set to this one check lets jobs skip on unrelated PRs without
+  # leaving a required check stuck pending (a skipped required check does not reliably satisfy branch
+  # protection; a green gate always does).
   gate:
     name: CI gate
     runs-on: ubuntu-latest
