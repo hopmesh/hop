@@ -155,11 +155,15 @@ rejected(
 )
 
 with tempfile.TemporaryDirectory() as temp:
-    policy = Path(temp) / "variables.tf"
-    policy.write_text('variable "github_required_checks" {\n  default = [\n    "Rust",\n    "Web",\n  ]\n}\n')
+    policy = Path(temp) / "required-checks.json"
+    policy.write_text('{"required_checks": ["Rust", "Web"]}\n')
     assert module.parse_required_checks(policy) == ["Rust", "Web"]
-    policy.write_text('variable "github_required_checks" {\n  default = [\n    "Rust",\n    "Rust",\n  ]\n}\n')
+    policy.write_text('{"required_checks": ["Rust", "Rust"]}\n')
     rejected(lambda: module.parse_required_checks(policy), "duplicate policy check")
+    policy.write_text('{"required_checks": []}\n')
+    rejected(lambda: module.parse_required_checks(policy), "empty policy check")
+    policy.write_text("not json\n")
+    rejected(lambda: module.parse_required_checks(policy), "unreadable policy check")
 
 components = json.loads((root / "tools/copybara/components.json").read_text())
 expected_workflows = {

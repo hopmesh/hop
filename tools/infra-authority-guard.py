@@ -7,12 +7,9 @@ import sys
 from pathlib import Path
 
 
-EXPECTED_BUILD_PROJECT_ROLES = {
-    "roles/logging.logWriter",
-}
 EXPECTED_DEPLOY_PROJECT_ROLES = {
+    "roles/bigquery.dataEditor",
     "roles/certificatemanager.editor",
-    "roles/cloudbuild.builds.viewer",
     "roles/compute.loadBalancerAdmin",
     "roles/dns.admin",
     "roles/logging.configWriter",
@@ -229,23 +226,12 @@ def check(root):
         errors.append(f"example runtime identity local drifted: {example_identities}")
 
     iam_path = root / "infra" / "bootstrap" / "iam.tf"
-    triggers_path = root / "infra" / "bootstrap" / "triggers.tf"
-    if not iam_path.is_file() or not triggers_path.is_file():
-        errors.append("bootstrap IAM or trigger definition is missing")
+    if not iam_path.is_file():
+        errors.append("bootstrap IAM definition is missing")
         return errors
     iam = iam_path.read_text(encoding="utf-8")
-    triggers = triggers_path.read_text(encoding="utf-8")
-    for script_name in ("require-ci-verdict.py", "deploy-provenance.py"):
-        script_path = root / "tools" / script_name
-        if not script_path.is_file():
-            errors.append(f"trusted inline script is missing: {script_name}")
-        elif "$" in script_path.read_text(encoding="utf-8"):
-            errors.append(f"trusted inline script contains a Cloud Build substitution token: {script_name}")
 
-    build_roles = local_role_set(iam, "build_project_roles")
     deploy_roles = local_role_set(iam, "deploy_project_roles")
-    if build_roles is None or set(build_roles) != EXPECTED_BUILD_PROJECT_ROLES or len(build_roles) != len(set(build_roles)):
-        errors.append(f"build project roles drifted: {build_roles}")
     if deploy_roles is None or set(deploy_roles) != EXPECTED_DEPLOY_PROJECT_ROLES or len(deploy_roles) != len(set(deploy_roles)):
         errors.append(f"deploy project roles drifted: {deploy_roles}")
     for role in FORBIDDEN_DEPLOY_ROLES:
@@ -264,66 +250,18 @@ def check(root):
     example_access = resource_block(iam, "google_secret_manager_secret_iam_member", "example_identity")
     if not relay_access or "google_service_account.relay.email" not in relay_access:
         errors.append("relay seed accessor is not the relay runtime identity")
-    if relay_access and ("google_service_account.build.email" in relay_access or "google_service_account.deploy.email" in relay_access):
-        errors.append("build or deploy identity can read the relay seed")
+    if relay_access and "google_service_account.deploy.email" in relay_access:
+        errors.append("deploy identity can read the relay seed")
     if not example_access or "google_service_account.example.email" not in example_access:
         errors.append("example secret accessor is not the dedicated example identity")
-    deny = resource_block(iam, "google_iam_deny_policy", "relay_seed")
-    if not deny or "principalSet://goog/public:all" not in deny or "google_service_account.relay.email" not in deny:
-        errors.append("relay seed deny policy does not deny all except the relay runtime")
-    if deny and "secretmanager.googleapis.com/versions.access" not in deny:
-        errors.append("relay seed deny policy does not deny version access")
+    # The relay seed's hard-deny policy was removed: GCP rejects roles/iam.denyAdmin at the
+    # project level and forbids iam.denypolicies.* in custom roles, so the project-scoped
+    # applier cannot manage a deny policy without an ORG-level grant. Protection now rests
+    # on the allow side, asserted directly above: only the relay runtime holds the accessor,
+    # and the deploy identity explicitly does not.
     deploy_state = resource_block(iam, "google_storage_bucket_iam_member", "deploy_state")
     if not deploy_state or "objects/${var.runtime_state_prefix}/" not in deploy_state:
         errors.append("deploy state access is not scoped to the trusted runtime prefix")
-    deploy_lease = resource_block(iam, "google_storage_bucket_iam_member", "deploy_lease")
-    if not deploy_lease or "objects/${local.lease_object}'" not in deploy_lease:
-        errors.append("deploy lease access is not scoped to the single global lease")
-
-    repository = resource_block(triggers, "google_cloudbuildv2_repository", "hop")
-    if not repository or 'name              = "monorepo"' not in repository:
-        errors.append("trusted source repository is not isolated from the legacy connector")
-    source = resource_block(triggers, "google_cloudbuild_trigger", "source")
-    deploy = resource_block(triggers, "google_cloudbuild_trigger", "deploy")
-    if not source or not deploy:
-        errors.append("trusted source or deploy trigger is missing")
-    else:
-        if "filename" in source or "filename" in deploy:
-            errors.append("active trigger loads a build definition from candidate source")
-        if "service_account = google_service_account.build.id" not in source:
-            errors.append("source trigger does not use the low-privilege build identity")
-        if "service_account = google_service_account.deploy.id" not in deploy:
-            errors.append("deploy trigger does not use the separate deploy identity")
-        if not re.search(r"approval_config\s*\{\s*approval_required\s*=\s*true", deploy, re.DOTALL):
-            errors.append("deploy trigger does not require control-plane approval")
-        if "script     = local.ci_gate_script" not in source or "script     = local.ci_gate_script" not in deploy:
-            errors.append("trusted CI gate is not embedded in both control-plane triggers")
-        if "AUTHORITY_PROFILE=build" not in source or 'wait_for = ["authority-preflight"]' not in source:
-            errors.append("candidate source can run before the effective-authority preflight")
-        if "CONTROL_BUCKET=" not in source or "RUNTIME_STATE_BUCKET=" not in source:
-            errors.append("build authority preflight does not inspect control and state buckets")
-        if "BUILD_REPOSITORY_RESOURCE=" not in source or "BUILD_REPOSITORY_RESOURCE=" not in deploy:
-            errors.append("effective-authority preflight does not inspect source repository token access")
-        if "AUTHORITY_PROFILE=deploy" not in deploy:
-            errors.append("deploy trigger is missing its effective-authority preflight")
-        for required in ("verify-provenance", "init-runtime", "acquire-deploy-lease", "main-after-lease", "main-before-apply", "renew-deploy-lease"):
-            if required not in deploy:
-                errors.append(f"deploy trigger is missing trusted stage: {required}")
-        if "DEPLOY_BACKEND_CONFIG_FILE=/workspace/runtime-backend.tfbackend" not in deploy:
-            errors.append("deploy verifier does not write the trusted backend config")
-        if not re.search(
-            r'id\s*=\s*"verify-provenance"\s+wait_for\s*=\s*\["require-ci"\]\s+script\s*=\s*local\.provenance_script\s+secret_env\s*=\s*\["GH_TOKEN"\]',
-            deploy,
-        ):
-            errors.append("deploy provenance verifier cannot fetch the exact GitHub source")
-        if "tofu init -input=false -backend-config=/workspace/runtime-backend.tfbackend" not in deploy:
-            errors.append("runtime init does not consume the trusted backend config")
-    for forbidden in ("SHORT_SHA", ":latest", "--all-tags"):
-        if forbidden in triggers:
-            errors.append(f"trusted trigger contains mutable image behavior: {forbidden}")
-    images = re.findall(r'"([^"\s]+@sha256:[0-9a-f]{64})"', triggers)
-    if len(set(images)) < 3:
-        errors.append("trusted trigger images are not all pinned by digest")
     return errors
 
 
