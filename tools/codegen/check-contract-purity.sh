@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Guardrail: the contract (sdk/hop.h) and the SDK faces (Hop wrapper + bearer kit) must name NOTHING
-# transport-specific — bearers are byte senders. The four bearer packages legitimately DO use these
+# transport-specific: bearers are byte senders. The four bearer packages legitimately DO use these
 # symbols, so they are excluded. Fails (non-zero) if a forbidden symbol leaks into the contract/SDK.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

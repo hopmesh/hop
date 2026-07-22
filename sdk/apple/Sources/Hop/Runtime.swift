@@ -1,4 +1,4 @@
-// Runtime — ties a HopNode (libhop) to the BearerManager. Lives in Hop (needs the node); the
+// Runtime: ties a HopNode (libhop) to the BearerManager. Lives in Hop (needs the node); the
 // bearer contract it drives lives in HopContract.
 import Foundation
 import HopContract

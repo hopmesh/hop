@@ -1,7 +1,7 @@
-// Bearers — the transport-side kit that ships WITH the Hop SDK so a bearer package depends on nothing
+// Bearers, the transport-side kit that ships WITH the Hop SDK so a bearer package depends on nothing
 // but `Hop`. It defines the in-process bearer contract (Bearer/LinkSink), the registry/multiplexer
 // (BearerManager), and the runtime that binds them to a HopNode (the C ABI). The CROSS-LANGUAGE
-// contract is hop.h; this is the small Swift kit that drives it. No transport types appear here —
+// contract is hop.h; this is the small Swift kit that drives it. No transport types appear here;
 // a bearer (BLE/LAN/Multipeer/Relay) lives in its own package and only conforms to `Bearer`.
 
 import Foundation
@@ -10,7 +10,7 @@ import Foundation
 public typealias LinkId = UInt64
 
 /// What a Bearer reports to its consumer (the BearerManager). The only seam between a transport and
-/// the node multiplexer — names nothing about BLE/Wi-Fi/sockets.
+/// the node multiplexer; it names nothing about BLE/Wi-Fi/sockets.
 public protocol LinkSink: AnyObject {
     func linkUp(_ link: LinkId, role: HopRole, peerId: Data)
     func linkBytes(_ link: LinkId, _ bytes: Data)
@@ -31,7 +31,7 @@ public protocol Bearer: AnyObject {
 /// The registry + multiplexer. Register bearers, set `sink`, drive everything as one `Bearer`. Mints a
 /// process-global LinkId per link and translates each bearer's local id into it, so the consumer keys
 /// all state on ONE id space regardless of which radio a link rode in on. (Ported from the proven
-/// HopBearerCore registry — same logic, the SDK's HopRole.)
+/// HopBearerCore registry: same logic, with the SDK's HopRole.)
 public final class BearerManager: Bearer {
     public weak var sink: LinkSink?
     public let transportName = "Mesh"

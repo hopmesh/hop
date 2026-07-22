@@ -1,8 +1,8 @@
-# Convergence-First BLE Transport — Design + Reference Source
+# Convergence-First BLE Transport: Design + Reference Source
 
 **Goal:** two symmetric dual-role devices (Android Kotlin, Apple Swift/CoreBluetooth)
 deterministically converge on **exactly one** reliable, bidirectional L2CAP byte channel
-between them — no duplicates, no livelock — and keep it healthy across drops, BLE address
+between them (no duplicates, no livelock) and keep it healthy across drops, BLE address
 rotation, and rapid meet/part cycles, indefinitely. Cross-platform (Android↔Apple) is the bar.
 
 Primary lens: **CONVERGENCE.** Every tradeoff below is chosen to make "two dual-role peers
@@ -28,7 +28,7 @@ These are not opinions; they constrain the architecture:
    works for *insecure* L2CAP channels but *secure* ones trigger Android pairing and fail with
    opaque iOS errors. (Apple Dev Forums #675960; JuulLabs/kable #588.) → iOS publishes with
    `withEncryption: false`; Android uses `listenUsingInsecureL2capChannel()` /
-   `createInsecureL2capChannel()`. **No OS pairing/bonding, no user interaction** — exactly what
+   `createInsecureL2capChannel()`. **No OS pairing/bonding, no user interaction**, exactly what
    an upper crypto layer needs.
 
 3. **OS disconnect detection is slow and asymmetric.** iOS supervision timeout ≈ 750 ms; Android
@@ -39,7 +39,7 @@ These are not opinions; they constrain the architecture:
 
 4. **Android throttles scanning:** max 5 `startScan` calls per 30 s per app; exceeding it silently
    no-ops. (Android `ScanSettings` docs; Punch Through.) → We keep **one persistent scan** for the
-   whole node lifetime — never stop/restart it on connect.
+   whole node lifetime; never stop/restart it on connect.
 
 5. **L2CAP CoC requires a real GATT/ACL connection first.** (Prior hopmac finding: advert-only /
    zero-GATT L2CAP is not accepted by Android; an over-built GATT service stalls the PSM read.)
@@ -87,7 +87,7 @@ peripheral returns `version|nonce|psm|flags`.
 
 Each node generates **16 cryptographically-random bytes = `myNonce`** at start. Re-rolled on:
 BT adapter cycle, app (process) restart, or explicit reset. It is **not** derived from any MAC,
-platform, or stable hardware id — satisfying "unbiased, in-band, address-independent."
+platform, or stable hardware id, so it satisfies "unbiased, in-band, address-independent."
 
 The nonce does double duty:
 
@@ -138,7 +138,7 @@ we resolve to one. `chanByNonce: Map<Nonce, ChannelState{CONNECTING,OPENING,ESTA
 5. `amInitiator = myNonce > peerNonce`:
    - **Initiator:** mark `chanByNonce[peerNonce]=OPENING`; **open L2CAP to `peerPsm` on this link.**
      This link is the keeper.
-   - **Acceptor (I dialed but I should be accepting — wrong direction):** **disconnect this link.**
+   - **Acceptor (I dialed but I should be accepting, wrong direction):** **disconnect this link.**
      The initiator will reach me via its own scan→connect to my advert (I'm always advertising +
      PSM published). No gap, because my peripheral side is always up.
 
@@ -147,7 +147,7 @@ we resolve to one. `chanByNonce: Map<Nonce, ChannelState{CONNECTING,OPENING,ESTA
 2. `amInitiator = myNonce > peerNonce`:
    - **Acceptor (peer is initiator):** this is the keeper. Wait for the central's `openL2CAPChannel`
      → my `didOpen`/accepted socket on the published PSM. Mark ESTABLISHED on L2CAP up.
-   - **Initiator (peer dialed me but I should dial — wrong direction):** do nothing here; my own
+   - **Initiator (peer dialed me but I should dial, wrong direction):** do nothing here; my own
      scanner will find this peer's advert and I'll dial out (→ central path, initiator). The peer
      tears down its wrong-direction link per the acceptor rule above.
 
@@ -164,7 +164,7 @@ link, rediscover. Deterministic termination (probability ~2⁻¹²⁸ per meet).
   acceptor's link is wrong-direction and is dropped; the initiator's always-on scanner then finds
   the acceptor and dials → keeper. If only the initiator discovered, it's the keeper immediately.
 - **No livelock:** the decision is a pure function of the two fixed nonces; both sides compute the
-  same winner. There is no "both back off" or "both retry" oscillation — exactly one side ends up
+  same winner. There is no "both back off" or "both retry" oscillation: exactly one side ends up
   in OPENING.
 - **Address rotation:** identity is the nonce, not the address. A rotated re-meet hits dedup
   (ESTABLISHED to that nonce) and is dropped. An established connection survives the *advertiser*
@@ -183,7 +183,7 @@ hardware retry; the convergence decision itself never oscillates.
 Roles below are after the §3 decision: **INITIATOR** = greater nonce = central/dialer;
 **ACCEPTOR** = lesser nonce = peripheral.
 
-### 4.1 ACCEPTOR setup (peripheral), done once at startup — both platforms
+### 4.1 ACCEPTOR setup (peripheral), done once at startup, both platforms
 
 **Apple:**
 ```
@@ -211,7 +211,7 @@ Roles below are after the §3 decision: **INITIATOR** = greater nonce = central/
 7. advertiser.startAdvertising(settings, AdvertiseData{ serviceUuid HOP_SVC }, advCallback)
 ```
 
-### 4.2 INITIATOR dial + open (central) — Apple
+### 4.2 INITIATOR dial + open (central), Apple
 
 ```
 1. central.scanForPeripherals(withServices: [HOP_SVC],
@@ -229,7 +229,7 @@ Roles below are after the §3 decision: **INITIATOR** = greater nonce = central/
 8. (didOpen channel:) -> bind streams (see §6); state = ESTABLISHED
 ```
 
-### 4.3 INITIATOR dial + open (central) — Android
+### 4.3 INITIATOR dial + open (central), Android
 
 ```
 1. scanner.startScan([ScanFilter serviceUuid HOP_SVC],
@@ -248,7 +248,7 @@ Roles below are after the §3 decision: **INITIATOR** = greater nonce = central/
        else: gatt.disconnect(); gatt.close()                          // wrong-direction, drop
 ```
 
-### 4.4 ACCEPTOR accept (peripheral) — both platforms
+### 4.4 ACCEPTOR accept (peripheral), both platforms
 
 ```
 Apple:   (peripheralManager didReceiveWrite reqs) -> parse central nonce from rv write;
@@ -287,7 +287,7 @@ writes when `.hasSpaceAvailable`).
 
 ## 6. Keepalive + liveness (fast, OS-independent)
 
-- **Send:** every node emits a frame **every 1000 ms** on each established channel — a COUNTER
+- **Send:** every node emits a frame **every 1000 ms** on each established channel, a COUNTER
   (incrementing) if it has nothing else to send, else any DATA frame resets the timer (a DATA
   frame counts as liveness too). This is the spec's "increasing counter / ping each second."
 - **Receive/liveness:** maintain `lastRxMonotonic`. If **no inbound frame of any type for 3000 ms**
@@ -326,10 +326,10 @@ writes when `.hasSpaceAvailable`).
 
 ---
 
-## 8. Reference source — Android (Kotlin), critical paths
+## 8. Reference source: Android (Kotlin), critical paths
 
 ```kotlin
-// HOP convergence-first BLE transport — critical paths only. API 29+ (insecure L2CAP CoC).
+// HOP convergence-first BLE transport, critical paths only. API 29+ (insecure L2CAP CoC).
 // Manifest: BLUETOOTH_ADVERTISE, BLUETOOTH_CONNECT, BLUETOOTH_SCAN (neverForLocation),
 //           ACCESS_FINE_LOCATION on <=30. Requires adapter.isLe2MPhySupported not required.
 
@@ -425,10 +425,10 @@ val gattCb = object : BluetoothGattCallback() {
 `bindStreams(...)` runs the §5 framer + §6 keepalive(1s)/liveness(3s) on a worker thread; on
 liveness fail or IOException it closes the socket, `chanByNonce.remove(nHex)`, and returns to scan.
 
-## 9. Reference source — Apple (Swift / CoreBluetooth), critical paths
+## 9. Reference source: Apple (Swift / CoreBluetooth), critical paths
 
 ```swift
-// HOP convergence-first BLE transport — critical paths. macOS CLI build first (swiftc + CoreBluetooth),
+// HOP convergence-first BLE transport, critical paths. macOS CLI build first (swiftc + CoreBluetooth),
 // same code as iOS. Info.plist (iOS): NSBluetoothAlwaysUsageDescription; UIBackgroundModes:
 // bluetooth-central, bluetooth-peripheral.
 
@@ -516,17 +516,17 @@ Note: you MUST retain discovered `CBPeripheral`s (`conns[p.identifier]=p`) or Co
 ## 10. Bring-up + reliability TEST procedure (the rig)
 
 **Build/run (fast loop = macOS CLI ↔ Android over adb):**
-- Apple: model on `apple/hopmac/build.sh` — `swiftc -O ... -framework CoreBluetooth ...` →
+- Apple: model on `apple/hopmac/build.sh`, `swiftc -O ... -framework CoreBluetooth ...` →
   run the binary from Terminal (so logs hit stdout; grant Bluetooth permission once).
 - Android: model on `android/HopDemo` gradlew/SDK config; install, `adb logcat -s HOPBLE`.
   Cycle the stack with `adb shell cmd bluetooth_manager disable` / `enable`.
 
-**Stage A — same-platform (table stakes):** mac↔mac, then Android↔Android. Confirm exactly one
+**Stage A, same-platform (table stakes):** mac↔mac, then Android↔Android. Confirm exactly one
 channel and counters advancing.
 
-**Stage B — cross-platform (the real test):** macOS CLI ↔ Android. Then iOS device ↔ Android.
+**Stage B, cross-platform (the real test):** macOS CLI ↔ Android. Then iOS device ↔ Android.
 
-**Stage C — convergence stress:**
+**Stage C, convergence stress:**
 1. Cold meet: start both; assert each logs **exactly one** `ESTABLISHED` and identical
    `peerNonce`/initiator decision (one INITIATOR, one ACCEPTOR). No second channel within 30 s.
 2. Simultaneous start: launch both within <200 ms (script both). Assert still exactly one channel
@@ -540,11 +540,11 @@ channel and counters advancing.
    dialing).
 
 **EXACT signals that prove "established AND maintained" (not just "connected once"):**
-- `state=ESTABLISHED peerNonce=<hex> role=INIT|ACCEPTOR psm=<n>` — exactly one per peer per device.
+- `state=ESTABLISHED peerNonce=<hex> role=INIT|ACCEPTOR psm=<n>`, exactly one per peer per device.
 - `rx_counter` strictly increasing, no gaps, for ≥ 5 minutes continuous (the core proof).
 - `keepalive ok` heartbeat and **zero** `liveness_timeout` events while in range.
 - On induced failure: `liveness_timeout` (≤3 s after stall) **then** a fresh single `ESTABLISHED`
-  with resumed counters — proving deterministic recovery.
+  with resumed counters, proving deterministic recovery.
 - Channel-count invariant: a `channels_open` gauge that is **always exactly 1** between the two
   devices whenever both are in range (the convergence guarantee, instrumented).
 
@@ -552,22 +552,22 @@ channel and counters advancing.
 
 ## 11. Justification of key API choices (one line each)
 
-- **Service UUID as the only advertised payload** — only thing discoverable cross-platform incl.
+- **Service UUID as the only advertised payload**, only thing discoverable cross-platform incl.
   iOS background (overflow area decodes the UUID for an iOS scanner; Android scans the UUID
   directly when iOS is foreground). Tiebreaker can't ride the advert cross-platform (§0.1).
-- **16-byte random nonce over GATT, not address** — unbiased, platform-neutral, survives MAC
-  rotation; serves as both tiebreaker and dedup key (§2) — the whole convergence hinges on it.
-- **One GATT characteristic, write-then-read** — peripheral can't read the central, so central
+- **16-byte random nonce over GATT, not address**, unbiased, platform-neutral, survives MAC
+  rotation; serves as both tiebreaker and dedup key (§2), the whole convergence hinges on it.
+- **One GATT characteristic, write-then-read**, peripheral can't read the central, so central
   pushes its nonce (write) and pulls the peripheral's record (read); single char avoids the
   PSM-read stall seen with over-built services (§0.5).
 - **Insecure L2CAP CoC** (`listenUsingInsecureL2capChannel`/`createInsecureL2capChannel`,
-  `publishL2CAPChannel(withEncryption:false)`/`openL2CAPChannel`) — only variant that works
+  `publishL2CAPChannel(withEncryption:false)`/`openL2CAPChannel`), only variant that works
   iOS↔Android with no bonding/user interaction; matches "transport is a pure byte mover" (§0.2).
-- **Greater-nonce = central/initiator** — binds the abstract winner to BLE's central-opens
+- **Greater-nonce = central/initiator**, binds the abstract winner to BLE's central-opens
   asymmetry, so the keeper link is unambiguous and the loser's link is provably redundant (§3).
-- **App-level 1 s keepalive / 3 s liveness** — OS supervision timeout is 750 ms (iOS) vs ~20 s
+- **App-level 1 s keepalive / 3 s liveness**, OS supervision timeout is 750 ms (iOS) vs ~20 s
   (Android) and a peripheral can't force params; app-level liveness gives uniform ~3 s detection
   (§0.3, §6).
-- **Single persistent scan, never restarted** — Android's 5-scans/30 s throttle would silently
+- **Single persistent scan, never restarted**, Android's 5-scans/30 s throttle would silently
   break recovery otherwise (§0.4).
 ```

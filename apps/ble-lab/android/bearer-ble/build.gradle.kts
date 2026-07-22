@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// :bearer-ble — the BLE transport as its OWN library (Android mirror of apple/HopBearers' HopBearerBle).
+// :bearer-ble, the BLE transport as its OWN library (Android mirror of apple/HopBearers' HopBearerBle).
 // Holds BleBearer (+ its internal Link / Peripheral / Central): the proven dual-role L2CAP transport,
 // re-seamed behind the Bearer/LinkSink contract. Depends ONLY on :bearer-core. Names nothing about LAN.
 android {

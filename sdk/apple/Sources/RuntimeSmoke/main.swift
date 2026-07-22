@@ -1,7 +1,7 @@
-// RuntimeSmoke — proves the FULL Swift stack: a Bearer (conforming to the SDK contract) registered
+// RuntimeSmoke: proves the FULL Swift stack: a Bearer (conforming to the SDK contract) registered
 // with a HopRuntime actually drives the node's C-ABI seam, and pump() routes outbound bytes back to
 // the bearer. Two runtimes, each with one LoopbackBearer; the bearers are paired so A's sent bytes
-// arrive as B's inbound bytes. Runs the real §39 send→deliver(+ACK) — no radios, all in-process.
+// arrive as B's inbound bytes. Runs the real §39 send→deliver(+ACK), no radios, all in-process.
 
 import Foundation
 import Hop

@@ -22,7 +22,7 @@ class HopAddressTest {
     @Test
     fun base58RejectsAShortAddressBeforeTouchingNative() {
         // 31 bytes: the guard must reject it (a native call would read 1 byte OOB). This throws in pure
-        // Kotlin, so it never loads the .so — proving the guard is the FIRST thing base58() does.
+        // Kotlin, so it never loads the .so, proving the guard is the FIRST thing base58() does.
         val ex = assertFailsWith<IllegalArgumentException> { HopAddress.base58(ByteArray(31)) }
         assertEquals("Hop address must be 32 bytes, got 31", ex.message)
     }

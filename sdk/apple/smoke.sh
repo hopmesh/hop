@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build+run the Swift smokes against libhop via the libhop.xcframework binary target. The xcframework
-# carries the static lib, so swift links it automatically — no -L/-l flags. Proves the Swift wrapper
+# carries the static lib, so swift links it automatically, no -L/-l flags. Proves the Swift wrapper
 # (and HopRuntime + a Bearer) drive the C ABI.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

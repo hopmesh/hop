@@ -28,7 +28,7 @@ class MainActivity : Activity() {
             setPadding(48, 48, 48, 48)
         }
         val title = TextView(this).apply {
-            text = "BLE Lab — dual-role proof of pipe"
+            text = "BLE Lab: dual-role proof of pipe"
             textSize = 20f
         }
         status = TextView(this).apply {
@@ -80,7 +80,7 @@ class MainActivity : Activity() {
         if (neededPermissions().isEmpty()) {
             launch()
         } else {
-            status.text = "Some permissions denied — BLE may not run. Re-grant in Settings."
+            status.text = "Some permissions denied, BLE may not run. Re-grant in Settings."
             Log.w(TAG, "Permissions still missing after request; starting service anyway")
             launch()
         }

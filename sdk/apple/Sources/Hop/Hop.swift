@@ -1,7 +1,7 @@
-// Hop — the thin idiomatic Swift wrapper over libhop's C ABI (CHop / hop.h).
+// Hop, the thin idiomatic Swift wrapper over libhop's C ABI (CHop / hop.h).
 //
 // Every method is a direct, type-safe shim over a `hop_*` C call; the cross-language contract lives
-// in the generated header, so this layer can't diverge from it semantically — it only adds Swift
+// in the generated header, so this layer can't diverge from it semantically; it only adds Swift
 // ergonomics (Data, String, closures, an owning class). Bearers and apps use THIS, never raw C.
 
 import CHop
@@ -121,7 +121,7 @@ public final class HopNode {
         return out
     }
 
-    /// This node's 32-byte identity secret — persist it to restore the node later.
+    /// This node's 32-byte identity secret; persist it to restore the node later.
     public var secret: Data {
         var out = Data(count: 32)
         let n = out.withUnsafeMutableBytes { hop_node_secret(raw, $0.bindMemory(to: UInt8.self).baseAddress) }

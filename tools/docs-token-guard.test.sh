@@ -32,6 +32,50 @@ expect_fail() {
   fi
 }
 
+# expect_src_pass / expect_src_fail FILE: the same, through the SOURCE pass (--source), which
+# applies the dash bans ONLY.
+expect_src_pass() {
+  if "$GUARD" --source "$1" >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: expected clean, source pass flagged $1"
+    "$GUARD" --source "$1" 2>&1 | sed 's/^/    /'
+  fi
+}
+expect_src_fail() {
+  if "$GUARD" --source "$1" >/dev/null 2>&1; then
+    fail=$((fail + 1)); echo "FAIL: expected a violation, source pass passed $1"
+  else
+    pass=$((pass + 1))
+  fi
+}
+
+# expect_tree_pass / expect_tree_fail DIR: run the guard with NO arguments from inside a fixture
+# repo (the guard resolves its root from its own path), so this exercises the REAL default scan
+# sets, not a hand-passed path. This is what proves the source trees are actually in the default
+# set: delete "core" from SRC_REQUESTED and expect_tree_fail below goes red.
+make_fixture_repo() {
+  local dir="$1"
+  mkdir -p "$dir/tools" "$dir/core/hop-core/src" "$dir/core/hop-core/vectors"
+  cp "$GUARD" "$dir/tools/docs-token-guard.sh"
+  printf '# fixture manifest\ncore/hop-core/src/bundle.rs\n' > "$dir/core/hop-core/vectors/wire-source-manifest.txt"
+}
+expect_tree_pass() {
+  if "$1/tools/docs-token-guard.sh" >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: expected clean, default-set scan flagged $1"
+    "$1/tools/docs-token-guard.sh" 2>&1 | sed 's/^/    /'
+  fi
+}
+expect_tree_fail() {
+  if "$1/tools/docs-token-guard.sh" >/dev/null 2>&1; then
+    fail=$((fail + 1)); echo "FAIL: expected a violation, default-set scan passed $1"
+  else
+    pass=$((pass + 1))
+  fi
+}
+
 # --- clean copy: must pass ---
 printf 'Hop rides BLE and LAN. Address a payload to another device or hops://.\n' > "$TMP/clean.md"
 expect_pass "$TMP/clean.md"
@@ -135,6 +179,52 @@ printf 'Hop is fully bluetooth-free, no GATT.\n' > "$TMP/bt-free.md"
 expect_fail "$TMP/bt-free.md"
 printf 'UIBackgroundModes: bluetooth-central and bluetooth-peripheral.\n' > "$TMP/bt-bgmodes.md"
 expect_pass "$TMP/bt-bgmodes.md"
+
+# --- docs-drift-03: the SOURCE pass. The repo law bans em/en-dashes in CODE too, but for years
+# this guard only read docs, so source drifted to ~1000 dashes. These cases lock the new coverage. ---
+
+# a dash in a SOURCE file must fail (literal, and the encoded form that keeps the bytes ASCII)
+printf '// the node loop%bthe orchestration.\n' "$(printf '\xe2\x80\x94')" > "$TMP/src.rs"
+expect_src_fail "$TMP/src.rs"
+printf 'val tag = "spray \\u2014 wait" // Kotlin\n' > "$TMP/src.kt"
+expect_src_fail "$TMP/src.kt"
+printf '/// see sections 5%b7\n' "$(printf '\xe2\x80\x93')" > "$TMP/src.swift"
+expect_src_fail "$TMP/src.swift"
+printf '# a shell comment%bwith a lookalike\n' "$(printf '\xe2\x80\x95')" > "$TMP/src.sh"
+expect_src_fail "$TMP/src.sh"
+
+# clean source must pass
+printf '// the node loop, the orchestration that turns pieces into a mesh.\n' > "$TMP/src-clean.rs"
+expect_src_pass "$TMP/src-clean.rs"
+
+# the source pass is dash-only ON PURPOSE: real API identifiers and transport tags in bearer code
+# must NOT trip it (they are legitimate code, not marketing copy).
+printf 'import CoreBluetooth\nlet tag = "Wi-Fi Direct" // transport label\n// Bluetooth is off\n' > "$TMP/src-api.swift"
+expect_src_pass "$TMP/src-api.swift"
+
+# --- the DEFAULT scan set really includes the source trees (not just an explicitly-passed path) ---
+FIX_HIT="$TMP/repo-hit"
+make_fixture_repo "$FIX_HIT"
+printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$FIX_HIT/core/hop-core/src/node.rs"
+expect_tree_fail "$FIX_HIT"
+
+# --- and the wire-manifest exclusion really holds: the SAME dash in a manifest-listed file passes,
+# because editing it would force a BUNDLE_VERSION bump for punctuation ---
+FIX_SKIP="$TMP/repo-skip"
+make_fixture_repo "$FIX_SKIP"
+printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$FIX_SKIP/core/hop-core/src/bundle.rs"
+expect_tree_pass "$FIX_SKIP"
+
+# --- generated/vendored output is excluded from the source pass (a rewrite there is undone by the
+# next regeneration): a dash in target/, node_modules/, a CHANGELOG, or a captured .log must pass ---
+FIX_GEN="$TMP/repo-gen"
+make_fixture_repo "$FIX_GEN"
+mkdir -p "$FIX_GEN/core/target/debug" "$FIX_GEN/core/node_modules/x" "$FIX_GEN/testkit/results"
+printf 'build artifact%bhere\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/target/debug/out.txt"
+printf 'vendored%bhere\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/node_modules/x/index.js"
+printf '## v1%bnotes\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/CHANGELOG.md"
+printf 'device log%bline\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/testkit/results/r1.log"
+expect_tree_pass "$FIX_GEN"
 
 echo "docs-token-guard.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile + run a Swift program against the Rust library on the macOS host — proves
+# Compile + run a Swift program against the Rust library on the macOS host, proves
 # the generated bindings actually drive the node loop (Noise handshake + delivery),
 # no device or simulator needed. Run tools/build-xcframework.sh first.
 set -euo pipefail

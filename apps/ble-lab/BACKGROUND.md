@@ -1,20 +1,20 @@
-# BACKGROUND.md — Suspended/Terminated iOS ⇄ Android BLE Re-link
+# BACKGROUND.md: Suspended/Terminated iOS ⇄ Android BLE Re-link
 
 **Scope.** We already have a proven, minimal, cross-platform dual-role BLE transport (insecure L2CAP CoC, Ditto-style: Android advertises a connectable service, iOS central connects, reads a PSM from one GATT char, opens L2CAP, bytes flow). Foreground works perfectly; a **backgrounded-but-alive** iOS app holds its L2CAP link fine (`UIBackgroundModes` `bluetooth-central`/`bluetooth-peripheral` + the 1 Hz PING keepalive). This document specifies the one remaining hard problem: a **SUSPENDED or TERMINATED (killed)** iOS app must **eventually** (re)connect to a nearby Android device, with **eventual latency acceptable but total failure not**.
 
 The current code (verified in this repo):
-- Android `sh.hopme.blelab` — `android/app/src/main/java/net/waldrip/blelab/{Ble.kt,BleService.kt,MainActivity.kt}`, `AndroidManifest.xml`. One connectable `AdvertisingSet` (service UUID `7ED70001…` + 6-byte mfg prefix), GATT one-char PSM read, insecure L2CAP listener, all inside a `connectedDevice` foreground service.
-- iOS `sh.hopme.blelab` — shared core `apple/HopBleLab.swift` (the `Node`/`Central`/`Peripheral`/`Link`), app shell `apple-ios/{BleLabApp.swift,ContentView.swift}`, `apple-ios/project.yml` (XcodeGen, deployment target **iOS 16.0**), `apple-ios/HopBleLab-Info.plist`. The `Central` already opts into CoreBluetooth State Restoration via `CBCentralManagerOptionRestoreIdentifierKey: "hoplab.ble.central"`, but `willRestoreState` is a stub and there is **no CoreLocation**.
+- Android `sh.hopme.blelab`, `android/app/src/main/java/net/waldrip/blelab/{Ble.kt,BleService.kt,MainActivity.kt}`, `AndroidManifest.xml`. One connectable `AdvertisingSet` (service UUID `7ED70001…` + 6-byte mfg prefix), GATT one-char PSM read, insecure L2CAP listener, all inside a `connectedDevice` foreground service.
+- iOS `sh.hopme.blelab`, shared core `apple/HopBleLab.swift` (the `Node`/`Central`/`Peripheral`/`Link`), app shell `apple-ios/{BleLabApp.swift,ContentView.swift}`, `apple-ios/project.yml` (XcodeGen, deployment target **iOS 16.0**), `apple-ios/HopBleLab-Info.plist`. The `Central` already opts into CoreBluetooth State Restoration via `CBCentralManagerOptionRestoreIdentifierKey: "hoplab.ble.central"`, but `willRestoreState` is a stub and there is **no CoreLocation**.
 
 ---
 
 ## 1. Decision: why this topology, in one paragraph
 
-A **backgrounded iOS peripheral is invisible to Android** — iOS relocates the 128-bit service UUID into Apple's proprietary overflow area (mfg-data, company `0x004C`, hashed bitmask) that Android only reads with its screen on. So the only robust direction is **Android = always-discoverable connectable peripheral + iBeacon emitter; iOS = central, woken by the beacon**. Android already plays that role; we add the beacon. On iOS, **no single API both survives force-quit and completes a BLE handshake**, so we run **three independent wake layers** with different failure modes and let "eventual" win.
+A **backgrounded iOS peripheral is invisible to Android**: iOS relocates the 128-bit service UUID into Apple's proprietary overflow area (mfg-data, company `0x004C`, hashed bitmask) that Android only reads with its screen on. So the only robust direction is **Android = always-discoverable connectable peripheral + iBeacon emitter; iOS = central, woken by the beacon**. Android already plays that role; we add the beacon. On iOS, **no single API both survives force-quit and completes a BLE handshake**, so we run **three independent wake layers** with different failure modes and let "eventual" win.
 
 ---
 
-## 2. iOS wake architecture — three layers (priority order)
+## 2. iOS wake architecture: three layers (priority order)
 
 | Layer | Mechanism | Survives | Does NOT survive |
 |---|---|---|---|
@@ -31,13 +31,13 @@ Starting iOS 26, generic CoreBluetooth state-restoration **relaunch-from-termina
 
 ---
 
-## 3. iOS implementation — exact code-level changes (`sh.hopme.blelab`)
+## 3. iOS implementation: exact code-level changes (`sh.hopme.blelab`)
 
 ### 3.1 Info.plist / `project.yml` keys
 
 XcodeGen generates the Info.plist from `project.yml` → edit **both** the `project.yml` `info.properties` block (source of truth) and the committed `HopBleLab-Info.plist` (so the checked-in file matches).
 
-**`apple-ios/project.yml`** — under `targets.HopBleLab.info.properties`, change `UIBackgroundModes` and add the location keys:
+**`apple-ios/project.yml`**, under `targets.HopBleLab.info.properties`, change `UIBackgroundModes` and add the location keys:
 
 ```yaml
         UIBackgroundModes:
@@ -66,11 +66,11 @@ Also register the new source file under `targets.HopBleLab.sources`:
 
 **Hard dependencies (surface in UI):** `authorizedAlways` location, **Background App Refresh ON** (global + per-app), Bluetooth ON. Any one off ⇒ no terminated-app wake.
 
-### 3.2 Shared core edits — `apple/HopBleLab.swift`
+### 3.2 Shared core edits: `apple/HopBleLab.swift`
 
 These compile unchanged for the macOS CLI too (all APIs exist on macOS). Two edits.
 
-**(a) Flesh out `Central.willRestoreState`** — replace the stub (currently lines ~528–531):
+**(a) Flesh out `Central.willRestoreState`**: replace the stub (currently lines ~528 to 531):
 
 ```swift
     func centralManager(_ c: CBCentralManager, willRestoreState dict: [String: Any]) {
@@ -121,10 +121,10 @@ These compile unchanged for the macOS CLI too (all APIs exist on macOS). Two edi
 
 (`central` is `private var central: Central!`; the method is inside `Node`, so it has access. No other change to `Node`.)
 
-### 3.3 New file — `apple-ios/BeaconWake.swift` (CLLocationManager + Always flow)
+### 3.3 New file: `apple-ios/BeaconWake.swift` (CLLocationManager + Always flow)
 
 ```swift
-// BeaconWake.swift — iOS-only CoreLocation iBeacon region monitor (Layer C, the
+// BeaconWake.swift, iOS-only CoreLocation iBeacon region monitor (Layer C, the
 // force-quit-proof relaunch). On region enter it pokes the BLE Node to (re)scan/connect.
 import Foundation
 import CoreLocation
@@ -157,7 +157,7 @@ final class BeaconWake: NSObject, CLLocationManagerDelegate {
         case .notDetermined:    lm.requestWhenInUseAuthorization()       // escalates to Always below
         case .authorizedWhenInUse: lm.requestAlwaysAuthorization()
         case .authorizedAlways: beginMonitoring()
-        default: log("STATE", "location auth=\(lm.authorizationStatus.rawValue) — NO terminated wake")
+        default: log("STATE", "location auth=\(lm.authorizationStatus.rawValue), NO terminated wake")
         }
     }
 
@@ -199,7 +199,7 @@ final class BeaconWake: NSObject, CLLocationManagerDelegate {
 }
 ```
 
-### 3.4 Rewire the app shell — `apple-ios/BleLabApp.swift`
+### 3.4 Rewire the app shell: `apple-ios/BleLabApp.swift`
 
 Move all bootstrap into a `UIApplicationDelegate` so it runs on **cold background launch** (location/CB) and can read `launchOptions`. The delegate owns the `Node` and the `BeaconWake`. Replace the file's `@main struct` section (keep `BLEIOThread` and `redirectLogsToFile()` as-is):
 
@@ -247,13 +247,13 @@ struct BleLabApp: App {
 
 ---
 
-## 4. Android implementation — exact code-level changes (`sh.hopme.blelab`)
+## 4. Android implementation: exact code-level changes (`sh.hopme.blelab`)
 
 ### 4.1 iBeacon over-the-air byte layout (legacy ≤31-byte PDU)
 
 ```
-02 01 06                         Flags (LE General Discoverable, BR/EDR not supported)  — stack adds this
-1A FF 4C 00                      len=0x1A(26), type=0xFF (mfg data), company=0x004C little-endian (4C 00) — stack adds 1A FF 4C 00
+02 01 06                         Flags (LE General Discoverable, BR/EDR not supported); stack adds this
+1A FF 4C 00                      len=0x1A(26), type=0xFF (mfg data), company=0x004C little-endian (4C 00), stack adds 1A FF 4C 00
 02 15                            iBeacon subtype (0x02) + remaining length (0x15 = 21)
 <16 bytes>                       Proximity UUID  (== BEACON_UUID, big-endian / network order)
 <2 bytes big-endian>             Major
@@ -263,7 +263,7 @@ struct BleLabApp: App {
 
 In Android you pass **only the 23-byte body** `[02 15][uuid16][major2][minor2][power1]` to `addManufacturerData(0x004C, payload)`; the stack prepends `1A FF 4C 00`. A 25-byte iBeacon + a 16-byte 128-bit service UUID do **not** co-fit in one 31-byte packet, which is why this is a **second** advertising set.
 
-### 4.2 `Ble.kt` — add the iBeacon `AdvertisingSet` to `Peripheral`
+### 4.2 `Ble.kt`: add the iBeacon `AdvertisingSet` to `Peripheral`
 
 Add constants near the top (next to `SERVICE_UUID`):
 
@@ -303,7 +303,7 @@ Inside `class Peripheral`, add the beacon set + callback + a cycler, and stop th
         if (beaconSet != null) return
         val adv = adapter.bluetoothLeAdvertiser ?: return
         if (!adapter.isMultipleAdvertisementSupported) {     // controller can't run 2 sets at once
-            Log.w(TAG, "multi-advertisement UNSUPPORTED — iBeacon skipped (time-slice fallback not implemented)")
+            Log.w(TAG, "multi-advertisement UNSUPPORTED, iBeacon skipped (time-slice fallback not implemented)")
             return
         }
         val params = AdvertisingSetParameters.Builder()
@@ -343,9 +343,9 @@ In `Peripheral.stop()` add (alongside the existing advertiser stop):
         beaconSet = null
 ```
 
-> The connectable service set (`startAdvertise()`) is unchanged — it already puts `SERVICE_UUID` in the **primary** packet, which is exactly what iOS passive background scan needs. The beacon set is purely the iOS *relaunch* signal.
+> The connectable service set (`startAdvertise()`) is unchanged: it already puts `SERVICE_UUID` in the **primary** packet, which is exactly what iOS passive background scan needs. The beacon set is purely the iOS *relaunch* signal.
 
-### 4.3 `BleService.kt` — typed `startForeground` + reboot restart
+### 4.3 `BleService.kt`: typed `startForeground` + reboot restart
 
 Android 14+ requires the typed `startForeground`. Replace the 2-arg call in `onCreate`:
 
@@ -360,7 +360,7 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 }
 ```
 
-New file **`android/app/src/main/java/net/waldrip/blelab/BootReceiver.kt`** (restart the FGS after reboot — `connectedDevice` is allowed to start from `BOOT_COMPLETED` on Android 14):
+New file **`android/app/src/main/java/net/waldrip/blelab/BootReceiver.kt`** (restart the FGS after reboot, `connectedDevice` is allowed to start from `BOOT_COMPLETED` on Android 14):
 
 ```kotlin
 package sh.hopme.blelab
@@ -375,7 +375,7 @@ class BootReceiver : BroadcastReceiver() {
 }
 ```
 
-### 4.4 `AndroidManifest.xml` — add boot + battery-exemption perms and the receiver
+### 4.4 `AndroidManifest.xml`: add boot + battery-exemption perms and the receiver
 
 ```xml
 <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -392,7 +392,7 @@ Inside `<application>`:
 </receiver>
 ```
 
-### 4.5 `MainActivity.kt` — prompt for battery-optimization exemption (recommended)
+### 4.5 `MainActivity.kt`: prompt for battery-optimization exemption (recommended)
 
 After permissions are granted and before/after `BleService.start(this)`, prompt the user once (aggressive OEMs reap non-exempt FGSs):
 
@@ -411,7 +411,7 @@ private fun requestBatteryExemption() {
 }
 ```
 
-> CompanionDeviceManager `startObservingDevicePresence` (+ `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`) is the "device reappeared, wake me from background" blessed path and the next hardening step if FGS reaping is observed in the field — not required for the lab proof.
+> CompanionDeviceManager `startObservingDevicePresence` (+ `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`) is the "device reappeared, wake me from background" blessed path and the next hardening step if FGS reaping is observed in the field, not required for the lab proof.
 
 ---
 
@@ -429,11 +429,11 @@ Both sides must agree byte-for-byte:
 
 ---
 
-## 6. Device test procedure — the killed-iOS-app wake
+## 6. Device test procedure: the killed-iOS-app wake
 
 **Pre-flight (one-time on the iPhone):** install the app, open it once, grant Bluetooth, grant location and **escalate to "Always"** (the prompt appears after the When-In-Use grant or later in Settings → BLE Lab → Location → **Always**), and confirm Settings → General → **Background App Refresh = ON** (global and for BLE Lab). On the Android phone: grant the three BT runtime perms + notifications and **accept the battery-optimization exemption** prompt.
 
-### Step 1 — build & install
+### Step 1: build & install
 ```bash
 # Android
 cd /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android && ./gradlew installDebug
@@ -447,18 +447,18 @@ xcrun devicectl device install app --device <UDID> <path-to-HopBleLab.app>
 xcrun devicectl device process launch --device <UDID> sh.hopme.blelab
 ```
 
-### Step 2 — confirm a foreground baseline link
+### Step 2: confirm a foreground baseline link
 - Android: `adb logcat -s HOPLOG | grep -E "BEACON|ADVERTISING|LINK UP|PROOF"` → expect `ADVERTISING started`, `BEACON started`, `LINK UP`, repeating `PROOF`.
 - iOS: the app redirects stdout to `Documents/blelab.log`. Watch the on-screen log or pull it (Step 4). Expect `beacon monitoring started`, `LINK UP`, repeating `PROOF`.
 
-### Step 3 — FORCE-QUIT the iOS app (the strict worst case)
+### Step 3, FORCE-QUIT the iOS app (the strict worst case)
 1. On the iPhone, swipe up from the bottom edge and pause to open the **App Switcher**.
-2. **Swipe the BLE Lab card up and off the top.** The app is now *user-terminated* (the case CB restoration cannot recover — only CoreLocation can).
+2. **Swipe the BLE Lab card up and off the top.** The app is now *user-terminated* (the case CB restoration cannot recover, only CoreLocation can).
 3. Keep the two phones next to each other (≈1 m). Do **not** reopen the app.
 
-### Step 4 — verify relaunch-into-background + re-link
-- The Android `BeaconCycler` stops the beacon, waits 35 s (iOS registers a region **exit**), then restarts it (iOS registers a region **enter**) — at most once per `BEACON_CYCLE_MS` (~5 min). On that enter, **iOS relaunches BLE Lab into the background** (no UI; the app does not come to foreground).
-- After 1–5 min, pull the iOS log:
+### Step 4: verify relaunch-into-background + re-link
+- The Android `BeaconCycler` stops the beacon, waits 35 s (iOS registers a region **exit**), then restarts it (iOS registers a region **enter**), at most once per `BEACON_CYCLE_MS` (~5 min). On that enter, **iOS relaunches BLE Lab into the background** (no UI; the app does not come to foreground).
+- After 1 to 5 min, pull the iOS log:
 ```bash
 xcrun devicectl device copy from --device <UDID> \
   --domain-type appDataContainer --domain-identifier sh.hopme.blelab \
@@ -472,33 +472,33 @@ xcrun devicectl device copy from --device <UDID> \
 
 The presence of fresh `PROOF` lines while the app was never manually reopened **is** the proof of eventual background re-link from a killed iOS app.
 
-### Step 5 — additional cases to exercise
-- **Separate-and-return:** force-quit iOS, carry it >~30 m away (out of BLE range) for a minute, return. The natural region exit→enter relaunches it without waiting for a beacon cycle — confirms the non-stationary path is faster.
-- **System kill / suspend (Layer B):** with iOS *suspended* (Home button, app still in switcher), bring devices together; expect re-link via background scan/restoration within tens of seconds — `willRestoreState peripherals=N` then `LINK UP` in the log (no `COLD LAUNCH location=true` needed).
+### Step 5: additional cases to exercise
+- **Separate-and-return:** force-quit iOS, carry it >~30 m away (out of BLE range) for a minute, return. The natural region exit→enter relaunches it without waiting for a beacon cycle; confirms the non-stationary path is faster.
+- **System kill / suspend (Layer B):** with iOS *suspended* (Home button, app still in switcher), bring devices together; expect re-link via background scan/restoration within tens of seconds, `willRestoreState peripherals=N` then `LINK UP` in the log (no `COLD LAUNCH location=true` needed).
 - **Reboot:** reboot the iPhone, unlock once, leave the app closed; on the next beacon enter it relaunches (monitored regions survive reboot). Reboot the Android: `BootReceiver` restarts the FGS, `adb logcat` shows `NODE START` + `BEACON started` with no manual launch.
 
 ### How to read logs (summary)
 - **Android:** `adb logcat -s HOPLOG` (tag `HOPLOG`); key lines `BEACON …`, `ADVERTISING …`, `ACCEPTED inbound L2CAP`, `LINK UP`, `PROOF`.
-- **iOS:** `Documents/blelab.log` (tag `HOPLAB`), pulled via `xcrun devicectl device copy from …` or Xcode Download Container; key lines `COLD LAUNCH …`, `BEACON WAKE …`, `WAKE re-armed scan`, `central willRestoreState …`, `LINK UP`, `PROOF`. (Prints go to the file, not os_log, so Console.app won't show them — the file is the artifact.)
+- **iOS:** `Documents/blelab.log` (tag `HOPLAB`), pulled via `xcrun devicectl device copy from …` or Xcode Download Container; key lines `COLD LAUNCH …`, `BEACON WAKE …`, `WAKE re-armed scan`, `central willRestoreState …`, `LINK UP`, `PROOF`. (Prints go to the file, not os_log, so Console.app won't show them; the file is the artifact.)
 
 ---
 
 ## 7. Honest capabilities / limits matrix
 
-Android here = always-on `connectedDevice` foreground service running the connectable service set **and** the cycling iBeacon. *Without that FGS, Android stops advertising ~10–15 min after backgrounding and every row fails.* Latencies assume the two devices are within BLE range.
+Android here = always-on `connectedDevice` foreground service running the connectable service set **and** the cycling iBeacon. *Without that FGS, Android stops advertising ~10 to 15 min after backgrounding and every row fails.* Latencies assume the two devices are within BLE range.
 
 | iOS app state | Wake path that fires | Re-links? | Typical latency |
 |---|---|---|---|
-| **Foreground** | direct scan→connect→L2CAP | Yes | ~1–3 s |
-| **Background, alive** (keepalive holding) | existing link stays up; new link via slowed bg scan | Yes | seconds–tens of seconds |
-| **Suspended** (in memory) | Layer A bg-scan discovery + Layer B pending connect | Yes | tens of seconds to ~2–3 min |
-| **System-killed** (jetsam/memory, iOS ≤ 25) | Layer B restoration on discovery/connection (+ Layer C) | Yes | ~1–3 min |
+| **Foreground** | direct scan→connect→L2CAP | Yes | ~1 to 3 s |
+| **Background, alive** (keepalive holding) | existing link stays up; new link via slowed bg scan | Yes | seconds to tens of seconds |
+| **Suspended** (in memory) | Layer A bg-scan discovery + Layer B pending connect | Yes | tens of seconds to ~2 to 3 min |
+| **System-killed** (jetsam/memory, iOS ≤ 25) | Layer B restoration on discovery/connection (+ Layer C) | Yes | ~1 to 3 min |
 | **System-killed, iOS 26** | Layer C only (Layer B terminated-relaunch disabled without AccessorySetupKit) | Yes (via beacon) | dominated by beacon enter; single-digit min |
-| **User force-quit**, Always-location ON, a boundary crossing occurs (incl. Android beacon cycle) | **Layer C only** | Yes | next region enter; ≤ ~5 min per cycle (the `BEACON_CYCLE_MS` floor + CoreLocation's ~3–5 min relaunch rate-limit) |
+| **User force-quit**, Always-location ON, a boundary crossing occurs (incl. Android beacon cycle) | **Layer C only** | Yes | next region enter; ≤ ~5 min per cycle (the `BEACON_CYCLE_MS` floor + CoreLocation's ~3 to 5 min relaunch rate-limit) |
 | **User force-quit, already adjacent & both stationary** | Layer C **only via Android beacon cycling** (that is exactly what `startBeaconCycler()` is for) | Yes, eventually | ≤ ~5 min (one cycle); **without the cycler this is a hard fail** |
 | **Reboot**, app left closed, Always-location ON | Layer C (regions survive reboot, after first unlock) | Yes | ~3 min post-unlock, then per beacon enter |
 
-### Hard failures (no workaround — surface them in onboarding)
+### Hard failures (no workaround, surface them in onboarding)
 1. **iOS location not "Always"** (When-In-Use, or denied): force-quit/terminated wake is **impossible**. This is the single worst case for a privacy-minded user who picks "While Using." Detect it and tell the user force-quit recovery is unavailable; offer a one-tap "Open to reconnect" local notification as the only recovery.
 2. **Background App Refresh OFF** (global or per-app): kills the CoreLocation relaunch path entirely; the app gets *no* region events even in foreground. Hard dependency, common silent failure.
 3. **iOS 26 + terminated + no beacon crossing + no AccessorySetupKit:** Layer B is gone and Layer C needs an enter event; mitigated by the Android beacon cycler, but if the cycler is disabled and devices are stationary/adjacent, recovery waits for the user to move or open the app.

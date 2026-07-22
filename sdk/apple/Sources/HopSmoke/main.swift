@@ -1,4 +1,4 @@
-// HopSmoke — proves the Swift `Hop` wrapper drives libhop's C ABI, same shape as core/hop-ffi's
+// HopSmoke: proves the Swift `Hop` wrapper drives libhop's C ABI, same shape as core/hop-ffi's
 // smoke.c: two in-memory nodes wired by a loopback bearer run the real §39 send→deliver(+ACK).
 
 import Foundation

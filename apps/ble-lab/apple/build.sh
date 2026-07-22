@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build HopBleLab — the canonical dual-role BLE "proof of pipe" macOS CLI (ble-lab/SPEC.md §8).
+# Build HopBleLab: the canonical dual-role BLE "proof of pipe" macOS CLI (ble-lab/SPEC.md §8).
 # Pure CoreBluetooth: NO Rust / hop-ffi. Modeled on apple/hopmac/build.sh's swiftc invocation.
 #
 # Produces a runnable, self-describing binary `blepeer` with an embedded Info.plist

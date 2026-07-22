@@ -10,10 +10,10 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-// ProofSink — the clean-room "proof of pipe" consumer. The Android mirror of
+// ProofSink, the clean-room "proof of pipe" consumer. The Android mirror of
 // apple/HopBearers' HopBearerProof/ProofSink.swift. It is a LinkSink: the transport (a BearerManager
 // over a BleBearer) owns framing / keepalive / watchdog / dedup / redial; this consumer owns ONLY the
-// proof — it pings each link over DATA frames (Bearer.send), counts rx/tx, measures RTT, and emits the
+// proof: it pings each link over DATA frames (Bearer.send), counts rx/tx, measures RTT, and emits the
 // `PROOF …` and `LINK UP/CLOSED` lines that existing logcat analysis parses.
 //
 // The proof's PING/PONG ride INSIDE DATA payloads (the transport's own 0x02/0x03 keepalive is a

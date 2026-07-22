@@ -8,7 +8,7 @@ import java.io.StringWriter
 
 /**
  * D-crash: process-wide uncaught-exception logger. Writes the failing thread + stack to
- * `filesDir/hop-crash.log` so an `adb pull` (or the app's own diagnostics) surfaces the last crash —
+ * `filesDir/hop-crash.log` so an `adb pull` (or the app's own diagnostics) surfaces the last crash,
  * the pre-distribution stand-in for crash reporting. Chains to the platform's default handler so the
  * usual crash dialog / process kill still happens. (Structured telemetry + opt-in scrubbed export is
  * the launch-gate follow-on.)

@@ -1,10 +1,10 @@
-// HopBleLab — SHARED CORE for the canonical dual-role BLE "proof of pipe" (ble-lab/SPEC.md §8).
+// HopBleLab: SHARED CORE for the canonical dual-role BLE "proof of pipe" (ble-lab/SPEC.md §8).
 //
 // This file contains ALL BLE logic and NO platform-specific bootstrap. It is meant to be compiled
 // UNCHANGED into either:
 //   • the macOS CLI target (main.swift sets nothing; the defaults below run everything on .main), or
 //   • a future minimal iOS app target (the app overrides `bleQueue` / `bleRunLoop` / `bleAppInBackground`
-//     per SPEC §8.1 BEFORE constructing `Node()` — no edits to this file required).
+//     per SPEC §8.1 BEFORE constructing `Node()`, no edits to this file required).
 //
 // Every device runs the symmetric dual role: it is simultaneously a BLE peripheral (advertises the
 // service, runs a GATT server with one READ characteristic returning [2B PSM][16B nodeId], hosts an
@@ -43,7 +43,7 @@ let LOST_S: Double = 30.0
 
 // MARK: - Platform config (SPEC §8 / §8.1). Overridable by the iOS app BEFORE Node() ------------
 //
-// CLI default: everything on .main (no UI contends — SPEC R8). The iOS app target instead points
+// CLI default: everything on .main (no UI contends, SPEC R8). The iOS app target instead points
 // bleQueue at a dedicated serial queue and bleRunLoop at a dedicated I/O thread's RunLoop, and sets
 // bleAppInBackground from scenePhase. Because these are plain mutable globals, the iOS app reassigns
 // them without touching this file.
@@ -113,7 +113,7 @@ final class Link: NSObject, StreamDelegate {
     private let onUp: (Link) -> Void
     private let onClose: (Link) -> Void
     private var closed = false
-    // CRITICAL: a Link is only inserted into Node.linksByPeerId in onUp — i.e. AFTER the peer's HELLO
+    // CRITICAL: a Link is only inserted into Node.linksByPeerId in onUp, i.e. AFTER the peer's HELLO
     // arrives. Before that, nothing else holds a strong ref (stream delegates are weak; the ping/
     // watchdog timer blocks are [weak self]), so ARC would free the Link milliseconds after didOpen
     // creates it, tearing down the L2CAP streams before HELLO ever completes (the peer sees EOF). So
@@ -139,7 +139,7 @@ final class Link: NSObject, StreamDelegate {
         self.output = channel.outputStream
         super.init()
 
-        log("STATE", "channel-open isDialer=\(isDialer) — scheduling streams")
+        log("STATE", "channel-open isDialer=\(isDialer), scheduling streams")
         for s in [input, output] {
             s.delegate = self
             s.schedule(in: bleRunLoop, forMode: .common)
@@ -189,7 +189,7 @@ final class Link: NSObject, StreamDelegate {
         for s in [input, output] { s.close(); s.remove(from: bleRunLoop, forMode: .common) }
         log("STATE", "LINK CLOSED (\(why)) peer=\(peerShort) isDialer=\(isDialer)")
         onClose(self)
-        selfRetain = nil           // release self — safe to dealloc now (see selfRetain decl)
+        selfRetain = nil           // release self, safe to dealloc now (see selfRetain decl)
     }
 
     func stream(_ s: Stream, handle e: Stream.Event) {
@@ -312,7 +312,7 @@ final class Peripheral: NSObject, CBPeripheralManagerDelegate {
         published = true
         log("STATE", "peripheral l2cap-published psm=\(psm)")
         if ProcessInfo.processInfo.environment["HOPLAB_NO_ADV"] != nil {        // DIAG: central-only (suppress advertising)
-            log("STATE", "peripheral advertising-SUPPRESSED (HOPLAB_NO_ADV) — central-only diagnostic")
+            log("STATE", "peripheral advertising-SUPPRESSED (HOPLAB_NO_ADV), central-only diagnostic")
             return
         }
         p.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [SERVICE_UUID]])  // UUID only on Apple (SPEC §1.3)
@@ -455,7 +455,7 @@ final class Central: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
-        log("STATE", "connected id=\(p.identifier.uuidString.prefix(8)) — discoverServices(nil)")
+        log("STATE", "connected id=\(p.identifier.uuidString.prefix(8)), discoverServices(nil)")
         p.discoverServices(nil)                                                 // SPEC: nil, not [SERVICE_UUID]
     }
 
@@ -470,7 +470,7 @@ final class Central: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didModifyServices invalidated: [CBService]) {
-        log("STATE", "didModifyServices id=\(p.identifier.uuidString.prefix(8)) — re-discover (defeat stale cache)")
+        log("STATE", "didModifyServices id=\(p.identifier.uuidString.prefix(8)), re-discover (defeat stale cache)")
         p.discoverServices(nil)
     }
 
@@ -515,7 +515,7 @@ final class Central: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         clearDialTimer(p)                                                      // SPEC R6: dial succeeded
         backoff[advPrefixById[p.identifier].map(hex) ?? p.identifier.uuidString] = nil
         log("STATE", "l2cap-open success (dialer) id=\(p.identifier.uuidString.prefix(8))")
-        // SPEC §8.1 iOS adaptation: same as Peripheral.didOpen — construct Link on the
+        // SPEC §8.1 iOS adaptation: same as Peripheral.didOpen, construct Link on the
         // I/O thread so streams and timers are bound to the thread owning bleRunLoop.
         let myId = self.myId, onLink = self.onLink, onClose = self.onClose
         let onCloseChain: (Link) -> Void = { [weak self] l in self?.dialerLinkClosed(p, l); onClose(l) }

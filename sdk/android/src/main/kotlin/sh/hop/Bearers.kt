@@ -1,7 +1,7 @@
-// Bearers — the Kotlin transport kit, shipped WITH the Hop SDK (parity with the Swift Bearers.swift)
+// Bearers, the Kotlin transport kit, shipped WITH the Hop SDK (parity with the Swift Bearers.swift)
 // so an Android bearer module depends on nothing but this SDK. Defines the in-process bearer contract
-// (Bearer/LinkSink), the registry/multiplexer (BearerManager — one global LinkId space), and the
-// runtime that binds them to a HopNode (the C ABI). Pure Kotlin, no Android types — an Android
+// (Bearer/LinkSink), the registry/multiplexer (BearerManager, one global LinkId space), and the
+// runtime that binds them to a HopNode (the C ABI). Pure Kotlin, no Android types, an Android
 // transport (BLE/LAN/Wi-Fi Direct/Relay) lives in its own module and only implements `Bearer`.
 
 package sh.hop

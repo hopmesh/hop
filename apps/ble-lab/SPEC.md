@@ -6,8 +6,8 @@
 > diverge.
 
 > **Status:** buildable specification. No further decisions required. Hardened against an adversarial
-> review (R1–R11); resolutions catalogued in **Appendix C**.
-> **Goal:** two symmetric dual-role devices — Android (Kotlin) and Apple (Swift / CoreBluetooth) —
+> review (R1 to R11); resolutions catalogued in **Appendix C**.
+> **Goal:** two symmetric dual-role devices, Android (Kotlin) and Apple (Swift / CoreBluetooth),
 > converge on **exactly one** reliable bidirectional L2CAP byte channel, keep it alive forever
 > across drops, BLE address rotation, and repeated meet/part cycles. Cross-platform **Android↔Apple
 > is the bar**; same-platform is table stakes. Prove the pipe: a 1 Hz monotonic counter that the
@@ -29,7 +29,7 @@ Every device runs identical, role-symmetric software and is **simultaneously** a
 listener with a session-stable PSM) **and** a BLE **central** (one persistent service-filtered scan,
 GATT client, L2CAP dialer). **All data flows over an insecure L2CAP connection-oriented channel
 (CoC); data NEVER rides GATT.** GATT exists only for a single read that returns `[2B PSM][16B
-nodeId]` — that read is also what primes Android's L2CAP accept path. Convergence to exactly one
+nodeId]`, that read is also what primes Android's L2CAP accept path. Convergence to exactly one
 channel is driven by an **ephemeral random 16-byte `nodeId`** carried in-band (a 6-byte prefix in
 the advert as an accelerator; the full 16 bytes authoritatively in the L2CAP `HELLO`). Reliability
 is an **app-layer 1 Hz PING** (which *is* the proof counter), an **adaptive** liveness watchdog
@@ -42,16 +42,16 @@ is an **app-layer 1 Hz PING** (which *is* the proof counter), an **adaptive** li
 |---|---|---|---|
 | Data substrate | **Insecure L2CAP CoC**, GATT only for the PSM/nodeId read | all three | CoC is the only cross-platform connection-oriented byte stream that carries a 64 KB frame at interactive latency with credit-based flow control; secure CoC needs bonding (forbidden) and fails iOS↔Android. |
 | GATT shape | **One characteristic, READ-only → `[2B PSM][16B nodeId]`** | reliability-first | The post-`HELLO` dedup model (below) means the peripheral does **not** need the central's nodeId before L2CAP, so convergence-first's extra GATT **WRITE** is removed (fewer round-trips, fewer 133s). Merging PSM+nodeId into one read drops platform-native's second characteristic. Minimal GATT also avoids the "over-built GATT stalls the PSM read" failure **[field]**. |
-| Convergence model | **Post-`HELLO` dedup is authoritative; pre-connect tiebreaker is an accelerator; wait-timeout breaks deadlocks** | reliability-first + platform-native | Convergence-first's *strict* "acceptor never dials, channel is always greater→lesser" model **deadlocks** when the assigned dialer cannot see the assigned acceptor — exactly the required case of a backgrounded iOS peripheral (invisible to Android). Post-`HELLO` dedup is correct no matter which side dialed. |
+| Convergence model | **Post-`HELLO` dedup is authoritative; pre-connect tiebreaker is an accelerator; wait-timeout breaks deadlocks** | reliability-first + platform-native | Convergence-first's *strict* "acceptor never dials, channel is always greater→lesser" model **deadlocks** when the assigned dialer cannot see the assigned acceptor, exactly the required case of a backgrounded iOS peripheral (invisible to Android). Post-`HELLO` dedup is correct no matter which side dialed. |
 | Tiebreaker direction | **Greater `nodeId` dials (initiator)** | convergence-first + platform-native (2 of 3) | Direction is arbitrary (both unbiased); pick the majority for consistency. Bound to BLE's central-opens asymmetry so the keeper is unambiguous. |
 | nodeId size | **16 bytes (128-bit)** | reliability-first + convergence-first | Collision resistance is free; 128-bit is the conventional random id. 6-byte prefix still fits the advert. |
-| Advert nodeId location | **6-byte prefix in the PRIMARY advert mfg data** (company `0xFFFF`) | reliability-first | Available on every *passive* scan hit (no scan-response round-trip), unlike platform-native's scan-response placement. It is an accelerator only — see §1.3. The prefix is **invariant across RPA rotation** (app-level, not the MAC), which makes it the correct rate-limit key (§6). |
+| Advert nodeId location | **6-byte prefix in the PRIMARY advert mfg data** (company `0xFFFF`) | reliability-first | Available on every *passive* scan hit (no scan-response round-trip), unlike platform-native's scan-response placement. It is an accelerator only; see §1.3. The prefix is **invariant across RPA rotation** (app-level, not the MAC), which makes it the correct rate-limit key (§6). |
 | Keepalive / proof | **1 Hz PING = the proof counter** | reliability-first + convergence-first | The problem statement mandates a 1 s counter; unifying it with the keepalive means no idle channel ever exists. Overrides platform-native's 4 s keepalive. |
-| Liveness threshold | **Adaptive: 5000 ms foreground, 15000 ms background, floored at 3× observed inter-arrival** | reliability-first + R7 | 5 s foreground is fast ("seconds, not Android's ~20 s") yet rides a brief radio stall without flapping. But iOS **relaxes the connection interval in background** toward the peripheral's slowest preferred value (hundreds of ms up to ~1–2 s), so a fixed 5 s deadline false-trips a healthy backgrounded link. The deadline therefore widens in background and adapts to the observed PONG cadence. |
+| Liveness threshold | **Adaptive: 5000 ms foreground, 15000 ms background, floored at 3× observed inter-arrival** | reliability-first + R7 | 5 s foreground is fast ("seconds, not Android's ~20 s") yet rides a brief radio stall without flapping. But iOS **relaxes the connection interval in background** toward the peripheral's slowest preferred value (hundreds of ms up to ~1 to 2 s), so a fixed 5 s deadline false-trips a healthy backgrounded link. The deadline therefore widens in background and adapts to the observed PONG cadence. |
 | Half-open reaper | **3000 ms** | reliability-first | Kills the classic orphan (Android `accept()` succeeded, central abandoned its end) before it eats Android's concurrent-channel cap **[field]**. |
 | iOS service discovery | **`discoverServices(nil)`** (discover all) | reliability-first | Targeted `discoverServices([SERVICE])` *stalls* against Android's GATT server; full discovery (what LightBlue does) succeeds **[field]**. |
 | Android scan | **One persistent scan, never restarted; LOW_LATENCY when 0 links, BALANCED when ≥1, with hysteresis + a sliding-window start guard** | reliability-first + convergence-first + R9 | Restart-per-meet trips Android's 5-starts/30 s throttle (silent dead scanner). Continuous LOW_LATENCY starves our own peripheral role **[field]**. The 0↔1 downshift is debounced (≥10 s stability) and every `startScan` is gated to never be the 5th in any 30 s window. |
-| GATT data fallback | **Specified as a documented drop-in (Appendix B), NOT in the core** | platform-native (demoted) | This lab's stated goal (`ble-bearer-pure-l2cap-no-gatt`) is reliable cross-platform L2CAP via the Ditto pattern; the GATT-first read is exactly what made L2CAP accept work. But the repo has burned on this assumption (`GattDataLink.kt`), so the fallback is fully specified and reuses the same framing — drop-in if a target Android OEM truly refuses L2CAP. See §11. |
+| GATT data fallback | **Specified as a documented drop-in (Appendix B), NOT in the core** | platform-native (demoted) | This lab's stated goal (`ble-bearer-pure-l2cap-no-gatt`) is reliable cross-platform L2CAP via the Ditto pattern; the GATT-first read is exactly what made L2CAP accept work. But the repo has burned on this assumption (`GattDataLink.kt`), so the fallback is fully specified and reuses the same framing, drop-in if a target Android OEM truly refuses L2CAP. See §11. |
 
 ---
 
@@ -66,21 +66,21 @@ MFG_COMPANY_ID = 0xFFFF                                  // "reserved for testin
 L2CAP_ENCRYPT  = false                                  // INSECURE CoC, no bonding
 ```
 
-### 1.2 The nodeId (the unbiased, in-band tiebreaker — NOT a MAC, NOT platform)
+### 1.2 The nodeId (the unbiased, in-band tiebreaker, NOT a MAC, NOT platform)
 
 At process start each device generates a **random 16-byte `nodeId`** (CSPRNG). It is:
-- **Stable for the entire process lifetime** — generated once at launch and **NOT re-rolled on a
+- **Stable for the entire process lifetime**, generated once at launch and **NOT re-rolled on a
   BT-adapter recycle** (R11). An adapter bounce is not a new identity; the session continues. The
   nodeId is a valid dedup/rate-limit key precisely *because* it is independent of the BLE MAC, which
   rotates underneath it. It is regenerated only on a full process restart.
-- **Unbiased** — pure randomness; no platform tag, no hardware address, no RSSI, no power-on order.
-- **In-band** — a 6-byte prefix in the advert; the full 16 bytes authoritatively in `HELLO`.
+- **Unbiased**: pure randomness; no platform tag, no hardware address, no RSSI, no power-on order.
+- **In-band**: a 6-byte prefix in the advert; the full 16 bytes authoritatively in `HELLO`.
 
 **Tiebreaker rule (one sentence):** *the channel that survives is the one dialed by the device with
 the numerically GREATER `nodeId`* (unsigned, byte 0 most significant). Both ends compute this
 identically from in-band data. Exact 16-byte tie (≈2⁻¹²⁸): both re-roll `nodeId` and re-advertise.
 
-### 1.3 Advertisement layout — legacy 31-byte ADV_IND (exact bytes)
+### 1.3 Advertisement layout: legacy 31-byte ADV_IND (exact bytes)
 
 The primary advertising packet, exactly 31 bytes (no extended advertising needed):
 
@@ -106,7 +106,7 @@ The primary advertising packet, exactly 31 bytes (no extended advertising needed
   `startAdvertising` honors only `CBAdvertisementDataServiceUUIDsKey` and
   `CBAdvertisementDataLocalNameKey`. When an iOS app is **backgrounded**, the name is dropped and
   the service UUID moves into Apple's proprietary **overflow area** (a hashed bloom filter in mfg
-  type `0xFF`) that **only another iOS device scanning that exact UUID can match** — Android cannot
+  type `0xFF`) that **only another iOS device scanning that exact UUID can match**: Android cannot
   see a backgrounded iOS advertiser at all.
 
 **Consequence (it shapes the whole convergence design):** the advert-borne id is an **accelerator**,
@@ -116,12 +116,12 @@ is the 16-byte id in the L2CAP `HELLO`, which is **always** present. The protoco
 
 ---
 
-## 2. Convergence engine — how two dual-role devices agree on ONE channel
+## 2. Convergence engine: how two dual-role devices agree on ONE channel
 
 Three cooperating mechanisms, in priority order. The first minimizes work; the last guarantees
 correctness regardless of visibility asymmetry. **Live-link identity is keyed by the full 16-byte
 `nodeId`; rate-limiting/backoff is keyed by the stable 6-byte nodeId prefix; transient pre-connect
-guards are keyed by the current MAC/identifier — never anything by MAC alone for state that must
+guards are keyed by the current MAC/identifier, never anything by MAC alone for state that must
 survive RPA rotation (§6).**
 
 ### 2.1 Pre-connect tiebreaker (fast path; needs the advert prefix)
@@ -141,18 +141,18 @@ degrades a busy Android radio **[field]**.
 ### 2.2 Wait-timeout safety net (breaks visibility-asymmetry deadlocks)
 
 The "waiter" from §2.1 starts a timer `T_wait = 4 s + rand(0…1 s)` when it first sees the peer.
-**Exactly one** wait is outstanding per discovered peer (deduped by identifier — R4); repeated
+**Exactly one** wait is outstanding per discovered peer (deduped by identifier, R4); repeated
 `didDiscover`/`onScanResult` deliveries (which `allowDuplicates` and a persistent scan produce in
 volume) do **not** stack multiple dials. When `T_wait` fires the waiter dials **only if it still does
 not hold a live link to that peer**, tested against the **node-level link map by prefix**
-(`haveLinkToPrefix`), **not** against the central's own in-flight/dial set — because in the dominant
+(`haveLinkToPrefix`), **not** against the central's own in-flight/dial set, because in the dominant
 case the link comes `UP` via our **acceptor** role, which never touches the central's dial state
 (R4). If a link already exists, the wait is dropped.
 
-This is what makes the design robust when the side that *should* dial **cannot see us** — e.g. a
+This is what makes the design robust when the side that *should* dial **cannot see us**, e.g. a
 backgrounded iOS peripheral whose advert is in the overflow area (Android never learns it should
 dial). The waiter (here iOS-as-central, which *can* scan in background) takes over. **No platform
-bias is encoded** — it is purely "if the assigned dialer didn't act, and I still have no link, I do."
+bias is encoded**; it is purely "if the assigned dialer didn't act, and I still have no link, I do."
 A peer discovered with **no** advert prefix at all (an iOS peripheral) is dialed immediately (there
 is nothing to compare).
 
@@ -169,11 +169,11 @@ Survivor = the channel dialed by the GREATER-nodeId node.
   if myId < peerId : keep MY accepted channel (isDialer == false), close my dialed one.
 ```
 
-Both ends know both ids, so both pick the same survivor — no negotiation, no livelock. A **single**
+Both ends know both ids, so both pick the same survivor, no negotiation, no livelock. A **single**
 channel always survives regardless of who dialed it (the rule only adjudicates *two* channels to the
 same peer). The map entry is set to the survivor **before** the redundant channel is closed, and the
 close handler removes a peer only if the closing link is **still the current occupant** of the map
-(identity check) — so the dedup-close can never evict the healthy kept link (R3). Even if both sides
+(identity check), so the dedup-close can never evict the healthy kept link (R3). Even if both sides
 dialed (no advert prefix, or both safety-nets fired), the mesh collapses to one channel within ~1 s
 and the redundant L2CAP is closed promptly (freeing Android's scarce concurrent-channel slot).
 
@@ -193,27 +193,27 @@ each end.
 
 Keep the L2CAP listener and its PSM **stable for the session**: a fresh `listenUsing…`/`publish…`
 mints a **new PSM** and strands any peer that cached the old one. Open it once; only re-open on
-failure (and then invalidate the GATT cache — §7.4).
+failure (and then invalidate the GATT cache, §7.4).
 
 **iOS / macOS (CBPeripheralManager):**
 1. `CBPeripheralManager(delegate:queue:options:[CBPeripheralManagerOptionRestoreIdentifierKey: "hop.ble.peripheral"])`.
    The `queue` is `.main` for the macOS CLI; on the iOS **app** target it is a dedicated serial
    dispatch queue (§7.5 / §8.1, R8).
 2. `peripheralManagerDidUpdateState` → `.poweredOn`:
-3. `let ch = CBMutableCharacteristic(type: ENDPOINT_CHAR, properties: .read, value: nil, permissions: .readable)`
-   — **`value: nil` ⇒ dynamic read**, answered live in the delegate (so PSM is always current).
+3. `let ch = CBMutableCharacteristic(type: ENDPOINT_CHAR, properties: .read, value: nil, permissions: .readable)`,
+  **`value: nil` ⇒ dynamic read**, answered live in the delegate (so PSM is always current).
 4. `let svc = CBMutableService(type: SERVICE_UUID, primary: true); svc.characteristics = [ch]; pm.add(svc)`
-5. `pm.publishL2CAPChannel(withEncryption: false)` — **insecure**.
+5. `pm.publishL2CAPChannel(withEncryption: false)`, **insecure**.
 6. `peripheralManager(_:didPublishL2CAPChannel:error:)` → store `psm`.
 7. `pm.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [SERVICE_UUID]])` (no mfg data possible
-   on iOS — §1.3). iOS publishes the L2CAP channel and registers the service synchronously enough
+   on iOS, §1.3). iOS publishes the L2CAP channel and registers the service synchronously enough
    that advertising-after-publish is safe; on `willRestoreState`, **re-add the service before
    re-advertising** (R10).
 8. **On read:** `peripheralManager(_:didReceiveRead:)` → `request.value = psm(2B BE) || nodeId(16B)`;
    `pm.respond(to: request, withResult: .success)`.
 9. **On inbound L2CAP:** `peripheralManager(_:didOpen channel:error:)` → wrap `channel.inputStream`/
    `outputStream`, schedule on the **BLE I/O run loop** (`.main` on the CLI; the dedicated I/O
-   thread's run loop on the iOS app — §8.1), `open()`; send `HELLO`; start the 3 s half-open reaper;
+   thread's run loop on the iOS app, §8.1), `open()`; send `HELLO`; start the 3 s half-open reaper;
    role = acceptor.
 
 **Android (peripheral):**
@@ -223,9 +223,9 @@ failure (and then invalidate the GATT cache — §7.4).
 3. GATT server: `gattServer = mgr.openGattServer(ctx, cb)`;
    `svc = BluetoothGattService(SERVICE_UUID, SERVICE_TYPE_PRIMARY)`;
    `svc.addCharacteristic(BluetoothGattCharacteristic(ENDPOINT_CHAR, PROPERTY_READ, PERMISSION_READ))`;
-   `gattServer.addService(svc)` — **asynchronous**.
+   `gattServer.addService(svc)`, **asynchronous**.
 4. **Gate advertising on registration (R10):** start advertising **only from `onServiceAdded`**
-   (status `GATT_SUCCESS`), never before — otherwise a fast iOS central can connect and discover
+   (status `GATT_SUCCESS`), never before, otherwise a fast iOS central can connect and discover
    *no* service, fail, and back off on first contact.
 5. **On read:** `onCharacteristicReadRequest` → `gattServer.sendResponse(device, requestId, GATT_SUCCESS, 0, psm(2B BE) || nodeId(16B))`.
 6. Advertise via `startAdvertisingSet` in **legacy mode** (§7.1): service UUID + 6-byte prefix in mfg
@@ -235,7 +235,7 @@ failure (and then invalidate the GATT cache — §7.4).
 
 **iOS / macOS (CBCentralManager):**
 1. `CBCentralManager(delegate:queue:options:[CBCentralManagerOptionRestoreIdentifierKey: "hop.ble.central"])`
-   (queue: `.main` on CLI; dedicated serial queue on the iOS app — §8.1).
+   (queue: `.main` on CLI; dedicated serial queue on the iOS app, §8.1).
 2. `.poweredOn` → `scanForPeripherals(withServices: [SERVICE_UUID], options:[CBCentralManagerScanOptionAllowDuplicatesKey: true])`.
    **Service filter is mandatory for background scan**; `allowDuplicates` is honored in foreground
    (re-see a peer mid-restart) and silently ignored in background.
@@ -243,14 +243,14 @@ failure (and then invalidate the GATT cache — §7.4).
    check backoff (keyed by prefix, else identifier) → check `haveLinkToPrefix` → run §2. If we dial:
    **retain the `CBPeripheral` in a strong map** (else it deallocs and the connect silently dies),
    set `p.delegate = self`, `central.connect(p, options: nil)`, and **start a real 12 s dial-timeout
-   (R6)** — on expiry call `cancelPeripheralConnection(p)` (CB's `connect` is otherwise an indefinite
+   (R6)**, on expiry call `cancelPeripheralConnection(p)` (CB's `connect` is otherwise an indefinite
    pending connect) and route into `reconnect`.
-4. `centralManager(_:didConnect:)` → `p.discoverServices(nil)`. **Use `nil`, not `[SERVICE_UUID]`** —
+4. `centralManager(_:didConnect:)` → `p.discoverServices(nil)`. **Use `nil`, not `[SERVICE_UUID]`**:
    targeted discovery stalls against Android **[field]**.
 5. `peripheral(_:didDiscoverServices:)` → find `SERVICE_UUID` → `p.discoverCharacteristics([ENDPOINT_CHAR], for: svc)`.
 6. `peripheral(_:didDiscoverCharacteristicsFor:error:)` → `p.readValue(for: ch)`.
 7. `peripheral(_:didUpdateValueFor:error:)` → parse `[2B PSM][16B peerNodeId]`; store `peerNodeId`.
-   **If `haveLinkTo(peerNodeId)` (R4) — we already hold a live link to this exact node — cancel the
+   **If `haveLinkTo(peerNodeId)` (R4), meaning we already hold a live link to this exact node, cancel the
    connection and do NOT open a redundant CoC.** Otherwise promote the backoff key to the stable
    6-byte nodeId prefix and `p.openL2CAPChannel(psm)`.
 8. `peripheral(_:didOpen channel:error:)`:
@@ -270,23 +270,23 @@ failure (and then invalidate the GATT cache — §7.4).
    then `gatt.discoverServices()`.
 4. `onServicesDiscovered` → `gatt.getService(SERVICE_UUID).getCharacteristic(ENDPOINT_CHAR)` →
    `gatt.readCharacteristic(ch)`.
-5. `onCharacteristicRead` — **override BOTH signatures (R1):** the 4-arg
+5. `onCharacteristicRead`, **override BOTH signatures (R1):** the 4-arg
    `onCharacteristicRead(gatt, char, value, status)` (added in **API 33**) **and** the deprecated
-   3-arg `onCharacteristicRead(gatt, char, status)` (the **only** one invoked on API 29–32, which is
+   3-arg `onCharacteristicRead(gatt, char, status)` (the **only** one invoked on API 29 to 32, which is
    the entire `minSdk 29` field below 33). Both route into one handler that parses
    `[2B PSM][16B peerNodeId]`. Without the 3-arg override the read callback **never fires** on
    Android 10/11/12 and cross-platform establishment is 0% there.
 6. `val sock = device.createInsecureL2capChannel(psm)`; on a **worker thread** `sock.connect()`
    (blocking). Success → wrap streams; send `HELLO`; start 1 Hz PING + adaptive liveness;
    `gatt.requestConnectionPriority(CONNECTION_PRIORITY_BALANCED)` after `HELLO`; role = dialer.
-7. **Any disconnect / failure / status-133** → `gatt.close()` **(mandatory — leaked GATT clients
+7. **Any disconnect / failure / status-133** → `gatt.close()` **(mandatory, leaked GATT clients
    exhaust Android's cap and kill all future connects [field])**, free the dial slot, apply backoff.
 
 ### 3.3 The `HELLO` exchange (the moment a channel becomes a real link)
 
 Each side sends one `HELLO` immediately after the channel opens and waits for the peer's. `UP` only
 after `HELLO` is both sent and received. The acceptor's 3 s reaper closes any channel that never
-delivers a `HELLO` — killing half-open orphans **[field]**.
+delivers a `HELLO`, killing half-open orphans **[field]**.
 
 ```
 HELLO body:  [0x01][16B nodeId][1B role: 0=acceptor 1=dialer][1B flags]
@@ -315,7 +315,7 @@ body = [type:u8][ payload ]
 - **Writers** handle partial writes: buffer the tail, flush on "space available".
 - A 64 KB `DATA` frame is one length-prefixed frame; L2CAP CoC fragments/reassembles the SDU
   transparently (negotiated MTU up to 64 KB+; iOS internally fragments above ~2 KB, invisibly).
-- **Guards:** reject `len < 1` or `len > 4 MiB` (`MAX_FRAME`, matching the repo) and close — defends
+- **Guards:** reject `len < 1` or `len > 4 MiB` (`MAX_FRAME`, matching the repo) and close, defends
   against a corrupt length.
 
 ---
@@ -330,14 +330,14 @@ The keepalive **is** the proof, so no idle channel ever exists.
   - **stale `seq` too long** ⇒ stall (caught by the watchdog below).
   This is literally the spec's "monotonically increasing counter the peer's stream must advance with
   no loss or stall."
-- **Liveness (primary detector) — ADAPTIVE (R7):** track `lastRxMs` (any inbound frame). Declare the
+- **Liveness (primary detector), ADAPTIVE (R7):** track `lastRxMs` (any inbound frame). Declare the
   link **dead** when `now - lastRxMs` exceeds `DEAD = max(base, 3 × ewmaInterArrival)`, where
   `base = 5000 ms` in the **foreground** and `15000 ms` in the **background**, and
   `ewmaInterArrival` is an exponential moving average of inbound-frame gaps. This is the **only**
-  detector that catches a *wedged-but-connected* channel (ACL alive, L2CAP stream stalled) — the BLE
+  detector that catches a *wedged-but-connected* channel (ACL alive, L2CAP stream stalled), the BLE
   supervision timeout will not. The background widening exists because **iOS relaxes the connection
   interval in background** (toward the peripheral's slowest preferred value, hundreds of ms up to
-  ~1–2 s); a fixed 5 s deadline would false-trip a perfectly healthy backgrounded link, causing a
+  ~1 to 2 s); a fixed 5 s deadline would false-trip a perfectly healthy backgrounded link, causing a
   reconnect storm that is itself slow in background. The app sets a single `appInBackground` flag
   from its lifecycle (`scenePhase`/`UIApplication` on iOS; foreground-service/CLI leave it `false`).
 - **Liveness (secondary, fast path):** the OS disconnect callback (iOS `didDisconnectPeripheral` /
@@ -346,8 +346,8 @@ The keepalive **is** the proof, so no idle channel ever exists.
 - **Half-open reaper:** if a channel never delivers a `HELLO` within **3000 ms**, close it. (At
   connect time intervals are tight, so 3 s is safe even in background.)
 
-Why 1 Hz / adaptive 5–15 s / 3 s: 1 Hz is mandated and keeps the iOS link warm (iOS tears down a
-link silent for ~15 s — repo `HopLink` doc; 1 Hz is far safer than the proven 4 s). The adaptive
+Why 1 Hz / adaptive 5 to 15 s / 3 s: 1 Hz is mandated and keeps the iOS link warm (iOS tears down a
+link silent for ~15 s, repo `HopLink` doc; 1 Hz is far safer than the proven 4 s). The adaptive
 deadline recovers in seconds in the foreground without flapping a still-good link, and survives the
 background connection-interval relaxation. 3 s reaps orphans before they exhaust Android's
 concurrent-channel cap.
@@ -371,9 +371,9 @@ concurrent-channel cap.
                          └────────────────────────────────────────────────────────────  ┘
 ```
 
-- **Backoff keying — the correction (R2).** Backoff is **keyed by the stable 6-byte nodeId prefix**
+- **Backoff keying, the correction (R2).** Backoff is **keyed by the stable 6-byte nodeId prefix**
   carried in the advert, which is **invariant across RPA rotation** (it is app-level, not the MAC).
-  This makes a genuinely flapping/failing peer stay rate-limited even after it rotates its MAC —
+  This makes a genuinely flapping/failing peer stay rate-limited even after it rotates its MAC,
   unlike the MAC/identifier, which for **non-bonded** peers is the rotating RPA on Android
   (`ScanResult.getDevice().getAddress()`) and a fresh `CBPeripheral.identifier` per RPA on iOS. The
   prefix is available at dial time (from the advert) **and** post-connect (the first 6 bytes of the
@@ -393,7 +393,7 @@ concurrent-channel cap.
 - **Adapter bounce / power state (R11):** **both platforms** proactively close all local links when
   the adapter powers off (iOS `didUpdateState .poweredOff`; Android `STATE_OFF` via the
   `ACTION_STATE_CHANGED` `BroadcastReceiver`), so the peer's watchdog is not the only thing cleaning
-  up the now-dead links. On power-on, both **rebuild both planes WITHOUT re-rolling the nodeId** —
+  up the now-dead links. On power-on, both **rebuild both planes WITHOUT re-rolling the nodeId**:
   re-add service, re-publish L2CAP, re-advertise, re-scan. Keeping the nodeId stable across the
   bounce avoids the transient duplicate link that an asymmetric re-roll used to create (the peer
   would have seen a "new" node and formed a second link until its watchdog reaped the first).
@@ -404,17 +404,17 @@ concurrent-channel cap.
 
 ## 7. Platform-specific reliability rules (all field-verified in this repo)
 
-### 7.1 Android advertiser — `startAdvertisingSet`, legacy mode, gated on `onServiceAdded`
+### 7.1 Android advertiser: `startAdvertisingSet`, legacy mode, gated on `onServiceAdded`
 Legacy `startAdvertising(...)` with `setIncludeDeviceName(true)` silently omits the GAP name on
 Pixel; `startAdvertisingSet(... setLegacyMode(true).setConnectable(true).setScannable(true) ...)`
 behaves. Start advertising **only from `onServiceAdded`** (R10) so a central can never connect before
-the GATT service is registered. A connectable `AdvertisingSet` **persists across connections** — do
+the GATT service is registered. A connectable `AdvertisingSet` **persists across connections**: do
 **not** stop/restart it per accepted connection (that races incoming connects into
 `CONNECTION_ACCEPT_TIMEOUT`). Make `startAdvertise()` idempotent, null the handle in
-`onAdvertisingSetStopped`, and self-heal from the tick loop (`if (ticks % 30 == 0) startAdvertise()`
-— no-op while live; recovers a wedged advertiser).
+`onAdvertisingSetStopped`, and self-heal from the tick loop (`if (ticks % 30 == 0) startAdvertise()`,
+a no-op while live; recovers a wedged advertiser).
 
-### 7.2 Android GATT lifecycle — always `gatt.close()`; the dialer's GATT client is scarce
+### 7.2 Android GATT lifecycle: always `gatt.close()`; the dialer's GATT client is scarce
 On any connect failure/disconnect/133, `gatt.close()` and remove from the in-flight set, or leaked
 GATT clients exhaust Android's cap and every later connect times out. `connectGatt` on the **main
 thread**, `autoConnect = false` (fast, deterministic direct connect); rely on our own state machine
@@ -423,7 +423,7 @@ for re-establish, not `autoConnect=true`'s opaque slow reconnect. A poisoned `ga
 OEM-dependent, system-wide). The dialer holds its `BluetoothGatt` for the session by default, which
 is the **safe** choice for the core proof. An optional, **flag-gated** optimization
 (`CLOSE_GATT_AFTER_L2CAP`, **default OFF**) closes the GATT client once the L2CAP channel is `UP`,
-freeing the slot — but on a minority of OEM stacks `gatt.close()` may drop the underlying LE ACL and
+freeing the slot, but on a minority of OEM stacks `gatt.close()` may drop the underlying LE ACL and
 kill the L2CAP socket. **Do not enable it without per-OEM verification** (§10: confirm the counter
 keeps advancing after the close on the target hardware). In the dominant iOS-central→Android-
 peripheral topology Android dials rarely, so default-OFF rarely approaches the cap; enable the flag
@@ -432,7 +432,7 @@ divergence from the reviewer's "default ON": for the core 1:1 / small-mesh proof
 socket is strictly worse than slot pressure, and the ACL-refcount behavior is not publicly
 documented.)*
 
-### 7.3 Android radio sharing — don't let central starve peripheral; respect the scan throttle
+### 7.3 Android radio sharing: don't let central starve peripheral; respect the scan throttle
 Continuous `SCAN_MODE_LOW_LATENCY` + failing `connectGatt`s saturate the radio so peers can't even
 *discover* this device. **One persistent scan, never restarted** in steady state. `LOW_LATENCY`
 while we hold **0** links (fast discovery), downshift to `BALANCED` while we hold **≥1** link. Two
@@ -442,7 +442,7 @@ guards make this safe against a flapping peer (R9):
   the scan on every flap.
 - **Sliding-window start guard:** every `stopScan`+`startScan` pair counts as one start; the code
   tracks start timestamps and **never issues a start that would be the 5th within any 30 s window**
-  (Android's 5-starts/30 s throttle is **silent** — it returns success and delivers nothing). A
+  (Android's 5-starts/30 s throttle is **silent**: it returns success and delivers nothing). A
   start that would breach the window is **deferred** until the window frees.
 
 In the dominant iOS↔Android topology Android barely needs to scan (iOS is the central; Android is the
@@ -465,7 +465,7 @@ re-listen, remove+re-add the GATT service to force a structure change so iOS re-
   Therefore on iOS: run the CB managers on a **dedicated serial dispatch queue**, and run the L2CAP
   streams + their PING/watchdog timers on a **dedicated thread with its own run loop** (the watchdog
   timer on that same run loop). The field rule "keep streams on MAIN" meant *don't move streams onto
-  a different thread than the run loop servicing them* — it did **not** mandate the UI main thread.
+  a different thread than the run loop servicing them*; it did **not** mandate the UI main thread.
   See §8.1 for the exact adaptation.
 - **Background + restoration:** set `UIBackgroundModes = [bluetooth-central, bluetooth-peripheral]`
   and `NSBluetoothAlwaysUsageDescription`. Pass the restore-identifier options and handle
@@ -476,14 +476,14 @@ re-listen, remove+re-add the GATT service to force a structure change so iOS re-
   keeps both planes alive via the existing `connectedDevice` foreground service (manifest already has
   `FOREGROUND_SERVICE_CONNECTED_DEVICE`).
 
-### 7.6 Cross-platform wake for a *killed* iOS peer (optional — Appendix A)
+### 7.6 Cross-platform wake for a *killed* iOS peer (optional, Appendix A)
 A suspended/killed iOS peripheral is invisible to Android. To let Android initiate to an iOS device
 that isn't running, broadcast a non-connectable iBeacon and monitor a `CLBeaconRegion` that
 relaunches the killed app into the background. Optional; the core proof does not require it.
 
 ---
 
-## 8. Critical source — Apple (Swift / CoreBluetooth)
+## 8. Critical source: Apple (Swift / CoreBluetooth)
 
 Build the macOS CLI as the fast iteration loop (`swiftc -framework CoreBluetooth`, model on
 `apple/hopmac/build.sh`); the same types are iOS-faithful. This is the reliability-critical core:
@@ -780,7 +780,7 @@ let node = Node()
 RunLoop.main.run()
 ```
 
-### 8.1 iOS device-target threading adaptation (R8) — apply when building the app, not the CLI
+### 8.1 iOS device-target threading adaptation (R8): apply when building the app, not the CLI
 
 The CLI above is correct as-is. For the **iOS app**, make exactly these substitutions; nothing else
 in §8 changes:
@@ -817,7 +817,7 @@ mutation; keep `linksByPeerId` accessed on a single queue.
 
 ---
 
-## 9. Critical source — Android (Kotlin)
+## 9. Critical source: Android (Kotlin)
 
 Model the build on `android/HopDemo` (`gradlew`, `compileSdk 34`, `minSdk 29`). Permissions are
 already in the manifest (`BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN` `neverForLocation`,
@@ -844,7 +844,7 @@ const val MFG_ID = 0xFFFF
 const val PING_MS = 1000L; const val DEAD_MS = 5000L; const val DEAD_BG_MS = 15_000L; const val REAP_MS = 3000L
 const val MAX_DIALS = 2; const val DIAL_TIMEOUT_MS = 12_000L
 const val LOST_MS = 30_000L
-const val CLOSE_GATT_AFTER_L2CAP = false      // R5: free the GATT slot after L2CAP up — OEM-risky; verify before enabling
+const val CLOSE_GATT_AFTER_L2CAP = false      // R5: free the GATT slot after L2CAP up, OEM-risky; verify before enabling
 @Volatile var appInBackground = false         // R7: set from app lifecycle; foreground-service default = false
 val myId = ByteArray(16).also { SecureRandom().nextBytes(it) }   // §1.2: stable for process lifetime; NOT re-rolled on adapter cycle (R11)
 
@@ -1055,7 +1055,7 @@ class Central(private val ctx: Context, private val myId: ByteArray,
         // R1: API 33+ delivers the 4-arg form...
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray, status: Int) =
             handleRead(g, value, status)
-        // R1: ...but API 29–32 (the whole sub-33 field) delivers ONLY this deprecated 3-arg form.
+        // R1: ...but API 29 to 32 (the whole sub-33 field) delivers ONLY this deprecated 3-arg form.
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
             @Suppress("DEPRECATION") handleRead(g, ch.value ?: ByteArray(0), status)
@@ -1155,12 +1155,12 @@ class Node(ctx: Context) {
 - **Apple:** `swiftc -O -framework CoreBluetooth ble-lab/apple/main.swift -o ble-lab/apple/blepeer`
   (model on `apple/hopmac/build.sh`). First run from Terminal grants the Bluetooth permission.
 - **Android:** model on `android/HopDemo` (`./gradlew installDebug`). Logcat tag `HOPLOG`. Cycle the
-  stack with `adb shell cmd bluetooth_manager disable` / `enable`. **Test on at least one API 29–32
+  stack with `adb shell cmd bluetooth_manager disable` / `enable`. **Test on at least one API 29 to 32
   device (R1):** confirm the deprecated 3-arg `onCharacteristicRead` path fires (the read completes
-  and the L2CAP dial proceeds) — a regression here is silent on API 33+.
+  and the L2CAP dial proceeds), a regression here is silent on API 33+.
 
 ### 10.2 Bring-up (clean radio first)
-1. `adb shell cmd bluetooth_manager disable && adb shell cmd bluetooth_manager enable` — a freshly
+1. `adb shell cmd bluetooth_manager disable && adb shell cmd bluetooth_manager enable`, a freshly
    cycled stack avoids a wedged advertiser **[field]**.
 2. Launch Android; confirm advertising via `adb shell dumpsys bluetooth_manager` (GATT Advertiser
    Map lists the service + connectable/scannable/legacy flags), or nRF Connect / LightBlue as ground
@@ -1174,7 +1174,7 @@ class Node(ctx: Context) {
   exercise the background scenario §10.5 #6 with the adaptive watchdog).
 - **Optional Stage C (only if enabling `CLOSE_GATT_AFTER_L2CAP`):** on the target Android OEM, set
   the flag and confirm the proof counter keeps advancing **after** the GATT client closes (R5). If it
-  stalls, the OEM drops the ACL on `gatt.close()` — leave the flag OFF for that hardware.
+  stalls, the OEM drops the ACL on `gatt.close()`; leave the flag OFF for that hardware.
 
 ### 10.4 The metrics that prove "established AND maintained" (not "connected once")
 Each peer logs a STATUS line every 5 s; assert over a long soak:
@@ -1199,10 +1199,10 @@ Each peer logs a STATUS line every 5 s; assert over a long soak:
    re-establishes exactly one channel. No per-MAC/identifier state accumulation (TTL-bounded), no
    degradation.
 4. **Address-rotation soak (hours):** the peer's RPA rotates repeatedly; the link persists or
-   re-forms with **no duplicate** — dedup is by `nodeId`, backoff by the stable nodeId prefix (R2),
+   re-forms with **no duplicate**, dedup is by `nodeId`, backoff by the stable nodeId prefix (R2),
    so rotation is a non-event and the backoff/in-flight maps stay bounded.
-5. **Contention:** add 2–3 extra centrals (more macOS peers / LightBlue). No orphan accumulation, no
-   L2CAP-open `Unknown error` storms — tiebreaker + reaper + dial caps keep Android's budget healthy.
+5. **Contention:** add 2 to 3 extra centrals (more macOS peers / LightBlue). No orphan accumulation, no
+   L2CAP-open `Unknown error` storms, tiebreaker + reaper + dial caps keep Android's budget healthy.
    If running near the GATT-client cap on Android, evaluate `CLOSE_GATT_AFTER_L2CAP` (R5, Stage C).
 6. **iOS background (device only):** background the app; a service-filtered scan still discovers the
    Android peer and `connect` completes; with state restoration the app relaunches into the
@@ -1223,7 +1223,7 @@ duration, channel count pinned at **1**, and automatic recovery after every indu
 Android `listenUsingInsecureL2capChannel` peripheral once GATT-first sequencing (connect → discover
 all services → read a characteristic) is done.** This repo holds *conflicting* evidence:
 `apple/hopmac` + the `ble-bearer-pure-l2cap-no-gatt` memory note say it works **iff** GATT
-discovery + a characteristic read precede the open (which this design does — that read is the PSM/id
+discovery + a characteristic read precede the open (which this design does: that read is the PSM/id
 read), while `GattDataLink.kt` and the `HopLink.kt` reaper comment say CoreBluetooth returns
 CBErrorDomain "Unknown error" opening L2CAP to Android, on some OEM stacks. The reaper (§5) and the
 dial backoff (§6) already keep the system healthy when an open fails; if a *target* Android OEM
@@ -1235,7 +1235,7 @@ the GATT client). This is **not** publicly documented, so `CLOSE_GATT_AFTER_L2CA
 is gated behind per-OEM verification (Stage C). The core proof does not depend on it.
 
 Other risks, each already mitigated: a **backgrounded iOS advertiser is invisible to Android**
-(mitigated by always keeping the iOS-central→Android-peripheral edge and the §2.2 wait-timeout —
+(mitigated by always keeping the iOS-central→Android-peripheral edge and the §2.2 wait-timeout;
 never depend on Android seeing iOS); **iOS connection parameters aren't controllable** (mitigated by
 the 1 Hz keepalive plus the adaptive background liveness deadline, R7); **double-connect races**
 (mitigated by the §2.3 post-`HELLO` nonce dedup plus the pre-connect `haveLinkTo`/`haveLinkToPrefix`
@@ -1243,37 +1243,37 @@ guards, R4).
 
 ---
 
-## Appendix A — iBeacon wake for a *killed* iOS peripheral (optional, iOS device only)
+## Appendix A: iBeacon wake for a *killed* iOS peripheral (optional, iOS device only)
 Broadcast a non-connectable iBeacon (`AdvertisingSet`, Apple company `0x004C`, payload `02 15
 <BEACON_UUID> <major> <minor> <txpower>`) as a second concurrent set. The iOS app monitors a
 `CLBeaconRegion(BEACON_UUID, notifyOnEntry, notifyEntryStateOnDisplay)` which relaunches the killed
 app into the background, after which its central path dials normally. Not required for the core proof.
 
-## Appendix B — GATT data-plane fallback (drop-in if L2CAP refuses on target hardware)
+## Appendix B: GATT data-plane fallback (drop-in if L2CAP refuses on target hardware)
 Reuse this repo's `GattDataLink.kt` verbatim. Add two characteristics to the service:
 `RX_CHAR` (WRITE / WRITE_NO_RESPONSE, central→peripheral) and `TX_CHAR` (NOTIFY/INDICATE,
 peripheral→central). When `openL2CAPChannel` errors (iOS `didOpen` error / Android
 `createInsecureL2capChannel.connect()` throws), bind the **same §4 framing + §3.3 HELLO + §5
 1 Hz PING/liveness** over GATT instead: central writes framed chunks of `MTU−3` to `RX_CHAR` with
 strict one-op-at-a-time flow control (write → await completion → next), peripheral indicates back
-over `TX_CHAR`. HELLO, PING/PONG, dedup, watchdog, and the state machine are all unchanged — only
+over `TX_CHAR`. HELLO, PING/PONG, dedup, watchdog, and the state machine are all unchanged, only
 the byte transport differs. This makes "pipe proven" hold even if cross-platform L2CAP never opens.
 
-## Appendix C — Adversarial-review resolutions (R1–R11)
+## Appendix C: Adversarial-review resolutions (R1 to R11)
 
 | ID | Issue | Disposition | Where fixed |
 |---|---|---|---|
-| **R1** | Android 4-arg `onCharacteristicRead` is API 33+; on API 29–32 (the whole sub-33 `minSdk` field) only the deprecated 3-arg fires → read never completes, 0% cross-platform establishment | **ACCEPTED** — override **both** signatures into one `handleRead` | §3.2 step 5, §9 `gattCb`, §10.1 |
-| **R2** | Backoff keyed by MAC/identifier (rotating RPA), not nodeId → maps grow unbounded and a flapping peer is never rate-limited after rotation; §6 prose was false | **ACCEPTED, refined** — backoff keyed by the **stable 6-byte nodeId prefix** (invariant across RPA rotation, available pre- and post-connect); MAC/identifier only for the short-lived in-flight guard and as pre-read fallback; all maps TTL-bounded | §2, §6, §8/§9 `backoff`/`addrToBkey`/`evictBackoff` |
-| **R3** | `onClose` "brevity" glue (`remove(peerId)`) evicts the surviving link because both ends share the `peerId` key | **ACCEPTED** — set survivor in map *before* closing the dropped channel; `onClose` removes only if the closing link is still the current occupant (identity check) | §2.3, §8/§9 `Node.onClose`/`onUp` |
-| **R4** | Wait-timeout (and iOS path) checked the central's own dial map, not the link map → redundant dial on every wait, multiplied by `allowDuplicates` | **ACCEPTED** — gate dials on the node link map (`haveLinkToPrefix`/`haveLinkTo`); dedupe wait closures (one per peer); add iOS pre-`openL2CAPChannel` `haveLinkTo` check | §2.1/§2.2, §3.2, §8/§9 |
-| **R5** | Dialer never closes the GATT client → each link holds a scarce (~7) GATT-client slot for the session | **PARTIAL** — added `CLOSE_GATT_AFTER_L2CAP`, but **default OFF** (reviewer wanted ON): the ACL-survives-close assumption is undocumented and killing a live socket is worse than slot pressure for the core proof; enable only after Stage-C per-OEM verification | §7.2, §9, §10.3 Stage C, §11 |
-| **R6** | iOS `connect()` has no timeout; `dial()` implemented none → permanent stall if peer vanishes mid-connect | **ACCEPTED** — real 12 s `DispatchWorkItem` timer → `cancelPeripheralConnection` → `reconnect` | §3.2, §8 `dial`/`dialTimedOut` |
-| **R7** | Fixed 5 s liveness deadline false-trips a healthy backgrounded iOS link (relaxed connection interval) | **ACCEPTED** — adaptive deadline: 5 s foreground / 15 s background, floored at 3× observed inter-arrival (EWMA) | §0.1, §5, §8/§9 `deadLimit`/`ewmaGap` |
-| **R8** | CB delegate + streams on `.main` is a foot-gun on a real iOS app (UI hitch → false-dead) | **ACCEPTED** — CLI stays on `.main` (no UI); iOS app uses a dedicated serial CB queue + a dedicated I/O thread/run loop for streams and timers | §7.5, §8.1 |
-| **R9** | Scan-mode 0↔1 churn can trip Android's silent 5-starts/30 s throttle → dead scanner | **ACCEPTED** — downshift hysteresis (≥10 s stability) + a 30 s sliding-window guard that never issues the 5th start (defers it) | §7.3, §9 `requestScanMode`/`applyScan`, §10.4 |
-| **R10** | Android advertises before async `addService` completes → fast central finds no service | **ACCEPTED** — advertise only from `onServiceAdded(GATT_SUCCESS)`; iOS re-adds service before re-advertising on `willRestoreState` | §3.1, §7.1, §9 |
-| **R11** | Asymmetric nodeId re-roll on adapter cycle → transient duplicate link | **ACCEPTED** — nodeId is stable for the process lifetime on **both** platforms (no re-roll on adapter bounce); both proactively close all local links on power-off | §1.2, §6, §8/§9 |
+| **R1** | Android 4-arg `onCharacteristicRead` is API 33+; on API 29 to 32 (the whole sub-33 `minSdk` field) only the deprecated 3-arg fires → read never completes, 0% cross-platform establishment | **ACCEPTED**: override **both** signatures into one `handleRead` | §3.2 step 5, §9 `gattCb`, §10.1 |
+| **R2** | Backoff keyed by MAC/identifier (rotating RPA), not nodeId → maps grow unbounded and a flapping peer is never rate-limited after rotation; §6 prose was false | **ACCEPTED, refined**: backoff keyed by the **stable 6-byte nodeId prefix** (invariant across RPA rotation, available pre- and post-connect); MAC/identifier only for the short-lived in-flight guard and as pre-read fallback; all maps TTL-bounded | §2, §6, §8/§9 `backoff`/`addrToBkey`/`evictBackoff` |
+| **R3** | `onClose` "brevity" glue (`remove(peerId)`) evicts the surviving link because both ends share the `peerId` key | **ACCEPTED**: set survivor in map *before* closing the dropped channel; `onClose` removes only if the closing link is still the current occupant (identity check) | §2.3, §8/§9 `Node.onClose`/`onUp` |
+| **R4** | Wait-timeout (and iOS path) checked the central's own dial map, not the link map → redundant dial on every wait, multiplied by `allowDuplicates` | **ACCEPTED**: gate dials on the node link map (`haveLinkToPrefix`/`haveLinkTo`); dedupe wait closures (one per peer); add iOS pre-`openL2CAPChannel` `haveLinkTo` check | §2.1/§2.2, §3.2, §8/§9 |
+| **R5** | Dialer never closes the GATT client → each link holds a scarce (~7) GATT-client slot for the session | **PARTIAL**: added `CLOSE_GATT_AFTER_L2CAP`, but **default OFF** (reviewer wanted ON): the ACL-survives-close assumption is undocumented and killing a live socket is worse than slot pressure for the core proof; enable only after Stage-C per-OEM verification | §7.2, §9, §10.3 Stage C, §11 |
+| **R6** | iOS `connect()` has no timeout; `dial()` implemented none → permanent stall if peer vanishes mid-connect | **ACCEPTED**: real 12 s `DispatchWorkItem` timer → `cancelPeripheralConnection` → `reconnect` | §3.2, §8 `dial`/`dialTimedOut` |
+| **R7** | Fixed 5 s liveness deadline false-trips a healthy backgrounded iOS link (relaxed connection interval) | **ACCEPTED**: adaptive deadline: 5 s foreground / 15 s background, floored at 3× observed inter-arrival (EWMA) | §0.1, §5, §8/§9 `deadLimit`/`ewmaGap` |
+| **R8** | CB delegate + streams on `.main` is a foot-gun on a real iOS app (UI hitch → false-dead) | **ACCEPTED**: CLI stays on `.main` (no UI); iOS app uses a dedicated serial CB queue + a dedicated I/O thread/run loop for streams and timers | §7.5, §8.1 |
+| **R9** | Scan-mode 0↔1 churn can trip Android's silent 5-starts/30 s throttle → dead scanner | **ACCEPTED**: downshift hysteresis (≥10 s stability) + a 30 s sliding-window guard that never issues the 5th start (defers it) | §7.3, §9 `requestScanMode`/`applyScan`, §10.4 |
+| **R10** | Android advertises before async `addService` completes → fast central finds no service | **ACCEPTED**: advertise only from `onServiceAdded(GATT_SUCCESS)`; iOS re-adds service before re-advertising on `willRestoreState` | §3.1, §7.1, §9 |
+| **R11** | Asymmetric nodeId re-roll on adapter cycle → transient duplicate link | **ACCEPTED**: nodeId is stable for the process lifetime on **both** platforms (no re-roll on adapter bounce); both proactively close all local links on power-off | §1.2, §6, §8/§9 |
 
 **Affirmed correct by the review (unchanged):** MSB-first prefix-vs-full-id ordering is consistent
 with the 16-byte dedup; the 2-channel dedup is symmetric (no livelock in the double-dial case); the
@@ -1284,20 +1284,20 @@ reality.
 ---
 
 ## Sources
-- Apple — Core Bluetooth Background Processing (overflow area; bg name dropped, UUIDs hashed): https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html
-- David G. Young — Hacking the iOS BLE Overflow Area: https://davidgyoungtech.com/2020/05/07/hacking-the-overflow-area  •  repo: https://github.com/davidgyoung/ios-overflow-area
-- Punch Through — iOS BLE Scanning guide (bg scan needs a service filter): https://punchthrough.com/ios-ble-scanning-guide/
-- Punch Through — Android BLE guide (4-arg `onCharacteristicRead` added API 33; implement both below 33): https://punchthrough.com/android-ble-guide/
-- Apple — `CBL2CAPChannel`: https://developer.apple.com/documentation/corebluetooth/cbl2capchannel  •  `publishL2CAPChannel(withEncryption:)`: https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/publishl2capchannel(withencryption:)
-- Apple Developer Forums #675960 — secure L2CAP fails iOS↔Android, insecure works: https://developer.apple.com/forums/thread/675960
-- Apple Developer Forums #713800 — iOS connection-interval floor 15 ms + periodic background callback disruption; L2CAP avoids GATT-cadence stalls: https://developer.apple.com/forums/thread/713800
-- Silicon Labs — Apple connection-parameter guidance / RPA & IRK privacy: https://docs.silabs.com/bluetooth/latest/bluetooth-application-security-design-considerations/03-privacy-and-tracking
-- Android — `ScanResult` (non-bonded `getAddress()` returns the rotating RPA): https://developer.android.com/reference/android/bluetooth/le/ScanResult
-- JuulLabs/kable #588 — cross-platform L2CAP (insecure works, secure fails): https://github.com/JuulLabs/kable/discussions/588
-- Android — `listenUsingInsecureL2capChannel` / `createInsecureL2capChannel` / `BluetoothServerSocket.psm` (LE CoC, no bonding): https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#listenUsingInsecureL2capChannel()
+- Apple, Core Bluetooth Background Processing (overflow area; bg name dropped, UUIDs hashed): https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html
+- David G. Young, Hacking the iOS BLE Overflow Area: https://davidgyoungtech.com/2020/05/07/hacking-the-overflow-area  •  repo: https://github.com/davidgyoung/ios-overflow-area
+- Punch Through, iOS BLE Scanning guide (bg scan needs a service filter): https://punchthrough.com/ios-ble-scanning-guide/
+- Punch Through, Android BLE guide (4-arg `onCharacteristicRead` added API 33; implement both below 33): https://punchthrough.com/android-ble-guide/
+- Apple, `CBL2CAPChannel`: https://developer.apple.com/documentation/corebluetooth/cbl2capchannel  •  `publishL2CAPChannel(withEncryption:)`: https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/publishl2capchannel(withencryption:)
+- Apple Developer Forums #675960, secure L2CAP fails iOS↔Android, insecure works: https://developer.apple.com/forums/thread/675960
+- Apple Developer Forums #713800, iOS connection-interval floor 15 ms + periodic background callback disruption; L2CAP avoids GATT-cadence stalls: https://developer.apple.com/forums/thread/713800
+- Silicon Labs, Apple connection-parameter guidance / RPA & IRK privacy: https://docs.silabs.com/bluetooth/latest/bluetooth-application-security-design-considerations/03-privacy-and-tracking
+- Android, `ScanResult` (non-bonded `getAddress()` returns the rotating RPA): https://developer.android.com/reference/android/bluetooth/le/ScanResult
+- JuulLabs/kable #588, cross-platform L2CAP (insecure works, secure fails): https://github.com/JuulLabs/kable/discussions/588
+- Android, `listenUsingInsecureL2capChannel` / `createInsecureL2capChannel` / `BluetoothServerSocket.psm` (LE CoC, no bonding): https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#listenUsingInsecureL2capChannel()
 - Demystifying Android BLE "GATT Status 133" (connectGatt on main thread, always close, jittered backoff): https://dev.to/ble_advertiser/demystifying-android-ble-gatt-status-133-common-causes-and-robust-solutions-for-connection-32la
-- Android BLE scan throttle — 5 startScan/30 s silent block; >30 min → opportunistic: https://punchthrough.com/android-ble-scan-errors/
-- Apple — `startAdvertising(_:)` honored keys (service UUID + local name only): https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)
+- Android BLE scan throttle, 5 startScan/30 s silent block; >30 min → opportunistic: https://punchthrough.com/android-ble-scan-errors/
+- Apple, `startAdvertising(_:)` honored keys (service UUID + local name only): https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)
 - BLE throughput / L2CAP CoC MTU & credit-based flow control: https://github.com/chrisc11/ble-guides/blob/master/ble-throughput.md
 - Repo field evidence: `apple/hopmac`, `android/HopDemo/.../HopLink.kt` + `GattDataLink.kt`; memory notes `ble-bearer-pure-l2cap-no-gatt`, `cross-platform-ble`.
 ```

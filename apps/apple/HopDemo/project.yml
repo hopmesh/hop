@@ -50,7 +50,7 @@ targets:
         NSBluetoothAlwaysUsageDescription: "Hop relays messages over Bluetooth so you can chat with people nearby without the internet."
         NSLocationWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to notice people nearby so it can relay messages."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Hop uses a Bluetooth beacon to wake and relay messages even when the app is in the background."
-        # MultipeerConnectivity Wi-Fi bearer (DESIGN.md §26) — required or it fails silently on iOS 14+.
+        # MultipeerConnectivity Wi-Fi bearer (DESIGN.md §26), required or it fails silently on iOS 14+.
         NSLocalNetworkUsageDescription: "Hop meshes with nearby devices over Wi-Fi to relay messages without the internet."
         NSBonjourServices: [_hop-mesh._tcp, _hop-mesh._udp, _hoplan._tcp]
         # TEST/AUTOMATION: custom URL scheme so a headless harness can drive sends via
