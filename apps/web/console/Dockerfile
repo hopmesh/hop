@@ -3,14 +3,14 @@
 # runtime by the Cloud Run env; every /api/* request is proxied there (next.config.mjs).
 # Build context is the repo root: docker build -f apps/web/console/Dockerfile .
 
-FROM node:22-bookworm-slim@sha256:bac8ff0b5302b06924a5e288fb4ceecef9c8bb0bb92515985d2efd51f0d7649e AS build
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
 WORKDIR /app
 COPY apps/web/console/package.json apps/web/console/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY apps/web/console/ ./
 RUN npm run build
 
-FROM node:22-bookworm-slim@sha256:bac8ff0b5302b06924a5e288fb4ceecef9c8bb0bb92515985d2efd51f0d7649e
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
