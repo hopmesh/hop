@@ -134,12 +134,19 @@ resource "google_service_account_iam_member" "billing_catalog_wif" {
 }
 
 # The catalog identity writes ONE secret: the Stripe webhook signing secret it just created
-# (infra/billing/webhook_secret.tf). versionAdder lets the apply write it; secretAccessor lets the next
-# plan refresh the version it owns without a permission error. Both are scoped to that single
-# container, so this identity still cannot read any other secret in the project.
+# (infra/billing/webhook_secret.tf).
+#
+# secretVersionManager, not secretVersionAdder. Writing a version is three API calls, not one: the
+# provider adds the version, then explicitly enables it, then refreshes it on the next plan. Those
+# need versions.add, versions.enable, and versions.get respectively. secretVersionAdder carries only
+# versions.add, and secretAccessor carries only versions.access (NOT versions.get, despite the name),
+# so the first apply wrote the secret and then died 403 on enable. secretVersionManager covers all
+# three and still carries NO versions.access, so the write path cannot read a payload; secretAccessor
+# below remains the separate, deliberate read grant. Both stay scoped to that single container, so
+# this identity still cannot touch any other secret in the project.
 resource "google_secret_manager_secret_iam_member" "billing_catalog_webhook_secret" {
   for_each = toset([
-    "roles/secretmanager.secretVersionAdder",
+    "roles/secretmanager.secretVersionManager",
     "roles/secretmanager.secretAccessor",
   ])
   secret_id = google_secret_manager_secret.stripe_webhook_secret.secret_id
