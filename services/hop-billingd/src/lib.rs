@@ -217,11 +217,19 @@ pub fn reconcile<S: MeterSink>(
 pub struct TelemetryRow {
     /// OTel-over-Hop events ingested this hour for this tenant (billed to `hop_telemetry_events`).
     pub events: u64,
+    /// Measured payload bytes behind those events. Recorded because a telemetry batch is
+    /// shape-bounded, not content-bounded, so one billable event can carry several KB of arbitrary
+    /// strings and the event count alone hides real consumption by orders of magnitude.
+    ///
+    /// MEASUREMENT ONLY: nothing is priced off this and no meter reads it. Whether telemetry should
+    /// be billed by bytes, by events, or by both is the owner's pricing decision.
+    pub payload_bytes: u64,
 }
 
 impl TelemetryRow {
     pub fn add(&mut self, other: &TelemetryRow) {
         self.events = self.events.saturating_add(other.events);
+        self.payload_bytes = self.payload_bytes.saturating_add(other.payload_bytes);
     }
 }
 
@@ -425,6 +433,15 @@ mod tests {
     const A: TenantId = [1u8; 16];
     const B: TenantId = [2u8; 16];
 
+    /// A telemetry row with only events set. Bytes are measurement, not a billing input, so the
+    /// reconciler tests deliberately leave them at zero except where the point IS the bytes.
+    fn tel(events: u64) -> TelemetryRow {
+        TelemetryRow {
+            events,
+            payload_bytes: 0,
+        }
+    }
+
     fn sample_event() -> MeterEvent {
         MeterEvent {
             event_name: meter::BACKBONE_DELIVERY,
@@ -515,9 +532,9 @@ mod tests {
     fn reconcile_telemetry_sums_collectors_and_emits_one_event_per_hour_tenant() {
         // Two collectors reported for (hour 5, tenant A); one row for (hour 5, tenant B).
         let rows = vec![
-            (5, A, TelemetryRow { events: 300 }),
-            (5, A, TelemetryRow { events: 120 }), // another collector
-            (5, B, TelemetryRow { events: 40 }),
+            (5, A, tel(300)),
+            (5, A, tel(120)), // another collector
+            (5, B, tel(40)),
         ];
         let mut sink = FakeSink::default();
         let wm = reconcile_telemetry(&rows, 0, 6, &mut sink);
@@ -534,10 +551,7 @@ mod tests {
 
     #[test]
     fn reconcile_telemetry_holds_the_watermark_on_a_failed_emit() {
-        let rows = vec![
-            (4, A, TelemetryRow { events: 10 }),
-            (5, A, TelemetryRow { events: 20 }),
-        ];
+        let rows = vec![(4, A, tel(10)), (5, A, tel(20))];
         let mut sink = FakeSink {
             fail_hours: vec![5],
             ..Default::default()
@@ -552,10 +566,10 @@ mod tests {
     #[test]
     fn reconcile_telemetry_skips_zero_and_out_of_window_hours() {
         let rows = vec![
-            (3, A, TelemetryRow { events: 99 }), // <= watermark, skipped
-            (5, A, TelemetryRow { events: 0 }),  // zero -> no event
-            (5, B, TelemetryRow { events: 7 }),
-            (6, A, TelemetryRow { events: 5 }), // current hour, still open
+            (3, A, tel(99)), // <= watermark, skipped
+            (5, A, tel(0)),  // zero -> no event
+            (5, B, tel(7)),
+            (6, A, tel(5)), // current hour, still open
         ];
         let mut sink = FakeSink::default();
         let wm = reconcile_telemetry(&rows, 3, 6, &mut sink);
@@ -563,6 +577,40 @@ mod tests {
         assert_eq!(sink.emitted.len(), 1, "only (5,B) with non-zero events");
         assert_eq!(sink.emitted[0].tenant, B);
         assert_eq!(sink.emitted[0].value, 7);
+    }
+
+    #[test]
+    fn telemetry_payload_bytes_are_recorded_but_change_no_price() {
+        // Bytes are measurement only. They must sum through the row arithmetic (so the data is
+        // there when someone decides how to price it) while emitting the SAME meter events, on the
+        // SAME meter, with the SAME values as before the field existed.
+        let mut row = TelemetryRow {
+            events: 10,
+            payload_bytes: 1000,
+        };
+        row.add(&TelemetryRow {
+            events: 5,
+            payload_bytes: 500,
+        });
+        assert_eq!(row.events, 15);
+        assert_eq!(row.payload_bytes, 1500, "bytes accumulate for visibility");
+
+        let fat = vec![(
+            5,
+            A,
+            TelemetryRow {
+                events: 3,
+                payload_bytes: 999_999,
+            },
+        )];
+        let mut sink = FakeSink::default();
+        assert_eq!(reconcile_telemetry(&fat, 0, 6, &mut sink), 5);
+        assert_eq!(sink.emitted.len(), 1, "still one event per (hour, tenant)");
+        assert_eq!(sink.emitted[0].event_name, meter::TELEMETRY_EVENTS);
+        assert_eq!(
+            sink.emitted[0].value, 3,
+            "billed on EVENTS only; no byte meter, no price change"
+        );
     }
 
     #[test]

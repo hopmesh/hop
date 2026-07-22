@@ -3,7 +3,14 @@
 //!
 //! The producers' write contracts (mirrored EXACTLY here):
 //! - relays:     `usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`bundles` u64, `payload_bytes` u64)
-//! - collectors: `telemetry_usage/{hour}/{tenant_hex32}` -> 8 bytes LE (`events` u64)
+//! - collectors: `telemetry_usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`events` u64,
+//!   `payload_bytes` u64). Rows written before the byte measure existed are 8 bytes (`events` only)
+//!   and MUST still parse, as `(events, 0)`.
+//! - relays:     `carriage_usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`bundles` u64,
+//!   `payload_bytes` u64). MEASUREMENT ONLY: carriage the relay performed that produced no delivery
+//!   event and is therefore currently UNBILLED (§40 telemetry is the systematic case). Parsed so it
+//!   is visible; it drives no reconciler and no Stripe meter, and it is deliberately a SEPARATE
+//!   prefix so it can never be summed into the live `usage/` reach ledger.
 //!
 //! Relays ALSO write `storage_usage/{hour}/{tenant_hex32}` -> 8 bytes LE (`byte_ms` u64), the
 //! mailbox-occupancy axis. It is deliberately NOT parsed here: the measurement is landing ahead of
@@ -26,6 +33,8 @@ use crate::{LedgerRow, TelemetryRow, TenantId};
 pub enum ParsedRow {
     Usage(u64, TenantId, LedgerRow),
     Telemetry(u64, TenantId, TelemetryRow),
+    /// Unbilled carriage measurement. Collected and surfaced, never reconciled or billed.
+    Carriage(u64, TenantId, LedgerRow),
 }
 
 /// Where ledger rows come from. The live implementation wraps `hop_store_firestore::KvReader`
@@ -55,8 +64,14 @@ pub fn parse_row(key: &str, value: &[u8]) -> Option<ParsedRow> {
                 .then_some(ParsedRow::Usage(hour, tenant, row))
         }
         "telemetry_usage" => {
-            let events = decode_events(value);
-            (events > 0).then_some(ParsedRow::Telemetry(hour, tenant, TelemetryRow { events }))
+            let row = decode_telemetry(value);
+            (row.events > 0 || row.payload_bytes > 0)
+                .then_some(ParsedRow::Telemetry(hour, tenant, row))
+        }
+        "carriage_usage" => {
+            let row = decode_usage(value);
+            (row.bundles > 0 || row.payload_bytes > 0)
+                .then_some(ParsedRow::Carriage(hour, tenant, row))
         }
         _ => None,
     }
@@ -75,11 +90,23 @@ fn decode_usage(bytes: &[u8]) -> LedgerRow {
     }
 }
 
-/// The collector's value layout: exactly 8 bytes LE. Any other length reads as zero.
-fn decode_events(bytes: &[u8]) -> u64 {
-    <[u8; 8]>::try_from(bytes)
-        .map(u64::from_le_bytes)
-        .unwrap_or(0)
+/// The collector's value layout: 16 bytes, `events` u64 LE then `payload_bytes` u64 LE.
+///
+/// 8 bytes is the ORIGINAL events-only layout and still parses as `(events, 0)`: rows written by a
+/// pre-upgrade collector must keep billing their events, not silently vanish. Any other length reads
+/// as zero (the producer's own corruption convention).
+fn decode_telemetry(bytes: &[u8]) -> TelemetryRow {
+    match bytes.len() {
+        16 => TelemetryRow {
+            events: u64::from_le_bytes(bytes[..8].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(bytes[8..].try_into().unwrap_or_default()),
+        },
+        8 => TelemetryRow {
+            events: u64::from_le_bytes(bytes.try_into().unwrap_or_default()),
+            payload_bytes: 0,
+        },
+        _ => TelemetryRow::default(),
+    }
 }
 
 /// Parse a 32-char lowercase-hex string into a [`TenantId`].
@@ -103,6 +130,9 @@ fn parse_tenant_hex(s: &str) -> Option<TenantId> {
 pub struct CollectedRows {
     pub usage: Vec<(u64, TenantId, LedgerRow)>,
     pub telemetry: Vec<(u64, TenantId, TelemetryRow)>,
+    /// Unbilled carriage measurement (see the module docs). Surfaced for visibility; no reconciler
+    /// consumes it and no Stripe event is emitted for it.
+    pub carriage: Vec<(u64, TenantId, LedgerRow)>,
     /// Partitions that could not be listed this run. Their rows are simply absent; because the
     /// watermark only advances past hours whose emits SUCCEEDED, and absent rows produce no emits,
     /// a skipped partition's usage is picked up on a later run. Surfaced so the operator sees it.
@@ -134,6 +164,7 @@ pub fn collect_rows<S: LedgerSource>(source: &S) -> Result<CollectedRows, String
             match parse_row(&key, &value) {
                 Some(ParsedRow::Usage(h, t, r)) => out.usage.push((h, t, r)),
                 Some(ParsedRow::Telemetry(h, t, r)) => out.telemetry.push((h, t, r)),
+                Some(ParsedRow::Carriage(h, t, r)) => out.carriage.push((h, t, r)),
                 None => {}
             }
         }
@@ -173,9 +204,82 @@ mod tests {
             Some(ParsedRow::Telemetry(
                 402,
                 TENANT,
-                TelemetryRow { events: 7 }
+                TelemetryRow {
+                    events: 7,
+                    payload_bytes: 0
+                }
             ))
         );
+    }
+
+    #[test]
+    fn telemetry_rows_parse_at_both_widths() {
+        // Current 16-byte shape: events + measured payload bytes.
+        let mut v = 7u64.to_le_bytes().to_vec();
+        v.extend_from_slice(&900u64.to_le_bytes());
+        assert_eq!(
+            parse_row(&format!("telemetry_usage/402/{T}"), &v),
+            Some(ParsedRow::Telemetry(
+                402,
+                TENANT,
+                TelemetryRow {
+                    events: 7,
+                    payload_bytes: 900
+                }
+            ))
+        );
+        // Legacy 8-byte (events-only) rows written before the byte measure existed must STILL
+        // parse, as (events, 0), or upgrading the collector would drop a billable hour on the floor.
+        assert_eq!(
+            parse_row(&format!("telemetry_usage/402/{T}"), &7u64.to_le_bytes()),
+            Some(ParsedRow::Telemetry(
+                402,
+                TENANT,
+                TelemetryRow {
+                    events: 7,
+                    payload_bytes: 0
+                }
+            ))
+        );
+        // A bytes-only row (no events) is still a real row and must not be dropped.
+        let mut bytes_only = 0u64.to_le_bytes().to_vec();
+        bytes_only.extend_from_slice(&50u64.to_le_bytes());
+        assert!(matches!(
+            parse_row(&format!("telemetry_usage/402/{T}"), &bytes_only),
+            Some(ParsedRow::Telemetry(..))
+        ));
+    }
+
+    #[test]
+    fn carriage_rows_parse_on_their_own_prefix_and_never_as_reach_usage() {
+        // Unbilled carriage measurement: parsed and surfaced, but on a prefix of its own so it can
+        // never be summed into the live `usage/` reach ledger that actually bills.
+        assert_eq!(
+            parse_row(&format!("carriage_usage/402/{T}"), &usage_val(2, 200)),
+            Some(ParsedRow::Carriage(
+                402,
+                TENANT,
+                LedgerRow {
+                    bundles: 2,
+                    payload_bytes: 200,
+                    storage_byte_ms: 0
+                }
+            ))
+        );
+        let source = FakeSource {
+            nodes: vec![(
+                "relay-a",
+                Ok(vec![
+                    (format!("usage/402/{T}"), usage_val(3, 300)),
+                    (format!("carriage_usage/402/{T}"), usage_val(9, 900)),
+                ]),
+            )],
+        };
+        let rows = collect_rows(&source).unwrap();
+        assert_eq!(rows.usage.len(), 1, "reach ledger is untouched");
+        assert_eq!(rows.usage[0].2.bundles, 3, "carriage did not leak into it");
+        assert_eq!(rows.carriage.len(), 1);
+        assert_eq!(rows.carriage[0].2.bundles, 9);
     }
 
     #[test]

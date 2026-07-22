@@ -396,7 +396,14 @@ mod tests {
         let mut customers = CustomerMap::new();
         customers.insert(A, "cus_ABC123");
         let mut sink = StripeSink::new(FakeTransport::status(500, "down"), customers);
-        let rows = vec![(4, A, TelemetryRow { events: 10 })];
+        let rows = vec![(
+            4,
+            A,
+            TelemetryRow {
+                events: 10,
+                payload_bytes: 0,
+            },
+        )];
         let wm = reconcile_telemetry(&rows, 0, 6, &mut sink);
         assert_eq!(wm, 0, "watermark held: the hour retries next run");
     }
