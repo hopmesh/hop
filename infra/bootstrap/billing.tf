@@ -141,7 +141,7 @@ resource "google_storage_bucket_iam_member" "billing_catalog_state" {
   condition {
     title       = "billing-state-prefix-only"
     description = "Only objects under the billing/ state prefix."
-    expression  = "resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\")"
+    expression  = "resource.name == \"projects/_/buckets/${var.runtime_state_bucket}\" || resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\")"
   }
 
   # Setting this member requires bootstrap-apply's bucket-policy grant (ci_apply.tf).

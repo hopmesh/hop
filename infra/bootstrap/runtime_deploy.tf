@@ -22,3 +22,24 @@ output "runtime_wif_service_account" {
   description = "Service account impersonated by the runtime-deploy workflow (repo variable GCP_RUNTIME_SERVICE_ACCOUNT)."
   value       = google_service_account.deploy.email
 }
+
+# Setting invoker_iam_disabled on a Cloud Run service is an IAM-policy write, not a service
+# update: the API rejects it with "Changes to invoker_iam_disabled require run.services.
+# setIamPolicy permissions". roles/run.developer (deploy_project_roles) does not carry it, so
+# the first runtime deploy failed on hop-example until this was granted. Kept as a narrow
+# custom role rather than roles/run.admin, which would also carry service delete.
+resource "google_project_iam_custom_role" "runtime_deploy_run_iam" {
+  role_id     = "hopRuntimeDeployRunIam"
+  title       = "Hop runtime deploy: Cloud Run IAM"
+  description = "Manage invoker IAM on Cloud Run services. Required for invoker_iam_disabled. No service delete."
+  permissions = [
+    "run.services.getIamPolicy",
+    "run.services.setIamPolicy",
+  ]
+}
+
+resource "google_project_iam_member" "deploy_run_iam" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.runtime_deploy_run_iam.id
+  member  = "serviceAccount:${google_service_account.deploy.email}"
+}

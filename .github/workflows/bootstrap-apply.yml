@@ -144,6 +144,8 @@ jobs:
             "projects/hop-mesh/serviceAccounts/bootstrap-apply@hop-mesh.iam.gserviceaccount.com"
           import_once "google_project_iam_custom_role.bootstrap_apply_secrets" \
             "projects/hop-mesh/roles/hopBootstrapApplySecrets"
+          import_once "google_project_iam_custom_role.runtime_deploy_run_iam" \
+            "projects/hop-mesh/roles/hopRuntimeDeployRunIam"
           import_once "google_project_iam_custom_role.bootstrap_apply_state_bucket_iam" \
             "projects/hop-mesh/roles/hopBootstrapApplyStateBucketIam"
           import_once "google_iam_workload_identity_pool.github" \
