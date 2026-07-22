@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 /**
  * quality-cov: the transport-neutral helpers every Android bearer shares (Transport.kt). These are the
  * cross-transport tiebreaker ("greater nodeId dials", so two peers that mutually discover don't
- * double-connect) and the hex/nodeId primitives. Pure JVM, no radios, no libhop — but until now they
+ * double-connect) and the hex/nodeId primitives. Pure JVM, no radios, no libhop, but until now they
  * were only reached transitively by the LAN bearer's tests, so the SDK module itself scored 0 on them.
  */
 class TransportHelpersTest {

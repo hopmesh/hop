@@ -156,20 +156,20 @@ function OverviewView({ ws }: { ws: Workspace }) {
       <div className="grid">
         <div className="card">
           <div className="card-k">Plan</div>
-          <div className="card-v">{sub ? cap(sub.plan) : "—"}</div>
+          <div className="card-v">{sub ? cap(sub.plan) : "…"}</div>
           <div className="card-s">{sub?.active ? "Active" : "Free tier"}</div>
         </div>
         <div className="card">
           <div className="card-k">Reach · this window</div>
-          <div className="card-v">{usage ? fmt(usage.reach.deliveries) : "—"}</div>
+          <div className="card-v">{usage ? fmt(usage.reach.deliveries) : "…"}</div>
           <div className="card-s">
-            of {usage ? fmt(usage.reach.included) : "—"} included deliveries
+            of {usage ? fmt(usage.reach.included) : "…"} included deliveries
           </div>
         </div>
         <div className="card">
           <div className="card-k">Telemetry · this window</div>
-          <div className="card-v">{usage ? fmt(usage.telemetry.events) : "—"}</div>
-          <div className="card-s">of {usage ? fmt(usage.telemetry.included) : "—"} included events</div>
+          <div className="card-v">{usage ? fmt(usage.telemetry.events) : "…"}</div>
+          <div className="card-s">of {usage ? fmt(usage.telemetry.included) : "…"} included events</div>
         </div>
         <div className="card">
           <div className="card-k">Carriage key</div>
@@ -178,7 +178,7 @@ function OverviewView({ ws }: { ws: Workspace }) {
               className={`fa-solid ${ws.hasCarriageKey ? "fa-circle-check ok" : "fa-circle-dot warn"}`}
             />
           </div>
-          <div className="card-s">{ws.hasCarriageKey ? "Registered" : "Not set — issue one in Keys"}</div>
+          <div className="card-s">{ws.hasCarriageKey ? "Registered" : "Not set. Issue one in Keys"}</div>
         </div>
       </div>
     </>
@@ -221,7 +221,7 @@ function Meter({ label, unit, used, included }: { label: string; unit: string; u
       <div className="bar">
         <div className={`fill${over ? " over" : ""}`} style={{ width: `${pct}%` }} />
       </div>
-      <div className="meter-s">{over ? "Over the included amount — metered from here" : "Within the included amount"}</div>
+      <div className="meter-s">{over ? "Over the included amount, metered from here" : "Within the included amount"}</div>
     </div>
   );
 }
@@ -254,7 +254,7 @@ function KeysView({ ws }: { ws: Workspace }) {
     <>
       <Header
         title="Carriage key"
-        sub="The Ed25519 key the paid relay fabric verifies your traffic against. Generated in your browser — we only ever store the public half."
+        sub="The Ed25519 key the paid relay fabric verifies your traffic against. Generated in your browser; we only ever store the public half."
       />
       <div className="panel wide">
         <p className="status-line">
@@ -264,7 +264,7 @@ function KeysView({ ws }: { ws: Workspace }) {
         {minted && (
           <div className="minted">
             <p>
-              <strong>Saved.</strong> Your private key just downloaded — keep it on your own
+              <strong>Saved.</strong> Your private key just downloaded. Keep it on your own
               infrastructure; we never see it. It won&rsquo;t be shown again.
             </p>
             <code className="pub">{minted.pub}</code>
@@ -451,11 +451,11 @@ function BillingView({ ws }: { ws: Workspace }) {
         <div className="plan-row">
           <div>
             <div className="card-k">Current plan</div>
-            <div className="plan-name">{sub ? cap(sub.plan) : "—"}</div>
+            <div className="plan-name">{sub ? cap(sub.plan) : "…"}</div>
             <div className="card-s">
               {sub?.active
                 ? `Active${sub.currentPeriodEnd ? ` · renews ${date(sub.currentPeriodEnd)}` : ""}`
-                : "Free tier — 10K reach + 25M telemetry included"}
+                : "Free tier: 10K reach + 25M telemetry included"}
             </div>
           </div>
           {isOwner && (
@@ -544,7 +544,7 @@ function ObservabilityView({ ws }: { ws: Workspace }) {
       <div className="panel wide">
         <p className="status-line">
           <i className={`fa-solid ${saved ? "fa-circle-check ok" : "fa-circle-dot warn"}`} />{" "}
-          {saved ? "An OTLP endpoint is configured." : "No OTLP endpoint yet — telemetry stays in Hop."}
+          {saved ? "An OTLP endpoint is configured." : "No OTLP endpoint yet, telemetry stays in Hop."}
         </p>
         <form className="field" onSubmit={save}>
           <label htmlFor="otlp">OTLP endpoint (https)</label>

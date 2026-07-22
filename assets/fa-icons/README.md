@@ -1,4 +1,4 @@
-# Font Awesome Pro icon sources — licensing (F-41)
+# Font Awesome Pro icon sources: licensing (F-41)
 
 The 27 SVGs in this directory (and the `ic_fa_*` drawables/assets derived from them in the iOS and
 Android apps) are **Font Awesome Pro 7.3.0** icons, used under a **commercial Font Awesome Pro seat**.
@@ -20,7 +20,7 @@ a publicly accessible repository or package**. This repo is **private today**, b
 Before making this repo public, or publishing any package that bundles these assets:
 
 1. **Strip or swap the Pro-only icons.** Several used here exist in **Font Awesome Free** (e.g. `lock`,
-   `camera`, `chevron-left`, `arrows-rotate`, `circle-info`, `wifi`, `bluetooth-b`) — swap those to the
+   `camera`, `chevron-left`, `arrows-rotate`, `circle-info`, `wifi`, `bluetooth-b`), swap those to the
    Free equivalents (SIL OFL / MIT, redistributable).
 2. **Remove any remaining Pro-only source SVGs** from the tree, or replace them with Free/other-licensed
    equivalents.

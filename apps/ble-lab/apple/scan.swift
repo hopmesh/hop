@@ -1,4 +1,4 @@
-// Standalone macOS BLE scanner — diagnostic only. No advertising, no dual role.
+// Standalone macOS BLE scanner, diagnostic only. No advertising, no dual role.
 // Scans UNFILTERED and prints any device advertising our lab service UUID or our 0xFFFF mfg id,
 // with full advert contents. Isolates "can macOS discover the Android peer?" from everything else.
 import Foundation

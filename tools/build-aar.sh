@@ -2,7 +2,7 @@
 # Build the Hop Android native libs (.so per ABI) + Kotlin bindings from hop-ffi.
 #
 # Output (gitignored): android/generated/
-#   - jniLibs/<abi>/libhop.so      (the C ABI / sh.hop SDK AND UniFFI — the crate is now `hop`)
+#   - jniLibs/<abi>/libhop.so      (the C ABI / sh.hop SDK AND UniFFI, the crate is now `hop`)
 #   - kotlin/uniffi/hop/hop.kt     (the UniFFI Kotlin bindings, namespace uniffi.hop)
 #
 # Prerequisites (one-time):
@@ -28,7 +28,7 @@ command -v cargo-ndk >/dev/null || { echo "missing: cargo-ndk"; exit 1; }
 
 rm -rf "$OUT"; mkdir -p "$OUT/kotlin"
 
-# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT — the host passes a
+# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT, the host passes a
 # Keystore-derived key to HopNode.open_keyed and every db page is encrypted. Set HOP_SQLCIPHER=0 for
 # a faster plain-SQLite dev build (skips the vendored-OpenSSL cross-compile, but no at-rest encryption).
 if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
@@ -36,7 +36,7 @@ if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
   echo "▸ SQLCipher at-rest ENABLED (set HOP_SQLCIPHER=0 to disable)"
 else
   FEAT=()
-  echo "▸ SQLCipher DISABLED — plain SQLite (no at-rest encryption)"
+  echo "▸ SQLCipher DISABLED, plain SQLite (no at-rest encryption)"
 fi
 
 echo "▸ building libhop.so for each ABI"

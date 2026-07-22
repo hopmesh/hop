@@ -1,4 +1,4 @@
-# HopDemo — iOS/iPadOS chat (first real hops)
+# HopDemo: iOS/iPadOS chat (first real hops)
 
 A SwiftUI chat app running a `HopNode` over a foreground CoreBluetooth + L2CAP
 bearer. Put it on two or three Apple devices and messages cross over real Bluetooth,
@@ -25,7 +25,7 @@ The Bluetooth usage string and Info.plist are generated from `project.yml`.
 
 1. Launch on **iPhone A** and **iPhone B** (and the **iPad** for a relay test), grant
    the Bluetooth prompt.
-2. Each device lists the others under **People nearby**, by device name — discovered
+2. Each device lists the others under **People nearby**, by device name, discovered
    over the mesh (gossip, so it works through a relay too).
 3. Tap a person → type → **Send**. It appears in their chat.
 
@@ -37,22 +37,22 @@ back (clears the sender's pending entry, since `requestAck` is on).
 
 Put A and B out of Bluetooth range of each other but both near the **iPad** in the
 middle. A still sees B under "People nearby" (its name gossiped via the iPad), and a
-message A→B is **relayed through the iPad** — no direct A↔B link. That's spray-and-wait
+message A→B is **relayed through the iPad**, no direct A↔B link. That's spray-and-wait
 + store-and-forward doing its job (proven in Rust by `relays_across_an_intermediate_node`
 and `discover_named_peer_two_hops_away_and_message_it`).
 
 ## Files
 
-- `HopBearer.swift` — dual-role CoreBluetooth + L2CAP, wired to `HopNode`.
-- `HopLink.swift` — length-prefixed framing over the L2CAP stream.
-- `ContentView.swift` — the chat UI.
-- `HopDemoApp.swift` — app entry point.
-- `project.yml` — XcodeGen spec (pulls in the generated binding + XCFramework).
+- `HopBearer.swift`, dual-role CoreBluetooth + L2CAP, wired to `HopNode`.
+- `HopLink.swift`, length-prefixed framing over the L2CAP stream.
+- `ContentView.swift`, the chat UI.
+- `HopDemoApp.swift`, app entry point.
+- `project.yml`, XcodeGen spec (pulls in the generated binding + XCFramework).
 
 ## Notes / next
 
 - Foreground only for now; iOS background BLE (DESIGN.md §11) is a deliberate follow-up.
 - Both devices run as central *and* peripheral, so a link may form in each direction;
   the app de-dups peers. Fine for a demo.
-- The bearer is intentionally thin — only `connected` / `received` / `drainOutgoing` /
+- The bearer is intentionally thin, only `connected` / `received` / `drainOutgoing` /
   `tick`. All protocol logic stays in `hop-core`.

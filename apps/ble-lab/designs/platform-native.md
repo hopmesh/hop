@@ -1,8 +1,8 @@
-# Proof-of-Pipe BLE Transport — the PLATFORM-NATIVE design
+# Proof-of-Pipe BLE Transport: the PLATFORM-NATIVE design
 
 A minimal, symmetric, dual-role BLE transport that establishes **exactly one** reliable
 bidirectional byte channel between two nearby devices and keeps it healthy across drops,
-BLE address rotation, and repeated meet/part cycles — indefinitely. Android (Kotlin) and
+BLE address rotation, and repeated meet/part cycles, indefinitely. Android (Kotlin) and
 Apple (Swift / CoreBluetooth), with **Android↔Apple as the bar**.
 
 Design lens: **platform-native**. Every choice below is the most-documented, most-blessed
@@ -34,7 +34,7 @@ Consequences we must design around:
 1. **A backgrounded iOS advertiser is invisible to Android.** Its service UUID is in the
    overflow area (Android can't parse it) and its `LocalName` / manufacturer data / service
    data are stripped entirely. So **any in-band data carried in an iOS advertisement is
-   unavailable in the background** — the tiebreaker cannot live *only* in the advert.
+   unavailable in the background**, the tiebreaker cannot live *only* in the advert.
 2. **iOS-as-central scanning with a service-UUID filter works in the background** (screen on),
    and Android-as-advertiser is always visible. Therefore the single edge that survives all
    states is **iOS(central) → Android(peripheral)**. The design must guarantee that edge is
@@ -61,11 +61,11 @@ RX_CHAR   7D5E0004-9A0B-4C3D-8E2F-A1B2C3D4E5F6   WRITE-NO-RSP   central->periphe
 TX_CHAR   7D5E0005-9A0B-4C3D-8E2F-A1B2C3D4E5F6   NOTIFY         peripheral->central (GATT fallback)
 ```
 
-### The node nonce (in-band identity — NEVER a MAC)
+### The node nonce (in-band identity, NEVER a MAC)
 Each process generates **8 random bytes once per launch**: `nonce`. It is:
 - the **tiebreaker** (compared as a big-endian u64),
 - the **dedup key** ("have I already linked this peer?"),
-- stable for the lifetime of the app process, and **rotates on relaunch** — so it is never a
+- stable for the lifetime of the app process, and **rotates on relaunch**, so it is never a
   hardware address and never survives long enough to be a tracking identity.
 
 It is carried **in-band three ways**, in increasing order of authority:
@@ -74,7 +74,7 @@ It is carried **in-band three ways**, in increasing order of authority:
    other's adverts pre-decide who dials, avoiding a double-connect. **Absent for backgrounded iOS.**
 2. *(authoritative for the dialer)* readable from `INFO_CHAR` over GATT after connect.
 3. *(authoritative for the acceptor)* the first in-band **HELLO** frame on the opened channel
-   (§5) — the acceptor of an L2CAP channel otherwise has no GATT identity for the peer.
+   (§5), the acceptor of an L2CAP channel otherwise has no GATT identity for the peer.
 
 ### Advertisement layout (why this exact split)
 - **Primary ADV packet:** Flags (3 B) + the 128-bit `SERVICE` UUID (18 B). That is ~21 of the
@@ -98,20 +98,20 @@ Every device runs, concurrently and identically:
   and an advertiser broadcasting `SERVICE` + nonce.
 - **Central plane:** a scanner filtering on `SERVICE`; a GATT client; and an L2CAP dialer.
 
-**Channel substrate — L2CAP CoC primary, GATT data fallback.** The data plane is an **L2CAP
+**Channel substrate: L2CAP CoC primary, GATT data fallback.** The data plane is an **L2CAP
 Connection-oriented Channel**. This is the platform-blessed connection-oriented byte stream on
-both OSes — Apple introduced it at [WWDC 2017 "What's New in Core Bluetooth"](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/publishl2capchannel(withencryption:))
+both OSes, Apple introduced it at [WWDC 2017 "What's New in Core Bluetooth"](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/publishl2capchannel(withencryption:))
 and Android exposes [`createInsecureL2capChannel` / `listenUsingInsecureL2capChannel`](https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#listenUsingInsecureL2capChannel()).
 It gives true stream semantics with built-in L2CAP credit-based flow control and no ATT/MTU
 chunking. We use the **insecure** (un-encrypted) variant deliberately: cross-platform *secure*
-L2CAP fails — the Android socket is never created when iOS asks for encryption ([Apple forum
-675960](https://developer.apple.com/forums/thread/675960)) — and our upper layer (a Noise
+L2CAP fails: the Android socket is never created when iOS asks for encryption ([Apple forum
+675960](https://developer.apple.com/forums/thread/675960)), and our upper layer (a Noise
 handshake) provides confidentiality/auth/MITM resistance, so OS-level encryption/bonding is
 both unnecessary and harmful (it would require pairing UI, which is forbidden).
 
 A **GATT write-no-response + notify** data plane (`RX_CHAR`/`TX_CHAR`) is the **co-equal
 fallback**, used automatically when L2CAP open fails. It is the lowest-common-denominator that
-works on every stack and survives iOS background. (See §11 — whether iOS↔Android L2CAP opens
+works on every stack and survives iOS background. (See §11, whether iOS↔Android L2CAP opens
 at all is the riskiest assumption, which is exactly why the fallback is not optional.)
 
 ---
@@ -120,7 +120,7 @@ at all is the riskiest assumption, which is exactly why the fallback is not opti
 
 ### Comparator
 `initiatorOf(a, b)` = the node whose 8-byte nonce is **numerically greater** (big-endian u64).
-Unbiased: it depends only on random per-launch bytes — not platform, not MAC, not who powered on
+Unbiased: it depends only on random per-launch bytes, not platform, not MAC, not who powered on
 first. Ties (equal 8 random bytes) are astronomically unlikely; if it ever happens both sides
 re-roll their nonce and re-advertise.
 
@@ -132,11 +132,11 @@ On discovering a peer and reading its advert nonce `P`:
 
 The grace-timer fallback is what makes this robust to asymmetric visibility and lost adverts:
 if the "should-dial" side can't actually see me (e.g. it's a backgrounded iPhone and I'm
-Android — it sees me, I don't see it; but symmetric loss happens on flaky adverts too), the
+Android: it sees me, I don't see it; but symmetric loss happens on flaky adverts too), the
 non-initiator still establishes the link rather than deadlocking.
 
-### Post-connect dedup (authoritative — this is what guarantees "exactly one")
-A meet can momentarily produce **two** channels (one per direction) — e.g. the grace timer
+### Post-connect dedup (authoritative: this is what guarantees "exactly one")
+A meet can momentarily produce **two** channels (one per direction), e.g. the grace timer
 fires just as the peer's dial lands, or both saw each other and a race slipped through. We
 resolve it deterministically *after the fact*, keyed on the in-band nonce (never the MAC):
 
@@ -158,7 +158,7 @@ adapted to our nonce.
 
 ---
 
-## 4. The channel-open handshake — EXACT API call order
+## 4. The channel-open handshake: EXACT API call order
 
 The single most important platform-native correctness rule, learned the hard way on real
 hardware and confirmed across the rig: **on the dialing side you MUST drive GATT first
@@ -170,7 +170,7 @@ fetch the PSM and the peer nonce. So the natural happy path is also the correct 
 
 Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
 
-### 4a. Apple — ACCEPTING side (CBPeripheralManager)
+### 4a. Apple, ACCEPTING side (CBPeripheralManager)
 1. `CBPeripheralManager(delegate:queue:options:)` with
    `CBPeripheralManagerOptionRestoreIdentifierKey` set (background relaunch).
 2. `peripheralManagerDidUpdateState` → `.poweredOn`:
@@ -181,7 +181,7 @@ Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
 3. `peripheralManager(_:didPublishL2CAPChannel:error:)` → store `PSM`. Now start advertising:
    `startAdvertising([CBAdvertisementDataServiceUUIDsKey: [SERVICE]])`. (CoreBluetooth has no
    API to set manufacturer/scan-response data, so the iOS advert carries only the UUID; the
-   nonce reaches peers via `INFO_CHAR`/HELLO. This is fine — see §0/§1.)
+   nonce reaches peers via `INFO_CHAR`/HELLO. This is fine; see §0/§1.)
 4. Central connects + reads:
    - `peripheralManager(_:didReceiveRead:)` for `PSM_CHAR` → `request.value = PSM (2B BE)`;
      `respond(to:withResult:.success)`.
@@ -189,11 +189,11 @@ Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
 5. `peripheralManager(_:didOpen:error:)` → wrap the `CBL2CAPChannel` in a `Link` (open streams,
    schedule on run loop). Expect a HELLO frame; dedup; mark **UP**.
 
-### 4b. Apple — DIALING side (CBCentralManager)
+### 4b. Apple, DIALING side (CBCentralManager)
 1. `CBCentralManager(delegate:queue:options:)` with `CBCentralManagerOptionRestoreIdentifierKey`.
 2. `.poweredOn` → `scanForPeripherals(withServices: [SERVICE], options:)`
    (`CBCentralManagerScanOptionAllowDuplicatesKey: true` in foreground for fast RSSI/tiebreak;
-   **omit it in background** — it is ignored there and wastes power).
+   **omit it in background**: it is ignored there and wastes power).
 3. `centralManager(_:didDiscover:advertisementData:rssi:)` → tiebreaker (§3). If I dial:
    retain the `CBPeripheral`, set its delegate, `central.connect(peripheral)`.
 4. `centralManager(_:didConnect:)` → `peripheral.discoverServices([SERVICE])`.   ← GATT-first
@@ -208,11 +208,11 @@ Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
      for: TX_CHAR)`, and send/receive framed bytes via `writeValue(.withoutResponse, RX_CHAR)` /
      `didUpdateValueFor TX_CHAR`. Send HELLO over that.
 
-### 4c. Android — ACCEPTING side (BluetoothGattServer + L2CAP listener)
+### 4c. Android, ACCEPTING side (BluetoothGattServer + L2CAP listener)
 1. `BluetoothManager.openGattServer(context, callback)`; add a `BluetoothGattService(SERVICE,
    SERVICE_TYPE_PRIMARY)` with the 4 characteristics → `addService`.
 2. `bluetoothAdapter.listenUsingInsecureL2capChannel()` → `BluetoothServerSocket`; read
-   `serverSocket.psm`. (**Insecure** — secure fails cross-platform, §2.)
+   `serverSocket.psm`. (**Insecure**, secure fails cross-platform, §2.)
 3. Background thread: loop `serverSocket.accept()` → `BluetoothSocket` → wrap in a `Link`; expect
    HELLO; dedup; UP. (Accept loop keeps running to accept the next peer.)
 4. `BluetoothLeAdvertiser.startAdvertising(settings, advData, scanResponse, callback)`:
@@ -228,13 +228,13 @@ Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
    feed bytes to the link; to send, `TX_CHAR.value = chunk; notifyCharacteristicChanged(device,
    TX_CHAR, false)` and wait for `onNotificationSent` before the next chunk.
 
-### 4d. Android — DIALING side (BluetoothLeScanner + GATT client + L2CAP dialer)
+### 4d. Android, DIALING side (BluetoothLeScanner + GATT client + L2CAP dialer)
 1. `bluetoothLeScanner.startScan(filters=[ScanFilter.setServiceUuid(SERVICE)], settings=
    SCAN_MODE_LOW_LATENCY, callback)`.
 2. `onScanResult` → read nonce from `result.scanRecord.getManufacturerSpecificData(0xFFFF)` →
    tiebreaker (§3). If I dial: `device.connectGatt(context, autoConnect=false, gattCb,
    TRANSPORT_LE)`. (`autoConnect=false` for a fast, deterministic direct connect; we own
-   reconnection ourselves — §7.)
+   reconnection ourselves, §7.)
 3. `onConnectionStateChange(STATE_CONNECTED)` → `gatt.requestMtu(517)`.
 4. `onMtuChanged` → `gatt.requestConnectionPriority(CONNECTION_PRIORITY_HIGH)`;
    `gatt.discoverServices()`.   ← GATT-first
@@ -254,7 +254,7 @@ Notation: **D** = dialing (central) side, **A** = accepting (peripheral) side.
 
 ## 5. Data framing
 
-One framing for both substrates (L2CAP stream and GATT payloads), identical on both platforms —
+One framing for both substrates (L2CAP stream and GATT payloads), identical on both platforms,
 exactly the repo's proven `HopLink` framing:
 
 ```
@@ -269,9 +269,9 @@ exactly the repo's proven `HopLink` framing:
   by the same deframer.
 
 **Message types (first payload byte):**
-- `0x01 HELLO`  : `nonce(8) | roleFlag(1)` — sent first on every channel (§3 dedup).
-- `0x02 PING`   : `seq(u64 BE)` — the proof-of-pipe counter, one per second.
-- `0x03 PONG`   : `seq(u64 BE)` — echo of the latest received PING (for RTT).
+- `0x01 HELLO`  : `nonce(8) | roleFlag(1)`, sent first on every channel (§3 dedup).
+- `0x02 PING`   : `seq(u64 BE)`, the proof-of-pipe counter, one per second.
+- `0x03 PONG`   : `seq(u64 BE)`, echo of the latest received PING (for RTT).
 - `0x00`        : reserved / opaque upper-layer payload (where the real Noise+messages go later).
 
 Max payload ~64 KB is well within `u32` and within L2CAP CoC SDU limits; for the GATT fallback
@@ -283,7 +283,7 @@ it is chunked. (Repo `MAX_FRAME` cap = 4 MiB guards against a corrupt length.)
 
 - **Keepalive:** every **4 s**, send a 0-length frame. iOS aggressively tears down a connection
   that goes idle; steady 4 s traffic keeps the connection interval warm and the link alive in
-  both directions. (Without it, an idle Android↔iOS link dies within seconds — repo
+  both directions. (Without it, an idle Android↔iOS link dies within seconds, repo
   `HopLink` documents iOS dropping silent links with GATT status 19.)
 - **Liveness watchdog:** if **nothing** (any frame, including keepalives) has been received for
   **15 s**, declare the link dead and close. 15 s > 3× keepalive, so a single lost keepalive
@@ -349,25 +349,25 @@ Per discovered peer (keyed by **nonce**, never MAC):
   `min(local, peer)` from `onMtuChanged`), then `requestConnectionPriority(CONNECTION_PRIORITY_
   HIGH)` while actively moving data and `…_BALANCED` when idle, so we don't starve the radio
   scheduler ([Nordic guidance](https://github.com/NordicSemiconductor/Android-BLE-Library)).
-- **iOS** exposes no connection-parameter API by design — the platform-native move is **don't
+- **iOS** exposes no connection-parameter API by design; the platform-native move is **don't
   fight it**: accept CoreBluetooth's negotiated interval and just keep the 4 s keepalive flowing
   so iOS keeps the link in a responsive state.
 - **Background:** Android keeps the peripheral+central plane alive in a **foreground service**
   with `connectedDevice` type (already in the repo manifest). iOS relies on the
   `bluetooth-central` + `bluetooth-peripheral` `UIBackgroundModes`, filtered background scanning,
   and state restoration. Remember: a backgrounded iOS peer is reachable only by the
-  iOS-central→Android-peripheral edge (§0) — which this design always keeps open.
+  iOS-central→Android-peripheral edge (§0), which this design always keeps open.
 
 ---
 
-## 9. Minimal source — critical paths
+## 9. Minimal source, critical paths
 
 > These are the load-bearing critical paths (discovery, tiebreak, the exact open handshake,
 > framing, keepalive/liveness, dedup, recovery). Boilerplate (permission prompts, service
 > lifecycle, UI) is omitted; model the build on the existing `apple/hopmac/build.sh` (swiftc +
 > `-framework CoreBluetooth`) and the `android/HopDemo` gradle setup.
 
-### 9a. Apple — Swift / CoreBluetooth
+### 9a. Apple, Swift / CoreBluetooth
 
 ```swift
 import Foundation
@@ -572,7 +572,7 @@ func handle(_ l: Link, _ p: [UInt8]) {
 }
 ```
 
-### 9b. Android — Kotlin
+### 9b. Android, Kotlin
 
 ```kotlin
 import android.bluetooth.*
@@ -763,7 +763,7 @@ class Central(
 ```
 
 The shared `onChannel` (both planes) wraps the socket in a `Link`, and on the first HELLO runs
-the §3 dedup against `linksByNonce` — identical logic to the Swift `handle()` above:
+the §3 dedup against `linksByNonce`, identical logic to the Swift `handle()` above:
 keep the channel dialed by the higher-nonce node, close the loser, register the survivor.
 
 ---
@@ -772,7 +772,7 @@ keep the channel dialed by the higher-nonce node, close the loser, register the 
 
 ### Rig
 - Android phone over `adb` (logcat).
-- macOS CoreBluetooth CLI (built like `apple/hopmac/build.sh`) — the fast iteration loop, faithful
+- macOS CoreBluetooth CLI (built like `apple/hopmac/build.sh`), the fast iteration loop, faithful
   to iOS (dual role, central, peripheral, GATT server, L2CAP). Optionally a physical iPhone.
 
 ### Bring-up (do same-platform first, then the real test)
@@ -783,10 +783,10 @@ keep the channel dialed by the higher-nonce node, close the loser, register the 
 3. **Android ↔ Apple (THE BAR):** Android phone + macOS CLI. Confirm:
    - Android advertiser visible to macOS central; macOS dials; GATT-first read of INFO+PSM;
      `openL2CAPChannel` succeeds → `CHANNEL UP`. **If L2CAP errors, confirm the GATT-data fallback
-     comes UP instead** — both count as success for "pipe proven."
+     comes UP instead**, both count as success for "pipe proven."
    - Reverse direction where Apple is foreground: macOS advertiser visible to Android scanner.
 
-### The proof — "established AND maintained over time" (not "connected once")
+### The proof: "established AND maintained over time" (not "connected once")
 Each side, once UP, emits `PING(seq++)` every 1 s and replies `PONG`. Log/scrape and assert:
 
 | Metric | How measured | Pass criterion |
@@ -818,12 +818,12 @@ works **iff** you do GATT discovery + a characteristic read before opening (whic
 does), while `GattDataLink.kt` flatly states CoreBluetooth returns CBErrorDomain "Unknown error"
 opening L2CAP to an Android peripheral and uses GATT as the real path. On some Android OEM stacks
 the Apple→Android L2CAP CoC simply does not come up. That is exactly why the **GATT
-write-no-response + notify data plane is a co-equal fallback, not an afterthought** — the same
+write-no-response + notify data plane is a co-equal fallback, not an afterthought**, the same
 framing, keepalive, liveness, HELLO, and dedup ride over it unchanged, so "pipe proven" holds
 even if L2CAP never opens cross-platform on the target hardware.
 
 Secondary risks, each already mitigated: a **backgrounded iOS advertiser is invisible to Android**
 (mitigated by always keeping the iOS-central→Android-peripheral edge and never depending on
-Android seeing iOS — §0); **iOS connection parameters aren't controllable** (mitigated by the 4 s
-keepalive instead of fighting the API — §6/§8); **double-connect races** (mitigated by the
-deterministic post-connect nonce dedup, not just the pre-connect tiebreaker — §3).
+Android seeing iOS, §0); **iOS connection parameters aren't controllable** (mitigated by the 4 s
+keepalive instead of fighting the API, §6/§8); **double-connect races** (mitigated by the
+deterministic post-connect nonce dedup, not just the pre-connect tiebreaker, §3).

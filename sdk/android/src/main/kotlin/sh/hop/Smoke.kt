@@ -1,4 +1,4 @@
-// Smoke — proves the Kotlin `Hop` wrapper drives libhop's C ABI, same shape as smoke.c / HopSmoke:
+// Smoke: proves the Kotlin `Hop` wrapper drives libhop's C ABI, same shape as smoke.c / HopSmoke:
 // two in-memory nodes wired by a loopback bearer run the real §39 send→deliver(+ACK) + base58.
 
 package sh.hop

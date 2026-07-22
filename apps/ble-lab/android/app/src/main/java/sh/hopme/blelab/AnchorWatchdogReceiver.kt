@@ -31,7 +31,7 @@ class AnchorWatchdogReceiver : BroadcastReceiver() {
             runCatching { BleService.start(context) }
                 .onFailure { Log.w(TAG, "WATCHDOG: startForegroundService failed: ${it.message}") }
         } else {
-            Log.i(TAG, "WATCHDOG: anchor alive — no-op")
+            Log.i(TAG, "WATCHDOG: anchor alive, no-op")
         }
     }
 

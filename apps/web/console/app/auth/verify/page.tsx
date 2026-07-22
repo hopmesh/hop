@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { redeem } from "@/lib/api";
 
 // The magic-link landing. The one-time token rides the URL FRAGMENT (#token=...), which the browser
-// never sends to a server and a mail-scanner prefetch (a GET) cannot consume — only this client reads
+// never sends to a server and a mail-scanner prefetch (a GET) cannot consume, only this client reads
 // it and POSTs it to redeem, so a link preview can't burn the token. On success the account service
 // has set the session cookie; we send them into the console.
 export default function Verify() {

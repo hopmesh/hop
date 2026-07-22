@@ -124,6 +124,11 @@ jobs:
               - 'apps/esp32/**'
             infra:
               - 'infra/**'
+            # The docs-tokens job runs tools/docs-token-guard.sh, which since docs-drift-03 enforces
+            # the repo-wide em/en-dash ban over the SOURCE trees too, not just docs and site copy.
+            # So this filter has to fire on a source-only change as well, or a Rust/Swift/Kotlin
+            # comment could reintroduce a dash with the guard skipped. core/** and tools/* already
+            # force `full` (which runs every job), so the trees listed below are the remainder.
             docs:
               - '.github/workflows/**'
               - '**/.github/workflows/**'
@@ -134,6 +139,15 @@ jobs:
               - 'LICENSE.md'
               - '**/LICENSE.md'
               - 'tools/copybara/**'
+              - 'services/**'
+              - 'drivers/**'
+              - 'sdk/**'
+              - 'bearers/**'
+              - 'apps/**'
+              - 'infra/**'
+              - 'examples/**'
+              - 'testkit/**'
+              - 'assets/**'
             sdk_node:
               - 'sdk/node/**'
             sdk_python:
@@ -861,6 +875,9 @@ jobs:
         run: bash tools/cov-floor-gate.test.sh
       # docs-drift-02: fail on em-dash/en-dash and removed-API / mispositioned terms in docs + site
       # copy (InternetEgress, Wi-Fi Direct, bare "Bluetooth"), scoped to avoid legit API identifiers.
+      # docs-drift-03: the same run now also sweeps the SOURCE trees for em/en/lookalike/encoded
+      # dashes (the dash bans only), so the repo-wide "no dashes anywhere" law is enforced in code
+      # and comments too, not just docs. See the `docs` path filter above.
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
       # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is

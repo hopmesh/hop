@@ -46,7 +46,7 @@ class BleService : Service() {
         if (manager != null) return
         try {
             val m = BearerManager()
-            // Register every transport against the SAME process-stable nodeId (R11) — one identity
+            // Register every transport against the SAME process-stable nodeId (R11), one identity
             // across radios. The manager fans start/stop/send out to both and multiplexes their links
             // into one global LinkId space behind the single ProofSink.
             m.register(BleBearer(applicationContext, myId))
@@ -86,7 +86,7 @@ class BleService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        // Do NOT cancel the watchdog alarm here — if we were killed (not force-stopped), let it fire
+        // Do NOT cancel the watchdog alarm here; if we were killed (not force-stopped), let it fire
         // and resurrect us so the iBeacon comes back to wake a killed iOS peer.
         receiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
         manager?.stop()

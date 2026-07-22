@@ -15,9 +15,9 @@
 /// but not a billed customer meter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UsageTotals {
-    /// Reach: offline deliveries (bundles) — the billed count.
+    /// Reach: offline deliveries (bundles), the billed count.
     pub reach_deliveries: u64,
-    /// Telemetry: OTel-over-Hop events — the billed count.
+    /// Telemetry: OTel-over-Hop events, the billed count.
     pub telemetry_events: u64,
 }
 

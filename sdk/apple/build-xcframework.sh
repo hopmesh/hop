@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build libhop.xcframework — the C ABI (hop.h + the static lib) for ios-arm64 + ios-sim(fat) +
-# macOS(fat) — so the Hop SwiftPM package (and everything that depends on it: the bearers, the
+# Build libhop.xcframework: the C ABI (hop.h + the static lib) for ios-arm64 + ios-sim(fat) +
+# macOS(fat), so the Hop SwiftPM package (and everything that depends on it: the bearers, the
 # driver, the app) builds for iOS devices, not just macOS. The package uses it as a binaryTarget
 # named CHop (the module Hop.swift imports). Gitignored output; regenerate after editing cabi.rs.
 set -euo pipefail

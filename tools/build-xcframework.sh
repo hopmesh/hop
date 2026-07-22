@@ -3,7 +3,7 @@
 #
 # Output (gitignored): drivers/apple/HopDriver/
 #   - Frameworks/HopFFI.xcframework        (ios-arm64 device + ios-sim + macos universal)
-#   - Sources/HopFFIBindings/hop.swift (the generated Swift API — a package target)
+#   - Sources/HopFFIBindings/hop.swift (the generated Swift API, a package target)
 #
 # Requires: Xcode, rustup. Run from anywhere.
 set -euo pipefail
@@ -34,7 +34,7 @@ cp "$OUT/Sources/hopFFI.modulemap" "$OUT/Headers/module.modulemap"
 mkdir -p "$PKG/Sources/HopFFIBindings"
 cp "$OUT/Sources/hop.swift" "$PKG/Sources/HopFFIBindings/hop.swift"
 
-# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT — the host passes a
+# F-25: ship the app's libhop with SQLCipher (encryption at rest) by DEFAULT, the host passes a
 # Keychain-derived key to HopNode.open_keyed and every db page is encrypted. Set HOP_SQLCIPHER=0 for
 # a faster plain-SQLite dev build (no OpenSSL vendored compile, but no at-rest encryption either).
 if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
@@ -42,7 +42,7 @@ if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
   echo "▸ SQLCipher at-rest ENABLED (set HOP_SQLCIPHER=0 to disable)"
 else
   FEAT=()
-  echo "▸ SQLCipher DISABLED — plain SQLite (no at-rest encryption)"
+  echo "▸ SQLCipher DISABLED, plain SQLite (no at-rest encryption)"
 fi
 
 echo "▸ cross-compiling release staticlibs (iOS device + sim, macOS arm64 + x86_64)"

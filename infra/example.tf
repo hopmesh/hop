@@ -1,4 +1,4 @@
-# example.hopme.sh — a live `hops://` demo (DESIGN.md §30).
+# example.hopme.sh: a live `hops://` demo (DESIGN.md §30).
 #
 # A single-region Cloud Run service runs the hop-example image: a tiny HTTP origin on
 # localhost fronted by a `hop-endpoint` bound to example.hopme.sh. A client speaking
@@ -28,7 +28,7 @@ locals {
 #   hop-endpoint --print-address --identity-file /tmp/seed
 #
 # The endpoint service. Always-on (min=1); one region is plenty for a demo. (F-39: NOT scale-to-zero
-# like the relays — the endpoint must stay relay-connected to be routable, so min_instance_count=1.)
+# like the relays, the endpoint must stay relay-connected to be routable, so min_instance_count=1.)
 resource "google_cloud_run_v2_service" "example" {
   name     = "hop-example"
   location = var.example_region
@@ -57,7 +57,7 @@ resource "google_cloud_run_v2_service" "example" {
     timeout         = "${var.ws_request_timeout_seconds}s"
 
     # Always-on (min = 1): the endpoint must stay connected to the relay to be routable by
-    # its address — a scaled-to-zero endpoint disconnects, so messages to it just sit held on
+    # its address, a scaled-to-zero endpoint disconnects, so messages to it just sit held on
     # the relay. As a routable mesh leaf (DESIGN.md §30) it needs a persistent presence.
     scaling {
       min_instance_count = 1
@@ -171,7 +171,7 @@ resource "google_compute_backend_service" "example" {
 
 # --- TLS for example.hopme.sh via the existing Certificate Manager cert map -----------
 # A separate DNS-authorized cert + a SNI (hostname) cert-map entry. The relay's proxy
-# already serves the map, so adding this entry makes it serve example.hopme.sh too — the
+# already serves the map, so adding this entry makes it serve example.hopme.sh too, the
 # relay's own cert/entry is untouched.
 resource "google_certificate_manager_dns_authorization" "example" {
   name   = "hop-example-dnsauth"

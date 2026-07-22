@@ -40,7 +40,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-// BleBearer — the PROVEN dual-role BLE transport (ble-lab/SPEC.md §9), re-seamed behind the
+// BleBearer, the PROVEN dual-role BLE transport (ble-lab/SPEC.md §9), re-seamed behind the
 // Bearer/LinkSink contract so the clean-room app and (later) the production app share ONE transport.
 // This is the Android mirror of apple/HopBearers' BleBearer.swift: a re-seam of the old all-in-one
 // Ble.kt, NOT a re-tune.
@@ -59,14 +59,14 @@ import kotlin.concurrent.thread
 // Grep the proof with:  adb logcat -s HOPLOG
 //
 // TAG, appInBackground, the ByteArray.toHex() helper, nodeIdGreater (the dial tiebreaker), and
-// randomNodeId now live in :bearer-core — they are transport-neutral and shared with LAN/relay. This
+// randomNodeId now live in :bearer-core; they are transport-neutral and shared with LAN/relay. This
 // file imports them and keeps ONLY the BLE-specific constants + types below.
 
 internal val SERVICE_UUID: ParcelUuid = ParcelUuid.fromString("7ED70001-3C2A-4F19-9B8E-1A2B3C4D5E6F")
 internal val ENDPOINT_CHAR: UUID = UUID.fromString("7ED70002-3C2A-4F19-9B8E-1A2B3C4D5E6F")
 internal const val MFG_ID = 0xFFFF
 
-// iBeacon (Layer C) — the iOS *relaunch* signal. Byte-matches iOS BeaconWake.swift BEACON_UUID.
+// iBeacon (Layer C), the iOS *relaunch* signal. Byte-matches iOS BeaconWake.swift BEACON_UUID.
 internal val BEACON_UUID: UUID = UUID.fromString("7ED7BEAC-3C2A-4F19-9B8E-1A2B3C4D5E6F") // == iOS BEACON_UUID
 internal const val APPLE_COMPANY_ID = 0x004C
 internal const val BEACON_CYCLE_MS = 300_000L   // ~5 min: floor for CoreLocation relaunch rate-limit
@@ -89,7 +89,7 @@ internal const val REAP_MS = 3000L
 internal const val MAX_DIALS = 2
 internal const val DIAL_TIMEOUT_MS = 12_000L
 internal const val LOST_MS = 30_000L
-internal const val CLOSE_GATT_AFTER_L2CAP = false // R5: free GATT slot after L2CAP up — OEM-risky; verify before enabling
+internal const val CLOSE_GATT_AFTER_L2CAP = false // R5: free GATT slot after L2CAP up, OEM-risky; verify before enabling
 
 // Wire frame types (SPEC §4). DATA (0x10) is the consumer seam: Bearer.send wraps the consumer's
 // application bytes in a DATA frame, and an inbound DATA frame is delivered via sink.linkBytes. The
@@ -142,7 +142,7 @@ internal class Link(
     fun start() {
         // HELLO first (SPEC §3.3): [0x01][16B nodeId][1B role][1B flags]
         sendFrame(byteArrayOf(FRAME_HELLO.toByte()) + myId + byteArrayOf((if (isDialer) 1 else 0).toByte(), 0))
-        Log.i(TAG, "LINK OPENING isDialer=$isDialer reaper=${REAP_MS}ms — sent HELLO")
+        Log.i(TAG, "LINK OPENING isDialer=$isDialer reaper=${REAP_MS}ms: sent HELLO")
         thread(name = "l2cap-rx") { readLoop() }
         sched.scheduleAtFixedRate({ tick() }, PING_MS, PING_MS, TimeUnit.MILLISECONDS)
     }
@@ -231,7 +231,7 @@ internal class Link(
                 peerId = b.copyOfRange(1, 17)
                 up = true
                 becameUpMs = System.currentTimeMillis()
-                Log.i(TAG, "LINK UP isDialer=$isDialer peer=${peerId!!.toHex().take(8)} — HELLO both ways")
+                Log.i(TAG, "LINK UP isDialer=$isDialer peer=${peerId!!.toHex().take(8)}, HELLO both ways")
                 onUp(this)
             }
             FRAME_PING -> { // PING → PONG. seq is the peer's monotonic keepalive counter.
@@ -251,7 +251,7 @@ internal class Link(
             }
             FRAME_PONG -> { /* PONG: reverse-direction liveness; lastRxMs already bumped in readLoop */ }
             FRAME_DATA -> onData(this, b.copyOfRange(1, b.size)) // DATA → consumer application bytes
-            else -> { /* unknown frame type — ignore */ }
+            else -> { /* unknown frame type, ignore */ }
         }
     }
 
@@ -319,7 +319,7 @@ internal class Peripheral(
                     Log.i(TAG, "ACCEPT loop ended: ${e.message}")
                     break
                 }
-                Log.i(TAG, "ACCEPTED inbound L2CAP — wrapping link (reaper armed)")
+                Log.i(TAG, "ACCEPTED inbound L2CAP, wrapping link (reaper armed)")
                 Link(sock, mintLinkId(), isDialer = false, myId, onLink, onData, onClose).start()
             }
         }
@@ -344,7 +344,7 @@ internal class Peripheral(
         gattServer = mgr.openGattServer(ctx, object : BluetoothGattServerCallback() {
             override fun onServiceAdded(status: Int, service: BluetoothGattService) { // R10
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    Log.i(TAG, "GATT service added — starting advertiser")
+                    Log.i(TAG, "GATT service added, starting advertiser")
                     startAdvertise()
                 } else {
                     Log.w(TAG, "GATT addService failed status=$status")
@@ -385,7 +385,7 @@ internal class Peripheral(
         }
     }
 
-    // §7.1: idempotent self-heal — no-op while live, recovers a wedged advertiser.
+    // §7.1: idempotent self-heal, no-op while live, recovers a wedged advertiser.
     fun startAdvertise() {
         if (advSet != null) return
         val adv = adapter.bluetoothLeAdvertiser ?: return
@@ -404,7 +404,7 @@ internal class Peripheral(
         if (beaconSet != null) return
         val adv = adapter.bluetoothLeAdvertiser ?: return
         if (!adapter.isMultipleAdvertisementSupported) {     // controller can't run 2 sets at once
-            Log.w(TAG, "multi-advertisement UNSUPPORTED — iBeacon skipped (time-slice fallback not implemented)")
+            Log.w(TAG, "multi-advertisement UNSUPPORTED, iBeacon skipped (time-slice fallback not implemented)")
             return
         }
         val params = AdvertisingSetParameters.Builder()
@@ -519,7 +519,7 @@ internal class Central(
         val addr = dev.address
         if (inFlight.size >= MAX_DIALS || addr in inFlight) return
         if (pre != null && haveLinkToPrefix(pre)) return // R4 (advert carries the mfg prefix)
-        // Address-based suppression: peers whose advert has NO mfg prefix (pre=null — the macOS/iOS
+        // Address-based suppression: peers whose advert has NO mfg prefix (pre=null, the macOS/iOS
         // peripherals) skip the prefix gate and were re-dialed on EVERY advert just to cancel after the
         // PSM read (the redial storm: ~99% wasted GATT connects, a battery/radio killer on BLE-only
         // nodes). Once we've resolved this MAC's peerId, suppress re-dials while we hold that link.
@@ -603,7 +603,7 @@ internal class Central(
             try {
                 val sock = dev.createInsecureL2capChannel(psm)
                 sock.connect()
-                Log.i(TAG, "L2CAP dialed psm=$psm addr=$addr — wrapping link")
+                Log.i(TAG, "L2CAP dialed psm=$psm addr=$addr, wrapping link")
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
                 inFlight -= addr
                 backoff.remove(addrToBkey[addr] ?: addr)
@@ -671,11 +671,11 @@ class BleBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
     private var statusExec: ScheduledExecutorService? = null
 
     // DIAG toggles via `adb shell setprop`:
-    //   debug.blelab.noscan 1  → peripheral-only (don't scan/dial) — isolates scan-vs-peripheral starvation
+    //   debug.blelab.noscan 1  → peripheral-only (don't scan/dial), isolates scan-vs-peripheral starvation
     private val noScan = sysProp("debug.blelab.noscan") == "1"
 
     override fun start() {
-        Log.i(TAG, "NODE START myId=${myId.toHex()} — ${if (noScan) "PERIPHERAL-ONLY (noscan)" else "symmetric dual role (peripheral + central)"}")
+        Log.i(TAG, "NODE START myId=${myId.toHex()}, ${if (noScan) "PERIPHERAL-ONLY (noscan)" else "symmetric dual role (peripheral + central)"}")
         peripheral = Peripheral(
             ctx, myId,
             mintLinkId = { mint() },

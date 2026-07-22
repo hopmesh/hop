@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
                 perms += Manifest.permission.ACCESS_FINE_LOCATION
             }
             // F-37: Wi-Fi Direct is gone, so we no longer request NEARBY_WIFI_DEVICES (13+) or fine
-            // location on 31-32 (which only Wi-Fi Direct needed — and denying it used to block start).
+            // location on 31-32 (which only Wi-Fi Direct needed, and denying it used to block start).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 perms += Manifest.permission.POST_NOTIFICATIONS
             }
@@ -245,7 +245,7 @@ private fun PermissionGate(
 // render bodies below stay here and are excluded from the coverage denominator (UI/device-bound).
 
 /// Render a Font Awesome vector icon, tinted, inside a square `size`×`size` box with ContentScale.Fit
-/// so the whole glyph is letterboxed and NEVER clipped (FA paths span the full viewBox — e.g. the lock
+/// so the whole glyph is letterboxed and NEVER clipped (FA paths span the full viewBox, e.g. the lock
 /// shackle sits at y=0; constraining a single axis clipped the extremes). For inline status glyphs.
 @Composable
 private fun FaIcon(res: Int, tint: Color = LocalContentColor.current, size: Dp = 13.dp) {
@@ -270,7 +270,7 @@ private fun SendingIndicator(sentAt: Long, peersReachable: Boolean) {
             delay(1000)
         }
     }
-    // Pulse driven by the 1-second tick (alternating alpha, smoothly faded) — NOT a continuous
+    // Pulse driven by the 1-second tick (alternating alpha, smoothly faded), NOT a continuous
     // 60fps infiniteTransition. The latter kept Compose from ever going idle, which blocked the
     // soft keyboard from opening in the chat composer. This settles between ticks.
     val alpha by animateFloatAsState(if (elapsed % 2 == 0L) 1f else 0.35f, label = "pulse")
@@ -313,7 +313,7 @@ fun HopApp(bearer: HopBearer) {
     }
 }
 
-/// Tab 4: Status — device info + cloud relay (shared IA with iOS).
+/// Tab 4: Status, device info + cloud relay (shared IA with iOS).
 @Composable
 fun StatusScreen(bearer: HopBearer) {
     var relayField by remember { mutableStateOf("") }
@@ -340,8 +340,8 @@ fun StatusScreen(bearer: HopBearer) {
                 Switch(checked = bearer.privateMode.value, onCheckedChange = { bearer.setPrivateMode(it) })
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (bearer.privateMode.value) "Private — not broadcasting your name. Reachable via your QR; still relays for all."
-                    else "Discoverable — broadcasting your name to nearby devices.",
+                    if (bearer.privateMode.value) "Private, not broadcasting your name. Reachable via your QR; still relays for all."
+                    else "Discoverable, broadcasting your name to nearby devices.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -368,7 +368,7 @@ fun StatusScreen(bearer: HopBearer) {
                             Spacer(Modifier.height(8.dp))
                             Text(bearer.myName.value)
                             Text(bearer.myAddress.value, style = MaterialTheme.typography.bodySmall)
-                            Text("Have someone scan to add you — works in private mode.",
+                            Text("Have someone scan to add you. Works in private mode.",
                                 style = MaterialTheme.typography.bodySmall)
                         }
                     },
@@ -392,7 +392,7 @@ fun StatusScreen(bearer: HopBearer) {
                     Text("Unpin (use anycast default)")
                 }
             } else {
-                Text("Anycast (default). A device uses one relay at a time — pin a direct address to test a specific relay.",
+                Text("Anycast (default). A device uses one relay at a time. Pin a direct address to test a specific relay.",
                     style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(16.dp))
@@ -427,7 +427,7 @@ fun StatusScreen(bearer: HopBearer) {
 }
 
 /// hps:// pub/sub (DESIGN.md §32): host a channel/service, subscribe by host+path, publish,
-/// and read sender-verified messages — Android parity with the iOS HpsView.
+/// and read sender-verified messages, Android parity with the iOS HpsView.
 @Composable
 fun ChannelsScreen(bearer: HopBearer) {
     var openId by remember { mutableStateOf<String?>(null) }
@@ -724,7 +724,7 @@ fun ChatsScreen(bearer: HopBearer, onPick: (HopBearer.Peer) -> Unit) {
     // arrived via a longer relay path; the hop signal is robust to links churning in/out of
     // peerLinks (otherwise direct peers flicker to "mesh" between blips).
     // Direct = a 1-hop neighbour. A live BT/Wi-Fi link is forced to 1 hop in refresh(), so this
-    // single rule covers both live links and direct adverts — a 2-hop peer is never "direct".
+    // single rule covers both live links and direct adverts, a 2-hop peer is never "direct".
     fun isDirect(p: HopBearer.Peer): Boolean = p.hops <= 1u
     val direct = bearer.peers.filter { isDirect(it) }
     val mesh = bearer.peers.filter { !isDirect(it) }
@@ -850,8 +850,8 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                         }
                     } else if (!m.incoming && !m.delivered && m.relayed == 0u && !locked) {
                         // Genuinely "Securing": no forward-secret session with THIS recipient yet (no
-                        // prekey). Once the session is locked the message HAS been sent — it's awaiting
-                        // a delivery ack, NOT securing — so don't keep showing "Securing".
+                        // prekey). Once the session is locked the message HAS been sent; it's awaiting
+                        // a delivery ack, NOT securing, so don't keep showing "Securing".
                         SendingIndicator(m.sentAt, peersReachable = bearer.peers.isNotEmpty())
                     } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
                         Text("Sent · awaiting delivery", style = MaterialTheme.typography.bodySmall)

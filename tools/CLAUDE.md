@@ -6,7 +6,10 @@ runs in CI BEFORE the guard itself, so a change to a guard proves it still flags
 ```
 docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity incl. no-semicolon, \u/CSS
                            escape) + removed terms (InternetEgress, Wi-Fi Direct) + bare "Bluetooth" in
-                           docs/site copy. Self-test: docs-token-guard.test.sh.
+                           docs/site copy. Second pass (`--source`, and part of the no-arg run) applies
+                           the DASH bans only across the code trees, so the repo-wide ban holds in
+                           comments too; generated output, captured logs, and the wire-source-manifest
+                           files are excluded (see the header). Self-test: docs-token-guard.test.sh.
 check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:` every other ci.yml
                            job, use `if: always()`, and fail on a failed/cancelled dep. Also fails on a
                            nameless job, an anchor/inline job, or a ${{ }}-templated name (any of which

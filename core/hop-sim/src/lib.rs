@@ -30,7 +30,7 @@ pub struct SimNode {
     pub store: MemoryStore,
     pub router: SprayAndWait,
     /// Deterministic signed-prekey secret (epoch 0), so this node can recognize §39 private
-    /// bundles addressed to it (`Bundle::recognized_by`) — the private path's "is this mine?".
+    /// bundles addressed to it (`Bundle::recognized_by`), the private path's "is this mine?".
     spk_secret: [u8; 32],
 }
 
@@ -50,7 +50,7 @@ impl SimNode {
         self.identity.address()
     }
 
-    /// This node's signed-prekey public (SPK) — the key a sender needs to mint a private (§39)
+    /// This node's signed-prekey public (SPK), the key a sender needs to mint a private (§39)
     /// bundle only this node can recognize.
     pub fn spk_public(&self) -> XPubKeyBytes {
         self.identity.derive_prekey().public
@@ -84,7 +84,7 @@ pub struct Metrics {
     pub mean_latency_ms: f64,
     /// Total copies transferred across all links (the cost of delivery).
     pub transmissions: u64,
-    /// `transmissions / delivered` — copies spent per successful delivery.
+    /// `transmissions / delivered`, copies spent per successful delivery.
     pub overhead: f64,
 }
 
@@ -315,7 +315,7 @@ impl Sim {
                     let is_private = copy.is_private();
                     self.nodes[to].store.put(copy, now);
                     // §39 private path: a Broadcast bundle has no cleartext destination, so delivery
-                    // is recognition-based — the receiving node checks "is this mine?" against its
+                    // is recognition-based: the receiving node checks "is this mine?" against its
                     // signed-prekey secret. If `to` is the intended recipient and recognizes the tag,
                     // this spray hop delivered it (record first-delivery time exactly once).
                     if is_private && self.private_dst.get(&id) == Some(&to) {
@@ -346,7 +346,7 @@ fn is_direct(dst: &Destination, addr: &PubKeyBytes) -> bool {
     }
 }
 
-/// Deterministic SplitMix64 PRNG — reproducible scenarios from a seed. (We avoid a
+/// Deterministic SplitMix64 PRNG, reproducible scenarios from a seed. (We avoid a
 /// `rand` dependency and keep runs bit-for-bit repeatable for regression tests.)
 pub struct Rng {
     state: u64,
@@ -415,7 +415,7 @@ pub fn build_scenario(p: &ScenarioParams, messages: usize, copies: u16) -> Sim {
     build_scenario_path(p, messages, copies, Path::Traced)
 }
 
-/// Like [`build_scenario`] but selects the routing [`Path`] — so the same seeded contact trace and
+/// Like [`build_scenario`] but selects the routing [`Path`], so the same seeded contact trace and
 /// workload can be measured on the traced path AND the default private (§39) path.
 pub fn build_scenario_path(p: &ScenarioParams, messages: usize, copies: u16, path: Path) -> Sim {
     let mut sim = Sim::new(p.nodes);
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn private_wrong_recipient_never_recognizes() {
         // A private bundle addressed to node 2 must NOT be counted delivered just because it floods
-        // to node 1 — recognition is what gates delivery on the §39 path.
+        // to node 1: recognition is what gates delivery on the §39 path.
         let mut sim = Sim::new(3);
         sim.schedule_private_message(0, 0, 2, 8, b"mine only".to_vec());
         sim.contacts.push(Contact { at: 10, a: 0, b: 1 }); // reaches a non-recipient relay

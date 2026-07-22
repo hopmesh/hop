@@ -5,7 +5,7 @@
 # transport: "ble" = BLE-only (Wi-Fi OFF, set by the operator) ; "full" = BLE + LAN. (Wi-Fi Direct was removed.)
 # The operator keeps PIXEL and XR off Wi-Fi (BLE-only); the rest have full connectivity.
 #
-# Addresses are NOT here — they are discovered live into testkit/addrs.env by refresh-addrs.sh
+# Addresses are NOT here; they are discovered live into testkit/addrs.env by refresh-addrs.sh
 # (Android: logcat "HOPAUTO self=" ; iOS: automation.json .self). Identity is device-seed-derived
 # and STABLE across reinstalls/data-wipes, so the map is durable.
 

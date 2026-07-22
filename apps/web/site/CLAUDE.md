@@ -14,7 +14,7 @@ The Astro marketing site for hopme.sh.
 ## Rules
 
 - **No em-dashes, en-dashes, or lookalike dashes anywhere in `src/`.** `tools/docs-token-guard.sh` scans
-  `web/src` in CI and rejects literal, HTML-entity (`&mdash;`, `&#8212`, with or without the semicolon),
+  `web/src` in CI and rejects literal, HTML-entity (`&mdash;`, `&#8212`, with or without the semicolon), <!-- docs-token-guard: allow -->
   `\u`/CSS escapes, and the lookalikes U+2015 / U+2012. Markdown smartypants is off in `astro.config.mjs`
   so a typed `--` cannot render as a dash behind the scanner's back.
 - Internal links must resolve: `node tools/check-web-links.mjs apps/web/site/dist` runs in CI.

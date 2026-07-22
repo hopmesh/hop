@@ -100,7 +100,7 @@ resource "google_cloud_run_v2_service" "relay" {
       # F-17: container-level liveness probes tied only to the driver loop heartbeat. Durable
       # readiness remains on /healthz so a Firestore outage stops traffic without a restart loop.
       # Without these Cloud Run's default TCP check passes for a WEDGED instance forever, and with
-      # one instance per region a wedged instance IS the region. These are internal to Cloud Run —
+      # one instance per region a wedged instance IS the region. These are internal to Cloud Run;
       # do NOT add an external uptime check against the region endpoints (DESIGN.md §1436: it wakes
       # scaled-to-zero instances).
       startup_probe {

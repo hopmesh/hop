@@ -1,6 +1,6 @@
 # Global external Application Load Balancer: one anycast IP + one DNS name in front
 # of every regional Cloud Run relay. Premium-tier routing sends each device to the
-# nearest healthy region — the "closest entrance/exit, lowest latency" goal.
+# nearest healthy region, the "closest entrance/exit, lowest latency" goal.
 
 # Anycast IPs the domain's A/AAAA records point at. Dual-stack: an IPv4 frontend and
 # an IPv6 one share the same proxies/url-map/backends/cert. IPv6 lets clients on
@@ -38,9 +38,9 @@ resource "google_compute_region_network_endpoint_group" "relay" {
   }
 }
 
-# Single backend gathering all regional NEGs — the anycast default behind
+# Single backend gathering all regional NEGs, the anycast default behind
 # relay.hopme.sh (nearest healthy region). timeout_sec is NOT allowed on serverless-NEG
-# backends — the WebSocket lifetime is governed by the Cloud Run service's own request
+# backends; the WebSocket lifetime is governed by the Cloud Run service's own request
 # timeout (var.ws_request_timeout_seconds, set in cloud_run.tf).
 # count-gated (not just empty backends) so a relay teardown DESTROYS this whole resource rather than
 # updating it to zero backends: an in-place update-to-empty while the url_map references it and the
@@ -225,7 +225,7 @@ resource "time_sleep" "certmanager_ready" {
 
 resource "google_certificate_manager_dns_authorization" "relay" {
   name   = "hop-relay-dnsauth"
-  domain = var.domain # relay.hopme.sh — also authorizes *.relay.hopme.sh
+  domain = var.domain # relay.hopme.sh, also authorizes *.relay.hopme.sh
 
   depends_on = [time_sleep.certmanager_ready]
 }
@@ -273,7 +273,7 @@ resource "google_compute_global_forwarding_rule" "https" {
   ip_address            = google_compute_global_address.relay.id
 }
 
-# IPv6 frontends — same proxies, just the v6 anycast address.
+# IPv6 frontends, same proxies, just the v6 anycast address.
 resource "google_compute_global_forwarding_rule" "https_v6" {
   count                 = var.relays_enabled ? 1 : 0
   name                  = "hop-relay-https-v6"

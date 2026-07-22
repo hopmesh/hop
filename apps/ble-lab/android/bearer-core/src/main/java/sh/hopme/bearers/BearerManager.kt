@@ -1,6 +1,6 @@
 package sh.hopme.bearers
 
-// BearerManager — the bearer registry, the Android mirror of apple/HopBearers' BearerManager.swift.
+// BearerManager, the bearer registry, the Android mirror of apple/HopBearers' BearerManager.swift.
 // The consumer registers one or more Bearers (BLE first; LAN / Wi-Fi Direct / relay later) and then
 // talks ONLY to the manager. The manager is ITSELF a Bearer, so the consumer drives the whole
 // transport layer through the same interface it would use for a single bearer:
@@ -10,7 +10,7 @@ package sh.hopme.bearers
 //     mgr.sink = myConsumer        // links from ALL bearers surface here
 //     mgr.start()                  // fans out to every registered bearer
 //
-// Two jobs, purely in terms of Bearer/LinkSink — NO BLE/Wi-Fi/socket types ever cross this boundary:
+// Two jobs, purely in terms of Bearer/LinkSink, NO BLE/Wi-Fi/socket types ever cross this boundary:
 //   1. Fan-out: start()/stop() reach every bearer; send() routes to the bearer owning the link.
 //   2. One link-id space: each bearer mints its own (local) LinkIds from 1, so two bearers would
 //      collide. The manager mints a process-global LinkId per link and translates each bearer's local
@@ -28,7 +28,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 // transports outside the manager (the production node's relay/Multipeer links share one nextLinkId
 // counter) passes a high base so manager ids can never collide. Default 1 (standalone / clean-room).
 class BearerManager(baseLinkId: LinkId = 1) : Bearer {
-    /// The consumer's sink — every link, from every registered bearer, surfaces here in ONE global
+    /// The consumer's sink: every link, from every registered bearer, surfaces here in ONE global
     /// LinkId space.
     override var sink: LinkSink? = null
 
@@ -62,12 +62,12 @@ class BearerManager(baseLinkId: LinkId = 1) : Bearer {
         target.first.send(bytes, target.second)
     }
 
-    // ---- transport labelling — the consumer's UI tags each shared-bearer link by its REAL transport ----
+    // ---- transport labelling, the consumer's UI tags each shared-bearer link by its REAL transport ----
 
     /// The short transport tag (e.g. "BT"/"LAN"/"Wi-Fi Direct"/"Relay") of the bearer owning `link`, or
-    /// null if the link is unknown / already closed. Cosmetic only — used to label a shared-bearer peer.
+    /// null if the link is unknown / already closed. Cosmetic only, used to label a shared-bearer peer.
     /// (Named `…Of` rather than `transportName(link)` to avoid colliding with the Bearer `transportName`
-    /// property above — Kotlin can't disambiguate a same-named property and function at a call site.)
+    /// property above; Kotlin can't disambiguate a same-named property and function at a call site.)
     fun transportNameOf(link: LinkId): String? =
         synchronized(lock) { fromGlobal[link] }?.first?.transportName
 
@@ -80,7 +80,7 @@ class BearerManager(baseLinkId: LinkId = 1) : Bearer {
         return out
     }
 
-    // ---- lane callbacks — bearer-local link ids in, global link ids out ----
+    // ---- lane callbacks, bearer-local link ids in, global link ids out ----
 
     private fun up(lane: Lane, local: LinkId, role: LinkRole, peerId: ByteArray) {
         val g: LinkId

@@ -26,17 +26,17 @@ final class C: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, StreamD
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData d: [String: Any], rssi: NSNumber) {
         guard target == nil else { return }
         target = p; p.delegate = self
-        log("discovered \(p.identifier) rssi=\(rssi) — connecting")
+        log("discovered \(p.identifier) rssi=\(rssi), connecting")
         c.stopScan()
         c.connect(p, options: nil)
     }
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
-        log("connected — discoverServices(nil)")
+        log("connected, discoverServices(nil)")
         p.discoverServices(nil)
     }
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { log("connect FAILED \(error?.localizedDescription ?? "?")") }
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
-        log("disconnected \(error?.localizedDescription ?? "clean") — rescanning")
+        log("disconnected \(error?.localizedDescription ?? "clean"), rescanning")
         target = nil; input = nil; output = nil; inBuf = []; outBuf = []; rxSeq = 0
         c.scanForPeripherals(withServices: [SERVICE_UUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
     }
@@ -51,13 +51,13 @@ final class C: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, StreamD
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
         guard let v = ch.value, v.count >= 18 else { log("read short/err \(error?.localizedDescription ?? "?")"); return }
         let psm = CBL2CAPPSM(UInt16(v[0]) << 8 | UInt16(v[1]))
-        log("✅ read PSM=\(psm) peerId=\(v.subdata(in: 2..<18).map{String(format:"%02x",$0)}.joined().prefix(8)) — openL2CAPChannel")
+        log("✅ read PSM=\(psm) peerId=\(v.subdata(in: 2..<18).map{String(format:"%02x",$0)}.joined().prefix(8)), openL2CAPChannel")
         p.openL2CAPChannel(psm)
     }
     func peripheral(_ p: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
         if let error { log("❌ openL2CAP FAILED \(error.localizedDescription)"); return }
         guard let channel else { return }
-        log("✅✅ L2CAP OPEN — wiring streams, sending HELLO")
+        log("✅✅ L2CAP OPEN, wiring streams, sending HELLO")
         input = channel.inputStream; output = channel.outputStream
         for s in [input!, output!] { s.delegate = self; s.schedule(in: .main, forMode: .common); s.open() }
         var hello = Data([0x01]); hello.append(Data(repeating: 0xAB, count: 16)); hello.append(1); hello.append(0)
@@ -88,7 +88,7 @@ final class C: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, StreamD
             let len = Int(UInt32(inBuf[0])<<24 | UInt32(inBuf[1])<<16 | UInt32(inBuf[2])<<8 | UInt32(inBuf[3]))
             guard inBuf.count >= 4+len else { break }
             let body = Array(inBuf[4..<4+len]); inBuf.removeFirst(4+len)
-            if body.first == 0x02 { log("📥 RX peer PING (bytes flowing both ways!) — PROOF") }
+            if body.first == 0x02 { log("📥 RX peer PING (bytes flowing both ways!), PROOF") }
             else if body.first == 0x01 { log("📥 RX peer HELLO") }
         }
     }

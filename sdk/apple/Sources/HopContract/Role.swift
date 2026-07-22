@@ -1,4 +1,4 @@
-// HopRole — which side opened a bearer link (the Noise role). It lives in HopContract so bearers and
+// HopRole: which side opened a bearer link (the Noise role). It lives in HopContract so bearers and
 // the node both share it WITHOUT depending on libhop. The libhop mapping (to the C `HopLinkRole`)
 // lives in Hop (HopNode.linkUp), keeping this module pure Swift.
 

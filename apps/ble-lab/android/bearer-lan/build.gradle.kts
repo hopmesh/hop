@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// :bearer-lan — the LAN transport as its OWN library (Android mirror of apple/HopBearers' HopBearerLan).
+// :bearer-lan, the LAN transport as its OWN library (Android mirror of apple/HopBearers' HopBearerLan).
 // Two devices on the same Wi-Fi/LAN discover each other over NSD/Bonjour (`_hoplan._tcp`) and talk over
 // TCP. Depends ONLY on :bearer-core, and speaks the SAME link grammar (HELLO/PING/PONG/DATA over a
 // 4-byte length prefix) as the Apple LanBearer so Android<->Apple interop. Names nothing about BLE.

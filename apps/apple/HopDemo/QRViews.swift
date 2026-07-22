@@ -1,5 +1,5 @@
 // QR identity exchange: reveal your own address as a QR, and scan another device's QR to add it as
-// a contact. This is the explicit, in-person identity reveal that pairs with private mode — you stay
+// a contact. This is the explicit, in-person identity reveal that pairs with private mode: you stay
 // anonymous on the mesh but can hand someone your address face-to-face.
 import SwiftUI
 import AVFoundation
@@ -28,7 +28,7 @@ struct QRRevealView: View {
             Text(name).font(.title3)
             Text(address).font(.caption2).monospaced().foregroundStyle(.secondary)
                 .textSelection(.enabled).multilineTextAlignment(.center).padding(.horizontal)
-            Text("Have someone scan this to add you — works even in private mode.")
+            Text("Have someone scan this to add you. Works even in private mode.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal)
             Spacer()
         }.padding()

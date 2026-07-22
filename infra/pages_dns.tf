@@ -2,7 +2,7 @@
 #
 # Served at the apex hopme.sh; www.hopme.sh redirects to it (GitHub Pages issues the
 # apex⇄www redirect automatically once both are configured). The relay fleet keeps the
-# relay.hopme.sh subdomain (dns.tf) — these records only touch the apex and www, so the
+# relay.hopme.sh subdomain (dns.tf); these records only touch the apex and www, so the
 # two coexist in the same zone.
 #
 # GitHub Pages serves the custom domain from web/public/CNAME (= hopme.sh), published by
@@ -53,7 +53,7 @@ resource "google_dns_record_set" "www_cname" {
 }
 
 # GitHub Pages domain verification (org "hopmesh"). Proves control of hopme.sh so the
-# domain can't be claimed by another GitHub account — covers the apex and its subdomains.
+# domain can't be claimed by another GitHub account. Covers the apex and its subdomains.
 # Created only when var.pages_challenge_txt is set (the token comes from GitHub at
 # verification time; keep it out of version control). Cloud DNS requires the TXT value
 # wrapped in literal quotes.

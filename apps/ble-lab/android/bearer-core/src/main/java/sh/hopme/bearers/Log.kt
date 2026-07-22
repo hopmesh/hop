@@ -1,7 +1,7 @@
 package sh.hopme.bearers
 
 // Transport-neutral helpers shared by the core, every bearer lib, and the proof consumer. Nothing here
-// is BLE/LAN-specific — just the grep-able log tag, the app-lifecycle flag every bearer reads, and the
+// is BLE/LAN-specific, just the grep-able log tag, the app-lifecycle flag every bearer reads, and the
 // byte/hex utility so every transport + consumer emit the SAME `HOPLOG` lines and short-peer labels.
 // The Android mirror of apple/HopBearers' Log.swift.
 
@@ -15,5 +15,5 @@ const val TAG = "HOPLOG"
 @Volatile
 var appInBackground = false
 
-/// Lowercase hex of a byte array — the short-peer label primitive shared by transport + consumer logs.
+/// Lowercase hex of a byte array, the short-peer label primitive shared by transport + consumer logs.
 fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

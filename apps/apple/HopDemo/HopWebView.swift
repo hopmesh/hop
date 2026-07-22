@@ -1,8 +1,8 @@
 // A WebView backed entirely by the Hop network (DESIGN.md §30).
 //
-// A WKWebView with a custom `hops` URL-scheme handler: every request the page makes — the
+// A WKWebView with a custom `hops` URL-scheme handler: every request the page makes, the
 // document itself and every sub-resource (CSS, JS, images) plus relative/same-origin links,
-// which resolve against the `hops://` base — is routed through HopBearer.hopsFetch, i.e. HNS
+// which resolve against the `hops://` base, is routed through HopBearer.hopsFetch, i.e. HNS
 // resolution + a sealed request to the domain's own endpoint over the mesh. No traffic
 // touches the normal HTTPS stack; there is no third party terminating TLS.
 

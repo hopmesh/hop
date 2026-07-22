@@ -7,7 +7,7 @@ import HopDemoKit
 import UIKit
 #endif
 
-/// Image helpers — keep image work OFF the render path and small on the wire.
+/// Image helpers: keep image work OFF the render path and small on the wire.
 enum HopImages {
     /// Decode-once cache keyed by the image bytes. SwiftUI re-evaluates view bodies constantly;
     /// calling `UIImage(data:)` inline re-decodes every image on every render, which pegged the
@@ -49,13 +49,13 @@ struct ContentView: View {
         #endif
     }
 
-    /// A peer is "direct" if we reach it without the cloud relay — either a live local radio
+    /// A peer is "direct" if we reach it without the cloud relay, either a live local radio
     /// link (BLE / Wi-Fi P2P), OR its presence arrived at ≤1 hop (a direct-neighbour advert).
     /// Both are needed: the link signal catches a peer whose advert came via a longer relay
     /// path, and the hop signal is robust to local links momentarily churning in/out of
     /// `peerLinks` (otherwise direct peers flicker to "mesh" between link blips).
     /// Direct = a 1-hop neighbour. A live BT/Wi-Fi link is forced to 1 hop in refresh(), so this
-    /// single rule covers both live links and direct adverts — and a 2-hop peer is never "direct".
+    /// single rule covers both live links and direct adverts, and a 2-hop peer is never "direct".
     private func isDirect(_ p: HopBearer.Peer) -> Bool { DemoFormat.isDirect(hops: p.hops) }
     private var direct: [HopBearer.Peer] { bearer.reachable.filter { isDirect($0) } }
     private var mesh: [HopBearer.Peer] { bearer.reachable.filter { !isDirect($0) } }
@@ -76,7 +76,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Tab 1: Chats — people you can reach → chat thread (shared IA)
+    // MARK: - Tab 1: Chats, people you can reach → chat thread (shared IA)
     @ViewBuilder private var chatsTab: some View {
         NavigationStack {
             List {
@@ -130,14 +130,14 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Tab 2: Channels — hps:// pub/sub (stack nav: list → channel thread)
+    // MARK: - Tab 2: Channels, hps:// pub/sub (stack nav: list → channel thread)
     @ViewBuilder private var channelsTab: some View {
         NavigationStack {
             ChannelsListView(bearer: bearer)
         }
     }
 
-    // MARK: - Tab 3: Web — hops:// fetch + browser, HNS cache
+    // MARK: - Tab 3: Web, hops:// fetch + browser, HNS cache
     @ViewBuilder private var webTab: some View {
         NavigationStack {
             List {
@@ -185,7 +185,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Tab 4: Status — device, relay, transports, backbone, queue
+    // MARK: - Tab 4: Status, device, relay, transports, backbone, queue
     @ViewBuilder private var statusTab: some View {
         NavigationStack {
             List {
@@ -246,7 +246,7 @@ struct ContentView: View {
                             bearer.setPinnedRelay(nil); relayField = ""
                         }.font(.caption)
                     } else {
-                        Text("Anycast (default). A device uses one relay at a time — pin a direct address to test a specific relay.")
+                        Text("Anycast (default). A device uses one relay at a time. Pin a direct address to test a specific relay.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 } header: { Text("Cloud relay (backbone)") }
@@ -501,7 +501,7 @@ struct ChatView: View {
                                 .foregroundStyle(.red)
                             } else if !m.incoming && !m.delivered && m.relayed == 0 {
                                 // In flight, not yet handed to any peer. With peers around, the holdup is
-                                // the recipient's forward-secret session, not peer availability — only with
+                                // the recipient's forward-secret session, not peer availability, only with
                                 // no reachable peers is it genuinely "Awaiting peers".
                                 SendingIndicator(sentAt: m.sentAt, peersReachable: !bearer.reachable.isEmpty)
                             } else {
@@ -633,7 +633,7 @@ struct AddContactView: View {
                         if bearer.addContact(name: name, address: address) {
                             dismiss()
                         } else {
-                            error = "Invalid address — need a 32-byte base58 key (and not your own)."
+                            error = "Invalid address: need a 32-byte base58 key (and not your own)."
                         }
                     }
                     .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -951,7 +951,7 @@ struct HpsAddView: View {
 
 /// A Font Awesome (Light) icon from the asset catalog, rendered as a tintable template inside a
 /// square `size`×`size` frame with scaledToFit so the whole glyph is letterboxed and NEVER clipped
-/// (FA paths span the full viewBox — the lock shackle sits at the top edge; constraining a single
+/// (FA paths span the full viewBox: the lock shackle sits at the top edge; constraining a single
 /// axis clipped the extremes). Use like an SF Symbol: `FaIcon(name: "ic_fa_lock", size: 12).foregroundStyle(.green)`.
 struct FaIcon: View {
     let name: String

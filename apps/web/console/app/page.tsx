@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { requestLink, githubStartUrl } from "@/lib/api";
 
-// The console entry: one email field, or GitHub. Passwordless and frictionless by design —
+// The console entry: one email field, or GitHub. Passwordless and frictionless by design,
 // no password, no org, no "email taken", no "already have an account". Signing up and signing in
 // are the same act (the link creates the account on first click, signs in after).
 export default function SignIn() {

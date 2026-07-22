@@ -22,9 +22,9 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-// LanBearer — the LAN transport as its OWN library (depends only on :bearer-core). Two devices on the
+// LanBearer, the LAN transport as its OWN library (depends only on :bearer-core). Two devices on the
 // same Wi-Fi/LAN discover each other over NSD/Bonjour (`_hoplan._tcp`) and talk over TCP. It is fully
-// self-contained: nothing here is shared with :bearer-ble (per "each bearer its own lib") — but it
+// self-contained: nothing here is shared with :bearer-ble (per "each bearer its own lib"), but it
 // speaks the SAME link grammar as the BLE bearer AND the Apple LanBearer, so the consumer sees identical
 // linkUp/linkBytes/linkDown semantics regardless of radio, and Android<->Apple interop on the wire:
 //
@@ -37,11 +37,11 @@ import kotlin.concurrent.thread
 //
 // Discovery: the NSD instance name IS our nodeId as 32 hex chars, so a browser learns the peer id
 // WITHOUT connecting (mirrors how the BLE advert carries the id prefix and how Apple sets the Bonjour
-// instance name). The greater nodeId dials; the lesser only listens — so a mutually-discovered pair
+// instance name). The greater nodeId dials; the lesser only listens, so a mutually-discovered pair
 // forms exactly one connection per direction, then dedup keeps one.
 //
 // THREADING (the Android difference from Apple's single serial queue): callbacks arrive from MULTIPLE
-// threads — NsdManager's internal threads (discovery/resolve/register), the accept thread, the per-link
+// threads, NsdManager's internal threads (discovery/resolve/register), the accept thread, the per-link
 // rx threads, and the per-link keepalive ScheduledExecutors. Every link/dedup-map mutation/read is
 // guarded by `lock` (the same discipline BleBearer/BearerManager use).
 
@@ -53,7 +53,7 @@ private const val LAN_REAP_MS = 5_000L    // close a connection that never compl
 private const val LAN_MAX_FRAME = 4 * 1024 * 1024
 private const val LAN_DIAL_TIMEOUT_MS = 5_000
 
-// Wire frame types — byte-identical to apple/HopBearers' LanBearer and to :bearer-ble's framing.
+// Wire frame types, byte-identical to apple/HopBearers' LanBearer and to :bearer-ble's framing.
 private const val L_HELLO = 0x01
 private const val L_PING = 0x02
 private const val L_PONG = 0x03
@@ -92,7 +92,7 @@ internal class LanLink(
         runCatching { socket.tcpNoDelay = true }
         // HELLO first (same grammar as BLE/Apple): [0x01][16B nodeId][1B role][1B flags]
         sendFrame(byteArrayOf(L_HELLO.toByte()) + myId + byteArrayOf((if (isDialer) 1 else 0).toByte(), 0))
-        Log.i(TAG, "lan channel-ready isDialer=$isDialer — sent HELLO")
+        Log.i(TAG, "lan channel-ready isDialer=$isDialer: sent HELLO")
         thread(name = "lan-rx") { readLoop() }
         sched.scheduleAtFixedRate({ tick() }, LAN_PING_MS, LAN_PING_MS, TimeUnit.MILLISECONDS)
     }
@@ -168,7 +168,7 @@ internal class LanLink(
             }
             L_PONG -> { /* reverse-direction liveness; lastRxMs already bumped in readLoop */ }
             L_DATA -> onData(this, b.copyOfRange(1, b.size)) // DATA → consumer application bytes
-            else -> { /* unknown frame type — ignore */ }
+            else -> { /* unknown frame type, ignore */ }
         }
     }
 
@@ -355,7 +355,7 @@ class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
                 synchronized(lock) { dialing.remove(peerHex) }
                 return@thread
             }
-            Log.i(TAG, "lan dialed peer=${peerHex.take(8)} — wrapping link")
+            Log.i(TAG, "lan dialed peer=${peerHex.take(8)}, wrapping link")
             LanLink(
                 sock, mint(), isDialer = true, myId, ::onUp, ::onData,
                 onClose = { l -> synchronized(lock) { dialing.remove(peerHex) }; onClose(l) },

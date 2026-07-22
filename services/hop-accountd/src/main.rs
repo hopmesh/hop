@@ -133,7 +133,7 @@ mod live {
         oauth_http: ReqwestOauth,
         console_base: String,
         github: Option<OauthConfig>,
-        /// The Stripe transport (restricted account key), always present — it powers the console's
+        /// The Stripe transport (restricted account key), always present; it powers the console's
         /// invoice/card READS as well as the billing writes.
         stripe: ReqwestStripe,
         /// The resolved price catalog for self-serve Checkout. Present only when HOP_STRIPE_*_PRICES is

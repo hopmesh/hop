@@ -1,4 +1,4 @@
-// BeaconWake.swift — iOS-only CoreLocation iBeacon region monitor (Layer C, the
+// BeaconWake.swift: iOS-only CoreLocation iBeacon region monitor (Layer C, the
 // force-quit-proof relaunch). On region enter it pokes the BLE Node to (re)scan/connect.
 import Foundation
 import CoreLocation
@@ -32,7 +32,7 @@ final class BeaconWake: NSObject, CLLocationManagerDelegate {
         case .notDetermined:    lm.requestWhenInUseAuthorization()       // escalates to Always below
         case .authorizedWhenInUse: lm.requestAlwaysAuthorization()
         case .authorizedAlways: beginMonitoring()
-        default: log("STATE", "location auth=\(lm.authorizationStatus.rawValue) — NO terminated wake")
+        default: log("STATE", "location auth=\(lm.authorizationStatus.rawValue), NO terminated wake")
         }
     }
 

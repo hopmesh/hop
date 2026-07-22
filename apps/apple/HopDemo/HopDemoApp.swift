@@ -5,7 +5,7 @@ import HopDriver
 import HopDemoKit
 
 extension HopBearer {
-    /// The app's single shared Hop runtime — the dev `Config` (messages db in the document dir, the
+    /// The app's single shared Hop runtime, the dev `Config` (messages db in the document dir, the
     /// dev app secret "H"×32, the anycast cloud relay, full role). One instance shared by the app's
     /// background tasks and `ContentView`, so there's exactly one `HopNode` open on the db.
     static let shared: HopBearer = {
@@ -26,7 +26,7 @@ extension HopBearer {
     }()
 }
 
-/// Boots the Hop runtime on EVERY launch type — most importantly a cold BACKGROUND / force-quit
+/// Boots the Hop runtime on EVERY launch type, most importantly a cold BACKGROUND / force-quit
 /// relaunch triggered by a CoreLocation iBeacon region event, where there is no window and thus
 /// `ContentView.onAppear` never runs (BACKGROUND.md §3.4 Layer C). `application(_:didFinishLaunching…)`
 /// is the one entry point guaranteed to run first on all launch types and to carry `launchOptions`.
@@ -45,7 +45,7 @@ final class HopAppDelegate: NSObject, UIApplicationDelegate {
     }
 
     /// D-crash: write uncaught Obj-C/NSException crashes (name, reason, call stack) to a file in the
-    /// Documents dir so a `devicectl` pull surfaces the last crash — the pre-distribution stand-in for
+    /// Documents dir so a `devicectl` pull surfaces the last crash, the pre-distribution stand-in for
     /// crash reporting. (Swift `fatalError`/signals need a signal handler + MetricKit; that's the
     /// launch-gate follow-on. This catches the common NSException class.)
     private func installCrashLogger() {
@@ -67,7 +67,7 @@ struct HopDemoApp: App {
 
     init() {
         // BGProcessingTask gets a longer window (runs when idle, best-effort on battery /
-        // reliably when charging) — used to *drain a backlog* like a large image that
+        // reliably when charging), used to *drain a backlog* like a large image that
         // accumulates across short wakes. Registered here (must be before launch finishes);
         // the appRefresh handler below is registered by the SwiftUI .backgroundTask modifier.
         HopDemoApp.registerProcessing()
@@ -144,7 +144,7 @@ struct HopDemoApp: App {
         }
     }
 
-    // MARK: - Automation control surface (TEST/AUTOMATION — headless harness, no UI tapping)
+    // MARK: - Automation control surface (TEST/AUTOMATION, headless harness, no UI tapping)
 
     /// Handle `hopdemo://send?to=<base58addr>&text=<marker>`: parse the address + marker text and
     /// drive a send through the bearer's `sendTo` automation hook. Authorized internal testing only.

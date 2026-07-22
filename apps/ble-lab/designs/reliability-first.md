@@ -1,4 +1,4 @@
-# Reliability-First Dual-Role BLE Transport — Design + Critical Source
+# Reliability-First Dual-Role BLE Transport: Design + Critical Source
 
 > Goal: two devices (Android Kotlin, Apple Swift/CoreBluetooth), each running identical
 > dual-role software, converge on **exactly one** bidirectional byte channel and **keep it
@@ -19,7 +19,7 @@ Each device is simultaneously a **peripheral** (advertises the service, runs an 
 (scans for the service, connects, reads the PSM, opens the L2CAP channel). **All data flows over
 the L2CAP connection-oriented channel (CoC); data NEVER rides GATT.** GATT is used only for the
 tiny PSM/identity read that bootstraps the L2CAP open. The channel is **insecure** L2CAP (no
-OS pairing/bonding) — the secure variant fails iOS↔Android **[field]**, and identity/crypto are
+OS pairing/bonding), the secure variant fails iOS↔Android **[field]**, and identity/crypto are
 an upper layer's job. Convergence to a single channel is driven by an **ephemeral random 16-byte
 node-id** carried in-band; reliability is driven by an **application-layer 1 Hz heartbeat** (which
 doubles as the proof counter), fast dead-link detection, and a per-peer reconnect state machine.
@@ -52,10 +52,10 @@ MFG_COMPANY_ID = 0xFFFF                                  // "reserved for testin
 L2CAP_ENCRYPT  = false                                  // insecure CoC
 ```
 
-### 1.2 The node-id (the unbiased, in-band tiebreaker — NOT MAC, NOT platform)
+### 1.2 The node-id (the unbiased, in-band tiebreaker, NOT MAC, NOT platform)
 
 At process start each device generates a **random 16-byte `nodeId`** (CSPRNG). It is:
-- **Ephemeral** (regenerated each app launch) but **stable for the whole session** — so it is a
+- **Ephemeral** (regenerated each app launch) but **stable for the whole session**, so it is a
   valid dedup key even while the BLE MAC rotates underneath it.
 - **Unbiased**: pure randomness; no platform tag, no hardware address, no RSSI.
 - **In-band**: carried in the advert (a 6-byte prefix, see below) and **authoritatively** in the
@@ -79,14 +79,14 @@ Primary advertisement (exactly 31 bytes, fits with no extended advertising):
 Scan response (separate 31 bytes): the device name (debugging only; not load-bearing).
 
 **Critical platform truth about the advert id [field + sources]:**
-- **Android** advertises the 6-byte `nodeId` prefix in manufacturer data fine — so for the
+- **Android** advertises the 6-byte `nodeId` prefix in manufacturer data fine, so for the
   dominant cross-platform topology (iOS-central → Android-peripheral) and Android↔Android, the
   pre-connect tiebreaker has the data it needs to suppress redundant dials.
 - **iOS/macOS peripherals cannot advertise manufacturer data at all.** `startAdvertising`
   honors only `CBAdvertisementDataServiceUUIDsKey` and `CBAdvertisementDataLocalNameKey`. And
   when an iOS app is **backgrounded**, the local name is dropped and the service UUID moves to
   the Apple-proprietary **overflow area** (manufacturer-data byte `0x01`), which only another
-  iOS device explicitly scanning that UUID can decode — **Android cannot see it.**
+  iOS device explicitly scanning that UUID can decode, **Android cannot see it.**
 
 Consequence (and it shapes the whole convergence design): **the advert-borne id is an
 accelerator, available only when the peer is an Android peripheral. The authoritative tiebreaker
@@ -117,7 +117,7 @@ the concurrent-L2CAP-channel exhaustion that degrades a busy Android radio **[fi
 The "waiter" from §2.1 starts a timer `T_wait = 4 s` (+ up to 1 s jitter) when it first sees the
 peer. If no channel to that peer reaches `UP` before `T_wait` expires, the waiter **dials anyway**.
 
-This is what makes the design robust when the side that *should* dial **can't see us** — e.g. we
+This is what makes the design robust when the side that *should* dial **can't see us**, e.g. we
 are a backgrounded iOS peripheral (overflow area: Android can't see our advert id, so Android
 never learns it should dial). The waiter (here, iOS-as-central, which *can* scan in background)
 takes over. No platform bias is encoded; it is purely "if the assigned dialer didn't act, I do."
@@ -168,7 +168,7 @@ characteristic and invalidate the peer's GATT cache (§5.4).
 5. `peripheralManager(_:didPublishL2CAPChannel:error:)` → store `psm` (this is what the GATT char
    returns).
 6. `peripheralManager.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [SERVICE_UUID],
-   CBAdvertisementDataLocalNameKey: name])`. (No mfg data is possible on iOS — see §1.3.)
+   CBAdvertisementDataLocalNameKey: name])`. (No mfg data is possible on iOS; see §1.3.)
 7. **On read:** `peripheralManager(_:didReceiveRead:)` → `request.value = psm(2B BE) || nodeId(16B)`;
    `peripheralManager.respond(to: request, withResult: .success)`.
 8. **On inbound L2CAP:** `peripheralManager(_:didOpen channel:error:)` → wrap
@@ -205,7 +205,7 @@ characteristic and invalidate the peer's GATT cache (§5.4).
    (else it deallocs and the connect silently dies), set its delegate, `central.connect(p,
    options: nil)`, start a **dial-timeout (12 s)**.
 4. `centralManager(_:didConnect:)` → `p.discoverServices(nil)`. **Use `nil` (discover all), not
-   `[SERVICE_UUID]`** — targeted discovery *stalls* against Android's GATT server; full discovery
+   `[SERVICE_UUID]`**, targeted discovery *stalls* against Android's GATT server; full discovery
    (what LightBlue does) succeeds **[field]**.
 5. `peripheral(_:didDiscoverServices:)` → find `SERVICE_UUID` →
    `p.discoverCharacteristics([ENDPOINT_CHAR], for: svc)`.
@@ -216,7 +216,7 @@ characteristic and invalidate the peer's GATT cache (§5.4).
    - error ⇒ peer likely re-listened (stale PSM) → drop cached PSM, `p.discoverServices(nil)` to
      re-read, or back off (§4.4).
    - success ⇒ wrap `channel.inputStream`/`channel.outputStream`,
-     `schedule(in: .main, forMode: .common)`, `open()`. **Keep streams on the MAIN runloop — moving
+     `schedule(in: .main, forMode: .common)`, `open()`. **Keep streams on the MAIN runloop, moving
      them to a private thread breaks Noise/data flow [field].** Send `HELLO`; start 1 Hz PING +
      liveness watchdog; role = dialer.
 
@@ -224,7 +224,7 @@ characteristic and invalidate the peer's GATT cache (§5.4).
 1. `scanner.startScan(listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()),
    ScanSettings.Builder().setScanMode(scanMode).build(), scanCb)`. `scanMode` =
    `SCAN_MODE_LOW_LATENCY` for a short burst after a drop/expected meet, `SCAN_MODE_BALANCED`
-   steady-state — **continuous LOW_LATENCY scanning starves the peripheral role [field]**.
+   steady-state, **continuous LOW_LATENCY scanning starves the peripheral role [field]**.
 2. `onScanResult` → parse mfg `nodeId` prefix → §2 convergence. If we dial AND
    `dialsInFlight < MAX_DIALS_IN_FLIGHT (2)` AND not in per-peer backoff:
    `device.connectGatt(ctx, /*autoConnect=*/false, gattCb, BluetoothDevice.TRANSPORT_LE)`
@@ -241,14 +241,14 @@ characteristic and invalidate the peer's GATT cache (§5.4).
    PING + liveness; `gatt.requestConnectionPriority(CONNECTION_PRIORITY_BALANCED)` after `HELLO`
    (save power once stable); role = dialer.
 7. `onConnectionStateChange(STATE_DISCONNECTED)` or any failure/status-133 → **`gatt.close()`
-   (mandatory — leaked GATT clients exhaust Android's cap and kill all future connects [field])**,
+   (mandatory, leaked GATT clients exhaust Android's cap and kill all future connects [field])**,
    free the dial slot, apply backoff (§4.4).
 
 ### 3.3 The `HELLO` exchange (the moment the channel becomes a real link)
 
 Immediately after the L2CAP channel opens, **each** side sends one `HELLO` frame and waits for
 the peer's. The link is `UP` only after `HELLO` is both sent and received. The acceptor's 3 s
-**HELLO-reap** closes any channel that never delivers a `HELLO` — this kills the *half-open
+**HELLO-reap** closes any channel that never delivers a `HELLO`; this kills the *half-open
 orphans* (Android `accept()` succeeded but the central abandoned its end) that otherwise pile up
 and exhaust the concurrent-channel cap **[field]**.
 
@@ -286,10 +286,10 @@ to 64 KB+; iOS internally fragments above ~2 KB, invisibly).
 
 Each side emits a `PING` **every 1000 ms** with `seq = ++txCounter`. The peer:
 - replies `PONG` (gives RTT and proves the *reverse* direction is live), and
-- verifies `seq == lastRxSeq + 1` — **any gap = packet loss**, **stale `seq` for too long =
+- verifies `seq == lastRxSeq + 1`, **any gap = packet loss**, **stale `seq` for too long =
   stall**. This is the literal "monotonically increasing counter that the peer's stream must
   advance with no loss or stall" the proof requires. The keepalive and the proof are the same
-  traffic — no idle channel ever exists.
+  traffic, no idle channel ever exists.
 
 ### 4.3 Liveness / fast dead-link detection (defense in depth)
 
@@ -297,7 +297,7 @@ Three independent detectors, fastest wins:
 1. **App-layer watchdog (primary).** Track `lastRxMs` (any frame). If `now - lastRxMs >
    DEAD_MS = 5000` (5 missed 1 Hz beats), declare the link **dead**, close streams, tear down,
    and trigger recovery. This is the only detector that catches a **wedged-but-connected**
-   channel (ACL alive, L2CAP stream stalled) — which the BLE supervision timeout will *not*
+   channel (ACL alive, L2CAP stream stalled), which the BLE supervision timeout will *not*
    catch.
 2. **BLE disconnect callback (secondary, fast path).** iOS `didDisconnectPeripheral` / Android
    `onConnectionStateChange(STATE_DISCONNECTED)` fire on a real ACL loss. Android's supervision
@@ -344,23 +344,23 @@ flapping a still-good link.
 
 ## 5. Platform-specific reliability rules (all field-verified in this repo)
 
-### 5.1 Android advertiser — use `startAdvertisingSet`, legacy mode
+### 5.1 Android advertiser: use `startAdvertisingSet`, legacy mode
 Legacy `startAdvertising(...)` with `setIncludeDeviceName(true)` **silently omits the GAP name**
 on Pixel. `startAdvertisingSet(AdvertisingSetParameters.Builder().setLegacyMode(true)
 .setConnectable(true).setScannable(true)…, advData, scanResponse, null, null, callback)` emits
-it. A connectable `AdvertisingSet` **persists across connections** — so do **not** stop/restart
+it. A connectable `AdvertisingSet` **persists across connections**, so do **not** stop/restart
 it per accepted connection (that resets the scan response and races incoming connects into
 `CONNECTION_ACCEPT_TIMEOUT`). Make `startAdvertise()` idempotent, null the handle in
 `onAdvertisingSetStopped`, and self-heal from the tick loop (`if (ticks % 30 == 0)
-startAdvertise()` — no-op while live; recovers a silently-wedged advertiser).
+startAdvertise()`, a no-op while live; recovers a silently-wedged advertiser).
 
-### 5.2 Android GATT lifecycle — always `gatt.close()`
+### 5.2 Android GATT lifecycle: always `gatt.close()`
 On any connect failure/disconnect, `gatt.close()` and remove from the in-flight set, or leaked
 GATT clients exhaust Android's cap and every later connect times out. `connectGatt` on the main
 thread. `autoConnect = false` (aggressive, fast) for the active dial; rely on our own state
 machine for re-establish rather than `autoConnect=true`'s opaque, slow background reconnect.
 
-### 5.3 Android radio sharing — don't let central starve peripheral
+### 5.3 Android radio sharing: don't let central starve peripheral
 Continuous `SCAN_MODE_LOW_LATENCY` + failing `connectGatt`s saturate the radio so peers can't
 even *discover* this device. Steady-state `SCAN_MODE_BALANCED`; LOW_LATENCY only in short bursts;
 cap dials; back off. In the dominant iOS↔Android topology Android barely needs to scan (iOS is
@@ -393,7 +393,7 @@ concurrent set alongside the connectable Hop advert.
 
 ---
 
-## 6. Critical source — Apple (Swift / CoreBluetooth)
+## 6. Critical source: Apple (Swift / CoreBluetooth)
 
 The macOS CLI is the fast iteration loop (build with `swiftc -framework CoreBluetooth`, model on
 `apple/hopmac/build.sh`); the same types are iOS-faithful. Below is the reliability-critical
@@ -519,7 +519,7 @@ final class Peripheral: NSObject, CBPeripheralManagerDelegate {
         let ch = CBMutableCharacteristic(type: ENDPOINT_CHAR, properties: .read, value: nil, permissions: .readable)
         let svc = CBMutableService(type: SERVICE_UUID, primary: true); svc.characteristics = [ch]
         p.add(svc)
-        p.publishL2CAPChannel(withEncryption: false)        // INSECURE — secure fails iOS<->Android
+        p.publishL2CAPChannel(withEncryption: false)        // INSECURE, secure fails iOS<->Android
     }
     func peripheralManager(_ p: CBPeripheralManager, didPublishL2CAPChannel PSM: CBL2CAPPSM, error: Error?) {
         psm = PSM
@@ -617,7 +617,7 @@ func onUp(_ link: Link) {
 
 ---
 
-## 7. Critical source — Android (Kotlin)
+## 7. Critical source: Android (Kotlin)
 
 Model the build on `android/HopDemo` (gradlew + SDK config). Permissions:
 `BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN` (`usesPermissionFlags="neverForLocation"`),
@@ -829,7 +829,7 @@ same room. macOS is the fast loop and is iOS-faithful; promote to a physical iPh
 background/restoration cases.
 
 **Bring-up (clean radio first).**
-1. `adb shell cmd bluetooth_manager disable && adb shell cmd bluetooth_manager enable` — a freshly
+1. `adb shell cmd bluetooth_manager disable && adb shell cmd bluetooth_manager enable`, a freshly
    cycled stack avoids a wedged advertiser **[field]** (the canonical "onStartSuccess but nothing
    on air" failure).
 2. Launch the Android app; confirm it advertises: `adb shell dumpsys bluetooth_manager` →
@@ -860,10 +860,10 @@ STATUS line every 5 s; the test asserts on these over a long soak:
    each cycle must re-establish exactly one channel. No per-MAC state accumulation, no degradation
    across cycles.
 4. **Address rotation soak:** run hours so the peer's RPA rotates repeatedly; assert the link
-   persists (or re-forms) with **no duplicate channel** — dedup is by `nodeId`, so rotation is a
+   persists (or re-forms) with **no duplicate channel**, dedup is by `nodeId`, so rotation is a
    non-event.
-5. **Contention:** add 2–3 extra centrals (more macOS peers / LightBlue). Assert no orphan
-   accumulation and no L2CAP-open `Unknown error` storms — the tiebreaker (one dialer),
+5. **Contention:** add 2 to 3 extra centrals (more macOS peers / LightBlue). Assert no orphan
+   accumulation and no L2CAP-open `Unknown error` storms, the tiebreaker (one dialer),
    HELLO-reap, and dial caps keep Android's concurrent-channel budget healthy.
 6. **iOS background (device only):** background the app; a service-filtered scan still discovers
    the Android peer and `connect` completes; with state restoration the app relaunches into the
@@ -875,13 +875,13 @@ STATUS line every 5 s; the test asserts on these over a long soak:
 ## Sources
 
 - [Core Bluetooth Background Processing for iOS Apps (Apple)](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html)
-- [Hacking the iOS BLE Overflow Area — David G. Young](https://davidgyoungtech.com/2020/05/07/hacking-the-overflow-area) / [ios-overflow-area repo](https://github.com/davidgyoung/ios-overflow-area)
-- [iOS BLE Scanning guide — Punch Through](https://punchthrough.com/ios-ble-scanning-guide/)
+- [Hacking the iOS BLE Overflow Area, David G. Young](https://davidgyoungtech.com/2020/05/07/hacking-the-overflow-area) / [ios-overflow-area repo](https://github.com/davidgyoung/ios-overflow-area)
+- [iOS BLE Scanning guide, Punch Through](https://punchthrough.com/ios-ble-scanning-guide/)
 - [CBL2CAPChannel (Apple)](https://developer.apple.com/documentation/corebluetooth/cbl2capchannel) / [publishL2CAPChannel(withEncryption:)](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/publishl2capchannel(withencryption:))
-- [startAdvertising(_:) (Apple — honored keys)](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:))
+- [startAdvertising(_:) (Apple, honored keys)](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:))
 - [CBCentralManager State Restoration Options (Apple)](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager/central_manager_state_restoration_options)
 - [Android createInsecureL2capChannel / listenUsingInsecureL2capChannel (LE-only CoC)](https://learn.microsoft.com/en-us/dotnet/api/android.bluetooth.bluetoothdevice.createinsecurel2capchannel) / [BluetoothServerSocket.Psm](https://learn.microsoft.com/en-us/dotnet/api/android.bluetooth.bluetoothserversocket.psm)
-- [L2CAP implementation in Android — Girish Yadawad](https://medium.com/@girishby90/l2cap-implementation-in-android-588f5b867f01)
-- [Demystifying Android BLE 'GATT Status 133'](https://dev.to/ble_advertiser/demystifying-android-ble-gatt-status-133-common-causes-and-robust-solutions-for-connection-32la) / [Android BLE timeouts & internal errors — Classy Code](https://blog.classycode.com/a-short-story-about-android-ble-connection-timeouts-and-gatt-internal-errors-fa89e3f6a456)
-- [BLE throughput / L2CAP CoC MTU & flow control — chrisc11/ble-guides](https://github.com/chrisc11/ble-guides/blob/master/ble-throughput.md) / [CoreBluetooth L2CAP MTU — Apple Forums](https://developer.apple.com/forums/thread/81120)
+- [L2CAP implementation in Android, Girish Yadawad](https://medium.com/@girishby90/l2cap-implementation-in-android-588f5b867f01)
+- [Demystifying Android BLE 'GATT Status 133'](https://dev.to/ble_advertiser/demystifying-android-ble-gatt-status-133-common-causes-and-robust-solutions-for-connection-32la) / [Android BLE timeouts & internal errors, Classy Code](https://blog.classycode.com/a-short-story-about-android-ble-connection-timeouts-and-gatt-internal-errors-fa89e3f6a456)
+- [BLE throughput / L2CAP CoC MTU & flow control, chrisc11/ble-guides](https://github.com/chrisc11/ble-guides/blob/master/ble-throughput.md) / [CoreBluetooth L2CAP MTU, Apple Forums](https://developer.apple.com/forums/thread/81120)
 - Repo field notes: `ble-bearer-pure-l2cap-no-gatt`, `cross-platform-ble` (this project's memory).

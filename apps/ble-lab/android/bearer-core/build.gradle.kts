@@ -3,11 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// :bearer-core — the transport-agnostic CORE of the bearer layer (Android mirror of
+// :bearer-core, the transport-agnostic CORE of the bearer layer (Android mirror of
 // apple/HopBearers' HopBearerCore). There is NO master library: this core holds only the
 // Bearer/LinkSink contract, the BearerManager registry, the shared nodeId helpers, and the grep-able
 // log/hex utilities. Each transport is its OWN library (`:bearer-ble`, `:bearer-lan`, …) that depends
-// only on this core — a BLE-only build never links LAN code. This file names NOTHING transport-specific.
+// only on this core, a BLE-only build never links LAN code. This file names NOTHING transport-specific.
 android {
     namespace = "sh.hopme.bearers"
     compileSdk = 34

@@ -134,7 +134,7 @@ variable "max_instances_per_region" {
     Upper bound on Cloud Run instances per region. Pin to 1 until the relay shares
     its directory/store across instances: presence and the bundle hot-path are
     in-memory per process, so a second instance is a second, disconnected node
-    (split-brain). D-429: raising this is NOT the fix — it would be worse than the
+    (split-brain). D-429: raising this is NOT the fix; it would be worse than the
     429s. The 429/wake-churn cause is already mitigated by the handoff-only default
     (mesh_fanout = 0) so regions don't full-mesh-dial each other; the real unlock for
     a higher ceiling is cross-instance directory/store sharing, a separate project.
@@ -147,7 +147,7 @@ variable "mesh_fanout" {
   description = <<-EOT
     Online-only relay-to-relay epidemic fan-out (DESIGN.md §28): each relay dials up to this
     many *currently-online* peer relays (never wakes a sleeping one). 0 = handoff-only (no
-    relay-to-relay dialing) — the safe default. Raise to a small number (e.g. 2-3) to enable
+    relay-to-relay dialing), the safe default. Raise to a small number (e.g. 2-3) to enable
     the partial-mesh epidemic; avoid large values (a full mesh re-creates the 429 load).
   EOT
   type        = number
@@ -193,7 +193,7 @@ variable "dns_zone_dns_name" {
 
 variable "pages_cname_target" {
   description = <<-EOT
-    CNAME target for www.hopme.sh — the GitHub Pages host for the marketing site
+    CNAME target for www.hopme.sh, the GitHub Pages host for the marketing site
     (web/), i.e. "<org>.github.io." with a trailing dot. The apex hopme.sh uses
     A/AAAA records to GitHub's Pages anycast IPs instead (see pages_dns.tf).
   EOT
@@ -208,7 +208,7 @@ variable "pages_challenge_txt" {
     record at _github-pages-challenge-hopmesh.hopme.sh with the token it shows;
     verifying the domain guards it against takeover. Set this (TF_VAR_pages_challenge_txt
     or a tfvars file) and the record in pages_dns.tf is created; leave empty to skip it.
-    Not a credential — only proves DNS control, so it is safe to keep in version control.
+    Not a credential, only proves DNS control, so it is safe to keep in version control.
   EOT
   type        = string
   default     = "a6ef60e39735942241ca277889d93d"
@@ -221,7 +221,7 @@ variable "google_dkim_txt" {
     The 2048-bit key exceeds the 255-char TXT limit, so supply it split into quoted
     chunks: '"v=DKIM1; k=rsa; p=<first 255 chars>" "<remainder>"'. Set via
     TF_VAR_google_dkim_txt or a tfvars file; leave empty to skip the record (see
-    mail_dns.tf) until the key exists. Not a credential — it is a public DNS record.
+    mail_dns.tf) until the key exists. Not a credential; it is a public DNS record.
   EOT
   type        = string
   default     = ""

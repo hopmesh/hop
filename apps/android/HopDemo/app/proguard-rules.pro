@@ -4,7 +4,7 @@
 # generated bindings package, JNA's runtime, and the native-callback types must survive shrinking or
 # the FFI call sites resolve to nothing at runtime.
 
-# UniFFI Kotlin bindings (uniffi.hop.*) — reflected across the FFI boundary.
+# UniFFI Kotlin bindings (uniffi.hop.*), reflected across the FFI boundary.
 -keep class uniffi.hop.** { *; }
 -keep class uniffi.** { *; }
 

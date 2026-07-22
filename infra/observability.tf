@@ -9,7 +9,7 @@
 # ---- F-16: stop the relay netlog metadata from persisting 30 days in _Default ---------------------
 #
 # hop-relayd mirrors every netlog line to stderr (so it lands in Cloud Logging), including device
-# address prefixes, ingest/handoff destinations + region, and spool mailbox-tag prefixes — exactly the
+# address prefixes, ingest/handoff destinations + region, and spool mailbox-tag prefixes, exactly the
 # "pseudonymous address → coarse location + activity timeline" DESIGN §33 calls the most sensitive
 # dataset and claims is ephemeral/on-device only. Route the relay services' logs to a dedicated
 # short-retention bucket instead of the 30-day _Default, so at-rest persistence is minimized without

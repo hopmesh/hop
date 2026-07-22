@@ -3,7 +3,7 @@
 //! A deliberately tiny HTTP backend (no dependencies) used to demonstrate `hops://` end to
 //! end at **example.hopme.sh** (DESIGN.md §30). A `hop-endpoint` runs in front of it and
 //! translates `hops://example.hopme.sh/<path>` requests into plain HTTP against this server
-//! on localhost — so this is the "origin" the endpoint is bound to.
+//! on localhost, so this is the "origin" the endpoint is bound to.
 //!
 //! It answers any GET with a small example payload and echoes the path, so you can see the
 //! whole chain working: client → mesh → endpoint → this origin → back.
@@ -53,7 +53,7 @@ fn handle(mut stream: TcpStream) {
 
 /// Read the request line + headers, returning (path, scheme). The endpoint in front of us
 /// tags each request with `X-Hop-Scheme: hops|https` so we can tell whether the client came
-/// over the mesh (`hops://`) or standard HTTPS — the two reach this same origin. We don't
+/// over the mesh (`hops://`) or standard HTTPS; the two reach this same origin. We don't
 /// read the body (a GET has none; blocking for it would hang the waiting client).
 fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
     let mut reader = BufReader::new(stream);
@@ -104,7 +104,7 @@ fn route(path: &str, scheme: &str) -> (&'static str, &'static str, String) {
             "200 OK",
             "text/plain; charset=utf-8",
             format!(
-                "example.hopme.sh — you asked for: {other}\nThis reached the origin over {}.\n",
+                "example.hopme.sh, you asked for: {other}\nThis reached the origin over {}.\n",
                 if hops {
                     "hops:// (the mesh)"
                 } else {
@@ -120,16 +120,16 @@ fn route(path: &str, scheme: &str) -> (&'static str, &'static str, String) {
 /// proxies plain HTTP to it), so we say which one this request used.
 fn home(hops: bool) -> String {
     let how = if hops {
-        "You fetched this over <code>hops://</code> — the request crossed the Hop mesh as sealed \
+        "You fetched this over <code>hops://</code>, the request crossed the Hop mesh as sealed \
          datagrams, was terminated at this domain's own <code>hop-endpoint</code>, and served by \
-         a tiny origin on localhost. It never touched the public internet's HTTP stack — no third \
+         a tiny origin on localhost. It never touched the public internet's HTTP stack, no third \
          party in the middle, no open proxy. The very same page is also reachable at \
          <code>https://example.hopme.sh</code>."
     } else {
-        "You fetched this over standard <code>https://</code> — the global load balancer \
+        "You fetched this over standard <code>https://</code>, the global load balancer \
          terminated TLS and the domain's <code>hop-endpoint</code> reverse-proxied it to a tiny \
          origin on localhost. The very same page is also reachable over the mesh at \
-         <code>hops://example.hopme.sh</code> — sealed end-to-end, with no third party in the middle."
+         <code>hops://example.hopme.sh</code>, sealed end-to-end, with no third party in the middle."
     };
     format!(
         "<!doctype html>\

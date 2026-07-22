@@ -1,4 +1,4 @@
-// ContentView.swift — Minimal UI for HopBleLab iOS.
+// ContentView.swift: Minimal UI for HopBleLab iOS.
 // The log file is the primary artifact; UI shows last 40 lines and link status.
 
 import SwiftUI
@@ -13,7 +13,7 @@ struct ContentView: View {
             HStack {
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .foregroundColor(.blue)
-                Text("BLE Lab — Running")
+                Text("BLE Lab: Running")
                     .font(.headline)
                 Spacer()
                 Text("auth=\(CBCentralManager.authorization.rawValue)")

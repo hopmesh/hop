@@ -1,4 +1,4 @@
-// BleLabApp.swift — iOS app entry point for HopBleLab (ble-lab/SPEC.md §8.1).
+// BleLabApp.swift: iOS app entry point for HopBleLab (ble-lab/SPEC.md §8.1).
 //
 // SPEC §8.1 threading adaptation:
 //   bleQueue   = dedicated serial DispatchQueue (CB delegate callbacks off the UI main thread)
@@ -23,7 +23,7 @@ import HopBearerProof   // shared clean-room consumer: ProofSink (same one blepe
 
 // MARK: - §8.1 Dedicated I/O thread (owns bleRunLoop) -------------------------------------------
 
-/// Long-lived background thread with its own RunLoop — services L2CAP streams and timers.
+/// Long-lived background thread with its own RunLoop; services L2CAP streams and timers.
 /// Kept alive by a Port source. Thread-safe singleton.
 final class BLEIOThread {
     static let shared = BLEIOThread()
@@ -56,15 +56,15 @@ private func redirectLogsToFile() {
 
 // MARK: - App lifecycle ---------------------------------------------------------------------------
 //
-// All bootstrap lives in the AppDelegate so it runs on EVERY launch type — foreground, a
-// CoreLocation region relaunch, and a CoreBluetooth state-restoration relaunch — and so it can
+// All bootstrap lives in the AppDelegate so it runs on EVERY launch type (foreground, a
+// CoreLocation region relaunch, and a CoreBluetooth state-restoration relaunch) and so it can
 // read launchOptions (the only place iOS delivers them). Re-creating Node() here re-instantiates
 // the CBCentralManager with the same RESTORE_ID_CENTRAL, which is what makes iOS hand back the
 // restored peripherals to willRestoreState (Layer B).
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     // Retained for the process lifetime. The manager is the uniform transport façade; the bearer is
-    // what the beacon wake pokes; the sink is the proof consumer (kept alive — the manager holds it weakly).
+    // what the beacon wake pokes; the sink is the proof consumer (kept alive, the manager holds it weakly).
     static var manager: BearerManager?
     static var bearer: BleBearer?
     private var sink: ProofSink?
