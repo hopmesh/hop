@@ -2844,3 +2844,43 @@ into a per-device fee.
 user-anonymous; the collector sees per-app aggregates, never a per-user identity. `region` is only ever
 knowable for relay-carried or self-reported traffic, consistent with §39: the backbone does not learn a
 pure-P2P device's location, the device discloses a coarse label or nothing.
+
+### Telemetry authentication and metering, stated plainly
+
+**There is no telemetry-specific credential.** Telemetry authenticates with the §35 carriage stamp and
+nothing else. A stamp binds `(bundle_id, epoch)` and proves only that the holder of a tenant key
+originated *that bundle* in *that epoch*. It says nothing about what the bundle contains or which
+traffic class it belongs to, so a stamp minted for any purpose is equally valid on a telemetry bundle.
+
+**Traffic class is inferred, not proven.** Nothing on the wire marks a bundle as telemetry. The class
+is inferred downstream from which daemon receives it: `hop-telemetryd` treats what arrives on
+`hop.telemetry` as telemetry because it is the collector, not because the bundle asserts it.
+Binding a traffic class into the stamp is a known future change and needs a wire version, so it is
+deliberately not done here.
+
+**Attribution is bounded on the telemetry path.** `AccessPolicy::attribute` verifies a stamp against
+its own signed epoch with no freshness bound, which is correct only where a bundle was already
+admitted once against a fresh stamp and its re-delivery is deduped (the durable re-ingest path).
+Telemetry ingest does neither, so it uses `attribute_fresh`: the stamp must not be future-dated and
+must be within `MAX_ATTRIBUTION_AGE_EPOCHS` of the collector's clock. That bounds replay to roughly a
+day instead of forever, and it does cap delay tolerance: a batch that spools longer than the window
+attributes to nobody.
+
+**The collector fails closed.** Without a key server, or when a batch cannot be attributed, the
+collector refuses to ingest or forward rather than serving it unbilled. `--allow-unattributed` opts
+out for local and dev use and logs loudly.
+
+**Telemetry is measured by events and bytes.** Batches are shape-bounded, not content-bounded, so one
+billable event can carry several KB of arbitrary strings and the event count alone understates real
+consumption by orders of magnitude. The `telemetry_usage` ledger row therefore records both
+(`events`, `payload_bytes`). Only events are billed today; whether bytes should be priced is an open
+pricing decision, not a settled one.
+
+**Carriage of non-ACK traffic is measured but unbilled.** Reach billing is delivery-justified: a relay
+bills only when delivery is proven by a returning ACK or a §39 vaccine. Telemetry bundles set
+`request_ack: false`, the collector never responds, and they are `Destination::Device` so no vaccine
+fires. A relay therefore accepts, stores, spools, and forwards every telemetry bundle and records zero
+`hop_backbone_delivery`: that carriage is free today, by construction and not by decision. Relays now
+record it per tenant on a separate `carriage_usage/{hour}/{tenant_hex}` ledger key so the volume is
+visible. Nothing bills off it, no Stripe event is emitted for it, and the existing `usage/` reach
+ledger is untouched. Whether to price it is the owner's call.

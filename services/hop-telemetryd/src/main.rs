@@ -118,6 +118,21 @@ fn well_known_body() -> &'static Mutex<Vec<u8>> {
     WK.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Whether this collector can actually do its job: attribute inbound telemetry to a tenant, or serve
+/// it deliberately unattributed. False means every batch is refused (fail closed).
+///
+/// `/healthz` reports this. Without it the fail-closed posture is INVISIBLE: a misconfigured
+/// collector, a missing or typo'd `--key-server`, would start, pass its Cloud Run health probe, and
+/// silently refuse every batch, so the first sign of trouble is absent telemetry rather than an
+/// alert. Reporting unhealthy surfaces the misconfiguration to Cloud Run and any monitoring watching
+/// revision health, while keeping the process up so the log line explaining WHY stays readable. That
+/// is the reason this is not an `exit(1)`: a crashloop is loud but its backoff tends to bury the one
+/// message an operator needs.
+fn ingest_ready() -> &'static std::sync::atomic::AtomicBool {
+    static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &READY
+}
+
 /// Sign this collector's reach record for `public_url` and render the `/.well-known/hop` JSON body.
 /// The `reach` field is the base64-std postcard record (SDKs decode exactly this); `address` +
 /// `endpoint` are informational. All three are base58 / base64 / a bare wss URL, so the JSON is safe
@@ -217,21 +232,46 @@ impl AggregateSink {
 /// the SAME tenant attribution as billing (recovered from the carriage stamp in the core, §35), so a
 /// tenant's observability bills to the same identity as its reach. Un-attributed batches (no stamp, or
 /// the collector runs an `Open` policy) can't be billed, so they are counted in aggregate only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TelemetryCounts {
+    events: u64,
+    /// Measured payload bytes ([`TelemetryBatch::payload_bytes`]). Recorded ALONGSIDE the event
+    /// count because batches are shape-bounded, not content-bounded: one legal "billable event" can
+    /// carry several KB of arbitrary strings, so events alone hide the real resource consumption by
+    /// orders of magnitude. Measurement only; nothing is priced off it yet.
+    payload_bytes: u64,
+}
+
+impl TelemetryCounts {
+    fn add(&mut self, other: &TelemetryCounts) {
+        self.events = self.events.saturating_add(other.events);
+        self.payload_bytes = self.payload_bytes.saturating_add(other.payload_bytes);
+    }
+}
+
 #[derive(Default)]
 struct TelemetryMeter {
-    counts: HashMap<TenantId, u64>,
+    counts: HashMap<TenantId, TelemetryCounts>,
+    /// Events accepted WITHOUT a tenant, which is only reachable with `--allow-unattributed`.
     unattributed: u64,
+    /// Events REFUSED because they could not be attributed and the collector is fail-closed.
+    refused: u64,
 }
 
 impl TelemetryMeter {
-    fn add(&mut self, tenant: Option<TenantId>, events: u64) {
+    fn add(&mut self, tenant: Option<TenantId>, counts: TelemetryCounts) {
         match tenant {
-            Some(t) => {
-                let c = self.counts.entry(t).or_insert(0);
-                *c = c.saturating_add(events);
-            }
-            None => self.unattributed = self.unattributed.saturating_add(events),
+            Some(t) => self.counts.entry(t).or_default().add(&counts),
+            None => self.unattributed = self.unattributed.saturating_add(counts.events),
         }
+    }
+
+    fn refuse(&mut self, events: u64) {
+        self.refused = self.refused.saturating_add(events);
+    }
+
+    fn take_refused(&mut self) -> u64 {
+        std::mem::replace(&mut self.refused, 0)
     }
 
     /// RMW-merge the accumulated per-tenant counts into the store's `telemetry_usage` ledger for the
@@ -243,13 +283,17 @@ impl TelemetryMeter {
             return;
         }
         let hour = now_ms / 3_600_000;
-        for (tenant, events) in self.counts.drain() {
-            if events == 0 {
+        for (tenant, counts) in self.counts.drain() {
+            if counts == TelemetryCounts::default() {
                 continue;
             }
             let key = telemetry_usage_key(hour, &tenant);
-            let total = store.get_kv(&key).map(|b| decode_events(&b)).unwrap_or(0);
-            store.put_kv(&key, encode_events(total.saturating_add(events)));
+            let mut total = store
+                .get_kv(&key)
+                .map(|b| decode_counts(&b))
+                .unwrap_or_default();
+            total.add(&counts);
+            store.put_kv(&key, encode_counts(&total));
         }
     }
 
@@ -265,15 +309,31 @@ fn telemetry_usage_key(hour: u64, tenant: &TenantId) -> String {
     format!("telemetry_usage/{hour}/{hex}")
 }
 
-/// Row value: the event count as 8 LE bytes. Decode tolerates corruption by reading as zero (the row
-/// is overwritten whole), the same convention as the relay's `decode_usage`.
-fn encode_events(events: u64) -> Vec<u8> {
-    events.to_le_bytes().to_vec()
+/// Row value: `events` then `payload_bytes`, both u64 LE (16 bytes total), mirroring the relay's
+/// `usage/` row shape. `hop-billingd`'s `ledger::parse_row` decodes exactly this.
+fn encode_counts(c: &TelemetryCounts) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&c.events.to_le_bytes());
+    out.extend_from_slice(&c.payload_bytes.to_le_bytes());
+    out
 }
-fn decode_events(bytes: &[u8]) -> u64 {
-    <[u8; 8]>::try_from(bytes)
-        .map(u64::from_le_bytes)
-        .unwrap_or(0)
+
+/// Decode a row value. 16 bytes is the current shape. 8 bytes is the ORIGINAL events-only shape and
+/// still decodes as `(events, 0)`, so a row written by a pre-upgrade collector keeps its events
+/// through the read-modify-write instead of being reset to zero. Any other length reads as zero (the
+/// row is then overwritten whole), the same corruption convention as the relay's `decode_usage`.
+fn decode_counts(bytes: &[u8]) -> TelemetryCounts {
+    match bytes.len() {
+        16 => TelemetryCounts {
+            events: u64::from_le_bytes(bytes[..8].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(bytes[8..].try_into().unwrap_or_default()),
+        },
+        8 => TelemetryCounts {
+            events: u64::from_le_bytes(bytes.try_into().unwrap_or_default()),
+            payload_bytes: 0,
+        },
+        _ => TelemetryCounts::default(),
+    }
 }
 
 /// Load a tenant `KeyServer` from a file of `<tenant-hex-32> <pubkey-base58>` lines (`#` comments and
@@ -394,6 +454,45 @@ fn parse_tenant_hex(s: &str) -> Option<TenantId> {
     Some(out)
 }
 
+// --- collector node assembly --------------------------------------------------------------------
+
+/// Assemble the collector's node: the SAME configuration `main` runs, factored out so a test can
+/// exercise the real thing end to end rather than the pieces in isolation.
+///
+/// The telemetry opt-in is the load-bearing line. `set_kind(NodeKind::Endpoint)` narrows the app
+/// payload policy to `HttpRequest | HpsMessage`, which does NOT include `Telemetry`, so without
+/// `set_telemetry_ingest(true)` the core's ingest gate drops every batch and the collector is inert.
+/// That was a live bug: the daemon set the kind and nothing else, so telemetry ingest was dead in
+/// production while every unit test (which built a default `Device`-kind node) passed. The narrow
+/// opt-in is used rather than widening `NodeKind::Endpoint`'s policy, so an ordinary `hops://`
+/// endpoint deployment never silently becomes a telemetry sink.
+///
+/// Returns whether tenant attribution is active (a key server was loaded).
+fn configure_collector_node<S: Store>(
+    node: &mut Node<S>,
+    domain: Option<String>,
+    key_server: Option<KeyServer>,
+) -> bool {
+    node.set_kind(NodeKind::Endpoint);
+    node.set_telemetry_ingest(true); // without this the §40 ingest gate drops every batch
+    node.set_name(domain);
+    node.set_max_relayed(0); // a leaf: routable by address, relays nothing
+
+    // Attribution: run the SAME Keyed access policy as the billing relays so a received stamp
+    // resolves to a tenant.
+    match key_server {
+        Some(server) => {
+            node.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(
+                server,
+                HashSet::new(),
+            )));
+            node.refresh_access();
+            true
+        }
+        None => false,
+    }
+}
+
 // --- CLI ---------------------------------------------------------------------------------------
 
 struct CliConfig {
@@ -414,6 +513,10 @@ struct CliConfig {
     /// Per-tenant OTLP endpoint file (`<tenant-hex> <base-url> [auth]` lines) for managed telemetry
     /// export (needs `--features live`). Env fallback: `HOP_OTLP_MAP`.
     otlp_map_file: Option<String>,
+    /// Serve telemetry that cannot be attributed to a tenant (so cannot be billed). OFF by default:
+    /// the collector fails CLOSED, refusing unattributable batches rather than ingesting and
+    /// exporting them for free. Local/dev escape hatch only.
+    allow_unattributed: bool,
 }
 
 /// Parse the CLI flags. Pure over its `args` iterator (no env, no I/O), so every flag/default is
@@ -429,6 +532,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
     let mut firestore: Option<String> = None;
     let mut db = "hop-telemetryd.db".to_string();
     let mut otlp_map_file: Option<String> = None;
+    let mut allow_unattributed = false;
     let mut args = args;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -447,6 +551,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
             "--firestore" => firestore = args.next(), // GCP project id, durable ledger
             "--db" => db = args.next().unwrap_or(db),
             "--otlp-map" => otlp_map_file = args.next(),
+            "--allow-unattributed" => allow_unattributed = true,
             "--print-address" => print_address = true,
             other => eprintln!("ignoring unknown arg: {other}"),
         }
@@ -462,6 +567,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
         firestore,
         db,
         otlp_map_file,
+        allow_unattributed,
     }
 }
 
@@ -477,6 +583,7 @@ fn main() {
         firestore,
         db,
         otlp_map_file,
+        allow_unattributed,
     } = parse_args(std::env::args().skip(1));
 
     // Graceful degrade when the relay fleet is off: infra can set HOP_NO_RELAY=1 so the instance
@@ -504,24 +611,39 @@ fn main() {
     install_shutdown_handler();
     let store = build_store(&firestore, &db, &identity.address());
     let mut node = Node::with_store(identity, store);
-    node.set_kind(NodeKind::Endpoint);
-    node.set_name(domain.clone());
-    node.set_max_relayed(0); // a leaf: routable by address, relays nothing
+    // Keys come from the static --key-server file PLUS, when --firestore is set, the tenant registry
+    // the account service projects. configure_collector_node then installs the SAME Keyed access
+    // policy the billing relays run, and (critically) opts this node into telemetry ingest.
+    let key_server = build_key_server(key_server_file.as_deref(), firestore.as_deref());
+    let attributed = configure_collector_node(&mut node, domain.clone(), key_server);
 
-    // Attribution: run the SAME Keyed access policy as the billing relays so a received stamp resolves
-    // to a tenant. Keys come from the static --key-server file PLUS, when --firestore is set, the
-    // tenant registry the account service projects. Without either, the collector runs Open and
-    // telemetry is unattributed (counted in aggregate, not billed) until a source is provided.
-    match build_key_server(key_server_file.as_deref(), firestore.as_deref()) {
-        Some(server) => {
-            node.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(server, HashSet::new())));
-            node.refresh_access();
-            println!("hop-telemetryd: keyed policy loaded; telemetry is tenant-attributed");
-        }
-        None => eprintln!(
-            "hop-telemetryd: no --key-server or tenant registry; telemetry is UNATTRIBUTED (not billable) until one is set"
-        ),
+    // Fail-closed posture. Serving telemetry we cannot attribute means ingesting, storing, and
+    // exporting a tenant's observability for free, so a missing, empty, or typo'd key source must
+    // REFUSE rather than silently give the product away. --allow-unattributed is the deliberate
+    // local/dev escape hatch, and it says so loudly because leaving it on in production is the same
+    // hole by another name.
+    if attributed {
+        println!("hop-telemetryd: keyed policy loaded; telemetry is tenant-attributed");
+    } else {
+        eprintln!(
+            "hop-telemetryd: no --key-server and no tenant registry; NOTHING can be attributed to a tenant"
+        );
     }
+    if allow_unattributed {
+        eprintln!(
+            "hop-telemetryd: WARNING --allow-unattributed is ON: unattributable telemetry will be \
+             ingested and exported UNBILLED. Local/dev only; never run this in production."
+        );
+    } else {
+        println!(
+            "hop-telemetryd: fail-closed: unattributable telemetry is REFUSED (not ingested, not \
+             forwarded). Pass --allow-unattributed to serve it anyway."
+        );
+    }
+    // Health reflects whether any batch can actually be served: a keyed policy attributes them, and
+    // --allow-unattributed serves them deliberately. Neither means we refuse everything, which is a
+    // misconfiguration the probe must expose rather than mask.
+    ingest_ready().store(attributed || allow_unattributed, Ordering::SeqCst);
 
     println!(
         "hop-telemetryd: address {}",
@@ -582,7 +704,7 @@ fn main() {
     // bounded queue, so a slow/down tenant endpoint drops rather than stalling the meter (see below).
     let otlp_tx = setup_otlp(otlp_map_file, firestore.as_deref());
 
-    run(node, domain, rx, otlp_tx);
+    run(node, domain, rx, otlp_tx, allow_unattributed);
 }
 
 /// One queued OTLP export: an attributed tenant + its batch, handed to the export worker off-thread.
@@ -689,6 +811,7 @@ fn run<S: Store>(
     domain: Option<String>,
     rx: Receiver<Ev>,
     otlp_tx: Option<std::sync::mpsc::SyncSender<OtlpItem>>,
+    allow_unattributed: bool,
 ) {
     let mut writers: HashMap<u64, Sender<Vec<u8>>> = HashMap::new();
     let mut sink = AggregateSink::default();
@@ -756,6 +879,7 @@ fn run<S: Store>(
             &mut meter,
             otlp_tx.as_ref(),
             received,
+            allow_unattributed,
         ));
 
         // Aggregate throughput line (counts only, services-03).
@@ -782,7 +906,13 @@ fn run<S: Store>(
             let unattributed = meter.take_unattributed();
             if unattributed > 0 {
                 eprintln!(
-                    "hop-telemetryd: {unattributed} unattributed events this window (unstamped or no key server)"
+                    "hop-telemetryd: {unattributed} unattributed events INGESTED UNBILLED this window (--allow-unattributed is on)"
+                );
+            }
+            let refused = meter.take_refused();
+            if refused > 0 {
+                eprintln!(
+                    "hop-telemetryd: {refused} events REFUSED this window (unattributable: unstamped, stale stamp, or no key server)"
                 );
             }
             last_flush = Instant::now();
@@ -803,21 +933,35 @@ fn run<S: Store>(
 /// attributed batches, the OTLP export queue (managed forwarding). Split out of `run` so it's
 /// unit-testable without the driver. Returns the number of batches DROPPED from the OTLP queue.
 ///
-/// Ordering is load-bearing: `meter.add` (the authoritative billing path, feeding the durable ledger)
-/// runs FIRST and unconditionally. The OTLP enqueue is a non-blocking `try_send`; a full queue (a
-/// slow/down tenant endpoint backing up the export worker) drops the batch and is counted, never
-/// blocking the meter. Same asymmetry as hop-billingd's `BillAndRecord`. Only attributed batches
-/// (`tenant.is_some()`) can be routed, since an OTLP endpoint is resolved per tenant.
+/// **Fail closed.** A batch with no tenant cannot be billed, so unless `allow_unattributed` is set
+/// it is REFUSED outright: not sunk, not metered, not exported. Serving it would hand a tenant free
+/// ingest and free managed export, which is exactly what a missing or typo'd `--key-server` used to
+/// do silently. Refusals are counted so the operator sees the volume being turned away.
+///
+/// Ordering is load-bearing for accepted batches: `meter.add` (the authoritative billing path,
+/// feeding the durable ledger) runs FIRST. The OTLP enqueue is a non-blocking `try_send`; a full
+/// queue (a slow/down tenant endpoint backing up the export worker) drops the batch and is counted,
+/// never blocking the meter. Same asymmetry as hop-billingd's `BillAndRecord`. Only attributed
+/// batches can be routed at all, since an OTLP endpoint is resolved per tenant.
 fn forward_telemetry(
     sink: &mut dyn TelemetrySink,
     meter: &mut TelemetryMeter,
     otlp_tx: Option<&std::sync::mpsc::SyncSender<OtlpItem>>,
     received: Vec<TelemetryIn>,
+    allow_unattributed: bool,
 ) -> u64 {
     let mut dropped = 0u64;
     for t in &received {
+        if t.tenant.is_none() && !allow_unattributed {
+            meter.refuse(t.batch.billable_events());
+            continue; // refused: no sink, no meter, no export
+        }
         sink.record(t.from, &t.batch);
-        meter.add(t.tenant, t.batch.billable_events()); // authoritative; always runs first
+        let counts = TelemetryCounts {
+            events: t.batch.billable_events(),
+            payload_bytes: t.batch.payload_bytes(),
+        };
+        meter.add(t.tenant, counts); // authoritative; always runs first
         if let (Some(tx), Some(tenant)) = (otlp_tx, t.tenant) {
             if tx.try_send((tenant, t.batch.clone())).is_err() {
                 dropped = dropped.saturating_add(1); // queue full or worker gone: best-effort drop
@@ -992,7 +1136,20 @@ fn serve_http_min(mut stream: TcpStream) {
 
     let (code, ctype, body): (&str, &str, Vec<u8>) =
         if method.eq_ignore_ascii_case("GET") && path == "/healthz" {
-            ("200 OK", "text/plain", b"ok".to_vec())
+            // A collector that cannot attribute anything is refusing every batch, so it is NOT
+            // healthy even though the process is up. Report that, or the misconfiguration hides
+            // behind a green probe until someone notices the telemetry never arrived.
+            if ingest_ready().load(Ordering::SeqCst) {
+                ("200 OK", "text/plain", b"ok".to_vec())
+            } else {
+                (
+                    "503 Service Unavailable",
+                    "text/plain",
+                    b"hop-telemetryd: no tenant key server; every batch is refused (fail closed). \
+                      Configure --key-server, or pass --allow-unattributed for local/dev."
+                        .to_vec(),
+                )
+            }
         } else if method.eq_ignore_ascii_case("GET") && path == "/.well-known/hop" {
             let record = well_known_body()
                 .lock()
@@ -1188,6 +1345,13 @@ fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    fn counts(events: u64, payload_bytes: u64) -> TelemetryCounts {
+        TelemetryCounts {
+            events,
+            payload_bytes,
+        }
+    }
+
     #[test]
     fn parse_args_defaults() {
         let c = parse_args(std::iter::empty());
@@ -1248,11 +1412,17 @@ mod tests {
                 tenant: None, // unattributed
             },
         ];
-        let dropped = forward_telemetry(&mut sink, &mut meter, None, received);
+        // --allow-unattributed ON: the legacy behaviour, both batches served.
+        let dropped = forward_telemetry(&mut sink, &mut meter, None, received, true);
         assert_eq!(dropped, 0);
         assert_eq!(sink.take(), (2, 3)); // throughput: 2 batches, 3 events
-        assert_eq!(meter.counts.get(&tenant), Some(&1)); // 1 billable event to the tenant
+        assert_eq!(meter.counts.get(&tenant).map(|c| c.events), Some(1));
         assert_eq!(meter.take_unattributed(), 2); // 2 unattributed events
+        assert_eq!(
+            meter.take_refused(),
+            0,
+            "nothing refused when the opt-out is on"
+        );
     }
 
     #[test]
@@ -1273,7 +1443,7 @@ mod tests {
                 tenant: None, // unattributed: metered aggregate-only, NOT forwarded
             },
         ];
-        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received);
+        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received, true);
         assert_eq!(dropped, 0);
         drop(tx);
         let queued: Vec<OtlpItem> = rx.iter().collect();
@@ -1304,10 +1474,10 @@ mod tests {
                 tenant: Some(tenant),
             },
         ];
-        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received);
+        let dropped = forward_telemetry(&mut sink, &mut meter, Some(&tx), received, false);
         assert_eq!(dropped, 1, "full queue drops the overflow, best-effort");
         // Billing is unaffected: BOTH events still metered to the tenant.
-        assert_eq!(meter.counts.get(&tenant), Some(&2));
+        assert_eq!(meter.counts.get(&tenant).map(|c| c.events), Some(2));
     }
 
     #[test]
@@ -1316,17 +1486,235 @@ mod tests {
         let now = 5 * 3_600_000 + 123; // hour 5
         let tenant = [7u8; 16];
         let mut meter = TelemetryMeter::default();
-        meter.add(Some(tenant), 10);
-        meter.add(Some(tenant), 5);
-        meter.add(None, 3);
+        meter.add(Some(tenant), counts(10, 100));
+        meter.add(Some(tenant), counts(5, 50));
+        meter.add(None, counts(3, 30));
         meter.flush_to_store(&mut store, now);
         let key = telemetry_usage_key(5, &tenant);
-        assert_eq!(store.get_kv(&key).map(|b| decode_events(&b)), Some(15));
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_counts(&b)),
+            Some(counts(15, 150))
+        );
         assert!(meter.counts.is_empty(), "cleared after flush");
         // A second window RMW-adds into the same hour row.
-        meter.add(Some(tenant), 4);
+        meter.add(Some(tenant), counts(4, 40));
         meter.flush_to_store(&mut store, now);
-        assert_eq!(store.get_kv(&key).map(|b| decode_events(&b)), Some(19));
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_counts(&b)),
+            Some(counts(19, 190))
+        );
+    }
+
+    /// Pump two nodes against each other over a synthetic bearer link until quiet: exactly what the
+    /// driver's `handle`/`drain_outgoing` loop does, so the Noise handshake and bundle delivery are
+    /// the real paths, not a stub.
+    fn pump<A: Store, B: Store>(a: &mut Node<A>, b: &mut Node<B>) {
+        const LINK: u64 = 1;
+        a.handle(BearerEvent::Connected(LINK, Role::Initiator));
+        b.handle(BearerEvent::Connected(LINK, Role::Responder));
+        for _ in 0..40 {
+            let mut moved = false;
+            for (_, bytes) in a.drain_outgoing() {
+                b.handle(BearerEvent::Data(LINK, bytes));
+                moved = true;
+            }
+            for (_, bytes) in b.drain_outgoing() {
+                a.handle(BearerEvent::Data(LINK, bytes));
+                moved = true;
+            }
+            if !moved {
+                break;
+            }
+        }
+    }
+
+    /// A device that stamps everything it originates with `tenant`, plus the key server a collector
+    /// needs to verify those stamps.
+    fn stamping_device(tenant: TenantId, now: u64) -> (Node<MemoryStore>, KeyServer) {
+        let key = Identity::generate();
+        let mut device = Node::new(Identity::generate());
+        device.set_time(now);
+        device.set_stamper(Some(Stamper::new(
+            tenant,
+            Identity::from_secret_bytes(&key.to_secret_bytes()),
+        )));
+        let mut server = KeyServer::new();
+        server.insert(tenant, key.address());
+        (device, server)
+    }
+
+    #[test]
+    fn the_assembled_collector_node_actually_ingests_telemetry() {
+        // THE regression test for the live bug. It exercises `configure_collector_node`, the node
+        // the daemon really builds, rather than `forward_telemetry` on a hand-made `TelemetryIn`.
+        // Before the fix this failed: set_kind(Endpoint) left the app payload policy without the
+        // Telemetry bit, so the core's ingest gate dropped every batch and take_telemetry was empty.
+        // The old unit tests all passed anyway because they either built a default Device-kind node
+        // or skipped the node entirely, which is precisely why CI never caught it.
+        let tenant: TenantId = [4u8; 16];
+        let now = 900 * CARRIAGE_EPOCH_MS + 7;
+        let (mut device, server) = stamping_device(tenant, now);
+
+        let mut collector: Node<MemoryStore> = Node::new(Identity::generate());
+        collector.set_time(now);
+        let attributed = configure_collector_node(
+            &mut collector,
+            Some("telemetry.hopme.sh".to_string()),
+            Some(server),
+        );
+        assert!(attributed, "a key server means tenant attribution is on");
+        assert!(
+            collector.telemetry_ingest(),
+            "the assembled collector must accept telemetry"
+        );
+
+        let batch = TelemetryBatch::new()
+            .with_resource("platform", "ios")
+            .counter("hop.bundle.delivered", 1, now)
+            .gauge("hop.delivery.latency_ms", 2100, now);
+        device.send_telemetry(collector.address(), &batch).unwrap();
+        pump(&mut device, &mut collector);
+
+        let received = collector.take_telemetry();
+        assert_eq!(received.len(), 1, "the batch reached the collector");
+        assert_eq!(received[0].batch, batch);
+        assert_eq!(
+            received[0].tenant,
+            Some(tenant),
+            "and it is attributed to the stamping tenant, so it can be billed"
+        );
+
+        // And it survives the daemon's own forwarding path into the ledger, fail-closed.
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        forward_telemetry(&mut sink, &mut meter, None, received, false);
+        assert_eq!(meter.counts.get(&tenant).map(|c| c.events), Some(2));
+        assert_eq!(meter.take_refused(), 0);
+    }
+
+    #[test]
+    fn a_collector_without_a_key_server_refuses_rather_than_serving_free() {
+        // Fail closed: no key server means nothing attributes, and unattributable telemetry must be
+        // refused instead of ingested and exported unbilled.
+        let tenant: TenantId = [5u8; 16];
+        let now = 901 * CARRIAGE_EPOCH_MS + 7;
+        let (mut device, _server) = stamping_device(tenant, now);
+
+        let mut collector: Node<MemoryStore> = Node::new(Identity::generate());
+        collector.set_time(now);
+        let attributed = configure_collector_node(&mut collector, None, None);
+        assert!(!attributed, "no key server, no attribution");
+
+        let batch = TelemetryBatch::new().counter("hop.bundle.delivered", 1, now);
+        device.send_telemetry(collector.address(), &batch).unwrap();
+        pump(&mut device, &mut collector);
+
+        let received = collector.take_telemetry();
+        assert_eq!(received.len(), 1, "it arrives at the node");
+        assert_eq!(received[0].tenant, None, "but attributes to nobody");
+
+        // Fail-closed (the default): refused outright.
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        let dropped = forward_telemetry(&mut sink, &mut meter, None, received.clone(), false);
+        assert_eq!(dropped, 0);
+        assert_eq!(meter.take_refused(), 1, "refused, not served");
+        assert_eq!(sink.take(), (0, 0), "not even counted as throughput");
+        assert!(meter.counts.is_empty());
+        assert_eq!(meter.take_unattributed(), 0);
+        let mut store = MemoryStore::default();
+        meter.flush_to_store(&mut store, now);
+        assert!(
+            store
+                .get_kv(&telemetry_usage_key(now / 3_600_000, &tenant))
+                .is_none(),
+            "nothing reaches the ledger"
+        );
+
+        // --allow-unattributed: the deliberate dev escape hatch, served but visibly unbilled.
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        forward_telemetry(&mut sink, &mut meter, None, received, true);
+        assert_eq!(meter.take_refused(), 0);
+        assert_eq!(
+            meter.take_unattributed(),
+            1,
+            "served, and counted as unbilled"
+        );
+        assert_eq!(sink.take(), (1, 1));
+    }
+
+    #[test]
+    fn parse_args_allow_unattributed_defaults_off() {
+        assert!(!parse_args(std::iter::empty()).allow_unattributed);
+        let c = parse_args(["--allow-unattributed"].into_iter().map(String::from));
+        assert!(c.allow_unattributed);
+    }
+
+    #[test]
+    fn the_ledger_row_is_16_bytes_and_still_reads_legacy_8_byte_rows() {
+        // The write contract hop-billingd::ledger mirrors. A pre-upgrade 8-byte row must keep its
+        // events through the read-modify-write, or upgrading the collector silently zeroes the hour.
+        let c = counts(7, 700);
+        let encoded = encode_counts(&c);
+        assert_eq!(encoded.len(), 16);
+        assert_eq!(decode_counts(&encoded), c);
+        // Legacy 8-byte (events-only) row.
+        assert_eq!(decode_counts(&9u64.to_le_bytes()), counts(9, 0));
+        // Corruption reads as zero, the producer convention.
+        assert_eq!(decode_counts(b"xyz"), TelemetryCounts::default());
+
+        // The RMW over a legacy row preserves the old events and starts counting bytes.
+        let mut store = MemoryStore::default();
+        let tenant = [1u8; 16];
+        let key = telemetry_usage_key(3, &tenant);
+        store.put_kv(&key, 100u64.to_le_bytes().to_vec()); // legacy row
+        let mut meter = TelemetryMeter::default();
+        meter.add(Some(tenant), counts(5, 500));
+        meter.flush_to_store(&mut store, 3 * 3_600_000);
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_counts(&b)),
+            Some(counts(105, 500)),
+            "legacy events carried forward, bytes accumulate from now on"
+        );
+    }
+
+    #[test]
+    fn payload_bytes_are_metered_not_just_event_counts() {
+        // Why FIX 4 exists: two batches with identical event counts, wildly different real cost.
+        let tenant: TenantId = [6u8; 16];
+        let fat = TelemetryBatch::new().push(
+            hop_core::telemetry::Record::counter("x", 1, 0)
+                .with_attr("k", &"v".repeat(hop_core::telemetry::MAX_STR)),
+        );
+        let thin = TelemetryBatch::new().counter("x", 1, 0);
+        let mut sink = AggregateSink::default();
+        let mut meter = TelemetryMeter::default();
+        forward_telemetry(
+            &mut sink,
+            &mut meter,
+            None,
+            vec![
+                TelemetryIn {
+                    from: [1u8; 32],
+                    batch: thin,
+                    tenant: Some(tenant),
+                },
+                TelemetryIn {
+                    from: [2u8; 32],
+                    batch: fat,
+                    tenant: Some(tenant),
+                },
+            ],
+            false,
+        );
+        let c = meter.counts.get(&tenant).copied().expect("metered");
+        assert_eq!(c.events, 2, "event count cannot tell them apart");
+        assert!(
+            c.payload_bytes > 130,
+            "but the byte measure can: {}",
+            c.payload_bytes
+        );
     }
 
     fn tmp_db(tag: &str) -> String {
@@ -1371,13 +1759,13 @@ mod tests {
         let tenant = [3u8; 16];
         let now = 9 * 3_600_000;
         let mut meter = TelemetryMeter::default();
-        meter.add(Some(tenant), 42);
+        meter.add(Some(tenant), counts(42, 420));
         meter.flush_to_store(&mut store, now);
         assert_eq!(
             store
                 .get_kv(&telemetry_usage_key(9, &tenant))
-                .map(|b| decode_events(&b)),
-            Some(42),
+                .map(|b| decode_counts(&b)),
+            Some(counts(42, 420)),
             "the ledger row survives the durable store round trip"
         );
         let _ = std::fs::remove_file(&db);
@@ -1439,5 +1827,52 @@ mod tests {
         );
         // Incomplete head (no terminator, no upgrade token): peek again.
         assert_eq!(classify_head(b"GET /healthz HTTP/1.1\r\n"), None);
+    }
+
+    /// The fail-closed posture must be VISIBLE. A collector that can attribute nothing refuses every
+    /// batch, so its health probe has to say so; otherwise Cloud Run sees a green service that
+    /// silently ingests nothing and the first symptom is missing telemetry, not an alert.
+    #[test]
+    fn healthz_reports_unhealthy_while_no_batch_can_be_served() {
+        use std::io::{Read as _, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        fn probe() -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let addr = listener.local_addr().expect("addr");
+            let server = std::thread::spawn(move || {
+                if let Ok((stream, _)) = listener.accept() {
+                    serve_http_min(stream);
+                }
+            });
+            let mut client = TcpStream::connect(addr).expect("connect");
+            client
+                .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+                .expect("write");
+            let mut out = String::new();
+            let _ = client.read_to_string(&mut out);
+            let _ = server.join();
+            out
+        }
+
+        // Misconfigured: no key server and no explicit opt-in, so every batch is refused.
+        ingest_ready().store(false, Ordering::SeqCst);
+        let refused = probe();
+        assert!(
+            refused.starts_with("HTTP/1.1 503"),
+            "a collector refusing every batch must fail its probe, got: {refused}"
+        );
+        assert!(
+            refused.contains("key server"),
+            "the body must say WHY, got: {refused}"
+        );
+
+        // Attributing (or deliberately serving unattributed) telemetry is healthy.
+        ingest_ready().store(true, Ordering::SeqCst);
+        let ok = probe();
+        assert!(
+            ok.starts_with("HTTP/1.1 200"),
+            "a working collector must pass its probe, got: {ok}"
+        );
     }
 }
