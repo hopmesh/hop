@@ -22,11 +22,17 @@ EXPECTED_RUNTIME_PROVIDER_SOURCES = {
     "hashicorp/google",
     "hashicorp/google-beta",
     "hashicorp/time",
+    # Built-in provider backing the terraform_remote_state read of the isolated billing state
+    # (Stripe price ids for hop-accountd). Ships with tofu; no plugin download.
+    "terraform.io/builtin/terraform",
 }
 EXPECTED_RUNTIME_PROVIDER_BLOCKS = ["google", "google-beta"]
 ALLOWED_RUNTIME_DATA_SOURCES = {
     "google_compute_regions",
     "google_project",
+    # Reads infra/billing outputs (price ids) into hop-accountd. Deliberate cross-root read; the
+    # deployer holds READ-ONLY object access on that state prefix (infra/bootstrap/console.tf).
+    "terraform_remote_state",
 }
 FORBIDDEN_RUNTIME_RESOURCE_PREFIXES = (
     "google_artifact_registry_repository",
@@ -68,7 +74,14 @@ def local_role_set(text, name):
 
 
 def resource_block(text, resource_type, resource_name):
-    marker = f'resource "{resource_type}" "{resource_name}"'
+    return balanced_block(text, f'resource "{resource_type}" "{resource_name}"')
+
+
+def variable_block(text, variable_name):
+    return balanced_block(text, f'variable "{variable_name}"')
+
+
+def balanced_block(text, marker):
     start = text.find(marker)
     if start < 0:
         return None
@@ -150,10 +163,15 @@ def check(root):
     for forbidden in ("SHORT_SHA", ":latest", "deploy_image_sha", "substr(var.deployment_source_sha"):
         if forbidden in runtime:
             errors.append(f"runtime root contains mutable deployment input: {forbidden}")
-    if not re.search(r'variable\s+"relay_image".*?@sha256:', runtime, re.DOTALL):
-        errors.append("runtime relay_image does not require a sha256 digest")
-    if not re.search(r'variable\s+"example_image".*?@sha256:', runtime, re.DOTALL):
-        errors.append("runtime example_image does not require a sha256 digest")
+    # Every executable image variable must REJECT anything that is not a digest. The check reads the
+    # variable's own validation condition, not just "the block mentions @sha256 somewhere": the
+    # error_message string mentions it too, so a looser search would pass a gutted condition.
+    for image_variable in ("relay_image", "example_image", "accountd_image", "console_image"):
+        block = variable_block(runtime, image_variable) or ""
+        condition = re.search(r'^\s*condition\s*=\s*([^\n]+)$', block, re.MULTILINE)
+        expression = condition.group(1) if condition else ""
+        if "@sha256:[0-9a-f]{64}$" not in expression or f"var.{image_variable}" not in expression:
+            errors.append(f"runtime {image_variable} does not require a sha256 digest")
     data_sources = re.findall(r'^\s*data\s+"([^"]+)"\s+"[^"]+"\s*\{', runtime, re.MULTILINE)
     if len(data_sources) != len(re.findall(r'^\s*data\b', runtime, re.MULTILINE)) or not set(data_sources) <= ALLOWED_RUNTIME_DATA_SOURCES:
         errors.append(f"runtime data sources drifted: {data_sources}")
@@ -186,20 +204,29 @@ def check(root):
     cloud_run_declarations = [
         declaration for declaration in resource_declarations if declaration[0].startswith("google_cloud_run")
     ]
-    if len(cloud_run_declarations) != 2 or set(cloud_run_declarations) != {
+    if len(cloud_run_declarations) != 4 or set(cloud_run_declarations) != {
         ("google_cloud_run_v2_service", "relay"),
         ("google_cloud_run_v2_service", "example"),
+        ("google_cloud_run_v2_service", "accountd"),
+        ("google_cloud_run_v2_service", "console"),
     }:
         errors.append(f"runtime Cloud Run executable resources drifted: {sorted(cloud_run_declarations)}")
     image_bindings = [value.strip() for value in re.findall(r'^\s*image\s*=\s*([^\n#]+)', runtime, re.MULTILINE)]
-    if len(image_bindings) != 2 or set(image_bindings) != {"var.relay_image", "var.example_image"}:
+    if len(image_bindings) != 4 or set(image_bindings) != {
+        "var.relay_image",
+        "var.example_image",
+        "var.accountd_image",
+        "var.console_image",
+    }:
         errors.append(f"runtime image bindings drifted: {image_bindings}")
     service_accounts = [
         value.strip() for value in re.findall(r'^\s*service_account\s*=\s*([^\n#]+)', runtime, re.MULTILINE)
     ]
-    if len(service_accounts) != 2 or set(service_accounts) != {
+    if len(service_accounts) != 4 or set(service_accounts) != {
         "local.relay_service_account",
         "local.example_service_account",
+        "local.accountd_service_account",
+        "local.console_service_account",
     }:
         errors.append(f"runtime executable identities drifted: {service_accounts}")
     example_path = root / "infra" / "example.tf"
@@ -216,14 +243,29 @@ def check(root):
         relay = relay_path.read_text(encoding="utf-8")
         if "service_account = local.relay_service_account" not in relay:
             errors.append("relay service does not use its dedicated runtime identity")
+    console_path = root / "infra" / "console.tf"
+    if console_path.is_file():
+        console = console_path.read_text(encoding="utf-8")
+        for local_name in ("local.accountd_service_account", "local.console_service_account"):
+            if f"service_account = {local_name}" not in console:
+                errors.append(f"console services do not use {local_name}")
+        for foreign in ("local.relay_service_account", "local.example_service_account"):
+            if foreign in console:
+                errors.append(f"console services reuse another service's identity: {foreign}")
     identities_path = root / "infra" / "data.tf"
     identities = identities_path.read_text(encoding="utf-8") if identities_path.is_file() else ""
     relay_identities = re.findall(r'^\s*relay_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
     example_identities = re.findall(r'^\s*example_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    accountd_identities = re.findall(r'^\s*accountd_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    console_identities = re.findall(r'^\s*console_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
     if relay_identities != ["hop-relay@${var.project_id}.iam.gserviceaccount.com"]:
         errors.append(f"relay runtime identity local drifted: {relay_identities}")
     if example_identities != ["hop-example@${var.project_id}.iam.gserviceaccount.com"]:
         errors.append(f"example runtime identity local drifted: {example_identities}")
+    if accountd_identities != ["hop-accountd@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"accountd runtime identity local drifted: {accountd_identities}")
+    if console_identities != ["hop-console@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"console runtime identity local drifted: {console_identities}")
 
     iam_path = root / "infra" / "bootstrap" / "iam.tf"
     if not iam_path.is_file():

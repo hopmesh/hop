@@ -19,6 +19,11 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.12"
     }
+    # Built-in provider backing the terraform_remote_state data source that reads the isolated
+    # infra/billing state (Stripe price ids for hop-accountd). No plugin download; it ships with tofu.
+    terraform = {
+      source = "terraform.io/builtin/terraform"
+    }
   }
 
   # State lives in GCS (migrated off Spacelift). The bucket is created out-of-band

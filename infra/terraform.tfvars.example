@@ -6,8 +6,10 @@ project_id = "hop-mesh"
 
 # Digest references are mandatory; tags, including full-SHA tags, are rejected here. The workflow
 # resolves these from the images it just pushed.
-relay_image   = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-example_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-example@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+relay_image    = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+example_image  = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-example@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+accountd_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-accountd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+console_image  = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-console@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 deployment_source_sha    = "0000000000000000000000000000000000000000"
 deployment_environment   = "production"

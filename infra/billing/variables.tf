@@ -5,6 +5,12 @@ variable "stripe_api_key" {
   default     = ""
 }
 
+variable "project_id" {
+  description = "GCP project holding the bootstrap-owned stripe-webhook-secret container this root seeds."
+  type        = string
+  default     = "hop-mesh"
+}
+
 variable "currency" {
   description = "ISO currency for all prices."
   type        = string

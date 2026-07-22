@@ -15,6 +15,13 @@ terraform {
       source  = "stripe/stripe"
       version = "~> 0.2.2"
     }
+    # Only for writing the webhook signing secret into the bootstrap-owned Secret Manager container
+    # (webhook_secret.tf). This root creates no Google resources of its own. Version pinned to the
+    # same major as the other two roots so a shared provider cache stays consistent.
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 7.7.0"
+    }
   }
 
   # infra-15: remote state in the same GCS bucket as the relay-fleet module, under a distinct prefix
@@ -32,4 +39,8 @@ provider "stripe" {
   # Restricted API key. Prefer TF_VAR_stripe_api_key or the STRIPE_API_KEY env var;
   # never commit it. Use a *restricted* key scoped to Products/Prices/Meters write.
   api_key = var.stripe_api_key
+}
+
+provider "google" {
+  project = var.project_id
 }

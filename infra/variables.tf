@@ -31,6 +31,55 @@ variable "example_image" {
   }
 }
 
+variable "accountd_image" {
+  description = "Immutable hop-accountd image reference built by runtime-deploy.yml, including an exact sha256 digest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.accountd_image))
+    error_message = "accountd_image must be an immutable Artifact Registry reference ending in @sha256:<64 lowercase hex>."
+  }
+}
+
+variable "console_image" {
+  description = "Immutable hop-console image reference built by runtime-deploy.yml, including an exact sha256 digest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.console_image))
+    error_message = "console_image must be an immutable Artifact Registry reference ending in @sha256:<64 lowercase hex>."
+  }
+}
+
+# The Cloud SQL instance backing hop-accountd is bootstrap-owned (infra/bootstrap/console.tf), so the
+# runtime root cannot reference the resource. Its connection name is deterministic from the project,
+# region, and instance name, so pin it here; the accountd template mounts the Auth proxy socket at
+# /cloudsql/<connection name>. The password never appears in this root at all: bootstrap generates it
+# and composes the whole DSN into the console-db-url secret that accountd reads as DATABASE_URL.
+variable "console_db_connection_name" {
+  description = "Cloud SQL connection name (project:region:instance) for the bootstrap-owned hop_console Postgres."
+  type        = string
+  default     = "hop-mesh:us-central1:hop-console-db"
+}
+
+# hop-accountd's GitHub OAuth client id. NOT a secret: an OAuth client id is public by construction
+# (it rides in the authorize redirect URL every browser sees), so it lives in code where it is
+# reviewable rather than in Secret Manager. The matching client secret is a real secret and stays in
+# the bootstrap-owned hop-github-oauth-client-secret container.
+variable "github_client_id" {
+  description = "Public GitHub OAuth client id for console sign-in (GITHUB_CLIENT_ID)."
+  type        = string
+  default     = "Ov23lidjG8DrCaoi8hT3"
+}
+
+# The envelope-from address for console transactional mail. Public by construction (it is printed in
+# every message header), so it is plain config. The Resend API key remains a secret.
+variable "resend_from" {
+  description = "From address for console transactional email (RESEND_FROM)."
+  type        = string
+  default     = "noreply@account.hopme.sh"
+}
+
 variable "deployment_source_sha" {
   description = "Exact source revision (the merged main commit) that GitHub Actions is deploying after CI went green."
   type        = string

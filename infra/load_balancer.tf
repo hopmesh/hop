@@ -119,6 +119,16 @@ resource "google_compute_url_map" "relay" {
     name            = "example"
     default_service = google_compute_backend_service.example.id
   }
+
+  host_rule {
+    hosts        = [local.console_domain]
+    path_matcher = "console"
+  }
+
+  path_matcher {
+    name            = "console"
+    default_service = google_compute_backend_service.console.id
+  }
 }
 
 # --- OFF-STATE serving chain (relays_enabled = false) --------------------------------
@@ -148,6 +158,18 @@ resource "google_compute_url_map" "off" {
   path_matcher {
     name            = "example"
     default_service = google_compute_backend_service.example.id
+  }
+
+  # dashboard.hopme.sh stays reachable in the off state too (the console is independent of the relay
+  # fleet). Same anycast IP + cert map; only the :443 forwarding-rule owner differs between states.
+  host_rule {
+    hosts        = [local.console_domain]
+    path_matcher = "console"
+  }
+
+  path_matcher {
+    name            = "console"
+    default_service = google_compute_backend_service.console.id
   }
 }
 

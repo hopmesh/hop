@@ -34,17 +34,17 @@ resource "google_secret_manager_secret" "stripe_account_key" {
   depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
 }
 
-# Empty container for the Stripe webhook signing secret consumed by hop-accountd as
-# STRIPE_WEBHOOK_SECRET. The value comes from the isolated billing root's `webhook_signing_secret`
-# output (stripe_webhook_endpoint.secret) and is seeded here OUT OF BAND: the billing and bootstrap
-# roots keep separate state + providers (Stripe vs Google), so the secret is never wired across them,
-# and secret bytes never enter OpenTofu state (same discipline as the stripe_api_key / account_key
-# containers above).
+# Container for the Stripe webhook signing secret hop-accountd consumes as STRIPE_WEBHOOK_SECRET. The
+# VALUE is written by the isolated billing root (infra/billing/webhook_secret.tf), which owns the
+# stripe_webhook_endpoint whose computed `secret` attribute this is; that root already holds the value
+# in its own state, so writing it here costs no new exposure and removes the last manual seeding step.
+# Bootstrap owns the container so the accountd secretAccessor grant (console.tf) stays in one place.
+# Apply order: bootstrap first (the container must exist), then infra/billing.
 #
-# NOTE for the parallel console task (infra/console.tf, which owns the hop-accountd Cloud Run service):
-# the accountd service account needs `roles/secretmanager.secretAccessor` on THIS secret, and the
-# service env must set STRIPE_WEBHOOK_SECRET from it. Both live with the accountd service definition,
-# not here.
+# Posture, stated plainly: this signing secret DOES live in OpenTofu state (the billing state, where
+# the endpoint's computed attribute has always put it). That is a deliberate, owner-approved tradeoff,
+# machine-generated credentials in state in exchange for zero manual seeding steps. The access
+# controlled hop-mesh-tfstate bucket is the boundary protecting those bytes.
 resource "google_secret_manager_secret" "stripe_webhook_secret" {
   secret_id = "stripe-webhook-secret"
 
@@ -131,6 +131,20 @@ resource "google_service_account_iam_member" "billing_catalog_wif" {
   service_account_id = google_service_account.billing_catalog_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
+}
+
+# The catalog identity writes ONE secret: the Stripe webhook signing secret it just created
+# (infra/billing/webhook_secret.tf). versionAdder lets the apply write it; secretAccessor lets the next
+# plan refresh the version it owns without a permission error. Both are scoped to that single
+# container, so this identity still cannot read any other secret in the project.
+resource "google_secret_manager_secret_iam_member" "billing_catalog_webhook_secret" {
+  for_each = toset([
+    "roles/secretmanager.secretVersionAdder",
+    "roles/secretmanager.secretAccessor",
+  ])
+  secret_id = google_secret_manager_secret.stripe_webhook_secret.secret_id
+  role      = each.value
+  member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
 }
 
 resource "google_storage_bucket_iam_member" "billing_catalog_state" {

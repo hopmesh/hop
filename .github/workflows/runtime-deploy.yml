@@ -1,14 +1,15 @@
 # Runtime deploy: GitHub is change management, GCP is plumbing.
 #
 # A merge to `main` runs the CI workflow. When CI COMPLETES SUCCESSFULLY on a push to main, this
-# workflow builds + pushes the relay and example images, resolves their immutable @sha256 digests, and
-# applies the runtime root (infra/) via Workload Identity Federation as hop-deploy. There is no GCP-side
-# re-verification of the change: CI going green on main IS the authorization.
+# workflow builds + pushes the four runtime images (relay, example, accountd, console), resolves their
+# immutable @sha256 digests, and applies the runtime root (infra/) via Workload Identity Federation as
+# hop-deploy. There is no GCP-side re-verification of the change: CI going green on main IS the
+# authorization.
 #
 # Keyless: GitHub OIDC -> WIF -> hop-deploy (infra/bootstrap/runtime_deploy.tf). The OIDC subject is the
 # exact push-on-main subject, so no other ref can mint these credentials. The job stays neutral until
 # both repository variables are populated from the reviewed bootstrap outputs.
-name: Runtime deploy (relay fleet)
+name: Runtime deploy (relay fleet + console)
 
 on:
   workflow_run:
@@ -76,9 +77,13 @@ jobs:
           service_account: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
           token_format: access_token
 
-      # Build + push both images tagged with the full source SHA, then resolve each pushed tag to an
-      # immutable @sha256 digest (the runtime variables reject anything that is not @sha256). The images
-      # are only built, pushed, and inspected here; none is executed on the runner.
+      # Build + push all four runtime images tagged with the full source SHA, then resolve each pushed
+      # tag to an immutable @sha256 digest (the runtime variables reject anything that is not @sha256).
+      # The images are only built, pushed, and inspected here; none is executed on the runner.
+      #
+      # accountd is the Rust console backend (its Dockerfile builds --features live,firestore); console
+      # is the Next.js standalone front. Both build from the repo root as their context, like the other
+      # two.
       - name: Build, push, and resolve image digests
         if: steps.guard.outputs.superseded != 'true'
         env:
@@ -86,24 +91,26 @@ jobs:
         run: |
           set -euo pipefail
           registry="${AR_REGION}-docker.pkg.dev"
-          relay_repo="${registry}/${PROJECT_ID}/hop/hop-relayd"
-          example_repo="${registry}/${PROJECT_ID}/hop/hop-example"
 
           echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${registry}"
 
-          docker build -f services/hop-relayd/Dockerfile -t "${relay_repo}:${HEAD_SHA}" .
-          docker build -f services/hop-endpoint/Dockerfile -t "${example_repo}:${HEAD_SHA}" .
-          docker push "${relay_repo}:${HEAD_SHA}"
-          docker push "${example_repo}:${HEAD_SHA}"
+          # name -> Dockerfile -> the GITHUB_ENV key the tofu step reads.
+          build_push_pin() {
+            local repo_name="$1" dockerfile="$2" env_key="$3"
+            local repo="${registry}/${PROJECT_ID}/hop/${repo_name}"
+            docker build -f "$dockerfile" -t "${repo}:${HEAD_SHA}" .
+            docker push "${repo}:${HEAD_SHA}"
+            local pinned
+            pinned="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${repo}:${HEAD_SHA}" | grep "^${repo}@sha256:" | head -n1)"
+            test -n "$pinned" || { echo "could not resolve ${repo_name} digest" >&2; exit 1; }
+            echo "${repo_name}: ${pinned}"
+            echo "${env_key}=${pinned}" >> "$GITHUB_ENV"
+          }
 
-          relay_image="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${relay_repo}:${HEAD_SHA}" | grep "^${relay_repo}@sha256:" | head -n1)"
-          example_image="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${example_repo}:${HEAD_SHA}" | grep "^${example_repo}@sha256:" | head -n1)"
-          test -n "$relay_image" || { echo "could not resolve relay digest" >&2; exit 1; }
-          test -n "$example_image" || { echo "could not resolve example digest" >&2; exit 1; }
-          echo "relay:   $relay_image"
-          echo "example: $example_image"
-          echo "RELAY_IMAGE=$relay_image" >> "$GITHUB_ENV"
-          echo "EXAMPLE_IMAGE=$example_image" >> "$GITHUB_ENV"
+          build_push_pin hop-relayd   services/hop-relayd/Dockerfile   RELAY_IMAGE
+          build_push_pin hop-example  services/hop-endpoint/Dockerfile EXAMPLE_IMAGE
+          build_push_pin hop-accountd services/hop-accountd/Dockerfile ACCOUNTD_IMAGE
+          build_push_pin hop-console  apps/web/console/Dockerfile      CONSOLE_IMAGE
 
       - if: steps.guard.outputs.superseded != 'true'
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -117,6 +124,8 @@ jobs:
           TF_VAR_project_id: ${{ env.PROJECT_ID }}
           TF_VAR_relay_image: ${{ env.RELAY_IMAGE }}
           TF_VAR_example_image: ${{ env.EXAMPLE_IMAGE }}
+          TF_VAR_accountd_image: ${{ env.ACCOUNTD_IMAGE }}
+          TF_VAR_console_image: ${{ env.CONSOLE_IMAGE }}
           TF_VAR_deployment_source_sha: ${{ github.event.workflow_run.head_sha }}
           TF_VAR_deployment_environment: ${{ vars.DEPLOYMENT_ENVIRONMENT || 'production' }}
           TF_VAR_relay_identity_version: ${{ vars.RELAY_IDENTITY_VERSION || '1' }}

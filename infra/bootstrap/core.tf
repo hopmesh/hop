@@ -17,6 +17,8 @@ locals {
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "serviceusage.googleapis.com",
+    # Cloud SQL Admin: the hop_console Postgres instance backing hop-accountd (console.tf).
+    "sqladmin.googleapis.com",
     "storage.googleapis.com",
     "sts.googleapis.com",
   ])

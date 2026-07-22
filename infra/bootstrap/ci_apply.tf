@@ -33,6 +33,11 @@ locals {
     # google_firestore_database.relay and the four google_firestore_field TTL policies. Unavoidably
     # broad: it also carries Firestore entity read/write, so it can see the relay bundle store.
     "roles/datastore.owner",
+    # google_sql_database_instance.console + its database and user (console.tf). Cloud SQL has no
+    # narrower create role: roles/cloudsql.editor cannot create an instance and roles/cloudsql.client
+    # is a connect-only runtime role. This is a control-plane role, not a data-plane one: it manages
+    # instances, databases, and users, and reads no table contents.
+    "roles/cloudsql.admin",
   ])
 
   # A single exact OIDC subject: a push-driven workflow run on canonical main. It is an exact subject,

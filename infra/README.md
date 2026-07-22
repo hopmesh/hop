@@ -33,10 +33,10 @@ workflow, where the input is a reviewed commit rather than whatever you last pul
 
 A merge to `main` runs the `CI` workflow. When CI COMPLETES SUCCESSFULLY on that push,
 `runtime-deploy.yml` fires. It authenticates as `hop-deploy` over WIF, builds and pushes
-the `hop-relayd` and `hop-example` images tagged with the full source SHA, resolves each
-pushed tag to an immutable `@sha256` digest, and runs `tofu apply` on the runtime root
-with digest-only image references. The runtime `relay_image` / `example_image` variables
-reject anything that is not an `@sha256` reference.
+the `hop-relayd`, `hop-example`, `hop-accountd`, and `hop-console` images tagged with the
+full source SHA, resolves each pushed tag to an immutable `@sha256` digest, and runs
+`tofu apply` on the runtime root with digest-only image references. All four runtime image
+variables reject anything that is not an `@sha256` reference.
 
 Before doing any of that, a supersession guard reads the current `main` tip with
 `git ls-remote`. If a newer commit already landed, the run SKIPS every remaining step
