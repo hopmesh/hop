@@ -158,6 +158,11 @@ resource "google_sql_database_instance" "console" {
   deletion_protection = true
 
   settings {
+    # ENTERPRISE is explicit on purpose. Cloud SQL now defaults a new Postgres instance to
+    # ENTERPRISE_PLUS, which rejects every shared-core tier ("Invalid Tier (db-f1-micro) for
+    # (ENTERPRISE_PLUS) Edition") and would force a db-perf-optimized-N-* machine this console
+    # does not need. Pinning the edition keeps the tier below valid and the cost flat.
+    edition           = "ENTERPRISE"
     tier              = "db-f1-micro"
     availability_type = "ZONAL"
     disk_size         = 10
@@ -241,13 +246,19 @@ resource "google_project_iam_member" "console" {
 # --- The applier's own version authority, scoped to the two containers it generates ----
 # hopBootstrapApplySecrets (ci_apply.tf) is deliberately container-only: no version add, no version
 # access, so applying this root can never read the Stripe keys, the relay seed, or the OAuth secret.
-# Writing hop-api-token and console-db-url needs both (add to write, accessor because the provider
-# re-reads secret_data on every refresh), so grant them per container, on these two only. Every other
-# secret in the project stays unreadable to this identity.
+# Writing hop-api-token and console-db-url needs both (write authority, plus accessor because the
+# provider re-reads secret_data on every refresh), so grant them per container, on these two only.
+# Every other secret in the project stays unreadable to this identity.
+#
+# secretVersionManager, not secretVersionAdder: the provider follows a version add with an explicit
+# enable call, and secretVersionAdder carries versions.add WITHOUT versions.enable, so the first
+# apply died 403 on enable after the version had already been written. secretVersionManager adds
+# enable/disable/destroy and still carries NO versions.access, so widening it here does not let this
+# identity read any payload; the read path stays the separate, per-container secretAccessor below.
 resource "google_secret_manager_secret_iam_member" "bootstrap_apply_generated_secrets" {
   for_each = {
     for pair in setproduct(local.bootstrap_generated_secret_ids, [
-      "roles/secretmanager.secretVersionAdder",
+      "roles/secretmanager.secretVersionManager",
       "roles/secretmanager.secretAccessor",
     ]) : "${pair[0]}:${pair[1]}" => { secret_id = pair[0], role = pair[1] }
   }
