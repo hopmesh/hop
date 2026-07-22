@@ -435,35 +435,14 @@ code {
 .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .status.dev::before { background: var(--held); }
 
-/* early-access badge (header, next to the wordmark) */
+/* header brand row */
 .brandwrap { display: inline-flex; align-items: center; gap: 10px; }
-.ea-badge { font: 600 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
-  color: var(--accent); border: 1px solid var(--accent-2); border-radius: 999px; padding: 4px 8px; white-space: nowrap; }
-@media (max-width: 520px) { .ea-badge { display: none; } }
 
 /* brand mark (cursive hop logo) */
 .hop-logo { display: inline-block; line-height: 0; color: var(--logo); }
 .hop-logo svg { display: block; height: 30px; width: auto; }
 .site-foot .hop-logo svg { height: 34px; }
 
-/* lead / early-access form */
-.lead-form { display: grid; gap: 16px; }
-.lead-form .field { display: grid; gap: 7px; }
-.lead-form label { font: 600 12.5px/1 var(--mono); letter-spacing: .04em; color: var(--ink-dim); }
-.lead-form label .req { color: var(--accent); }
-.lead-form input, .lead-form select, .lead-form textarea {
-  font: 400 15px/1.4 var(--sans); color: var(--ink);
-  background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius-sm);
-  padding: 12px 14px; width: 100%; transition: border-color .14s ease, box-shadow .14s ease; }
-.lead-form textarea { resize: vertical; min-height: 96px; line-height: 1.6; }
-.lead-form input::placeholder, .lead-form textarea::placeholder { color: var(--ink-mut); }
-.lead-form input:focus, .lead-form select:focus, .lead-form textarea:focus {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
-.lead-form .btn-primary { justify-content: center; margin-top: 4px; }
-.lead-form .lf-hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.lead-note { font-size: 14px; color: var(--ink-dim); min-height: 1em; }
-.lead-note.ok { color: var(--accent-2); font-weight: 600; }
-.lead-note.err { color: var(--red, #e0564f); }
 
 /* ---------- docs site (left sidebar + content) ---------- */
 .docs-shell { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; display: grid;

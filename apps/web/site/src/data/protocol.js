@@ -300,7 +300,7 @@ export const layers = [
       "Because the store-and-forward model is delay-tolerant, it even fits deep-space links where a continuous path never exists.",
     ],
     dev: "Implement the bearer trait and the entire core above runs unchanged, no protocol changes, no rewrites.",
-    biz: "Never locked to one radio or vendor, Hop adapts to whatever connectivity you have, or add later. Have an unusual link or use case? <a href=\"/early-access/\">Tell us</a>.",
+    biz: "Never locked to one radio or vendor, Hop adapts to whatever connectivity you have, or add later. Have an unusual link or use case? <a href=\"mailto:hello@hopme.sh?subject=Hop%20bearer%20request\">Tell us</a>.",
     viz: {
       vb: '0 0 660 270',
       caption: "The bearer is an abstract slot, anything that moves bytes can carry Hop. BLE and Wi-Fi today; the internet, long-range radio, satellite, and beyond. Have a special link in mind? Tell us.",

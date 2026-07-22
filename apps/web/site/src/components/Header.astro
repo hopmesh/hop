@@ -8,14 +8,14 @@ const is = (p) => (path === p ? 'nav-link active' : 'nav-link');
   <div class="wrap">
     <div class="brandwrap">
       <a class="brand" href="/" aria-label="Hop, home"><Logo /></a>
-      <a class="ea-badge" href="/early-access/">Early access</a>
     </div>
     <nav class="site-nav">
       <a class={is('/use-cases')} href="/use-cases/">Use cases</a>
       <a class={is('/developers')} href="/developers/">Developers</a>
       <a class={is('/business')} href="/business/">Business</a>
       <a class={is('/pricing')} href="/pricing/">Pricing</a>
-      <a class="btn btn-primary btn-sm" href="/docs/quickstart/">Quickstart</a>
+      <a class="nav-link" href="https://dashboard.hopme.sh/">Sign in</a>
+      <a class="btn btn-primary btn-sm" href="https://dashboard.hopme.sh/">Start free</a>
       <button class="theme-toggle" type="button" aria-label="Toggle light and dark theme">
         <i class="t-dark fa-duotone fa-solid fa-moon-stars"></i>
         <i class="t-light fa-duotone fa-solid fa-sun-bright"></i>
