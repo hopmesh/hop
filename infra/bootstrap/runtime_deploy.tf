@@ -43,3 +43,24 @@ resource "google_project_iam_member" "deploy_run_iam" {
   role    = google_project_iam_custom_role.runtime_deploy_run_iam.id
   member  = "serviceAccount:${google_service_account.deploy.email}"
 }
+
+# infra/regions.tf resolves the deployable region set with `data "google_compute_regions"`, which
+# calls compute.regions.list. None of deploy_project_roles carries that permission:
+# compute.loadBalancerAdmin manages LB resources but cannot enumerate regions, so every runtime
+# apply fails its refresh with "Required 'compute.regions.list' permission ... forbidden" before it
+# reaches a single resource. Kept as a narrow custom role rather than roles/compute.viewer, which
+# would hand this identity read over every compute resource in the project just to list regions.
+resource "google_project_iam_custom_role" "runtime_deploy_regions" {
+  role_id     = "hopRuntimeDeployRegions"
+  title       = "Hop runtime deploy: list regions"
+  description = "List Compute regions. Required by the google_compute_regions data source. Read only, regions only."
+  permissions = [
+    "compute.regions.list",
+  ]
+}
+
+resource "google_project_iam_member" "deploy_regions" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.runtime_deploy_regions.id
+  member  = "serviceAccount:${google_service_account.deploy.email}"
+}
