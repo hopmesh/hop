@@ -69,6 +69,12 @@ expect_bad("relay_seed_to_deployer", lambda f: replace(
     'secret_id = google_secret_manager_secret.relay_identity.secret_id\n  role      = "roles/secretmanager.secretAccessor"\n  member    = "serviceAccount:${google_service_account.deploy.email}"',
 ))
 expect_bad("example_reuses_relay", lambda f: replace(f, pathlib.Path("infra/example.tf"), "service_account = local.example_service_account", "service_account = local.relay_service_account"))
+expect_bad("console_reuses_example", lambda f: replace(f, pathlib.Path("infra/console.tf"), "service_account = local.console_service_account", "service_account = local.example_service_account"))
+expect_bad("accountd_identity_local_retargeted", lambda f: replace(f, pathlib.Path("infra/data.tf"), 'hop-accountd@${var.project_id}.iam.gserviceaccount.com', "attacker@example.com"))
+expect_bad("console_identity_local_retargeted", lambda f: replace(f, pathlib.Path("infra/data.tf"), 'hop-console@${var.project_id}.iam.gserviceaccount.com', "attacker@example.com"))
+expect_bad("unsigned_accountd_image", lambda f: replace(f, pathlib.Path("infra/console.tf"), "image = var.accountd_image", 'image = "us-central1-docker.pkg.dev/attacker/repo/image@sha256:' + "9" * 64 + '"'))
+expect_bad("mutable_console_image_variable", lambda f: replace(f, pathlib.Path("infra/variables.tf"), 'can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.console_image))', "true"))
+expect_bad("console_cloud_run_dropped", lambda f: replace(f, pathlib.Path("infra/console.tf"), 'resource "google_cloud_run_v2_service" "console"', 'resource "google_cloud_run_v2_service" "console_v2"'))
 expect_bad("example_identity_version_unpinned", lambda f: replace(f, pathlib.Path("infra/example.tf"), "version = var.example_identity_version", 'version = "latest"'))
 expect_bad("runtime_backend_retargeted", lambda f: replace(f, pathlib.Path("infra/versions.tf"), 'backend "gcs"', 'backend "local"'))
 expect_bad("bootstrap_state_writable", lambda f: replace(f, pathlib.Path("infra/bootstrap/iam.tf"), "objects/${var.runtime_state_prefix}/", "objects/bootstrap/"))
