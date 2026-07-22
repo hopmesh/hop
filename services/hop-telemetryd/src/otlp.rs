@@ -72,6 +72,16 @@ impl OtlpEndpointMap {
         OtlpEndpointMap { map }
     }
 
+    /// Insert or replace one tenant's endpoint. Used to merge the fleet tenant-registry endpoints on
+    /// top of the static `--otlp-map` file, so a console-set OTLP endpoint takes effect (a registry
+    /// entry wins over a stale file line). Only http(s) urls are accepted, same as `parse`.
+    #[cfg_attr(not(all(feature = "live", feature = "firestore")), allow(dead_code))]
+    pub fn insert(&mut self, tenant: TenantId, endpoint: OtlpEndpoint) {
+        if endpoint.url.starts_with("http://") || endpoint.url.starts_with("https://") {
+            self.map.insert(tenant, endpoint);
+        }
+    }
+
     pub fn get(&self, tenant: &TenantId) -> Option<&OtlpEndpoint> {
         self.map.get(tenant)
     }
@@ -326,6 +336,29 @@ mod tests {
         let b = m.get(&[0xff; 16]).unwrap();
         assert_eq!(b.url, "https://plain.example");
         assert_eq!(b.auth, None);
+    }
+
+    #[test]
+    fn insert_merges_and_wins_over_a_file_line_and_rejects_non_http() {
+        let mut m = OtlpEndpointMap::parse(&format!("{T} https://from-file.example tok\n", T = T));
+        // a registry entry for the same tenant WINS over the file line
+        m.insert(
+            TENANT,
+            OtlpEndpoint {
+                url: "https://from-registry.example".into(),
+                auth: None,
+            },
+        );
+        assert_eq!(m.get(&TENANT).unwrap().url, "https://from-registry.example");
+        // a non-http url is refused (never POST nonsense)
+        m.insert(
+            [0x11; 16],
+            OtlpEndpoint {
+                url: "ftp://nope.example".into(),
+                auth: None,
+            },
+        );
+        assert!(m.get(&[0x11; 16]).is_none());
     }
 
     fn batch() -> TelemetryBatch {

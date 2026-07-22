@@ -351,6 +351,37 @@ fn load_registry_keys(project: &str) -> std::result::Result<Vec<(TenantId, [u8; 
     Ok(records.iter().filter_map(|r| r.carriage_key()).collect())
 }
 
+/// The per-tenant OTLP endpoints from the Firestore tenant registry. A read error is logged and yields
+/// an empty list, so the collector keeps the static file endpoints and stays up (fail-open). A row
+/// with no OTLP endpoint or a malformed tenant hex is skipped. The url is trusted as the console
+/// SSRF-validated it at write time (5a); `OtlpEndpointMap::insert` re-checks the http(s) scheme.
+#[cfg(all(feature = "live", feature = "firestore"))]
+fn load_registry_otlp(project: &str) -> Vec<(TenantId, otlp::OtlpEndpoint)> {
+    let registry = hop_store_firestore::TenantRegistry::new(project);
+    match registry.all() {
+        Ok(records) => records
+            .iter()
+            .filter_map(|r| {
+                let url = r.otlp_endpoint.as_deref()?;
+                let tenant = parse_tenant_hex(&r.tenant_hex)?;
+                Some((
+                    tenant,
+                    otlp::OtlpEndpoint {
+                        url: url.to_string(),
+                        auth: None,
+                    },
+                ))
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!(
+                "hop-telemetryd: tenant registry OTLP read failed: {e}; keeping file endpoints"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// Parse a 32-char hex string into a 16-byte `TenantId`; `None` if it is not exactly 32 hex chars.
 fn parse_tenant_hex(s: &str) -> Option<TenantId> {
     if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -549,7 +580,7 @@ fn main() {
 
     // Managed OTLP export (best-effort, off the driver thread). Spawns an export worker draining a
     // bounded queue, so a slow/down tenant endpoint drops rather than stalling the meter (see below).
-    let otlp_tx = setup_otlp(otlp_map_file);
+    let otlp_tx = setup_otlp(otlp_map_file, firestore.as_deref());
 
     run(node, domain, rx, otlp_tx);
 }
@@ -557,22 +588,39 @@ fn main() {
 /// One queued OTLP export: an attributed tenant + its batch, handed to the export worker off-thread.
 type OtlpItem = (TenantId, TelemetryBatch);
 
-/// Build the OTLP export queue + worker if a per-tenant endpoint map is configured. Live-only (the
-/// POST needs reqwest); without the feature there is no export and this always returns `None`, so
-/// `forward_telemetry` skips OTLP entirely. Best-effort: the worker POSTs on its own thread and counts
-/// failures, never touching the meter/ledger path.
+/// Build the OTLP export queue + worker from the static `--otlp-map` file AND, when `--firestore` is
+/// set, the per-tenant OTLP endpoints the account service projects into the tenant registry (so a
+/// tenant that sets its endpoint in the console gets telemetry streamed without an operator file
+/// edit). Live-only (the POST needs reqwest); without the feature there is no export and this returns
+/// `None`, so `forward_telemetry` skips OTLP. Best-effort: the worker POSTs on its own thread and
+/// counts failures, never touching the meter/ledger path.
 #[cfg(feature = "live")]
-fn setup_otlp(file: Option<String>) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
-    let text = file
+fn setup_otlp(
+    file: Option<String>,
+    firestore: Option<&str>,
+) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
+    // Start from the static file (if any); an absent file is an empty map the registry may still fill.
+    let mut map = file
         .and_then(|p| std::fs::read_to_string(p).ok())
         .or_else(|| {
             std::env::var("HOP_OTLP_MAP")
                 .ok()
                 .and_then(|p| std::fs::read_to_string(p).ok())
-        })?;
-    let map = otlp::OtlpEndpointMap::parse(&text);
+        })
+        .map(|text| otlp::OtlpEndpointMap::parse(&text))
+        .unwrap_or_else(|| otlp::OtlpEndpointMap::parse(""));
+    // Registry endpoints (https/SSRF-validated at the console write, 5a) win over a stale file line. A
+    // read error is logged and the file endpoints are kept (fail-open, like the KeyServer).
+    #[cfg(feature = "firestore")]
+    if let Some(project) = firestore {
+        for (tenant, endpoint) in load_registry_otlp(project) {
+            map.insert(tenant, endpoint);
+        }
+    }
+    #[cfg(not(feature = "firestore"))]
+    let _ = firestore;
     if map.is_empty() {
-        eprintln!("hop-telemetryd: OTLP endpoint map empty or unreadable; OTLP export off");
+        eprintln!("hop-telemetryd: no OTLP endpoints (file or registry); OTLP export off");
         return None;
     }
     let transport = match otlp::ReqwestOtlpTransport::new() {
@@ -617,7 +665,10 @@ fn setup_otlp(file: Option<String>) -> Option<std::sync::mpsc::SyncSender<OtlpIt
 
 /// Without the `live` feature there is no OTLP export path at all.
 #[cfg(not(feature = "live"))]
-fn setup_otlp(_file: Option<String>) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
+fn setup_otlp(
+    _file: Option<String>,
+    _firestore: Option<&str>,
+) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
     None
 }
 

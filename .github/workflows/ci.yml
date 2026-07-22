@@ -227,6 +227,12 @@ jobs:
       - name: Test telemetryd (live feature)
         run: cargo test -p hop-telemetryd --features live
 
+      # The OTLP-endpoint-from-registry routing (a tenant's console-set endpoint reaches the export
+      # worker) needs BOTH features together: live for the POST, firestore for the registry read.
+      # Neither single-feature run above compiles that merge path.
+      - name: Test telemetryd (live + firestore)
+        run: cargo test -p hop-telemetryd --features live,firestore
+
       # At-rest encryption (F-25) is behind the `sqlcipher` feature (SQLite + SQLCipher, vendored
       # OpenSSL) which the default workspace run doesn't build. This exercises open_keyed end-to-end.
       - name: Test store (sqlcipher feature)
