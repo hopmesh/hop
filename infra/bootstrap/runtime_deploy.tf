@@ -10,7 +10,7 @@
 resource "google_service_account_iam_member" "deploy_runtime_wif" {
   service_account_id = google_service_account.deploy.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:ref:refs/heads/main"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/${local.github_immutable_subject_main}"
 }
 
 output "runtime_wif_provider" {

@@ -118,3 +118,28 @@ variable "relay_domain" {
   type        = string
   default     = "relay.hopme.sh"
 }
+
+# GitHub issues IMMUTABLE OIDC subject claims for this repository: the sub is
+# repo:<org>@<org_id>/<repo>@<repo_id>:ref:<ref>, NOT the name-based
+# repo:<org>/<repo>:ref:<ref>. Verified live by decoding a real Actions OIDC token:
+#   SUB= repo:hopmesh@294843325/monorepo@1273816715:ref:refs/heads/main
+# A name-based principal binding silently never matches, and the failure surfaces far
+# downstream as "Permission 'iam.serviceAccounts.getAccessToken' denied" on first API use,
+# not as an auth error. Keep these ids in sync with the repository if it is ever recreated
+# (a rename does NOT change them, which is the point of immutable subjects).
+variable "github_org_id" {
+  description = "Numeric GitHub organization id used in the immutable OIDC subject claim."
+  type        = string
+  default     = "294843325"
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub repository id used in the immutable OIDC subject claim."
+  type        = string
+  default     = "1273816715"
+}
+
+# The exact immutable OIDC subject for a workflow run on canonical main.
+locals {
+  github_immutable_subject_main = "repo:hopmesh@${var.github_org_id}/monorepo@${var.github_repository_id}:ref:refs/heads/main"
+}

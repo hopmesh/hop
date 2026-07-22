@@ -37,7 +37,7 @@ locals {
 
   # A single exact OIDC subject: a push-driven workflow run on canonical main. It is an exact subject,
   # not a principalSet: a workflow run on any other ref, or from a pull request, gets no token at all.
-  bootstrap_apply_subject   = "repo:${var.github_repository}:ref:refs/heads/main"
+  bootstrap_apply_subject   = local.github_immutable_subject_main
   bootstrap_apply_principal = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject"
 }
 
