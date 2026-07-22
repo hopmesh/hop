@@ -3,7 +3,7 @@ import DocsLayout from '../../layouts/DocsLayout.astro';
 
 const cargo = `# Cargo.toml, embed the core
 [dependencies]
-hop-core = "0.1"   # early access, request access`;
+hop-core = "0.1"   # free to start`;
 
 const rust = `<span style="color:var(--tok-comment)">// open a node from your 32-byte secret (you own key storage)</span>
 <span style="color:var(--tok-kw)">let</span> node = HopNode::open(secret)?;
@@ -65,7 +65,7 @@ node.send_service_request(endpoint, <span style="color:var(--tok-str)">"acme/ord
   <div class="card code-card" style="padding:0; overflow:hidden; margin-top:26px;">
     <pre class="code-block" set:html={rust}></pre>
   </div>
-  <p class="note mt-m">Illustrative, the full API across <code>hop-core</code> and the FFI bindings comes with early access.</p>
+  <p class="note mt-m">Illustrative, the full API across <code>hop-core</code> and the FFI bindings ships with the SDK.</p>
 
   <h2>Pick your platform</h2>
   <p>The core only moves bytes; a per-platform <a href="/docs/">driver</a> runs the radios. Start with
@@ -74,5 +74,5 @@ node.send_service_request(endpoint, <span style="color:var(--tok-str)">"acme/ord
      <a href="/docs/drivers/linux/">Linux / server</a>.</p>
 
   <h2>Get access</h2>
-  <p>Hop is in early access. <a href="/early-access/">Request access</a> and tell us what you're building.</p>
+  <p>Hop is free to start. <a href="https://dashboard.hopme.sh/">Create an account</a> and get your keys in a minute.</p>
 </DocsLayout>
