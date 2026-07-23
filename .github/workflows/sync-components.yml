@@ -167,32 +167,31 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          credentials="$(mktemp "$RUNNER_TEMP/copybara-credentials.XXXXXX")"
           gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
-          cleanup() { rm -f "$credentials" "$gitconfig"; }
+          cleanup() { rm -f "$gitconfig"; }
           trap cleanup EXIT
-          printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$SOURCE_TOKEN" > "$credentials"
-          printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY" >> "$credentials"
-          cat > "$gitconfig" <<'CONFIG'
-          [credential]
-              helper = store --file=/run/secrets/git-credentials
-              useHttpPath = true
+          # Authenticate git by rewriting the canonical https URLs to carry the per-repo token
+          # (url.insteadOf), NOT a credential.helper store. The store helper writes a lock file on
+          # `credential approve` after a push, and every writable path in this hardened container is
+          # read-only, so the push died "unable to get credential storage lock: Read-only file system".
+          # insteadOf needs no helper and no writable state. The tokens are Actions secrets
+          # (github.token + the App token), so they are masked if they ever surface in a log line. 644
+          # because the container runs as a non-root user whose UID does not match the runner's; the
+          # file lives only on the ephemeral runner and is removed on exit.
+          cat > "$gitconfig" <<CONFIG
+          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/monorepo"]
+              insteadOf = https://github.com/hopmesh/monorepo
+          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/${DESTINATION_REPOSITORY}"]
+              insteadOf = https://github.com/hopmesh/${DESTINATION_REPOSITORY}
           [user]
               name = hop-sync
               email = sync@hopme.sh
           CONFIG
-          # 644, not 600: the Copybara container runs as a non-root user whose UID does not match the
-          # runner's, so a 600 file owned by the runner is unreadable inside the container (git then
-          # dies "unable to access '/etc/gitconfig': Permission denied"). The gitconfig carries no
-          # secret; the credentials file holds only short-lived tokens (the job-scoped github.token and
-          # a 1-hour, single-mirror App token) on an ephemeral single-purpose runner, and is removed on
-          # exit. World-read inside that throwaway container is an acceptable exposure.
-          chmod 644 "$credentials" "$gitconfig"
+          chmod 644 "$gitconfig"
           set +e
           docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
             -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
-            -v "$credentials:/run/secrets/git-credentials:ro" \
             -v "$gitconfig:/etc/gitconfig:ro" \
             -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
@@ -243,32 +242,28 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          credentials="$(mktemp "$RUNNER_TEMP/copybara-credentials.XXXXXX")"
           gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
-          cleanup() { rm -f "$credentials" "$gitconfig"; }
+          cleanup() { rm -f "$gitconfig"; }
           trap cleanup EXIT
-          printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$SOURCE_TOKEN" "$SOURCE_REPOSITORY" > "$credentials"
-          printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$DESTINATION_TOKEN" >> "$credentials"
-          cat > "$gitconfig" <<'CONFIG'
-          [credential]
-              helper = store --file=/run/secrets/git-credentials
-              useHttpPath = true
+          # Authenticate git by rewriting the canonical https URLs to carry the per-repo token
+          # (url.insteadOf), NOT a credential.helper store: the store helper needs a writable path for
+          # its lock on `credential approve`, and this hardened container is read-only. See the export
+          # step for the full rationale. Import reads the mirror (App token) and pushes a PR branch to
+          # the monorepo (github.token).
+          cat > "$gitconfig" <<CONFIG
+          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/${SOURCE_REPOSITORY}"]
+              insteadOf = https://github.com/hopmesh/${SOURCE_REPOSITORY}
+          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/monorepo"]
+              insteadOf = https://github.com/hopmesh/monorepo
           [user]
               name = hop-sync
               email = sync@hopme.sh
           CONFIG
-          # 644, not 600: the Copybara container runs as a non-root user whose UID does not match the
-          # runner's, so a 600 file owned by the runner is unreadable inside the container (git then
-          # dies "unable to access '/etc/gitconfig': Permission denied"). The gitconfig carries no
-          # secret; the credentials file holds only short-lived tokens (the job-scoped github.token and
-          # a 1-hour, single-mirror App token) on an ephemeral single-purpose runner, and is removed on
-          # exit. World-read inside that throwaway container is an acceptable exposure.
-          chmod 644 "$credentials" "$gitconfig"
+          chmod 644 "$gitconfig"
           set +e
           docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
             -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
-            -v "$credentials:/run/secrets/git-credentials:ro" \
             -v "$gitconfig:/etc/gitconfig:ro" \
             -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
