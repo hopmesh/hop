@@ -100,11 +100,21 @@ if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=true \
   exit 1
 fi
 
-# export_pr requires a valid pr_number and prepends it to the Copybara args (before the flags).
-opts="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
-  python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
-if [ "$opts" != "292 --ignore-noop --force" ]; then
-  echo "export_pr copybara_options drifted: $opts" >&2
+# export_pr requires a valid pr_number, emitted as source_ref (NOT folded into options, which the
+# olivr wrapper places first; source_ref is appended last, where the positional PR ref belongs).
+json="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+  python3 "$dispatch" --json)"
+opts="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
+sref="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
+if [ "$opts" != "--ignore-noop --force" ] || [ "$sref" != "292" ]; then
+  echo "export_pr mapping drifted: options=$opts source_ref=$sref" >&2
+  exit 1
+fi
+# export/import carry no source_ref.
+sref_export="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export SYNC_INIT_HISTORY=false \
+  python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
+if [ -n "$sref_export" ]; then
+  echo "export unexpectedly carries a source_ref: $sref_export" >&2
   exit 1
 fi
 # export_pr with no pr_number is rejected.

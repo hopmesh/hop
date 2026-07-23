@@ -31,9 +31,10 @@ def select(component, direction, init_history, pr_number="", components=None):
         raise ValueError("init_history is allowed only for export")
 
     # export_pr needs the source monorepo PR number: Copybara's github_pr_origin (CHANGE_REQUEST)
-    # requires a PR reference as a positional arg. Validate it here (the guard forbids the job from
-    # touching raw dispatch inputs, so it must be sanitized in the mapper) and prepend it to the
-    # Copybara args, before the flags, so the command is `migrate <config> <workflow> <pr> <flags>`.
+    # requires a PR reference. Validate it here (the guard forbids the job from touching raw dispatch
+    # inputs, so it is sanitized in the mapper) and emit it as `source_ref`. The olivr container's
+    # copybara wrapper appends COPYBARA_SOURCEREF as the LAST arg (after the workflow), which is where
+    # the positional PR ref belongs: `<jar> <options> migrate <config> <workflow> <source_ref>`.
     pr_number = pr_number.strip()
     if direction == "export_pr":
         if not re.fullmatch(r"[1-9][0-9]{0,6}", pr_number):
@@ -45,14 +46,13 @@ def select(component, direction, init_history, pr_number="", components=None):
     options = "--ignore-noop --force"
     if init_history == "true":
         options = "--ignore-noop --init-history --force"
-    if direction == "export_pr":
-        options = f"{pr_number} --ignore-noop --force"
     return {
         "component": component,
         "repository": component,
         "prefix": entry["prefix"],
         "workflow": f"{component}_{direction}",
         "copybara_options": options,
+        "source_ref": pr_number if direction == "export_pr" else "",
         "direction": direction,
     }
 
