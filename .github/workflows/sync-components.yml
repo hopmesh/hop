@@ -38,6 +38,7 @@ on:
         options:
           - export
           - import
+          - export_pr
         default: export
       init_history:
         description: "Seed full history on the first export only"
@@ -208,6 +209,82 @@ jobs:
             echo "synced: changes migrated to the mirror"
           elif [ "$rc" -eq 4 ]; then
             echo "no-op: mirror already up to date"
+          else
+            echo "::error::copybara exited $rc"
+            exit "$rc"
+          fi
+
+  export_pr:
+    needs: [authorize, select]
+    if: needs.select.outputs.direction == 'export_pr'
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    # github.token only READS the open monorepo PR (source). The mirror PR (destination) is written by
+    # the minted App token below, so github.token needs no write here.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Mint destination-mirror PR token
+        id: mirror-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: ${{ needs.select.outputs.repository }}
+          # Writes a branch + opens/updates a PR on the mirror; the PR may carry the mirror's own
+          # .github/workflows, so it needs Workflows write like the export push does.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Mirror the open monorepo PR to the component with isolated Copybara
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          DESTINATION_TOKEN: ${{ steps.mirror-token.outputs.token }}
+          DESTINATION_REPOSITORY: ${{ needs.select.outputs.repository }}
+          COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
+          COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
+          cleanup() { rm -f "$gitconfig"; }
+          trap cleanup EXIT
+          # Same auth model as the export step: rewrite the canonical https URLs to carry the per-repo
+          # token (url.insteadOf), no credential.helper store (its lock write fails on the read-only
+          # container). See the export step for the full rationale. Source = monorepo (github.token,
+          # reads the open PR); destination = mirror PR (App token, writes the branch + PR).
+          cat > "$gitconfig" <<CONFIG
+          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/monorepo"]
+              insteadOf = https://github.com/hopmesh/monorepo
+          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/${DESTINATION_REPOSITORY}"]
+              insteadOf = https://github.com/hopmesh/${DESTINATION_REPOSITORY}
+          [user]
+              name = hop-sync
+              email = sync@hopme.sh
+          CONFIG
+          chmod 644 "$gitconfig"
+          set +e
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
+            -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
+            -v "$gitconfig:/etc/gitconfig:ro" \
+            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
+            -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
+            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
+            olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "synced: open monorepo PR mirrored to hopmesh/$DESTINATION_REPOSITORY"
+          elif [ "$rc" -eq 4 ]; then
+            echo "no-op: no open monorepo PR touches this component (nothing to mirror)"
           else
             echo "::error::copybara exited $rc"
             exit "$rc"

@@ -357,6 +357,31 @@ def _register(prefix, name):
         mode = "CHANGE_REQUEST",
         transformations = import_transforms,
     )
+    core.workflow(
+        name = name + "_export_pr",
+        # The MIRROR of `_import`: an OPEN monorepo PR touching this subtree becomes a PR on the mirror,
+        # so review + discussion can happen in public on the mirror before anything merges. Same
+        # transforms as `_export` (strip prefix, rename crate, inject workspace preamble). This is the
+        # "sync a private PR up to the mirror" direction; the canonical MERGE still happens once in the
+        # monorepo (branch-protected), after which `_export` (ITERATIVE push) carries the merged commits
+        # to mirror main and this open mirror PR goes empty + is closed. Because the merge cascades out
+        # as a PUSH (no PR event on the mirror) and `_import` only fires on mirror-authored PRs, the
+        # monorepo-PR -> mirror-PR -> merge -> push round trip cannot loop. See tools/copybara/PR-SYNC.md.
+        origin = git.github_pr_origin(url = MONOREPO, branch = "main"),
+        destination = git.github_pr_destination(
+            url = mirror_url(name),
+            destination_ref = "main",
+            pr_branch = "copybara/export/" + name,
+        ),
+        origin_files = glob(
+            origin_paths,
+            exclude = export_excludes,
+        ),
+        destination_files = glob(["**"]),
+        authoring = authoring.pass_thru(default = BOT),
+        mode = "CHANGE_REQUEST",
+        transformations = export_transforms,
+    )
 
 # This pinned Copybara runtime does not support tuple-unpacking comprehensions. Keep these explicit
 # registrations in the same order as COMPONENTS; dispatch.test.sh rejects drift between them.

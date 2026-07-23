@@ -47,6 +47,7 @@ def check_text(text, components):
     select = job(text, "select")
     export = job(text, "export")
     import_job = job(text, "import")
+    export_pr = job(text, "export_pr")
 
     for literal in (
         'expected = "hopmesh/monorepo"',
@@ -71,7 +72,7 @@ def check_text(text, components):
         "mapping checkout is not bound to canonical main SHA",
     )
 
-    for name, block in (("export", export), ("import", import_job)):
+    for name, block in (("export", export), ("import", import_job), ("export_pr", export_pr)):
         require(
             "needs: [authorize, select]" in block,
             f"{name} does not depend on preflight and fixed mapping",
@@ -101,7 +102,29 @@ def check_text(text, components):
         "import token lacks exact source PR read scope",
     )
     require("permission-contents: write" not in import_job, "import App token can write mirror contents")
-    require(text.count(COPYBARA_IMAGE) == 2, "Copybara image count drifted")
+
+    # export_pr: the App token writes the MIRROR PR (branch + PR + possibly a workflow file), so it
+    # needs contents + pull-requests + workflows write on the destination. The monorepo PR is read via
+    # github.token at the JOB permission level (contents/pull-requests read), never the App token, so
+    # the App token is still scoped only to the single mapped mirror (asserted in the loop above).
+    require(
+        "permission-contents: write" in export_pr,
+        "export_pr token lacks destination contents write",
+    )
+    require(
+        "permission-pull-requests: write" in export_pr,
+        "export_pr token lacks destination PR write",
+    )
+    require(
+        "permission-workflows: write" in export_pr,
+        "export_pr token lacks destination workflows write",
+    )
+    require(
+        re.search(r"(?m)^    permissions:\n      contents: read\n      pull-requests: read$", export_pr),
+        "export_pr job github.token is not read-only (contents + pull-requests read)",
+    )
+
+    require(text.count(COPYBARA_IMAGE) == 3, "Copybara image count drifted")
     require("github.com/hopmesh/hop" not in text, "legacy canonical repository remains")
 
 
