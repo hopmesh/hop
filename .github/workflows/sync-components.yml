@@ -157,6 +157,11 @@ jobs:
           owner: hopmesh
           repositories: ${{ needs.select.outputs.repository }}
           permission-contents: write
+          # The mirror carries its own .github/workflows (ci.yml, release.yml, sync-back.yml, cla.yml)
+          # that copy.bara.sky manages, and GitHub refuses to let an App create/update a workflow file
+          # without this scope ("refusing to allow a GitHub App to create or update workflow ...
+          # without `workflows` permission"). The App must also be granted Workflows: read/write.
+          permission-workflows: write
       - name: Export selected component with isolated Copybara
         env:
           SOURCE_TOKEN: ${{ github.token }}
