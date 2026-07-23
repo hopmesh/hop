@@ -16,25 +16,6 @@ const is = (p) => (path === p ? 'nav-link active' : 'nav-link');
       <a class={is('/pricing')} href="/pricing/">Pricing</a>
       <a class="nav-link" href="https://dashboard.hopme.sh/">Sign in</a>
       <a class="btn btn-primary btn-sm" href="https://dashboard.hopme.sh/">Start free</a>
-      <button class="theme-toggle" type="button" aria-label="Toggle light and dark theme">
-        <i class="t-dark fa-duotone fa-solid fa-moon-stars"></i>
-        <i class="t-light fa-duotone fa-solid fa-sun-bright"></i>
-      </button>
     </nav>
   </div>
 </header>
-
-<script is:inline>
-  (function () {
-    var btn = document.querySelector('.theme-toggle');
-    if (!btn) return;
-    btn.addEventListener('click', function () {
-      var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-      var next = cur === 'light' ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', next);
-      try { localStorage.setItem('hop-theme', next); } catch (e) {}
-      var m = document.querySelector('meta[name="theme-color"]');
-      if (m) m.setAttribute('content', next === 'light' ? '#ffffff' : '#07090b');
-    });
-  })();
-</script>

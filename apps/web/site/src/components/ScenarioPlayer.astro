@@ -145,9 +145,10 @@ const first = SCEN[0]?.id || 'p2p';
   }
   // web-r2-05: target the concrete same-origin sim frame, never '*', so the message is scoped to our own origin.
   const pushTheme = () => { try{ if(sim && sim.contentWindow) sim.contentWindow.postMessage({type:'theme', theme:curTheme()}, location.origin); }catch(e){} };
-  // The Header toggle mutates <html data-theme>; observe it and forward the new theme into the iframe.
+  // data-theme tracks the OS preference (set pre-paint, updated live on an OS flip); observe it and
+  // forward the new theme into the iframe.
   new MutationObserver(pushTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
-  // Also push once the iframe has loaded, in case the toggle fired before it was listening.
+  // Also push once the iframe has loaded, in case the theme resolved before it was listening.
   if(sim) sim.addEventListener('load', pushTheme);
 
   // Update the story copy for scenario i, tell the sim to switch to it (no

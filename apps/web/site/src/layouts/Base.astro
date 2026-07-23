@@ -17,27 +17,23 @@ const ogImageUrl = new URL(ogImage, Astro.site);
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    {/* Set theme before paint, stored choice, else OS pref, else dark. */}
+    {/* Theme follows the OS, always. No manual override and nothing persisted: stamp
+        data-theme from prefers-color-scheme before paint, and track it live if the OS flips.
+        The CSS keys every light rule on [data-theme="light"] (dark is the :root default),
+        so this attribute drives the whole palette. */}
     <script is:inline>
       (function () {
         try {
-          var t = localStorage.getItem('hop-theme');
-          if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-          }
-          document.documentElement.setAttribute('data-theme', t);
-          // Follow the OS live: if the visitor has not made a manual choice, track system flips.
           var mq = window.matchMedia('(prefers-color-scheme: light)');
-          var onOs = function () {
-            var stored = localStorage.getItem('hop-theme');
-            if (stored === 'light' || stored === 'dark') return;
+          var apply = function () {
             var next = mq.matches ? 'light' : 'dark';
             document.documentElement.setAttribute('data-theme', next);
             var m = document.querySelector('meta[name="theme-color"]');
             if (m) m.setAttribute('content', next === 'light' ? '#ffffff' : '#07090b');
           };
-          if (mq.addEventListener) mq.addEventListener('change', onOs);
-          else if (mq.addListener) mq.addListener(onOs);
+          apply();
+          if (mq.addEventListener) mq.addEventListener('change', apply);
+          else if (mq.addListener) mq.addListener(apply);
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'dark');
         }
