@@ -100,4 +100,32 @@ if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=true \
   exit 1
 fi
 
+# export_pr requires a valid pr_number and prepends it to the Copybara args (before the flags).
+opts="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+  python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
+if [ "$opts" != "292 --ignore-noop --force" ]; then
+  echo "export_pr copybara_options drifted: $opts" >&2
+  exit 1
+fi
+# export_pr with no pr_number is rejected.
+if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" \
+    python3 "$dispatch" --json >/dev/null 2>&1; then
+  echo "dispatch accepted export_pr with no pr_number" >&2
+  exit 1
+fi
+# A non-numeric / injection pr_number is rejected.
+for bad in 'abc' '1;id' '$(id)' '-1' '0' '../7' '12345678'; do
+  if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="$bad" \
+      python3 "$dispatch" --json >/dev/null 2>&1; then
+    echo "dispatch accepted malicious pr_number: $bad" >&2
+    exit 1
+  fi
+done
+# pr_number is rejected on the non-PR directions.
+if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+    python3 "$dispatch" --json >/dev/null 2>&1; then
+  echo "dispatch accepted pr_number on export" >&2
+  exit 1
+fi
+
 echo "copybara dispatch tests passed"

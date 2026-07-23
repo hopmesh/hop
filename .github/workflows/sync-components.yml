@@ -44,6 +44,10 @@ on:
         description: "Seed full history on the first export only"
         type: boolean
         default: false
+      pr_number:
+        description: "Source monorepo PR number (required for export_pr; ignored otherwise)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -134,6 +138,7 @@ jobs:
           SYNC_COMPONENT: ${{ inputs.component }}
           SYNC_DIRECTION: ${{ inputs.direction }}
           SYNC_INIT_HISTORY: ${{ inputs.init_history }}
+          SYNC_PR_NUMBER: ${{ inputs.pr_number }}
         run: python3 tools/copybara/dispatch.py
 
   export:
