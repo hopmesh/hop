@@ -406,6 +406,7 @@ mod live {
         let mut auth_hdr: Option<String> = None;
         let mut cookie_hdr: Option<String> = None;
         let mut xff_hdr: Option<String> = None;
+        let mut client_ip_hdr: Option<String> = None;
         let mut sig_hdr: Option<String> = None;
         let mut content_length: usize = 0;
         for h in lines {
@@ -424,6 +425,13 @@ mod live {
                 cookie_hdr = Some(value());
             } else if lower.starts_with("x-forwarded-for:") {
                 xff_hdr = Some(value());
+            } else if lower.starts_with("x-hop-client-ip:") {
+                // The real end-user IP as resolved by the console proxy. accountd sits BEHIND that
+                // proxy, so its own X-Forwarded-For ends in the proxy's egress IP (one key for every
+                // user), which would collapse the per-peer rate limiter into a single global bucket.
+                // The console reads the browser IP from its own XFF (where Cloud Run did append the
+                // real client last) and forwards it here; peer_identity trusts it over the XFF.
+                client_ip_hdr = Some(value());
             } else if lower.starts_with("stripe-signature:") {
                 sig_hdr = Some(value());
             } else if lower.starts_with("content-length:") {
@@ -500,6 +508,7 @@ mod live {
             body.truncate(content_length);
             let body = String::from_utf8_lossy(&body).into_owned();
             let peer = auth_api::peer_identity(
+                client_ip_hdr.as_deref(),
                 xff_hdr.as_deref(),
                 &stream
                     .peer_addr()
@@ -568,9 +577,11 @@ mod live {
             let Some(gh) = st.github.as_ref() else {
                 return (404, headers, "{\"error\":\"not found\"}".into());
             };
-            if !st.peer_limiter.allow(peer, now) {
-                return (429, headers, "{\"error\":\"slow_down\"}".into());
-            }
+            // No app-level peer limit on the OAuth dance: it plants a CSRF state cookie the callback
+            // must echo (the real guard), makes no email/DB/external call, and the LB/Cloud Run front
+            // is the volumetric outer defense. Gating it here also mis-fired behind the console proxy,
+            // where every user shares the proxy's egress IP, so a handful of retries throttled all
+            // logins at once.
             let state = auth::generate_token();
             headers.push(("Set-Cookie".into(), oauth::state_cookie(&state)));
             headers.push(("Location".into(), oauth::authorize_url(gh, &state)));
@@ -595,9 +606,9 @@ mod live {
                 ));
                 (302, headers, String::new())
             };
-            if !st.peer_limiter.allow(peer, now) {
-                return fail(headers, "rate limited");
-            }
+            // No peer limit here either: the callback is already gated by the single-use state cookie
+            // (an attacker without a matching cookie is rejected below), and behind the proxy the peer
+            // key is the shared console egress. GitHub itself rate-limits the code exchange.
             let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
             let Some((code, qstate)) = oauth::parse_callback_query(query) else {
                 return fail(headers, "malformed query");

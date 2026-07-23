@@ -121,11 +121,24 @@ pub fn authorize_tenant(
     Ok((user, org))
 }
 
-/// The client identity used for per-peer limiting. On Cloud Run (and behind the LB) the platform
-/// APPENDS the real client address as the LAST `X-Forwarded-For` entry; anything earlier is
-/// client-supplied and spoofable, so only the last entry counts. Absent the header (direct/dev),
-/// fall back to the socket peer with its port stripped.
-pub fn peer_identity(xff: Option<&str>, socket_peer: &str) -> String {
+/// The client identity used for per-peer limiting.
+///
+/// `trusted_client_ip` is the `X-Hop-Client-IP` the console proxy sets: when accountd is reached
+/// through the console, its own `X-Forwarded-For` ends in the PROXY's egress IP (identical for every
+/// user), which would collapse the per-peer limiter into one global bucket. The console resolves the
+/// real browser IP from its own XFF and forwards it here, so it wins when present.
+///
+/// Absent that (accountd hit directly, or dev): on Cloud Run the platform APPENDS the real client
+/// address as the LAST `X-Forwarded-For` entry; anything earlier is client-supplied and spoofable,
+/// so only the last entry counts. Absent the header too, fall back to the socket peer, port stripped.
+pub fn peer_identity(
+    trusted_client_ip: Option<&str>,
+    xff: Option<&str>,
+    socket_peer: &str,
+) -> String {
+    if let Some(ip) = trusted_client_ip.map(str::trim).filter(|s| !s.is_empty()) {
+        return ip.to_string();
+    }
     if let Some(last) = xff
         .and_then(|h| h.split(',').next_back())
         .map(str::trim)
@@ -704,14 +717,35 @@ mod tests {
     fn peer_identity_trusts_only_the_appended_xff_entry() {
         // Cloud Run appends the REAL client last; spoofed leading entries are ignored.
         assert_eq!(
-            peer_identity(Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:33112"),
+            peer_identity(None, Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:33112"),
             "1.2.3.4"
         );
-        assert_eq!(peer_identity(Some(" 1.2.3.4 "), "10.0.0.9:1"), "1.2.3.4");
+        assert_eq!(
+            peer_identity(None, Some(" 1.2.3.4 "), "10.0.0.9:1"),
+            "1.2.3.4"
+        );
         // no header: socket peer, port stripped (IPv6 bracket form included)
-        assert_eq!(peer_identity(None, "9.9.9.9:5124"), "9.9.9.9");
-        assert_eq!(peer_identity(None, "[::1]:5124"), "[::1]");
+        assert_eq!(peer_identity(None, None, "9.9.9.9:5124"), "9.9.9.9");
+        assert_eq!(peer_identity(None, None, "[::1]:5124"), "[::1]");
         // empty header falls back too
-        assert_eq!(peer_identity(Some(""), "9.9.9.9:5124"), "9.9.9.9");
+        assert_eq!(peer_identity(None, Some(""), "9.9.9.9:5124"), "9.9.9.9");
+    }
+
+    #[test]
+    fn peer_identity_prefers_the_trusted_console_client_ip() {
+        // Behind the console proxy, XFF ends in the proxy IP; the forwarded real client wins.
+        assert_eq!(
+            peer_identity(
+                Some("203.0.113.7"),
+                Some("10.8.0.2, 10.8.0.9"),
+                "10.8.0.9:4432"
+            ),
+            "203.0.113.7"
+        );
+        // Empty/whitespace trusted header falls through to the XFF logic.
+        assert_eq!(
+            peer_identity(Some("  "), Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:1"),
+            "1.2.3.4"
+        );
     }
 }

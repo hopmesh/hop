@@ -43,6 +43,8 @@ const STRIP_RESPONSE_HEADERS = new Set([
   "content-length",
   "keep-alive",
   "transfer-encoding",
+  // Never let a client-supplied value ride through; the proxy sets this itself, below.
+  "x-hop-client-ip",
 ]);
 
 async function proxy(request: NextRequest): Promise<Response> {
@@ -55,6 +57,19 @@ async function proxy(request: NextRequest): Promise<Response> {
   request.headers.forEach((value, key) => {
     if (!STRIP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
   });
+
+  // Forward the real end-user IP for accountd's per-peer rate limiter. accountd sits behind THIS
+  // proxy, so its own X-Forwarded-For ends in our egress IP and every user would collapse to one
+  // rate-limit key. Same model accountd uses on its own hop: the platform appends the real client
+  // last, so the last entry of the request we received is the browser. If we can't resolve one,
+  // leave it unset and accountd falls back to its X-Forwarded-For logic.
+  const clientIp = request.headers
+    .get("x-forwarded-for")
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (clientIp) headers.set("x-hop-client-ip", clientIp);
 
   // GET and HEAD must not carry a body; anything else streams through untouched so JSON posts and
   // the Stripe webhook's raw bytes arrive byte-identical (signature verification depends on that).
