@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -18,7 +19,7 @@ def load_components(path=COMPONENTS_FILE):
     return components
 
 
-def select(component, direction, init_history, components=None):
+def select(component, direction, init_history, pr_number="", components=None):
     components = components or load_components()
     if component not in components:
         raise ValueError(f"component is not allowed: {component!r}")
@@ -29,10 +30,23 @@ def select(component, direction, init_history, components=None):
     if init_history == "true" and direction != "export":
         raise ValueError("init_history is allowed only for export")
 
+    # export_pr needs the source monorepo PR number: Copybara's github_pr_origin (CHANGE_REQUEST)
+    # requires a PR reference as a positional arg. Validate it here (the guard forbids the job from
+    # touching raw dispatch inputs, so it must be sanitized in the mapper) and prepend it to the
+    # Copybara args, before the flags, so the command is `migrate <config> <workflow> <pr> <flags>`.
+    pr_number = pr_number.strip()
+    if direction == "export_pr":
+        if not re.fullmatch(r"[1-9][0-9]{0,6}", pr_number):
+            raise ValueError("export_pr requires pr_number to be a positive integer")
+    elif pr_number:
+        raise ValueError("pr_number is allowed only for export_pr")
+
     entry = components[component]
     options = "--ignore-noop --force"
     if init_history == "true":
         options = "--ignore-noop --init-history --force"
+    if direction == "export_pr":
+        options = f"{pr_number} --ignore-noop --force"
     return {
         "component": component,
         "repository": component,
@@ -65,6 +79,7 @@ def main():
         os.environ.get("SYNC_COMPONENT", ""),
         os.environ.get("SYNC_DIRECTION", ""),
         os.environ.get("SYNC_INIT_HISTORY", ""),
+        os.environ.get("SYNC_PR_NUMBER", ""),
         components,
     )
     if args.json:
