@@ -255,6 +255,10 @@ jobs:
           DESTINATION_REPOSITORY: ${{ needs.select.outputs.repository }}
           COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
           COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
+          # The source monorepo PR number. The olivr wrapper appends COPYBARA_SOURCEREF as the last
+          # copybara arg (after the workflow), which is exactly where github_pr_origin wants the
+          # positional PR reference. Sanitized to a bare integer by dispatch.py.
+          COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}
         run: |
           set -euo pipefail
           umask 077
@@ -282,7 +286,7 @@ jobs:
             -v "$gitconfig:/etc/gitconfig:ro" \
             -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
-            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
+            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS -e COPYBARA_SOURCEREF \
             olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
           rc=$?
           set -e
