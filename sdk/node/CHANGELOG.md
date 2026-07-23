@@ -41,3 +41,5 @@ git-cliff. Do not edit by hand.
 - CHANGE_REQUEST sync-back + document merge/conversation + confidentiality (9e1dec2)
 - one consistent endpoint surface across node/python/go/elixir (#125) (c46cd8d)
 
+
+<!-- export_pr validation probe; remove after test -->
