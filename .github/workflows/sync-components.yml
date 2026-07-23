@@ -187,8 +187,8 @@ jobs:
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
             -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
             -v "$credentials:/run/secrets/git-credentials:ro" \
-            -v "$gitconfig:/root/.gitconfig:ro" \
-            -w /usr/src/app -e HOME=/root \
+            -v "$gitconfig:/run/secrets/gitconfig:ro" \
+            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/run/secrets/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
             -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
             olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
@@ -257,8 +257,8 @@ jobs:
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
             -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
             -v "$credentials:/run/secrets/git-credentials:ro" \
-            -v "$gitconfig:/root/.gitconfig:ro" \
-            -w /usr/src/app -e HOME=/root \
+            -v "$gitconfig:/run/secrets/gitconfig:ro" \
+            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/run/secrets/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
             -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
             olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
