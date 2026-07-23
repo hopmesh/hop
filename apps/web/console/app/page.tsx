@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { requestLink, githubStartUrl } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { me, requestLink, githubStartUrl } from "@/lib/api";
 
 // The console entry: one email field, or GitHub. Passwordless and frictionless by design,
 // no password, no org, no "email taken", no "already have an account". Signing up and signing in
@@ -10,6 +10,22 @@ export default function SignIn() {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
   const [error, setError] = useState<string | null>(null);
+  // An already-authenticated visitor (a live session cookie, or one just set by the GitHub
+  // callback that lands here) skips the form and goes straight to the dashboard. Checked client
+  // side so the static page still serves instantly; the flash is one frame.
+  const [checking, setChecking] = useState(true);
+  useEffect(() => {
+    let live = true;
+    me()
+      .then((u) => {
+        if (live && u) window.location.replace("/dashboard");
+        else if (live) setChecking(false);
+      })
+      .catch(() => live && setChecking(false));
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -23,6 +39,10 @@ export default function SignIn() {
       setState("idle");
     }
   }
+
+  // Hold the paint until the session check resolves, so an authenticated visitor never sees the
+  // sign-in form blink before the redirect.
+  if (checking) return <main className="auth-wrap" aria-busy="true" />;
 
   return (
     <main className="auth-wrap">

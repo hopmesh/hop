@@ -626,9 +626,12 @@ mod live {
                         "Set-Cookie".into(),
                         session::set_cookie(&out.session_raw, session::SESSION_TTL_MS / 1000),
                     ));
+                    // Land the user IN the app, on the dashboard, not on the console root, which
+                    // is the sign-in page and would just show the form again to an authenticated
+                    // visitor. Mirrors where the magic-link flow ends up.
                     headers.push((
                         "Location".into(),
-                        format!("{}/", st.console_base.trim_end_matches('/')),
+                        format!("{}/dashboard", st.console_base.trim_end_matches('/')),
                     ));
                     (302, headers, String::new())
                 }

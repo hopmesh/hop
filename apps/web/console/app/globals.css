@@ -285,7 +285,7 @@ a:hover { text-decoration: underline; }
 .linkish:hover { text-decoration: underline; }
 .linkish.danger { color: var(--danger); }
 
-.content { padding: 34px clamp(20px, 4vw, 44px); max-width: 980px; }
+.content { padding: 34px clamp(20px, 4vw, 44px); max-width: 1120px; margin-inline: auto; width: 100%; }
 .view-head { margin-bottom: 22px; }
 .view-head h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .view-head p { margin: 6px 0 0; color: var(--ink-dim); font-size: 14px; }
