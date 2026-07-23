@@ -25,14 +25,20 @@ pub struct OauthConfig {
     pub client_id: String,
     pub client_secret: String,
     /// The console origin, e.g. `https://dashboard.hopme.sh`; the registered redirect URI is
-    /// `{console_base}/auth/github/callback`.
+    /// `{console_base}/api/auth/github/callback`.
     pub console_base: String,
 }
 
 impl OauthConfig {
+    /// The registered redirect URI carries the `/api` prefix on purpose. The callback is a
+    /// server-side handler (exchange the code, set the session cookie, redirect to the console),
+    /// not a console page, so the browser must reach it through the console's `/api/*` proxy, which
+    /// strips `/api` and forwards `/auth/github/callback` to this service. Without the prefix the
+    /// browser lands on the Next app, which has no such route and 404s. This must exactly match the
+    /// GitHub OAuth app's registered callback URL and is reused verbatim in the token exchange.
     pub fn redirect_uri(&self) -> String {
         format!(
-            "{}/auth/github/callback",
+            "{}/api/auth/github/callback",
             self.console_base.trim_end_matches('/')
         )
     }
@@ -246,9 +252,9 @@ mod tests {
         let u = authorize_url(&cfg(), "st4te");
         assert!(u.starts_with("https://github.com/login/oauth/authorize?"));
         assert!(u.contains("client_id=Iv1.abc"));
-        assert!(
-            u.contains("redirect_uri=https%3A%2F%2Fdashboard.hopme.sh%2Fauth%2Fgithub%2Fcallback")
-        );
+        assert!(u.contains(
+            "redirect_uri=https%3A%2F%2Fdashboard.hopme.sh%2Fapi%2Fauth%2Fgithub%2Fcallback"
+        ));
         assert!(u.contains("scope=user%3Aemail"));
         assert!(u.ends_with("state=st4te"));
     }
@@ -317,8 +323,11 @@ mod tests {
         assert!(body.contains("client_id=Iv1.abc"));
         assert!(body.contains("client_secret=sekrit"));
         assert!(body.contains("code=c0de"));
-        assert!(body
-            .contains("redirect_uri=https%3A%2F%2Fdashboard.hopme.sh%2Fauth%2Fgithub%2Fcallback"));
+        // The exchange redirect_uri must match the authorize redirect_uri byte for byte, /api and
+        // all; GitHub rejects the exchange otherwise.
+        assert!(body.contains(
+            "redirect_uri=https%3A%2F%2Fdashboard.hopme.sh%2Fapi%2Fauth%2Fgithub%2Fcallback"
+        ));
     }
 
     #[test]
