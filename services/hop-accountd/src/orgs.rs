@@ -73,6 +73,47 @@ pub fn ensure_personal_workspace(
     }
 }
 
+/// Longest workspace name we store (Unicode scalar values). Bounded so a name can't bloat a row or
+/// blow out a sidebar label; generous enough for real team names.
+pub const MAX_ORG_NAME: usize = 60;
+
+/// Create a NEW org named `name`, owned by `user_id`, and return it. Unlike
+/// `ensure_personal_workspace` this ALWAYS creates: a user may own several workspaces (their personal
+/// one plus teams they found). `name` must already be trimmed, non-empty, and within `MAX_ORG_NAME`
+/// (the handler validates). Retries only on the astronomically unlikely tenant-hex collision.
+pub fn create_named_org(
+    store: &dyn Store,
+    user_id: &str,
+    name: &str,
+    now_ms: u64,
+) -> StoreResult<Org> {
+    loop {
+        let org = Org {
+            id: auth::generate_token(),
+            name: name.to_string(),
+            tenant_hex: generate_tenant_hex(),
+            stripe_customer: None,
+            carriage_pubkey: None,
+            otlp_endpoint: None,
+            plan: None,
+            subscription_status: None,
+            created_ms: now_ms,
+        };
+        match store.create_org(&org) {
+            Ok(()) => {
+                store.add_membership(&Membership {
+                    user_id: user_id.to_string(),
+                    org_id: org.id.clone(),
+                    role: Role::Owner,
+                })?;
+                return Ok(org);
+            }
+            Err(StoreError::Conflict(_)) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The tenant-registry entry for `tenant_hex`, i.e. the Org row the fleet reads. `None` if no such
 /// tenant. This is the read side of the registry the fleet-sync (later phase) pushes to Firestore.
 pub fn registry_entry(store: &dyn Store, tenant_hex: &str) -> StoreResult<Option<Org>> {
@@ -112,6 +153,28 @@ mod tests {
         let b = ensure_personal_workspace(&s, uid, "dev@hopme.sh", 200).unwrap();
         assert_eq!(a.id, b.id);
         assert_eq!(s.memberships_for_user(uid).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_named_org_always_makes_a_new_owned_workspace() {
+        let s = MemStore::new();
+        let uid = "u1";
+        // A personal workspace exists first; creating a named org adds a SECOND one.
+        ensure_personal_workspace(&s, uid, "dev@hopme.sh", 1).unwrap();
+        let team = create_named_org(&s, uid, "Acme Robotics", 2).unwrap();
+        assert_eq!(team.name, "Acme Robotics");
+        assert_eq!(
+            s.membership(uid, &team.id).unwrap().unwrap().role,
+            Role::Owner
+        );
+        assert!(crate::api::valid_tenant_hex(&team.tenant_hex));
+        // now a member of two distinct workspaces
+        let mine = s.memberships_for_user(uid).unwrap();
+        assert_eq!(mine.len(), 2);
+        // a second create with the same name is still a distinct org (no dedupe by name)
+        let team2 = create_named_org(&s, uid, "Acme Robotics", 3).unwrap();
+        assert_ne!(team.id, team2.id);
+        assert_ne!(team.tenant_hex, team2.tenant_hex);
     }
 
     #[test]

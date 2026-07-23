@@ -88,6 +88,8 @@ export const githubStartUrl = "/api/auth/github/start";
 // ---- console reads -------------------------------------------------------
 
 export const overview = () => jget<Overview>("/api/console/overview");
+// Create a new workspace the caller owns; returns it in the same shape as an overview workspace.
+export const createOrg = (name: string) => jpost<Workspace>("/api/console/orgs", { name });
 export const usage = (t: string) => jget<Usage>(`/api/console/usage?tenant=${t}`);
 export const subscription = (t: string) => jget<Subscription>(`/api/console/subscription?tenant=${t}`);
 export const invoices = (t: string) => jget<{ invoices: Invoice[] }>(`/api/console/invoices?tenant=${t}`);

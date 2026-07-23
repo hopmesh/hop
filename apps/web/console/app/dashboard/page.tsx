@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type { Overview, Workspace, Role } from "@/lib/api";
 import { generateCarriageKeypair, ed25519Supported, downloadText } from "@/lib/keygen";
@@ -22,15 +22,55 @@ function navFor(role: Role): { view: View; label: string; icon: string }[] {
   return all.filter((n) => n.roles.includes(role));
 }
 
+// The last-selected workspace persists across reloads, keyed by tenant so it survives even as the
+// workspace list changes (a stored tenant that no longer exists just falls back to the first).
+const WS_KEY = "hop-console-ws";
+
 export default function Dashboard() {
   const [data, setData] = useState<Overview | null | "loading">("loading");
-  const [wsIndex, setWsIndex] = useState(0);
+  const [wsTenant, setWsTenant] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
 
+  // Load (or reload) the workspace list, then select `prefer` if given, else the persisted choice,
+  // else the first. Used on mount and after creating a workspace (to pull the new one in and switch).
+  const load = useCallback((prefer?: string) => {
+    api.overview().then(
+      (d) => {
+        setData(d);
+        let stored: string | null = prefer ?? null;
+        if (!stored) {
+          try {
+            stored = localStorage.getItem(WS_KEY);
+          } catch {
+            stored = null;
+          }
+        }
+        const pick = d.workspaces.find((w) => w.tenant === stored) ?? d.workspaces[0];
+        if (pick) {
+          setWsTenant(pick.tenant);
+          try {
+            localStorage.setItem(WS_KEY, pick.tenant);
+          } catch {
+            /* private mode: selection just won't persist */
+          }
+        }
+      },
+      () => window.location.replace("/"),
+    );
+  }, []);
+
   useEffect(() => {
-    api.overview().then(setData, () => {
-      window.location.replace("/");
-    });
+    load();
+  }, [load]);
+
+  const switchTo = useCallback((tenant: string) => {
+    setWsTenant(tenant);
+    try {
+      localStorage.setItem(WS_KEY, tenant);
+    } catch {
+      /* ignore */
+    }
+    setView("overview");
   }, []);
 
   if (data === "loading" || data === null) {
@@ -45,7 +85,7 @@ export default function Dashboard() {
     );
   }
 
-  const ws = data.workspaces[wsIndex] ?? data.workspaces[0];
+  const ws = data.workspaces.find((w) => w.tenant === wsTenant) ?? data.workspaces[0];
   if (!ws) {
     return (
       <main className="auth-wrap">
@@ -68,22 +108,12 @@ export default function Dashboard() {
       <aside className="side">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="side-mark" src="/hop-mark.svg" alt="Hop" width={92} height={54} />
-        {data.workspaces.length > 1 ? (
-          <select
-            className="ws-switch"
-            value={wsIndex}
-            onChange={(e) => setWsIndex(Number(e.target.value))}
-            aria-label="Workspace"
-          >
-            {data.workspaces.map((w, i) => (
-              <option key={w.tenant} value={i}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="ws-name">{ws.name}</div>
-        )}
+        <WorkspaceSwitcher
+          workspaces={data.workspaces}
+          current={ws}
+          onSwitch={switchTo}
+          onCreated={(w) => load(w.tenant)}
+        />
         <nav className="nav">
           {nav.map((n) => (
             <button
@@ -107,6 +137,151 @@ export default function Dashboard() {
       <main className="content">
         <ViewBody view={active} ws={ws} />
       </main>
+    </div>
+  );
+}
+
+// The workspace picker + org creation, in the sidebar. Click to open a menu of every workspace the
+// user belongs to (switch), or create a new one inline. Joining an existing org happens through the
+// invite link a teammate sends (the /invite page); inviting others is in the Team view.
+function WorkspaceSwitcher({
+  workspaces,
+  current,
+  onSwitch,
+  onCreated,
+}: {
+  workspaces: Workspace[];
+  current: Workspace;
+  onSwitch: (tenant: string) => void;
+  onCreated: (w: Workspace) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // Close on an outside click or Escape, the usual menu affordances.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setCreating(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setCreating(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault();
+    const n = name.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const w = await api.createOrg(n);
+      setName("");
+      setCreating(false);
+      setOpen(false);
+      onCreated(w);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the workspace.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ws-switch-box" ref={boxRef}>
+      <button
+        type="button"
+        className="ws-switch-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="ws-switch-name">{current.name}</span>
+        <i className="fa-solid fa-chevron-down ws-switch-caret" aria-hidden="true" />
+      </button>
+
+      {open && (
+        <div className="ws-menu" role="menu">
+          <div className="ws-menu-label">Workspaces</div>
+          {workspaces.map((w) => (
+            <button
+              key={w.tenant}
+              type="button"
+              role="menuitem"
+              className={`ws-menu-item${w.tenant === current.tenant ? " current" : ""}`}
+              onClick={() => {
+                onSwitch(w.tenant);
+                setOpen(false);
+              }}
+            >
+              <span className="ws-menu-item-name">{w.name}</span>
+              <span className="ws-menu-item-role">{w.role}</span>
+              {w.tenant === current.tenant && (
+                <i className="fa-solid fa-check ws-menu-check" aria-hidden="true" />
+              )}
+            </button>
+          ))}
+
+          <div className="ws-menu-sep" />
+
+          {creating ? (
+            <form className="ws-create" onSubmit={create}>
+              <input
+                className="ws-create-input"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Organization name"
+                maxLength={60}
+                autoFocus
+                aria-label="New organization name"
+              />
+              <div className="ws-create-row">
+                <button type="submit" className="btn btn-primary btn-sm" disabled={busy || !name.trim()}>
+                  {busy ? "Creating…" : "Create"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setCreating(false);
+                    setError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {error && <div className="ws-create-err">{error}</div>}
+            </form>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              className="ws-menu-item ws-menu-add"
+              onClick={() => setCreating(true)}
+            >
+              <i className="fa-solid fa-plus" aria-hidden="true" /> Create organization
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

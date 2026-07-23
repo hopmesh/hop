@@ -712,6 +712,9 @@ mod live {
                 billing_api::handle_portal(&st.store, bill, &st.console_base, cookie, body, now)
             }),
             "/console/overview" if is_get => console_api::handle_overview(&st.store, cookie, now),
+            "/console/orgs" if is_post => {
+                console_api::handle_create_org(&st.store, cookie, body, now)
+            }
             "/console/invoices" if is_get => {
                 console_api::handle_invoices(&st.store, &st.stripe, cookie, &tenant, now)
             }

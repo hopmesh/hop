@@ -50,6 +50,44 @@ pub fn handle_overview(store: &dyn Store, cookie: Option<&str>, now_ms: u64) -> 
     AuthResponse::json(200, &body.to_string())
 }
 
+/// POST /console/orgs {"name": "..."}. Create a new workspace the signed-in user OWNS and return it in
+/// the same shape as an overview workspace, so the client can drop straight into it. Any authenticated
+/// user may create a workspace: there is no cap (billing is per-tenant and usage-metered, so an empty
+/// workspace costs nothing). The name is trimmed and length-bounded before any write.
+pub fn handle_create_org(
+    store: &dyn Store,
+    cookie: Option<&str>,
+    body: &str,
+    now_ms: u64,
+) -> AuthResponse {
+    let Some(raw) = session_from_cookie_header(cookie) else {
+        return AuthResponse::json(401, r#"{"error":"unauthenticated"}"#);
+    };
+    let user = match crate::session::validate_session(store, &raw, now_ms) {
+        Ok(Some(u)) => u,
+        Ok(None) => return AuthResponse::json(401, r#"{"error":"unauthenticated"}"#),
+        Err(_) => return AuthResponse::json(500, r#"{"error":"internal"}"#),
+    };
+    let name = crate::auth_api::json_field(body, "name").unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > crate::orgs::MAX_ORG_NAME {
+        return AuthResponse::json(400, r#"{"error":"bad_name"}"#);
+    }
+    match crate::orgs::create_named_org(store, &user.id, name, now_ms) {
+        Ok(org) => {
+            let body = serde_json::json!({
+                "tenant": org.tenant_hex,
+                "name": org.name,
+                "role": "owner",
+                "hasCarriageKey": false,
+                "hasOtlp": false,
+            });
+            AuthResponse::json(200, &body.to_string())
+        }
+        Err(_) => AuthResponse::json(500, r#"{"error":"internal"}"#),
+    }
+}
+
 /// Resolve the tenant to its Stripe customer under the `ViewInvoices` gate (Owner+Admin), or the
 /// ready error response / a "no billing yet" signal. Shared by the invoice + card reads so both gate
 /// identically and neither can read another tenant's Stripe data.
