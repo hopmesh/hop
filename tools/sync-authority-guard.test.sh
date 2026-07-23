@@ -34,6 +34,28 @@ rejected("mutable image", workflow.replace("@sha256:87e2e9089344e64693faebb2ee0e
 rejected("broad token", workflow.replace("repositories: ${{ needs.select.outputs.repository }}", "repositories: hop", 1))
 rejected("raw input", workflow.replace("SOURCE_TOKEN: ${{ github.token }}", "SOURCE_TOKEN: ${{ inputs.component }}", 1))
 rejected("mapping drift", workflow.replace("          - hop-sdk-node\n", "", 1))
+# export_pr: the github.token that reads the monorepo PR must stay read-only. "contents: read\n
+# pull-requests: read" is unique to the export_pr job (export has only contents:read; import is
+# write/write), so flipping it to write exercises the read-only assertion.
+rejected(
+    "export_pr source token writable",
+    workflow.replace(
+        "      contents: read\n      pull-requests: read",
+        "      contents: write\n      pull-requests: write",
+        1,
+    ),
+)
+# export_pr must keep Workflows write on its destination App token (the mirror PR can carry workflow
+# files). "permission-pull-requests: write\n          permission-workflows: write" is unique to
+# export_pr (export has no pull-requests:write), so dropping the workflows line trips the check.
+rejected(
+    "export_pr missing workflows write",
+    workflow.replace(
+        "          permission-pull-requests: write\n          permission-workflows: write",
+        "          permission-pull-requests: write",
+        1,
+    ),
+)
 
 sync_back = (root / "core/hop-core/.github/workflows/sync-back.yml").read_text()
 guard.check_sync_back_text(sync_back, "hop-core")

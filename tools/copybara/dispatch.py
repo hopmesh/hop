@@ -22,7 +22,7 @@ def select(component, direction, init_history, components=None):
     components = components or load_components()
     if component not in components:
         raise ValueError(f"component is not allowed: {component!r}")
-    if direction not in ("export", "import"):
+    if direction not in ("export", "import", "export_pr"):
         raise ValueError(f"direction is not allowed: {direction!r}")
     if init_history not in ("true", "false"):
         raise ValueError("init_history must be exactly true or false")
