@@ -181,7 +181,13 @@ jobs:
               name = hop-sync
               email = sync@hopme.sh
           CONFIG
-          chmod 600 "$credentials" "$gitconfig"
+          # 644, not 600: the Copybara container runs as a non-root user whose UID does not match the
+          # runner's, so a 600 file owned by the runner is unreadable inside the container (git then
+          # dies "unable to access '/etc/gitconfig': Permission denied"). The gitconfig carries no
+          # secret; the credentials file holds only short-lived tokens (the job-scoped github.token and
+          # a 1-hour, single-mirror App token) on an ephemeral single-purpose runner, and is removed on
+          # exit. World-read inside that throwaway container is an acceptable exposure.
+          chmod 644 "$credentials" "$gitconfig"
           set +e
           docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
@@ -251,7 +257,13 @@ jobs:
               name = hop-sync
               email = sync@hopme.sh
           CONFIG
-          chmod 600 "$credentials" "$gitconfig"
+          # 644, not 600: the Copybara container runs as a non-root user whose UID does not match the
+          # runner's, so a 600 file owned by the runner is unreadable inside the container (git then
+          # dies "unable to access '/etc/gitconfig': Permission denied"). The gitconfig carries no
+          # secret; the credentials file holds only short-lived tokens (the job-scoped github.token and
+          # a 1-hour, single-mirror App token) on an ephemeral single-purpose runner, and is removed on
+          # exit. World-read inside that throwaway container is an acceptable exposure.
+          chmod 644 "$credentials" "$gitconfig"
           set +e
           docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
