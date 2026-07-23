@@ -5,22 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark light" />
 <script>
-  /* Set theme before paint: a same-origin manual choice (hop-theme) wins, else follow the OS live. */
+  /* Theme follows the OS, always: stamp data-theme from prefers-color-scheme before paint and
+     track it live. No manual choice, nothing persisted (matches the main site). */
   (function () {
     try {
-      var t = localStorage.getItem('hop-theme');
-      if (t !== 'light' && t !== 'dark') {
-        t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-      }
-      document.documentElement.setAttribute('data-theme', t);
       var mq = window.matchMedia('(prefers-color-scheme: light)');
-      var onOs = function () {
-        var s = localStorage.getItem('hop-theme');
-        if (s === 'light' || s === 'dark') return;
+      var apply = function () {
         document.documentElement.setAttribute('data-theme', mq.matches ? 'light' : 'dark');
       };
-      if (mq.addEventListener) mq.addEventListener('change', onOs);
-      else if (mq.addListener) mq.addListener(onOs);
+      apply();
+      if (mq.addEventListener) mq.addEventListener('change', apply);
+      else if (mq.addListener) mq.addListener(apply);
     } catch (e) {
       document.documentElement.setAttribute('data-theme', 'dark');
     }
@@ -35,7 +30,7 @@
     --glow:#16203a; --code-bg:#0c1322; --toc-bg:rgba(11,15,23,.82); --btn-bg:#13203a; --btn-hi:#16263f; --log-bg:#0a0f1a; --prose:#d4ddec; --code-fg:#cfe6ff;
     color-scheme:dark;
   }
-  /* Light theme: follows the OS by default; a same-origin manual choice (hop-theme) still wins. */
+  /* Light theme: follows the OS. Stamped as data-theme="light" by the pre-paint script above. */
   :root[data-theme="light"]{ --bg:#f5f8fc; --panel:#ffffff; --panel2:#f1f5fb; --ink:#111a2b; --muted:#54627a; --line:#dbe4f0; --accent:#1f74d8; --accent2:#6f5ef0; --good:#0f9d72; --warn:#b07d15; --bad:#d64530; --client:#1f74d8; --server:#6f5ef0; --glow:#dce8fb; --code-bg:#eef2f9; --toc-bg:rgba(255,255,255,.85); --btn-bg:#eaf0fa; --btn-hi:#dce7f7; --log-bg:#f0f4fa; --prose:#2a3852; --code-fg:#1f4b7a; color-scheme:light; }
   @media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){ --bg:#f5f8fc; --panel:#ffffff; --panel2:#f1f5fb; --ink:#111a2b; --muted:#54627a; --line:#dbe4f0; --accent:#1f74d8; --accent2:#6f5ef0; --good:#0f9d72; --warn:#b07d15; --bad:#d64530; --client:#1f74d8; --server:#6f5ef0; --glow:#dce8fb; --code-bg:#eef2f9; --toc-bg:rgba(255,255,255,.85); --btn-bg:#eaf0fa; --btn-hi:#dce7f7; --log-bg:#f0f4fa; --prose:#2a3852; --code-fg:#1f4b7a; color-scheme:light; } }
   *{box-sizing:border-box}

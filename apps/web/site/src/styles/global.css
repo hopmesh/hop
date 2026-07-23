@@ -321,7 +321,8 @@ code {
 /* ============================================================
    Theming, light / dark. The dark palette lives in :root (above)
    and applies by default; light overrides it under [data-theme="light"].
-   A pre-paint inline script sets data-theme from localStorage / OS pref.
+   A pre-paint inline script sets data-theme from the OS preference and
+   tracks it live. The theme follows the system; there is no manual toggle.
    ============================================================ */
 
 :root[data-theme="light"] {
@@ -357,19 +358,6 @@ code {
 /* soften heavy dark-tuned shadows in light mode */
 :root[data-theme="light"] .card.lit { box-shadow: inset 0 0 0 1px #1f74d815, 0 12px 36px #1f2a4014; }
 :root[data-theme="light"] .tier.feature { box-shadow: 0 16px 50px #1f74d818; }
-
-/* theme toggle button in the header */
-.theme-toggle {
-  width: 34px; height: 34px; border-radius: 9px; cursor: pointer;
-  display: grid; place-items: center; font-size: 15px; line-height: 1;
-  background: var(--panel); border: 1px solid var(--line); color: var(--ink);
-  transition: border-color .15s ease, background .15s ease;
-}
-.theme-toggle:hover { border-color: #2c3a5c; background: var(--panel-2); }
-:root[data-theme="light"] .theme-toggle:hover { border-color: #c3cfe0; }
-.theme-toggle .t-light { display: none; }
-:root[data-theme="light"] .theme-toggle .t-light { display: inline; }
-:root[data-theme="light"] .theme-toggle .t-dark { display: none; }
 
 /* code block, always dark so syntax colors hold in both themes */
 .code-block {
