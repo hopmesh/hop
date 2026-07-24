@@ -1,12 +1,14 @@
 # Keep the monorepo CHANGELOG.md and every per-library CHANGELOG.md (public mirrors + private crates)
 # current from conventional commits (git-cliff, see cliff.toml + tools/gen-changelogs.sh).
 #
-# Scheduled + on-demand, NOT per-push: the Cloud Build trigger builds an image for EVERY commit to
-# main (the deploy tags by SHA), so committing a changelog on every merge would double the builds.
-# A daily run keeps them current within a day at one extra build; dispatch it manually for an
-# immediate refresh. The commit uses HOP_SYNC_TOKEN so it triggers CI + the image build like any
-# commit (keeping the every-commit-has-an-image invariant), and this workflow is not push-triggered,
-# so its own commit cannot loop back into it.
+# Scheduled + on-demand, NOT per-push: the deploy builds an image for EVERY commit to main (it tags
+# by SHA), so committing a changelog on every merge would double the builds. A daily run keeps them
+# current within a day at one extra build; dispatch it manually for an immediate refresh. This
+# workflow is not push-triggered, so its own commit cannot loop back into it.
+#
+# It opens a PR rather than pushing to main: main requires the aggregate "CI gate" context, which a
+# direct push can never satisfy (that is exactly how this silently broke, see the step below). The PR
+# is pushed with HOP_SYNC_TOKEN so CI actually fires, and pr-automerge.yml lands it once green.
 name: Changelog
 
 on:
@@ -42,7 +44,20 @@ jobs:
       - name: Regenerate changelogs
         run: bash tools/gen-changelogs.sh
 
-      - name: Commit if anything changed
+      # Open a PR, never push to main. main is branch-protected and requires the aggregate "CI gate"
+      # context, which a direct push can never satisfy: this step failed every day with
+      # "GH006: Protected branch update failed ... Required status check CI gate is expected" from the
+      # moment protection landed, so the changelogs silently stopped regenerating. Routing through a PR
+      # is also the repo's own law (the PR merge is the only human gate). pr-automerge.yml arms
+      # auto-merge on every non-draft PR at open, so this lands by itself once CI is green.
+      #
+      # The branch is run-scoped, so concurrent or retried runs never collide and nothing is
+      # force-pushed. HOP_SYNC_TOKEN (a real PAT, from the checkout above) attributes the push to a
+      # user, so CI actually fires on the PR; a GITHUB_TOKEN push would not trigger workflows.
+      - name: Open a PR if anything changed
+        env:
+          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+          BRANCH: chore/changelog-${{ github.run_id }}
         run: |
           set -euo pipefail
           git config user.name "hop-sync"
@@ -51,6 +66,10 @@ jobs:
             echo "changelog: already current, nothing to commit"
             exit 0
           fi
+          git checkout -b "$BRANCH"
           git add -- CHANGELOG.md '**/CHANGELOG.md'
           git commit -m "docs(changelog): regenerate from conventional commits"
-          git push
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "docs(changelog): regenerate from conventional commits" \
+            --body "Automated changelog refresh from conventional commits (git-cliff, see cliff.toml and tools/gen-changelogs.sh). Opened by the scheduled Changelog workflow; auto-merges once CI is green."
