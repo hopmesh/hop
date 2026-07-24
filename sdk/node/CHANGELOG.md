@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- pass the PR ref as COPYBARA_SOURCEREF; drop the leaked probe (31cec8a)
 - guard fixed-32-byte C-ABI reads in all wrappers (ADV18-06) (c95c826)
 - pass-5 audit remediation - DNSSEC name-hijack (CRITICAL) + Node reply UAF (HIGH) (#138) (d207acc)
 - use-after-free-safe teardown across go/python/node (+ elixir safety test) (#134) (42a4a2e)
@@ -15,6 +16,7 @@ git-cliff. Do not edit by hand.
 - sdk/node CI as a canonical composite action (shared monorepo <-> standalone repo) (#149) (85d885b)
 
 ### Chore
+- bump koffi in /sdk/node in the node-sdk-dependencies group (9e3f7c8)
 - bump the node-sdk-dependencies group across 1 directory with 2 updates (#158) (1af6155)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
@@ -24,6 +26,8 @@ git-cliff. Do not edit by hand.
 - marketable README template + brand mark + public-repo catalog (#148) (b585e9a)
 
 ### Features
+- finish inbound (import), drop export_pr (41c095e)
+- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 - expose the endpoint CP quorum setter in all six SDKs (#161) (1bc8eef)
 - cluster bindings across all six SDKs (+ passphrase ABI entry) (#154) (afb1632)
 - example parity + in-process dev certs across go/python/node/elixir (#133) (d58c460)
@@ -41,4 +45,6 @@ git-cliff. Do not edit by hand.
 - CHANGE_REQUEST sync-back + document merge/conversation + confidentiality (9e1dec2)
 - one consistent endpoint surface across node/python/go/elixir (#125) (c46cd8d)
 
+### Testing
+- export_pr validation probe (sdk/node) (dddb024)
 

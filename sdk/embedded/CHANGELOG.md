@@ -9,6 +9,8 @@ git-cliff. Do not edit by hand.
 - drop unused attestation read access (0137b19)
 
 ### Features
+- finish inbound (import), drop export_pr (41c095e)
+- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 - hop-embedded, the PlatformIO library (ESP32/Arduino/MCU) (4dcd152)
 
 ### Other
