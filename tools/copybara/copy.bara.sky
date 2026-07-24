@@ -355,6 +355,9 @@ def _register(prefix, name):
         destination_files = glob([prefix + "/**"], exclude = internal),
         authoring = authoring.pass_thru(default = BOT),
         mode = "CHANGE_REQUEST",
+        # Import transforms mirror the one-way export transforms, so the CHANGE_REQUEST reversibility
+        # check does not apply to this directional sync (same reason as export_pr).
+        reversible_check = False,
         transformations = import_transforms,
     )
     core.workflow(
@@ -367,11 +370,12 @@ def _register(prefix, name):
         # to mirror main and this open mirror PR goes empty + is closed. Because the merge cascades out
         # as a PUSH (no PR event on the mirror) and `_import` only fires on mirror-authored PRs, the
         # monorepo-PR -> mirror-PR -> merge -> push round trip cannot loop. See tools/copybara/PR-SYNC.md.
-        # baseline_from_branch: the monorepo carries no *-RevId label to find the baseline from (export
-        # writes those into the MIRROR, not here), so derive it by diffing the PR against its base
-        # branch instead. Without this, CHANGE_REQUEST fails with "Cannot read origin revision from
-        # baseline". Only valid for github -> git CHANGE_REQUEST, which this is.
-        origin = git.github_pr_origin(url = MONOREPO, branch = "main", baseline_from_branch = True),
+        # The monorepo carries no *-RevId label to find the baseline from (export writes those into the
+        # MIRROR, not here). baseline_from_branch does not fit either: it uses the PR's base-branch tip,
+        # which is generally not a subtree-touching commit and so has no counterpart in the mirror. The
+        # export_pr job instead passes --change-request-parent = the monorepo revision the mirror is
+        # currently at (its HEAD GitOrigin-RevId), which copybara resolves on both the origin and mirror.
+        origin = git.github_pr_origin(url = MONOREPO, branch = "main"),
         destination = git.github_pr_destination(
             url = mirror_url(name),
             destination_ref = "main",
