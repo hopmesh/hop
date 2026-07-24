@@ -21,6 +21,18 @@ options = [line.split("-", 1)[1].strip() for line in match.group("options").spli
 if options != list(components):
     raise SystemExit(f"workflow choices drifted: {options!r}")
 
+# Every `needs.select.outputs.X` a job consumes must be declared in the select job's `outputs:` block,
+# or it silently resolves to empty at runtime. This is exactly how export_pr lost its PR ref: source_ref
+# was emitted by the mapper and consumed by the job, but never surfaced as a select output.
+select = re.search(r"^  select:\n(?P<body>(?: {4,}.*\n|\n)+)", workflow, re.M)
+if not select:
+    raise SystemExit("select job not found in workflow")
+declared = set(re.findall(r"^      (\w+):\s*\$\{\{\s*steps\.map\.outputs\.\w+", select.group("body"), re.M))
+consumed = set(re.findall(r"needs\.select\.outputs\.(\w+)", workflow))
+missing = consumed - declared
+if missing:
+    raise SystemExit(f"select outputs consumed but not declared (resolve to empty): {sorted(missing)!r}")
+
 sky = (root / "tools/copybara/copy.bara.sky").read_text()
 if re.search(r"(?<!\$)\$\{SRCDIR\}", sky) or sky.count("$${SRCDIR}") != 4:
     raise SystemExit("Copybara cgo paths do not escape literal template dollars")

@@ -127,6 +127,9 @@ jobs:
       workflow: ${{ steps.map.outputs.workflow }}
       copybara_options: ${{ steps.map.outputs.copybara_options }}
       direction: ${{ steps.map.outputs.direction }}
+      # export_pr needs the source PR number to reach the copybara container; without this line
+      # needs.select.outputs.source_ref is empty and github_pr_origin gets no PR reference.
+      source_ref: ${{ steps.map.outputs.source_ref }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -257,7 +260,8 @@ jobs:
           COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
           # The source monorepo PR number. The olivr wrapper appends COPYBARA_SOURCEREF as the last
           # copybara arg (after the workflow), which is exactly where github_pr_origin wants the
-          # positional PR reference. Sanitized to a bare integer by dispatch.py.
+          # positional PR reference. Sanitized to a bare integer by dispatch.py, and surfaced as a
+          # select job output (below) so this reference resolves to the number rather than empty.
           COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}
         run: |
           set -euo pipefail
