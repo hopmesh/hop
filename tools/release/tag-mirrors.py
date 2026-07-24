@@ -78,11 +78,21 @@ def version_from_text(filename, text):
     return None
 
 
-def decide(entry, tag_exists, mirror_version):
+def decide(entry, tag_exists, mirror_version, mirror_has_any_tag=True, allow_first_tag=False):
     """Pure policy: tag, or skip with a reason. mirror_version is None when unread/unverifiable."""
     version = entry["version"]
     if tag_exists:
         return False, f"already tagged v{version}"
+    # A mirror with NO tags at all is not a routine version bump, it is that component's first ever
+    # release, and every untagged component qualifies at once. Landing this workflow tagged eleven
+    # mirrors in one go and fired eleven release workflows; the registries were spared only by a
+    # separate approval gate. So a first tag is deliberate-only: dispatch with first_tag=yes. An
+    # ordinary bump on an already-tagged mirror stays automatic.
+    if not mirror_has_any_tag and not allow_first_tag:
+        return False, (
+            f"v{version} would be this mirror's FIRST tag; "
+            "dispatch Release tags with first_tag=yes to allow it"
+        )
     if entry["source"] == ANCHOR_SOURCE:
         return True, f"tagging v{version} (no in-repo version to verify)"
     if mirror_version is None:
@@ -92,7 +102,7 @@ def decide(entry, tag_exists, mirror_version):
     return True, f"tagging v{version}"
 
 
-def process(entry, token):
+def process(entry, token, allow_first_tag=False):
     repo = entry["component"]
     version = entry["version"]
     tag = f"v{version}"
@@ -101,6 +111,14 @@ def process(entry, token):
     if status not in (200, 404):
         raise TagError(f"{repo}: unexpected status {status} reading tag {tag}")
     tag_exists = status == 200
+
+    # Does this mirror have ANY tag? Distinguishes a routine bump from a first-ever release.
+    mirror_has_any_tag = tag_exists
+    if not tag_exists:
+        tags, status = request(f"/repos/{OWNER}/{repo}/tags?per_page=1", token)
+        if status != 200:
+            raise TagError(f"{repo}: cannot list tags ({status})")
+        mirror_has_any_tag = bool(tags)
 
     mirror_version = None
     if not tag_exists and entry["source"] != ANCHOR_SOURCE:
@@ -113,7 +131,9 @@ def process(entry, token):
             text = base64.b64decode(contents["content"]).decode("utf-8", "replace")
             mirror_version = version_from_text(entry["source"], text)
 
-    should_tag, reason = decide(entry, tag_exists, mirror_version)
+    should_tag, reason = decide(
+        entry, tag_exists, mirror_version, mirror_has_any_tag, allow_first_tag
+    )
     print(f"{repo}: {reason}")
     if not should_tag:
         return False
@@ -146,9 +166,13 @@ def main():
     entries = json.loads(os.environ.get("PLAN") or "[]")
     if not entries:
         raise TagError("PLAN is empty")
+    # Opt-in for a mirror's first ever tag; only a deliberate dispatch sets this.
+    allow_first_tag = os.environ.get("ALLOW_FIRST_TAG", "").strip().lower() == "yes"
+    if allow_first_tag:
+        print("first_tag=yes: mirrors with no tags at all are eligible in this run")
     tagged = 0
     for entry in entries:
-        tagged += 1 if process(entry, token) else 0
+        tagged += 1 if process(entry, token, allow_first_tag) else 0
     print(f"release tags created: {tagged}")
 
 
