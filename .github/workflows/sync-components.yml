@@ -267,27 +267,47 @@ jobs:
           set -euo pipefail
           umask 077
           gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
-          cleanup() { rm -f "$gitconfig"; }
+          gitcreds="$(mktemp "$RUNNER_TEMP/copybara-gitcreds.XXXXXX")"
+          cleanup() { rm -f "$gitconfig" "$gitcreds"; }
           trap cleanup EXIT
-          # Same auth model as the export step: rewrite the canonical https URLs to carry the per-repo
-          # token (url.insteadOf), no credential.helper store (its lock write fails on the read-only
-          # container). See the export step for the full rationale. Source = monorepo (github.token,
-          # reads the open PR); destination = mirror PR (App token, writes the branch + PR).
+          # Two auth surfaces, both per-repo. (1) git TRANSPORT (clone monorepo, push mirror) carries
+          # the token in the URL via url.insteadOf. (2) copybara's GitHub API client (github_pr_origin
+          # reads the PRIVATE monorepo PR, github_pr_destination opens the mirror PR) resolves a token
+          # via `git credential fill`, so it needs a helper. We point it at a read-only store file with
+          # useHttpPath, so each repo path draws its own token: monorepo -> source (github.token),
+          # mirror -> destination (App). Only `fill` (read) runs here, so the read-only store is never
+          # written (no approve/erase, no lock). See the export step for the transport rationale.
           cat > "$gitconfig" <<CONFIG
           [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/monorepo"]
               insteadOf = https://github.com/hopmesh/monorepo
           [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/${DESTINATION_REPOSITORY}"]
               insteadOf = https://github.com/hopmesh/${DESTINATION_REPOSITORY}
+          [credential]
+              helper = store --file=/etc/hop-git-credentials
+              useHttpPath = true
           [user]
               name = hop-sync
               email = sync@hopme.sh
           CONFIG
           chmod 644 "$gitconfig"
+          # Per-repo API tokens for `git credential fill` (copybara's GitHub API client). Both the bare
+          # and .git path forms, since the web URL copybara authenticates against may or may not carry
+          # the .git suffix. Written with printf so no heredoc indentation leaks into the credential
+          # lines (git-credential-store does not tolerate leading whitespace). World readable to match
+          # gitconfig; same tokens, single-tenant ephemeral runner.
+          {
+            printf 'https://x-access-token:%s@github.com/hopmesh/monorepo\n' "$SOURCE_TOKEN"
+            printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$SOURCE_TOKEN"
+            printf 'https://x-access-token:%s@github.com/hopmesh/%s\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY"
+            printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY"
+          } > "$gitcreds"
+          chmod 644 "$gitcreds"
           set +e
           docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
             -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
             -v "$gitconfig:/etc/gitconfig:ro" \
+            -v "$gitcreds:/etc/hop-git-credentials:ro" \
             -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
             -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS -e COPYBARA_SOURCEREF \
