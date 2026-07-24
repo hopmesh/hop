@@ -98,6 +98,7 @@ jobs:
               - 'tools/*'
               - 'tools/codegen/**'
               - 'tools/native-attestation/**'
+              - 'tools/release/**'
             rust:
               - 'services/**'
               - '**/*.rs'
@@ -838,6 +839,8 @@ jobs:
         run: bash tools/pages-path-guard.test.sh
       - name: Enforce Pages dependency graph
         run: python3 tools/pages-path-guard.py
+      - name: Self-test release plan + mirror tagger
+        run: bash tools/release/release.test.sh
       - name: Self-test immutable release artifacts
         run: bash tools/release-artifact.test.sh
       - name: Self-test exact crates.io publication payloads

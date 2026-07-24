@@ -1,0 +1,68 @@
+# Tag a release on every PUBLIC mirror whose declared version is not tagged there yet.
+#
+# This is the missing link in the release chain. Each mirror already ships a release.yml that fires on
+# a `vX.Y.Z` tag and publishes via OIDC trusted publishing, but nothing ever created those tags, so no
+# mirror had a single tag or release. A version bump is therefore the release gate: bump a component's
+# manifest, merge it, and once the export carries that bump to the mirror this tags it and the mirror
+# publishes itself.
+#
+# It runs after "Sync component" finishes on main (the auto-export that pushes the bump to the
+# mirrors), never before, plus on demand. Every step is idempotent and self-healing:
+#
+#   - a version already tagged on that mirror is skipped, so ordinary merges tag nothing;
+#   - a mirror whose main does NOT yet carry the version is skipped, not forced. The tag would
+#     otherwise point at code whose manifest says something else, and the mirror's own release.yml
+#     asserts tag == manifest version, so it would fail the publish. Skipping lets the next run (or the
+#     dispatch) pick it up once the export lands;
+#   - tags are created through the git refs API, which never overwrites an existing ref.
+#
+# Auth is the same GitHub App the sync uses, minted for exactly the mirrors in the plan with
+# contents:write (creating a ref) and nothing else. The monorepo's own GITHUB_TOKEN stays read-only.
+name: Release tags
+
+on:
+  workflow_run:
+    workflows: ["Sync component"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-tags
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    # Only after a SUCCESSFUL export (a failed sync means the mirrors may not carry the bump yet), and
+    # only from canonical main.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Resolve each releasable component's declared version
+        id: plan
+        run: python3 tools/release/plan.py
+
+      - name: Mint mirror tokens for the releasable components
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: write
+
+      - name: Tag each mirror that is not yet tagged at its declared version
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PLAN: ${{ steps.plan.outputs.plan }}
+        run: python3 tools/release/tag-mirrors.py
