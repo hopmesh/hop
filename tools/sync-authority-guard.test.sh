@@ -57,6 +57,12 @@ rejected(
     ),
 )
 
+# auto_export (push path) must stay push-gated and export-only.
+rejected("auto_export not push-gated", workflow.replace("if: ${{ github.event_name == 'push' }}", "if: true", 1))
+rejected("auto_export write direction", workflow.replace("SYNC_DIRECTION=export ", "SYNC_DIRECTION=import ", 1))
+rejected("auto_export skips preflight", workflow.replace("python3 tools/copybara/auto-export-plan.py", "true", 1))
+rejected("auto_export broad token", workflow.replace("repositories: ${{ steps.plan.outputs.repos }}", "repositories: hop", 1))
+
 sync_back = (root / "core/hop-core/.github/workflows/sync-back.yml").read_text()
 guard.check_sync_back_text(sync_back, "hop-core")
 
