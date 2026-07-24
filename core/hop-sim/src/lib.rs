@@ -28,7 +28,7 @@ use hop_core::prelude::*;
 pub struct SimNode {
     pub identity: Identity,
     pub store: MemoryStore,
-    pub router: SprayAndWait,
+    pub router: EpidemicRouter,
     /// Deterministic signed-prekey secret (epoch 0), so this node can recognize §39 private
     /// bundles addressed to it (`Bundle::recognized_by`), the private path's "is this mine?".
     spk_secret: [u8; 32],
@@ -41,7 +41,7 @@ impl SimNode {
         Self {
             identity,
             store: MemoryStore::new(),
-            router: SprayAndWait::new(),
+            router: EpidemicRouter::new(),
             spk_secret,
         }
     }

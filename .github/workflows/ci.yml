@@ -206,7 +206,7 @@ jobs:
           git fetch --no-tags --prune --force origin "+refs/heads/main:refs/remotes/origin/main"
           bash tools/wire-version-guard.sh
 
-      - name: Check deterministic v9 wire corpus
+      - name: Check deterministic wire corpus (v11)
         run: cargo run -p hop-core --example wire-vectors --features wire-vectors
 
       - name: Install pinned fuzz toolchain and cargo-fuzz
@@ -825,6 +825,10 @@ jobs:
         run: bash tools/executable-reference-guard.test.sh
       - name: Enforce immutable executable and publication references
         run: python3 tools/executable-reference-guard.py
+      - name: Self-test BLE dial-backoff parity guard
+        run: bash tools/ble-backoff-parity.test.sh
+      - name: Enforce BLE dial-backoff parity across bearers
+        run: bash tools/ble-backoff-parity.sh
       - name: Self-test exact branch-protection policy
         run: bash tools/check-branch-protection.test.sh
       - name: Self-test canonical sync authority

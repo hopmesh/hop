@@ -1,0 +1,66 @@
+{
+  "_comment": [
+    "Canonical BLE dial-backoff schedule, shared by bearers/apple/HopBearerBle (bleNextBackoffS)",
+    "and bearers/android/bearer-ble (nextBackoffMs). Jitter is EXCLUDED: it is caller-supplied and",
+    "deliberately random, so only the deterministic base is pinned.",
+    "These two implementations DIVERGED once: Android moved to count-based growth after finding a",
+    "delta-based schedule reset to the floor every cycle (a dial takes DIAL_TIMEOUT_MS=12s to fail,",
+    "which outlasts a sub-2s window, so a peer that never yields an L2CAP channel re-dialed every",
+    "~13s forever and starved healthy peers). Apple kept the broken version until this file existed.",
+    "tools/ble-backoff-parity.sh fails CI if either implementation stops matching these numbers."
+  ],
+  "base_ms": 2000,
+  "max_ms": 30000,
+  "quarantine_after": 6,
+  "quarantine_ms": 120000,
+  "vectors": [
+    {
+      "fail_count": 1,
+      "backoff_ms": 2000
+    },
+    {
+      "fail_count": 2,
+      "backoff_ms": 4000
+    },
+    {
+      "fail_count": 3,
+      "backoff_ms": 8000
+    },
+    {
+      "fail_count": 4,
+      "backoff_ms": 16000
+    },
+    {
+      "fail_count": 5,
+      "backoff_ms": 30000
+    },
+    {
+      "fail_count": 6,
+      "backoff_ms": 64000
+    },
+    {
+      "fail_count": 7,
+      "backoff_ms": 120000
+    },
+    {
+      "fail_count": 8,
+      "backoff_ms": 120000
+    },
+    {
+      "fail_count": 9,
+      "backoff_ms": 120000
+    },
+    {
+      "fail_count": 10,
+      "backoff_ms": 120000
+    },
+    {
+      "fail_count": 11,
+      "backoff_ms": 120000
+    },
+    {
+      "fail_count": 12,
+      "backoff_ms": 120000
+    }
+  ]
+}
