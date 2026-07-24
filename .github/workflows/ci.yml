@@ -79,7 +79,7 @@ jobs:
       sdk_crystal: ${{ steps.f.outputs.sdk_crystal }}
       sdk_elixir: ${{ steps.f.outputs.sdk_elixir }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: f
         with:
@@ -167,7 +167,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -267,7 +267,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.kotlin == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
@@ -309,7 +309,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.android == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
@@ -406,7 +406,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The daemon runner has no login-keychain session, so the HopDriver Keychain + Secure-Enclave tests
       # (SecItemAdd/Copy) fail and fall back to in-memory. Create + unlock a dedicated CI keychain and make
@@ -558,7 +558,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.wasm == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust + wasm32 target
         run: |
@@ -602,7 +602,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.web == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # web-04 / quality-net-05 / infra-12: the marketing site + the homepage sim had NO PR-time gate;
       # a broken Astro build, a dead internal link, or a sim-scenario regression only surfaced as a
@@ -682,7 +682,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.contract == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust + cbindgen (pinned)
         run: |
@@ -740,7 +740,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.infra == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # infra-10: run the same OpenTofu version pinned in the bootstrap-owned inline
       # deployment trigger, so fmt/validate here match the production apply.
@@ -804,7 +804,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -857,7 +857,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Self-test mirror release provenance
         run: bash tools/release-provenance.test.sh
       - name: Self-test clean package exports and signed native artifacts
@@ -909,7 +909,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_node == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The CANONICAL sdk/node CI, shared verbatim with the standalone hop-sdk-node repo (one composite
       # action, no drift). Here it builds libhop from the in-tree Rust core; the standalone downloads a
       # prebuilt from the hopmesh/libhop release. See sdk/node/.github/ + tools/copybara/.
@@ -924,8 +924,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_python == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.13"
       - name: Install Rust toolchain
@@ -956,7 +956,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_go == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.22.12"
@@ -989,8 +989,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_ruby == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "3.3.12"
       - name: Install Rust toolchain
@@ -1018,7 +1018,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_crystal == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Crystal
         uses: crystal-lang/install-crystal@d8ef131ecec0352ce0e39b81b0a6d95def58fe2f # v1.9.2
         with:
@@ -1050,7 +1050,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_elixir == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "27.3.4.3"
