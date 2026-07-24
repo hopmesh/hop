@@ -25,7 +25,12 @@ on:
     workflows: ["Sync component"]
     types: [completed]
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      first_tag:
+        description: 'Type "yes" to also tag mirrors that have NO tags at all (a component first release)'
+        required: false
+        default: "no"
 
 permissions:
   contents: read
@@ -65,4 +70,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PLAN: ${{ steps.plan.outputs.plan }}
+          # A mirror's FIRST ever tag is that component's first release, not a routine bump, and every
+          # untagged component qualifies simultaneously. Automatic runs never do it; only a deliberate
+          # dispatch with first_tag=yes does. Reaching the tagger as a value (not a raw expression in
+          # the script) keeps dispatch data out of the shell.
+          ALLOW_FIRST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.first_tag || 'no' }}
         run: python3 tools/release/tag-mirrors.py

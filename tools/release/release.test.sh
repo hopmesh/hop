@@ -7,6 +7,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 python3 - "$root" <<'PY'
 import importlib.util
+import re
 import json
 import sys
 from pathlib import Path
@@ -67,8 +68,8 @@ manifest = {"component": "hop-sdk-node", "version": "1.2.3", "source": "package.
 anchor = {"component": "hop-sdk-go", "version": "1.2.3", "source": tag_mod.ANCHOR_SOURCE}
 
 
-def should(entry, tag_exists, mirror_version):
-    return tag_mod.decide(entry, tag_exists, mirror_version)[0]
+def should(entry, tag_exists, mirror_version, has_tags=True, allow_first=False):
+    return tag_mod.decide(entry, tag_exists, mirror_version, has_tags, allow_first)[0]
 
 
 # Never retag: an existing tag wins over everything, including a matching manifest.
@@ -80,6 +81,22 @@ assert not should(manifest, False, "1.2.2"), "tagged a mirror still on the old v
 assert not should(manifest, False, None), "tagged a mirror whose manifest could not be read"
 # Anchor-versioned components have nothing to compare and no assertion downstream.
 assert should(anchor, False, None), "refused to tag an anchor-versioned component"
+
+# A mirror with NO tags at all is a component's FIRST release, not a routine bump, and every untagged
+# component qualifies at once. That must never happen automatically; it needs a deliberate dispatch.
+assert not should(manifest, False, "1.2.3", has_tags=False), "auto-created a mirror's first ever tag"
+assert not should(anchor, False, None, has_tags=False), "auto-created an anchor mirror's first tag"
+assert should(manifest, False, "1.2.3", has_tags=False, allow_first=True), "opt-in first tag refused"
+assert should(anchor, False, None, has_tags=False, allow_first=True), "opt-in first tag refused"
+# The opt-in must not weaken any other rule.
+assert not should(manifest, True, "1.2.3", has_tags=False, allow_first=True), "opt-in retagged"
+assert not should(manifest, False, "1.2.2", has_tags=False, allow_first=True), "opt-in tagged a stale mirror"
+# The tagger reads the opt-in from an env var and treats anything but "yes" as off, so a default
+# dispatch (first_tag=no) or a missing value cannot backfill.
+tagger_src = (root / "tools/release/tag-mirrors.py").read_text()
+assert 'os.environ.get("ALLOW_FIRST_TAG", "").strip().lower() == "yes"' in tagger_src, (
+    "the first-tag opt-in is not read strictly from ALLOW_FIRST_TAG"
+)
 
 # --- the workflow's authority shape -------------------------------------------------------------
 # This workflow mints a write token on PUBLIC repositories and creates tags that publish packages, so
@@ -98,9 +115,15 @@ for required in (
 for forbidden in (
     "permission-workflows: write",   # tagging never rewrites mirror workflows
     "permission-administration",
-    "${{ inputs.",                   # no raw dispatch data reaches the tagger
 ):
     assert forbidden not in workflow, f"release-tags authority widened: {forbidden}"
+
+# The one piece of dispatch data the tagger sees is the first-tag opt-in, and it must arrive as an
+# env VALUE compared against a literal in Python, never interpolated into a run: script.
+assert "ALLOW_FIRST_TAG: ${{" in workflow, "the first-tag opt-in is not passed as an env value"
+run_blocks = re.findall(r"^\s*run: \|?(.*?)(?=^\s{6}- |\Z)", workflow, re.S | re.M)
+for block in run_blocks:
+    assert "inputs." not in block, "dispatch input is interpolated into a run: script"
 
 # The CI job must actually run this self-test, or the policy above is unenforced.
 ci = (root / ".github/workflows/ci.yml").read_text()
