@@ -77,7 +77,7 @@ relays forward for strangers but must not be able to read or forge payloads.
 ├─────────────────────────────────────────────────────────┤
 │ Bundle        id · src · dst · lifetime · custody · seal   │  hop-core::bundle
 ├─────────────────────────────────────────────────────────┤
-│ Routing       epidemic / spray-and-wait · gateway-gradient │  hop-core::routing
+│ Routing       epidemic flood + ACK-vaccine · gateway-gradient │  hop-core::routing
 ├─────────────────────────────────────────────────────────┤
 │ Store         persistent forward queue · dedup · custody   │  hop-core::store
 ├─────────────────────────────────────────────────────────┤
@@ -232,39 +232,58 @@ time out. Large payloads (HTTP responses) ride L2CAP CoC, not GATT notifications
 Routing decides, for each stored bundle and each newly-discovered peer, **whether
 to hand this bundle to that peer.** No global topology, no addresses-as-locations.
 
-### Device-to-device (B): binary Spray-and-Wait
+### Device-to-device (B): epidemic flood, reclaimed by vaccine
 
 The problem: in an intermittently-connected mesh there is no path to query, so the
-two naive options are bad. **Epidemic routing**, copy to *every* peer you meet, delivers well but the copy count explodes, and so do storage and radio time.
+two naive options are bad. **Epidemic routing**, copy to *every* peer you meet,
+delivers well but the copy count explodes, and so do storage and radio time.
 **Direct delivery**, keep one copy, hand it only to the destination, has minimal
 overhead but terrible latency (you must physically encounter the destination).
-Spray-and-Wait is the tunable middle.
 
-A bundle is born with a **copy budget L** (`BundleOpts.copies`, default 8). That
-budget is the *total* number of copies allowed to exist in the network, it travels
-with the bundle in the (unsigned) envelope, so it survives handoffs.
+**What ships today** (`routing.rs`, `EpidemicRouter::should_forward`) is epidemic
+with a *reclamation* mechanism rather than an *issuance* budget:
 
-- **Spray phase** (`copies > 1`): on meeting a peer that doesn't already have the
-  bundle, the custodian does a **binary split**, gives the peer `floor(n/2)` of its
-  copies and keeps `ceil(n/2)` (`Bundle::split_copies`). Both can now spray further.
-  Starting from 8: `8 → 4+4 → 2+2 → 1+1`, so after ~log₂(L) good encounters the
-  copies are spread across up to L distinct carriers fanning out in parallel.
-- **Wait phase** (`copies == 1`): a carrier down to its last copy stops spraying and
-  holds it, delivering **only** when it directly meets the destination.
-- **Direct delivery always wins:** at any time, if the peer *is* the destination, the
-  bundle is handed over regardless of phase (and custody released).
+- **Forward to every peer**, bounded only by `hop_limit` (`BundleOpts` default 8).
+  A peer that already holds the bundle dedups it by `BundleId`, so re-offering is
+  cheap rather than harmful.
+- **Direct delivery is not a special case**, it falls out of the same rule: if the
+  peer *is* the destination, the same `Forward` hands it over.
+- **The delivery vaccine reclaims the copies** (§39, `Destination::Vaccine`). On
+  delivery the recipient floods a self-verifying anti-packet carrying the revealed
+  recognition token. Every holder tests that token against its stored tag and drops
+  the bundle it matches. Copies are bounded *after the fact* by delivery, which is
+  tighter than any budget picked in advance, because a budget cannot know when the
+  message actually arrived.
 
-Why binary specifically: among spray schemes under random mobility, the binary
-split minimizes expected delivery delay, it spreads copies to independent carriers
-fastest, maximizing the chance one of them encounters the destination soon. L is the
-single knob trading overhead (≤ L copies, bounded) against delivery probability and
-latency. The simulator (`hop-sim`) is where we'll tune L against contact traces;
-see test `binary_spray_splits_copies_then_delivers`.
+**Why not binary Spray-and-Wait.** The original design here was Spray-and-Wait: a
+copy budget `L` in the envelope, binary-split on each handoff (`8 → 4+4 → 2+2 →
+1+1`), spray while `copies > 1`, hold and wait at `copies == 1`. It was replaced for
+two reasons:
 
-**Optional later, PRoPHET hint:** instead of spraying to *any* fresh peer, prefer
-peers with higher historical delivery-predictability for the destination. The same
-encounter statistics that power reliability-weighted relay (§18) feed this. Pure
-spray-and-wait works without it; we add it only if the simulator shows it helps.
+1. **The vaccine subsumes it.** A budget caps copies whether or not the message was
+   delivered; the vaccine deletes them precisely because it was. Metering issuance
+   on top of that pays latency (a carrier in the wait phase holds a copy it could
+   have handed on) for a bound the vaccine already provides.
+2. **A decrementing counter is a §39 side channel.** `copies` rides the *unsigned*
+   envelope and is mutated in transit, so it is one of the few fields an on-path
+   observer sees change. A monotonically decreasing per-bundle counter is a
+   correlation handle across hops and a rough hop-distance oracle, both of which
+   §39 spends real complexity elsewhere to deny.
+
+**Dormant machinery, deliberately retained.** `Envelope.copies`,
+`Bundle::split_copies`, and `Store::split_copies` still exist and are still tested.
+Routing does not call them (`EpidemicRouter::should_forward` reads `b.copies` only
+to discard it). They are kept because `Router` is a swappable trait and the
+simulator (`hop-sim`) is where an alternative policy would be evaluated against
+contact traces. Treat them as a policy hook, not as live behavior. **If you are
+implementing `Store` against the C ABI, `split_copies` is not on any hot path.**
+
+**Optional later, PRoPHET hint:** prefer peers with higher historical
+delivery-predictability for the destination instead of forwarding to any fresh peer.
+The same encounter statistics that power reliability-weighted relay (§18) feed this.
+Epidemic works without it; we add it only if the simulator shows it helps. Note this
+reintroduces a routing decision keyed on the destination, which a §39 private bundle
+deliberately does not expose, so it can only apply to traced bundles.
 
 ### Internet egress (A): device-addressed hops:// request
 - Egress is no longer a mesh-visible `InternetEgress` destination (that variant was
@@ -278,7 +297,7 @@ spray-and-wait works without it; we add it only if the simulator shows it helps.
 ### ACK / response return path
 The return bundle is `Device(origin_pubkey)` (response) or `AckTo(...)`. It routes
 back using the same device-to-device machinery. Because the origin may have moved,
-returns use spray-and-wait too. The origin retransmits the request until the
+returns flood epidemically too. The origin retransmits the request until the
 response/ACK arrives or lifetime expires.
 
 Routing is a trait so policies are swappable and testable in simulation:
@@ -462,7 +481,7 @@ hop/
 │  │   ├─ discover       # gossiped service/peer directory + pub-sub (§15 §16)
 │  │   ├─ node           # the event loop tying every layer together
 │  │   ├─ relay          # reliability-weighted relay scoring (§18)
-│  │   ├─ routing        # spray-and-wait + gateway gradient (§6)
+│  │   ├─ routing        # epidemic flood + gateway gradient (§6)
 │  │   ├─ link           # Noise XX sessions + fragmentation (§4)
 │  │   ├─ stream         # ordered SSE/WS reassembly + resend buffer (§20)
 │  │   ├─ store/util
@@ -508,8 +527,9 @@ hop/
    `Store` (`Node::with_store`), so it runs on either memory or SQLite. Encryption at
    rest via SQLCipher or app-supplied page encryption; `MemoryStore` remains for
    tests and the simulator. Tests cover dedup-across-reopen and copy-budget persistence.
-3. **Routing v1**, start with pure binary spray-and-wait (simplest correct thing)
-   and add PRoPHET/gateway-gradient once the simulator shows the need?
+3. **Routing v1** (historical: this is what was planned, see §6 for what shipped),
+   start with pure binary spray-and-wait and add PRoPHET/gateway-gradient once the
+   simulator shows the need? Superseded: epidemic + ACK-vaccine ships instead.
 4. ~~**Bundle codec**~~, **DECIDED: `postcard`** (compact, Rust-native; native
    apps consume via the `hop` C ABI, so CBOR interop isn't needed).
 5. **Identity backup / recovery**, losing the keypair = losing your address. Out
@@ -522,8 +542,9 @@ hop/
 - **Phase 0, Spec.** This document. Resolve §13 (1) and (4) before coding format.
 - **Phase 1, Core data plane.** `hop-core`: bundle codec + crypto (identity, seal,
   sign, dedup) + store. Property tests for round-trip and dedup.
-- **Phase 2, Routing + simulator.** `hop-sim` + binary spray-and-wait + gateway
-  gradient. Measure delivery ratio/overhead under churn and partition.
+- **Phase 2, Routing + simulator.** `hop-sim` + routing policy + gateway gradient.
+  Measure delivery ratio/overhead under churn and partition. (Shipped as epidemic
+  + ACK-vaccine, not the spray-and-wait originally sketched here; see §6.)
 - **Phase 3, Link layer.** ✅ Noise XX sessions (`link::LinkHandshake` /
   `LinkSession`, via `snow`) + fragmentation/reassembly (`link::fragment` /
   `Reassembler`). Remaining: drive sessions from the node loop over a real bearer.
@@ -679,6 +700,40 @@ very fast hop in the same store-and-forward model.
 bundle protocol over TCP/QUIC/WebSocket instead of BLE, the `Bearer` trait already
 abstracts this (§11), so the core is unchanged. What's new is a rendezvous store so
 two online nodes that are *not simultaneously connected* can still relay.
+
+### Many relays, not one fleet (`relay_pool.rs`)
+
+The relay bearer takes one URL, which quietly made a node's entire internet reach a
+function of one operator's fleet being up. Turning hop's own fleet off
+(`relays_enabled=false`) took reach to zero, and no amount of correct protocol helped,
+because there was nowhere to dial.
+
+`RelayPool` fixes the shape rather than the fleet: an ordered, health-scored set of
+relay endpoints with automatic failover. Two consecutive failures back an endpoint off
+(one failure is noise: a sleeping radio, a transient network), doubling from 30s to a
+30-minute ceiling, and any success clears the state completely. A backed-off relay
+always comes back, because operators fix things and a permanently-evicted endpoint
+would make an outage irreversible without a restart.
+
+Endpoints come from three places, ranked so gossip can never demote an operator's own
+relay: `Configured` (explicit), `Bundled` (shipped defaults), `Discovered` (learned
+from a signed §-reach record, `learn_from_reach`). The pool is bounded at 512 and a
+newcomer only evicts an entry it actually outranks, so a gossip flood of junk URLs
+cannot churn out a pool of proven relays.
+
+**Why pointing at a stranger's relay is safe here, and why that matters.** A §39
+private bundle exposes no sender, no recipient, no path, and carries a self-verifying
+id; a traced bundle is signed end to end. The relay is an untrusted store-and-forward
+surface by construction, so *anyone* can run one and hop loses nothing by dialing it.
+This is a genuinely stronger position than a design whose packets name both endpoints:
+such a design has to add onion routing to make a third-party relay tolerable, whereas
+hop's headers were already blank. Whether a relay may carry a given tenant's traffic is
+a separate question answered by §35 carriage stamps, never by the pool.
+
+The pool is pure policy and does no I/O: it names no transport and knows nothing about
+WebSockets. That keeps one tested implementation serving Apple, Android, embedded, and
+the simulator, instead of the same failover logic being written once per platform and
+drifting.
 
 **The online store is an untrusted, best-effort mailbox keyed by destination.**
 - Bundles are already sealed end-to-end (§4), so the store holds **ciphertext it
@@ -1114,6 +1169,66 @@ asynchronously, then **0-RTT resume** the instant a live path appears; a live
 *interactive* stream over it still needs the path live at that moment. Costs to handle:
 ephemeral-key retention window (forward secrecy), prekey management, replay/clock-skew
 over long spans.
+
+### Prekeys: SPK always, one-time prekeys where we can get them
+
+A session bootstraps from the recipient's published [`PreKeyBundle`]: identity (IK, which
+*is* the address, §4), a rotating **signed prekey** (SPK), and a batch of **one-time
+prekeys** (OPKs).
+
+For a long time this design carried the claim that OPKs were impossible here, on the
+grounds that a serverless flood network has no party to hand out a distinct one-time key
+per sender. That reasoning conflated two different jobs. Classic X3DH uses a server as a
+**dispenser** (hand each requester a different OPK, then delete it). What actually makes
+an OPK usable by a stranger is that it is **verifiable offline**, and an Ed25519 signature
+over the batch provides that with no server at all. So the mesh carries the batch: OPKs
+ride the same gossiped `_keys` advert as the SPK, and any node that has heard of the
+publisher can verify and consume one while the publisher is offline.
+
+The handshake is therefore the standard 4-DH form when an OPK is available:
+
+```
+DH1 = IK_a · SPK_b     DH2 = EK_a · IK_b
+DH3 = EK_a · SPK_b     DH4 = EK_a · OPK_b     (only when an OPK was used)
+root = KDF("hop session x3dh v2", n_dh ‖ DH1 ‖ DH2 ‖ DH3 [‖ DH4])
+```
+
+and the classic 3-DH form when it is not. The DH **count** is folded into the preimage so
+the two can never collide: a responder that has reaped the referenced OPK derives a
+different root by construction, so there is no silent downgrade. It answers with
+`SessionReset` and the sender re-opens SPK-only, costing a round trip, never a message.
+
+**What this buys, stated precisely.** Without an OPK, compromising a device exposes the
+SPK secret and with it every session bootstrapped against that SPK generation until it
+rotates (§25 epoch, currently a week). With an OPK, the root also depends on a secret the
+owner destroys within `OPK_RETAIN_AFTER_USE_MS` of first use, so the exposure window for
+that one session shrinks from an SPK epoch to hours.
+
+**What it does not buy, and must not be claimed: uniqueness.** With no dispenser, two
+senders can pick the same OPK. Mitigations, both necessary:
+
+- Senders pick **at random** among the OPKs they have not already spent on that peer.
+  Walking the batch in order would be worse than useless: every fresh sender would take
+  id 0, so a batch of 8 would behave exactly like a batch of 1 while seven keys sat idle.
+- The owner **retains a used OPK secret for a bounded window** instead of deleting on
+  first use. This is the DTN constraint, not laziness: delivery is late and out of order,
+  so eager deletion would black-hole a legitimately delayed second message that referenced
+  the same OPK.
+
+So an OPK here is one-time **by the owner's retention policy**, not by mutual exclusion.
+It is a forward-secrecy ratchet on the prekey, never a replay defense.
+
+**OPK secrets are memory-resident and never persisted.** Deriving them from the identity
+seed (the way SPKs are derived, so they survive restarts) would defeat the entire point:
+a compromise re-derives them and DH4 buys nothing. Persisting them to disk is strictly
+weaker than not having them there. The accepted cost is that a restart drops in-flight
+first contacts to a `SessionReset` and one SPK-only retry.
+
+**Batch size is a flood-bandwidth knob.** The batch rides a gossiped advert, so each OPK
+costs 36 wire bytes plus a fixed 64-byte batch signature. Measured against the
+`idle_established_link_does_not_flood` budget, a batch of 16 added ~54% to 30 seconds of
+idle gossip. We publish 8 (the same cap bitchat arrived at from deployment) and replenish
+when unused keys fall below 4.
 
 ### Mode selection (client decides; never silently downgrade)
 
@@ -1683,7 +1798,7 @@ point-to-point `resolve_hns_via` are removed.
 Everything below is built on plain datagrams; none of it requires a live end-to-end path.
 
 - **Epidemic spray + ACK-vaccine (§6/§7).** A bundle is replicated to new peers as they're
-  met (spray-and-wait, bounded by copy budget + hop limit + lifetime). The destination's
+  met (epidemic, bounded by hop limit + lifetime; there is no live copy budget, see §6). The destination's
   delivery-ACK travels back as an **anti-packet/vaccine**: every node it passes drops its
   copy and refuses future ones (`immune`), collapsing the flood. Reliability = redundant
   persistent replication that an acknowledgment later cancels.
@@ -2587,8 +2702,8 @@ island gains a gateway. Nothing is dropped; held until lifetime/ACK.
 
 The **inbox bifurcates by mode**: §34/§28's `inbox/{recipient-address}` is recipient-*keyed* (a
 cleartext-dst construct). Private mode has no recipient-keyed inbox, it has a **blind spool** keyed by
-mailbox-tag that the recipient pulls; traced mode keeps the address-keyed inbox and targeted
-spray-and-wait. Privacy means the gateway can't *target* the recipient, so it floods the component or
+mailbox-tag that the recipient pulls; traced mode keeps the address-keyed inbox and destination-
+directed forwarding. Privacy means the gateway can't *target* the recipient, so it floods the component or
 answers a blind pull, the routing-vs-privacy asymmetry, one layer down.
 
 ### Cross-region under dormancy: eventual delivery, no global store
@@ -2616,7 +2731,7 @@ wakes another; the durable regional spools plus the awake-set epidemic are the r
 ### Opt-in trace: buy back routing and visibility
 
 Setting the trace flag reverts *that one message* to §5/§27: cleartext `Destination::Device(dst)` (so
-relays run spray-and-wait §6 and learn routes §27) and per-hop `TraceHop` recording (so the sender
+relays run the §6 epidemic policy and learn routes §27) and per-hop `TraceHop` recording (so the sender
 watches the path and "Sent N / delivered"). A deliberate trade of privacy for **both** efficiency and
 visibility, right for debugging or a public/infra flow, wrong for a personal message. The machinery
 already exists; §39 only flips which mode is the default.

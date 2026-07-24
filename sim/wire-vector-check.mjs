@@ -15,12 +15,12 @@ const { validate_wire_bundle: validateWireBundle } = require(
   join(here, '../core/hop-wasm/pkg-node/hop_wasm.js'),
 );
 const corpus = JSON.parse(readFileSync(
-  join(here, '../core/hop-core/vectors/bundle-v10.json'),
+  join(here, '../core/hop-core/vectors/bundle-v11.json'),
   'utf8',
 ));
 
-if (corpus.bundle_version !== 10) {
-  throw new Error(`expected bundle corpus version 10, got ${corpus.bundle_version}`);
+if (corpus.bundle_version !== 11) {
+  throw new Error(`expected bundle corpus version 11, got ${corpus.bundle_version}`);
 }
 
 function assertVariantSet(label, actual, expected) {
