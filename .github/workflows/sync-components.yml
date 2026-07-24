@@ -5,8 +5,8 @@ name: Sync component
 
 on:
   # Auto-export: a merge to protected main publishes the changed subtrees to their mirrors. This path
-  # is EXPORT ONLY (main -> public mirror, publish-only of already-reviewed code); import and export_pr
-  # (which open PRs) remain human workflow_dispatch. See the auto_export job's push-scoped preflight.
+  # is EXPORT ONLY (main -> public mirror, publish-only of already-reviewed code); import (which opens a
+  # monorepo PR) stays workflow_dispatch. See the auto_export job's push-scoped preflight.
   push:
     branches: [main]
   workflow_dispatch:
@@ -43,14 +43,13 @@ on:
         options:
           - export
           - import
-          - export_pr
         default: export
       init_history:
         description: "Seed full history on the first export only"
         type: boolean
         default: false
       pr_number:
-        description: "Source monorepo PR number (required for export_pr; ignored otherwise)"
+        description: "Source mirror PR number (required for import; ignored otherwise)"
         type: string
         default: ""
 
@@ -63,8 +62,9 @@ concurrency:
 
 jobs:
   authorize:
-    # The human authority gate covers the dispatch path only (import / export_pr / manual export). The
-    # push path is gated by auto_export's own push-scoped preflight below.
+    # The authority gate covers the dispatch path (manual export + import). Manual export stays
+    # human-only; import may also be the sync App bot (see the human-actor carve-out below). The push
+    # path is gated by auto_export's own push-scoped preflight.
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Authorize canonical protected main
     runs-on: ubuntu-latest
@@ -76,6 +76,7 @@ jobs:
         env:
           ACTOR: ${{ github.actor }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DIRECTION: ${{ inputs.direction }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
           EVENT_SENDER: ${{ github.event.sender.login }}
@@ -103,9 +104,14 @@ jobs:
               "protected ref": os.environ["REF_PROTECTED"] == "true",
               "same triggering actor": os.environ["ACTOR"] == os.environ["TRIGGERING_ACTOR"],
               "event sender": os.environ["ACTOR"] == os.environ["EVENT_SENDER"],
-              "human actor": not os.environ["ACTOR"].endswith("[bot]"),
               "full SHA": re.fullmatch(r"[0-9a-f]{40}", os.environ["SHA"]) is not None,
           }
+          # Manual dispatch of a write direction stays human-only. import may ALSO be dispatched by the
+          # sync App bot (a mirror's sync-back reacting to a public PR): import only OPENS a monorepo PR
+          # (still human-reviewed and merged) and only the App holds monorepo Actions:write, so no other
+          # bot can trigger it.
+          if os.environ["DIRECTION"] != "import":
+              checks["human actor"] = not os.environ["ACTOR"].endswith("[bot]")
           failed = [name for name, passed in checks.items() if not passed]
           if failed:
               raise SystemExit("sync authority rejected: " + ", ".join(failed))
@@ -135,7 +141,7 @@ jobs:
       workflow: ${{ steps.map.outputs.workflow }}
       copybara_options: ${{ steps.map.outputs.copybara_options }}
       direction: ${{ steps.map.outputs.direction }}
-      # export_pr needs the source PR number to reach the copybara container; without this line
+      # import needs the source mirror PR number to reach the copybara container; without this line
       # needs.select.outputs.source_ref is empty and github_pr_origin gets no PR reference.
       source_ref: ${{ steps.map.outputs.source_ref }}
     steps:
@@ -230,119 +236,6 @@ jobs:
             exit "$rc"
           fi
 
-  export_pr:
-    needs: [authorize, select]
-    if: needs.select.outputs.direction == 'export_pr'
-    runs-on: ubuntu-latest
-    environment:
-      name: component-sync
-    # github.token only READS the open monorepo PR (source). The mirror PR (destination) is written by
-    # the minted App token below, so github.token needs no write here.
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
-          persist-credentials: false
-      - name: Mint destination-mirror PR token
-        id: mirror-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
-          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
-          owner: hopmesh
-          repositories: ${{ needs.select.outputs.repository }}
-          # Writes a branch + opens/updates a PR on the mirror; the PR may carry the mirror's own
-          # .github/workflows, so it needs Workflows write like the export push does.
-          permission-contents: write
-          permission-pull-requests: write
-          permission-workflows: write
-      - name: Mirror the open monorepo PR to the component with isolated Copybara
-        env:
-          SOURCE_TOKEN: ${{ github.token }}
-          DESTINATION_TOKEN: ${{ steps.mirror-token.outputs.token }}
-          DESTINATION_REPOSITORY: ${{ needs.select.outputs.repository }}
-          COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
-          COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
-          # The source monorepo PR number. The olivr wrapper appends COPYBARA_SOURCEREF as the last
-          # copybara arg (after the workflow), which is exactly where github_pr_origin wants the
-          # positional PR reference. Sanitized to a bare integer by dispatch.py, and surfaced as a
-          # select job output (below) so this reference resolves to the number rather than empty.
-          COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}
-        run: |
-          set -euo pipefail
-          umask 077
-          gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
-          gitcreds="$(mktemp "$RUNNER_TEMP/copybara-gitcreds.XXXXXX")"
-          cleanup() { rm -f "$gitconfig" "$gitcreds"; }
-          trap cleanup EXIT
-          # Two auth surfaces, both per-repo. (1) git TRANSPORT (clone monorepo, push mirror) carries
-          # the token in the URL via url.insteadOf. (2) copybara's GitHub API client (github_pr_origin
-          # reads the PRIVATE monorepo PR, github_pr_destination opens the mirror PR) resolves a token
-          # via `git credential fill`, so it needs a helper. We point it at a read-only store file with
-          # useHttpPath, so each repo path draws its own token: monorepo -> source (github.token),
-          # mirror -> destination (App). Only `fill` (read) runs here, so the read-only store is never
-          # written (no approve/erase, no lock). See the export step for the transport rationale.
-          cat > "$gitconfig" <<CONFIG
-          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/monorepo"]
-              insteadOf = https://github.com/hopmesh/monorepo
-          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/${DESTINATION_REPOSITORY}"]
-              insteadOf = https://github.com/hopmesh/${DESTINATION_REPOSITORY}
-          [credential]
-              helper = store --file=/etc/hop-git-credentials
-              useHttpPath = true
-          [user]
-              name = hop-sync
-              email = sync@hopme.sh
-          CONFIG
-          chmod 644 "$gitconfig"
-          # Per-repo API tokens for `git credential fill` (copybara's GitHub API client). Both the bare
-          # and .git path forms, since the web URL copybara authenticates against may or may not carry
-          # the .git suffix. Written with printf so no heredoc indentation leaks into the credential
-          # lines (git-credential-store does not tolerate leading whitespace). World readable to match
-          # gitconfig; same tokens, single-tenant ephemeral runner.
-          {
-            printf 'https://x-access-token:%s@github.com/hopmesh/monorepo\n' "$SOURCE_TOKEN"
-            printf 'https://x-access-token:%s@github.com/hopmesh/monorepo.git\n' "$SOURCE_TOKEN"
-            printf 'https://x-access-token:%s@github.com/hopmesh/%s\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY"
-            printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$DESTINATION_TOKEN" "$DESTINATION_REPOSITORY"
-          } > "$gitcreds"
-          chmod 644 "$gitcreds"
-          # CHANGE_REQUEST baseline: the monorepo revision the mirror currently tracks (its HEAD
-          # GitOrigin-RevId), passed as --change-request-parent so copybara resolves the baseline on
-          # both the origin and the mirror. The base-branch tip cannot serve: the mirror only carries
-          # commits for subtree changes, so a non-subtree base tip has no counterpart there. Read with
-          # the destination App token (contents:read is implied by its write scope on the public mirror).
-          baseline="$(GH_TOKEN="$DESTINATION_TOKEN" gh api "repos/hopmesh/${DESTINATION_REPOSITORY}/commits/main" --jq '.commit.message' 2>/dev/null | sed -n 's/^GitOrigin-RevId:[[:space:]]*\([0-9a-f]\{7,40\}\).*/\1/p' | head -1 || true)"
-          if printf '%s' "$baseline" | grep -qiE '^[0-9a-f]{7,40}$'; then
-            COPYBARA_OPTIONS="${COPYBARA_OPTIONS} --change-request-parent=${baseline}"
-            echo "export_pr baseline (mirror HEAD GitOrigin-RevId): ${baseline}"
-          else
-            echo "::warning::no GitOrigin-RevId on hopmesh/${DESTINATION_REPOSITORY} main; export_pr baseline unresolved"
-          fi
-          set +e
-          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
-            --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
-            -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
-            -v "$gitconfig:/etc/gitconfig:ro" \
-            -v "$gitcreds:/etc/hop-git-credentials:ro" \
-            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
-            -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
-            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS -e COPYBARA_SOURCEREF \
-            olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "synced: open monorepo PR mirrored to hopmesh/$DESTINATION_REPOSITORY"
-          elif [ "$rc" -eq 4 ]; then
-            echo "no-op: no open monorepo PR touches this component (nothing to mirror)"
-          else
-            echo "::error::copybara exited $rc"
-            exit "$rc"
-          fi
-
   import:
     needs: [authorize, select]
     if: needs.select.outputs.direction == 'import'
@@ -374,6 +267,10 @@ jobs:
           SOURCE_REPOSITORY: ${{ needs.select.outputs.repository }}
           COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
           COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
+          # The source mirror PR number. The olivr wrapper appends COPYBARA_SOURCEREF as the last
+          # copybara arg, exactly where github_pr_origin wants the positional PR reference. Sanitized to
+          # a bare integer by dispatch.py and surfaced as a select output.
+          COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}
         run: |
           set -euo pipefail
           umask 077
@@ -417,7 +314,7 @@ jobs:
             -v "$gitcreds:/etc/hop-git-credentials:ro" \
             -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
             -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
-            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
+            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS -e COPYBARA_SOURCEREF \
             olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
           rc=$?
           set -e
@@ -432,7 +329,7 @@ jobs:
 
   auto_export:
     # Publish changed subtrees to their mirrors on merge to protected main. EXPORT ONLY: the push path
-    # can never select import/export_pr (SYNC_DIRECTION is hardcoded to export in the loop below), and
+    # can never select import (SYNC_DIRECTION is hardcoded to export in the loop below), and
     # the plan step re-validates this is the current canonical protected main before anything runs.
     if: ${{ github.event_name == 'push' }}
     name: Auto-export changed components

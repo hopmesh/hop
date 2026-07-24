@@ -22,7 +22,7 @@ if options != list(components):
     raise SystemExit(f"workflow choices drifted: {options!r}")
 
 # Every `needs.select.outputs.X` a job consumes must be declared in the select job's `outputs:` block,
-# or it silently resolves to empty at runtime. This is exactly how export_pr lost its PR ref: source_ref
+# or it silently resolves to empty at runtime. This is exactly how import's PR ref would be lost: source_ref
 # was emitted by the mapper and consumed by the job, but never surfaced as a select output.
 select = re.search(r"^  select:\n(?P<body>(?: {4,}.*\n|\n)+)", workflow, re.M)
 if not select:
@@ -76,9 +76,10 @@ PY
 
 while IFS= read -r component; do
   for direction in export import; do
-    init=false
+    init=false; pr=""
     [ "$direction" = export ] && init=true
-    SYNC_COMPONENT="$component" SYNC_DIRECTION="$direction" SYNC_INIT_HISTORY="$init" \
+    [ "$direction" = import ] && pr=1
+    SYNC_COMPONENT="$component" SYNC_DIRECTION="$direction" SYNC_INIT_HISTORY="$init" SYNC_PR_NUMBER="$pr" \
       python3 "$dispatch" --json >/dev/null
   done
 done < <(python3 "$dispatch" --list)
@@ -112,32 +113,32 @@ if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=true \
   exit 1
 fi
 
-# export_pr requires a valid pr_number, emitted as source_ref (NOT folded into options, which the
-# olivr wrapper places first; source_ref is appended last, where the positional PR ref belongs).
-json="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+# import requires a valid pr_number, emitted as source_ref (NOT folded into options, which the olivr
+# wrapper places first; source_ref is appended last, where the positional PR ref belongs).
+json="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
   python3 "$dispatch" --json)"
 opts="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
 sref="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
 if [ "$opts" != "--ignore-noop --force" ] || [ "$sref" != "292" ]; then
-  echo "export_pr mapping drifted: options=$opts source_ref=$sref" >&2
+  echo "import mapping drifted: options=$opts source_ref=$sref" >&2
   exit 1
 fi
-# export/import carry no source_ref.
+# export carries no source_ref.
 sref_export="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export SYNC_INIT_HISTORY=false \
   python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
 if [ -n "$sref_export" ]; then
   echo "export unexpectedly carries a source_ref: $sref_export" >&2
   exit 1
 fi
-# export_pr with no pr_number is rejected.
-if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" \
+# import with no pr_number is rejected.
+if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" \
     python3 "$dispatch" --json >/dev/null 2>&1; then
-  echo "dispatch accepted export_pr with no pr_number" >&2
+  echo "dispatch accepted import with no pr_number" >&2
   exit 1
 fi
 # A non-numeric / injection pr_number is rejected.
 for bad in 'abc' '1;id' '$(id)' '-1' '0' '../7' '12345678'; do
-  if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export_pr SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="$bad" \
+  if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="$bad" \
       python3 "$dispatch" --json >/dev/null 2>&1; then
     echo "dispatch accepted malicious pr_number: $bad" >&2
     exit 1
