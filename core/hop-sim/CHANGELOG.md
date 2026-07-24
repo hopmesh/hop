@@ -8,7 +8,11 @@ git-cliff. Do not edit by hand.
 - cover Destination::Vaccine in every workspace crate (relay/relayd/hop-sim) + workspace fmt/clippy (e611c4d)
 
 ### Chore
+- purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
+
+### Features
+- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 
 ### Other
 - copyright holder is Hop Mesh, LLC (7d8c514)

@@ -9,12 +9,17 @@ git-cliff. Do not edit by hand.
 - per-repo release workflows (publish on a vX.Y.Z tag) (277cf32)
 
 ### Chore
+- purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (b56bb49)
 
 ### Documentation
 - branded, marketable READMEs for every sub-repo (9c2a477)
 - stop mentioning DNSSEC (no longer part of the design) (179a278)
+
+### Features
+- finish inbound (import), drop export_pr (41c095e)
+- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 
 ### Other
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)

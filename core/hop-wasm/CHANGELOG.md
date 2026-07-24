@@ -23,6 +23,8 @@ git-cliff. Do not edit by hand.
 - decouple hop-core's vocabulary from the sim (comments only) (#119) (d153989)
 
 ### Features
+- finish inbound (import), drop export_pr (41c095e)
+- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 - channels + mine scenario + curated homepage; fix two real protocol bugs the honest harness exposed (dc20947)
 - real hop counts + LoRa net modeled + clockin & multi-hop everywhere + bubble timers (48b8e98)
 - beacon ripple viz + average delivery/ack cards (5599e1b)
