@@ -23,6 +23,13 @@ repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs,
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
+release/                    plan.py resolves each publishing component's declared version from its own
+                            manifest (Cargo/package.json/pyproject/shard/mix/gemspec, else the workspace
+                            anchor); tag-mirrors.py creates `vX.Y.Z` on each PUBLIC mirror that lacks it,
+                            which is what fires that mirror's release.yml and publishes. Skips unless the
+                            mirror's main already declares the version (the mirror asserts tag ==
+                            manifest). Driven by release-tags.yml after a successful export.
+                            Self-test: release/release.test.sh (pins the tag/skip policy AND the token scope).
 infra-authority-guard.py    forbids bootstrap authority in the runtime root and bounds the hop-deploy grants.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).

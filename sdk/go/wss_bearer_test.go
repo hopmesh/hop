@@ -374,7 +374,12 @@ func TestWSSPendingLinkCapRejectsCapPlusOneAndRecovers(t *testing.T) {
 
 	_ = connections[len(connections)-1].Close()
 	connections = connections[:len(connections)-1]
-	deadline := time.Now().Add(time.Second)
+	// Releasing the slot is asynchronous: the server only frees it once its read loop observes the
+	// peer's close, and the bearer exposes no pending-count seam to synchronize on. One second was
+	// tight enough that a loaded `-race` runner failed here ("capacity was not released: websocket:
+	// bad handshake") while the close was still in flight. The loop already exits on the first
+	// successful dial, so a longer ceiling costs a passing run nothing and only bounds the failure.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		recovered, response, dialErr := dialer.Dial(url, nil)
 		if dialErr == nil {
