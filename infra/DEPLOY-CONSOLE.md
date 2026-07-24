@@ -72,14 +72,21 @@ secrets, and ride as plain Cloud Run env from `infra/variables.tf`.
 
 ## Resend sending domain
 
-Before this, Terraform published the DKIM/SPF/return-path DNS records a Resend domain needs, but
-**nothing ever registered the domain on Resend's side**, so the dashboard showed no domain to verify.
-The `infra/billing` root now registers `account.hopme.sh` in Resend (`resend.tf`, the community
-`y0n0zawa/resend` provider) and emits the records it returns as an output; `infra/resend_dns.tf` in the
-runtime root reads that output (through the billing remote state it already consumes for the Stripe
-price ids) and publishes the records into the hopme.sh zone. So the records derive from the registered
-domain and are no longer hardcoded, and no new root, workflow, WIF identity, or repo variable was
-needed: it reuses the billing catalog's apply.
+Before this, Terraform published the DKIM/SPF/return-path DNS records a Resend domain needs but did not
+manage the domain itself: `account.hopme.sh` had been **registered by hand in the Resend dashboard**
+(that is where the DKIM key formerly hardcoded in `resend_dns.tf` came from), so the records were a
+copied snapshot that nothing kept in sync with Resend.
+
+The `infra/billing` root now manages the domain (`resend.tf`, the community `y0n0zawa/resend` provider)
+and emits the records it returns as an output; `infra/resend_dns.tf` in the runtime root reads that
+output (through the billing remote state it already consumes for the Stripe price ids) and publishes
+the records into the hopme.sh zone. So the records derive from the live domain and are no longer
+hardcoded, and no new root, workflow, WIF identity, or repo variable was needed: it reuses the billing
+catalog's apply.
+
+Because the domain predates Terraform, a create fails with "domain has been registered already", so
+`billing-catalog.yml` **adopts it**: a one-time step looks up its id and `tofu import`s it (guarded, so
+every later run is a no-op; an account with no such domain falls through and the apply creates it).
 
 It is the `account.hopme.sh` **subdomain, not the bare apex**, deliberately (keeps Resend's SPF/DKIM
 reputation off the Workspace apex mail). `resend_sending_domain` in `infra/billing/variables.tf` flips

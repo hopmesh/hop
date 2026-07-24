@@ -63,6 +63,34 @@ jobs:
           TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
         run: tofu plan -input=false -no-color
 
+      # The sending domain was registered by hand in the Resend dashboard long before Terraform managed
+      # it (that is where the DKIM key previously hardcoded in infra/resend_dns.tf came from), so a
+      # create fails with "The <domain> domain has been registered already". Adopt it instead: look up
+      # its id and import it, ONCE. The state guard makes every later run a no-op, and an account with
+      # no such domain falls through so the apply below creates it normally. Mirrors the import_once
+      # pattern in bootstrap-apply.yml. Import writes state, it never deletes a remote object.
+      # The domain id is not a credential; the API key is only ever passed as a header, never echoed.
+      - name: tofu import (adopt a pre-existing Resend domain, one time)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
+        env:
+          TF_VAR_stripe_api_key: ${{ secrets.STRIPE_API_KEY }}
+          TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
+          # Must match var.resend_sending_domain in infra/billing/variables.tf.
+          SENDING_DOMAIN: account.hopme.sh
+        run: |
+          if tofu state list | grep -Fxq 'resend_domain.sending'; then
+            echo "resend_domain.sending is already tracked, skipping import"
+            exit 0
+          fi
+          id="$(curl -sS -H "Authorization: Bearer ${TF_VAR_resend_api_key}" https://api.resend.com/domains \
+            | python3 -c 'import json, os, sys; rows = json.load(sys.stdin).get("data") or []; matches = [r["id"] for r in rows if r.get("name") == os.environ["SENDING_DOMAIN"]]; print(matches[0] if len(matches) == 1 else "")')"
+          if [ -z "$id" ]; then
+            echo "no unique pre-existing Resend domain named ${SENDING_DOMAIN}; the apply will create it"
+            exit 0
+          fi
+          echo "adopting the existing Resend domain ${SENDING_DOMAIN} (${id})"
+          tofu import -input=false resend_domain.sending "$id"
+
       - name: tofu apply
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
         env:
