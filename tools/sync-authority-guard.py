@@ -47,7 +47,6 @@ def check_text(text, components):
     select = job(text, "select")
     export = job(text, "export")
     import_job = job(text, "import")
-    export_pr = job(text, "export_pr")
 
     for literal in (
         'expected = "hopmesh/monorepo"',
@@ -58,6 +57,9 @@ def check_text(text, components):
         'os.environ["ACTOR"] == os.environ["TRIGGERING_ACTOR"]',
         'os.environ["ACTOR"] == os.environ["EVENT_SENDER"]',
         'not os.environ["ACTOR"].endswith("[bot]")',
+        # human-only, carved out ONLY for import so the sync App bot can auto-import a mirror PR; if
+        # this scope drifted (e.g. to export), a bot could trigger a write-y direction.
+        'if os.environ["DIRECTION"] != "import":',
         "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
         'current != os.environ["SHA"]',
     ):
@@ -72,7 +74,7 @@ def check_text(text, components):
         "mapping checkout is not bound to canonical main SHA",
     )
 
-    for name, block in (("export", export), ("import", import_job), ("export_pr", export_pr)):
+    for name, block in (("export", export), ("import", import_job)):
         require(
             "needs: [authorize, select]" in block,
             f"{name} does not depend on preflight and fixed mapping",
@@ -102,31 +104,16 @@ def check_text(text, components):
         "import token lacks exact source PR read scope",
     )
     require("permission-contents: write" not in import_job, "import App token can write mirror contents")
-
-    # export_pr: the App token writes the MIRROR PR (branch + PR + possibly a workflow file), so it
-    # needs contents + pull-requests + workflows write on the destination. The monorepo PR is read via
-    # github.token at the JOB permission level (contents/pull-requests read), never the App token, so
-    # the App token is still scoped only to the single mapped mirror (asserted in the loop above).
+    # import reads the source mirror PR by number; that ref must reach copybara via COPYBARA_SOURCEREF
+    # (else github_pr_origin has no PR reference). The value comes from the sanitized select output.
     require(
-        "permission-contents: write" in export_pr,
-        "export_pr token lacks destination contents write",
-    )
-    require(
-        "permission-pull-requests: write" in export_pr,
-        "export_pr token lacks destination PR write",
-    )
-    require(
-        "permission-workflows: write" in export_pr,
-        "export_pr token lacks destination workflows write",
-    )
-    require(
-        re.search(r"(?m)^    permissions:\n      contents: read\n      pull-requests: read$", export_pr),
-        "export_pr job github.token is not read-only (contents + pull-requests read)",
+        "COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}" in import_job,
+        "import does not pass the sanitized mirror PR reference to copybara",
     )
 
-    # auto_export: the push path (merge to main). It must stay EXPORT ONLY (never import/export_pr),
-    # run its own push-scoped preflight (auto-export-plan.py), use the protected environment and the
-    # pinned image, mint a token scoped only to the changed mirrors, and never consume raw inputs.
+    # auto_export: the push path (merge to main). It must stay EXPORT ONLY (never import), run its own
+    # push-scoped preflight (auto-export-plan.py), use the protected environment and the pinned image,
+    # mint a token scoped only to the changed mirrors, and never consume raw inputs.
     auto = job(text, "auto_export")
     require("if: ${{ github.event_name == 'push' }}" in auto, "auto_export is not restricted to push events")
     require(
@@ -139,8 +126,8 @@ def check_text(text, components):
     )
     require("SYNC_DIRECTION=export " in auto, "auto_export is not hardcoded to the export direction")
     require(
-        "SYNC_DIRECTION=import" not in auto and "SYNC_DIRECTION=export_pr" not in auto,
-        "auto_export can select a write direction (import / export_pr)",
+        "SYNC_DIRECTION=import" not in auto,
+        "auto_export can select the import (write) direction",
     )
     require(
         "repositories: ${{ steps.plan.outputs.repos }}" in auto,
@@ -152,7 +139,7 @@ def check_text(text, components):
     require(auto.count(COPYBARA_IMAGE) == 1, "auto_export Copybara image is not immutable")
     require("${{ inputs." not in auto, "auto_export consumes raw dispatch data")
 
-    require(text.count(COPYBARA_IMAGE) == 4, "Copybara image count drifted")
+    require(text.count(COPYBARA_IMAGE) == 3, "Copybara image count drifted")
     require("github.com/hopmesh/hop" not in text, "legacy canonical repository remains")
 
 
@@ -173,6 +160,10 @@ def check_sync_back_text(text, component):
         f"sync-back component identity drifted: {component}",
     )
     require("-f direction=import" in text, f"sync-back direction drifted: {component}")
+    require(
+        "-f pr_number=${{ github.event.pull_request.number }}" in text,
+        f"sync-back does not pass the mirror PR number: {component}",
+    )
 
 
 def check(root):

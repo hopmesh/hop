@@ -23,24 +23,24 @@ def select(component, direction, init_history, pr_number="", components=None):
     components = components or load_components()
     if component not in components:
         raise ValueError(f"component is not allowed: {component!r}")
-    if direction not in ("export", "import", "export_pr"):
+    if direction not in ("export", "import"):
         raise ValueError(f"direction is not allowed: {direction!r}")
     if init_history not in ("true", "false"):
         raise ValueError("init_history must be exactly true or false")
     if init_history == "true" and direction != "export":
         raise ValueError("init_history is allowed only for export")
 
-    # export_pr needs the source monorepo PR number: Copybara's github_pr_origin (CHANGE_REQUEST)
-    # requires a PR reference. Validate it here (the guard forbids the job from touching raw dispatch
-    # inputs, so it is sanitized in the mapper) and emit it as `source_ref`. The olivr container's
-    # copybara wrapper appends COPYBARA_SOURCEREF as the LAST arg (after the workflow), which is where
-    # the positional PR ref belongs: `<jar> <options> migrate <config> <workflow> <source_ref>`.
+    # import needs the source mirror PR number: Copybara's github_pr_origin (CHANGE_REQUEST) requires a
+    # PR reference. Validate it here (the guard forbids the job from touching raw dispatch inputs, so it
+    # is sanitized in the mapper) and emit it as `source_ref`. The olivr container's copybara wrapper
+    # appends COPYBARA_SOURCEREF as the LAST arg (after the workflow), which is where the positional PR
+    # ref belongs: `<jar> <options> migrate <config> <workflow> <source_ref>`.
     pr_number = pr_number.strip()
-    if direction == "export_pr":
+    if direction == "import":
         if not re.fullmatch(r"[1-9][0-9]{0,6}", pr_number):
-            raise ValueError("export_pr requires pr_number to be a positive integer")
+            raise ValueError("import requires pr_number to be a positive integer")
     elif pr_number:
-        raise ValueError("pr_number is allowed only for export_pr")
+        raise ValueError("pr_number is allowed only for import")
 
     entry = components[component]
     options = "--ignore-noop --force"
@@ -52,7 +52,7 @@ def select(component, direction, init_history, pr_number="", components=None):
         "prefix": entry["prefix"],
         "workflow": f"{component}_{direction}",
         "copybara_options": options,
-        "source_ref": pr_number if direction == "export_pr" else "",
+        "source_ref": pr_number if direction == "import" else "",
         "direction": direction,
     }
 
