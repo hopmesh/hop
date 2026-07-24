@@ -384,6 +384,11 @@ def _register(prefix, name):
         destination_files = glob(["**"]),
         authoring = authoring.pass_thru(default = BOT),
         mode = "CHANGE_REQUEST",
+        # The export transforms are intentionally one-way (strip prefix, rename crate, inject the
+        # workspace preamble); their reverse lives in _import, not here. CHANGE_REQUEST defaults
+        # reversible_check to True and would reject them, even though _export applies the same
+        # transforms fine in ITERATIVE mode. Disable the check for this direction.
+        reversible_check = False,
         transformations = export_transforms,
     )
 
