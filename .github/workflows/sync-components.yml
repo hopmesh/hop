@@ -4,6 +4,11 @@
 name: Sync component
 
 on:
+  # Auto-export: a merge to protected main publishes the changed subtrees to their mirrors. This path
+  # is EXPORT ONLY (main -> public mirror, publish-only of already-reviewed code); import and export_pr
+  # (which open PRs) remain human workflow_dispatch. See the auto_export job's push-scoped preflight.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       component:
@@ -58,6 +63,9 @@ concurrency:
 
 jobs:
   authorize:
+    # The human authority gate covers the dispatch path only (import / export_pr / manual export). The
+    # push path is gated by auto_export's own push-scoped preflight below.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Authorize canonical protected main
     runs-on: ubuntu-latest
     outputs:
@@ -394,3 +402,88 @@ jobs:
             echo "::error::copybara exited $rc"
             exit "$rc"
           fi
+
+  auto_export:
+    # Publish changed subtrees to their mirrors on merge to protected main. EXPORT ONLY: the push path
+    # can never select import/export_pr (SYNC_DIRECTION is hardcoded to export in the loop below), and
+    # the plan step re-validates this is the current canonical protected main before anything runs.
+    if: ${{ github.event_name == 'push' }}
+    name: Auto-export changed components
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Preflight + detect changed components
+        id: plan
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/copybara/auto-export-plan.py
+      - name: Mint mirror tokens for the changed components
+        id: token
+        if: steps.plan.outputs.any == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          # Scoped to exactly the changed mirrors, so the token can write no more than this push needs.
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: write
+          permission-workflows: write
+      - name: Export each changed component with isolated Copybara
+        if: steps.plan.outputs.any == 'true'
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          DESTINATION_TOKEN: ${{ steps.token.outputs.token }}
+          COMPONENTS: ${{ steps.plan.outputs.components }}
+        run: |
+          set -euo pipefail
+          umask 077
+          fail=0
+          for component in $COMPONENTS; do
+            echo "::group::export ${component}"
+            # Data-only mapping: dispatch.py validates the component and returns fixed paths/options.
+            json="$(SYNC_COMPONENT="$component" SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" python3 tools/copybara/dispatch.py --json)"
+            repo="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["repository"])')"
+            workflow="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["workflow"])')"
+            opts="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
+            gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
+            # printf (not a heredoc) so indentation cannot leak in; git config tolerates the tab indent.
+            {
+              printf '[url "https://x-access-token:%s@github.com/hopmesh/monorepo"]\n\tinsteadOf = https://github.com/hopmesh/monorepo\n' "$SOURCE_TOKEN"
+              printf '[url "https://x-access-token:%s@github.com/hopmesh/%s"]\n\tinsteadOf = https://github.com/hopmesh/%s\n' "$DESTINATION_TOKEN" "$repo" "$repo"
+              printf '[user]\n\tname = hop-sync\n\temail = sync@hopme.sh\n'
+            } > "$gitconfig"
+            chmod 644 "$gitconfig"
+            set +e
+            docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+              --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
+              -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
+              -v "$gitconfig:/etc/gitconfig:ro" \
+              -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
+              -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
+              -e COPYBARA_WORKFLOW="$workflow" -e COPYBARA_OPTIONS="$opts" \
+              olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+            rc=$?
+            set -e
+            rm -f "$gitconfig"
+            if [ "$rc" -eq 0 ]; then echo "synced: ${component}"
+            elif [ "$rc" -eq 4 ]; then echo "no-op: ${component} already up to date"
+            else echo "::error::${component}: copybara exited ${rc}"; fail=1; fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then echo "::error::one or more components failed to export"; exit 1; fi

@@ -124,7 +124,35 @@ def check_text(text, components):
         "export_pr job github.token is not read-only (contents + pull-requests read)",
     )
 
-    require(text.count(COPYBARA_IMAGE) == 3, "Copybara image count drifted")
+    # auto_export: the push path (merge to main). It must stay EXPORT ONLY (never import/export_pr),
+    # run its own push-scoped preflight (auto-export-plan.py), use the protected environment and the
+    # pinned image, mint a token scoped only to the changed mirrors, and never consume raw inputs.
+    auto = job(text, "auto_export")
+    require("if: ${{ github.event_name == 'push' }}" in auto, "auto_export is not restricted to push events")
+    require(
+        "python3 tools/copybara/auto-export-plan.py" in auto,
+        "auto_export skips the push-scoped preflight/plan",
+    )
+    require(
+        re.search(r"(?m)^    environment:\n      name: component-sync$", auto),
+        "auto_export does not use the protected component-sync environment",
+    )
+    require("SYNC_DIRECTION=export " in auto, "auto_export is not hardcoded to the export direction")
+    require(
+        "SYNC_DIRECTION=import" not in auto and "SYNC_DIRECTION=export_pr" not in auto,
+        "auto_export can select a write direction (import / export_pr)",
+    )
+    require(
+        "repositories: ${{ steps.plan.outputs.repos }}" in auto,
+        "auto_export token is not scoped to the changed mirrors",
+    )
+    require("owner: hopmesh" in auto, "auto_export App token owner drifted")
+    require("permission-contents: write" in auto, "auto_export token lacks destination contents write")
+    require("permission-pull-requests: write" not in auto, "auto_export token can write pull requests")
+    require(auto.count(COPYBARA_IMAGE) == 1, "auto_export Copybara image is not immutable")
+    require("${{ inputs." not in auto, "auto_export consumes raw dispatch data")
+
+    require(text.count(COPYBARA_IMAGE) == 4, "Copybara image count drifted")
     require("github.com/hopmesh/hop" not in text, "legacy canonical repository remains")
 
 
@@ -154,6 +182,17 @@ def check(root):
         (root / "tools/copybara/components.json").read_text(encoding="utf-8")
     )
     check_text(workflow, components)
+    # The push path's authority lives in the plan script; keep its preflight from being weakened.
+    plan = (root / "tools/copybara/auto-export-plan.py").read_text(encoding="utf-8")
+    for literal in (
+        'EXPECTED = "hopmesh/monorepo"',
+        'env.get("EVENT_NAME") == "push"',
+        'env.get("REF") == "refs/heads/main"',
+        'env.get("REF_PROTECTED") == "true"',
+        '"git/ref/heads/main"',
+        'current != env["SHA"]',
+    ):
+        require(literal in plan, f"auto-export plan preflight weakened: {literal}")
     for component, entry in components.items():
         sync_back = root / entry["prefix"] / ".github/workflows/sync-back.yml"
         check_sync_back_text(sync_back.read_text(encoding="utf-8"), component)
