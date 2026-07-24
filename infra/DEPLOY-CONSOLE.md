@@ -70,6 +70,32 @@ deliberate, owner-approved tradeoff for zero manual seeding; the access-controll
 bucket is the boundary protecting them. `GITHUB_CLIENT_ID` and `RESEND_FROM` are public config, not
 secrets, and ride as plain Cloud Run env from `infra/variables.tf`.
 
+## Resend sending domain
+
+Before this, Terraform published the DKIM/SPF/return-path DNS records a Resend domain needs, but
+**nothing ever registered the domain on Resend's side**, so the dashboard showed no domain to verify.
+The `infra/billing` root now registers `account.hopme.sh` in Resend (`resend.tf`, the community
+`y0n0zawa/resend` provider) and emits the records it returns as an output; `infra/resend_dns.tf` in the
+runtime root reads that output (through the billing remote state it already consumes for the Stripe
+price ids) and publishes the records into the hopme.sh zone. So the records derive from the registered
+domain and are no longer hardcoded, and no new root, workflow, WIF identity, or repo variable was
+needed: it reuses the billing catalog's apply.
+
+It is the `account.hopme.sh` **subdomain, not the bare apex**, deliberately (keeps Resend's SPF/DKIM
+reputation off the Workspace apex mail). `resend_sending_domain` in `infra/billing/variables.tf` flips
+it. The one credential is a `RESEND_API_KEY` repo secret with **domain (full-access) scope** (NOT the
+sending-only `hop-resend-apikey`); it rides billing-catalog.yml as `TF_VAR_resend_api_key` and never
+enters state.
+
+Steps (after the secret is set):
+
+1. `gh workflow run billing-catalog.yml --ref main -f confirm=plan`, read the plan (the `resend_domain`
+   create), then `-f confirm=apply`. This registers the domain and writes its records to billing state.
+2. The runtime root publishes the records on its next apply (a merge to `main`, or re-run
+   `runtime-deploy.yml`). Until then the fallback values keep the old records in place, so nothing drops.
+3. Watch the billing-catalog run's `resend status` output climb to `verified` once the records
+   propagate (a minute or two).
+
 ## What this change adds
 
 **`infra/bootstrap/console.tf`** (administrator-owned, applied by dispatch)

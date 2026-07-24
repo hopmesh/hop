@@ -1,14 +1,18 @@
-# Apply the Stripe billing catalog (infra/billing) via CI/CD, never a local tofu run.
+# Apply the keyed-SaaS root (infra/billing) via CI/CD, never a local tofu run. This root holds the
+# Stripe billing catalog AND the Resend sending domain (resend.tf); both register a resource on a SaaS
+# via an API key, so they share this workflow and identity.
 #
-# - On a PR that touches infra/billing/**: `tofu plan` so the catalog diff is reviewable.
-# - On manual dispatch with confirm=apply: `tofu apply` (creating live Stripe billing resources is
-#   consequential and meters are append-only, so it is gated behind a deliberate click, not a push).
+# - On a PR that touches infra/billing/**: `tofu plan` so the diff is reviewable.
+# - On manual dispatch with confirm=apply: `tofu apply` (creating live Stripe resources is
+#   consequential and meters are append-only; registering the Resend domain is likewise a deliberate
+#   step, so both are gated behind a click, not a push).
 #
 # Auth is keyless: GitHub OIDC -> Workload Identity Federation -> the billing-catalog-apply service
 # account (infra/bootstrap/billing.tf), which can reach ONLY the billing/ Terraform state prefix. The
-# Stripe key is the STRIPE_API_KEY repo secret. The job stays neutral until its two repository
-# variables have been populated from the reviewed bootstrap outputs.
-name: Billing catalog (Stripe)
+# Stripe key is the STRIPE_API_KEY repo secret; the Resend key is RESEND_API_KEY (domain scope). The
+# job stays neutral until its two repository variables have been populated from the reviewed bootstrap
+# outputs. Neither API key ever enters state.
+name: Billing catalog (Stripe + Resend)
 
 on:
   pull_request:
@@ -56,16 +60,19 @@ jobs:
       - name: tofu plan
         env:
           TF_VAR_stripe_api_key: ${{ secrets.STRIPE_API_KEY }}
+          TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
         run: tofu plan -input=false -no-color
 
       - name: tofu apply
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
         env:
           TF_VAR_stripe_api_key: ${{ secrets.STRIPE_API_KEY }}
+          TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
         run: tofu apply -input=false -auto-approve -no-color
 
-      - name: catalog outputs (ids the metering system needs)
+      - name: catalog outputs (ids the metering system needs + Resend domain status)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'apply'
         run: |
           echo "meter event_names:"; tofu output -json meter_event_names
           echo "price ids:";         tofu output -json price_ids
+          echo "resend status:";     tofu output -raw resend_domain_status

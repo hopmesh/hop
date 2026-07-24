@@ -11,6 +11,29 @@ variable "project_id" {
   default     = "hop-mesh"
 }
 
+variable "resend_api_key" {
+  description = "Resend API key with domain (full-access) scope. Set via TF_VAR_resend_api_key or RESEND_API_KEY; never commit it. Empty is fine for plan/validate without the domain."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# The console sending domain, deliberately a subdomain and not the bare apex: sending from
+# account.hopme.sh keeps Resend's SPF/DKIM reputation off the hopme.sh apex mail Google Workspace
+# handles. Must match var.resend_from's domain in infra/variables.tf. Set to "hopme.sh" to send from
+# the apex instead (which drops that reputation split).
+variable "resend_sending_domain" {
+  description = "Domain registered in Resend and used as the console sending domain (account.hopme.sh)."
+  type        = string
+  default     = "account.hopme.sh"
+}
+
+variable "resend_region" {
+  description = "Resend hosting region. Must match the SES endpoints in the returned records (us-east-1 gives feedback-smtp.us-east-1.amazonses.com)."
+  type        = string
+  default     = "us-east-1"
+}
+
 variable "currency" {
   description = "ISO currency for all prices."
   type        = string

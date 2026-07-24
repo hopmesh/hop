@@ -26,3 +26,16 @@ output "meter_event_names" {
     mailbox           = stripe_billing_meter.mailbox.event_name
   }
 }
+
+# The DNS records Resend expects for the sending domain. The runtime root reads this (through the
+# billing remote state it already consumes) and publishes them into the hopme.sh zone; see
+# infra/resend_dns.tf. Public by design (a DKIM public key lives in DNS).
+output "resend_records" {
+  description = "DNS records Resend returns for the sending domain (name/type/value/ttl/priority)."
+  value       = resend_domain.sending.records
+}
+
+output "resend_domain_status" {
+  description = "Resend verification status (not_started until the records propagate and Resend checks them)."
+  value       = resend_domain.sending.status
+}

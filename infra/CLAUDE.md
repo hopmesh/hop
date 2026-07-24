@@ -1,7 +1,9 @@
 # infra/
 
-GCP production infrastructure is split across two OpenTofu roots. The Stripe
-catalog is isolated in the third root at `infra/billing/`:
+GCP production infrastructure is split across two OpenTofu roots. Keyed third-party
+SaaS is isolated in the third root at `infra/billing/` (the Stripe billing catalog
+and the Resend sending domain, `resend.tf`), so the relay-fleet apply never carries
+those API keys:
 
 - `infra/bootstrap/` is applied by manual dispatch of
   `.github/workflows/bootstrap-apply.yml`, never from a terminal. It owns APIs,
