@@ -119,6 +119,12 @@ excludes=(
   --binary-files=without-match
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.astro
   --exclude-dir=pkg --exclude-dir=pkg-node --exclude-dir=sqlite-wasm --exclude-dir=audits
+  # `generated/` is UniFFI/cbindgen output (apps/android/HopDemo/generated), gitignored and
+  # untracked. It was still being scanned, so the guard reddened only on a machine where someone had
+  # actually run tools/build-aar.sh: green in CI and green on a clean checkout, red for whoever built
+  # for a device. A guard whose result depends on local build state is worse than no guard, because
+  # the failure looks like a real violation in prose nobody wrote.
+  --exclude-dir=generated
   --exclude='*.wasm' --exclude='*.lock' --exclude='package-lock.json'
   --exclude='*.svg' --exclude='*.png' --exclude='*.jpg'
 )

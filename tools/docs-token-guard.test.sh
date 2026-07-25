@@ -193,6 +193,24 @@ expect_src_fail "$TMP/src.swift"
 printf '# a shell comment%bwith a lookalike\n' "$(printf '\xe2\x80\x95')" > "$TMP/src.sh"
 expect_src_fail "$TMP/src.sh"
 
+# --- generated output must never be scanned. UniFFI/cbindgen emit dashes in their own prose, and
+# apps/android/HopDemo/generated is gitignored + untracked. Because the exclude list did not name it,
+# the guard passed in CI and on a clean checkout but FAILED for anyone who had run
+# tools/build-aar.sh for a device: a guard whose verdict depends on local build state, reporting a
+# violation in prose no human wrote. This case fails without --exclude-dir=generated.
+gen_repo="$TMP/genrepo"
+make_fixture_repo "$gen_repo"
+mkdir -p "$gen_repo/apps/android/HopDemo/generated/kotlin/uniffi/hop"
+printf '// The provided buffer MUST be direct%bonly direct buffers work.\n' "$(printf '\xe2\x80\x94')" \
+  > "$gen_repo/apps/android/HopDemo/generated/kotlin/uniffi/hop/hop.kt"
+expect_tree_pass "$gen_repo"
+
+# ...but the SAME dash in hand-written app source right beside it must still be caught.
+printf '// a real hand-written comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" \
+  > "$gen_repo/apps/android/HopDemo/Real.kt"
+expect_tree_fail "$gen_repo"
+rm -f "$gen_repo/apps/android/HopDemo/Real.kt"
+
 # clean source must pass
 printf '// the node loop, the orchestration that turns pieces into a mesh.\n' > "$TMP/src-clean.rs"
 expect_src_pass "$TMP/src-clean.rs"
