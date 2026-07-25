@@ -25,21 +25,22 @@ rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-android
 ./tools/build-aar.sh
 ```
 
-Produces (gitignored) under `android/HopDemo/generated/`:
+Produces (gitignored) under `apps/android/HopDemo/generated/`:
 - `jniLibs/<abi>/libhop.so`, the native libraries (wired in via `sourceSets`)
 - `kotlin/uniffi/hop/hop.kt`, the generated bindings (wired in via `sourceSets`)
 
 ## Build & run the app
 
-Open `android/HopDemo` in Android Studio and run on two devices, **or** CLI:
+Open `apps/android/HopDemo` in Android Studio and run on two devices, **or** CLI:
 
 ```sh
-cd android/HopDemo
+cd apps/android/HopDemo
 ./gradlew installDebug      # with both devices in dev mode / USB
 ```
 
-(If there's no Gradle wrapper yet, run `gradle wrapper` once in `android/HopDemo`,
-or open the folder in Android Studio which generates it.)
+The toolchain (JDK, Gradle, Kotlin, the Android SDK + NDK) is provided by `mise`, not by global
+installs, so run these through it. A bare shell reports "Unable to locate a Java Runtime" even
+though everything is installed.
 
 ## Use it
 

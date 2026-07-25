@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Hop Android native libs (.so per ABI) + Kotlin bindings from hop-ffi.
 #
-# Output (gitignored): android/generated/
+# Output (gitignored): apps/android/HopDemo/generated/ (override with HOP_ANDROID_OUT)
 #   - jniLibs/<abi>/libhop.so      (the C ABI / sh.hop SDK AND UniFFI, the crate is now `hop`)
 #   - kotlin/uniffi/hop/hop.kt     (the UniFFI Kotlin bindings, namespace uniffi.hop)
 #
