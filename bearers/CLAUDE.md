@@ -50,12 +50,23 @@ not, twice.
 
 ## Deferred: dead code inside wire-manifest files
 
-`link::Bearer` (hop-core) has never had an in-tree implementor: the real transport seam is
-`BearerEvent` pumped over the C ABI. It is still there because `core/hop-core/src/link.rs` is listed
-in `core/hop-core/vectors/wire-source-manifest.txt`, so deleting even dead code from it trips the
-wire-version guard and would force a `BUNDLE_VERSION` bump for a change that moves no bytes. Same
-carve-out the dash ban already uses for manifest files. Delete it at the next real wire bump, along
-with the three stale spray-and-wait comments in `bundle.rs`.
+`core/hop-core/src/link.rs` is listed in `core/hop-core/vectors/wire-source-manifest.txt`, so
+deleting even dead code from it trips the wire-version guard and would force a `BUNDLE_VERSION` bump
+for a change that moves no bytes. Same carve-out the dash ban already uses for manifest files. What
+is parked in there is larger than the one trait this note used to name:
+
+- `link::Bearer` has never had an in-tree implementor: the real transport seam is `BearerEvent`
+  pumped over the C ABI.
+- The entire generic fragmentation layer is unreached in production: `Frame`, `fragment`,
+  `Reassembler`, and the four `MAX_FRAME_*` / `MAX_REASSEMBLED_*` bounds. Record splitting is done
+  by `wire_emit::frame_record` into `LinkPacket::DataFrag` (reassembled by `Node::on_record_frag`),
+  which `wire_emit.rs` itself calls "the ONLY place record framing is decided". `node.rs` imports
+  nothing from `link` beyond `BearerEvent`, `LinkHandshake`, `LinkId`, `LinkSession`, and `Role`.
+- `Frame`'s one remaining consumer is `wire_vectors.rs`, a corpus entry pinning the byte layout of a
+  type nothing emits. Retire that vector in the same bump or it keeps the dead code alive by itself.
+
+Delete all of it at the next real wire bump, along with the three stale spray-and-wait comments in
+`bundle.rs`.
 
 ## Note
 

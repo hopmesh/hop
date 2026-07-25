@@ -220,7 +220,7 @@ extension HopBearer {
         // (no need to wait for a hop.identify round-trip) - shows in the endpoints list + traces.
         nameByAddr[endpoint] = domain
         // Open a direct link to the endpoint (wss://<domain>) so the sealed request has a path
-        // to it - the endpoint doesn't transit our relay (§30). Spray-and-wait holds the
+        // to it - the endpoint doesn't transit our relay (§30). Store-and-forward holds the
         // bundle and delivers it the moment the Noise handshake on this link completes.
         _ = dialEndpointForTest?(domain) ?? dialEndpoint(domain)
         hopsResults[domain] = "fetching…"

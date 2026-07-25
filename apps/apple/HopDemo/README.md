@@ -37,7 +37,7 @@ back (clears the sender's pending entry, since `requestAck` is on).
 
 Put A and B out of Bluetooth range of each other but both near the **iPad** in the
 middle. A still sees B under "People nearby" (its name gossiped via the iPad), and a
-message A→B is **relayed through the iPad**, no direct A↔B link. That's spray-and-wait
+message A→B is **relayed through the iPad**, no direct A↔B link. That's the epidemic forward
 + store-and-forward doing its job (proven in Rust by `relays_across_an_intermediate_node`
 and `discover_named_peer_two_hops_away_and_message_it`).
 

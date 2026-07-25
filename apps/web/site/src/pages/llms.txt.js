@@ -66,7 +66,7 @@ export async function GET() {
   );
   L.push('Key design points:');
   L.push('- Delay-tolerant, not real-time: a message is held on nearby devices and re-offered at every encounter, delivered the moment a path opens (lifetime measured in hours to days). When a path is live, delivery is quick.');
-  L.push('- Multipath: copies are sprayed across independent routes at once (binary spray-and-wait); the first to arrive delivers and an acknowledgement cancels the rest. At-least-once with idempotency/dedup.');
+  L.push('- Multipath: copies are spread across independent routes at once (epidemic forward); the first to arrive delivers and an acknowledgement cancels the rest. At-least-once with idempotency/dedup.');
   L.push('- The network finds many ways. BLE is the primary local bearer because it is passive, devices discover and relay through each other with no pairing, no taps, no setup (a deliberate trade-off: lower throughput for always-on, invisible meshing). Wi-Fi/LAN carries high-bandwidth local transfers; an internet relay bridges globally; the bearer is a pluggable trait, so the same sealed bundles ride whatever is available.');
   L.push('- Confidential by default: every payload is end-to-end encrypted (X25519 + ChaCha20-Poly1305), sealed to the destination\'s key. Relays carry ciphertext they cannot read. Identities are public keys, no phone numbers, no accounts.');
   L.push('');

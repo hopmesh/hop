@@ -10,9 +10,9 @@ export const cases = [
       'End-to-end encrypted, store-and-forward messaging that works with no tower, Wi-Fi, or server, hopping device to device until it reaches its destination.',
     body: [
       "End-to-end encrypted, store-and-forward messaging that works with no tower, Wi-Fi, or server. A message hops device to device across everyone in between until it reaches its destination, confidential the whole way, even across relays you don't trust.",
-      "Binary spray-and-wait spreads a small copy budget across independent paths so the first to arrive delivers, and the cloud backbone holds messages for recipients who are offline. Built for events, field teams, remote communities, and response.",
+      "Epidemic forwarding spreads copies across independent paths so the first to arrive delivers and the acknowledgement collapses the rest, and the cloud backbone holds messages for recipients who are offline. Built for events, field teams, remote communities, and response.",
     ],
-    uses: [['hdp://', '/protocol/hdp/'], ['spray-and-wait', '/protocol/hdp/'], ['mailbox', '/protocol/hdp/']],
+    uses: [['hdp://', '/protocol/hdp/'], ['epidemic forwarding', '/protocol/hdp/'], ['mailbox', '/protocol/hdp/']],
     scenarios: ['p2p', 'expedition', 'ski', 'collapse'],
   },
   {
@@ -75,7 +75,7 @@ export const cases = [
       "Send once, reach many. A sealed message published to a topic, or simply sprayed across an area, fans out device to device until it reaches everyone who's subscribed, even when no tower or server is in the picture. Emergency alerts, evacuation notices, event announcements, crew-wide broadcasts.",
       "Topic-based pub/sub over <code>hps://</code> fans a broadcast only to the people who care; members decrypt it, non-members carry it blind, and reach is acknowledged back across the mesh, so a one-to-many push is as reliable as a one-to-one message.",
     ],
-    uses: [['hps://', '/protocol/hps/'], ['spray-and-wait', '/protocol/hdp/'], ['hdp://', '/protocol/hdp/']],
+    uses: [['hps://', '/protocol/hps/'], ['epidemic forwarding', '/protocol/hdp/'], ['hdp://', '/protocol/hdp/']],
     scenarios: ['blackout', 'disaster', 'p2p'],
   },
 ];

@@ -4,7 +4,7 @@
 //
 // Two kinds:
 //   - mesh  (default): a static graph; sealed copies animate along fixed
-//                      routes (binary spray-and-wait, many paths at once).
+//                      routes (epidemic forward, many paths at once).
 //   - carry          : delay-tolerant store-carry-forward. A carrier NODE
 //                      physically moves; links attach/detach as it enters and
 //                      leaves range; the message is picked up, ferried, handed

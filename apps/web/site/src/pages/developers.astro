@@ -164,7 +164,7 @@ node.send_service_request(
       <div class="grid-3">
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-lock"></i></div><h3>Encrypted by default</h3><p>X25519 + ChaCha20-Poly1305 sealed payloads; Ed25519-signed headers; Noise XX links between peers.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-key"></i></div><h3>Key = address</h3><p>One Ed25519 keypair is identity, address, and seal. Import a seed, export a seed, storage is yours.</p></div>
-        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-water"></i></div><h3>Spray-and-wait routing</h3><p>A small copy budget fans across independent paths in parallel; first arrival wins. No flooding.</p></div>
+        <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-water"></i></div><h3>Epidemic routing</h3><p>Copies fan across independent paths in parallel; first arrival wins, and the delivery acknowledgement collapses the rest.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-box"></i></div><h3>Durable store</h3><p>Persistent forward queue with dedup and custody transfer, bounded by bundle lifetime.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-satellite-dish"></i></div><h3>BLE bearer</h3><p>GATT for control, L2CAP CoC for bulk, with fragmentation and reassembly handled for you.</p></div>
         <div class="card"><div class="ic"><i class="fa-duotone fa-solid fa-compass"></i></div><h3>Gossiped discovery</h3><p>Find peers, services, and names the moment you meet anyone who has seen them.</p></div>
