@@ -11,11 +11,21 @@ the native BLE bearer (TODO, see below).
 ./tools/build-xcframework.sh
 ```
 
-Produces (gitignored) under `apple/generated/`:
+Produces under `drivers/apple/HopDriver/`:
 
-- `HopFFI.xcframework`, device (`ios-arm64`) + simulator slices. Drag into your
-  Xcode project (or add as a binary target in a Swift package).
-- `Sources/hop.swift`, the generated Swift API. Add it to your target.
+- `Frameworks/HopFFI.xcframework`, device (`ios-arm64`) + simulator + macOS slices. Add it as a
+  binary target in a Swift package, which is what `HopDriver/Package.swift` already does.
+- `Sources/HopFFIBindings/hop.swift`, the generated Swift API.
+
+Note that unlike the Android and `sdk/apple` equivalents, this xcframework is **committed**, not
+gitignored, because `HopDriver/Package.swift` resolves it by local path. Rebuilding it therefore
+shows up as a large binary diff.
+
+**Building any in-tree Apple package or app also needs the manifest swap**
+`cp sdk/apple/Package.local.swift sdk/apple/Package.swift`. The committed manifest is the published
+one and resolves `CHop` from a `hop-sdk-apple` release asset that does not exist yet, so resolution
+fails with a 404 without the swap. CI does the same (`.github/workflows/ci.yml`). Restore the remote
+manifest before committing.
 
 ## Verify it works (no device needed)
 
