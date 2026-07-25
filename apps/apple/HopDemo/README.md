@@ -11,15 +11,39 @@ needs the devices.
 ## Build the project
 
 ```sh
-./tools/build-xcframework.sh        # → apple/generated/{HopFFI.xcframework, Sources/hop.swift}
-cd apple/HopDemo && xcodegen        # → HopDemo.xcodeproj (gitignored; brew install xcodegen)
+./tools/build-xcframework.sh                          # → drivers/apple/HopDriver/{Frameworks/HopFFI.xcframework,
+                                                      #    Sources/HopFFIBindings/hop.swift}
+cp sdk/apple/Package.local.swift sdk/apple/Package.swift   # REQUIRED, see below
+cd apps/apple/HopDemo && xcodegen                     # → HopDemo.xcodeproj (gitignored; brew install xcodegen)
 open HopDemo.xcodeproj
 ```
 
-In Xcode: select the **HopDemo** target → **Signing & Capabilities** → pick your team
-(free dev signing is fine for devices in developer mode). Then run on each device.
+**The `Package.swift` swap is not optional.** The committed `sdk/apple/Package.swift` is the
+*published* manifest: it resolves `CHop` from a release asset on `hopmesh/hop-sdk-apple`. That
+release does not exist yet, so package resolution fails outright with a 404 on
+`libhop.xcframework.zip` and nothing builds. `Package.local.swift` points at the artifact you just
+built instead. CI does exactly this swap (`.github/workflows/ci.yml`), so it is the supported path,
+not a workaround. Restore the remote manifest before committing.
 
-The Bluetooth usage string and Info.plist are generated from `project.yml`.
+In Xcode: select the **HopDemo** target → **Signing & Capabilities** → pick your team. The
+Bluetooth usage string and Info.plist are generated from `project.yml`.
+
+### Known blocker: device builds fail signing
+
+Building for a real device currently fails with:
+
+```
+Provisioning profile "iOS Team Provisioning Profile: sh.hopme.demo" doesn't match the entitlements
+file's value for the com.apple.developer.default-data-protection entitlement.
+```
+
+The App ID grants `NSFileProtectionComplete`; `HopDemo.entitlements` requests
+`NSFileProtectionCompleteUntilFirstUserAuthentication`. **The app is right.** `Complete` denies
+writes while the device is locked, which would re-open the background-delivery history gap that
+entitlement exists to close (see the comment in `HopDemo.entitlements`). Do not "fix" this by
+weakening the entitlement. The fix is to set that App ID's Data Protection capability to
+"Protected Until First User Authentication" in the developer portal. Until then the simulator
+builds fine and the Apple packages are covered by `swift test` and CI, but nothing runs on a radio.
 
 ## Use it
 
@@ -43,16 +67,23 @@ and `discover_named_peer_two_hops_away_and_message_it`).
 
 ## Files
 
-- `HopBearer.swift`, dual-role CoreBluetooth + L2CAP, wired to `HopNode`.
-- `HopLink.swift`, length-prefixed framing over the L2CAP stream.
+The app is UI only. Every radio and protocol concern lives outside it, in
+`drivers/apple/HopDriver` (the node + bearer glue) and `bearers/apple/HopBearer{Ble,Lan,Relay}`.
+
 - `ContentView.swift`, the chat UI.
 - `HopDemoApp.swift`, app entry point.
-- `project.yml`, XcodeGen spec (pulls in the generated binding + XCFramework).
+- `HopWebView.swift`, the embedded web view.
+- `QRViews.swift`, address QR display and scanning.
+- `HopDemo.entitlements`, the at-rest file-protection class (read the comment before changing it).
+- `project.yml`, XcodeGen spec (pulls in HopDriver, the generated binding, and the XCFramework).
 
 ## Notes / next
 
-- Foreground only for now; iOS background BLE (DESIGN.md §11) is a deliberate follow-up.
-- Both devices run as central *and* peripheral, so a link may form in each direction;
-  the app de-dups peers. Fine for a demo.
-- The bearer is intentionally thin, only `connected` / `received` / `drainOutgoing` /
-  `tick`. All protocol logic stays in `hop-core`.
+- Background BLE ships. `project.yml` declares `bluetooth-central`, `bluetooth-peripheral`,
+  `location`, `fetch` and `processing` background modes, and `HopBearerBle/BeaconWake.swift`
+  implements the iBeacon wake that revives a force-quit app (DESIGN.md §22). The beacon UUID must
+  byte-match the Android side or the wake silently never fires.
+- Both devices run as central *and* peripheral, so a link may form in each direction; the dedup
+  keep-rule picks one, tie-broken on a random id.
+- The app links no protocol code. `hop-core` is reached through the C ABI (`sdk/hop.h`), and the
+  bearers deliberately do not link libhop at all.
