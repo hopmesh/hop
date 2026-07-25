@@ -5,8 +5,12 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### CI
+- run the security surfaces that were never compiled, and close the ABI guard hole (59392bf)
 - bump create-github-app-token to v3.2.0 across all mirrored components (efc9f6c)
 - drop unused attestation read access (0137b19)
+
+### Documentation
+- regenerate from conventional commits (a355901)
 
 ### Features
 - finish inbound (import), drop export_pr (41c095e)

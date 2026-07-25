@@ -23,6 +23,9 @@ git-cliff. Do not edit by hand.
 ### Chore
 - purge em-dashes and en-dashes from source (d222435)
 
+### Documentation
+- regenerate from conventional commits (a355901)
+
 ### Features
 - organization management (create + switch, persisted) (1392ae1)
 - store subscription/plan state from a Stripe webhook (59b16e0)

@@ -18,6 +18,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (a355901)
 - branded, marketable READMEs for every sub-repo (9c2a477)
 - stop mentioning DNSSEC (no longer part of the design) (179a278)
 
@@ -32,10 +33,14 @@ git-cliff. Do not edit by hand.
 - Go endpoint SDK via cgo (net/http-shaped, proven) (#124) (21e52ee)
 
 ### Other
+- wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
 - SECURITY.md per component + enable-security in the bootstrap script (a1492e9)
 - copyright holder is Hop Mesh, LLC (7d8c514)
 - fill the Apache-2.0 copyright placeholder (2026 Jason Waldrip) (2fb7d1c)
 - CHANGE_REQUEST sync-back + document merge/conversation + confidentiality (9e1dec2)
 - one consistent endpoint surface across node/python/go/elixir (#125) (c46cd8d)
+
+### Testing
+- de-flake the WSS pending-cap recovery test (8dd7bbb)
 

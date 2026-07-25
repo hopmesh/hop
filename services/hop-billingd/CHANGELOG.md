@@ -12,6 +12,9 @@ git-cliff. Do not edit by hand.
 ### Build
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
+### Documentation
+- regenerate from conventional commits (a355901)
+
 ### Features
 - §35 storage dimension, per-tenant held-byte occupancy (d58a544)
 - auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
