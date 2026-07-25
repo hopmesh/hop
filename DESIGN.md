@@ -1224,8 +1224,25 @@ root = KDF("hop session x3dh v2", n_dh ‖ DH1 ‖ DH2 ‖ DH3 [‖ DH4])
 
 and the classic 3-DH form when it is not. The DH **count** is folded into the preimage so
 the two can never collide: a responder that has reaped the referenced OPK derives a
-different root by construction, so there is no silent downgrade. It answers with
-`SessionReset` and the sender re-opens SPK-only, costing a round trip, never a message.
+different root by construction, so there is no silent downgrade.
+
+**Recovery differs by path, and this is the §39 asymmetry, not an oversight.** On a
+traced bundle the responder answers with `SessionReset` and the sender re-opens
+SPK-only, costing a round trip and never a message. On the **private path, which is the
+default, it cannot**: the bundle's `src` is an unauthenticated claim until the AEAD
+succeeds, and when the referenced OPK is missing the AEAD never runs, so replying would
+let anyone holding a victim's address elicit a control message in their name (enforced
+by `an_unauthenticated_private_sender_claim_must_not_receive_a_reflected_SessionReset`).
+
+So the private path heals from the SENDER side instead. When a peer republishes prekeys
+and the OPK our unconfirmed handshake pinned is absent from the new batch, that
+handshake is provably dead and the session is dropped so the next send re-opens against
+the current advert (`heal_sessions_against_refreshed_prekeys`). Deliberately narrow:
+unconfirmed sessions only, OPK-bearing handshakes only, and only when the id is
+demonstrably gone, so a routine republish never disturbs a working conversation.
+Without it the sender resent an identical doomed `SessionInit` until lifetime expiry,
+with `gc_idle_sessions` 30 days away and refreshed by activity: silent loss on the
+default path.
 
 **What this buys, stated precisely.** Without an OPK, compromising a device exposes the
 SPK secret and with it every session bootstrapped against that SPK generation until it
