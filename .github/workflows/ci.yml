@@ -176,6 +176,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # CI-DISK: this job runs 14+ cargo invocations across DISTINCT feature sets (workspace,
+      # firestore x3, reqwest, sqlcipher with VENDORED OpenSSL, the minimal embedded build, a
+      # nightly fuzz toolchain plus cargo-fuzz), and each feature set is its own set of target
+      # artifacts. On 2026-07-25 that exhausted the runner's disk mid-job: the worker process died
+      # with "System.IO.IOException: No space left on device", which surfaces as a job failure with
+      # NO failing step and NO retrievable logs (the runner cannot upload them after it dies), and
+      # is only visible through the check-run annotations API. It cost an hour of misdiagnosis, so
+      # the reclaim is documented rather than terse.
+      #
+      # The removed trees are preinstalled SDKs this job never uses. Reclaims roughly 25 GB.
+      - name: Reclaim runner disk before the cargo matrix
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          echo "after:"; df -h / | tail -1
       - name: Install Rust toolchain
         run: rustup component add clippy rustfmt --toolchain 1.97.0
 
@@ -260,12 +277,27 @@ jobs:
       # workspace run never compiles the sync module. This exercises the projection + its tests.
       - name: Test accountd (firestore feature)
         run: cargo test -p hop-accountd --features firestore
+      # CI-DISK: a breadcrumb after the heaviest feature builds. If this job ever dies with no
+      # failing step again, this line is the last thing in the log and says whether disk was the
+      # cause, instead of needing the annotations API to find out.
+      - name: Report remaining disk
+        if: always()
+        run: df -h / | tail -1
 
       # hop-telemetryd's OTLP-export path (translate + forward telemetry to a tenant's OTel endpoint)
       # is behind the `live` feature (reqwest). The pure builders/routing are tested in the default
       # run; this compiles the reqwest transport shim so a live-build break is caught in CI.
       - name: Test telemetryd (live feature)
         run: cargo test -p hop-telemetryd --features live
+
+      # GT-04: hop-billingd's `live` feature carries the Stripe HTTP transport (the §37
+      # usage-ledger reconciler's only production egress) and NOTHING in the workspace enabled it,
+      # so it was never compiled or tested. Same class as the gateway's reqwest surface: a
+      # money-touching code path that read as covered because the crate's default build is green.
+      - name: Test billingd (live feature)
+        run: cargo test -p hop-billingd --features live
+      - name: Clippy billingd (live feature)
+        run: cargo clippy -p hop-billingd --features live --all-targets -- -D warnings
 
       # The OTLP-endpoint-from-registry routing (a tenant's console-set endpoint reaches the export
       # worker) needs BOTH features together: live for the POST, firestore for the registry read.
