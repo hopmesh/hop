@@ -18,8 +18,8 @@ This README is the entrypoint. For the full protocol and threat model, read
 | Drivers | `drivers/` | The per-platform host layer. |
 | Services | `services/` | The relay (`hop-relayd`), gateway, endpoint, and example origin. |
 | Infra | `infra/` | OpenTofu for the cloud relay fleet. See `docs/runbooks/`. |
-| Apps | `android/`, `apple/` | The demo apps. |
-| Web / Sim | `web/`, `sim/` | The Astro marketing site and the browser swarm sim. |
+| Apps | `apps/` | Every app: `apps/apple/HopDemo`, `apps/android/HopDemo`, `apps/web/site`, `apps/ble-lab`, `apps/esp32`. |
+| Sim | `sim/` | The browser swarm sim (real `hop-core` compiled to wasm) plus the scenario checks. |
 
 ## Quick start (Rust core)
 

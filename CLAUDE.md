@@ -8,7 +8,8 @@ own `CLAUDE.md` with local detail (the nearest one to the files you are editing 
 
 ```
 core/       Rust: the protocol (hop-core), the C ABI crate (hop), the browser build (hop-wasm), stores
-services/   Rust daemons: hop-relayd (the relay), hop-endpoint, hop-gateway
+services/   Rust daemons: hop-relayd (the relay), hop-endpoint, hop-gateway, hop-telemetryd, plus
+            two non-mesh web services: hop-accountd (console backend) and hop-billingd (§37 reconciler)
 sdk/        the C-ABI language wrappers (Kotlin via JNA, Swift) + the xcframework packaging
 bearers/    per-platform transport packages (apple/, android/): BLE, LAN, relay
 drivers/    per-platform app-facing client (apple/HopDriver, android/hop-driver): node + bearers + UI glue

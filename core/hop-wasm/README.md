@@ -21,7 +21,7 @@ Hop is a **delay-tolerant mesh**: end-to-end encrypted datagrams that hop device
 Wi-Fi, and the internet, until they reach the person you meant. Held, never dropped.
 
 `@hop-mesh/wasm` is `hop-core` compiled to WebAssembly: a `WasmNode` is a **genuine** Hop node, the same
-store-and-forward, crypto, and spray-and-wait routing that runs on a phone, now running in a tab. JS owns
+store-and-forward, crypto, and epidemic routing that runs on a phone, now running in a tab. JS owns
 the bearer (it decides who's in range, pumps bytes across links, reads the inbox) and owns the storage
 (bundles live in a host store you provide, not in wasm memory, so a tab full of nodes doesn't OOM). It
 powers the live browser swarm simulator, where every dot on the map is a real instance of the protocol.
@@ -50,7 +50,6 @@ const bridge = () => {
     seen: id => seen.has(hex(id)), seenExpiry: id => seen.get(hex(id)), contains: id => held.has(hex(id)),
     have() { const o = new Uint8Array(held.size * 32); let i = 0; for (const h of held.keys()) { o.set(Uint8Array.from(h.match(/../g).map(x => parseInt(x, 16))), i); i += 32 } return o },
     prune(now) { for (const [h, e] of seen) if (e <= now) { seen.delete(h); held.delete(h) } },
-    setData(id, d) { const h = hex(id); if (held.has(h)) held.set(h, d.slice()) },
     kvPut: (k, v) => kv.set(k, v.slice()), kvGet: k => kv.get(k), kvRemove: k => kv.delete(k),
     kvList() { return new Uint8Array() },
   }

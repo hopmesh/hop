@@ -7,7 +7,8 @@
     "delta-based schedule reset to the floor every cycle (a dial takes DIAL_TIMEOUT_MS=12s to fail,",
     "which outlasts a sub-2s window, so a peer that never yields an L2CAP channel re-dialed every",
     "~13s forever and starved healthy peers). Apple kept the broken version until this file existed.",
-    "tools/ble-backoff-parity.sh fails CI if either implementation stops matching these numbers."
+    "tools/ble-backoff-parity.sh fails CI if either implementation stops matching these numbers.",
+    "reset_on pins WHERE the failure state is cleared, not just the schedule. Apple cleared it at L2CAP-open while Android cleared it at HELLO-complete (android-05/06), which pinned Apple's failCount at 1 forever for any peer that accepts a channel and never says HELLO, making the growth curve and the quarantine unreachable for exactly the peer they exist to park. A schedule is only as good as its reset point, so both are pinned."
   ],
   "base_ms": 2000,
   "max_ms": 30000,
@@ -62,5 +63,6 @@
       "fail_count": 12,
       "backoff_ms": 120000
     }
-  ]
+  ],
+  "reset_on": "hello_complete"
 }

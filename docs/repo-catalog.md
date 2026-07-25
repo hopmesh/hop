@@ -2,13 +2,16 @@
 
 A rough cut of the public repos we split out of this monorepo (source of truth stays here; each is
 mirrored via Copybara, see `tools/copybara/`). Every one is intended to be public and carries its own
-FSL-1.1-ALv2 license. Names are proposals; boundaries marked **(open)** are real decisions to make.
+`LICENSE.md` in one of TWO tiers: the protocol core (`core/*`) is FSL-1.1-ALv2, everything else (SDKs,
+bearers, drivers, services) is Apache-2.0. See the License section of `README.md`;
+`tools/repo-integrity-guard.sh` fails CI on a cross-tier license, so this file is not a second source
+of truth. Names are proposals; boundaries marked **(open)** are real decisions to make.
 
 ## Core (the protocol)
 
 | Repo | From | What it is | Ships as | Audience |
 | --- | --- | --- | --- | --- |
-| `hop-core` | `core/hop-core` | The Hop protocol in pure Rust: bundles, wire format, Noise links, spray-and-wait routing, the §39 untraceable path, crypto. | crates.io | Rust embedders, auditors |
+| `hop-core` | `core/hop-core` | The Hop protocol in pure Rust: bundles, wire format, Noise links, epidemic routing with delivery-vaccine reclamation routing, the §39 untraceable path, crypto. | crates.io | Rust embedders, auditors |
 | `libhop` | `core/hop` | The C ABI (`hop.h`, cbindgen) over hop-core: the universal client + bearer contract every non-Rust SDK binds. | prebuilt binaries + crate | SDK authors, C/C++/embedded |
 | `hop-wasm` | `core/hop-wasm` | hop-core compiled to WASM: a real Hop node in the browser. | npm | web / browser mesh |
 | `hop-store-sqlite` | `core/stores/hop-store-sqlite` | SQLite + SQLCipher persistence behind the `Store` trait. | crates.io | Rust embedders |

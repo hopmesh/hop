@@ -479,6 +479,31 @@ RustBuffer uniffi_hop_fn_method_hopnode_register_service(uint64_t ptr, RustBuffe
 uint32_t uniffi_hop_fn_method_hopnode_rehydrate_dropped(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_ADD
+#define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_ADD
+int8_t uniffi_hop_fn_method_hopnode_relay_add(uint64_t ptr, RustBuffer url, int8_t configured, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_NEXT
+#define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_NEXT
+RustBuffer uniffi_hop_fn_method_hopnode_relay_next(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_POOL_AVAILABLE
+#define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_POOL_AVAILABLE
+uint32_t uniffi_hop_fn_method_hopnode_relay_pool_available(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_POOL_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_POOL_SIZE
+uint32_t uniffi_hop_fn_method_hopnode_relay_pool_size(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_REPORT
+#define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RELAY_REPORT
+void uniffi_hop_fn_method_hopnode_relay_report(uint64_t ptr, RustBuffer url, int8_t ok, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RESOLVE_HNS
 #define UNIFFI_FFIDEF_UNIFFI_HOP_FN_METHOD_HOPNODE_RESOLVE_HNS
 RustBuffer uniffi_hop_fn_method_hopnode_resolve_hns(uint64_t ptr, RustBuffer domain, RustCallStatus *_Nonnull out_status
@@ -1164,6 +1189,36 @@ uint16_t uniffi_hop_checksum_method_hopnode_register_service(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_REHYDRATE_DROPPED
 #define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_REHYDRATE_DROPPED
 uint16_t uniffi_hop_checksum_method_hopnode_rehydrate_dropped(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_ADD
+#define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_ADD
+uint16_t uniffi_hop_checksum_method_hopnode_relay_add(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_NEXT
+#define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_NEXT
+uint16_t uniffi_hop_checksum_method_hopnode_relay_next(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_POOL_AVAILABLE
+#define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_POOL_AVAILABLE
+uint16_t uniffi_hop_checksum_method_hopnode_relay_pool_available(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_POOL_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_POOL_SIZE
+uint16_t uniffi_hop_checksum_method_hopnode_relay_pool_size(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_REPORT
+#define UNIFFI_FFIDEF_UNIFFI_HOP_CHECKSUM_METHOD_HOPNODE_RELAY_REPORT
+uint16_t uniffi_hop_checksum_method_hopnode_relay_report(void
 
 );
 #endif

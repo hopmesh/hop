@@ -20,7 +20,7 @@
 // same value via hop_abi_version(), so a wrapper paired with a mismatched prebuilt archive fails
 // loudly at startup instead of drifting silently. Keep it in step with HOP_ABI_VERSION in hop.h.
 #ifndef HOP_EMBEDDED_ABI_VERSION
-#define HOP_EMBEDDED_ABI_VERSION 4
+#define HOP_EMBEDDED_ABI_VERSION 5
 #endif
 
 // Opaque handle to the running node, owned by libhop. Declared here so the class can hold a pointer

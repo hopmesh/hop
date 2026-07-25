@@ -846,6 +846,35 @@ public protocol HopNodeProtocol: AnyObject, Sendable {
     func rehydrateDropped()  -> UInt32
 
     /**
+     * Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a
+     * gossiped endpoint can never demote.
+     */
+    func relayAdd(url: String, configured: Bool)  -> Bool
+
+    /**
+     * The relay to dial right now. Empty string means "every candidate is backed off, wait and
+     * retry", which is NOT the same as having no reach.
+     */
+    func relayNext()  -> String
+
+    /**
+     * How many pooled endpoints are dialable right now. `relay_pool_size() > 0` with this at 0 is
+     * the degraded "everything backed off" state, which a UI should distinguish from offline.
+     */
+    func relayPoolAvailable()  -> UInt32
+
+    /**
+     * How many relay endpoints are pooled. Two scalars rather than a tuple because UniFFI
+     * cannot lower a tuple return across the FFI boundary.
+     */
+    func relayPoolSize()  -> UInt32
+
+    /**
+     * Report a dial outcome so the pool can score it.
+     */
+    func relayReport(url: String, ok: Bool)
+
+    /**
      * Resolve `domain` to its hops endpoint address (DESIGN.md §30). See [`HnsLookupResult`].
      */
     func resolveHns(domain: String)  -> HnsLookupResult
@@ -1655,6 +1684,73 @@ open func rehydrateDropped() -> UInt32  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+
+    /**
+     * Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a
+     * gossiped endpoint can never demote.
+     */
+open func relayAdd(url: String, configured: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_hop_fn_method_hopnode_relay_add(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(url),
+        FfiConverterBool.lower(configured),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * The relay to dial right now. Empty string means "every candidate is backed off, wait and
+     * retry", which is NOT the same as having no reach.
+     */
+open func relayNext() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_hop_fn_method_hopnode_relay_next(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * How many pooled endpoints are dialable right now. `relay_pool_size() > 0` with this at 0 is
+     * the degraded "everything backed off" state, which a UI should distinguish from offline.
+     */
+open func relayPoolAvailable() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_hop_fn_method_hopnode_relay_pool_available(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * How many relay endpoints are pooled. Two scalars rather than a tuple because UniFFI
+     * cannot lower a tuple return across the FFI boundary.
+     */
+open func relayPoolSize() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_hop_fn_method_hopnode_relay_pool_size(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Report a dial outcome so the pool can score it.
+     */
+open func relayReport(url: String, ok: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_hop_fn_method_hopnode_relay_report(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(url),
+        FfiConverterBool.lower(ok),uniffiCallStatus
+    )
+}
 }
 
     /**
@@ -4613,6 +4709,21 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_hop_checksum_method_hopnode_rehydrate_dropped() != 26481) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_hop_checksum_method_hopnode_relay_add() != 34285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_hop_checksum_method_hopnode_relay_next() != 15483) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_hop_checksum_method_hopnode_relay_pool_available() != 32448) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_hop_checksum_method_hopnode_relay_pool_size() != 44282) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_hop_checksum_method_hopnode_relay_report() != 31044) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_hop_checksum_method_hopnode_resolve_hns() != 47453) {

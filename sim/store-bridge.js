@@ -15,7 +15,6 @@
 //   contains(id) -> bool                currently held
 //   have() -> Uint8Array                all held ids, concatenated 32-byte chunks
 //   prune(nowMs)                        drop held + dedup entries whose window closed
-//   setData(id, data)                   overwrite held data (copy-budget mutation)
 //   kvPut/kvRemove(key[,val]) -> bool   synchronously acknowledged durable key→bytes mutation
 //   kvBatch(bytes) -> bool               atomically commit bundle custody + KV mutations
 //   kvGet(key) -> Uint8Array|undefined  durable key→bytes lookup
@@ -81,7 +80,6 @@ export function makeMapBridge({ failBatchMutation = -1 } = {}) {
     contains(id) { return held.has(_hex(id)); },
     have() { const out = new Uint8Array(held.size * 32); let o = 0; for (const h of held.keys()) { out.set(_idBytes(h), o); o += 32; } return out; },
     prune(nowMs) { for (const [h, e] of seen) if (e <= nowMs) { seen.delete(h); held.delete(h); } },
-    setData(id, data) { const h = _hex(id); if (held.has(h)) held.set(h, data.slice()); },
     kvPut(key, value) { kv.set(key, value.slice()); return true; },
     kvBatch(encoded) {
       const candidateSeen = new Map(seen);
@@ -158,7 +156,6 @@ export function makeSqliteBridge(db, ns) {
       db.exec({ sql: `DELETE FROM bundles WHERE ns=? AND id IN (SELECT id FROM seen WHERE ns=? AND expires_at<=?)`, bind: [ns, ns, nowMs] });
       db.exec({ sql: `DELETE FROM seen WHERE ns=? AND expires_at<=?`, bind: [ns, nowMs] });
     },
-    setData(id, data) { db.exec({ sql: `UPDATE bundles SET data=? WHERE ns=? AND id=?`, bind: [data.slice(), ns, id.slice()] }); },
     kvPut(key, value) { db.exec({ sql: `INSERT OR REPLACE INTO kv(ns,key,value) VALUES(?,?,?)`, bind: [ns, key, value.slice()] }); return true; },
     kvBatch(encoded) {
       const operations = _decodeKvBatch(encoded);

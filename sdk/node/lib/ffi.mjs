@@ -156,7 +156,7 @@ export const hop = {
     ),
 }
 
-const ABI_EXPECTED = 4
+const ABI_EXPECTED = 5
 export function assertAbi() {
   const got = hop.abi_version()
   if (got !== ABI_EXPECTED) {

@@ -33,7 +33,6 @@ pub(crate) trait Bridge {
     fn contains(&self, id: &[u8]) -> bool;
     fn have(&self) -> Vec<u8>;
     fn prune(&self, now_ms: f64);
-    fn set_data(&self, id: &[u8], data: &[u8]);
     fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String>;
     fn kv_batch(&self, mutations: &[KvMutation]) -> std::result::Result<(), String>;
     fn kv_get(&self, key: &str) -> Option<Vec<u8>>;
@@ -103,28 +102,6 @@ impl<B: Bridge> Store for JsStore<B> {
 
     fn prune(&mut self, now_ms: u64) {
         self.bridge.prune(now_ms as f64);
-    }
-
-    fn split_copies(&mut self, id: &BundleId) -> u16 {
-        let Some(mut bundle) = self.get(id) else {
-            return 0;
-        };
-        let give = bundle.split_copies();
-        if give > 0 {
-            if let Ok(d) = bundle.to_bytes() {
-                self.bridge.set_data(id, &d);
-            }
-        }
-        give
-    }
-
-    fn set_copies(&mut self, id: &BundleId, copies: u16) {
-        if let Some(mut bundle) = self.get(id) {
-            bundle.env.copies = copies;
-            if let Ok(d) = bundle.to_bytes() {
-                self.bridge.set_data(id, &d);
-            }
-        }
     }
 
     fn put_kv(&mut self, key: &str, value: Vec<u8>) {
@@ -273,12 +250,6 @@ mod tests {
             for k in expired {
                 f.seen.remove(&k);
                 f.bundles.remove(&k);
-            }
-        }
-        fn set_data(&self, id: &[u8], data: &[u8]) {
-            let mut f = self.inner.borrow_mut();
-            if f.bundles.contains_key(id) {
-                f.bundles.insert(id.to_vec(), data.to_vec());
             }
         }
         fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
@@ -678,52 +649,6 @@ mod tests {
             None,
             "a pruned id no longer reports a dedup deadline"
         );
-    }
-
-    #[test]
-    fn split_copies_halves_the_stored_budget() {
-        use hop_core::bundle::{Bundle, BundleOpts, Destination, Payload};
-        let alice = Identity::generate();
-        let bob = Identity::generate();
-        let b = Bundle::create(
-            &alice,
-            Destination::Device(bob.address()),
-            &bob.address(),
-            &Payload::PeerMessage {
-                content_type: "t".into(),
-                body: b"x".to_vec(),
-            },
-            BundleOpts {
-                copies: 8,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let id = b.id();
-        let mut s = store();
-        s.put(b, 0);
-        // Binary spray-and-wait: give floor(n/2), keep the rest, and the write persists via set_data.
-        let give = s.split_copies(&id);
-        assert_eq!(give, 4, "floor(8/2) handed to the peer");
-        let kept = s.get(&id).unwrap().env.copies;
-        assert_eq!(
-            kept, 4,
-            "remaining budget persisted back through the bridge"
-        );
-
-        // set_copies overwrites the stored budget.
-        s.set_copies(&id, 1);
-        assert_eq!(s.get(&id).unwrap().env.copies, 1);
-        // At 1 copy, nothing more to split.
-        assert_eq!(s.split_copies(&id), 0);
-    }
-
-    #[test]
-    fn split_copies_absent_bundle_is_zero() {
-        let missing: hop_core::bundle::BundleId = [7u8; 32];
-        let mut s = store();
-        assert_eq!(s.split_copies(&missing), 0);
-        assert!(s.get(&missing).is_none());
     }
 
     // ---- The wasm-facing node surface, exercised on the host through Node<JsStore<Fake>> -----

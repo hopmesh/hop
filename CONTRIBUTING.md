@@ -16,8 +16,8 @@ libhop C-ABI contract, `docs/libhop-architecture.md`.
 - `drivers/` - the per-platform host layer.
 - `services/` - the relay (`hop-relayd`), gateway, endpoint, and example origin.
 - `infra/` - OpenTofu for the cloud relay fleet (see `docs/runbooks/`).
-- `android/`, `apple/` - the demo apps.
-- `web/`, `sim/` - the marketing site (Astro) and the browser swarm sim.
+- `apps/` - every app: `apps/apple/HopDemo`, `apps/android/HopDemo`, `apps/web/site`, `apps/ble-lab`, `apps/esp32`.
+- `sim/` - the browser swarm sim (real `hop-core` compiled to wasm) plus the scenario checks.
 
 ## Prerequisites
 

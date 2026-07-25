@@ -565,7 +565,7 @@ func verifyInstalledShape(root string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(string(header), "#define HOP_ABI_VERSION 4") {
+	if !strings.Contains(string(header), "#define HOP_ABI_VERSION 5") {
 		return fmt.Errorf("release header does not declare the expected ABI version")
 	}
 	entries := 0
