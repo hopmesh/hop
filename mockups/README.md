@@ -10,7 +10,7 @@ There are two swarm demos in this repo. Only one is real:
 
 - **`sim/` (canonical).** Every node is a live `hop-core` instance compiled to wasm
   (`core/hop-wasm`). It runs the actual Hop protocol: real store-and-forward, real crypto,
-  real spray-and-wait routing, real §39 private path. This is what the site embeds and what
+  real epidemic routing, real §39 private path. This is what the site embeds and what
   the "your browser is running the real Hop protocol" claim on the homepage refers to.
 - **`mockups/swarm.html` (superseded, design reference only).** A pure-JS, fake-physics
   animation. It does NOT run the Hop protocol. It is kept solely as a visual/interaction

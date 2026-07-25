@@ -9,7 +9,7 @@
 //! - a [`ScenarioParams`]-driven generator that synthesizes a partitioned contact
 //!   trace and a cross-partition message workload ([`build_scenario`]);
 //! - a discrete-event [`Sim`] that replays contacts and injections in time order,
-//!   performing real binary spray-and-wait, and reports [`Metrics`].
+//!   performing the same unbounded epidemic forward the node does, and reports [`Metrics`].
 //!
 //! Both routing paths are exercised (choose via [`Path`] / [`build_scenario_path`]):
 //! - **Traced** (`Destination::Device`): the opt-in directed path, delivered by a direct handoff to
@@ -207,7 +207,7 @@ impl Sim {
     }
 
     /// Replay all injections and contacts in time order (injections first at equal
-    /// times), performing real binary spray-and-wait.
+    /// times), performing the same unbounded epidemic forward the node does.
     pub fn run(&mut self) {
         enum Ev {
             Inject(usize, Box<Bundle>),

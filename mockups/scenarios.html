@@ -233,7 +233,7 @@ function routePath(route,N){return 'M'+route.map(id=>`${N[id].x},${N[id].y}`).jo
 
 // scenarios ---------------------------------------------------------
 // each scenario carries MULTIPLE routes, copies fan out across independent
-// paths (binary spray-and-wait); the first to arrive delivers.
+// paths (epidemic forward); the first to arrive delivers.
 const SCEN = [
  {
    tab:'P2P messaging', ic:'💬', scene:'NEIGHBORHOOD · PURE PEER-TO-PEER', dur:4.8,
@@ -430,7 +430,7 @@ function render(i){
   // highlight the primary route under the nodes
   svg+=`<path class="trail" d="${routePath(routes[0],N)}"/>`;
   Object.values(N).forEach(n=>svg+=nodeSVG(n));
-  // one packet per route, copies racing independent paths (spray-and-wait)
+  // one packet per route, copies racing independent paths (epidemic forward)
   routes.forEach((rt,ri)=>{
     const p=routePath(rt,N);
     const d=(s.dur*(1+ri*0.16)).toFixed(2);       // alternates run a touch slower

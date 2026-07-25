@@ -197,11 +197,11 @@ export const layers = [
     id: 'hdp', name: 'hdp://', mono: true, group: 'Waist', ref: '§30 · §31',
     tagline: 'The datagram substrate, all traffic rides this',
     how: [
-      "Each datagram is born with a small copy budget that binary-splits across peers, copies fan out on independent paths in parallel (spray-and-wait).",
+      "Each datagram is handed on to every peer a carrier meets, so copies fan out on independent paths in parallel (epidemic forward).",
       "Sealed and addressed to a key; relays carry ciphertext they can't read and keep <strong>custody</strong> of their copy until they've handed it onward.",
       "The recipient's acknowledgement travels back as a vaccine, every node it reaches drops its copy and refuses more, collapsing the flood. Held when there's no route, never dropped.",
     ],
-    dev: "One connectionless send/receive primitive, a sealed, addressed bundle. The library handles spray-and-wait replication, custody, retransmit with backoff, dedup, and the delivery-ACK; you manage no connections or routes.",
+    dev: "One connectionless send/receive primitive, a sealed, addressed bundle. The library handles epidemic replication, custody, retransmit with backoff, dedup, and the delivery-ACK; you manage no connections or routes.",
     biz: "Messages get through across flaky or absent networks with nothing to operate. Delivery is eventual but guaranteed, with a default 24-hour lifetime everything above inherits.",
     viz: {
       vb: '0 0 720 340',

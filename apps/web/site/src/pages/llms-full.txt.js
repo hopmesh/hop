@@ -58,7 +58,7 @@ export async function GET() {
     '- Revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.',
     '- Pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.',
     '- End-to-end encrypted (X25519 + ChaCha20-Poly1305); identities are public keys, not phone numbers or accounts.',
-    '- BLE is the primary local bearer (passive, no pairing); Wi-Fi/LAN and an internet relay extend reach; multipath binary spray-and-wait; at-least-once with dedup.',
+    '- BLE is the primary local bearer (passive, no pairing); Wi-Fi/LAN and an internet relay extend reach; multipath epidemic forward; at-least-once with dedup.',
     '- Contact: hello@hopme.sh'
   );
 
