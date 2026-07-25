@@ -90,6 +90,10 @@ pub struct Metrics {
 
 /// The simulation world.
 pub struct Sim {
+    /// Hop limit stamped on workload bundles. Under epidemic routing this is the ONLY knob that
+    /// bounds propagation (the copy budget is reserved and unread, DESIGN.md §6), so it is the
+    /// thing a routing experiment actually varies.
+    pub hop_limit: u8,
     pub nodes: Vec<SimNode>,
     pub contacts: Vec<Contact>,
     /// Delivered bundle ids per destination node index.
@@ -109,6 +113,7 @@ pub struct Sim {
 impl Sim {
     pub fn new(node_count: usize) -> Self {
         Self {
+            hop_limit: BundleOpts::default().hop_limit,
             nodes: (0..node_count).map(|_| SimNode::new()).collect(),
             contacts: Vec::new(),
             delivered: HashMap::new(),
@@ -137,6 +142,7 @@ impl Sim {
         copies: u16,
         body: Vec<u8>,
     ) -> BundleId {
+        let hop_limit = self.hop_limit;
         let dst_addr = self.nodes[dst].address();
         let dst_x = self.nodes[dst].identity.address();
         let bundle = Bundle::create(
@@ -150,6 +156,7 @@ impl Sim {
             BundleOpts {
                 created_at: at,
                 copies,
+                hop_limit,
                 ..Default::default()
             },
         )
@@ -300,13 +307,19 @@ impl Sim {
                     self.nodes[from].store.remove(&id); // delivered; release custody
                 }
                 ForwardDecision::Forward => {
-                    // Spray: give the peer floor(n/2) copies, keep the rest.
-                    let give = self.nodes[from].store.split_copies(&id);
-                    if give == 0 {
-                        continue; // wait phase: nothing to spray (or absent)
-                    }
+                    // Epidemic: hand the peer a copy, keep ours. Bounded by the hop limit; the
+                    // receiver dedups by BundleId and a §39 delivery vaccine purges copies once
+                    // the message lands (DESIGN.md §6).
+                    //
+                    // This BLOCK USED TO SIMULATE SPRAY-AND-WAIT: it split a copy budget via
+                    // `Store::split_copies` and, at `give == 0`, `continue`d, i.e. a bundle down to
+                    // its last copy never forwarded at all. The shipped `EpidemicRouter` has no
+                    // copy budget and forwards to every peer, so the simulator was measuring a
+                    // routing policy production does not run: it under-reported delivery ratio and
+                    // over-reported latency for exactly the tail cases (few copies left, sparse
+                    // contact) that a DTN simulator exists to characterize. A simulator that models
+                    // the wrong protocol is worse than no simulator, because its numbers get quoted.
                     let mut copy = b.clone();
-                    copy.env.copies = give;
                     if !copy.decrement_hop() {
                         continue;
                     }
@@ -415,10 +428,26 @@ pub fn build_scenario(p: &ScenarioParams, messages: usize, copies: u16) -> Sim {
     build_scenario_path(p, messages, copies, Path::Traced)
 }
 
+/// Like [`build_scenario`] but stamps a specific `hop_limit` on the workload, so an experiment can
+/// vary the one knob that actually bounds epidemic propagation.
+pub fn build_scenario_hops(p: &ScenarioParams, messages: usize, hop_limit: u8) -> Sim {
+    let mut sim = Sim::new(p.nodes);
+    sim.hop_limit = hop_limit;
+    fill_scenario(&mut sim, p, messages, 8, Path::Traced);
+    sim
+}
+
 /// Like [`build_scenario`] but selects the routing [`Path`], so the same seeded contact trace and
 /// workload can be measured on the traced path AND the default private (§39) path.
 pub fn build_scenario_path(p: &ScenarioParams, messages: usize, copies: u16, path: Path) -> Sim {
     let mut sim = Sim::new(p.nodes);
+    fill_scenario(&mut sim, p, messages, copies, path);
+    sim
+}
+
+/// Generate the seeded contact trace and workload into an existing [`Sim`], so a caller that has
+/// already configured the sim (e.g. a non-default `hop_limit`) keeps that configuration.
+fn fill_scenario(sim: &mut Sim, p: &ScenarioParams, messages: usize, copies: u16, path: Path) {
     let mut rng = Rng::new(p.seed);
     let parts = p.partitions.max(1);
 
@@ -476,8 +505,6 @@ pub fn build_scenario_path(p: &ScenarioParams, messages: usize, copies: u16, pat
             }
         }
     }
-
-    sim
 }
 
 #[cfg(test)]
@@ -512,9 +539,16 @@ mod tests {
     }
 
     #[test]
-    fn binary_spray_splits_copies_then_delivers() {
-        // Source (0) starts with 8 copies. It sprays to relays 1 and 2, halving
-        // each handoff, then relay 1 delivers directly to the destination (4).
+    fn epidemic_forwards_to_every_peer_then_delivers() {
+        // Replaces `binary_spray_splits_copies_then_delivers`, which asserted a copy budget the
+        // shipped router does not implement. `EpidemicRouter` forwards to EVERY peer bounded only
+        // by the hop limit, so both relays end up holding a copy, the source keeps its own, and
+        // whichever relay meets the destination first delivers.
+        //
+        // The old test passed only because the SIMULATOR also implemented spray-and-wait, so sim
+        // and production disagreed and the test pinned the simulator's fiction rather than the
+        // protocol. Critically, the old sim `continue`d when a bundle was down to its last copy,
+        // meaning it never modelled the tail case a DTN simulator exists to measure.
         let mut sim = Sim::new(5);
         let dst_addr = sim.nodes[4].address();
         let dst_x = sim.nodes[4].identity.address();
@@ -527,25 +561,68 @@ mod tests {
                 content_type: "t".into(),
                 body: b"hi".to_vec(),
             },
-            BundleOpts {
-                copies: 8,
-                ..Default::default()
-            },
+            BundleOpts::default(),
         )
         .unwrap();
         let id = bundle.id();
 
         sim.inject(0, bundle);
-        sim.contacts.push(Contact { at: 10, a: 0, b: 1 }); // 0 sprays 4 to 1, keeps 4
-        sim.contacts.push(Contact { at: 20, a: 0, b: 2 }); // 0 sprays 2 to 2, keeps 2
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 }); // 0 hands 1 a copy, keeps its own
+        sim.contacts.push(Contact { at: 20, a: 0, b: 2 }); // 0 hands 2 a copy too
         sim.contacts.push(Contact { at: 30, a: 1, b: 4 }); // 1 delivers direct to dst
         sim.run();
 
         assert_eq!(sim.delivered.get(&4).map(|v| v.len()), Some(1));
-        // Source kept ceil after two sprays: 8 -> 4 -> 2.
-        assert_eq!(sim.nodes[0].store.get(&id).unwrap().env.copies, 2);
-        // Relay 2 holds the 2 copies it was sprayed.
-        assert_eq!(sim.nodes[2].store.get(&id).unwrap().env.copies, 2);
+        assert!(
+            sim.nodes[1].store.contains(&id) || sim.delivered.contains_key(&4),
+            "relay 1 carried the bundle to the destination"
+        );
+        assert!(
+            sim.nodes[2].store.contains(&id),
+            "epidemic forwards to every peer met, not just while a budget remains"
+        );
+        assert!(
+            sim.nodes[0].store.contains(&id),
+            "the origin keeps its own copy; forwarding is a copy, not a handoff"
+        );
+    }
+
+    /// The tail case the old spray simulator could not model at all: a bundle that reaches a relay
+    /// which then meets the destination LATE still delivers, because there is no wait phase to
+    /// suppress the final hop.
+    #[test]
+    fn a_late_single_carrier_still_delivers() {
+        let mut sim = Sim::new(3);
+        let dst_addr = sim.nodes[2].address();
+        let dst_x = sim.nodes[2].identity.address();
+        let bundle = Bundle::create(
+            &sim.nodes[0].identity,
+            Destination::Device(dst_addr),
+            &dst_x,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"late".to_vec(),
+            },
+            BundleOpts {
+                copies: 1, // the old sim's wait phase: split_copies returned 0 and it never forwarded
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sim.inject(0, bundle);
+        sim.contacts.push(Contact { at: 10, a: 0, b: 1 });
+        sim.contacts.push(Contact {
+            at: 5_000,
+            a: 1,
+            b: 2,
+        });
+        sim.run();
+
+        assert_eq!(
+            sim.delivered.get(&2).map(|v| v.len()),
+            Some(1),
+            "a single-copy bundle must still be forwarded and delivered"
+        );
     }
 
     fn base_params() -> ScenarioParams {
@@ -673,22 +750,51 @@ mod tests {
     }
 
     #[test]
-    fn more_copies_never_deliver_less() {
-        // Same seed → identical contacts and workload; only the copy budget differs.
-        // Spray (L=16) must deliver at least as much as direct-only (L=1).
+    fn the_copy_budget_is_inert() {
+        // `Envelope.copies` is RESERVED wire capacity: the shipped EpidemicRouter never reads it
+        // (DESIGN.md §6). So two runs that differ ONLY in the copy budget must produce IDENTICAL
+        // metrics. This replaces `more_copies_never_deliver_less`, which asserted
+        // `sprayed.delivered >= direct.delivered` and became VACUOUS the moment routing stopped
+        // consulting copies: both sides ran the same protocol, so it compared a number to itself
+        // and would have passed even if delivery were always zero.
+        //
+        // Stated this way the assertion is falsifiable and load-bearing: it fails the moment
+        // someone re-wires the copy budget into a routing decision without updating §6.
         let p = base_params();
-        let mut direct = build_scenario(&p, 60, 1);
-        direct.run();
-        let mut sprayed = build_scenario(&p, 60, 16);
-        sprayed.run();
+        let mut one = build_scenario(&p, 60, 1);
+        one.run();
+        let mut many = build_scenario(&p, 60, 16);
+        many.run();
 
-        let (md, ms) = (direct.metrics(), sprayed.metrics());
-        assert_eq!(md.injected, ms.injected);
+        let (a, b) = (one.metrics(), many.metrics());
+        assert_eq!(a.injected, b.injected);
+        assert_eq!(
+            a.delivered, b.delivered,
+            "the copy budget must not change delivery; it is reserved and unread"
+        );
+        assert_eq!(
+            a.transmissions, b.transmissions,
+            "the copy budget must not change radio cost either"
+        );
+    }
+
+    #[test]
+    fn a_higher_hop_limit_never_delivers_less() {
+        // The monotonicity property that IS real under epidemic routing: hop_limit is the only
+        // knob bounding propagation, so raising it cannot reduce delivery on identical contacts.
+        let p = base_params();
+        let mut shallow = build_scenario_hops(&p, 60, 2);
+        shallow.run();
+        let mut deep = build_scenario_hops(&p, 60, 12);
+        deep.run();
+
+        let (a, b) = (shallow.metrics(), deep.metrics());
+        assert_eq!(a.injected, b.injected);
         assert!(
-            ms.delivered >= md.delivered,
-            "spray L=16 delivered {} < direct L=1 delivered {}",
-            ms.delivered,
-            md.delivered
+            b.delivered >= a.delivered,
+            "hop_limit=12 delivered {} < hop_limit=2 delivered {}",
+            b.delivered,
+            a.delivered
         );
     }
 

@@ -13,7 +13,7 @@ module Hop
     CH = Fiddle::TYPE_CHAR
     V  = Fiddle::TYPE_VOID
 
-    ABI_EXPECTED = 4
+    ABI_EXPECTED = 5
 
     def self.lib_path
       ext = case RbConfig::CONFIG["host_os"]

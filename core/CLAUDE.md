@@ -3,7 +3,8 @@
 The Rust heart of Hop. Everything else binds through here.
 
 ```
-core/hop-core     the protocol: bundles, wire format, Noise links, spray-and-wait routing, the §39
+core/hop-core     the protocol: bundles, wire format, Noise links, epidemic routing with
+                  delivery-vaccine reclamation (DESIGN.md §6), the §39
                   untraceable-messaging path, HNS (well-known reach records), hps:// pub/sub, the crypto
 core/hop          the C ABI crate (cbindgen -> sdk/hop.h); the universal client + bearer contract
 core/hop-wasm     the wasm/browser binding of hop-core (JS-consumable via wasm-bindgen), peer to the

@@ -315,7 +315,7 @@ body = [type:u8][ payload ]
 - **Writers** handle partial writes: buffer the tail, flush on "space available".
 - A 64 KB `DATA` frame is one length-prefixed frame; L2CAP CoC fragments/reassembles the SDU
   transparently (negotiated MTU up to 64 KB+; iOS internally fragments above ~2 KB, invisibly).
-- **Guards:** reject `len < 1` or `len > 4 MiB` (`MAX_FRAME`, matching the repo) and close, defends
+- **Guards:** reject `len < 1` or `len > 1 MiB` (`MAX_FRAME`, matching hop-core's `MAX_BUNDLE_WIRE_BYTES` and LAN) and close, defends
   against a corrupt length.
 
 ---

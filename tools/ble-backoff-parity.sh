@@ -22,13 +22,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VECTORS="${BLE_BACKOFF_VECTORS:-$ROOT/bearers/ble-backoff-vectors.json}"
 KOTLIN="${BLE_BACKOFF_KOTLIN:-$ROOT/bearers/android/bearer-ble/src/main/java/sh/hopme/bearers/ble/DialBackoff.kt}"
 SWIFT="${BLE_BACKOFF_SWIFT:-$ROOT/bearers/apple/HopBearerBle/Sources/HopBearerBle/BleBearer.swift}"
+# The reset-point check reads the two files that own the reset, not the constants. Overridable so the
+# self-test can point them at fixtures (deriving them from the constant files' names only works for
+# the real filenames, which made the check unreachable from the self-test).
+SWIFT_CORE="${BLE_BACKOFF_SWIFT_CORE:-$ROOT/bearers/apple/HopBearerBle/Sources/HopBearerBle/CentralCore.swift}"
+KOTLIN_BEARER="${BLE_BACKOFF_KOTLIN_BEARER:-$ROOT/bearers/android/bearer-ble/src/main/java/sh/hopme/bearers/ble/BleBearer.kt}"
 
-python3 - "$VECTORS" "$KOTLIN" "$SWIFT" <<'PY'
+python3 - "$VECTORS" "$KOTLIN" "$SWIFT" "$SWIFT_CORE" "$KOTLIN_BEARER" <<'PY'
 import json
 import re
 import sys
 
 vectors_path, kotlin_path, swift_path = sys.argv[1], sys.argv[2], sys.argv[3]
+swift_core_path, kotlin_bearer_path = sys.argv[4], sys.argv[5]
 failures = []
 
 try:
@@ -64,6 +70,8 @@ def grab(text, pattern, label, path):
 
 kotlin = read(kotlin_path)
 swift = read(swift_path)
+kotlin_bearer = read(kotlin_bearer_path)
+
 
 # Kotlin is in milliseconds.
 got_kotlin = {
@@ -111,6 +119,86 @@ for row in spec["vectors"]:
             f"{vectors_path}: vector fail_count={n} says {row['backoff_ms']}ms but the "
             f"declared constants produce {want_ms}ms"
         )
+
+# --- frame cap ---------------------------------------------------------------------------------
+# The two BLE bearers independently declare the max accepted length prefix. They drifted to 4 MiB
+# while the protocol (`MAX_BUNDLE_WIRE_BYTES`) and the LAN bearer are both 1 MiB, and the Android
+# comment asserted parity with LAN that did not hold. BLE is the most attacker-adjacent transport (no
+# pairing, any stranger in radio range), so a 4x oversized per-frame commitment for bytes the core
+# can never decode is the wrong direction to drift. Pinned on both platforms.
+FRAME_CAP_BYTES = 1 << 20
+swift_cap = grab(swift, r"^let MAX_FRAME = 1 << (\d+)", "MAX_FRAME", swift_path)
+if swift_cap is not None and int(2 ** swift_cap) != FRAME_CAP_BYTES:
+    failures.append(
+        f"{swift_path}: MAX_FRAME is 1<<{int(swift_cap)}, expected 1<<20 ({FRAME_CAP_BYTES} bytes) "
+        f"to match hop-core MAX_BUNDLE_WIRE_BYTES and the LAN bearer"
+    )
+kcap = grab(kotlin_bearer, r"^internal const val MAX_FRAME_BYTES = 1 shl (\d+)", "MAX_FRAME_BYTES", kotlin_bearer_path)
+if kcap is not None and int(2 ** kcap) != FRAME_CAP_BYTES:
+    failures.append(
+        f"{kotlin_bearer_path}: MAX_FRAME_BYTES is 1 shl {int(kcap)}, expected 1 shl 20 to match "
+        f"hop-core MAX_BUNDLE_WIRE_BYTES and the LAN bearer"
+    )
+
+# --- reset point -------------------------------------------------------------------------------
+# A backoff schedule is only as strong as WHERE it resets. Apple cleared the failure state at
+# L2CAP-open while Android cleared it at HELLO-complete, so on Apple a peer that accepted a channel
+# and never said HELLO had its count cleared every cycle: the growth curve and the quarantine were
+# unreachable for exactly the peer they exist to park. Constants alone would never have caught that,
+# which is why the vectors now pin `reset_on` and this section checks it structurally.
+reset_on = spec.get("reset_on")
+if reset_on is None:
+    # FAIL CLOSED. Silently skipping when the key is absent would make this whole section vacuous
+    # the moment someone hand-edited the vectors, which is the same fail-open vice the reset point
+    # itself was: a check that quietly does nothing reads as coverage. (Caught by this guard's own
+    # self-test, which initially "passed" three regression fixtures because the key was missing.)
+    failures.append(
+        f"{vectors_path}: no `reset_on` key, so the reset-point check would silently do nothing. "
+        f"Declare it (currently: \"hello_complete\")."
+    )
+elif reset_on != "hello_complete":
+    failures.append(
+        f"{vectors_path}: unknown reset_on={reset_on!r}; this guard only knows \"hello_complete\""
+    )
+else:
+    swift_core = swift_core_path
+    core = read(swift_core)
+
+    def body_of(text, sig):
+        """Crude brace-matched function body. Enough to ask 'does THIS function clear the count?'."""
+        i = text.find(sig)
+        if i < 0:
+            return None
+        j = text.index("{", i)
+        depth = 0
+        for k in range(j, len(text)):
+            if text[k] == "{":
+                depth += 1
+            elif text[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[j : k + 1]
+        return None
+
+    opened = body_of(core, "func channelOpened(")
+    hello = body_of(core, "func dialerLinkUp(")
+    if opened is None:
+        failures.append(f"{swift_core}: channelOpened(...) not found; the reset-point check cannot run")
+    elif "failCount[" in opened and "= nil" in opened:
+        failures.append(
+            f"{swift_core}: channelOpened clears the failure state. L2CAP-open is NOT proof of a "
+            f"healthy peer (no HELLO yet); reset belongs in dialerLinkUp (reset_on=hello_complete)"
+        )
+    if hello is None:
+        failures.append(f"{swift_core}: dialerLinkUp(...) missing; nothing performs the HELLO-complete reset")
+    elif "failCount[" not in hello:
+        failures.append(f"{swift_core}: dialerLinkUp does not clear the failure count")
+
+    kbody = body_of(kotlin_bearer, "private fun dialerLinkUp(")
+    if kbody is None:
+        failures.append(f"{kotlin_bearer_path}: dialerLinkUp(...) missing; the HELLO-complete reset is gone")
+    elif "succeededForAddr" not in kbody:
+        failures.append(f"{kotlin_bearer_path}: dialerLinkUp no longer clears the failure state")
 
 if failures:
     print("ble-backoff-parity: FAIL", file=sys.stderr)

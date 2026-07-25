@@ -77,9 +77,6 @@ extern "C" {
     /// Drop held bundles + dedup entries whose window has closed at `now_ms`.
     #[wasm_bindgen(method)]
     fn prune(this: &StoreBridge, now_ms: f64);
-    /// Overwrite the held data for `id` (copy-budget mutation). No-op if not held.
-    #[wasm_bindgen(method, js_name = setData)]
-    fn set_data(this: &StoreBridge, id: &[u8], data: &[u8]);
     #[wasm_bindgen(method, catch, js_name = kvPut)]
     fn kv_put(this: &StoreBridge, key: &str, value: &[u8]) -> Result<bool, JsValue>;
     /// Atomically apply flat-encoded bundle custody and KV mutations. Returns only after the host
@@ -123,9 +120,6 @@ impl Bridge for StoreBridge {
     }
     fn prune(&self, now_ms: f64) {
         StoreBridge::prune(self, now_ms)
-    }
-    fn set_data(&self, id: &[u8], data: &[u8]) {
-        StoreBridge::set_data(self, id, data)
     }
     fn kv_put(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
         match StoreBridge::kv_put(self, key, value) {

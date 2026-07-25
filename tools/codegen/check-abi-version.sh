@@ -7,13 +7,14 @@
 # in cabi.rs but forgets the Swift or Kotlin wrapper (or vice versa), the assertion checks the wrong
 # number and the mismatch it was meant to catch slips through.
 #
-# This script greps the constant out of all five authoritative locations and fails (non-zero) if they
+# This script greps the constant out of all six authoritative locations and fails (non-zero) if they
 # disagree:
 #   - core/hop/src/cabi.rs                                  (the source of truth: the Rust const)
 #   - core/hop/include/hop.h                                (the hand-written header)
 #   - sdk/hop.h                                             (the cbindgen-published header)
 #   - sdk/apple/Sources/Hop/Hop.swift               (the Swift wrapper's compiled-in expectation)
 #   - sdk/android/src/main/kotlin/sh/hop/Hop.kt    (the Kotlin wrapper's compiled-in expectation)
+#   - sdk/embedded/src/Hop.h                                (the C++ wrapper's HOP_EMBEDDED_ABI_VERSION)
 #
 # The two headers under sdk/apple/Frameworks/** are gitignored build artifacts (copied from
 # core/hop/include/hop.h at xcframework-build time), so they are not authoritative and not checked here.
@@ -52,6 +53,13 @@ extract "header-src"   "$ROOT/core/hop/include/hop.h"                           
 extract "header-sdk"   "$ROOT/sdk/hop.h"                                         '#define +HOP_ABI_VERSION +[0-9]+'
 extract "swift"        "$ROOT/sdk/apple/Sources/Hop/Hop.swift"           'expectedABIVersion: *UInt32 *= *[0-9]+'
 extract "kotlin"       "$ROOT/sdk/android/src/main/kotlin/sh/hop/Hop.kt" 'HOP_ABI_VERSION *= *[0-9]+'
+# DOC-07: the embedded C++ wrapper declares its OWN constant and asserts it against
+# hop_abi_version() at begin(), so it is every bit as authoritative as the Swift/Kotlin ones. It was
+# omitted here, and the omission bit immediately: the v4 -> v5 bump for the relay-pool calls updated
+# all five checked declarations and silently left this one at 4, which would have made every
+# embedded node refuse to start against the library it shipped with. A guard that covers five of six
+# declarations is precisely as strong as its weakest unchecked leg.
+extract "embedded"     "$ROOT/sdk/embedded/src/Hop.h" 'HOP_EMBEDDED_ABI_VERSION *[0-9]+'
 
 if [ "$fail" -ne 0 ]; then
   echo "::error:: HOP_ABI_VERSION guard failed: one or more declarations are missing (see above)."
@@ -63,7 +71,7 @@ ref="${VALUES[0]}"
 for i in "${!VALUES[@]}"; do
   if [ "${VALUES[$i]}" != "$ref" ]; then
     echo "::error:: HOP_ABI_VERSION mismatch: ${NAMES[$i]} declares ${VALUES[$i]} but ${NAMES[0]} declares $ref."
-    echo "::error:: Bump every location together (cabi.rs, both hop.h, Hop.swift, Hop.kt) in the same change."
+    echo "::error:: Bump every location together (cabi.rs, both hop.h, Hop.swift, Hop.kt, embedded Hop.h) in the same change."
     fail=1
   fi
 done

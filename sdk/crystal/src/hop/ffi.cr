@@ -42,7 +42,7 @@ module Hop
   # Thin, one-to-one helpers over LibHop: turn raw pointers + synchronous sink callbacks into Crystal
   # Bytes/String/arrays. Everything ergonomic lives in Hop::Endpoint.
   module FFI
-    ABI_EXPECTED = 4_u32
+    ABI_EXPECTED = 5_u32
 
     # Verified reach record fields (mirrors ReachInfo on the Rust side).
     record Reach, address : Bytes, endpoint : String, issued_at : UInt64, ttl_secs : UInt32

@@ -123,6 +123,10 @@ jobs:
               - 'mockups/**'
             contract:
               - 'apps/esp32/**'
+              # GT-03: this job owns the strict-warning C++ host test that compiles
+              # sdk/embedded/src/Hop.cpp|Hop.h, so a PR touching ONLY those files must fire it.
+              # It previously skipped on exactly the changes it exists to check.
+              - 'sdk/embedded/**'
             infra:
               - 'infra/**'
             # The docs-tokens job runs tools/docs-token-guard.sh, which since docs-drift-03 enforces
@@ -224,6 +228,27 @@ jobs:
       # the optional `firestore` feature, which the default workspace test run doesn't enable.
       - name: Test relayd (firestore feature)
         run: cargo test -p hop-relayd --features firestore
+
+      # GT-01: hop-gateway's BIN sets required-features = ["reqwest"], and 15 lib regions are
+      # cfg'd on it, so the DEFAULT workspace run compiles NEITHER. Measured: 13 tests run without
+      # the feature, 22 with it. The 9 that never ran include the SSRF resolved-IP filter, the
+      # redirect refusal, the hop-by-hop header stripping, and the vetted-client loopback/metadata
+      # check, i.e. exactly the egress security surface, plus main.rs (855 lines) was never even
+      # type-checked. Security tests that do not compile are worse than no tests: they read as
+      # coverage.
+      - name: Clippy gateway (reqwest feature)
+        run: cargo clippy -p hop-gateway --features reqwest --all-targets -- -D warnings
+      - name: Test gateway (reqwest feature)
+        run: cargo test -p hop-gateway --features reqwest
+
+      # GT-02: `open_store_persistent`'s at-rest-encryption arm selection (core/hop/src/lib.rs) is
+      # sqlcipher-gated, including the PRODUCTION migration arm, and the sqlcipher step below runs
+      # against hop-store-sqlite, a DIFFERENT crate. So the crate mobile actually links had its
+      # keyed-open migration and fail-closed branches neither run nor compiled.
+      - name: Test C ABI (sqlcipher feature)
+        run: cargo test -p hop --no-default-features --features sqlcipher --locked
+      - name: Clippy C ABI (sqlcipher feature)
+        run: cargo clippy -p hop --no-default-features --features sqlcipher --all-targets --locked -- -D warnings
 
       # hop-telemetryd's durable telemetry_usage ledger (what the §37 reconciler bills from) is behind
       # the same optional `firestore` feature, so the default workspace run never compiles that path.

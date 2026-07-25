@@ -270,13 +270,37 @@ two reasons:
    correlation handle across hops and a rough hop-distance oracle, both of which
    §39 spends real complexity elsewhere to deny.
 
-**Dormant machinery, deliberately retained.** `Envelope.copies`,
-`Bundle::split_copies`, and `Store::split_copies` still exist and are still tested.
-Routing does not call them (`EpidemicRouter::should_forward` reads `b.copies` only
-to discard it). They are kept because `Router` is a swappable trait and the
-simulator (`hop-sim`) is where an alternative policy would be evaluated against
-contact traces. Treat them as a policy hook, not as live behavior. **If you are
-implementing `Store` against the C ABI, `split_copies` is not on any hot path.**
+**What was removed, and what is reserved.** The mutation API is gone:
+`Store::split_copies` and `Store::set_copies` were required trait methods that every
+adapter (sqlite, firestore, wasm, and every test double) had to implement, and that
+nothing called for a routing decision. That is dead surface imposed on every
+third-party `Store` implementor, including anyone implementing one against the C ABI,
+so it was deleted. Deleting it cascaded: the firestore `remirror` helper existed only
+to serve those two methods, and `PendingTx.copies` existed only to feed a
+`set_copies` write that nothing read back. All gone.
+
+`Envelope.copies` itself is **retained as reserved wire capacity**, not as dormant
+machinery. Two bytes is a cheap option to hold open, and deleting a field from the
+bundle envelope would shift the C ABI metadata layout that nine SDK wrappers parse,
+which is a poor trade for two bytes nothing reads. The contract is now explicit and
+tested rather than implied: a store must round-trip it byte-exactly
+(`reserved_copy_budget_survives_a_store_round_trip`), and the simulator asserts the
+router genuinely ignores it (`the_copy_budget_is_inert`, which fails the moment
+anyone re-wires the budget into a routing decision without updating this section).
+`Bundle::split_copies` survives as a plain bundle helper, imposing nothing on anyone.
+
+**The simulator was modelling the wrong protocol, and that is now fixed.** `hop-sim`
+implemented spray-and-wait directly: it split a copy budget on every forward and, at
+the wait phase, `continue`d without forwarding at all. So the simulator's delivery
+ratio, latency, and overhead numbers described a policy the production node does not
+run, and it under-reported delivery in exactly the sparse-contact tail a DTN simulator
+exists to characterize. `hop-sim` now performs the same unbounded epidemic forward the
+node does. The test that used to pin the old behavior
+(`binary_spray_splits_copies_then_delivers`) asserted the fiction and was replaced by
+`epidemic_forwards_to_every_peer_then_delivers` plus
+`a_late_single_carrier_still_delivers`, the tail case the old simulator could not model
+at all. A simulator that models the wrong protocol is worse than no simulator, because
+its numbers get quoted.
 
 **Optional later, PRoPHET hint:** prefer peers with higher historical
 delivery-predictability for the destination instead of forwarding to any fresh peer.
@@ -866,11 +890,13 @@ devices. A region with nobody listening never receives it. An addressed message 
 straight to the destination's current region. This is what makes a global backbone
 affordable rather than a flood amplifier.
 
-**Status.** `RegionRouter` (presence + per-region decayed demand, with
-`region_of` / `should_route_topic_to` / `target_regions`) is implemented and tested
-in `hop-relay`. The relay daemon (`hop-relayd`) runs a node + TCP bearer so devices
-and relays link over the internet; wiring `RegionRouter` into the live forwarding
-path is the next step.
+**Status.** Split by signal, because they differ. **Presence is implemented AND live**:
+`hop-store-firestore` records it (`set_presence` / `region_of`, TTL-fresh reads that wake no node,
+`PRESENCE_TTL_MS` 90s) and the `hop-relayd` handoff loop writes an undeliverable bundle into the
+destination region's partition; unknown or stale presence simply means no handoff yet.
+**Per-region decayed demand is NOT implemented.** The `RegionRouter` type this section used to name
+lived in a `hop-relay` crate that no longer exists, so treat the symbol as removed, not as
+shippable code.
 
 ### One DNS, many nodes, closest entrance, closest exit, lowest latency
 
@@ -968,7 +994,10 @@ is local, triggered by a bundle that arrived over BLE).
 
 Design + app capabilities (background modes, restore identifiers, local
 notifications, app-refresh task on iOS; foreground service + notifications on
-Android) are wired in the demo apps. Tuning the wake cadence and adding iBeacon
+Android) are wired in the demo apps. iBeacon region wake is SHIPPED in the shared BLE bearer
+(`HopBearerBle/BeaconWake.swift` monitors a `CLBeaconRegion` on `BEACON_UUID` and pokes the
+Central; `bearer-ble` emits the matching legacy-PDU beacon). Remaining: tuning the wake cadence and
+re-validating iBeacon
 region monitoring are follow-ups to validate on-device.
 
 ## 23. Addressing: the address *is* the public key
@@ -1823,7 +1852,8 @@ Everything below is built on plain datagrams; none of it requires a live end-to-
   the receiver was offline), distinct from carrier transport, which reassembles into one
   bundle.
 - **DTN-scale timing.** Default bundle lifetime is **24 h** (settable longer), and
-  retransmission **backs off exponentially** (30 s → … → 15 min cap) so a long-lived bundle
+  retransmission **backs off exponentially** (5 s → … → 15 min cap; the floor is short on purpose so a
+  copy lost mid-send on a flaky BLE link recovers in seconds, see `DEFAULT_RETX_INTERVAL_MS`) so a long-lived bundle
   costs a handful of retries, not thousands. A message persists and keeps seeking the
   destination across contacts for its whole lifetime.
 
@@ -1957,7 +1987,7 @@ equal under GDPR:
   strong Art. 32 safeguard and the core of any transfer-risk argument.
 - **No central identity/name registry (§23).** Addresses are pseudonymous public keys with no
   account mapping. Pseudonymization and data minimization by construction.
-- **TTL eviction** on bundles (`infra/firestore.tf`) and heartbeat staleness on presence, storage limitation (Art. 5(1)(e)) is built in, not bolted on.
+- **TTL eviction** on bundles (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on every write) and heartbeat staleness on presence, storage limitation (Art. 5(1)(e)) is built in, not bolted on.
 
 ### The actual exposures
 
@@ -2844,7 +2874,7 @@ exactly what Hop's thesis signs up for. (Operational flood-alerting can come lat
    durable spool, epidemic-spreads to co-awake regions over time. Bob comes online → anycast wakes his
    region → it reconciles the pending set from the awake backbone → Bob's fresh beacon drains it the
    last hops to him. Slower, certain, and no region was woken to push.
-3. **Alice opts into trace.** Cleartext `Device(Bob)` + growing `trace`: relays spray-and-wait toward
+3. **Alice opts into trace.** Cleartext `Device(Bob)` + growing `trace`: relays forward toward
    Bob and record each hop; Alice watches the path and a live "delivered." Faster and visible, and
    on-path relays now see Alice→Bob. Her choice, that message only.
 

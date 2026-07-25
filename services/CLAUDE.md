@@ -6,7 +6,13 @@ The Rust daemons. Deployed to Cloud Run via the GitOps pipeline (see `infra/CLAU
 services/hop-relayd    the relay: the most internet-exposed process, accepts connections from any mesh
                        node worldwide with no prior trust. WS + raw TCP; Firestore-backed spool/mailbox.
 services/hop-endpoint  the hops:// internet-egress endpoint (fetches on behalf of the mesh)
-services/hop-gateway   the gateway
+services/hop-gateway   the gateway (internet egress; its production reqwest client is behind the
+                       `reqwest` feature, which CI now compiles and tests explicitly)
+services/hop-accountd  the console backend (auth / billing / keys / invoices) behind apps/web/console.
+                       Does NOT link hop-core; it is a plain web service.
+services/hop-billingd  DESIGN.md §37 usage-ledger to Stripe/BigQuery reconciler. Pure lib plus a
+                       `live` feature that carries the Stripe HTTP transport.
+services/hop-telemetryd DESIGN.md §40 OTel-over-Hop collector: a mesh leaf with a durable ledger.
 ```
 
 ## Invariants (do not regress)
@@ -17,4 +23,6 @@ services/hop-gateway   the gateway
 
 ## Verify
 
-`cargo test -p hop-relayd` and `--features firestore` (the cloud path). `cargo test -p hop-endpoint -p hop-gateway`. Stores: `cargo test -p hop-store-sqlite --no-default-features --features sqlcipher`. The deploy gate (`infra/cloudbuild.trigger.yaml`) blocks `tofu apply` until CI is green for the commit.
+`cargo test -p hop-relayd` and `--features firestore` (the cloud path). `cargo test -p hop-endpoint -p hop-gateway`. Stores: `cargo test -p hop-store-sqlite --no-default-features --features sqlcipher`. `.github/workflows/runtime-deploy.yml` fires only on a SUCCESSFUL CI run from a push to `main` and
+applies the runtime root via WIF as `hop-deploy`; see `infra/CLAUDE.md`. (There is no
+`infra/cloudbuild.trigger.yaml`; Cloud Build triggers were retired.)

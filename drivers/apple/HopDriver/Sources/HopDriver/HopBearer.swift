@@ -604,7 +604,24 @@ public final class HopBearer: NSObject, ObservableObject {
         // Cloud relay (WebSocket) as a shared bearer - ONE outbound link to the backbone, on any host that
         // wants a relay (full app, or the relay-only test client) with a relay configured.
         if wantsRelay, let relay = config.defaultRelay {
-            bearerMgr.register(RelayBearer(relayURL: pinnedRelay ?? relay))
+            // §19 relay pool. Seed the node's pool with the operator/user choice, then let the
+            // bearer resolve PER DIAL ATTEMPT and report each outcome. That is what turns a dead
+            // relay from "retried forever until the app restarts" into automatic failover: the
+            // BearerManager has no live re-register, so the choice has to move inside the bearer.
+            //
+            // The pool also grows itself: every verified reach record the node resolves becomes a
+            // Discovered candidate, which can never demote this Configured one.
+            let seed = pinnedRelay ?? relay
+            _ = node.relayAdd(url: seed, configured: true)
+            bearerMgr.register(RelayBearer(
+                seedURL: seed,
+                resolveURL: { [weak self] in
+                    guard let self else { return nil }
+                    let next = self.node.relayNext()
+                    return next.isEmpty ? nil : next
+                },
+                reportOutcome: { [weak self] url, ok in self?.node.relayReport(url: url, ok: ok) }
+            ))
         }
         bearerMgr.start()
         let tags = [isRelayOnly ? nil : "BLE", isFull ? "LAN" : nil,

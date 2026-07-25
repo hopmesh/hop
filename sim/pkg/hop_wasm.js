@@ -756,9 +756,6 @@ function __wbg_get_imports() {
             const ret = arg0.seen(getArrayU8FromWasm0(arg1, arg2));
             return ret;
         },
-        __wbg_setData_27d07a06437501d2: function(arg0, arg1, arg2, arg3, arg4) {
-            arg0.setData(getArrayU8FromWasm0(arg1, arg2), getArrayU8FromWasm0(arg3, arg4));
-        },
         __wbg_static_accessor_GLOBAL_THIS_2fee5048bcca5938: function() {
             const ret = typeof globalThis === 'undefined' ? null : globalThis;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);

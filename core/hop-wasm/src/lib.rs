@@ -1,7 +1,7 @@
 //! Browser wrapper over the **real** `hop-core` node.
 //!
 //! Each `WasmNode` is a genuine `Node<JsStore>`, the same store-and-forward, crypto, and
-//! spray-and-wait routing that runs on device, over a host-provided persistent store (SQLite/OPFS
+//! epidemic routing that runs on device, over a host-provided persistent store (SQLite/OPFS
 //! in the Worker; see [`store`]). JavaScript owns the "bearer": it decides which nodes are in range,
 //! calls [`WasmNode::connected`], pumps [`WasmNode::drain`] → peer [`WasmNode::receive`] each frame,
 //! and reads delivered messages via [`WasmNode::inbox`]. An actual mesh of real Hop instances.
