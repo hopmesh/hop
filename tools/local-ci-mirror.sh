@@ -12,6 +12,9 @@ step "deterministic wire corpus"      cargo run -q -p hop-core --example wire-ve
 step "gateway (reqwest feature)"      cargo test -p hop-gateway --features reqwest
 step "C ABI (sqlcipher feature)"      cargo test -p hop --no-default-features --features sqlcipher --locked
 step "relayd (firestore feature)"     cargo test -p hop-relayd --features firestore
+step "accountd (firestore feature)"   cargo test -p hop-accountd --features firestore
+step "telemetryd (firestore feature)" cargo test -p hop-telemetryd --features firestore
+step "billingd (live feature)"        cargo test -p hop-billingd --features live
 step "store (sqlcipher feature)"      cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 step "minimal embedded C-ABI build"   cargo build -p hop --no-default-features --features minimal
 step "docs-token-guard"               bash tools/docs-token-guard.sh
