@@ -9,6 +9,9 @@ git-cliff. Do not edit by hand.
 - revive dead ingest, fail closed, bound stamps, measure bytes and carriage (1912c75)
 - keep the OTLP failure log aggregate-only + panic-isolate the worker (5c865d0)
 
+### Documentation
+- regenerate from conventional commits (a355901)
+
 ### Features
 - stream OTel to registry OTLP endpoints (P2, OTel day 1) (19916c2)
 - relays + collectors read tenant keys from the registry (5b-2, reader) (f80f5b3)

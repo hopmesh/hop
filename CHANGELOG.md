@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- fmt drift, orphaned doc comments, and Android tests that raced the network (dc44ef4)
+- two bugs in my own one-time-prekey work, plus three CI breaks (93859f8)
+- require explicit opt-in for a mirror's first ever tag (df25c27)
 - finish export_pr (baseline) + import (API auth, reversibility) (912d7cd)
 - export_pr reversible_check=False (one-way export transforms) (7ea3a27)
 - export_pr baseline via base branch (baseline_from_branch) (093931a)
@@ -147,6 +150,9 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### CI
+- stop the rust job exhausting the runner's disk (ffb04bc)
+- run the security surfaces that were never compiled, and close the ABI guard hole (59392bf)
+- name the wire-corpus step for the version it actually checks (f7e0e18)
 - open a PR instead of pushing to protected main (9ef8509)
 - docs-token-guard also sweeps the source trees for dashes (aef5a73)
 - expect the bumped token action in every release workflow (2c0ecf2)
@@ -176,8 +182,14 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
-- bump koffi in /sdk/node in the node-sdk-dependencies group (9e3f7c8)
+- bump com.android.application to 9.3.1 to match the library plugin (dc777e1)
+- bump the github-actions group across 1 directory with 3 updates (1925d5e)
 - bump astro (bced08b)
+- bump org.json:json in /bearers/android (f1b4e0a)
+- bump com.android.library in /apps/android/HopDemo (045ff66)
+- bump org.json:json in /apps/android/HopDemo (49b7d48)
+- bump koffi in /sdk/node in the node-sdk-dependencies group (9e3f7c8)
+- bump com.android.library in /bearers/android (65ed034)
 - re-trigger CI (62103c6)
 - purge em-dashes and en-dashes from source (d222435)
 - gate ssrf ip filter behind reqwest feature; fmt (a6f4665)
@@ -211,6 +223,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- make §6 match the shipped router, rename the fossil (49f2f53)
+- regenerate from conventional commits (a355901)
 - archive the 2026-07-09 ground-up audit report (9e04e8b)
 - rewrite deploy docs to GitHub-is-change-management; canonicalize required-checks (cd2892e)
 - de-dash relay-connection-policy doc (repo no-dash law) + sync to main (0456453)
@@ -251,6 +265,7 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (47a86df)
 
 ### Features
+- tag mirror releases so published packages can actually ship (0cd1018)
 - finish inbound (import), drop export_pr (41c095e)
 - auto-export changed components on merge to main (1c8c053)
 - follow the system theme, no manual toggle (2964001)
@@ -393,6 +408,17 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- rebuild pkg after the wasm bridge lost set_data (16dfe00)
+- cut the frame cap to the protocol's, and pin it (2a16945)
+- delete unwired trait surface and correct 12 stale claims (4e4272f)
+- clean the em-dashes retiring store.rs from the wire manifest exposed (59fa5f2)
+- Apple was resetting the dial backoff at the wrong moment (f94599f)
+- wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
+- delete the dead copy-budget API and stop the simulator lying (9ab3138)
+- fix Apple's dial backoff and pin the schedule across platforms (54f6f02)
+- relay pool with health scoring and failover (92f2eea)
+- rebuild pkg for wire v11 and repoint the corpus checks (af62d5f)
+- one-time prekeys for async first contact (wire v11) (d6ebce3)
 - adopt the pre-existing Resend domain instead of creating it (bae4a2a)
 - fold Resend domain into the billing root (drop the separate apparatus) (47df101)
 - de-flake the LAN pending-cap test (hold the no-HELLO reaper) (8497488)
@@ -623,6 +649,7 @@ git-cliff. Do not edit by hand.
 - drop the short send TTL — it murdered slow DTN deliveries before they arrived (b238e3e)
 
 ### Testing
+- de-flake the WSS pending-cap recovery test (8dd7bbb)
 - export_pr validation probe (sdk/node) (dddb024)
 - cover a second retirement and wrapped retirement records (e53b687)
 - enforce portable skill contracts (dbb7629)

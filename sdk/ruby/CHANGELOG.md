@@ -12,6 +12,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (a355901)
 - branded, marketable READMEs for every sub-repo (9c2a477)
 - stop mentioning DNSSEC (no longer part of the design) (179a278)
 
@@ -23,6 +24,7 @@ git-cliff. Do not edit by hand.
 - Ruby endpoint SDK (Fiddle, zero gems) + use-after-free-safe teardown (#131) (dbc1997)
 
 ### Other
+- wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - RubyGems trusted-publishing release workflow (rake release + OIDC role) (5a2d6ee)
 - local first-publish + OIDC trusted publishing on npm/PyPI/RubyGems (beefc71)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
