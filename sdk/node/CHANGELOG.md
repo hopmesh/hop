@@ -21,6 +21,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 - stop mentioning DNSSEC (no longer part of the design) (179a278)
 - correct the license line (services are Apache now, only core is FSL) (f9681c9)

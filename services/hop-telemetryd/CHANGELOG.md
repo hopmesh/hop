@@ -10,6 +10,7 @@ git-cliff. Do not edit by hand.
 - keep the OTLP failure log aggregate-only + panic-isolate the worker (5c865d0)
 
 ### Documentation
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 
 ### Features

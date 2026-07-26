@@ -17,6 +17,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 - branded, marketable READMEs for every sub-repo (9c2a477)
 
@@ -26,6 +27,7 @@ git-cliff. Do not edit by hand.
 - self-certifying reachability records (core + ABI) for DNS-free endpoint discovery (#126) (7c31123)
 
 ### Other
+- let a host enable and disable individual bearers at runtime (c17b01a)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
 - SECURITY.md per component + enable-security in the bootstrap script (a1492e9)

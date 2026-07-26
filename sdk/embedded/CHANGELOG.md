@@ -10,6 +10,7 @@ git-cliff. Do not edit by hand.
 - drop unused attestation read access (0137b19)
 
 ### Documentation
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 
 ### Features

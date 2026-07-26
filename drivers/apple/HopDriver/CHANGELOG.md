@@ -14,6 +14,8 @@ git-cliff. Do not edit by hand.
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (b56bb49)
 
 ### Documentation
+- stop describing a routing algorithm the code no longer runs (5433b6e)
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 - branded, marketable READMEs for every sub-repo (9c2a477)
 - stop mentioning DNSSEC (no longer part of the design) (179a278)
@@ -23,6 +25,7 @@ git-cliff. Do not edit by hand.
 - auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
 
 ### Other
+- per-transport switches, and show when the SENDER sent a message (7a923c0)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - fix Apple's dial backoff and pin the schedule across platforms (54f6f02)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)

@@ -16,6 +16,7 @@ git-cliff. Do not edit by hand.
 - AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10 + core-ktx 1.19.0 (13 held bumps) (471edb7)
 
 ### Documentation
+- regenerate from conventional commits (1572ae2)
 - regenerate from conventional commits (a355901)
 - branded, marketable READMEs for every sub-repo (9c2a477)
 
@@ -25,6 +26,8 @@ git-cliff. Do not edit by hand.
 - self-certifying reachability records (core + ABI) for DNS-free endpoint discovery (#126) (7c31123)
 
 ### Other
+- per-transport switches, and show when the SENDER sent a message (7a923c0)
+- let a host enable and disable individual bearers at runtime (c17b01a)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
 - SECURITY.md per component + enable-security in the bootstrap script (a1492e9)
