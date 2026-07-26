@@ -363,6 +363,32 @@ public final class HopBearer: NSObject, ObservableObject {
     /// ids it mints can never collide with the legacy / Multipeer / relay / endpoint / LAN / GATT ranges
     /// (1, 10k, 20k, 30k, 40k, 60k) that `nextLinkId` & friends still serve for the non-shared transports.
     let bearerMgr = BearerManager(baseLinkId: 1_000_000)
+
+    /// Turn one shared transport on or off at runtime (`tag` is a `TransportStatus.tag`: "BT", "LAN",
+    /// "Relay"). Returns false if no bearer carries that tag, e.g. Peer-to-Peer, which is not a shared
+    /// bearer, or a relay bearer that was never registered because relays are disabled.
+    ///
+    /// Switching a transport off tears its live links down (see `BearerManager.setEnabled`), so the
+    /// node stops routing over it immediately rather than holding a path that can no longer deliver.
+    /// Runs OFF the caller's thread: a bearer's start/stop touches radios and can block, and this is
+    /// called straight from a UI toggle.
+    @discardableResult
+    public func setTransportEnabled(_ tag: String, _ on: Bool) -> Bool {
+        guard bearerMgr.bearerStates()[tag] != nil else { return false }
+        bearerControl.async { [weak self] in
+            guard let self else { return }
+            self.bearerMgr.setEnabled(tag, on)
+            // refresh() reads @Published state and must start on main.
+            DispatchQueue.main.async { [weak self] in self?.refresh() }
+        }
+        return true
+    }
+
+    /// Serial queue for transport enable/disable. Deliberately NOT `core`: a bearer's start/stop
+    /// touches radios and can block, and `core` is the single serial queue that owns all node state,
+    /// so blocking it would stall every other link, the relay, and `tick()`. That is the same coupling
+    /// R-02 removed on Android by moving the BLE socket write off the node's core thread.
+    private let bearerControl = DispatchQueue(label: "hop.bearer.control")
     /// One stable transport id for this process, shared by every registered bearer (the BLE/LAN HELLO id
     /// + the greater-id dedup tiebreaker). This is a TRANSPORT-layer id, distinct from the Hop node
     /// address (SPEC R11) - the node still negotiates Noise over the bearer's DATA frames.
@@ -1053,7 +1079,8 @@ public final class HopBearer: NSObject, ObservableObject {
         // radio object, so per-transport status comes from the manager's live links - each short tag mapped
         // to its display id. Multipeer (Peer-to-Peer) is not a shared bearer, so it's added separately.
         let active = bearerMgr.activeTransports()          // short tag → live link count
-        transports = RefreshMapper.transportStatuses(active: active, p2pActive: p2pActive,
+        transports = RefreshMapper.transportStatuses(active: active, states: bearerMgr.bearerStates(),
+                                                     p2pActive: p2pActive,
                                                      p2pLinks: mcPeerByLink.count)
 
         // Map each direct neighbour to the transport(s) carrying it (the route). Shared-bearer links are

@@ -69,6 +69,37 @@ internal fun readCapped(input: java.io.InputStream, maximum: Int = 32 * 1024 * 1
 }
 
 /// One-line metadata under a chat bubble (mirrors the iOS app).
+/// The ORIGINATING device's send time, for the message list. The twin of Swift
+/// `DemoFormat.originStamp`; keep the two in step.
+///
+/// Two deliberate choices. NO SECONDS: on the §39 private path (the default) the wire `created_at` is
+/// bucketed to 60s and rounded down, because at millisecond resolution it is a sender timing
+/// fingerprint. Rendering seconds would imply precision the protocol removes on purpose. A DATE ONCE
+/// IT IS NOT TODAY: hop is delay-tolerant, so a bundle can arrive hours or days after it was sent, and
+/// a bare "09:12" on a three-day-old message reads as recent.
+///
+/// 24-hour and built from calendar fields rather than a locale-sensitive formatter, so the output is
+/// stable and the tests cannot flake on the runner's region.
+internal fun originStamp(originMs: Long, nowMs: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+    val o = java.time.Instant.ofEpochMilli(originMs).atZone(zone)
+    val n = java.time.Instant.ofEpochMilli(nowMs).atZone(zone)
+    val hhmm = "%02d:%02d".format(o.hour, o.minute)
+    if (o.toLocalDate() == n.toLocalDate()) return hhmm
+    if (o.toLocalDate() == n.toLocalDate().minusDays(1)) return "Yesterday $hhmm"
+    val mon = MONTH_ABBREV[o.monthValue - 1]
+    return if (o.year == n.year) "${o.dayOfMonth} $mon $hhmm" else "${o.dayOfMonth} $mon ${o.year} $hhmm"
+}
+
+private val MONTH_ABBREV = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+/// The origin send time under a bubble, or null when there is nothing trustworthy to show. Outgoing:
+/// our own send clock (we ARE the origin). Incoming: the bundle's `created_at`, which is null when the
+/// sender left it unset.
+internal fun originLabel(m: HopBearer.Message, nowMs: Long = System.currentTimeMillis()): String? {
+    val origin = if (m.incoming) m.originAt else m.sentAt
+    return origin?.let { originStamp(it, nowMs) }
+}
+
 internal fun messageMeta(m: HopBearer.Message): String {
     if (m.incoming) {
         var s = HopBearer.hopsLabel(m.hops)

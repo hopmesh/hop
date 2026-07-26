@@ -38,6 +38,10 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
     private var nextGlobal = baseLinkId
     private val toGlobal = HashMap<Bearer, HashMap<Long, Long>>()
     private val fromGlobal = HashMap<Long, Pair<Bearer, Long>>()
+    /** Disabled bearers by identity. ABSENT MEANS ENABLED, so a bearer is live the moment it
+     *  registers and adding this could not change existing behaviour. */
+    private val disabled = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Bearer, Boolean>())
+    private var started = false
 
     fun register(bearer: Bearer) {
         val lane = Lane(this, bearer)
@@ -45,13 +49,87 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
         synchronized(lock) { lanes.add(lane); bearers.add(bearer) }
     }
 
+    // Per-transport enablement -------------------------------------------------------------------
+    //
+    // Not every integrator wants every radio. A product may ship BLE-only, or let the user turn the
+    // relay off to keep traffic off the internet, and that has to be revocable at RUNTIME: deciding
+    // at registration time would mean an app restart to change your mind.
+    //
+    // `transportName` is the handle, because it is the identity the consumer already sees (the
+    // per-peer `xport=` tag, `transportNameOf`) and the only bearer property meaningful outside this
+    // file. That promotes it from "cosmetic" to an identifier, so two bearers sharing a name are one
+    // addressable group and `setEnabled` applies to all of them rather than picking one arbitrarily.
+
+    /** Enable/disable every registered bearer with this [transportName]; returns whether any matched.
+     *  Idempotent.
+     *
+     *  Disabling STOPS the bearer *and tears down its live links*. Stopping alone would leave the
+     *  consumer holding links that can never carry bytes again, which is worse than a closed link:
+     *  the node would keep choosing a dead path instead of re-offering over another one. Enabling
+     *  starts it if the manager is started, otherwise it goes live on the next [start]. */
+    fun setEnabled(transportName: String, enabled: Boolean): Boolean {
+        val toStart = ArrayList<Bearer>(); val toStop = ArrayList<Bearer>()
+        val matched: Boolean
+        synchronized(lock) {
+            val matches = bearers.filter { it.transportName == transportName }
+            matched = matches.isNotEmpty()
+            for (b in matches) {
+                val wasEnabled = !disabled.contains(b)
+                if (wasEnabled == enabled) continue          // idempotent
+                if (enabled) { disabled.remove(b); if (started) toStart.add(b) } else { disabled.add(b); toStop.add(b) }
+            }
+        }
+        // Outside the lock: a bearer's start/stop touches radios and can block.
+        toStop.forEach { stopAndTearDown(it) }
+        toStart.forEach { doStart(it) }
+        return matched
+    }
+
+    /** Is any bearer with this [transportName] enabled? False for an unknown name. */
+    fun isEnabled(transportName: String): Boolean = synchronized(lock) {
+        bearers.any { it.transportName == transportName && !disabled.contains(it) }
+    }
+
+    /** Every registered transport name mapped to its enablement, for a settings UI. */
+    fun bearerStates(): Map<String, Boolean> = synchronized(lock) {
+        val out = LinkedHashMap<String, Boolean>()
+        for (b in bearers) out[b.transportName] = (out[b.transportName] ?: false) || !disabled.contains(b)
+        out
+    }
+
+    /** Stop a bearer and synthesize `linkDown` for every link it still owned, so the consumer's link
+     *  table cannot outlive the transport carrying it. */
+    private fun stopAndTearDown(bearer: Bearer) {
+        doStop(bearer)
+        val orphans = synchronized(lock) {
+            val gs = toGlobal.remove(bearer)?.values?.sorted() ?: emptyList()
+            gs.forEach { fromGlobal.remove(it) }
+            gs
+        }
+        orphans.forEach { sink?.linkDown(it) }
+    }
+
+    /** Start only the ENABLED bearers. A disabled transport must stay down across a stop/start cycle,
+     *  or the setting silently reverts the next time the host restarts the mesh. */
+    override fun start() {
+        val live = synchronized(lock) { started = true; bearers.filter { !disabled.contains(it) } }
+        live.forEach { doStart(it) }
+    }
+
+    /** Stop everything, including disabled bearers (already stopped, and per-bearer stop is
+     *  idempotent). Enablement is preserved so a later [start] honours it. */
+    override fun stop() {
+        synchronized(lock) { started = false }
+        snapshot().forEach { doStop(it) }
+    }
+
     // F-10: isolate each bearer's start/stop so one throwing (e.g. BLE listen failing when Bluetooth
     // is off at launch) can't abort the others (LAN + relay) or crash the caller's thread.
-    override fun start() = snapshot().forEach {
-        try { it.start() } catch (e: Throwable) { System.err.println("bearer start failed: ${e.message}") }
+    private fun doStart(b: Bearer) {
+        try { b.start() } catch (e: Throwable) { System.err.println("bearer start failed: ${e.message}") }
     }
-    override fun stop() = snapshot().forEach {
-        try { it.stop() } catch (e: Throwable) { System.err.println("bearer stop failed: ${e.message}") }
+    private fun doStop(b: Bearer) {
+        try { b.stop() } catch (e: Throwable) { System.err.println("bearer stop failed: ${e.message}") }
     }
 
     override fun send(bytes: ByteArray, link: Long) {
@@ -62,6 +140,14 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
     private fun snapshot(): List<Bearer> = synchronized(lock) { ArrayList(bearers) }
 
     fun transportNameOf(link: LinkId): String? = synchronized(lock) { fromGlobal[link] }?.first?.transportName
+
+    /** Live link count per transport name (the twin of Swift's `activeTransports()`). Counts the
+     *  MANAGER's links, so it includes a transport-level link the node has not yet handshaked. */
+    fun activeTransports(): Map<String, Int> = synchronized(lock) {
+        val out = HashMap<String, Int>()
+        for ((bearer, _) in fromGlobal.values) out[bearer.transportName] = (out[bearer.transportName] ?: 0) + 1
+        out
+    }
 
     internal fun up(bearer: Bearer, local: Long, role: HopRole, peerId: ByteArray) {
         val g: Long

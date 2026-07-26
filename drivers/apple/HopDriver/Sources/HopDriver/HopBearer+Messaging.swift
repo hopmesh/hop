@@ -294,10 +294,13 @@ extension HopBearer {
             let now = HopBearer.nowMs()
             let latency = now >= m.createdAt ? now - m.createdAt : 0  // clamp clock skew
             let contentType = isMultipart && images.isEmpty ? "text/plain" : m.contentType
+            // created_at 0 means the sender never stamped it; surface nil rather than 1970.
+            let originAt = m.createdAt > 0 ? Date(timeIntervalSince1970: Double(m.createdAt) / 1000) : nil
             let message = Message(peer: who, text: text, incoming: true,
                                   peerAddr: m.from, contentType: contentType,
                                   imageData: isImage ? m.body : nil, images: images,
-                                  inboxId: m.id, hops: m.hops, latencyMs: latency, trace: m.trace)
+                                  inboxId: m.id, hops: m.hops, latencyMs: latency, trace: m.trace,
+                                  originAt: originAt)
             let retained = RetentionPolicy.retain(updated + [message])
             let retainedMessage = retained.contains { $0.id == message.id }
             let persisted = persistInboxForTest?(m.id, retainedMessage ? message : nil) ??

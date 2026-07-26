@@ -327,6 +327,34 @@ fun StatusScreen(bearer: HopBearer) {
             Text(bearer.status.value, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(16.dp))
 
+            // Transports: every REGISTERED bearer, switchable at runtime. Not every integrator
+            // ships every radio, and switching one off closes its live links so the node stops
+            // routing over it (see BearerManager.setEnabled).
+            Text("Transports", style = MaterialTheme.typography.titleMedium)
+            if (bearer.transports.isEmpty()) {
+                Text("starting…", style = MaterialTheme.typography.bodySmall)
+            }
+            bearer.transports.forEach { t ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = t.enabled, onCheckedChange = { bearer.setTransportEnabled(t.tag, it) })
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t.name)
+                        // Three states, not two: off by choice, on with no peers, on and carrying
+                        // links. Collapsing the first two would make a deliberate setting look broken.
+                        Text(
+                            when {
+                                !t.enabled -> "disabled"
+                                t.active -> "${t.links} link${if (t.links == 1) "" else "s"}"
+                                else -> "no links"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+
             // Privacy + QR identity exchange
             Text("Privacy", style = MaterialTheme.typography.titleMedium)
             var showQr by remember { mutableStateOf(false) }
@@ -856,7 +884,12 @@ fun ChatScreen(bearer: HopBearer, peer: HopBearer.Peer, onBack: () -> Unit) {
                     } else if (!m.incoming && !m.delivered && m.relayed == 0u) {
                         Text("Sent · awaiting delivery", style = MaterialTheme.typography.bodySmall)
                     } else {
-                        Text(messageMeta(m), style = MaterialTheme.typography.bodySmall)
+                        // When the ORIGINATING device sent it, then the usual metadata. For an
+                        // outgoing message we are the origin; for an incoming one m.sentAt is when WE
+                        // received it, so the sender's created_at is the only honest source.
+                        val stamp = originLabel(m)
+                        Text(if (stamp != null) "$stamp \u00B7 ${messageMeta(m)}" else messageMeta(m),
+                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
