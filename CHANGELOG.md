@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- kill the LAN reap-test flake by pinning the ordering (a16a715)
 - fmt drift, orphaned doc comments, and Android tests that raced the network (dc44ef4)
 - two bugs in my own one-time-prekey work, plus three CI breaks (93859f8)
 - require explicit opt-in for a mirror's first ever tag (df25c27)
@@ -223,6 +224,11 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- the reorg left three more build recipes pointing at paths that moved (95c7bb5)
+- the HopDemo README documented a build that cannot work (7278753)
+- node.rs called shipped fragmentation a TODO, and pointed at the dead layer (45f9b6f)
+- stop describing a routing algorithm the code no longer runs (5433b6e)
+- regenerate from conventional commits (1572ae2)
 - make §6 match the shipped router, rename the fossil (49f2f53)
 - regenerate from conventional commits (a355901)
 - archive the 2026-07-09 ground-up audit report (9e04e8b)
@@ -408,6 +414,10 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- per-transport switches, and show when the SENDER sent a message (7a923c0)
+- let a host enable and disable individual bearers at runtime (c17b01a)
+- move the BLE socket write off the node's core thread (R-02) (41fd3fb)
+- heal a doomed handshake on the private path, where no reset can be sent (5133f4d)
 - rebuild pkg after the wasm bridge lost set_data (16dfe00)
 - cut the frame cap to the protocol's, and pin it (2a16945)
 - delete unwired trait surface and correct 12 stale claims (4e4272f)

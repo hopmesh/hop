@@ -12,6 +12,8 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- stop describing a routing algorithm the code no longer runs (5433b6e)
+- regenerate from conventional commits (1572ae2)
 - make §6 match the shipped router, rename the fossil (49f2f53)
 - regenerate from conventional commits (a355901)
 
