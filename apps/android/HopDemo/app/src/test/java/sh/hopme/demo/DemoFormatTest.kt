@@ -163,4 +163,63 @@ class DemoFormatTest {
         assertEquals("Sent · 0 peers", messageMeta(msg(relayed = 0u)))
         assertEquals("Sent · 2 peers", messageMeta(msg(relayed = 2u)))
     }
+
+    // originStamp: when the ORIGINATING device sent it ------------------------------------------
+
+    /** A fixed UTC zone, so these assert the format and never the runner's region. */
+    private val utc = java.time.ZoneId.of("UTC")
+    private fun at(y: Int, mo: Int, d: Int, h: Int, mi: Int): Long =
+        java.time.ZonedDateTime.of(y, mo, d, h, mi, 0, 0, utc).toInstant().toEpochMilli()
+
+    @Test fun origin_stamp_is_bare_time_for_today() {
+        val now = at(2026, 7, 26, 21, 40)
+        assertEquals("09:05", originStamp(at(2026, 7, 26, 9, 5), now, utc))
+    }
+
+    /**
+     * The delay-tolerant case that makes this more than cosmetic: a bundle can arrive long after it
+     * was sent, so a bare time on an old message would read as recent.
+     */
+    @Test fun origin_stamp_names_yesterday_and_older_days() {
+        val now = at(2026, 7, 26, 21, 40)
+        assertEquals("Yesterday 23:59", originStamp(at(2026, 7, 25, 23, 59), now, utc))
+        assertEquals("20 Jul 08:00", originStamp(at(2026, 7, 20, 8, 0), now, utc))
+        assertEquals("31 Dec 2025 23:15", originStamp(at(2025, 12, 31, 23, 15), now, utc))
+    }
+
+    /**
+     * Yesterday is a CALENDAR day, not "within 24 hours": 00:10 today and 23:50 yesterday are 20
+     * minutes apart but must not both render as a bare time.
+     */
+    @Test fun origin_stamp_yesterday_is_a_calendar_day_not_a_24h_window() {
+        val now = at(2026, 7, 26, 0, 10)
+        assertEquals("Yesterday 23:50", originStamp(at(2026, 7, 25, 23, 50), now, utc))
+        assertEquals("00:00", originStamp(at(2026, 7, 26, 0, 0), now, utc))
+    }
+
+    @Test fun origin_stamp_never_shows_seconds_because_the_private_path_buckets_to_60s() {
+        val now = at(2026, 7, 26, 12, 0)
+        val withSeconds = java.time.ZonedDateTime.of(2026, 7, 26, 11, 30, 59, 0, utc).toInstant().toEpochMilli()
+        assertEquals("11:30", originStamp(withSeconds, now, utc))
+    }
+
+    /** Incoming uses the sender's stamp; outgoing uses our own clock, since we ARE the origin. */
+    @Test fun origin_label_picks_the_right_clock_per_direction_and_is_null_when_unstamped() {
+        val t = at(2026, 7, 26, 10, 0)
+        val incoming = HopBearer.Message(localId = 1, peer = "p", text = "hi", incoming = true,
+            originAt = t, sentAt = at(2026, 7, 26, 18, 0))
+        assertEquals("incoming must show the SENDER's stamp, not our receive time",
+            originStamp(t, at(2026, 7, 26, 19, 0), java.time.ZoneId.systemDefault()),
+            originLabel(incoming, at(2026, 7, 26, 19, 0)))
+
+        val outgoing = HopBearer.Message(localId = 2, peer = "p", text = "yo", incoming = false,
+            originAt = null, sentAt = t)
+        assertEquals("outgoing falls back to our own send clock",
+            originStamp(t, at(2026, 7, 26, 19, 0), java.time.ZoneId.systemDefault()),
+            originLabel(outgoing, at(2026, 7, 26, 19, 0)))
+
+        val unstamped = HopBearer.Message(localId = 3, peer = "p", text = "?", incoming = true, originAt = null)
+        assertNull("an unstamped incoming message shows nothing rather than 1970",
+            originLabel(unstamped, at(2026, 7, 26, 19, 0)))
+    }
 }

@@ -276,14 +276,26 @@ struct ContentView: View {
                             }
                         } label: {
                             HStack {
-                                Circle().fill(t.active ? Color.green : Color.red).frame(width: 8, height: 8)
+                                Circle().fill(statusColor(t)).frame(width: 8, height: 8)
                                 Text(t.id)
                                 Spacer()
-                                Text(t.active ? "\(t.links) linked" : "off")
+                                Text(statusText(t))
                                     .font(.caption).foregroundStyle(.secondary)
+                                // A shared bearer carries a tag and can be switched off at runtime;
+                                // Peer-to-Peer (Multipeer) is not a shared bearer, so it has none.
+                                if let tag = t.tag {
+                                    Toggle("", isOn: Binding(
+                                        get: { t.enabled },
+                                        set: { bearer.setTransportEnabled(tag, $0) }
+                                    ))
+                                    .labelsHidden()
+                                    .accessibilityLabel("\(t.id) transport")
+                                }
                             }
                         }
                     }
+                    Text("Switching a transport off closes its live links, so the node stops routing over it. Not every integrator ships every radio.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
 
                 if !bearer.relays.isEmpty {
@@ -410,6 +422,18 @@ struct ContentView: View {
     /// Rendered via FaIcon (template/tintable); bluetooth-b is a brand glyph.
     private func transportIcon(_ tag: String) -> String { DemoFormat.transportIcon(tag) }
 
+    /// Three states, not two: off by choice, on but with no peers, on and carrying links. Collapsing
+    /// the first two into one red dot would make a deliberate setting look like a failure.
+    private func statusColor(_ t: HopBearer.TransportStatus) -> Color {
+        if !t.enabled { return .secondary }
+        return t.active ? .green : .orange
+    }
+
+    private func statusText(_ t: HopBearer.TransportStatus) -> String {
+        if !t.enabled { return "disabled" }
+        return t.active ? "\(t.links) linked" : "no links"
+    }
+
     /// Map a TransportStatus id to the tag used in `linkTransports` (logic in HopDemoKit).
     private func transportTag(_ id: String) -> String { DemoFormat.transportTag(id) }
 
@@ -460,6 +484,14 @@ struct ChatView: View {
         }
     }
 
+    /// The origin send time under a bubble, or nil when there is nothing trustworthy to show.
+    /// Outgoing: our own send clock. Incoming: the bundle's `created_at`, minute-granular on the
+    /// private path by design (see DemoFormat.originStamp).
+    private func originLabel(_ m: HopBearer.Message) -> String? {
+        guard let origin = m.incoming ? m.originAt : m.sentAt else { return nil }
+        return DemoFormat.originStamp(origin, now: Date())
+    }
+
     /// One-line metadata under a bubble (formatting logic in HopDemoKit, unit-tested).
     /// Incoming: "2 hops, 1m" (path length + send→receive time).
     /// Outgoing: "Delivered, 10 hops, 2h" once acked, else "Sent · N peers".
@@ -505,7 +537,18 @@ struct ChatView: View {
                                 // no reachable peers is it genuinely "Awaiting peers".
                                 SendingIndicator(sentAt: m.sentAt, peersReachable: !bearer.reachable.isEmpty)
                             } else {
-                                Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    // When the ORIGINATING device sent it. For an outgoing message we
+                                    // are the origin, so sentAt IS that; for an incoming one sentAt is
+                                    // when WE received it, so originAt (the bundle's created_at) is the
+                                    // only honest source and nil when the sender left it unset.
+                                    if let stamp = originLabel(m) {
+                                        Text(stamp).font(.caption2).monospacedDigit()
+                                            .foregroundStyle(.secondary)
+                                        Text("\u{00B7}").font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                    Text(meta(m)).font(.caption2).foregroundStyle(.secondary)
+                                }
                             }
                             // Provenance: who/what carried each hop, resolved to display
                             // names where known (DESIGN.md §27/§29).

@@ -460,4 +460,51 @@ final class DemoFormatTests: XCTestCase {
         return out as Data
     }
     #endif
+
+    // MARK: originStamp (when the ORIGINATING device sent it)
+
+    /// A fixed UTC calendar, so these assert the format and never the runner's region.
+    private var utc: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC")!
+        return c
+    }
+    private func at(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int) -> Date {
+        var c = DateComponents(); c.year = y; c.month = mo; c.day = d; c.hour = h; c.minute = mi
+        return utc.date(from: c)!
+    }
+
+    func testOriginStampIsBareTimeForToday() {
+        let now = at(2026, 7, 26, 21, 40)
+        XCTAssertEqual(DemoFormat.originStamp(at(2026, 7, 26, 9, 5), now: now, calendar: utc), "09:05",
+                       "same day needs no date, and is zero-padded 24-hour")
+    }
+
+    /// The delay-tolerant case that makes this more than cosmetic: a bundle can arrive long after it
+    /// was sent, so a bare time on an old message would read as recent.
+    func testOriginStampNamesYesterdayAndOlderDays() {
+        let now = at(2026, 7, 26, 21, 40)
+        XCTAssertEqual(DemoFormat.originStamp(at(2026, 7, 25, 23, 59), now: now, calendar: utc), "Yesterday 23:59")
+        XCTAssertEqual(DemoFormat.originStamp(at(2026, 7, 20, 8, 0), now: now, calendar: utc), "20 Jul 08:00")
+        XCTAssertEqual(DemoFormat.originStamp(at(2025, 12, 31, 23, 15), now: now, calendar: utc), "31 Dec 2025 23:15",
+                       "a different year has to say so")
+    }
+
+    /// Yesterday is a CALENDAR day, not "within 24 hours": 00:10 today and 23:50 yesterday are 20
+    /// minutes apart but must not both render as a bare time.
+    func testOriginStampYesterdayIsACalendarDayNotA24HourWindow() {
+        let now = at(2026, 7, 26, 0, 10)
+        XCTAssertEqual(DemoFormat.originStamp(at(2026, 7, 25, 23, 50), now: now, calendar: utc), "Yesterday 23:50")
+        XCTAssertEqual(DemoFormat.originStamp(at(2026, 7, 26, 0, 0), now: now, calendar: utc), "00:00")
+    }
+
+    func testOriginStampNeverShowsSecondsBecauseThePrivatePathBucketsTo60s() {
+        // Two sends 59s apart inside one private-path bucket are indistinguishable on the wire, so the
+        // display must not imply otherwise.
+        let now = at(2026, 7, 26, 12, 0)
+        var c = DateComponents(); c.year = 2026; c.month = 7; c.day = 26; c.hour = 11; c.minute = 30; c.second = 59
+        let withSeconds = utc.date(from: c)!
+        XCTAssertEqual(DemoFormat.originStamp(withSeconds, now: now, calendar: utc), "11:30")
+        XCTAssertFalse(DemoFormat.originStamp(withSeconds, now: now, calendar: utc).contains("59"))
+    }
 }

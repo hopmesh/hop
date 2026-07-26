@@ -73,19 +73,49 @@ final class RefreshMapperTests: XCTestCase {
 
     // MARK: transportStatuses
 
-    func testTransportStatusesOmitsAbsentBearersAndAlwaysIncludesP2P() {
-        let ts = RefreshMapper.transportStatuses(active: ["BT": 2, "Relay": 1], p2pActive: true, p2pLinks: 3)
+    func testTransportStatusesListsRegisteredBearersAndAlwaysIncludesP2P() {
+        let ts = RefreshMapper.transportStatuses(active: ["BT": 2, "Relay": 1],
+                                                 states: ["BT": true, "Relay": true],
+                                                 p2pActive: true, p2pLinks: 3)
         XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer", "Relay"],
-                       "only present shared bearers appear; Peer-to-Peer is always listed")
+                       "registered shared bearers appear in fixed order; Peer-to-Peer is always listed")
         XCTAssertEqual(ts.first { $0.id == "Bluetooth" }?.links, 2)
         XCTAssertEqual(ts.first { $0.id == "Peer-to-Peer" }?.links, 3)
         XCTAssertTrue(ts.first { $0.id == "Peer-to-Peer" }?.active ?? false)
+        XCTAssertEqual(ts.first { $0.id == "Bluetooth" }?.tag, "BT", "the toggle handle rides along")
+        XCTAssertNil(ts.first { $0.id == "Peer-to-Peer" }?.tag, "Multipeer is not a shared bearer")
     }
 
-    func testTransportStatusesEmptyActiveStillListsInactiveP2P() {
-        let ts = RefreshMapper.transportStatuses(active: [:], p2pActive: false, p2pLinks: 0)
-        XCTAssertEqual(ts.map { $0.id }, ["Peer-to-Peer"])
-        XCTAssertFalse(ts[0].active)
+    func testTransportStatusesUnregisteredBearerIsStillOmitted() {
+        // A relay bearer is only registered when relays are on. Absent from `states` means absent
+        // from the list, which is different from registered-but-switched-off.
+        let ts = RefreshMapper.transportStatuses(active: [:], states: ["BT": true],
+                                                 p2pActive: false, p2pLinks: 0)
+        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer"])
+        XCTAssertFalse(ts.first { $0.id == "Peer-to-Peer" }?.active ?? true)
+    }
+
+    /// The regression this mapper change exists to prevent. Switching a transport off drops its links
+    /// to zero, and the old mapper keyed presence off the link count, so the row you would use to
+    /// switch it back on was exactly the row that disappeared.
+    func testADisabledBearerIsStillListedSoItCanBeSwitchedBackOn() {
+        let ts = RefreshMapper.transportStatuses(active: ["BT": 2],
+                                                 states: ["BT": true, "Relay": false],
+                                                 p2pActive: false, p2pLinks: 0)
+        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer", "Relay"])
+        let relay = ts.first { $0.id == "Relay" }
+        XCTAssertEqual(relay?.enabled, false, "listed, and reported off")
+        XCTAssertEqual(relay?.links, 0)
+        XCTAssertEqual(relay?.active, false, "no links, so not active")
+        XCTAssertEqual(relay?.tag, "Relay", "still toggleable")
+    }
+
+    func testAnUnknownRegisteredTransportIsListedUnderItsOwnTag() {
+        // A host may register a bearer this display has no display name for; it must not vanish.
+        let ts = RefreshMapper.transportStatuses(active: ["Sat": 1], states: ["Sat": true],
+                                                 p2pActive: false, p2pLinks: 0)
+        XCTAssertEqual(ts.map { $0.id }, ["Peer-to-Peer", "Sat"])
+        XCTAssertEqual(ts.first { $0.id == "Sat" }?.tag, "Sat")
     }
 
     // MARK: mapQueue

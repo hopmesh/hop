@@ -60,13 +60,34 @@ enum RefreshMapper {
     /// Per-transport status rows: several bearers run at once, so the headline count is the actual
     /// transport-level connection count from the BearerManager (`active` short-tag -> live-link count),
     /// with Peer-to-Peer (Multipeer, not a shared bearer) added from its own live-link/radio signal.
-    static func transportStatuses(active: [String: Int], p2pActive: Bool,
-                                  p2pLinks: Int) -> [HopBearer.TransportStatus] {
+    /// `states` is the authority on WHICH shared transports exist (every registered bearer, from
+    /// `BearerManager.bearerStates()`); `active` only supplies live link counts.
+    ///
+    /// This used to key off `active` alone, so a transport with no links did not appear at all. That
+    /// is fine for a read-only readout and fatal for a settings UI: switching a bearer off drops its
+    /// links to zero, so the row you would use to switch it back on is exactly the row that vanishes.
+    static func transportStatuses(active: [String: Int], states: [String: Bool],
+                                  p2pActive: Bool, p2pLinks: Int) -> [HopBearer.TransportStatus] {
+        // Fixed display order, so a toggle never makes rows jump around.
+        let shared: [(tag: String, name: String)] = [("BT", "Bluetooth"), ("LAN", "Local Net"), ("Relay", "Relay")]
         var ts: [HopBearer.TransportStatus] = []
-        if let n = active["BT"]    { ts.append(HopBearer.TransportStatus(id: "Bluetooth", active: true, links: n)) }
-        ts.append(HopBearer.TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: p2pLinks))
-        if let n = active["LAN"]   { ts.append(HopBearer.TransportStatus(id: "Local Net", active: true, links: n)) }
-        if let n = active["Relay"] { ts.append(HopBearer.TransportStatus(id: "Relay", active: true, links: n)) }
+        func appendShared(_ tag: String, _ name: String) {
+            guard let on = states[tag] else { return }        // not registered at all
+            let n = active[tag] ?? 0
+            ts.append(HopBearer.TransportStatus(id: name, active: n > 0, links: n, tag: tag, enabled: on))
+        }
+        appendShared("BT", "Bluetooth")
+        // Multipeer is not a shared bearer, so it has no BearerManager handle and cannot be toggled.
+        ts.append(HopBearer.TransportStatus(id: "Peer-to-Peer", active: p2pActive, links: p2pLinks,
+                                            tag: nil, enabled: true))
+        appendShared("LAN", "Local Net")
+        appendShared("Relay", "Relay")
+        // Any transport a host registered that this display does not know by name still has to be
+        // listed, or it would be untoggleable.
+        for (tag, on) in states.sorted(by: { $0.key < $1.key }) where !shared.contains(where: { $0.tag == tag }) {
+            let n = active[tag] ?? 0
+            ts.append(HopBearer.TransportStatus(id: tag, active: n > 0, links: n, tag: tag, enabled: on))
+        }
         return ts
     }
 

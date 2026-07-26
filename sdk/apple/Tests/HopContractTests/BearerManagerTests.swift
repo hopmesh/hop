@@ -131,4 +131,118 @@ final class BearerManagerTests: XCTestCase {
         XCTAssertTrue(nodeIdGreater(Data([0x01, 0x02, 0x00]), Data([0x01, 0x02])), "equal prefix, longer wins")
         XCTAssertTrue(nodeIdGreater(Data([0x02, 0x00]), Data([0x01, 0xff])), "most-significant byte decides")
     }
+
+    // MARK: - Per-transport enablement (integrators do not all want every radio)
+
+    func testEverythingIsEnabledByDefaultSoRegisteringIsUnchanged() {
+        let mgr = BearerManager()
+        let ble = FakeBearer("BT"), relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        XCTAssertTrue(mgr.isEnabled("BT"))
+        XCTAssertTrue(mgr.isEnabled("Relay"))
+        XCTAssertEqual(mgr.bearerStates(), ["BT": true, "Relay": true])
+        mgr.start()
+        XCTAssertEqual(ble.started, 1)
+        XCTAssertEqual(relay.started, 1, "a fresh manager starts every bearer, as before")
+    }
+
+    func testDisablingStopsOnlyThatTransport() {
+        let mgr = BearerManager()
+        let ble = FakeBearer("BT"), relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+
+        XCTAssertTrue(mgr.setEnabled("Relay", false))
+        XCTAssertEqual(relay.stopped, 1)
+        XCTAssertEqual(ble.stopped, 0, "disabling one transport must not disturb another")
+        XCTAssertFalse(mgr.isEnabled("Relay"))
+        XCTAssertTrue(mgr.isEnabled("BT"))
+    }
+
+    /// The property that makes this safe. Stopping a bearer without downing its links would leave the
+    /// node holding a path that can never carry bytes again, so it would keep choosing that dead path
+    /// instead of re-offering the bundle over another transport.
+    func testDisablingTearsDownThatBearersLiveLinksAndLeavesOthersAlone() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 500)
+        mgr.sink = sink
+        let ble = FakeBearer("BT"), relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+
+        ble.sink?.linkUp(1, role: .dialer, peerId: Data([0xAA]))     // global 500
+        relay.sink?.linkUp(7, role: .dialer, peerId: Data([0xBB]))   // global 501
+        relay.sink?.linkUp(8, role: .acceptor, peerId: Data([0xCC]))   // global 502
+        XCTAssertEqual(sink.ups.map(\.link), [500, 501, 502])
+
+        mgr.setEnabled("Relay", false)
+        XCTAssertEqual(sink.downs, [501, 502], "every link the relay owned is downed, in id order")
+
+        // Routing for the surviving transport is untouched...
+        mgr.send(Data([0x01]), on: 500)
+        XCTAssertEqual(ble.sent.count, 1)
+        // ...and the torn-down globals are no longer routable, so a late send cannot reach a dead pipe.
+        mgr.send(Data([0x02]), on: 501)
+        XCTAssertEqual(relay.sent.count, 0, "a global id whose bearer was disabled must not route")
+        XCTAssertNil(mgr.transportName(of: 501))
+    }
+
+    func testDisabledBearerStaysDownAcrossAStopStartCycle() {
+        let mgr = BearerManager()
+        let ble = FakeBearer("BT"), relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        let relayStartsBefore = relay.started
+
+        mgr.stop(); mgr.start()   // the host restarting the mesh must not revive a disabled transport
+        XCTAssertEqual(relay.started, relayStartsBefore, "a disabled transport must not come back on start()")
+        XCTAssertEqual(ble.started, 2, "the enabled one restarts normally")
+        XCTAssertFalse(mgr.isEnabled("Relay"))
+    }
+
+    func testReEnablingStartsItAgainAndOnlyWhenTheManagerIsStarted() {
+        let mgr = BearerManager()
+        let relay = FakeBearer("Relay")
+        mgr.register(relay)
+
+        // Toggled BEFORE start: no start call, the setting just waits for start().
+        mgr.setEnabled("Relay", false)
+        mgr.setEnabled("Relay", true)
+        XCTAssertEqual(relay.started, 0, "enablement before start() must not start the bearer early")
+        mgr.start()
+        XCTAssertEqual(relay.started, 1)
+
+        // Toggled AFTER start: takes effect immediately.
+        mgr.setEnabled("Relay", false)
+        mgr.setEnabled("Relay", true)
+        XCTAssertEqual(relay.started, 2)
+    }
+
+    func testIsIdempotentAndReportsAnUnknownTransport() {
+        let mgr = BearerManager()
+        let relay = FakeBearer("Relay")
+        mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        mgr.setEnabled("Relay", false)
+        XCTAssertEqual(relay.stopped, 1, "disabling twice must stop once")
+        mgr.setEnabled("Relay", true)
+        mgr.setEnabled("Relay", true)
+        XCTAssertEqual(relay.started, 2, "enabling twice must start once")
+        XCTAssertFalse(mgr.setEnabled("Nope", false), "an unknown transport reports no match")
+        XCTAssertFalse(mgr.isEnabled("Nope"))
+    }
+
+    func testTwoBearersSharingANameToggleAsOneGroup() {
+        // transportName is the handle, so a shared name is deliberately one addressable group rather
+        // than an arbitrary pick between them.
+        let mgr = BearerManager()
+        let a = FakeBearer("Relay"), b = FakeBearer("Relay")
+        mgr.register(a); mgr.register(b)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        XCTAssertEqual(a.stopped, 1); XCTAssertEqual(b.stopped, 1)
+        XCTAssertEqual(mgr.bearerStates(), ["Relay": false])
+    }
 }

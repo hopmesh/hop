@@ -93,6 +93,34 @@ public enum DemoFormat {
     /// Note: when the message is outgoing, not delivered, not failed, and `relayed == 0`, the app
     /// renders a live SendingIndicator view instead of this string; `messageMeta` still returns the
     /// "Sent \u{00B7} 0 peers" form for that case so the pure logic stays total.
+    /// The ORIGINATING device's send time, for the message list.
+    ///
+    /// Two deliberate choices. **No seconds:** on the §39 private path (the default) the wire
+    /// `created_at` is bucketed to 60s and rounded down, because at millisecond resolution it is a
+    /// sender timing fingerprint. Rendering seconds would imply precision the protocol removes on
+    /// purpose. **A date once it is not today:** hop is delay-tolerant, so a bundle can arrive hours
+    /// or days after it was sent, and a bare "09:12" on a three-day-old message reads as recent.
+    ///
+    /// 24-hour and built from calendar components rather than a `DateFormatter`, so the output is
+    /// locale-independent and the tests cannot flake on the runner's region settings.
+    public static func originStamp(_ origin: Date, now: Date, calendar: Calendar = .current) -> String {
+        let o = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: origin)
+        guard let oy = o.year, let om = o.month, let od = o.day, let oh = o.hour, let omin = o.minute else { return "" }
+        let hhmm = String(format: "%02d:%02d", oh, omin)
+        if calendar.isDate(origin, inSameDayAs: now) { return hhmm }
+        if let y = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(origin, inSameDayAs: y) {
+            return "Yesterday \(hhmm)"
+        }
+        let nowYear = calendar.component(.year, from: now)
+        let mon = monthAbbrev(om)
+        return oy == nowYear ? "\(od) \(mon) \(hhmm)" : "\(od) \(mon) \(oy) \(hhmm)"
+    }
+
+    private static func monthAbbrev(_ m: Int) -> String {
+        let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        return (1...12).contains(m) ? names[m - 1] : "?"
+    }
+
     public static func messageMeta(incoming: Bool,
                                    hops: UInt8,
                                    latencyMs: UInt64?,

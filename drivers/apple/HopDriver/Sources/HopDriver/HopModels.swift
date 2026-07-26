@@ -37,6 +37,15 @@ extension HopBearer {
         public var hops: UInt8 = 0
         public var latencyMs: UInt64? = nil      // received time − sender's send time
         public var trace: [TraceHopInfo] = []    // each forwarding hop, resolved at render (§27)
+        /// When the ORIGINATING device says it sent this, from the bundle's `created_at`. Distinct
+        /// from `sentAt`, which for an incoming message is when WE received it, not when it was sent.
+        ///
+        /// Precision is deliberately limited: on the §39 private path (the default) the wire stamp is
+        /// bucketed to 60s and rounded DOWN, because at millisecond resolution it is a sender timing
+        /// fingerprint and a relay on both legs could pair a message with its ACK. So render this to
+        /// the minute; showing seconds would imply precision the private path removes on purpose.
+        /// `nil` when the sender left it unset (`created_at` 0, which would otherwise render as 1970).
+        public var originAt: Date? = nil
         // Outgoing delivery tracking.
         public var sentAt: Date = Date()
         public var deliveredAt: Date? = nil
@@ -52,11 +61,17 @@ extension HopBearer {
         public let id: Data; public let own: Bool; public let to: String; public let priority: UInt8; public let hops: UInt8
     }
 
-    /// Per-bearer status (all transports run at once).
+    /// Per-bearer status. Every REGISTERED transport is listed, including one with no links and one
+    /// the host has switched off, because a settings UI has to be able to switch it back on.
     public struct TransportStatus: Identifiable, Hashable {
-        public let id: String      // "Bluetooth" / "Wi-Fi"
-        public let active: Bool    // radio up + bearer running
+        public let id: String      // display name, "Bluetooth" / "Local Net" / "Relay"
+        public let active: Bool    // has live links (or, for Peer-to-Peer, the radio is up)
         public let links: Int      // live links on this transport
+        /// The `BearerManager` transport name, the handle `setTransportEnabled` takes. `nil` for a
+        /// transport that is not a shared bearer (Multipeer), which therefore cannot be toggled.
+        public var tag: String? = nil
+        /// The host's enablement setting. Always true for a non-toggleable transport.
+        public var enabled: Bool = true
     }
 
     /// One HNS cache entry for the debug view: domain → address, with remaining TTL (seconds).

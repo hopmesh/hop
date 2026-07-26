@@ -120,4 +120,129 @@ class BearerManagerTest {
         assertEquals(1, ok1.started); assertEquals(1, ok2.started, "healthy bearers still started")
         assertEquals(1, ok1.stopped); assertEquals(1, ok2.stopped, "healthy bearers still stopped")
     }
+
+    // Per-transport enablement (integrators do not all want every radio) ------------------------
+
+    @Test fun everything_is_enabled_by_default_so_registering_is_unchanged() {
+        val mgr = BearerManager()
+        val ble = FakeBearer("BT"); val relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        assertTrue(mgr.isEnabled("BT"))
+        assertTrue(mgr.isEnabled("Relay"))
+        assertEquals(mapOf("BT" to true, "Relay" to true), mgr.bearerStates())
+        mgr.start()
+        assertEquals(1, ble.started)
+        assertEquals(1, relay.started, "a fresh manager starts every bearer, as before")
+    }
+
+    @Test fun disabling_stops_only_that_transport() {
+        val mgr = BearerManager()
+        val ble = FakeBearer("BT"); val relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+        assertTrue(mgr.setEnabled("Relay", false))
+        assertEquals(1, relay.stopped)
+        assertEquals(0, ble.stopped, "disabling one transport must not disturb another")
+        assertTrue(!mgr.isEnabled("Relay"))
+        assertTrue(mgr.isEnabled("BT"))
+    }
+
+    /**
+     * The property that makes this safe. Stopping a bearer without downing its links would leave the
+     * node holding a path that can never carry bytes again, so it would keep choosing that dead path
+     * instead of re-offering the bundle over another transport.
+     */
+    @Test fun disabling_tears_down_that_bearers_live_links_and_leaves_others_alone() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 500)
+        mgr.sink = sink
+        val ble = FakeBearer("BT"); val relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+
+        ble.sink?.linkUp(1, HopRole.DIALER, byteArrayOf(0xAA.toByte()))     // global 500
+        relay.sink?.linkUp(7, HopRole.DIALER, byteArrayOf(0xBB.toByte()))   // global 501
+        relay.sink?.linkUp(8, HopRole.ACCEPTOR, byteArrayOf(0xCC.toByte())) // global 502
+        assertContentEquals(listOf(500L, 501L, 502L), sink.ups.map { it.link })
+
+        mgr.setEnabled("Relay", false)
+        assertContentEquals(listOf(501L, 502L), sink.downs, "every link the relay owned is downed, in id order")
+
+        // Routing for the surviving transport is untouched...
+        mgr.send(byteArrayOf(1), 500L)
+        assertEquals(1, ble.sent.size)
+        // ...and the torn-down globals no longer route, so a late send cannot reach a dead pipe.
+        mgr.send(byteArrayOf(2), 501L)
+        assertEquals(0, relay.sent.size, "a global id whose bearer was disabled must not route")
+        assertNull(mgr.transportNameOf(501L))
+    }
+
+    @Test fun a_disabled_bearer_stays_down_across_a_stop_start_cycle() {
+        val mgr = BearerManager()
+        val ble = FakeBearer("BT"); val relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        val before = relay.started
+
+        mgr.stop(); mgr.start()   // the host restarting the mesh must not revive a disabled transport
+        assertEquals(before, relay.started, "a disabled transport must not come back on start()")
+        assertEquals(2, ble.started, "the enabled one restarts normally")
+        assertTrue(!mgr.isEnabled("Relay"))
+    }
+
+    @Test fun re_enabling_starts_it_again_and_only_when_the_manager_is_started() {
+        val mgr = BearerManager()
+        val relay = FakeBearer("Relay")
+        mgr.register(relay)
+
+        // Toggled BEFORE start: no start call, the setting just waits for start().
+        mgr.setEnabled("Relay", false)
+        mgr.setEnabled("Relay", true)
+        assertEquals(0, relay.started, "enablement before start() must not start the bearer early")
+        mgr.start()
+        assertEquals(1, relay.started)
+
+        // Toggled AFTER start: takes effect immediately.
+        mgr.setEnabled("Relay", false)
+        mgr.setEnabled("Relay", true)
+        assertEquals(2, relay.started)
+    }
+
+    @Test fun is_idempotent_and_reports_an_unknown_transport() {
+        val mgr = BearerManager()
+        val relay = FakeBearer("Relay")
+        mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false); mgr.setEnabled("Relay", false)
+        assertEquals(1, relay.stopped, "disabling twice must stop once")
+        mgr.setEnabled("Relay", true); mgr.setEnabled("Relay", true)
+        assertEquals(2, relay.started, "enabling twice must start once")
+        assertTrue(!mgr.setEnabled("Nope", false), "an unknown transport reports no match")
+        assertTrue(!mgr.isEnabled("Nope"))
+    }
+
+    @Test fun two_bearers_sharing_a_name_toggle_as_one_group() {
+        // transportName is the handle, so a shared name is deliberately one addressable group rather
+        // than an arbitrary pick between them.
+        val mgr = BearerManager()
+        val a = FakeBearer("Relay"); val b = FakeBearer("Relay")
+        mgr.register(a); mgr.register(b)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        assertEquals(1, a.stopped); assertEquals(1, b.stopped)
+        assertEquals(mapOf("Relay" to false), mgr.bearerStates())
+    }
+
+    /** A disabled bearer that throws on stop must not prevent its links being torn down (F-10). */
+    @Test fun a_bearer_throwing_on_stop_still_gets_its_links_torn_down() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 900)
+        mgr.sink = sink
+        val boom = ThrowingBearer()
+        mgr.register(boom)
+        boom.sink?.linkUp(1, HopRole.DIALER, byteArrayOf(1))   // global 900
+        mgr.setEnabled("Boom", false)
+        assertContentEquals(listOf(900L), sink.downs, "the throw is swallowed; the link still goes down")
+    }
 }
