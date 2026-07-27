@@ -224,6 +224,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (102ae67)
 - the reorg left three more build recipes pointing at paths that moved (95c7bb5)
 - the HopDemo README documented a build that cannot work (7278753)
 - node.rs called shipped fragmentation a TODO, and pointed at the dead layer (45f9b6f)
@@ -414,6 +415,7 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- a stopped Android central revived itself from an in-flight scan callback (ea43289)
 - per-transport switches, and show when the SENDER sent a message (7a923c0)
 - let a host enable and disable individual bearers at runtime (c17b01a)
 - move the BLE socket write off the node's core thread (R-02) (41fd3fb)
