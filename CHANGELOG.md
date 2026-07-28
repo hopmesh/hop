@@ -224,6 +224,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
 - the reorg left three more build recipes pointing at paths that moved (95c7bb5)
 - the HopDemo README documented a build that cannot work (7278753)
