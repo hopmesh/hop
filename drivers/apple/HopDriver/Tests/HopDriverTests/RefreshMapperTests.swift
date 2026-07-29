@@ -74,16 +74,18 @@ final class RefreshMapperTests: XCTestCase {
     // MARK: transportStatuses
 
     func testTransportStatusesListsRegisteredBearersAndAlwaysIncludesP2P() {
-        let ts = RefreshMapper.transportStatuses(active: ["BT": 2, "Relay": 1],
-                                                 states: ["BT": true, "Relay": true],
+        let ts = RefreshMapper.transportStatuses(active: ["BT": 2, "P2P": 3, "Relay": 1],
+                                                 states: ["BT": true, "P2P": true, "Relay": true],
                                                  p2pActive: true, p2pLinks: 3)
         XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer", "Relay"],
-                       "registered shared bearers appear in fixed order; Peer-to-Peer is always listed")
+                       "registered shared bearers appear in fixed order")
         XCTAssertEqual(ts.first { $0.id == "Bluetooth" }?.links, 2)
         XCTAssertEqual(ts.first { $0.id == "Peer-to-Peer" }?.links, 3)
         XCTAssertTrue(ts.first { $0.id == "Peer-to-Peer" }?.active ?? false)
         XCTAssertEqual(ts.first { $0.id == "Bluetooth" }?.tag, "BT", "the toggle handle rides along")
-        XCTAssertNil(ts.first { $0.id == "Peer-to-Peer" }?.tag, "Multipeer is not a shared bearer")
+        // Multipeer is a shared bearer now, so it carries a handle too. It was the ONE Apple transport
+        // with no switch, which is why a delivery on an Apple device could not be attributed to BLE.
+        XCTAssertEqual(ts.first { $0.id == "Peer-to-Peer" }?.tag, "P2P")
     }
 
     func testTransportStatusesUnregisteredBearerIsStillOmitted() {
@@ -91,8 +93,8 @@ final class RefreshMapperTests: XCTestCase {
         // from the list, which is different from registered-but-switched-off.
         let ts = RefreshMapper.transportStatuses(active: [:], states: ["BT": true],
                                                  p2pActive: false, p2pLinks: 0)
-        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer"])
-        XCTAssertFalse(ts.first { $0.id == "Peer-to-Peer" }?.active ?? true)
+        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth"],
+                       "an unregistered transport is absent, which is distinct from registered-but-off")
     }
 
     /// The regression this mapper change exists to prevent. Switching a transport off drops its links
@@ -102,7 +104,7 @@ final class RefreshMapperTests: XCTestCase {
         let ts = RefreshMapper.transportStatuses(active: ["BT": 2],
                                                  states: ["BT": true, "Relay": false],
                                                  p2pActive: false, p2pLinks: 0)
-        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Peer-to-Peer", "Relay"])
+        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Relay"])
         let relay = ts.first { $0.id == "Relay" }
         XCTAssertEqual(relay?.enabled, false, "listed, and reported off")
         XCTAssertEqual(relay?.links, 0)
@@ -114,7 +116,7 @@ final class RefreshMapperTests: XCTestCase {
         // A host may register a bearer this display has no display name for; it must not vanish.
         let ts = RefreshMapper.transportStatuses(active: ["Sat": 1], states: ["Sat": true],
                                                  p2pActive: false, p2pLinks: 0)
-        XCTAssertEqual(ts.map { $0.id }, ["Peer-to-Peer", "Sat"])
+        XCTAssertEqual(ts.map { $0.id }, ["Sat"])
         XCTAssertEqual(ts.first { $0.id == "Sat" }?.tag, "Sat")
     }
 

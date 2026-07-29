@@ -109,35 +109,19 @@ extension HopBearer {
     /// Stand up the Wi-Fi bearer: advertise + browse for nearby Hop peers and shuttle
     /// the node's frames over a `MCSession`, exactly like the BLE bearer but a
     /// different medium (DESIGN.md §26). Encryption is left to Hop's Noise layer.
+    /// Bring the Multipeer transport up. The session/advertiser/browser now live in the
+    /// MultipeerBearer package; the driver only forwards the private-mode setting, because §39
+    /// private mode means "do not broadcast presence" and MC advertises a Bonjour name.
     func startWiFi() {
-        let pid = MCPeerID(displayName: mcTransportId)   // apple-03: random transport id, NOT the address
-        mcPeerID = pid
-        let session = MCSession(peer: pid, securityIdentity: nil, encryptionPreference: .none)
-        session.delegate = self
-        mcSession = session
-        let adv = MCNearbyServiceAdvertiser(peer: pid, discoveryInfo: nil, serviceType: HopBearer.mcServiceType)
-        adv.delegate = self
-        // apple-03: private mode means "do not broadcast presence". Browse (so we can still reach peers who
-        // advertise) but do NOT advertise ourselves, matching retractPresence's contract for the relay path.
-        if !privateMode { adv.startAdvertisingPeer() }
-        mcAdvertiser = adv
-        let br = MCNearbyServiceBrowser(peer: pid, serviceType: HopBearer.mcServiceType)
-        br.delegate = self
-        br.startBrowsingForPeers()
-        mcBrowser = br
-        NSLog("HOPLOG wifi start: \(pid.displayName) private=\(privateMode)")
+        mcBearer.setAdvertising(!privateMode)
     }
 
-    /// Re-attempt advertise/browse and clear any blocked state. Called on foreground -
-    /// MultipeerConnectivity errors out while the Local Network prompt is still
-    /// pending, so this recovers once the user grants permission (no relaunch needed).
+    /// Re-attempt advertise/browse and clear the blocked flag. MultipeerConnectivity errors out while
+    /// the Local Network prompt is still pending, so the host calls this on foreground to recover once
+    /// the user grants permission, with no relaunch.
     func restartWiFi() {
-        wifiBlocked = false
-        mcAdvertiser?.stopAdvertisingPeer()
-        mcBrowser?.stopBrowsingForPeers()
-        if !privateMode { mcAdvertiser?.startAdvertisingPeer() }   // apple-03: honor private mode
-        mcBrowser?.startBrowsingForPeers()
-        NSLog("HOPLOG wifi restart private=\(privateMode)")
+        mcBearer.setAdvertising(!privateMode)
+        mcBearer.wake()
     }
 
     // MARK: - Shared BearerManager link callbacks (fire only on a real radio link)
@@ -311,68 +295,10 @@ extension HopBearer {
 
 // MARK: - Wi-Fi bearer delegates (MultipeerConnectivity)
 
-extension HopBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
-    public func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID,
-                    withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        invitationHandler(true, mcSession) // accept; role arbitration is on the browser side
-    }
-
-    public func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
-                 withDiscoveryInfo info: [String: String]?) {
-        // Only the lexicographically-smaller address invites, so each pair forms one
-        // session with a clear initiator/responder (matches Noise XX roles).
-        guard let me = mcPeerID, me.displayName < peerID.displayName, let s = mcSession else { return }
-        browser.invitePeer(peerID, to: s, withContext: nil, timeout: 15)
-    }
-
-    public func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {}
-
-    public func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        NSLog("HOPLOG wifi advertise failed: \(error.localizedDescription)")
-        DispatchQueue.main.async { [weak self] in self?.wifiBlocked = true; self?.refresh() }
-    }
-
-    public func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        NSLog("HOPLOG wifi browse failed: \(error.localizedDescription)")
-        DispatchQueue.main.async { [weak self] in self?.wifiBlocked = true; self?.refresh() }
-    }
-
-    public func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            switch state {
-            case .connected:
-                guard self.mcLinkByPeer[peerID] == nil else { return }
-                let id = self.mcNextLinkId; self.mcNextLinkId += 1
-                self.mcLinkByPeer[peerID] = id
-                self.mcPeerByLink[id] = peerID
-                let initiator = (self.mcPeerID?.displayName ?? "") < peerID.displayName
-                self.status = "linked (wifi)"
-                self.linkUp(id, initiator: initiator)
-            case .notConnected:
-                if let id = self.mcLinkByPeer[peerID] {
-                    self.mcLinkByPeer[peerID] = nil
-                    self.mcPeerByLink[id] = nil
-                    self.linkDown(id)
-                }
-            case .connecting: break
-            @unknown default: break
-            }
-        }
-    }
-
-    public func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let id = self.mcLinkByPeer[peerID] else { return }
-            self.deliver(link: id, bytes: data)
-        }
-    }
-
-    // Unused transfer modes (protocol requires them).
-    public func session(_ s: MCSession, didReceive stream: InputStream, withName n: String, fromPeer p: MCPeerID) {}
-    public func session(_ s: MCSession, didStartReceivingResourceWithName n: String, fromPeer p: MCPeerID, with progress: Progress) {}
-    public func session(_ s: MCSession, didFinishReceivingResourceWithName n: String, fromPeer p: MCPeerID, at u: URL?, withError e: Error?) {}
-}
+// The MCSessionDelegate / advertiser / browser conformances that lived here moved to
+// bearers/apple/HopBearerMultipeer (MultipeerBearer+Radio.swift). Multipeer is now an
+// independent bearer registered with BearerManager like BLE/LAN/relay, so the driver no longer
+// mints its link ids or owns its session; that is what gives it a runtime toggle.
 
 // NOTE: The iBeacon background-wake MONITOR (a CLLocationManager region monitor) used to live here as a
 // facade in the driver. It is now owned entirely by the shared BLE bearer (HopBearerBle.BeaconWake),
