@@ -11,6 +11,7 @@ import HopObjC
 import HopContract
 import HopBearerBle
 import HopBearerLan
+import HopBearerMultipeer
 import HopBearerRelay
 // Re-export the generated FFI types (HopNode records like HpsTopicInfo, HpsAccess, TraceHopInfo…)
 // so a host that imports HopDriver sees them without importing HopFFIBindings directly.
@@ -207,7 +208,7 @@ public final class HopBearer: NSObject, ObservableObject {
             if privateMode { retractPresence() } else { publishPresence() }
             // apple-03: also (un)advertise the Wi-Fi (Multipeer) bearer so private mode actually stops
             // broadcasting on every transport, not just the relay presence.
-            if privateMode { mcAdvertiser?.stopAdvertisingPeer() } else { mcAdvertiser?.startAdvertisingPeer() }
+            mcBearer.setAdvertising(!privateMode)
         }
     }
     @Published public var idNote = ""   // identity persistence outcome (diagnostic)
@@ -284,13 +285,10 @@ public final class HopBearer: NSObject, ObservableObject {
     /// build the dev `Config`; to test cross-app isolation, change it on one device.
     public static let appSecret = Data(repeating: 0x48, count: 32) // "H" ×32 - dev build only
     // Wi-Fi bearer (MultipeerConnectivity) - a second transport feeding the same node.
-    var mcPeerID: MCPeerID?
-    var mcSession: MCSession?
-    var mcAdvertiser: MCNearbyServiceAdvertiser?
-    var mcBrowser: MCNearbyServiceBrowser?
-    var mcLinkByPeer: [MCPeerID: UInt64] = [:]
-    var mcPeerByLink: [UInt64: MCPeerID] = [:]
-    var mcNextLinkId: UInt64 = 10_000   // distinct id range from BLE links
+    // The MCSession / advertiser / browser / link tables that lived here now belong to
+    // `mcBearer` (bearers/apple/HopBearerMultipeer). The driver no longer mints Multipeer link ids
+    // from a private 10_000 space: BearerManager owns the id space for every transport, which is what
+    // lets Multipeer be switched off at runtime like the others.
     var wifiBlocked = false             // MC failed to start (e.g. local-network denied)
     // Cloud relay is owned ENTIRELY by the shared RelayBearer (bearers/apple/HopBearerRelay), registered
     // in startSharedBearers(). apple-r2-01: the legacy in-driver relay dial (WS/TCP on relayLinkId 20000)
@@ -362,6 +360,11 @@ public final class HopBearer: NSObject, ObservableObject {
     /// The shared bearer registry/multiplexer. Its global link-id space starts high (1_000_000) so the
     /// ids it mints can never collide with the legacy / Multipeer / relay / endpoint / LAN / GATT ranges
     /// (1, 10k, 20k, 30k, 40k, 60k) that `nextLinkId` & friends still serve for the non-shared transports.
+    /// The Multipeer (Apple peer-to-peer) transport, now an independent bearer rather than in-driver
+    /// state. `privateMode` is forwarded to it via `setAdvertising`, and the host's foreground hook
+    /// calls `wake()` to recover from the Local Network permission prompt.
+    let mcBearer = MultipeerBearer(myId: Data())
+
     let bearerMgr = BearerManager(baseLinkId: 1_000_000)
 
     /// Turn one shared transport on or off at runtime (`tag` is a `TransportStatus.tag`: "BT", "LAN",
@@ -623,6 +626,11 @@ public final class HopBearer: NSObject, ObservableObject {
         bearerMgr.sink = bearerSink
         if !isRelayOnly {
             bearerMgr.register(bleBearer)   // BLE (central-only suppresses advertising via config.role)
+            // Multipeer now registers like every other transport instead of being minted in-driver, so
+            // it flows through the manager's global link-id space and gains a runtime switch. That
+            // switch is the point: MC carries local Apple traffic, so without it a delivery could not
+            // be attributed to BLE.
+            bearerMgr.register(mcBearer)
         }
         if isFull {
             bearerMgr.register(LanBearer(myId: bearerId))   // LAN (mDNS + TCP) - full host only
@@ -743,8 +751,8 @@ public final class HopBearer: NSObject, ObservableObject {
         for pkt in outgoing {
             if bearerLinksContains(pkt.link) {              // shared BearerManager (BLE + LAN + relay) owns it
                 bearerMgr.send(pkt.bytes, on: pkt.link)
-            } else if let peer = mcPeerByLink[pkt.link] {
-                try? mcSession?.send(pkt.bytes, toPeers: [peer], with: .reliable) // Wi-Fi (Multipeer) link
+            } else if false {
+                // Multipeer packets now leave through bearerMgr.send like every other transport.
             } else if let ws = endpointWS[pkt.link] {
                 ws.send(.data(pkt.bytes)) { _ in }         // direct hops:// endpoint link (§30)
             }
@@ -1070,18 +1078,15 @@ public final class HopBearer: NSObject, ObservableObject {
         // "linked"), not just handshake-complete Hop links - otherwise a peer that's
         // connected but mid-Noise-handshake shows as zero. The expandable list below
         // shows the identified peers (and notes any still establishing).
-        // MC keeps its session object even when Wi-Fi is off; trust the real radio (or
-        // the presence of live MC links) instead. Peer-to-Peer (MultipeerConnectivity/AWDL, no router)
-        // is NOT a shared bearer, so it keeps its own live-link/radio signal.
-        let p2pActive = !wifiBlocked && (wifiUp || !mcPeerByLink.isEmpty)
+        // Peer-to-Peer is a SHARED BEARER now, so it no longer needs its own live-link/radio signal
+        // threaded in beside the others: the manager reports its links and its enablement exactly like
+        // BLE, LAN and relay. That is the whole point of the extraction, and it deletes the special
+        // case that made Multipeer the one transport a user could not switch off.
         let pls = snap.peerLinks
-        // The shared bearers mint links through the BearerManager (baseLinkId 1_000_000+), NOT any legacy
-        // radio object, so per-transport status comes from the manager's live links - each short tag mapped
-        // to its display id. Multipeer (Peer-to-Peer) is not a shared bearer, so it's added separately.
         let active = bearerMgr.activeTransports()          // short tag → live link count
         transports = RefreshMapper.transportStatuses(active: active, states: bearerMgr.bearerStates(),
-                                                     p2pActive: p2pActive,
-                                                     p2pLinks: mcPeerByLink.count)
+                                                     p2pActive: !mcBearer.blocked,
+                                                     p2pLinks: active["P2P"] ?? 0)
 
         // Map each direct neighbour to the transport(s) carrying it (the route). Shared-bearer links are
         // minted by the BearerManager (baseLinkId 1_000_000+), so the legacy link-id ranges can't tag

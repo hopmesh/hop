@@ -544,6 +544,13 @@ jobs:
       - name: Test + coverage-gate the Relay bearer (>=80% of RelayBearer.swift)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerRelay Sources/HopBearerRelay/RelayBearer.swift 80
 
+      # The Multipeer bearer's MCSession/advertiser/browser glue is device-bound and cannot run in CI,
+      # so it is excluded from the denominator exactly like the BLE bearer's CoreBluetooth surface.
+      # What IS gated is the logic whose silent change breaks interop: the invite tiebreak, the
+      # display-name parse, and the link table.
+      - name: Test + coverage-gate the Multipeer bearer (>=80% of MultipeerBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerMultipeer Sources/HopBearerMultipeer/MultipeerBearer.swift 80 'MultipeerBearer\+Radio\.swift'
+
       # cov/apple-driver: the headless-node suite drives the driver's public API + snapshot-mapping +
       # persistence against a REAL libhop HopNode (no device), plus the Keychain identity store. The 80%
       # line-coverage floor keeps the grade honest. The former god-object (HopBearer.swift) was decomposed

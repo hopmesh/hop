@@ -121,7 +121,8 @@ else
     trap 'cp /tmp/hop-pkg-remote.bak "$ROOT/sdk/apple/Package.swift" 2>/dev/null' EXIT
     cp sdk/apple/Package.local.swift sdk/apple/Package.swift
     for p in sdk/apple drivers/apple/HopDriver apps/apple/HopDemoKit \
-             bearers/apple/HopBearerBle bearers/apple/HopBearerLan bearers/apple/HopBearerRelay; do
+             bearers/apple/HopBearerBle bearers/apple/HopBearerLan bearers/apple/HopBearerRelay \
+             bearers/apple/HopBearerMultipeer; do
       step "swift test $p" bash -c "cd '$p' && swift test"
     done
     cp /tmp/hop-pkg-remote.bak sdk/apple/Package.swift

@@ -28,6 +28,7 @@ let package = Package(
         .package(path: "../../../sdk/apple"),
         .package(path: "../../../bearers/apple/HopBearerBle"),
         .package(path: "../../../bearers/apple/HopBearerLan"),
+        .package(path: "../../../bearers/apple/HopBearerMultipeer"),
         .package(path: "../../../bearers/apple/HopBearerRelay"),
     ],
     targets: [
@@ -48,6 +49,7 @@ let package = Package(
             .product(name: "HopContract",    package: "apple"),
             .product(name: "HopBearerBle",   package: "HopBearerBle"),
             .product(name: "HopBearerLan",   package: "HopBearerLan"),
+            .product(name: "HopBearerMultipeer", package: "HopBearerMultipeer"),
             .product(name: "HopBearerRelay", package: "HopBearerRelay"),
         ]),
 
