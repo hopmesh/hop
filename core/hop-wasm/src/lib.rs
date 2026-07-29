@@ -89,7 +89,12 @@ pub fn validate_wire_bundle(bytes: &[u8], expected_id: &[u8]) -> Result<Vec<u8>,
         metadata[109..141].copy_from_slice(&header.ephemeral);
         if let Some(mailbox) = header.mailbox {
             metadata[141] = 1;
-            metadata[142..144].copy_from_slice(&mailbox);
+            // The ABI slot is a FIXED 2 bytes holding a VARIABLE-WIDTH prefix, left-aligned and zero-padded.
+            // crypto::MAILBOX_ROUTE_PREFIX_BYTES is a privacy dial (it sets the recipient anonymity
+            // set) and moved 2 -> 1 in wire v12. Keeping the slot fixed means that dial can turn
+            // without breaking the published layout that nine SDK wrappers parse, so it costs no
+            // HOP_ABI_VERSION bump. Copying the whole slot instead panics the moment the two differ.
+            metadata[142..142 + mailbox.len()].copy_from_slice(&mailbox);
         }
         metadata[144] = 1;
     } else if matches!(&bundle.inner.dst, hop_core::bundle::Destination::Vaccine(_)) {

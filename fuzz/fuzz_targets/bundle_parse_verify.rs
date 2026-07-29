@@ -23,7 +23,7 @@ fn materialize(input: &[u8]) -> Vec<u8> {
                     content_type: "fuzz".into(),
                     body: vec![1, 2, 3],
                 },
-                Some([0x12, 0x34]),
+                Some([0x12]),
                 BundleOpts {
                     flags: BundleFlags {
                         request_ack: true,
