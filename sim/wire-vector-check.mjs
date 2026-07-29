@@ -5,7 +5,7 @@
 // Run after sim/build-wasm.sh:
 //   node sim/wire-vector-check.mjs
 import { createRequire } from 'module';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -14,12 +14,20 @@ const require = createRequire(import.meta.url);
 const { validate_wire_bundle: validateWireBundle } = require(
   join(here, '../core/hop-wasm/pkg-node/hop_wasm.js'),
 );
-const corpus = JSON.parse(readFileSync(
-  join(here, '../core/hop-core/vectors/bundle-v11.json'),
-  'utf8',
-));
+// Resolve the corpus by GLOB, not a pinned filename. It is named for the wire version
+// (bundle-v<N>.json) and is renamed on every BUNDLE_VERSION bump, so a literal rots silently: the v12
+// bump broke this checker with ENOENT on bundle-v11.json though nothing about the check was wrong.
+// Exactly one corpus is committed at a time, so a glob is unambiguous and needs no maintenance.
+const vectorsDir = join(here, '../core/hop-core/vectors');
+const corpusFiles = readdirSync(vectorsDir).filter((f) => /^bundle-v[0-9]+\.json$/.test(f));
+if (corpusFiles.length !== 1) {
+  console.error(`expected exactly one bundle-v<N>.json in ${vectorsDir}, found ${corpusFiles.length}`);
+  process.exit(1);
+}
+const corpusVersion = Number(corpusFiles[0].replace(/[^0-9]/g, ''));
+const corpus = JSON.parse(readFileSync(join(vectorsDir, corpusFiles[0]), 'utf8'));
 
-if (corpus.bundle_version !== 11) {
+if (corpus.bundle_version !== corpusVersion) {
   throw new Error(`expected bundle corpus version 11, got ${corpus.bundle_version}`);
 }
 
@@ -98,7 +106,6 @@ for (const vector of corpus.bundles) {
     ['private content id', 61, 93, vector.private_content_id_hex],
     ['recognition tag', 93, 109, vector.recognition_tag_hex],
     ['recognition ephemeral', 109, 141, vector.recognition_ephemeral_hex],
-    ['private mailbox', 142, 144, vector.private_mailbox_hex],
   ];
   for (const [field, start, end, expectedHex] of fixedFields) {
     const expected = fromHex(expectedHex);
@@ -107,6 +114,28 @@ for (const vector of corpus.bundles) {
       if (actual.some(value => value !== 0)) throw new Error(`${vector.name}: ${field} is not zero-filled`);
     } else if (!equalBytes(actual, expected)) {
       throw new Error(`${vector.name}: ${field} differs`);
+    }
+  }
+
+  // The mailbox ABI slot is a FIXED 2 bytes carrying a VARIABLE-WIDTH routing prefix
+  // (MAILBOX_ROUTE_PREFIX_BYTES, a privacy dial that moved 2 -> 1 in wire v12), left-aligned and
+  // zero-padded. Checking the whole slot against the corpus value would fail on width alone and would
+  // also let a non-zero pad through unnoticed, so check the two halves of the contract separately.
+  const mailboxExpected = fromHex(vector.private_mailbox_hex);
+  const mailboxSlot = metadata.slice(142, 144);
+  if (mailboxExpected.length === 0) {
+    if (mailboxSlot.some(value => value !== 0)) {
+      throw new Error(`${vector.name}: private mailbox is not zero-filled`);
+    }
+  } else {
+    if (mailboxExpected.length > mailboxSlot.length) {
+      throw new Error(`${vector.name}: mailbox prefix ${mailboxExpected.length}B exceeds the 2B ABI slot`);
+    }
+    if (!equalBytes(mailboxSlot.slice(0, mailboxExpected.length), mailboxExpected)) {
+      throw new Error(`${vector.name}: private mailbox differs`);
+    }
+    if (mailboxSlot.slice(mailboxExpected.length).some(value => value !== 0)) {
+      throw new Error(`${vector.name}: private mailbox padding is not zero`);
     }
   }
   if (metadata[141] !== Number(vector.private_mailbox_present)) {

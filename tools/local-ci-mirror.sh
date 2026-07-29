@@ -43,6 +43,19 @@ step "billingd (live feature)"        cargo test -p hop-billingd --features live
 step "store (sqlcipher feature)"      cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 step "minimal embedded C-ABI build"   cargo build -p hop --no-default-features --features minimal
 
+# The fuzz crate is OUTSIDE the cargo workspace, so `cargo test --workspace` never compiles it and a
+# type change in core can break it invisibly. Wire v12 did exactly that: narrowing the mailbox prefix
+# left a 2-byte literal in fuzz_targets/bundle_parse_verify.rs, which passed 32/32 here and reddened
+# CI. Build-only (no fuzzing run) keeps it fast while still type-checking the targets against core.
+# Call the SAME script CI calls (ci.yml runs `bash tools/fuzz-smoke.sh`) rather than invoking cargo
+# fuzz directly: the targets need the pinned nightly toolchain, and reimplementing that here is how a
+# mirror drifts from the thing it mirrors.
+if cargo fuzz --version >/dev/null 2>&1; then
+  step "fuzz smoke (outside workspace)" bash tools/fuzz-smoke.sh
+else
+  skip "fuzz smoke" "cargo-fuzz not installed"
+fi
+
 # --- guards --------------------------------------------------------------------------------------
 step "docs-token-guard"               bash tools/docs-token-guard.sh
 step "ble-backoff-parity self-test"   bash tools/ble-backoff-parity.test.sh
@@ -50,6 +63,10 @@ step "ble-backoff-parity"             bash tools/ble-backoff-parity.sh
 step "abi-version guard"              bash tools/codegen/check-abi-version.sh
 step "required-checks guard"          bash tools/check-required-checks.sh
 step "repo-integrity guard"           bash tools/repo-integrity-guard.sh
+# Catches a swapped-in Package.local.swift being committed by accident: it asserts the EXPORTED Apple
+# manifest still carries the immutable v0.0.1 release URL rather than a local path binaryTarget. That
+# is exactly the mistake `git add -A` made here while the Apple build had the manifest swapped.
+step "package export smoke"           bash tools/package-export-smoke.test.sh
 step "sim pkg freshness"              bash sim/check-pkg-fresh.sh
 step "sim wire vectors"               node sim/wire-vector-check.mjs
 
