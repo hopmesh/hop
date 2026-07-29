@@ -19,6 +19,7 @@ git-cliff. Do not edit by hand.
 - land the grouped rust-dependencies bump (sha2, ed25519/x25519-dalek, chacha20poly1305, snow, rusqlite, p256, uniffi, tungstenite) (#89) (2038ce9)
 
 ### Documentation
+- regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
 - regenerate from conventional commits (1572ae2)
@@ -40,6 +41,7 @@ git-cliff. Do not edit by hand.
 - hop-wasm — run the real hop-core Node in the browser (8ff94bc)
 
 ### Other
+- stop the receiver-beacon publishing address-to-mailbox in cleartext (5948b7c)
 - delete unwired trait surface and correct 12 stale claims (4e4272f)
 - delete the dead copy-budget API and stop the simulator lying (9ab3138)
 - local first-publish + OIDC trusted publishing on npm/PyPI/RubyGems (beefc71)

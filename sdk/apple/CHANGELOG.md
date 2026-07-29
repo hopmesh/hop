@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- `git add -A` committed the swapped Apple manifest, and add the guard for it (228a20d)
 - guard fixed-32-byte C-ABI reads in all wrappers (ADV18-06) (c95c826)
 
 ### CI
@@ -17,6 +18,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
 - regenerate from conventional commits (1572ae2)
