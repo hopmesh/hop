@@ -2705,28 +2705,48 @@ Privacy needs one tag; being *reachable* needs another. They trade differently, 
 ### Routing: the beacon gradient (soft state)
 
 A recipient that wants to be *routed to* (not merely recognized as traffic floods past) emits a
-**beacon**: a small signed bundle carrying its mailbox-tag (or `k`-bit prefix) and a fresh
-**reverse-path token**. As the beacon propagates, every node it crosses records a **gradient**: "prefix
-P / mailbox M is reachable via the neighbor I heard this from." A node then **holds** a private bundle
-until it has a gradient for that bundle's prefix and **forwards down the gradient**, directed, cheap,
-and private (the node knows a direction, never an identity).
+**beacon**: a `Wire::RecvBeacon` link record carrying its mailbox **routing prefix** and a distance,
+sent inside the Noise session of each link it holds. Every node that records one keeps a **gradient**:
+"prefix P is reachable via the neighbor I heard this from", and re-emits at distance+1 so the gradient
+reaches past a direct neighbour. A node then **holds** a private bundle until it has a gradient for that
+bundle's prefix and **forwards down the gradient**, directed, cheap, and private (the node knows a
+direction, never an identity).
 
-Three rules keep this sound, not a foot-gun:
+Four rules keep this sound, not a foot-gun:
 
-- **Signed beacons.** The beacon is signed by the prekey behind its mailbox-tag, so only the holder of
-  M can advertise a gradient for M. No node can hijack or black-hole a prefix it doesn't own.
-- **Soft state that decays.** A gradient is recency-weighted (§18/§27 half-life), refreshed by periodic
-  re-beaconing, superseded when a newer beacon arrives from a different direction. "Holds a path" means
-  *between refreshes*, never forever, otherwise a moved recipient black-holes.
+- **Link-local, unsigned, prefix-only.** The beacon carries the routing prefix and nothing else: no
+  address, no full mailbox-tag, no signature, and it is never flooded. This is deliberate and it is a
+  correction. The beacon used to be an identity-signed `AdvertKind::RecvBeacon` advert carrying the FULL
+  16-byte tag, and an advert body names its publisher's real address in cleartext, so every node within
+  three hops (which is every relay you connect to) was handed "address P owns mailbox tag T" verbatim.
+  The signature bought hijack-resistance, but a prefix bucket is shared by an anonymity set BY DESIGN,
+  so CLAIMING one is not a coherent theft: a false claimant is served the same sealed bundles as any
+  genuine colliding member and drops them on the recognition check. Be precise about the limit of that
+  argument. A claim ADDS a next-hop rather than replacing one only while the bucket is below
+  `MAX_GRADIENT_LINKS_PER_BUCKET`; at saturation the least-recently-seen link IS evicted. What protects a
+  genuine recipient there is the eviction ORDER, not the absence of eviction: recency. A recipient
+  re-beacons on a short interval and is therefore always among the most-recently-seen, while a link that
+  claimed a slot once and went quiet is the one dropped. So the residual threat is gradient-pollution
+  DoS by a neighbour willing to keep beaconing, which the link's own authentication plus the caps below
+  bound. The signature
+  was authenticating the wrong party anyway: an originator several hops away that the forwarder cannot
+  punish, instead of the neighbour it can rate-limit and drop. `Wire::Have` (§35) already set this
+  precedent: a claim scoped to the authenticated link it arrived on needs no second signature.
+- **Bounded propagation.** A distance cap terminates the distance-vector loop, split-horizon stops the
+  two-node ping-pong, and a beacon that changes nothing is not re-emitted (an unchanged bucket is still
+  carried onward once per refresh interval, or the downstream soft state would decay).
+- **Soft state that decays, on OUR clock.** A gradient entry is leased for `RECV_BEACON_TTL_MS` stamped
+  by the node that records it, refreshed by periodic re-beaconing. The beacon supplies no freshness
+  input at all, so a peer cannot buy a far-future expiry or a supersession advantage. "Holds a path"
+  means *between refreshes*, never forever, otherwise a moved recipient black-holes.
 - **Flood is the fallback, not the default.** With no gradient yet (cold start, or a never-seen
-  prefix), a node falls back to bounded flood, the local physical mesh, the `k`-bit anonymity-set, or
+  prefix), a node falls back to bounded flood, the local physical mesh, the prefix anonymity-set, or
   `Broadcast`. The recipient's beacon *is* the bootstrap: you can only route to a prefix that has
   advertised itself, so an offline recipient has no live gradient and senders hold (in the durable
   spool, below).
 
-A beacon is just a bundle, so the gradient is **bearer-agnostic** (§26): one learned over BLE is
-followed by a bundle arriving over LAN or a relay link, the `BearerManager` seam makes the transport
-irrelevant to routing.
+The gradient is **bearer-agnostic** (§26): one learned over BLE is followed by a bundle arriving over
+LAN or a relay link, the `BearerManager` seam makes the transport irrelevant to routing.
 
 ### Reaching a recipient: want beacons and the gateway-as-bearer
 
@@ -2792,9 +2812,9 @@ it leaks `k` bits of destination entropy and adds prefix-level linkability (a re
 their prefix). A mesh dials `k` up only when it grows large enough that flooding hurts.
 
 **Realized (sec-priv-04):** routing, spooling, and want-beacon matching now ALL key on the tag's
-`MAILBOX_ROUTE_PREFIX_BYTES`-byte prefix (16 bits by default), never the full 16-byte tag. The full tag
-still travels in the beacon (so the relay authenticates it against the publisher's signed address, F-05),
-but the **private header carries ONLY the routing prefix** (`crypto::MailboxRoute`, the leading
+`MAILBOX_ROUTE_PREFIX_BYTES`-byte prefix, never the full 16-byte tag. The full tag no longer travels
+anywhere on the wire: the beacon carries the prefix alone, and the **private header carries ONLY the
+routing prefix** (`crypto::MailboxRoute`, the leading
 `MAILBOX_ROUTE_PREFIX_BYTES` of `H(address ‖ epoch)`), never the full 16-byte tag (core-protocol-r2-02).
 The recipient never reads a target mailbox-tag off the header; it recomputes the per-message *recognition*
 tag locally from its own prekey and the header's ephemeral. Carrying the full tag verbatim would let a
@@ -2834,13 +2854,19 @@ decay (above); held private bundles evict at `lifetime` (§8); each node caps it
 global observer can't correlate a recipient's mailbox across epochs. A recipient beacons the current epoch
 plus a one-epoch window (and a relay accepts that window), so a bundle addressed/spooled just before a
 rotation boundary still routes and pulls. Deriving from `(address, epoch)` rather than the prekey decouples
-rotation from the deterministic prekey (sessions/recognition are untouched) and makes a beacon **self-
-verifying at the relay from public info**, the relay recomputes `H(publisher ‖ epoch)` and only lays a
-gradient if it matches, and since a beacon is identity-signed by that address, no node can forge a victim's
-mailbox (F-05). Residual: being pull-reachable via a signed beacon inherently reveals "this address is
-reachable this epoch"; that's the documented cost of pull-reachability (a fully passive recipient sets
-`route_to_me = false` and advertises no mailbox). Caps + rate-limits stop a Sybil *bloating* the table with
-fake mailbox-tags; §35 keying gates relays. Anything that "remembers forever" is a storage and DoS liability.
+rotation from the deterministic prekey (sessions/recognition are untouched). The relay-side ownership check
+(F-05, "recompute `H(publisher ‖ epoch)` and only lay a gradient if it matches") is GONE with the advert
+that carried the publisher: it required the recipient to publish its own address next to its own tag,
+which is precisely the leak, and what it protected is a shared bucket that cannot meaningfully be owned.
+Residual, stated precisely because the weaker version of it is false: a beacon reveals "some address
+in this prefix bucket is reachable this epoch". Against an observer with no candidate list that is an
+anonymity set of population/256. It is NOT 1-in-256 against an adversary holding a suspect's address,
+because `mailbox_tag = H(address || epoch)` is a pure public function of a public key: anyone can compute
+a target's bucket and watch it. What the prefix denies such an adversary is a unique CONFIRMATION, since
+every other address colliding on that byte produces the same observation; what it does not deny is
+targeted suspicion. A fully passive recipient sets `route_to_me = false` and beacons nothing. Caps stop a neighbour bloating the table: one link may
+occupy at most `MAX_GRADIENT_BUCKETS_PER_LINK` buckets, evicting its OWN least-recently-seen entries, so
+grinding prefixes can never displace another link's genuine route; §35 keying gates relays. Anything that "remembers forever" is a storage and DoS liability.
 
 ### Costs (honest)
 
@@ -2957,10 +2983,11 @@ rather than let a v3 unproven ACK be silently trusted, or a v4 proof be misparse
 recognition tag + `g^e`, plus the optional 2-byte mailbox **routing prefix** `MailboxRoute`; no
 src/dst/sig and no separate `k`-bit hint field, since the prefix *is* the gradient hint), the recipient-
 only CDH `proof` on the private `Payload::Ack` (v4), the ephemeral-tag and
-mailbox-tag KDFs, the **signed beacon** + reverse-path token + per-node gradient table (soft state),
-the blind regional spool, and the want-beacon pull path: a recipient floods a signed
-`AdvertKind::RecvBeacon` a few hops; a node that newly accepts it queues that mailbox-tag, and the
-host drains it (`take_wanted_mailboxes`) and reloads the mailbox's durable blind spool. (This replaced
+mailbox-tag KDFs, the **link-local unsigned prefix beacon** (`Wire::RecvBeacon`, v13) + per-node gradient
+table (soft state), the blind regional spool, and the want-beacon pull path: a recipient beacons its
+routing prefix to its neighbours, which carry it a bounded distance onward; a node whose gradient bucket
+changes queues that prefix, and the host drains it (`take_wanted_mailboxes`) and reloads the mailbox's
+durable blind spool. (This replaced
 the removed `InternetEgress` pull verb.) Reuses: `Broadcast` flood + BundleId dedup (§5/§7),
 `topic_tag` recognition (§32), X3DH prekeys (§25), the §27 trace machinery (now opt-in), demand-summoned
 regions (§28), regional spools + online-only relay epidemic (§28/§34), and §38 RBSR for cross-region

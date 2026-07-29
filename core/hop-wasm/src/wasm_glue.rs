@@ -307,13 +307,12 @@ impl WasmNode {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag, turning
-    /// blind flood into directed route-toward (§39 P4). Re-publish before the 90s soft-state TTL lapses.
-    pub fn publish_recv_beacon(&mut self) -> Result<(), JsValue> {
-        self.node
-            .publish_recv_beacon()
-            .map(|_| ())
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
+    /// Emit a §39 receive beacon so directly-connected peers lay a gradient toward this node's
+    /// mailbox route PREFIX, turning blind flood into directed route-toward (§39 P4). Re-emit before
+    /// the 90s soft-state TTL lapses. Infallible: it writes a link-local record to each live link
+    /// (nothing to sign, nothing to publish, so nothing to fail).
+    pub fn publish_recv_beacon(&mut self) {
+        self.node.publish_recv_beacon()
     }
 
     /// Which mailbox-tags this node currently holds a gradient toward, and the inbound link to forward
