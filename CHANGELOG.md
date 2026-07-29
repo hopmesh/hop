@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- `git add -A` committed the swapped Apple manifest, and add the guard for it (228a20d)
 - kill the LAN reap-test flake by pinning the ordering (a16a715)
 - fmt drift, orphaned doc comments, and Android tests that raced the network (dc44ef4)
 - two bugs in my own one-time-prekey work, plus three CI breaks (93859f8)
@@ -224,6 +225,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
 - the reorg left three more build recipes pointing at paths that moved (95c7bb5)
@@ -416,6 +418,12 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- extract Multipeer so EVERY bearer registers with the manager (f3949f7)
+- rate-limit inbound receiver-beacons per link (c1c0c49)
+- stop the receiver-beacon publishing address-to-mailbox in cleartext (5948b7c)
+- rebuild pkg after set_route_to_me changed the wasm interface (183dae3)
+- rebuild pkg for the wire v12 bump (7019990)
+- the local CI mirror green-lit work CI would reject (ee4ecdf)
 - a stopped Android central revived itself from an in-flight scan callback (ea43289)
 - per-transport switches, and show when the SENDER sent a message (7a923c0)
 - let a host enable and disable individual bearers at runtime (c17b01a)

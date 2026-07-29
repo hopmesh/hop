@@ -24,6 +24,7 @@ git-cliff. Do not edit by hand.
 - purge em-dashes and en-dashes from source (d222435)
 
 ### Documentation
+- regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
 - regenerate from conventional commits (1572ae2)
