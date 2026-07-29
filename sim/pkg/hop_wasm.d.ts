@@ -155,8 +155,10 @@ export class WasmNode {
      */
     publish_prekey(): void;
     /**
-     * Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag, turning
-     * blind flood into directed route-toward (§39 P4). Re-publish before the 90s soft-state TTL lapses.
+     * Emit a §39 receive beacon so directly-connected peers lay a gradient toward this node's
+     * mailbox route PREFIX, turning blind flood into directed route-toward (§39 P4). Re-emit before
+     * the 90s soft-state TTL lapses. Infallible: it writes a link-local record to each live link
+     * (nothing to sign, nothing to publish, so nothing to fail).
      */
     publish_recv_beacon(): void;
     /**
@@ -237,7 +239,7 @@ export interface InitOutput {
     readonly wasmnode_new: (a: number, b: number, c: any) => number;
     readonly wasmnode_pending_count: (a: number) => number;
     readonly wasmnode_publish_prekey: (a: number) => [number, number];
-    readonly wasmnode_publish_recv_beacon: (a: number) => [number, number];
+    readonly wasmnode_publish_recv_beacon: (a: number) => void;
     readonly wasmnode_receive: (a: number, b: number, c: number, d: number) => void;
     readonly wasmnode_register_channel: (a: number, b: number, c: number) => void;
     readonly wasmnode_send: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

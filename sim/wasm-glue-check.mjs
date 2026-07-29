@@ -174,7 +174,7 @@ console.log('set_default_lifetime_ms');
 })();
 
 // ---- 2) publish_recv_beacon: an EXPLICIT call (not Node::tick's own 30s auto-republish timer)
-//         really gossips a signed advert that forms a real §39 P4 gradient on the neighbor. ----
+//         really emits a link-local unsigned prefix-only Wire::RecvBeacon that forms a real §39 P4 gradient on the neighbor. ----
 console.log('publish_recv_beacon');
 (function testRecvBeacon() {
   const pair = twoNodeLink(); // a = recipient, b = the neighbor that will learn a route toward a
@@ -187,7 +187,7 @@ console.log('publish_recv_beacon');
   try { pair.a.publish_recv_beacon(); } catch (e) { threw = true; }
   check('callable without throwing', !threw);
 
-  now = pumpFor(pair, now, 10, 100); // propagate the advert over the link
+  now = pumpFor(pair, now, 10, 100); // propagate the beacon record over the link
   // core/hop-core/src/node.rs RECV_BEACON_REFRESH_MS = 30_000ms: staying well under it means any
   // gradient we see below came from THIS explicit call, not Node::tick's own auto-republish.
   check('elapsed time stays well under the 30s auto-beacon timer', now < 30_000);

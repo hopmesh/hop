@@ -474,14 +474,13 @@ export class WasmNode {
         }
     }
     /**
-     * Publish a §39 receive beacon so relays lay a gradient toward this node's mailbox-tag, turning
-     * blind flood into directed route-toward (§39 P4). Re-publish before the 90s soft-state TTL lapses.
+     * Emit a §39 receive beacon so directly-connected peers lay a gradient toward this node's
+     * mailbox route PREFIX, turning blind flood into directed route-toward (§39 P4). Re-emit before
+     * the 90s soft-state TTL lapses. Infallible: it writes a link-local record to each live link
+     * (nothing to sign, nothing to publish, so nothing to fail).
      */
     publish_recv_beacon() {
-        const ret = wasm.wasmnode_publish_recv_beacon(this.__wbg_ptr);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
+        wasm.wasmnode_publish_recv_beacon(this.__wbg_ptr);
     }
     /**
      * Feed in bytes that arrived on a link from the peer.
