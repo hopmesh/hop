@@ -220,6 +220,33 @@ def _strip_workspace():
         multiline = True,
     )
 
+# The preamble is shared by every Rust mirror, so it can only name one repository, and it names the
+# monorepo. That is wrong twice over on a published artifact: the monorepo is PRIVATE, so the link is
+# dead for anyone who installs the package, and npm REJECTS a package whose repository does not match
+# the one its sigstore provenance attests to:
+#   Failed to validate repository information: package.json: "repository.url" is "...",
+#   expected to match "https://github.com/hopmesh/hop-wasm" from provenance
+# hop-wasm publishes to npm from its own mirror and would fail exactly that, the same way hop-sdk-node
+# already did. So rewrite the shared value to each crate's OWN mirror on export, and reverse it on
+# import before the preamble is stripped (the strip matches the preamble verbatim).
+MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/monorepo"'
+
+def _mirror_repository(name):
+    return core.replace(
+        before = MONOREPO_REPOSITORY,
+        after = 'repository = "https://github.com/hopmesh/' + name + '"',
+        paths = glob(["Cargo.toml"]),
+        first_only = True,
+    )
+
+def _monorepo_repository(name):
+    return core.replace(
+        before = 'repository = "https://github.com/hopmesh/' + name + '"',
+        after = MONOREPO_REPOSITORY,
+        paths = glob(["Cargo.toml"]),
+        first_only = True,
+    )
+
 # Copybara's Starlark forbids top-level for loops, so register each component's two workflows from a
 # function, invoked once per component by the comprehension at the end of the file.
 def _register(prefix, name):
@@ -254,6 +281,7 @@ def _register(prefix, name):
         export_transforms.append(_rename_pkg(rename[0], rename[1]))
     if is_rust:
         export_transforms.append(_inject_workspace())
+        export_transforms.append(_mirror_repository(name))
     if is_elixir:
         export_transforms.extend(_elixir_vendor_export())
     if name == "hop-sdk-go":
@@ -261,6 +289,8 @@ def _register(prefix, name):
     # import: reverse order: strip the preamble, un-rename the package, then re-add the prefix.
     import_transforms = []
     if is_rust:
+        # Undo the per-mirror repository BEFORE stripping, or the preamble no longer matches verbatim.
+        import_transforms.append(_monorepo_repository(name))
         import_transforms.append(_strip_workspace())
     if rename:
         import_transforms.append(_rename_pkg(rename[1], rename[0]))
