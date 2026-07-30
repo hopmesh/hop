@@ -59,9 +59,40 @@ for filename, text, want in cases:
     got = tag_mod.version_from_text(filename, text)
     assert got == want, f"{filename}: parsed {got!r}, wanted {want!r}"
 
-# An inherited Cargo version cannot be resolved from a mirror (no workspace root there), so it must
-# read as unverifiable rather than silently passing.
+# An inherited Cargo version with NO workspace root in the same file is genuinely unverifiable.
 assert tag_mod.version_from_text("Cargo.toml", '[package]\nversion.workspace = true\n') is None
+
+# But that is NOT the manifest the mirror receives, and asserting it against an inline literal is how
+# this parser came to permanently defer every Rust mirror. The real export injects copy.bara.sky's
+# [workspace.package] preamble ahead of [package], so the inherited version IS resolvable there. The
+# fixture below is the ACTUAL export transformation, not a hypothetical manifest: a preamble change
+# that breaks version resolution reddens here.
+smoke = load("package_export_smoke", "tools/package-export-smoke.py")
+by_component = {entry["component"]: entry for entry in entries}
+rust_export_versions = {}
+for component in sorted(smoke.RUST_MIRRORS):
+    if component not in by_component:
+        continue
+    manifest = smoke.expected_export_tree(root, component)["Cargo.toml"][1].decode("utf-8")
+    got = tag_mod.version_from_text("Cargo.toml", manifest)
+    planned = by_component[component]["version"]
+    assert got is not None, f"{component}: the real exported Cargo.toml reads as unverifiable"
+    assert got == planned, f"{component}: exported manifest declares {got!r}, plan wants {planned!r}"
+    rust_export_versions[component] = got
+assert "hop-core" in rust_export_versions, "hop-core is not a releasable Rust mirror any more"
+
+# Every releasable component must be able to REACH a tagging decision once its mirror is synced. A
+# component that can never be tagged is a release path that silently does nothing forever, which is
+# exactly what the inherited-version parse did to the four crates.io mirrors.
+for entry in entries:
+    if entry["source"] == tag_mod.ANCHOR_SOURCE:
+        synced = None
+    elif entry["component"] in rust_export_versions:
+        synced = rust_export_versions[entry["component"]]
+    else:
+        synced = entry["version"]
+    tagged, reason = tag_mod.decide(entry, False, synced)
+    assert tagged, f"{entry['component']}: a synced mirror still cannot be tagged ({reason})"
 
 # --- the tag/skip policy ------------------------------------------------------------------------
 manifest = {"component": "hop-sdk-node", "version": "1.2.3", "source": "package.json"}

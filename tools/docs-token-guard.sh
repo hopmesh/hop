@@ -66,9 +66,20 @@ else
   # SOURCE pass default set: every tree that holds hand-written code. apps/web/site/src is
   # already in the doc set above; leaving apps/ whole here costs nothing (a dash is banned by
   # both passes) and keeps the list from needing a carve-out that could silently widen.
+  #
+  # .github and mockups are here because ci.yml DISPATCHES this guard on them: the `docs` path filter
+  # names '.github/workflows/**' and the wasm/web filters name 'mockups/**', so an edit there ran this
+  # guard and got a green result for a tree it never opened. ci.yml alone is ~1200 lines of prose-dense
+  # comments, which made it the largest unscanned writing surface in the repo. Root markdown is here
+  # for the same reason: the filter names README.md and LICENSE.md, and the doc pass only ever read
+  # three of the seven root files. tools/docs-token-guard.test.sh pins the filter-to-target mapping.
   SRC_REQUESTED=(
     "core" "services" "drivers" "sdk" "bearers" "apps" "tools" "infra" "examples" "testkit" "assets"
+    ".github" "mockups"
   )
+  for root_markdown in ./*.md; do
+    [ -e "$root_markdown" ] && SRC_REQUESTED+=("${root_markdown#./}")
+  done
 fi
 
 # Keep only paths that exist, so a not-yet-created doc (e.g. a root README) does not error

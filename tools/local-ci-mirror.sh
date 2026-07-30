@@ -1,17 +1,41 @@
 #!/usr/bin/env bash
-# The local mirror of what CI actually runs, in order. Run this before EVERY push.
+# The local pre-push run of the CI jobs that can be reproduced on a workstation, in CI's order.
 #
 # HONESTY IS THE POINT OF THIS SCRIPT. It used to run the Rust job's steps and then print "ALL LOCAL
 # GATES PASS", which reads as "CI will be green" while the Kotlin, Swift and Android suites had never
 # been executed. On 2026-07-26 that gap hid 7 real test failures (the Kotlin SDK's JNA integration
-# tests and the Android driver's Robolectric HNS suite) behind a 23/23 green run. A script named after
-# mirroring CI must never green-light work CI would reject, so it now runs the platform suites too and,
+# tests and the Android driver's Robolectric HNS suite) behind a 23/23 green run. A script that claims
+# to mirror CI must never green-light work CI would reject, so it runs the platform suites too and,
 # when it cannot, says exactly what it skipped instead of quietly narrowing its own scope.
+#
+# It still does NOT run every CI job, and the header used to claim otherwise ("the local mirror of what
+# CI actually runs"). Seven gating jobs have no local counterpart at all and six more are only partly
+# reproduced here, so a green run here is not a prediction that CI will be green. CI_COVERAGE below
+# declares, per ci.yml job, exactly what this script does about it; the summary prints every job that
+# is not fully covered, on every run, including a passing one.
+# tools/local-ci-mirror-coverage.sh (self-tested, run in CI) fails when a job exists in ci.yml with no
+# entry here, so this script cannot silently fall behind the thing it is measured against again. That
+# guard also holds every `full` entry to its word: a task or cargo invocation in a full job's ci.yml
+# steps that this script does not run reddens CI, which is how the android entry came to claim "full"
+# while the five JaCoCo coverage-verification tasks CI gates on were never executed here.
 #
 # Three build artifacts are gitignored and therefore ABSENT in a fresh worktree. Each one makes a
 # different suite fail in a way that looks like a defect, so they are built on demand rather than left
 # as a trap: the wasm node package (sim wire vectors), the UniFFI Kotlin bindings (the Android driver
 # will not even compile), and the host libhop cdylib (JNA/Robolectric tests need HOP_LIBDIR).
+#
+# THREE WAYS THIS SCRIPT USED TO DAMAGE THE TREE IT VERIFIES, all handled in one EXIT trap:
+#   1. It wrote every step's output to a fixed /tmp/vstep.log, so two runs in sibling worktrees (the
+#      normal way agents work here) overwrote each other's failure tail. During the 2026-07-29 audit
+#      that misattributed a failure to the wrong branch. The log is now per-process (mktemp).
+#   2. Building the Apple xcframeworks REWRITES drivers/apple/HopDriver/Frameworks/**, which is 178MB
+#      of TRACKED build output. Following this script's own "run before every push" instruction left a
+#      178MB dirty tree that is trivial to commit by accident. If this run dirtied it, the trap
+#      restores it; anything it cannot restore is printed and makes the run FAIL rather than pass with
+#      a dirty tree. A Frameworks/** that was already dirty before this run is left alone and named.
+#   3. Its first step regenerates the tracked sim/pkg, whose wasm binary is not byte-reproducible, so a
+#      fresh worktree comes out with sim/pkg modified. That one is NOT restored (after a real wire bump
+#      it has to be committed), it is named, with the rule for deciding which case you are in.
 #
 #   SKIP_PLATFORMS=1   Rust + guards only, and the summary says so.
 set -uo pipefail
@@ -36,10 +60,87 @@ skipped=()
 #                             would commit the local manifest as the published one, which is the exact
 #                             mistake this script's own comment below says has already happened once.
 SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
-STEP_LOG="$SCRATCH/step.log"
+LOG="$SCRATCH/step.log"
+# The tracked 178MB xcframework the Apple build rewrites, and whether it was dirty BEFORE this run.
+FRAMEWORKS="drivers/apple/HopDriver/Frameworks"
+frameworks_dirty_before="$(git -C "$ROOT" status --porcelain -- "$FRAMEWORKS" 2>/dev/null)"
+# The other tracked build output a run rewrites: sim/build-wasm.sh regenerates sim/pkg, and the wasm
+# binary is not byte-reproducible, so a fresh worktree ends up with a modified sim/pkg. This one is NOT
+# auto-restored, because after a real BUNDLE_VERSION bump the rebuilt sim/pkg MUST be committed (the
+# check-pkg-fresh guard reddens CI otherwise). So it is named instead, with which case is which.
+WASM_PKG="sim/pkg"
+wasm_pkg_dirty_before="$(git -C "$ROOT" status --porcelain -- "$WASM_PKG" 2>/dev/null)"
+# Set while sdk/apple/Package.swift is swapped for the local-path manifest; empty means nothing to undo.
+pkg_backup=""
 
-step() { printf '%-46s' "$1"; shift; if "$@" >"$STEP_LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$STEP_LOG" | sed 's/^/    /'; fi; }
+cleanup() {
+  local status=$?
+  if [ -n "$pkg_backup" ]; then
+    cp "$pkg_backup" "$ROOT/sdk/apple/Package.swift" 2>/dev/null
+    rm -f "$pkg_backup"
+  fi
+  local after
+  after="$(git -C "$ROOT" status --porcelain -- "$FRAMEWORKS" 2>/dev/null)"
+  if [ -n "$after" ] && [ -z "$frameworks_dirty_before" ]; then
+    git -C "$ROOT" checkout -- "$FRAMEWORKS" 2>/dev/null
+    local remaining
+    remaining="$(git -C "$ROOT" status --porcelain -- "$FRAMEWORKS" 2>/dev/null)"
+    if [ -n "$remaining" ]; then
+      echo
+      # Reachable when the checkout itself fails (permissions, a lock). Untracked additions under
+      # Frameworks cannot reach it: .gitignore covers that tree, so only the 10 tracked files there can
+      # ever show up dirty, and those are exactly what the checkout above puts back.
+      echo "ERROR: this run left $FRAMEWORKS dirty and it could not be restored:"
+      printf '%s\n' "$remaining" | sed 's/^/    /'
+      echo "  Fix it before committing: git checkout origin/main -- $FRAMEWORKS/"
+      rm -rf "$SCRATCH"
+      exit 1
+    fi
+    echo "(restored $FRAMEWORKS, which the Apple xcframework build rewrote)"
+  elif [ -n "$after" ]; then
+    echo
+    echo "NOTE: $FRAMEWORKS was ALREADY dirty before this run, so it was left untouched."
+    echo "  Never commit it: git checkout origin/main -- $FRAMEWORKS/"
+  fi
+  local wasm_after
+  wasm_after="$(git -C "$ROOT" status --porcelain -- "$WASM_PKG" 2>/dev/null)"
+  if [ -n "$wasm_after" ] && [ "$wasm_after" != "$wasm_pkg_dirty_before" ]; then
+    echo
+    echo "NOTE: this run rebuilt the tracked $WASM_PKG (the wasm binary is not byte-reproducible):"
+    printf '%s\n' "$wasm_after" | sed 's/^/    /'
+    echo "  Commit it ONLY as part of a wire-version bump; otherwise revert:"
+    echo "  git checkout -- $WASM_PKG/"
+  fi
+  rm -rf "$SCRATCH"
+  exit "$status"
+}
+trap cleanup EXIT
+
+# ci.yml job id | full | partial | none | what this script does about it. Every job id in
+# .github/workflows/ci.yml appears here exactly once. "partial" and "none" entries are printed in the
+# summary of EVERY run, so the terminal verdict can never read broader than what was executed.
+CI_COVERAGE=(
+  "changes|none|dorny path-filter computation, no local analogue; it decides which jobs run, it gates nothing"
+  "rust|full|fmt, clippy, the workspace tests, both wire guards, the deterministic corpus and every feature-matrix cargo invocation ci.yml runs, including the reqwest/sqlcipher/billingd clippy passes and the live and live+firestore telemetryd tests; the fuzz smoke needs cargo-fuzz and is named in NOT RUN without it"
+  "kotlin-sdk|full|gradle test + jacocoTestReport + jacocoTestCoverageVerification, the same tasks ci.yml runs, when mise java/android-sdk and gradle are present"
+  "android|full|the bearers and HopDemo JVM unit suites AND all five per-module JaCoCo coverage-verification floors ci.yml gates on, when mise java/android-sdk and gradle are present"
+  "apple|partial|swift test for all seven packages, when swift and xcodebuild are present; NOT the five apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
+  "wasm|none|the swarm invariant test and the mockups suite are not run here"
+  "web|partial|the sim pkg freshness and wire-vector checks run here; NOT the scenario check, the wasm-glue check, npm ci, the Astro build, or the internal link check"
+  "contract|partial|the ABI version guard runs here; NOT contract purity, the cbindgen header-drift diff, the C-ABI smoke, the wire vectors through the native C ABI, the embedded C++ host tests, or the ESP32 host example"
+  "infra|partial|the required-checks guard runs here; NOT tofu fmt, the three tofu init/validate roots, or the infra authority guards"
+  "automation|partial|the docs token guard, the BLE backoff parity pair, the repo integrity guard and the package export smoke run here; NOT the native attestation npm tests, the agent output guard, the executable reference guard, the sync/pages/release/artifact-publication/workflow-secrets guards, or the audit skill tests"
+  "docs-tokens|partial|the docs token guard and the repo integrity guard run here; NOT the release provenance self-test, the full export generation, the coverage-floor gate self-test, or the version alignment guard"
+  "node-sdk|none|the endpoint SDK suites are not run here"
+  "python-sdk|none|the endpoint SDK suites are not run here"
+  "go-sdk|none|the endpoint SDK suites are not run here"
+  "ruby-sdk|none|the endpoint SDK suites are not run here"
+  "crystal-sdk|none|the endpoint SDK suites are not run here, including the crystal tool format check that has broken CI repeatedly"
+  "elixir-sdk|none|the endpoint SDK suites are not run here, including the mix format check that has broken CI repeatedly"
+  "gate|none|the aggregate that depends on the other 17; it exists only in CI and is the ONE required context on main"
+)
+
+step() { printf '%-46s' "$1"; shift; if "$@" >"$LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$LOG" | sed 's/^/    /'; fi; }
 skip() { printf '%-46s%s\n' "$1" "SKIP ($2)"; skipped+=("$1 ($2)"); }
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -53,12 +154,20 @@ step "cargo test --workspace"         cargo test --workspace
 step "wire-version-guard self-test"   bash tools/wire-version-guard.test.sh
 step "wire-version-guard"             env WIRE_BASE_REF=origin/main bash tools/wire-version-guard.sh
 step "deterministic wire corpus"      cargo run -q -p hop-core --example wire-vectors --features wire-vectors
+# The feature matrix, in ci.yml's order and with ci.yml's exact flags. The CLIPPY passes matter as much
+# as the tests: a feature-gated region that only ever gets `cargo test` still fails CI on a warning,
+# and these three were the gap that made this script's rust entry read "partial".
 step "gateway (reqwest feature)"      cargo test -p hop-gateway --features reqwest
+step "clippy gateway (reqwest)"       cargo clippy -p hop-gateway --features reqwest --all-targets -- -D warnings
 step "C ABI (sqlcipher feature)"      cargo test -p hop --no-default-features --features sqlcipher --locked
+step "clippy C ABI (sqlcipher)"       cargo clippy -p hop --no-default-features --features sqlcipher --all-targets --locked -- -D warnings
 step "relayd (firestore feature)"     cargo test -p hop-relayd --features firestore
 step "accountd (firestore feature)"   cargo test -p hop-accountd --features firestore
 step "telemetryd (firestore feature)" cargo test -p hop-telemetryd --features firestore
+step "telemetryd (live feature)"      cargo test -p hop-telemetryd --features live
+step "telemetryd (live + firestore)"  cargo test -p hop-telemetryd --features live,firestore
 step "billingd (live feature)"        cargo test -p hop-billingd --features live
+step "clippy billingd (live)"         cargo clippy -p hop-billingd --features live --all-targets -- -D warnings
 step "store (sqlcipher feature)"      cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 step "minimal embedded C-ABI build"   cargo build -p hop --no-default-features --features minimal
 
@@ -125,8 +234,17 @@ else
       step "generate UniFFI Kotlin bindings" bash tools/build-aar.sh
     fi
     step "Kotlin SDK (+coverage gate)"  bash -c 'cd sdk/android && gradle test jacocoTestReport jacocoTestCoverageVerification'
-    step "bearers/android (all modules)" bash -c 'cd bearers/android && ./gradlew test'
-    step "HopDemo android (JVM units)"   bash -c 'cd apps/android/HopDemo && ./gradlew testDebugUnitTest'
+    # The SAME task list ci.yml's android job runs. A bare `./gradlew test` used to stand in for it,
+    # which meant the four per-module JaCoCo LINE floors CI GATES ON (lan, relay, ble, driver) were
+    # never evaluated here while the coverage table still called this job "full". A coverage floor that
+    # only exists in CI is a floor this script cannot see you break.
+    step "bearers/android (+cov floors)" bash -c 'cd bearers/android && ./gradlew :bearer-ble:testDebugUnitTest test \
+      :bearer-lan:jacocoLanReport :bearer-lan:jacocoLanCoverageVerification \
+      :bearer-relay:jacocoRelayReport :bearer-relay:jacocoRelayCoverageVerification \
+      :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification \
+      :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification --stacktrace'
+    step "HopDemo android (+cov floor)"  bash -c 'cd apps/android/HopDemo && ./gradlew :app:testDebugUnitTest \
+      :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --stacktrace'
   else
     skip "Kotlin SDK + Android suites" "no mise java/android-sdk or gradle"
   fi
@@ -134,21 +252,23 @@ else
   if have swift && have xcodebuild; then
     # Every in-tree Apple package resolves sdk/apple BY PATH, but the committed manifest is the
     # PUBLISHED one and points at a hop-sdk-apple release asset that does not exist, so resolution
-    # 404s. CI does this same swap. Restore on any exit so a failed run never leaves the tree dirty.
+    # 404s. CI does this same swap. The EXIT trap at the top of this script restores the manifest on
+    # ANY exit (including a failure or a Ctrl-C) so a run never leaves the published manifest swapped.
+    # tools/build-xcframework.sh below REWRITES the tracked 178MB drivers/apple/HopDriver/Frameworks;
+    # the same trap restores that, and fails the run if it cannot.
     if [ ! -f sdk/apple/Frameworks/libhop.xcframework/Info.plist ]; then
       step "build apple xcframeworks" bash -c 'bash sdk/apple/build-xcframework.sh && bash tools/build-xcframework.sh'
     fi
-    PKG_BAK="$SCRATCH/Package.swift.published"
-    cp sdk/apple/Package.swift "$PKG_BAK"
-    trap 'cp "$PKG_BAK" "$ROOT/sdk/apple/Package.swift" 2>/dev/null; rm -rf "$SCRATCH"' EXIT
+        pkg_backup="$SCRATCH/Package.swift.published"
+        cp sdk/apple/Package.swift "$pkg_backup"
     cp sdk/apple/Package.local.swift sdk/apple/Package.swift
     for p in sdk/apple drivers/apple/HopDriver apps/apple/HopDemoKit \
              bearers/apple/HopBearerBle bearers/apple/HopBearerLan bearers/apple/HopBearerRelay \
              bearers/apple/HopBearerMultipeer; do
       step "swift test $p" bash -c "cd '$p' && swift test"
     done
-    cp "$PKG_BAK" sdk/apple/Package.swift
-    trap 'rm -rf "$SCRATCH"' EXIT
+        cp "$pkg_backup" sdk/apple/Package.swift
+        pkg_backup=""
   else
     skip "Apple package suites" "no swift/xcodebuild"
   fi
@@ -160,11 +280,29 @@ if [ "${#skipped[@]}" -gt 0 ]; then
   echo "NOT RUN (${#skipped[@]}):"
   for s in "${skipped[@]}"; do echo "  - $s"; done
 fi
+
+# Every CI job this script does not fully cover, named, on every run. An empty `skipped` array means
+# the local toolchain was complete, NOT that CI's scope was covered, and that difference is exactly
+# what a bare pass line used to hide.
+uncovered=()
+for entry in "${CI_COVERAGE[@]}"; do
+  job="${entry%%|*}"
+  rest="${entry#*|}"
+  level="${rest%%|*}"
+  reason="${rest#*|}"
+  [ "$level" = "full" ] || uncovered+=("$job [$level] $reason")
+done
+if [ "${#uncovered[@]}" -gt 0 ]; then
+  echo "CI JOBS NOT FULLY COVERED HERE (${#uncovered[@]} of ${#CI_COVERAGE[@]}), a pass below says nothing about these:"
+  for u in "${uncovered[@]}"; do echo "  - $u"; done
+  echo
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "SOME GATES FAILED"
 elif [ "${#skipped[@]}" -gt 0 ]; then
-  echo "GATES RUN HERE PASS, but the list above was NOT checked; CI still can redden."
+  echo "GATES RUN HERE PASS, but the lists above were NOT checked; CI still can redden."
 else
-  echo "ALL LOCAL GATES PASS (rust + guards + kotlin/android + apple)"
+  echo "ALL LOCAL GATES PASS (rust + guards + kotlin/android + apple); the CI jobs listed above were NOT checked here, so CI can still redden."
 fi
 exit "$fail"
