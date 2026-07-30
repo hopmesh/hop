@@ -404,8 +404,13 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         native.subprocess.run = original_subprocess_run
     assert {path.name for path in partial_output.iterdir()} == set(native.NATIVE_TARGET_FILENAMES.values())
 
-    esp_release = (root / ".github/workflows/libhop-esp-release.yml").read_text()
-    assert esp_release.count("-Zbuild-std=std,panic_abort") == 2
+    # The ESP targets have no prebuilt core or std, so every ESP build of libhop must pass
+    # -Zbuild-std. libhop-esp-release.yml used to be the other place this had to hold; it was deleted
+    # (unprovisionable credentials, superseded by this signed path), so native-artifacts.yml is now the
+    # only workflow that builds them and the check follows it there rather than being dropped.
+    esp_release = (root / ".github/workflows/native-artifacts.yml").read_text()
+    assert esp_release.count("-Zbuild-std=std,panic_abort") == 1
+    assert "xtensa-esp32-espidf" in esp_release and "riscv32imc-esp-espidf" in esp_release
     esp_builder = (root / "apps/esp32/hop-sensor/build-libhop-esp.sh").read_text()
     assert "cargo +esp build" in esp_builder
     assert esp_builder.count("-Zbuild-std=std,panic_abort") == 1

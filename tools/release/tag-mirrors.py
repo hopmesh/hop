@@ -59,10 +59,18 @@ def version_from_text(filename, text):
     if name == "pyproject.toml":
         return tomllib.loads(text).get("project", {}).get("version")
     if name == "Cargo.toml":
-        version = tomllib.loads(text).get("package", {}).get("version")
-        # An inherited version cannot be read from the mirror (it has no workspace root), so treat it
-        # as unverifiable rather than guessing.
-        return None if isinstance(version, dict) else version
+        document = tomllib.loads(text)
+        version = document.get("package", {}).get("version")
+        if not isinstance(version, dict):
+            return version
+        # `version.workspace = true` inherits from a workspace root. On the MIRROR that root is the
+        # [workspace.package] preamble copy.bara.sky injects on export (WORKSPACE_PREAMBLE), which
+        # carries a literal version that tools/version-align-guard.sh keeps equal to the anchor. So
+        # the inherited version IS resolvable here; resolve it from the same document. Only a
+        # manifest that inherits with no workspace root in it is genuinely unverifiable.
+        if not version.get("workspace"):
+            return None
+        return document.get("workspace", {}).get("package", {}).get("version")
     if name == "shard.yml":
         match = re.search(r"^version:\s*['\"]?([0-9][^'\"\s]*)", text, re.MULTILINE)
         return match.group(1) if match else None
@@ -96,7 +104,10 @@ def decide(entry, tag_exists, mirror_version, mirror_has_any_tag=True, allow_fir
     if entry["source"] == ANCHOR_SOURCE:
         return True, f"tagging v{version} (no in-repo version to verify)"
     if mirror_version is None:
-        return False, f"mirror manifest {entry['source']} unreadable, deferring"
+        # Reachable ONLY when the mirror does not carry the manifest yet (the export has not landed).
+        # A manifest that IS present but yields no version is raised as an error by process(), because
+        # that state never clears on its own and a silent skip would defer the release forever.
+        return False, f"mirror does not carry {entry['source']} yet, deferring until the export lands"
     if mirror_version != version:
         return False, f"mirror still at {mirror_version}, waiting for the export of {version}"
     return True, f"tagging v{version}"
@@ -125,11 +136,21 @@ def process(entry, token, allow_first_tag=False):
         contents, status = request(
             f"/repos/{OWNER}/{repo}/contents/{entry['source']}?ref=main", token
         )
+        if status not in (200, 404):
+            raise TagError(f"{repo}: unexpected status {status} reading {entry['source']}")
         if status == 200 and contents.get("content"):
             import base64
 
             text = base64.b64decode(contents["content"]).decode("utf-8", "replace")
             mirror_version = version_from_text(entry["source"], text)
+            # The manifest is THERE and still yields nothing. That is not a transient wait for the
+            # export, it is a state that repeats forever and silently never releases the component,
+            # so it is an error. See release.test.sh, which pins the real exported manifests.
+            if mirror_version is None:
+                raise TagError(
+                    f"{repo}: mirror carries {entry['source']} but no version could be read from it; "
+                    "the export must produce a manifest whose declared version is resolvable"
+                )
 
     should_tag, reason = decide(
         entry, tag_exists, mirror_version, mirror_has_any_tag, allow_first_tag

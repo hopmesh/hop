@@ -41,4 +41,32 @@ run_case exact pass '{"required_status_checks":{"checks":[{"context":"CI gate"}]
 run_case stale-extra fail '{"required_status_checks":{"checks":[{"context":"CI gate"},{"context":"Stale check"}]}}'
 run_case missing-gate fail '{"required_status_checks":{"checks":[{"context":"Other check"}]}}'
 
+# The workflow WRAPPER, not just the script. This audit is the only live assertion that main still
+# requires the CI gate, and it used to `exit 0` when BRANCH_PROTECTION_TOKEN was absent: deleting one
+# secret disarmed the detector and every subsequent run reported green. Inability to read the live rule
+# is an unknown, never a pass, so the missing-credential branch must fail. Run the actual step body
+# extracted from the workflow with an empty token, and require a non-zero exit.
+workflow="$root/.github/workflows/branch-protection-audit.yml"
+step="$(python3 - "$workflow" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(
+    r"(?ms)^      - name: Assert main branch protection requires the CI checks\n.*?^        run: \|\n(.*?)(?=^      - |\Z)",
+    text,
+)
+if match is None:
+    raise SystemExit("branch-protection audit step not found")
+print("\n".join(line[10:] for line in match.group(1).splitlines()))
+PY
+)"
+case "$step" in
+  *"exit 0"*) echo "branch-protection audit still exits 0 on a missing token" >&2; exit 1 ;;
+esac
+if (cd "$root" && BP_TOKEN="" bash -c "$step") >/dev/null 2>&1; then
+  echo "branch-protection audit PASSED with no token: the drift-detector can be disarmed" >&2
+  exit 1
+fi
+
 echo "branch protection guard tests passed"

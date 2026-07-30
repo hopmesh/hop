@@ -916,6 +916,25 @@ jobs:
         run: python3 tools/pages-path-guard.py
       - name: Self-test release plan + mirror tagger
         run: bash tools/release/release.test.sh
+      # A build artifact on a PUBLIC download surface must come from a commit whose canonical CI gate
+      # passed, proved with the same authority the rest of the release chain uses. The ESP32 archives
+      # were published to hopmesh/libhop with no such proof at all.
+      - name: Self-test artifact publication authority
+        run: bash tools/artifact-publication-guard.test.sh
+      - name: Enforce artifact publication authority
+        run: python3 tools/artifact-publication-guard.py
+      # Every secret name a workflow reads must be provisioned in a scope that job can see. Names only
+      # are printed here; no secret value is read, and the API does not return one.
+      - name: Self-test workflow secret scopes
+        run: bash tools/workflow-secrets-guard.test.sh
+      - name: Enforce workflow secret scopes
+        run: python3 tools/workflow-secrets-guard.py
+      # The local pre-push script must declare what it does about EVERY ci.yml job, so its verdict can
+      # never read broader than the set it executed.
+      - name: Self-test local CI mirror coverage
+        run: bash tools/local-ci-mirror-coverage.test.sh
+      - name: Enforce local CI mirror coverage
+        run: bash tools/local-ci-mirror-coverage.sh
       - name: Self-test mirror release-secret audit
         run: bash tools/release/check-mirror-secrets.test.sh
       - name: Self-test immutable release artifacts

@@ -244,5 +244,86 @@ printf '## v1%bnotes\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/CHANGELOG.md
 printf 'device log%bline\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/testkit/results/r1.log"
 expect_tree_pass "$FIX_GEN"
 
+# --- the guard must read every tree ci.yml dispatches it on -------------------------------------
+# The `docs` path filter names '.github/workflows/**' as a reason to RUN this guard, but the default
+# target lists never contained .github, so a dash could land in any workflow comment (ci.yml alone is
+# ~1200 prose-dense lines) with the Docs token guard job green. CLAUDE.md names this guard as the
+# enforcement of a repo-wide ban, so a green run there asserted a property it had not checked.
+FIX_GH="$TMP/repo-github"
+make_fixture_repo "$FIX_GH"
+mkdir -p "$FIX_GH/.github/workflows"
+printf '# a workflow comment%bwith a dash\nname: ci\n' "$(printf '\xe2\x80\x94')" \
+  > "$FIX_GH/.github/workflows/ci.yml"
+expect_tree_fail "$FIX_GH"
+
+# mockups/** dispatches the wasm and web jobs and ships hand-written HTML/JS; it was unscanned too.
+FIX_MOCK="$TMP/repo-mockups"
+make_fixture_repo "$FIX_MOCK"
+mkdir -p "$FIX_MOCK/mockups"
+printf '<p>fast%buntraceable</p>\n' "$(printf '\xe2\x80\x94')" > "$FIX_MOCK/mockups/swarm.html"
+expect_tree_fail "$FIX_MOCK"
+
+# Root markdown beyond the three files the doc pass named (CLAUDE.md, CONTRIBUTING.md, SECURITY.md).
+FIX_ROOT="$TMP/repo-rootmd"
+make_fixture_repo "$FIX_ROOT"
+printf 'Contributing%bread this first.\n' "$(printf '\xe2\x80\x94')" > "$FIX_ROOT/CONTRIBUTING.md"
+expect_tree_fail "$FIX_ROOT"
+
+# And the mapping itself: every path pattern in ci.yml's `docs` filter must resolve to a tree the
+# guard's default target lists actually read, so the filter can never again dispatch a guard that is
+# blind to the very change that dispatched it.
+if ! python3 - "$HERE/.." <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+guard = (root / "tools/docs-token-guard.sh").read_text(encoding="utf-8")
+
+block = re.search(r"(?ms)^            docs:\n(.*?)(?=^            [a-z_]+:\n)", ci)
+if block is None:
+    raise SystemExit("ci.yml `docs` path filter not found")
+patterns = re.findall(r"^\s+- '([^']+)'$", block.group(1), re.MULTILINE)
+if not patterns:
+    raise SystemExit("ci.yml `docs` filter has no patterns")
+
+
+def targets(name):
+    match = re.search(rf"(?ms)^  {name}=\((.*?)^  \)", guard)
+    if match is None:
+        raise SystemExit(f"docs-token-guard.sh {name} block not found")
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+covered = targets("REQUESTED") | targets("SRC_REQUESTED")
+# Root markdown is added by a glob over ./*.md rather than being spelled out.
+root_markdown = "for root_markdown in ./*.md" in guard
+missing = []
+for pattern in patterns:
+    head = pattern.split("/", 1)[0].removeprefix("**")
+    if pattern.endswith(".md") and "/" not in pattern:
+        if not root_markdown and pattern not in covered:
+            missing.append(pattern)
+        continue
+    if pattern.startswith("**/"):
+        # A nested pattern is covered when the tree that can hold it is scanned; every one of these
+        # (README.md, LICENSE.md, .github/workflows) lives under a scanned tree or under .github.
+        head = pattern.split("/")[1] if pattern.count("/") > 1 else pattern.split("/", 1)[1]
+        if head.endswith(".md"):
+            continue
+    if head and head not in covered:
+        missing.append(pattern)
+if missing:
+    raise SystemExit(
+        "ci.yml `docs` filter dispatches the guard on paths it does not scan: " + ", ".join(missing)
+    )
+PY
+then
+  fail=$((fail + 1)); echo "FAIL: the docs path filter names trees the guard does not scan"
+else
+  pass=$((pass + 1))
+fi
+
 echo "docs-token-guard.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

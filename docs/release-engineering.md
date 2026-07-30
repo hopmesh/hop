@@ -136,6 +136,50 @@ even when everything else is correct.
 The `release` environment on each mirror is an approval gate, so a release still waits for a human
 even once the credential exists.
 
+### ESP32 prebuilt archives: the `hopmesh/libhop` path is REMOVED
+
+`libhop-esp-release.yml` used to build two ESP32 `libhop.a` archives plus `sdk/hop.h` and publish them
+as a GitHub Release on the public `hopmesh/libhop` repo. It is deleted, for two reasons:
+
+1. **It could not run.** Its publish job minted a token from `HOP_RELEASE_APP_ID` /
+   `HOP_RELEASE_APP_PRIVATE_KEY`, and neither name was ever provisioned in the org, the repository, or
+   the `release` environment. Creating that App is an org-owner action, so the workflow sat in the tree
+   as a documented path that nothing could exercise.
+2. **It is superseded.** `native-artifacts.yml` builds a superset of those targets (`esp32`, `esp32s2`,
+   `esp32s3`, `esp32c3`, plus the RISC-V pair) under a signed manifest with a Sigstore bundle, and
+   `sdk/embedded`'s own `release.yml` consumes THAT bundle from `hopmesh/hop-embedded`, verifying the
+   signature, the source SHA, and the full subject inventory before staging. `install-libhop.py` points
+   at `hopmesh/hop-embedded`. Nothing consumes `hopmesh/libhop`.
+
+For the record, because an earlier comment in that workflow claimed the opposite: the path DID publish
+once. `hopmesh/libhop` release `v0.0.1` (2026-07-17) carries `hop.h`,
+`libhop-esp32-xtensa.a` and `libhop-esp32-riscv.a`, produced by the pre-`4d5344a` version of the
+workflow, which used the org `HOP_SYNC_TOKEN` rather than a libhop-only App. That release predates the
+signed release-manifest inventory and stays where it is; it is not the supported way to get libhop.
+
+To publish ESP32 archives again, tag `hop-embedded` (the signed native path). If a libhop-only GitHub
+Release is ever wanted back, restore the workflow from history AND provision the App first, or the same
+dead path returns.
+
+### Secret inventory: what checks that a workflow's credentials exist
+
+`tools/workflow-secrets.json` declares every `secrets.NAME` the workflows read and the ONE scope it is
+provisioned in. Three checks hold it to reality, and they answer different questions:
+
+| Check | Runs | Answers |
+| --- | --- | --- |
+| `python3 tools/workflow-secrets-guard.py` | CI, every push (the `automation` job) | do the workflows and the manifest agree, does every environment-scoped name get read only by a job declaring that environment, and is every declared name covered by a presence job |
+| the `secret-presence*` jobs in `branch-protection-audit.yml` | weekly cron plus pushes to `main` | is each declared name ACTUALLY set, asked from inside a job in that scope, with no credential (each name is passed as an is-it-non-empty boolean, never a value) |
+| `python3 tools/workflow-secrets-guard.py --verify-live` | by hand, never in a workflow | the same question through the API, across org, repository and environment inventories. It needs `admin:org` plus secrets read, which no provisioned token here has, so no workflow runs it |
+
+The static pass cannot detect a DELETED secret, only a manifest that disagrees with the workflow files.
+That is what the presence jobs are for: deleting `BRANCH_PROTECTION_TOKEN` makes them red.
+
+`MIRROR_SECRET_AUDIT_TOKEN` is declared `provisioned: false`: the `mirror-secrets` job in
+`branch-protection-audit.yml` FAILS until that PAT exists, because a check that cannot read the thing it
+audits must not report success. Either add the PAT (`secrets: read` on the mirrors, plus `admin:org`),
+or delete that job and run `python3 tools/release/check-mirror-secrets.py` by hand.
+
 ### C ABI header (`sdk/hop.h`)
 
 The universal contract. It is generated from `core/hop/src/cabi.rs` via cbindgen
