@@ -20,7 +20,26 @@ ROOT="$PWD"
 fail=0
 skipped=()
 
-step() { printf '%-46s' "$1"; shift; if "$@" >/tmp/vstep.log 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 /tmp/vstep.log | sed 's/^/    /'; fi; }
+# PER-RUN scratch, never a fixed /tmp path. Several worktrees on one machine run this script at the
+# same time (parallel agents), and the two fixed paths this used to use were shared mutable state
+# across those runs:
+#
+#   /tmp/vstep.log            one run's step output overwrote another's WHILE the other was tailing
+#                             it, so a FAIL tail printed a foreign run's output, and the tail | sed
+#                             pipeline itself aborted ("Abort trap: 6") on the truncated file.
+#   /tmp/hop-pkg-remote.bak   worse than confusing. Run A copies the PUBLISHED sdk/apple/Package.swift
+#                             here, then swaps in Package.local.swift for the Swift suites. If run B
+#                             reaches its own backup step while A is swapped, B copies A's SWAPPED
+#                             manifest over the backup, and then BOTH runs "restore" the local
+#                             manifest into their trees. The local manifest points at a machine-local
+#                             path binaryTarget, so `package export smoke` fails, and a `git add -A`
+#                             would commit the local manifest as the published one, which is the exact
+#                             mistake this script's own comment below says has already happened once.
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+STEP_LOG="$SCRATCH/step.log"
+
+step() { printf '%-46s' "$1"; shift; if "$@" >"$STEP_LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$STEP_LOG" | sed 's/^/    /'; fi; }
 skip() { printf '%-46s%s\n' "$1" "SKIP ($2)"; skipped+=("$1 ($2)"); }
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -119,16 +138,17 @@ else
     if [ ! -f sdk/apple/Frameworks/libhop.xcframework/Info.plist ]; then
       step "build apple xcframeworks" bash -c 'bash sdk/apple/build-xcframework.sh && bash tools/build-xcframework.sh'
     fi
-    cp sdk/apple/Package.swift /tmp/hop-pkg-remote.bak
-    trap 'cp /tmp/hop-pkg-remote.bak "$ROOT/sdk/apple/Package.swift" 2>/dev/null' EXIT
+    PKG_BAK="$SCRATCH/Package.swift.published"
+    cp sdk/apple/Package.swift "$PKG_BAK"
+    trap 'cp "$PKG_BAK" "$ROOT/sdk/apple/Package.swift" 2>/dev/null; rm -rf "$SCRATCH"' EXIT
     cp sdk/apple/Package.local.swift sdk/apple/Package.swift
     for p in sdk/apple drivers/apple/HopDriver apps/apple/HopDemoKit \
              bearers/apple/HopBearerBle bearers/apple/HopBearerLan bearers/apple/HopBearerRelay \
              bearers/apple/HopBearerMultipeer; do
       step "swift test $p" bash -c "cd '$p' && swift test"
     done
-    cp /tmp/hop-pkg-remote.bak sdk/apple/Package.swift
-    trap - EXIT
+    cp "$PKG_BAK" sdk/apple/Package.swift
+    trap 'rm -rf "$SCRATCH"' EXIT
   else
     skip "Apple package suites" "no swift/xcodebuild"
   fi
