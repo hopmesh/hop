@@ -61,7 +61,8 @@ metadata-privacy sections, "§39", on untraceable-by-default delivery) and in
   ratchet is an error, never a static-seal fallback.
 - The default delivery path is metadata-private ("§39"): the network does not learn
   who is talking to whom from routing alone. Mailbox tags rotate per epoch. The private
-  header carries only the 2-byte routing prefix (not the full mailbox-tag), so a
+  header carries only a short routing prefix (1 byte as of wire v12, `MAILBOX_ROUTE_PREFIX_BYTES`,
+  not the full mailbox-tag), so a
   bundle-capturing address-knower gets at most anonymity-set membership, never a unique
   re-linking of a recipient (core-protocol-r2-02).
 - A private delivery ACK carries a recipient-only CDH proof, so an attacker who learns a

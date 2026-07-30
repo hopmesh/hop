@@ -11,10 +11,14 @@ import { apiLangs, apiFlows } from '../../../data/api-reference.js';
   <p class="lede">One interface, every language. The driver handles discovery, connections,
      background, and power behind the scenes, so the code you write is nearly the same whichever
      language you're in. Pick yours; every example below switches with you.</p>
-  <p class="note">Hand-maintained for now. These samples are kept in sync with the real
-     API by hand today; the intent is to generate them from the C ABI (sdk/hop.h) and its language
-     wrappers per release. Java rides the JVM binding; Objective-C bridges from the Swift binding;
-     Python lands as its binding does.</p>
+  <p class="note"><strong>Illustrative, not the current API. Do not copy these into a build.</strong>
+     The snippets below sketch the SHAPE each flow is heading toward; they are not generated from the
+     shipped surface and the names and types differ from it today (the real entry points are
+     <code>hop_node_open</code>, <code>hop_send_to</code>, <code>hop_poll_inbox</code> and friends).
+     For code that compiles, read the C ABI in <code>sdk/hop.h</code> and the wrapper for your
+     language under <code>sdk/</code>. Generating this page from that header per release is the fix,
+     and it is not done yet. <code>Objective-C</code> and <code>Java</code> have no binding package
+     at all; those tabs are planned, not shipped.</p>
 
   <div class="apiref" data-apilang="rust">
     <div class="apilangs" role="tablist" aria-label="Language">

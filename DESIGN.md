@@ -160,19 +160,44 @@ lifecycle (ephemeral, device-bound, or account-synced).
 
 Wire format is length-prefixed, versioned, `postcard`/CBOR-style canonical encoding.
 
+A bundle is TWO structs plus a signature, not one flat record. `postcard` encodes by field
+position with no names, so the field order below IS the wire order: a decoder that skips a field
+desynchronises for the rest of the struct.
+
 ```
-Bundle {
+Bundle {                      // bundle.rs `Bundle`
+  inner:        SignedInner   // the content; signed on the traced path
+  env:          Envelope      // mutable forwarding state; NEVER signed
+  sig:          Signature     // Ed25519 over postcard(inner) ONLY; empty on the unsigned paths (§39)
+}
+
+SignedInner {                 // bundle.rs `SignedInner`, field order is wire order
   version:      u8
-  id:           [u8; 32]      // BLAKE3(src || ephemeral_pub || nonce || ciphertext); see below
-  src:          PubKey        // Ed25519, 32 bytes
-  dst:          Destination   // enum below
+  app:          AppId         // [u8;16] application namespace on the shared fabric (§17)
+  id:           [u8; 32]      // derivation depends on the destination class; see below
+  src:          PubKey        // Ed25519, 32 bytes; ZEROED on a §39 private bundle
+  dst:          Destination   // enum below; always Broadcast on a §39 private bundle
+  private:      Option<PrivateHeader>  // Some iff this is a §39 private (untraceable) bundle
   created_at:   u64           // sender clock, ms, advisory only (see §8)
   lifetime_ms:  u32           // discard after created_at + lifetime
+  flags:        BundleFlags   // { request_ack, is_ack, custody_requested }
+  priority:     u8            // service priority, 0 = lowest, 4 = normal; drives relay eviction
+  payload:      SealedPayload // Sealed { ephemeral_pub, nonce, ciphertext }: X25519 + ChaCha20-Poly1305
+}
+
+Envelope {                    // bundle.rs `Envelope`, rewritten in flight, NOT covered by `sig`
   hop_limit:    u8            // decrement per forward; 0 = drop
-  flags:        BundleFlags   // request_ack, is_ack, custody_requested, ...
   custody:      Option<PubKey>// current custodian, if custody transfer in use
-  payload:      SealedPayload // X25519 + ChaCha20-Poly1305
-  sig:          Signature     // Ed25519 over all preceding fields
+  copies:       u16           // RESERVED wire capacity; the router deliberately never reads it (§6)
+  hops:         u8            // hops travelled from the source so far; advisory
+  trace:        Vec<TraceHop> // provenance, one { node: [u8;8], app: [u8;8] } per forwarder (§27)
+  access:       Option<CarriageStamp>  // §35 keyed-relay access + metering; self-certifying
+}
+
+PrivateHeader {               // §39; lives INSIDE SignedInner so the private wire id binds it
+  tag:          [u8; 16]      // recognition tag = KDF(ephemeral·SPK, content_id); recipient-only
+  ephemeral:    XPubKey       // 32 bytes; the recipient DHs it against its prekey
+  mailbox:      Option<MailboxRoute>  // leading MAILBOX_ROUTE_PREFIX_BYTES of H(address ‖ epoch)
 }
 
 Destination =                 // discriminant order is LOCKED; append-only (see note)
@@ -206,18 +231,43 @@ SealedPayload depends on kind:
                               // ACK path. This trailing field is the v3->v4 wire bump (§39).
 ```
 
-The bundle `id` derivation depends on the destination class. A normal bundle uses
-`compute_id = BLAKE3(src ‖ ephemeral_pub ‖ nonce ‖ ciphertext)` (bundle.rs). A §39 private
-bundle drops `src` and domain-separates: `BLAKE3("hop private bundle id v1" ‖ ephemeral_pub ‖
-nonce ‖ ciphertext)`. A `Vaccine` is deterministic and self-verifying:
-`BLAKE3("hop vaccine id v2" ‖ token)` (sec-priv-07: no delivered id in the pre-image), so all
-vaccines for one delivery still dedup to a single flood (the token is unique per delivered bundle)
-and a tampered token yields a different id.
+### The `id`, per destination class
 
-Bundles are immutable once created and signed, except the mutable forwarding
-envelope (`hop_limit`, `custody`) which is **not** covered by `sig`, relays may
-decrement hop_limit and update custodian without invalidating the signature.
-(Implementation: split into a signed inner header + an unsigned forwarding header.)
+`SignedInner.id` is what `Bundle::verify()` recomputes and compares, so there is exactly one
+derivation per class. On the §39 private path there are TWO distinct hashes and only one of them
+rides the wire; conflating them produces a bundle every node rejects.
+
+- **Traced** (`Device` / `AckTo` / `Broadcast` with `src` set):
+  `id = BLAKE3(src ‖ ephemeral_pub ‖ nonce ‖ ciphertext)` (`compute_id`, bundle.rs), and `sig` is
+  Ed25519 over `postcard(inner)`. Note the scope: the signature covers the signed inner struct,
+  **not** the envelope fields, which is why a relay can decrement `hop_limit`, take custody, spend
+  copies, append a trace hop or attach a §35 stamp without invalidating anything.
+- **§39 private** (`src` zeroed, `dst = Broadcast`, `private = Some(..)`, no signature). The
+  **wire id**, the value in `SignedInner.id`, is
+  `BLAKE3("hop private bundle wire-id v2" ‖ postcard(SignedInner with id zeroed))`
+  (`compute_private_wire_id`, core-protocol-r13-01 + r14-01). A private bundle carries no
+  signature, so this recomputation IS its integrity check, and it therefore commits to the whole
+  inner struct: the sealed payload, the recognition header (`tag` / `ephemeral` / `mailbox`) and
+  every scalar (`version` / `app` / `src` / `dst` / `created_at` / `lifetime_ms` / `flags` /
+  `priority`). A header-rewritten chimera or a twin that flips `flags.request_ack` gets a
+  DIFFERENT id, so it floods as its own bundle and can never occupy the genuine id at a
+  keep-first relay store. `verify()` returns `BadSignature` on any mismatch.
+- **§39 private content id**, a separate value that never appears on the wire:
+  `BLAKE3("hop private bundle id v1" ‖ ephemeral_pub ‖ nonce ‖ ciphertext)`
+  (`compute_private_content_id`). It exists before the wire id does, which is what breaks the
+  id⇄tag circularity, and it survives a header rewrite unchanged. Its consumers are exactly four:
+  the recognition `tag`, the blinded `hops` initialiser, the delivery-vaccine token→tag resolution,
+  and the private-ACK `proof` check (§39). It is NOT the value a decoder compares against
+  `SignedInner.id`.
+- **`Vaccine`**: deterministic and self-verifying,
+  `id = BLAKE3("hop vaccine id v2" ‖ token)` (sec-priv-07: no delivered id in the pre-image), so
+  all vaccines for one delivery still dedup to a single flood (the token is unique per delivered
+  bundle) and a tampered token yields a different id. `verify()` additionally pins the canonical
+  vaccine shape (`is_ack` set, `src` zeroed, empty ciphertext), since the id binds only the token.
+
+Bundles are immutable once created and signed, except the `Envelope` above, which no signature
+covers: relays may decrement `hop_limit`, update the custodian, spend copies, append trace hops and
+attach or strip a §35 stamp without invalidating anything.
 
 ### Fragmentation
 BLE ATT MTU is ~185-512 B and even L2CAP CoC has bounded SDU sizes. The Link layer
@@ -2046,15 +2096,21 @@ and residency**:
   EU-serving infra on GCP.
 - **Tighten the sensitive set:** shrink presence retention/granularity; keep bundle/ACK TTLs as
   short as delivery allows.
-- **EU data residency (largely free under the per-region model, §28):** the chosen model gives
-  **each region its own local regional store**, so EU relays already keep their spool **in the EU**
-  and asia/etc. keep theirs locally, residency falls out of locality, no single US-centric DB to
-  split. The relay-to-relay epidemic does move ciphertext across regions, but it's **sealed
-  payload** the relay can't read (§32), and a hard mandate can constrain *which* peer regions a
-  given region syncs to. The remaining lever is the **declared home** (§34): residency is a
-  property of the person, so a mandate pins a device's region to its declared store and bounds
-  where its bundles may replicate. (The old "single global `nam5` + per-continent split" framing
-  is superseded by per-region local spools.)
+- **EU data residency, NOT BUILT (would be largely free under the per-region model of §28):** the
+  §28 model *would* give each region its own local regional store, so an EU relay would keep its
+  spool in the EU and residency would fall out of locality. **That is not what is deployed.** As
+  "Globality & replication of the store (precise)" above states, `infra/` creates exactly ONE
+  `google_firestore_database` at
+  `var.firestore_location` (default `nam5`) and every relay region writes into it, so locality is
+  none and residency is US, full stop. Nothing in `core/`, `services/` or `infra/` implements a
+  per-region durable store, and a repo-wide search for a home-region control finds no
+  implementation. Getting to the paragraph's premise means splitting the store per region first.
+  The second, still-unbuilt lever on top of that is the **declared home** (§34): residency is a
+  property of the person, so a mandate would pin a device's region to its declared store and bound
+  where its bundles may replicate. Do not restate either of these as available: no product surface
+  may promise regional storage or a home-region pin until both exist and are demonstrated end to
+  end. (The old "single global `nam5` + per-continent split" framing is what is actually running;
+  per-region local spools are the intended replacement.)
 
 ## 34. Device inboxes, recipient-keyed mailboxes with locality migration
 
@@ -2673,8 +2729,13 @@ demand-summoned regions of §28, the anti-entropy of §38, and the §27 trace ma
 - **No `src`, no identity signature.** Sender authenticity moves *inside* the seal, the recipient
   authenticates the sender from the established ratchet/X3DH session (§25), not a cleartext header
   signature (which would re-expose the sender).
-- **`BundleId = H(sealed ‖ ephemeral)`** instead of `H(src ‖ sealed)` (§5), globally unique, dedups
-  under flood, leaks nothing about the endpoints.
+- **A different `id` derivation.** The on-wire `id` is
+  `BLAKE3("hop private bundle wire-id v2" ‖ postcard(SignedInner with id zeroed))`, not the traced
+  path's `H(src ‖ sealed)` (§5). It is globally unique, dedups under flood, leaks nothing about the
+  endpoints, and, because a private bundle carries no signature, recomputing it IS the integrity
+  check. The distinct **content id**, `BLAKE3("hop private bundle id v1" ‖ sealed)`, never rides the
+  wire; it keys the recognition tag, the blinded hop count, the vaccine resolution and the ACK
+  proof. See §5 for both derivations and their consumers.
 - **Empty `trace`** (§27), no hop recording.
 - **Sealed payload unchanged** (§4). Content was already private; §39 closes the *metadata* gap.
 
@@ -2685,8 +2746,10 @@ an app id, never the sender, the recipient, or (without colluding across the who
 
 Privacy needs one tag; being *reachable* needs another. They trade differently, so they are separate:
 
-- **Ephemeral recognition tag (per message), unlinkable.** `tag = KDF(g^{e·P_recipient}, BundleId)`,
-  with the ephemeral public `g^e` in the header. The recipient recomputes `KDF(g^{e·s}, BundleId)` per
+- **Ephemeral recognition tag (per message), unlinkable.** `tag = KDF(g^{e·P_recipient}, content_id)`,
+  with the ephemeral public `g^e` in the header. The key is the §5 **content id**, not the wire id:
+  the content id exists before the wire id (which hashes the header the tag sits in), so keying on it
+  is what breaks the circularity. The recipient recomputes `KDF(g^{e·s}, content_id)` per
   prekey and checks for a match, a few scalar-mults, no payload decryption. Because the ephemeral
   changes every message, two bundles for the same recipient share nothing a relay can correlate. This
   is the **transit** identity, for *recognize-as-it-floods-by*. (A static `H(prekey)` tag would be
@@ -2864,7 +2927,9 @@ anonymity set of population/256. It is NOT 1-in-256 against an adversary holding
 because `mailbox_tag = H(address || epoch)` is a pure public function of a public key: anyone can compute
 a target's bucket and watch it. What the prefix denies such an adversary is a unique CONFIRMATION, since
 every other address colliding on that byte produces the same observation; what it does not deny is
-targeted suspicion. A fully passive recipient sets `route_to_me = false` and beacons nothing. Caps stop a neighbour bloating the table: one link may
+targeted suspicion. A host EMBEDDING hop-core can suppress the beacon entirely with
+`Node::set_route_to_me(false)`, at the cost of reachability (see the note below on how far that
+control reaches). Caps stop a neighbour bloating the table: one link may
 occupy at most `MAX_GRADIENT_BUCKETS_PER_LINK` buckets, evicting its OWN least-recently-seen entries, so
 grinding prefixes can never displace another link's genuine route; §35 keying gates relays. Anything that "remembers forever" is a storage and DoS liability.
 
@@ -2884,22 +2949,78 @@ The model trades targeted routing for privacy, and the bill is real:
   per-address tag to a `k`-bit prefix, so both a passive indexer AND an address-knower cluster only an
   *anonymity set* of ~`N/2^k` addresses, not a unique identity; epoch rotation bounds the cross-epoch
   window on top. But the set is not empty: pure unlinkability stays local-only (a fully passive recipient
-  that sets `route_to_me = false` and beacons nothing). You cannot have global reachability *and* zero
+  that beacons nothing). You cannot have global reachability *and* zero
   linkability; you can have global reachability with prefix-set linkability, which is what this ships.
+  - **How far the passive control actually reaches (core-only, not a product toggle).**
+    `Node::set_route_to_me(false)` is a **hop-core embedding API**, and that is the whole of it.
+    It is exported by NO C-ABI function in `sdk/hop.h`, no language wrapper, no driver and no app,
+    so a client built on the published contract cannot select the passive posture; every node that calls
+    `tick()` beacons, because the field initialises to `true`. Read this paragraph as describing the
+    trade a Rust embedder can make, NOT a switch a shipped Hop client offers. Exposing it is a product
+    decision with a real cost (a non-beaconing recipient off-relay cannot be recovered in a pure-P2P
+    partition, above), so it is deliberately not wired through yet. If it ever is, it lands in
+    `sdk/hop.h` first and this paragraph changes with it.
   - **Honest scope at small N (security-privacy-r3-01 / r2-03).** The `~N/2^k` anonymity-set argument is a
-    *large-N* argument, and `k = MAILBOX_ROUTE_PREFIX_BYTES` (16 bits) is a **compile-time constant, NOT
-    adaptive to observed N**. Below ~`2^k` (~65k) reachable addresses in the observed region, a target's
+    *large-N* argument, and `k = MAILBOX_ROUTE_PREFIX_BYTES` is a **compile-time constant, NOT
+    adaptive to observed N**. It is **1 byte (8 bits, 256 buckets) as of wire v12**; it was 2 bytes
+    before that, and every figure here is derived from the shipped value, so re-derive them on any
+    width change. Below ~`2^k` (~256) reachable addresses in the observed region, a target's
     prefix bucket is almost always occupied by the target ALONE, so against an **address-knower** who
     computes the target's route and watches that bucket in a region, the "anonymity set" is effectively a
     set of one: seeing the bucket active is, with near-certainty, a per-address reachability disclosure
     ("this specific target is reachable here this epoch"). At the current fleet scale (single-digit to a
-    few hundred devices) the fixed 2-byte prefix therefore provides **no meaningful sender/recipient
+    few hundred devices) the 1-byte prefix therefore provides **no meaningful sender/recipient
     anonymity against an address-knower**; its only role at that scale is to keep routing buckets from
     being unique KEYS on the wire (so a *passive* indexer without the address still can't derive it). The
-    real fix is to widen `k` adaptively as observed reachable-N grows (so `~N/2^k` stays >= a target set
-    size). That is **wire-affecting** (the private header carries this prefix, so its width is part of the
-    format) and is deliberately deferred + tracked as future work, not shipped in this hardening pass.
-    Mirrored at `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES` so the caveat lives with the constant too.
+    real fix is to widen `k` as reachable-N grows (so `~N/2^k` stays >= a target set
+    size); `crypto.rs` carries the w=1 vs w=2 bucket-occupancy table and the trigger to widen. That is
+    **wire-affecting** (the private header carries this prefix, so its width is part of the
+    format) and rides a `BUNDLE_VERSION` bump, deliberately deferred until population demands it.
+  - **Stale 2-byte prose still in the manifest files (CLAIM-004, deferred, read this before trusting
+    a comment).** If you follow the pointer above into `crypto.rs`, trust the constant and the block
+    comment *below* it, not the rustdoc *above* it. Four spots still say 2 bytes and were deliberately
+    NOT corrected in the pass that fixed this section. Three of them are simply **wrong for the
+    shipped protocol**: `core/hop-core/src/crypto.rs:756` ("Two bytes (16 bits) is the deliberate
+    balance"), `crypto.rs:770` ("Do NOT rely on the fixed 2-byte prefix ... below ~2^16 reachable
+    addresses"), and the assertion comment inside the
+    `mailbox_route_is_a_prefix_and_forms_an_anonymity_set` test at `crypto.rs:1269-1272` ("With a
+    2-byte prefix there are only 2^16 buckets"). All three are wrong in the *conservative*
+    direction: they understate the delivered anonymity set (256 buckets, not 65_536) and overstate
+    the do-not-trust-it threshold (~256 addresses, not ~65k). The fourth,
+    `core/hop-core/src/bundle.rs:28` ("the mailbox-tag's 2-byte PREFIX"), is **not** wrong and must
+    NOT be renumbered: it is the dated `v3` entry in a per-version changelog, and the prefix really
+    was 2 bytes when v3 shipped. Rewriting it to 1 would falsify the history the list exists to
+    record. What is actually missing there is the narrowing itself, because that changelog stops at
+    `v9 -> v10` / `v10 -> v11` and has **no v12 or v13 entry at all**, so a reader scanning it for
+    the current width finds only the v3 line and reasonably takes it as current. The fix for that
+    one is an added v12 entry, not an edited v3 entry. The shipped
+    value is `MAILBOX_ROUTE_PREFIX_BYTES = 1`, stated correctly on the definition line
+    (`crypto.rs:776`), in the `WHY 1 BYTE` block comment immediately below it (`crypto.rs:778-798`,
+    with the full w=1 vs w=2 table), in `MECHANISMS.md`, and in `SECURITY.md`. `sdk/hop.h` is also
+    correct and is the surface every platform actually binds: it documents a FIXED 2-byte ABI
+    *slot* carrying a VARIABLE-WIDTH prefix, left-aligned and zero-padded, and names the 2 -> 1
+    narrowing in v12, so the published integration contract never encoded the stale width at all.
+    Why they were left: `crypto.rs` and `bundle.rs` are both listed in
+    `core/hop-core/vectors/wire-source-manifest.txt`, so `tools/wire-version-guard.sh` hashes them
+    and fails any edit that does not come with a `BUNDLE_VERSION` bump and a regenerated, renamed
+    wire corpus. Bumping the wire version to reword a comment is exactly the "false wire bump"
+    that degrades the version into a build counter, which the manifest header forbids, so these
+    three edits ride the next real wire bump instead of minting one.
+    **This deferral is only honest if it names its trigger, because a deferral that names no trigger
+    does not fire.** `tools/docs-token-guard.sh` carved these same manifest paths out of its source
+    pass on identical reasoning and closed with the identical prose promise ("clean them during the
+    NEXT real wire bump"), and wire v12 and v13 then both shipped with the files untouched, which is
+    what the audit's PROC-001 finding is about. So the trigger here is not this paragraph. The three
+    edits are owed by the branch that is **already** at `BUNDLE_VERSION = 14`, already rewriting
+    comments in both `crypto.rs` and `bundle.rs`, and already carrying the renamed
+    `vectors/bundle-v14.json` corpus: the width correction costs it nothing beyond the edit, because
+    the bump and the corpus rename it would otherwise force have already been paid. If that lane
+    lands without these three, the width prose is stale for a fourth wire version in a row and this
+    paragraph is the only thing standing between a reader and the wrong number. The guard the audit asks for
+    (fail when the documented width and `MAILBOX_ROUTE_PREFIX_BYTES` diverge) rides with them for a
+    second, independent reason: it would have to read those same comments, so it cannot pass until
+    they are corrected, and a version of it that skipped `crypto.rs` would check everything except
+    the one place the drift actually lives.
 - **Mobility → flood.** Move faster than your beacon refresh and gradients go stale; you degrade to
   flood (the safety net), less efficient but still delivered.
 
@@ -2980,7 +3101,8 @@ struct-layout change: `BUNDLE_VERSION` bumped 3->4 and the version gate rejects 
 rather than let a v3 unproven ACK be silently trusted, or a v4 proof be misparsed by a v3 sender.
 
 **Status: SHIPPED (P1-P5, fleet-verified).** New wire pieces: the private header variant (ephemeral
-recognition tag + `g^e`, plus the optional 2-byte mailbox **routing prefix** `MailboxRoute`; no
+recognition tag + `g^e`, plus the optional mailbox **routing prefix** `MailboxRoute`, whose width is
+`MAILBOX_ROUTE_PREFIX_BYTES`, 1 byte since wire v12; no
 src/dst/sig and no separate `k`-bit hint field, since the prefix *is* the gradient hint), the recipient-
 only CDH `proof` on the private `Payload::Ack` (v4), the ephemeral-tag and
 mailbox-tag KDFs, the **link-local unsigned prefix beacon** (`Wire::RecvBeacon`, v13) + per-node gradient

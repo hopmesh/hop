@@ -13,7 +13,7 @@ export async function GET() {
   const L = [];
   L.push('# Hop, full reference for language models', '');
   L.push(
-    '> Hop is a delay-tolerant mesh network: end-to-end encrypted, store-and-forward datagrams that hop device to device, over BLE, Wi-Fi, and the internet, until they reach the person or service you meant. Held, never dropped. The single transport layer offline-capable apps build on.'
+    '> Hop is a delay-tolerant mesh network: end-to-end encrypted, store-and-forward datagrams that hop device to device, over BLE, Wi-Fi, and the internet, until they reach the person or service you meant. Held until they land or expire, not dropped for a missing network. The single transport layer offline-capable apps build on.'
   );
   L.push('', 'Short version: https://hopme.sh/llms.txt', '');
 
@@ -54,7 +54,7 @@ export async function GET() {
 
   L.push(
     '## Licensing & facts',
-    '- The SDK is source-available under FSL-1.1-ALv2 and converts to Apache-2.0 after two years; the protocol itself is never monetized.',
+    '- Licensing is two-tier and per-component: the protocol core (core/*: hop-core, libhop, hop-wasm, the stores) is source-available under FSL-1.1-ALv2 and converts to Apache-2.0 after two years; the SDKs, bearers, drivers and services are Apache-2.0. The protocol itself is never monetized.',
     '- Revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.',
     '- Pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.',
     '- End-to-end encrypted (X25519 + ChaCha20-Poly1305); identities are public keys, not phone numbers or accounts.',
