@@ -650,5 +650,128 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     finally:
         native.MAX_EXPANDED_BYTES = original_expanded_limit
 
+# --- the mid-release tolerance in verify_standalone_lock must not become a hole -------------------
+# It exists so a coordinated version bump can pass CI while a first-party sibling is briefly absent from
+# the registry. It forgives exactly that. These cases pin everything it must still reject, because a
+# check that quietly accepts a broken lock is worse than the deadlock it replaced.
+import subprocess as _subprocess
+
+_first_party = exports.published_crate_names(root)
+assert "hop-mesh-core" in _first_party, "crates.io rename map not parsed"
+assert "hop-wasm" in _first_party, "unrenamed published crate missing"
+_anchor = exports.workspace_version(root)
+
+
+def _fake_cargo(stderr):
+    """Stand in for a failing `cargo metadata --locked` with a chosen stderr."""
+    class Result:
+        returncode = 101
+        stdout = ""
+
+    result = Result()
+    result.stderr = stderr
+    return lambda *a, **k: result
+
+
+def _tree(tmp, manifest, lock):
+    tmp.mkdir(parents=True, exist_ok=True)
+    (tmp / "Cargo.toml").write_text(manifest)
+    (tmp / "Cargo.lock").write_text(lock)
+    return tmp
+
+
+_unresolved = (
+    'error: failed to select a version for the requirement `hop-mesh-core = "^%s"`\n' % _anchor
+)
+_good_manifest = (
+    '[workspace]\n[workspace.dependencies]\n'
+    'hop-core = { version = "%s", package = "hop-mesh-core" }\n'
+    '[package]\nname = "x"\nversion = "%s"\n'
+    '[dependencies]\nhop-core = { workspace = true }\nserde = "1"\n' % (_anchor, _anchor)
+)
+_good_lock = (
+    '[[package]]\nname = "hop-mesh-core"\nversion = "%s"\n\n'
+    '[[package]]\nname = "serde"\nversion = "1.0.229"\n' % _anchor
+)
+
+with tempfile.TemporaryDirectory() as _raw:
+    _tmp = pathlib.Path(_raw)
+    _original_run = exports.subprocess.run
+    exports.subprocess.run = _fake_cargo(_unresolved)
+    try:
+        # The tolerated case: sibling unpublished at exactly the anchor, lock agrees -> accepted.
+        exports.verify_standalone_lock(root, "hop-wasm", _tree(_tmp / "ok", _good_manifest, _good_lock))
+
+        # A lock that does NOT carry the sibling at the version the manifest wants is still a defect.
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm",
+                _tree(_tmp / "stale", _good_manifest,
+                      _good_lock.replace('version = "%s"' % _anchor, 'version = "0.0.1"', 1)),
+            ),
+            "lock pinning the sibling at a different version",
+        )
+
+        # A dependency the manifest requires but the lock omits entirely is still a defect.
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm",
+                _tree(_tmp / "missing", _good_manifest,
+                      '[[package]]\nname = "hop-mesh-core"\nversion = "%s"\n' % _anchor),
+            ),
+            "lock missing a required dependency",
+        )
+
+        # A THIRD-PARTY crate failing to resolve is never a mid-release state; it must stay fatal.
+        # This fixture is built so ONLY the first-party filter can reject it: the crate is not ours, but it
+        # sits at the anchor version and the lock agrees, so every downstream structural check passes. If
+        # the filter is ever loosened to forgive any unresolved dependency, this is the case that notices.
+        _foreign_manifest = (
+            '[package]\nname = "x"\nversion = "%s"\n'
+            '[dependencies]\nnotours = "%s"\n' % (_anchor, _anchor)
+        )
+        _foreign_lock = '[[package]]\nname = "notours"\nversion = "%s"\n' % _anchor
+        exports.subprocess.run = _fake_cargo(
+            'error: failed to select a version for the requirement `notours = "^%s"`\n' % _anchor
+        )
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm", _tree(_tmp / "foreign", _foreign_manifest, _foreign_lock)
+            ),
+            "unresolvable dependency that is not one of our crates",
+        )
+
+        exports.subprocess.run = _fake_cargo(
+            'error: failed to select a version for the requirement `serde = "^9.9.9"`\n'
+        )
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm", _tree(_tmp / "thirdparty", _good_manifest, _good_lock)
+            ),
+            "unresolvable third-party dependency",
+        )
+
+        # A first-party sibling at some OTHER version is not the release in flight; stay fatal.
+        exports.subprocess.run = _fake_cargo(
+            'error: failed to select a version for the requirement `hop-mesh-core = "^9.9.9"`\n'
+        )
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm", _tree(_tmp / "otherver", _good_manifest, _good_lock)
+            ),
+            "sibling unresolvable at a version that is not being released",
+        )
+
+        # Any cargo failure that is not a version-selection error at all must stay fatal.
+        exports.subprocess.run = _fake_cargo("error: could not parse manifest\n")
+        rejected(
+            lambda: exports.verify_standalone_lock(
+                root, "hop-wasm", _tree(_tmp / "other", _good_manifest, _good_lock)
+            ),
+            "unrelated cargo failure",
+        )
+    finally:
+        exports.subprocess.run = _original_run
+
 print("package export and native artifact tests passed")
 PY

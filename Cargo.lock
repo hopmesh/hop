@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "hop"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bs58",
  "hop-core",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "hop-accountd"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "argon2",
  "hmac",
@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "hop-billingd"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "hop-store-firestore",
  "reqwest",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "hop-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "blake3",
  "bs58",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "hop-endpoint"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64",
  "bs58",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "hop-endpoint-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "blake3",
  "hop-core",
@@ -963,11 +963,11 @@ dependencies = [
 
 [[package]]
 name = "hop-example-origin"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "hop-gateway"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bs58",
  "hop-core",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "hop-relayd"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "blake3",
  "bs58",
@@ -991,14 +991,14 @@ dependencies = [
 
 [[package]]
 name = "hop-sim"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "hop-core",
 ]
 
 [[package]]
 name = "hop-store-firestore"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64",
  "blake3",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "hop-store-sqlite"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "hop-core",
  "rusqlite",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "hop-telemetryd"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64",
  "bs58",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "hop-wasm"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "getrandom 0.2.17",
  "hop-core",
