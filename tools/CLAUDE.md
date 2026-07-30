@@ -30,6 +30,12 @@ release/                    plan.py resolves each publishing component's declare
                             mirror's main already declares the version (the mirror asserts tag ==
                             manifest). Driven by release-tags.yml after a successful export.
                             Self-test: release/release.test.sh (pins the tag/skip policy AND the token scope).
+                            release/check-mirror-secrets.py compares the secrets each mirror's release.yml
+                            REFERENCES against what is seeded at repo + environment + org scope. It exists
+                            because HOP_SOURCE_APP_ID/_PRIVATE_KEY were never seeded on any mirror, and an
+                            unset secret resolves to "" rather than erroring, so nothing ever published and
+                            the only symptom was an action complaining about an empty input. Needs a
+                            secrets-read token; the weekly branch-protection-audit runs it when armed.
 infra-authority-guard.py    forbids bootstrap authority in the runtime root and bounds the hop-deploy grants.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).

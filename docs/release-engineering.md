@@ -70,6 +70,72 @@ canonical workflow, source SHA, ref, run attempt, GitHub-hosted runner, certific
 complete 14-target subject set before a mirror publishes. GitHub's attestation API is an additional
 storage mirror when the repository plan supports it, not the sole copy of provenance.
 
+#### The credential that makes provenance work (and why nothing published without it)
+
+Verifying provenance means reading the CANONICAL repository from a PUBLIC mirror: every mirror's
+`release.yml` mints a GitHub App token and `release-provenance.py` follows the `GitOrigin-RevId` label
+on the mirror commit back to the monorepo SHA, then checks that SHA's CI. That needs two secrets to
+resolve inside the mirror's `release` environment:
+
+| Secret | Value |
+| --- | --- |
+| `HOP_SOURCE_APP_ID` | the App's id |
+| `HOP_SOURCE_APP_PRIVATE_KEY` | the App's PEM private key |
+
+**Neither was ever seeded, on any mirror, at any scope**, so no component had ever published: 15 of 15
+mirrors had their registry token in place (npm, PyPI, crates, RubyGems, Hex, Maven, PlatformIO) and
+failed one step earlier. GitHub resolves an unset secret to the EMPTY STRING instead of erroring, so
+the only symptom was a third-party action complaining `The 'client-id' (or deprecated 'app-id') input
+must be set to a non-empty string`, which names no secret and no repository. Run
+`python3 tools/release/check-mirror-secrets.py` to see the real state; it compares what each
+release workflow REFERENCES against what is seeded at repository, environment, and organization scope.
+
+**Use a dedicated read-only App, never the sync App.** `hop-component-sync` holds
+`contents: write` + `workflows: write` on all 21 repositories, and it lacks `actions`/`checks` read
+anyway, so minting would fail. More importantly this key lives on PUBLIC repositories: if the sync
+App's key leaked, someone could rewrite every mirror and inject workflows, whereas a read-only App
+leaks as read-only. That separation is why the workflows name it `HOP_SOURCE_APP_*` and not
+`HOP_SYNC_APP_*`.
+
+To arm publishing:
+
+1. Create a GitHub App (org `hopmesh`), e.g. `hop-source-read`, with repository permissions
+   **`actions: read`, `checks: read`, `contents: read` and nothing else**. Install it on
+   **`hopmesh/monorepo` only**: the mirrors hold the key to mint the token, they are not its target.
+2. Seed both values ONCE as organization secrets scoped to the publishing mirrors, rather than
+   fifteen times (the release workflows read them through the `release` environment):
+
+   ```sh
+   gh secret set HOP_SOURCE_APP_ID --org hopmesh --visibility selected \
+     --repos "$(python3 tools/release/check-mirror-secrets.py --json \
+                | python3 -c 'import json,sys; print(",".join(e["component"] for e in json.load(sys.stdin)))')"
+   gh secret set HOP_SOURCE_APP_PRIVATE_KEY --org hopmesh --visibility selected \
+     --repos "<same list>" < /path/to/app-private-key.pem
+   ```
+
+3. Confirm with `python3 tools/release/check-mirror-secrets.py` (expects
+   `all 15 publishing mirrors have every referenced secret seeded`), then re-run one mirror's failed
+   `release` workflow to publish that component without creating a new tag.
+
+Seeding the secrets is NOT sufficient on its own, and the three failure signatures at the mint step
+say which piece is missing. Read the error rather than re-seeding:
+
+| Mint step error | Meaning |
+| --- | --- |
+| `'client-id' ... must be set to a non-empty string` | the secrets do not resolve in this repo (unset, or scoped to the wrong repositories). Run the checker. |
+| `Failed to create token for "hopmesh/monorepo": Not Found` (404, `get-a-repository-installation-for-the-authenticated-app`) | the App id and key are a valid pair, but the App is **not installed** on the org with `monorepo` selected. Install it; `gh api orgs/hopmesh/installations` should list it. |
+| a 401, or `integration not found` | the id and the private key are not from the same App. |
+| a permissions error naming actions/checks/contents | installed, but that permission was added after installation and the pending request was never approved. |
+
+Prefer a tag-only mirror (`hop-bearers-apple`, `hop-driver-apple`, `hop-sdk-apple`, `hop-sdk-crystal`)
+when testing the credential: those exercise mint, provenance, and artifact verification without pushing
+to any registry, so a misconfiguration costs nothing irreversible. Do not test on `hop-sdk-python`,
+whose 0.0.1 already exists on PyPI from the bootstrap publish and would fail on a duplicate version
+even when everything else is correct.
+
+The `release` environment on each mirror is an approval gate, so a release still waits for a human
+even once the credential exists.
+
 ### C ABI header (`sdk/hop.h`)
 
 The universal contract. It is generated from `core/hop/src/cabi.rs` via cbindgen

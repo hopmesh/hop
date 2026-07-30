@@ -909,6 +909,8 @@ jobs:
         run: python3 tools/pages-path-guard.py
       - name: Self-test release plan + mirror tagger
         run: bash tools/release/release.test.sh
+      - name: Self-test mirror release-secret audit
+        run: bash tools/release/check-mirror-secrets.test.sh
       - name: Self-test immutable release artifacts
         run: bash tools/release-artifact.test.sh
       - name: Self-test exact crates.io publication payloads
