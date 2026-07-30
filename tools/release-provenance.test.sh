@@ -291,5 +291,86 @@ for package, expected in expected_sigstore.items():
     dependency = lock["packages"][package]
     assert (dependency["version"], dependency["integrity"]) == expected
 
+# --- symlinks in the canonical source archive -----------------------------------------------------
+# The extractor must reject an escaping or absolute symlink and accept a relative one that stays inside
+# the tree. It previously rejected ANY target containing "..", unnormalized, so the in-repo link
+# .claude/skills/hop-adversarial-audit -> ../../.agents/skills/hop-adversarial-audit was refused even
+# though it resolves inside the tree. That single link blocked EVERY component's publish.
+import io
+import os
+import tarfile
+
+
+def _archive(tmp, name, linkname):
+    """A one-symlink source archive rooted at `root/`, as the canonical tarball is."""
+    path = tmp / "src.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        directory = tarfile.TarInfo("root")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        # A real file for in-tree links to point at, so acceptance is not vacuous.
+        payload = b"x\n"
+        target_file = tarfile.TarInfo("root/.agents/skills/hop-adversarial-audit")
+        target_file.size = len(payload)
+        archive.addfile(target_file, io.BytesIO(payload))
+        link = tarfile.TarInfo(name)
+        link.type = tarfile.SYMTYPE
+        link.linkname = linkname
+        archive.addfile(link)
+    return path
+
+
+with tempfile.TemporaryDirectory() as _raw:
+    _tmp = Path(_raw)
+
+    # Drive the REAL extractor: the exact link this repo carries today must extract, and the extracted
+    # symlink must point where the archive said.
+    (_tmp / "ok").mkdir()
+    _accepted = _tmp / "accepted"
+    module.extract_archive(
+        _archive(_tmp / "ok", "root/.claude/skills/hop-adversarial-audit",
+                 "../../.agents/skills/hop-adversarial-audit"),
+        _accepted,
+    )
+    _link = _accepted / ".claude/skills/hop-adversarial-audit"
+    assert _link.is_symlink(), "the in-tree link was not extracted"
+    assert os.readlink(_link) == "../../.agents/skills/hop-adversarial-audit", "link target rewritten"
+
+    # An escaping link must still be refused by the real extractor, not merely by the logic below.
+    (_tmp / "bad").mkdir()
+    rejected(
+        lambda: module.extract_archive(
+            _archive(_tmp / "bad", "root/a/b/link", "../../../etc/passwd"), _tmp / "refused"
+        ),
+        "escaping symlink in the canonical source archive",
+    )
+
+    # Mirror the extractor's classification so the policy stays pinned across refactors.
+    def _unsafe(member_name, linkname):
+        from pathlib import PurePosixPath
+        import posixpath as _pp
+        parts = PurePosixPath(member_name).parts[1:]
+        link = PurePosixPath(linkname)
+        joined = _pp.join(_pp.join(*parts[:-1]) if parts[:-1] else "", linkname)
+        resolved = _pp.normpath(joined)
+        return link.is_absolute() or resolved == ".." or resolved.startswith("../") or _pp.isabs(resolved)
+
+    # In-tree relative links are safe, including the real one that used to be rejected.
+    assert not _unsafe("root/.claude/skills/hop-adversarial-audit",
+                       "../../.agents/skills/hop-adversarial-audit"), "real in-tree link rejected"
+    assert not _unsafe("root/a/b/link", "../c"), "relative in-tree link rejected"
+    assert not _unsafe("root/a/link", "sibling"), "sibling link rejected"
+    # Escapes and absolutes must still be refused.
+    assert _unsafe("root/a/b/link", "../../../etc/passwd"), "escaping link accepted"
+    assert _unsafe("root/a/link", "../../outside"), "escaping link accepted"
+    assert _unsafe("root/link", ".."), "bare .. accepted"
+    assert _unsafe("root/a/link", "/etc/passwd"), "absolute link accepted"
+
+    # And the source file itself must still carry the normalization, not just this reimplementation.
+    _src = (root / "tools/release-provenance.py").read_text()
+    assert "posixpath.normpath(joined)" in _src, "symlink check no longer normalizes before testing"
+    assert 'resolved.startswith("../")' in _src, "symlink check no longer tests for escape"
+
 print("release provenance tests passed")
 PY
