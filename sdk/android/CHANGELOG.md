@@ -4,6 +4,10 @@ Notable changes, generated from [conventional commits](https://www.conventionalc
 git-cliff. Do not edit by hand.
 ## Unreleased
 
+### Bug Fixes
+- make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
+- disabling a transport now actually stops it (PLAT-001) (7b84c71)
+
 ### CI
 - bump create-github-app-token to v3.2.0 across all mirrored components (efc9f6c)
 - drop unused attestation read access (0137b19)
@@ -16,6 +20,8 @@ git-cliff. Do not edit by hand.
 - AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10 + core-ktx 1.19.0 (13 held bumps) (471edb7)
 
 ### Documentation
+- the deferred-teardown note was itself an overclaim (bc86421)
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)

@@ -13,6 +13,7 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### Documentation
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
@@ -32,5 +33,7 @@ git-cliff. Do not edit by hand.
 - §37 reconciler crate (hop-billingd) - pure, idempotent, watermarked (3816c74)
 
 ### Other
+- make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
+- writer-scope the usage ledger rows so concurrent flushes compose (SVC-005) (b66cac9)
 - rework the console deploy onto the new GitHub-is-change-management pipeline (b53b9d0)
 

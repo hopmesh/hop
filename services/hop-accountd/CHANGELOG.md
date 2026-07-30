@@ -24,6 +24,7 @@ git-cliff. Do not edit by hand.
 - purge em-dashes and en-dashes from source (d222435)
 
 ### Documentation
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
@@ -52,6 +53,7 @@ git-cliff. Do not edit by hand.
 - hop-accountd, the native invoice backend (stripe-account-key consumer) (62dbaef)
 
 ### Other
+- make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
 - rustfmt the oauth redirect_uri assertion (6ee3865)
 - accountd firestore image + the deploy plan (P4) (d51be5d)
 - reject internal/metadata OTLP endpoints (5a review) (8518833)

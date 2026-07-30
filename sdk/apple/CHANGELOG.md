@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
+- disabling a transport now actually stops it (PLAT-001) (7b84c71)
 - `git add -A` committed the swapped Apple manifest, and add the guard for it (228a20d)
 - guard fixed-32-byte C-ABI reads in all wrappers (ADV18-06) (c95c826)
 
@@ -18,6 +20,8 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- the deferred-teardown note was itself an overclaim (bc86421)
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
