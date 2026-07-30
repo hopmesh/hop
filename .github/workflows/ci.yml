@@ -227,7 +227,10 @@ jobs:
           git fetch --no-tags --prune --force origin "+refs/heads/main:refs/remotes/origin/main"
           bash tools/wire-version-guard.sh
 
-      - name: Check deterministic wire corpus (v11)
+      # Deliberately NOT version-pinned in the label: it read "(v11)" while the committed corpus was
+      # v13, because a hand-typed version in a step name has nothing keeping it honest. The step
+      # regenerates from live code and byte-compares whatever bundle-v<N>.json is committed.
+      - name: Check deterministic wire corpus (regenerate and byte-compare)
         run: cargo run -p hop-core --example wire-vectors --features wire-vectors
 
       - name: Install pinned fuzz toolchain and cargo-fuzz

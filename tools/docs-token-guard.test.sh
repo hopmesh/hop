@@ -54,11 +54,23 @@ expect_src_fail() {
 # repo (the guard resolves its root from its own path), so this exercises the REAL default scan
 # sets, not a hand-passed path. This is what proves the source trees are actually in the default
 # set: delete "core" from SRC_REQUESTED and expect_tree_fail below goes red.
+#
+# make_fixture_repo DIR [MANIFEST_PATH ...]: build the fixture. With no extra args the fixture
+# manifest names core/hop-core/src/bundle.rs, the file the old carve-out was demonstrated with.
+# Pass paths to pin a different manifest, which is how the per-path loop below walks the REAL
+# manifest: a re-added exclusion is only caught if the fixture manifest names the file it covers.
 make_fixture_repo() {
-  local dir="$1"
+  local dir="$1"; shift
   mkdir -p "$dir/tools" "$dir/core/hop-core/src" "$dir/core/hop-core/vectors"
   cp "$GUARD" "$dir/tools/docs-token-guard.sh"
-  printf '# fixture manifest\ncore/hop-core/src/bundle.rs\n' > "$dir/core/hop-core/vectors/wire-source-manifest.txt"
+  {
+    printf '# fixture manifest\n'
+    if [ "$#" -gt 0 ]; then
+      printf '%s\n' "$@"
+    else
+      printf 'core/hop-core/src/bundle.rs\n'
+    fi
+  } > "$dir/core/hop-core/vectors/wire-source-manifest.txt"
 }
 expect_tree_pass() {
   if "$1/tools/docs-token-guard.sh" >/dev/null 2>&1; then
@@ -172,6 +184,25 @@ printf 'See 5%b7 sections.\n' "$(printf '\xe2\x80\x92')" > "$TMP/figdash.md"
 expect_fail "$TMP/figdash.md"
 printf 'Quiet &#8213; by default.\n' > "$TMP/hbar-ent.html"
 expect_fail "$TMP/hbar-ent.html"
+
+# --- PROC-001: U+2212 MINUS SIGN is the third lookalike, and it was live in source (a node.rs comment
+# reading "received U+2212 created_at") while this guard reported OK over core/. Literal + all three
+# encoded forms must fail, in BOTH passes, and an ASCII hyphen subtraction must still pass. ---
+printf 'Latency is received%bcreated_at.\n' "$(printf '\xe2\x88\x92')" > "$TMP/minus.md"
+expect_fail "$TMP/minus.md"
+printf '// stamps `received%bcreated_at` into the ACK\n' "$(printf '\xe2\x88\x92')" > "$TMP/minus-src.rs"
+expect_src_fail "$TMP/minus-src.rs"
+printf 'Chunks of MTU &#8722; 3 bytes.\n' > "$TMP/minus-dec.html"
+expect_fail "$TMP/minus-dec.html"
+printf 'Chunks of MTU &#x2212; 3 bytes.\n' > "$TMP/minus-hex.html"
+expect_fail "$TMP/minus-hex.html"
+printf 'const t = "MTU \\u2212 3";\n' > "$TMP/minus-esc.ts"
+expect_src_fail "$TMP/minus-esc.ts"
+printf '.m::after{content:"\\2212";}\n' > "$TMP/minus-css.css"
+expect_fail "$TMP/minus-css.css"
+# the ASCII replacement is what the fix uses, so it must NOT be flagged
+printf '// stamps `received - created_at` into the ACK; chunks of `MTU - 3`\n' > "$TMP/minus-ascii.rs"
+expect_src_pass "$TMP/minus-ascii.rs"
 # --- F-CI-5: bare marketing "bluetooth-<word>" must fail; the two real iOS background-mode ids must pass ---
 printf 'A bluetooth-powered mesh nearby.\n' > "$TMP/bt-powered.md"
 expect_fail "$TMP/bt-powered.md"
@@ -226,12 +257,50 @@ make_fixture_repo "$FIX_HIT"
 printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$FIX_HIT/core/hop-core/src/node.rs"
 expect_tree_fail "$FIX_HIT"
 
-# --- and the wire-manifest exclusion really holds: the SAME dash in a manifest-listed file passes,
-# because editing it would force a BUNDLE_VERSION bump for punctuation ---
-FIX_SKIP="$TMP/repo-skip"
-make_fixture_repo "$FIX_SKIP"
-printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$FIX_SKIP/core/hop-core/src/bundle.rs"
-expect_tree_pass "$FIX_SKIP"
+# --- the retired wire-manifest carve-out stays retired (audit PROC-001). A manifest-listed file
+# used to be EXCLUDED from the source pass, on a promise to clean it "at the next real wire bump"
+# that two bumps came and went without honouring. This asserts the opposite of the old behaviour:
+# the same dash in a manifest-listed path must now FAIL, exactly like any other source file. It is
+# the regression net for the exclusion coming back, whether by revert or by a well-meaning re-add:
+# with SRC_SKIP_RE restored, this fixture passes the guard and this case goes red. ---
+FIX_MANIFEST="$TMP/repo-manifest"
+make_fixture_repo "$FIX_MANIFEST"
+printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$FIX_MANIFEST/core/hop-core/src/bundle.rs"
+expect_tree_fail "$FIX_MANIFEST"
+
+# The encoded forms are not a loophole either: an HTML entity in a manifest-listed file renders a
+# real dash and must fail through the same path.
+FIX_MANIFEST_ENC="$TMP/repo-manifest-encoded"
+make_fixture_repo "$FIX_MANIFEST_ENC"
+printf '// a comment &mdash; with an encoded dash\n' > "$FIX_MANIFEST_ENC/core/hop-core/src/bundle.rs"
+expect_tree_fail "$FIX_MANIFEST_ENC"
+
+# --- ...and the net covers EVERY manifest-listed path, not just bundle.rs. Asserting one file left a
+# hole big enough to walk through: re-adding a SINGLE-file exclusion for a DIFFERENT manifest path
+# (--exclude='crypto.rs') restored the carve-out for that file and still passed this self-test, so
+# only deleting the manifest-reading block wholesale was caught. This loops the REAL manifest and
+# demands a failure per path, so the net is exactly as wide as the carve-out could ever be, and it
+# widens by itself when a path is added to the manifest. ---
+REAL_MANIFEST="$(cd "$HERE/.." && pwd)/core/hop-core/vectors/wire-source-manifest.txt"
+manifest_paths=()
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in '' | '#'*) continue ;; esac
+  manifest_paths+=("$line")
+done < "$REAL_MANIFEST"
+# Read zero paths and the loop below would vacuously pass, which is the same trust-a-green-result
+# failure this whole case exists to close. Fail loudly instead.
+if [ "${#manifest_paths[@]}" -lt 2 ]; then
+  fail=$((fail + 1))
+  echo "FAIL: read ${#manifest_paths[@]} path(s) from $REAL_MANIFEST; the per-path net would be empty or trivial"
+fi
+for mp in "${manifest_paths[@]:-}"; do
+  case "$mp" in *.rs) ;; *) continue ;; esac
+  d="$TMP/repo-mf-$(printf '%s' "$mp" | tr '/.' '__')"
+  make_fixture_repo "$d" "$mp"
+  mkdir -p "$d/$(dirname "$mp")"
+  printf '// a comment%bwith a dash\n' "$(printf '\xe2\x80\x94')" > "$d/$mp"
+  expect_tree_fail "$d"
+done
 
 # --- generated/vendored output is excluded from the source pass (a rewrite there is undone by the
 # next regeneration): a dash in target/, node_modules/, a CHANGELOG, or a captured .log must pass ---

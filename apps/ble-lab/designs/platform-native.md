@@ -264,7 +264,7 @@ exactly the repo's proven `HopLink` framing:
 - `N == 0` is a **keepalive** (liveness only; surfaces nothing upward).
 - On L2CAP, frames are written/read directly to the stream; the reader buffers until it has a
   full `4 + N`.
-- On the GATT fallback, the same framed bytes are split into `MTU − 3` chunks; strict
+- On the GATT fallback, the same framed bytes are split into `MTU - 3` chunks; strict
   one-op-at-a-time flow control (send chunk → await completion callback → send next), reassembled
   by the same deframer.
 
