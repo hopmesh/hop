@@ -620,8 +620,10 @@ hop/
   Measure delivery ratio/overhead under churn and partition. (Shipped as epidemic
   + ACK-vaccine, not the spray-and-wait originally sketched here; see §6.)
 - **Phase 3, Link layer.** ✅ Noise XX sessions (`link::LinkHandshake` /
-  `LinkSession`, via `snow`) + fragmentation/reassembly (`link::fragment` /
-  `Reassembler`). Remaining: drive sessions from the node loop over a real bearer.
+  `LinkSession`, via `snow`) + record splitting/reassembly. Framing shipped as
+  `wire_emit::frame_record` / `Node::on_record_frag` over `LinkPacket::DataFrag`,
+  not the generic `link::fragment` / `Reassembler` layer sketched here, which never
+  had a production caller and was deleted in the v13 to v14 bump (audit PROC-001).
 - **Phase 4, Gateway.** `hop-gateway`: HTTP fulfillment, request dedup, abuse
   controls. End-to-end A in simulation.
 - **Phase 5, FFI + native BLE.** ✅ `hop-ffi` (since renamed to the `hop` crate, now
@@ -1643,7 +1645,7 @@ toward** a destination's region rather than flood blindly.
 ### The one constraint: bounded fan-out
 
 "Online relays sync with each other" taken as a **full mesh** is the *other* half of the old
-429: N online regions → N² persistent peer links, each `maxScale=1` instance holding (N−1)
+429: N online regions → N² persistent peer links, each `maxScale=1` instance holding (N-1)
 peer connections *plus* its device connections, saturating the instance and 429'ing real
 check-ins. So the mesh is **partial**:
 

@@ -80,7 +80,7 @@ pub struct Metrics {
     pub delivered: usize,
     /// `delivered / injected`.
     pub delivery_ratio: f64,
-    /// Mean end-to-end delay (delivery time − creation time) over delivered msgs.
+    /// Mean end-to-end delay (delivery time minus creation time) over delivered msgs.
     pub mean_latency_ms: f64,
     /// Total copies transferred across all links (the cost of delivery).
     pub transmissions: u64,

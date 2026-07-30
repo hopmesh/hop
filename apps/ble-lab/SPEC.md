@@ -1254,7 +1254,7 @@ Reuse this repo's `GattDataLink.kt` verbatim. Add two characteristics to the ser
 `RX_CHAR` (WRITE / WRITE_NO_RESPONSE, central→peripheral) and `TX_CHAR` (NOTIFY/INDICATE,
 peripheral→central). When `openL2CAPChannel` errors (iOS `didOpen` error / Android
 `createInsecureL2capChannel.connect()` throws), bind the **same §4 framing + §3.3 HELLO + §5
-1 Hz PING/liveness** over GATT instead: central writes framed chunks of `MTU−3` to `RX_CHAR` with
+1 Hz PING/liveness** over GATT instead: central writes framed chunks of `MTU - 3` to `RX_CHAR` with
 strict one-op-at-a-time flow control (write → await completion → next), peripheral indicates back
 over `TX_CHAR`. HELLO, PING/PONG, dedup, watchdog, and the state machine are all unchanged, only
 the byte transport differs. This makes "pipe proven" hold even if cross-platform L2CAP never opens.

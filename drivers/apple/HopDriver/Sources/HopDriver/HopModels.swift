@@ -35,7 +35,7 @@ extension HopBearer {
         public var inboxId: Data? = nil    // stable incoming id, persisted before core acceptance
         // Incoming metadata (shown under the bubble).
         public var hops: UInt8 = 0
-        public var latencyMs: UInt64? = nil      // received time − sender's send time
+        public var latencyMs: UInt64? = nil      // received time minus sender's send time
         public var trace: [TraceHopInfo] = []    // each forwarding hop, resolved at render (§27)
         /// When the ORIGINATING device says it sent this, from the bundle's `created_at`. Distinct
         /// from `sentAt`, which for an incoming message is when WE received it, not when it was sent.

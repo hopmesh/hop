@@ -74,25 +74,36 @@ there is no portable way to detect already-being-on-it. Android's `stop()` is sy
 the weaker of the two behaviours; a host that needs true radio silence as a postcondition has to get
 it from the platform.
 
-## Deferred: dead code inside wire-manifest files
+## Closed: the dead framing layer in link.rs is gone
 
 `core/hop-core/src/link.rs` is listed in `core/hop-core/vectors/wire-source-manifest.txt`, so
-deleting even dead code from it trips the wire-version guard and would force a `BUNDLE_VERSION` bump
-for a change that moves no bytes. Same carve-out the dash ban already uses for manifest files. What
-is parked in there is larger than the one trait this note used to name:
+deleting even dead code from it trips the wire-version guard. That was the reason this section
+existed as a DEFERRAL, parked behind the sentence "delete all of it at the next real wire bump".
+That sentence is a prose intention, not a trigger, and it went unhonoured twice, the same failure
+that got the dash-guard manifest carve-out retired (audit PROC-001). It went unhonoured a third
+time inside the v13 to v14 bump that indicted the pattern, which is when it was finally paid.
 
-- `link::Bearer` has never had an in-tree implementor: the real transport seam is `BearerEvent`
-  pumped over the C ABI.
-- The entire generic fragmentation layer is unreached in production: `Frame`, `fragment`,
-  `Reassembler`, and the four `MAX_FRAME_*` / `MAX_REASSEMBLED_*` bounds. Record splitting is done
-  by `wire_emit::frame_record` into `LinkPacket::DataFrag` (reassembled by `Node::on_record_frag`),
-  which `wire_emit.rs` itself calls "the ONLY place record framing is decided". `node.rs` imports
-  nothing from `link` beyond `BearerEvent`, `LinkHandshake`, `LinkId`, `LinkSession`, and `Role`.
-- `Frame`'s one remaining consumer is `wire_vectors.rs`, a corpus entry pinning the byte layout of a
-  type nothing emits. Retire that vector in the same bump or it keeps the dead code alive by itself.
+Deleted in the v13 to v14 bump, all of it:
 
-Delete all of it at the next real wire bump, along with the three stale spray-and-wait comments in
-`bundle.rs`.
+- `link::Bearer`, which never had an in-tree implementor. The real transport seam is `BearerEvent`
+  pumped over the C ABI, and that is what remains in `link.rs`.
+- the entire generic fragmentation layer: `Frame`, `fragment`, `Reassembler`, and the four
+  `MAX_FRAME_*` / `MAX_REASSEMBLED_BUNDLE_BYTES` bounds, plus the four tests that exercised only
+  them. Record splitting is and was done by `wire_emit::frame_record` into `LinkPacket::DataFrag`
+  (reassembled by `Node::on_record_frag`), which `wire_emit.rs` itself calls "the ONLY place record
+  framing is decided".
+- the `Frame` corpus vector in `wire_vectors.rs`, which was pinning the byte layout of a type
+  nothing emitted and would otherwise have kept the dead code alive on its own. Regenerating the
+  corpus removed exactly that one entry and moved no other byte, which is the proof the deletion
+  was wire-neutral.
+- the three stale spray-and-wait comments in `bundle.rs`, which described `Envelope.copies` as a
+  live copy budget. They now say what DESIGN.md §6 says: reserved wire capacity the router never
+  reads.
+
+**The lesson, for the next deferral anyone is tempted to write here:** do not name a trigger in
+prose. Either do the work in the commit that notices it, or attach the deferral to something
+mechanical that fails when the condition arrives. A note in a CLAUDE.md is read by whoever happens
+to open the file, which is not the same person as whoever performs the trigger.
 
 ## Note
 
