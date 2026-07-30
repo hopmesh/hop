@@ -1,9 +1,13 @@
 // Unified interface reference. The point isn't per-language doc dumps, it's the SAME
 // flows across languages, where the code is nearly identical because the driver does
 // the platform work (discovery, connections, background, power) behind the scenes.
-// These are seeded by hand now; the intent is to GENERATE them from the C ABI
-// (sdk/hop.h) and its language wrappers so they track the real API, then weave
-// in per-language notes. Shape: each flow has one shared description + a snippet per
+// WARNING: these snippets are ILLUSTRATIVE SHAPES, NOT the shipped API. They were seeded by hand
+// and never tracked the real surface: `HopNode(secret:)`, `Destination`, `Payload` and `receive()`
+// exist in no wrapper, and Objective-C and Java have no binding package under sdk/ at all. The real
+// entry points are `hop_node_open` / `hop_send_to` / `hop_poll_inbox` (sdk/hop.h) and their
+// per-language wrappers. The page rendering this says so out loud; keep that notice until these are
+// GENERATED from the C ABI and its wrappers, which is the actual fix.
+// Shape: each flow has one shared description + a snippet per
 // language. Add languages to `apiLangs` and a matching key to each `samples`.
 const S = 'var(--tok-str)', K = 'var(--tok-kw)', C = 'var(--tok-comment)';
 const s = (x) => `<span style="color:${S}">${x}</span>`;
@@ -12,9 +16,9 @@ const k = (x) => `<span style="color:${K}">${x}</span>`;
 export const apiLangs = [
   { id: 'rust', label: 'Rust' },
   { id: 'swift', label: 'Swift' },
-  { id: 'objc', label: 'Objective-C' },
+  { id: 'objc', label: 'Objective-C (planned)' },
   { id: 'kotlin', label: 'Kotlin' },
-  { id: 'java', label: 'Java' },
+  { id: 'java', label: 'Java (planned)' },
 ];
 
 export const apiFlows = [

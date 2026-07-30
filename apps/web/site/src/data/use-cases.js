@@ -48,7 +48,7 @@ export const cases = [
     description:
       "A device with no internet emits a sealed HTTP request; any gateway node fulfills it and relays the sealed response back to your device's key.",
     body: [
-      "A device with no internet emits a sealed HTTP request. Any gateway node fulfills it and relays the sealed response back to your device's key, eventual, but guaranteed. Or reach a specific service over <code>hops://</code>: HTTP semantics carried as sealed datagrams, terminated by the origin's own endpoint, with no third party in the middle.",
+      "A device with no internet emits a sealed HTTP request. Any gateway node fulfills it and relays the sealed response back to your device's key, eventual, at-least-once, bounded by the request's lifetime. Or reach a specific service over <code>hops://</code>: HTTP semantics carried as sealed datagrams, terminated by the origin's own endpoint, with no third party in the middle.",
     ],
     uses: [['hops://', '/protocol/hops/'], ['HNS', '/protocol/hns/'], ['internet egress', '/protocol/hops/']],
     scenarios: ['nodata', 'blackout'],

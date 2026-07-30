@@ -799,7 +799,8 @@ mod tests {
     }
 
     // sim-wasm-r2-01: exercise the wire-v3 k-bit mailbox-route / anonymity-set behavior at the sim
-    // layer. The routing/spool/want-beacon key is only the 2-byte prefix of a recipient's mailbox-tag
+    // layer. The routing/spool/want-beacon key is only the `MAILBOX_ROUTE_PREFIX_BYTES` prefix (1 byte
+    // since wire v12) of a recipient's mailbox-tag
     // (`crypto::mailbox_route`), so two DIFFERENT recipients can land in the SAME routing bucket. The
     // privacy claim (sec-priv-04) is that a colliding pair is an anonymity SET, not a mix-up: each
     // recipient still recognizes ONLY its own bundle (the per-message-ephemeral recognition tag
@@ -811,8 +812,9 @@ mod tests {
         hop_core::crypto::mailbox_route(&hop_core::crypto::mailbox_tag(addr, epoch))
     }
 
-    /// Grind fresh identities until two share a mailbox-route bucket at epoch 0 (a ~1/2^16 event, so
-    /// a few hundred tries on average; capped so the test can never hang). Returns the colliding pair.
+    /// Grind fresh identities until two share a mailbox-route bucket at epoch 0 (~1/2^(8*w) per pair for
+    /// a w-byte prefix, so tens of tries at the shipped w=1; capped so the test can never hang).
+    /// Returns the colliding pair.
     fn grind_colliding_pair() -> (Identity, Identity) {
         use std::collections::HashMap;
         let mut seen: HashMap<hop_core::crypto::MailboxRoute, Identity> = HashMap::new();
@@ -880,7 +882,7 @@ mod tests {
         assert!(sim.delivered_at.contains_key(&id_a) && sim.delivered_at.contains_key(&id_b));
 
         // No cross-recognition: A holds B's flooding bundle but does NOT recognize it as its own
-        // (and vice versa). The 2-byte prefix collision does not make one recipient claim the other's.
+        // (and vice versa). The routing-prefix collision does not make one recipient claim the other's.
         if let Some(other) = sim.nodes[2].store.get(&id_b) {
             assert!(
                 !other.recognized_by(&sim.nodes[2].spk_secret),

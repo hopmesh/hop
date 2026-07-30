@@ -199,13 +199,13 @@ export const layers = [
     how: [
       "Each datagram is handed on to every peer a carrier meets, so copies fan out on independent paths in parallel (epidemic forward).",
       "Sealed and addressed to a key; relays carry ciphertext they can't read and keep <strong>custody</strong> of their copy until they've handed it onward.",
-      "The recipient's acknowledgement travels back as a vaccine, every node it reaches drops its copy and refuses more, collapsing the flood. Held when there's no route, never dropped.",
+      "The recipient's acknowledgement travels back as a vaccine, every node it reaches drops its copy and refuses more, collapsing the flood. Held while there's no route, until its lifetime runs out.",
     ],
-    dev: "One connectionless send/receive primitive, a sealed, addressed bundle. The library handles epidemic replication, custody, retransmit with backoff, dedup, and the delivery-ACK; you manage no connections or routes.",
-    biz: "Messages get through across flaky or absent networks with nothing to operate. Delivery is eventual but guaranteed, with a default 24-hour lifetime everything above inherits.",
+    dev: "One connectionless send/receive primitive, a sealed, addressed bundle. The library handles epidemic replication, custody, retransmit with backoff, dedup, and the delivery-ACK; you manage no connections or routes. Delivery is at-least-once within the bundle's lifetime (24 hours by default), not unconditional: a bundle past its lifetime is discarded, and a carrier over its custody cap evicts the lowest-utility copy it holds.",
+    biz: "Messages get through across flaky or absent networks with nothing to operate. Delivery is eventual and at-least-once, bounded by a default 24-hour lifetime everything above inherits.",
     viz: {
       vb: '0 0 720 340',
-      caption: "Plaintext at the ends, garbled (sealed) in transit. Copies take more than one peer path; each relay holds its stored copy until an acknowledgement comes back, then releases it. Held, never dropped.",
+      caption: "Plaintext at the ends, garbled (sealed) in transit. Copies take more than one peer path; each relay holds its stored copy until an acknowledgement comes back or the lifetime expires, then releases it.",
       svg: `
         <line class="pd-edge" x1="80" y1="166" x2="345" y2="96"/>
         <line class="pd-edge" x1="80" y1="166" x2="345" y2="246"/>

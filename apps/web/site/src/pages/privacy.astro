@@ -48,9 +48,14 @@ import Base from '../layouts/Base.astro';
          identity. We never open a payload to meter it.</p>
 
       <h2>Where data lives</h2>
-      <p>The backbone stores data regionally, near where it's used, and supports a declared home region
-         to pin a user's data to a jurisdiction where that's required. Locality is detected from usage
-         for performance; legal residency is only ever set by explicit declaration, never inferred.</p>
+      <p>The hosted backbone's durable store is a <strong>single database in one Google Cloud
+         multi-region, currently the United States</strong>. Relays in other regions read and write
+         that same store, so backbone-held sealed bundles and their routing envelope rest under US
+         residency wherever the relay carrying them runs. We do not offer regional pinning or a
+         per-user home region today, and we will not claim to until it ships.</p>
+      <p>If that placement does not work for you, the protocol does not require our backbone: run
+         peer-to-peer with no backbone at all, or operate your own in the jurisdiction you need
+         (see Self-hosting below).</p>
 
       <h2>What we don't do</h2>
       <ul>
