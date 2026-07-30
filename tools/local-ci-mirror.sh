@@ -60,6 +60,8 @@ fi
 step "docs-token-guard"               bash tools/docs-token-guard.sh
 step "ble-backoff-parity self-test"   bash tools/ble-backoff-parity.test.sh
 step "ble-backoff-parity"             bash tools/ble-backoff-parity.sh
+step "ble-threading self-test"        bash tools/ble-threading-guard.test.sh
+step "ble-threading guard"            bash tools/ble-threading-guard.sh
 step "abi-version guard"              bash tools/codegen/check-abi-version.sh
 step "required-checks guard"          bash tools/check-required-checks.sh
 step "repo-integrity guard"           bash tools/repo-integrity-guard.sh

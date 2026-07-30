@@ -234,6 +234,94 @@ class BearerManagerTest {
         assertEquals(mapOf("Relay" to false), mgr.bearerStates())
     }
 
+    // PLAT-001: a bearer that is disabled or stopped cannot surface a link ----------------------
+    //
+    // The regression the audit named: enablement was enforced only where the manager called INTO a
+    // bearer (start/stop), never where a bearer called BACK. A BLE link that was open but had not yet
+    // completed HELLO when the user switched the transport off finished its handshake afterwards,
+    // called sink.linkUp, and the manager minted it a global id, so the "disabled" transport was
+    // routing node packets again while the UI still said disabled. Each of these fails without the
+    // guard in up().
+
+    @Test fun a_link_surfaced_after_disabling_is_refused() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 700)
+        mgr.sink = sink
+        val ble = FakeBearer("BT")
+        mgr.register(ble)
+        mgr.start()
+
+        mgr.setEnabled("BT", false)
+        // The bearer's stop() has returned, but a channel that was mid-handshake completes now.
+        ble.sink!!.linkUp(1, HopRole.ACCEPTOR, byteArrayOf(0xAA.toByte()))
+
+        assertEquals(0, sink.ups.size, "a disabled bearer must not surface a link to the consumer")
+        assertEquals(emptyMap(), mgr.activeTransports(), "activeTransports must agree with bearerStates")
+        assertEquals(mapOf("BT" to false), mgr.bearerStates())
+        assertNull(mgr.transportNameOf(700L), "no global id may have been minted for it")
+        // And nothing routes over it.
+        mgr.send(byteArrayOf(1), 700L)
+        assertEquals(0, ble.sent.size, "a disabled bearer must never take a packet from send()")
+        // Its bytes/down callbacks are inert too (nothing was ever mapped).
+        ble.sink!!.linkBytes(1, byteArrayOf(2))
+        ble.sink!!.linkDown(1)
+        assertEquals(0, sink.bytes.size)
+        assertEquals(0, sink.downs.size)
+    }
+
+    @Test fun a_link_surfaced_after_the_manager_stopped_is_refused_until_restart() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 800)
+        mgr.sink = sink
+        val ble = FakeBearer("BT")
+        mgr.register(ble)
+        mgr.start()
+        mgr.stop()
+
+        ble.sink!!.linkUp(1, HopRole.DIALER, byteArrayOf(0xBB.toByte()))
+        assertEquals(0, sink.ups.size, "a stopped bearer must not surface a link")
+        assertEquals(emptyMap(), mgr.activeTransports())
+
+        // Restarting the mesh re-arms it: the bearer is meant to be running again.
+        mgr.start()
+        ble.sink!!.linkUp(2, HopRole.DIALER, byteArrayOf(0xBB.toByte()))
+        assertContentEquals(listOf(800L), sink.ups.map { it.link }, "a restarted bearer surfaces links again")
+        assertEquals(mapOf("BT" to 1), mgr.activeTransports())
+    }
+
+    @Test fun re_enabling_restores_the_ability_to_surface_links() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 950)
+        mgr.sink = sink
+        val relay = FakeBearer("Relay")
+        mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        relay.sink!!.linkUp(1, HopRole.DIALER, byteArrayOf(0xCC.toByte()))
+        assertEquals(0, sink.ups.size)
+
+        mgr.setEnabled("Relay", true)
+        relay.sink!!.linkUp(2, HopRole.DIALER, byteArrayOf(0xCC.toByte()))
+        assertContentEquals(listOf(950L), sink.ups.map { it.link }, "re-enabling must not leave the transport muted")
+        mgr.send(byteArrayOf(9), 950L)
+        assertEquals(1, relay.sent.size)
+    }
+
+    @Test fun disabling_one_transport_does_not_mute_another() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 1_100)
+        mgr.sink = sink
+        val ble = FakeBearer("BT"); val relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+
+        relay.sink!!.linkUp(1, HopRole.DIALER, byteArrayOf(1))   // refused
+        ble.sink!!.linkUp(1, HopRole.DIALER, byteArrayOf(2))     // still fine
+        assertContentEquals(listOf(1_100L), sink.ups.map { it.link })
+        assertEquals(mapOf("BT" to 1), mgr.activeTransports())
+    }
+
     /** A disabled bearer that throws on stop must not prevent its links being torn down (F-10). */
     @Test fun a_bearer_throwing_on_stop_still_gets_its_links_torn_down() {
         val sink = CapturingSink()
@@ -244,5 +332,48 @@ class BearerManagerTest {
         boom.sink?.linkUp(1, HopRole.DIALER, byteArrayOf(1))   // global 900
         mgr.setEnabled("Boom", false)
         assertContentEquals(listOf(900L), sink.downs, "the throw is swallowed; the link still goes down")
+    }
+
+    // PLAT-001 (closure): enablement is keyed by transportName, not by bearer object -----------------
+    //
+    // The invariant is stated PER NAME: "no bearer carrying that transportName may surface a new
+    // linkUp". Keyed by object identity, a bearer registered after the toggle carried no entry, so it
+    // started, its links were accepted, and bearerStates() ORed the tag back to true. This fails
+    // against an identity-keyed `disabled`.
+    @Test fun a_bearer_registered_under_an_already_disabled_name_is_dormant() {
+        val sink = CapturingSink()
+        val mgr = BearerManager(baseLinkId = 1_300)
+        mgr.sink = sink
+        val first = FakeBearer("Relay")
+        mgr.register(first)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+
+        // A second relay bearer joins the (disabled) group afterwards: a config reload, or a second
+        // relay endpoint added while the transport is switched off.
+        val second = FakeBearer("Relay")
+        mgr.register(second)
+
+        assertEquals(0, second.started, "registering into a disabled tag must not start the bearer")
+        assertTrue(!mgr.isEnabled("Relay"))
+        assertEquals(mapOf("Relay" to false), mgr.bearerStates(), "one bearer cannot flip the group on")
+
+        second.sink!!.linkUp(1, HopRole.DIALER, byteArrayOf(0xD))
+        assertEquals(0, sink.ups.size, "a bearer under a disabled name must not surface a link either")
+        assertEquals(emptyMap(), mgr.activeTransports())
+        assertNull(mgr.transportNameOf(1_300))
+
+        // A restart must not resurrect it: the setting outlives the mesh lifecycle.
+        mgr.stop(); mgr.start()
+        assertEquals(0, second.started)
+        second.sink!!.linkUp(2, HopRole.DIALER, byteArrayOf(0xD))
+        assertEquals(0, sink.ups.size)
+
+        // Enabling the tag brings the whole group up, including the late arrival.
+        mgr.setEnabled("Relay", true)
+        assertEquals(1, second.started)
+        second.sink!!.linkUp(3, HopRole.DIALER, byteArrayOf(0xD))
+        assertContentEquals(listOf(1_300L), sink.ups.map { it.link })
+        assertEquals(mapOf("Relay" to 1), mgr.activeTransports())
     }
 }

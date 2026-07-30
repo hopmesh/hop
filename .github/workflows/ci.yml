@@ -893,6 +893,13 @@ jobs:
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
         run: bash tools/ble-backoff-parity.sh
+      # PLAT-002: CoreBluetooth cannot run headless, so no test can redden a regression that moves the
+      # Apple BLE bearer's shell lifecycle back off bleQueue. Measured, not assumed: reverting all three
+      # controls left HopBearerBle at 117 tests, 0 failures. This is the gate.
+      - name: Self-test BLE radio single-homing guard
+        run: bash tools/ble-threading-guard.test.sh
+      - name: Enforce Apple BLE radio single-homing (bleQueue / bleRunLoop)
+        run: bash tools/ble-threading-guard.sh
       - name: Self-test exact branch-protection policy
         run: bash tools/check-branch-protection.test.sh
       - name: Self-test canonical sync authority
