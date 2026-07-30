@@ -28,7 +28,8 @@ Each received batch is metered to its billing **tenant**, recovered from the bun
 same identity as its reach. Provide the tenant `KeyServer` with `--key-server <file>` (lines of
 `<tenant-hex> <pubkey-base58>`); without it the collector runs `Open` and telemetry is counted in
 aggregate only, not billed. Per-tenant counts are merged every 30s into the durable
-`telemetry_usage/{hour}/{tenant}` ledger (mirroring the relay's `usage/` write), which the §37
+`telemetry_usage/{hour}/{tenant}/{writer}` ledger (mirroring the relay's `usage/` write, writer
+segment included), which the §37
 reconciler bills as `hop_telemetry_events` (`reconcile_telemetry`, in hop-billingd).
 
 The `TelemetrySink` (`AggregateSink`) runs alongside for throughput logging, aggregate counts only,

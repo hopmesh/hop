@@ -8,11 +8,14 @@
 //! ## What it reads
 //!
 //! Each relay drains its in-memory meter into hour-bucketed rows in its region's durable store:
-//! `usage/{hour}/{tenant}` = a [`LedgerRow`] (carriage bundles + sealed payload bytes). Rows are
-//! per REGION already (each region's relay owns its partition), so aggregation is a sum across
-//! regions per (hour, tenant).
+//! `usage/{hour}/{tenant}/{writer}` = a [`LedgerRow`] (carriage bundles + sealed payload bytes).
+//! Rows are per REGION already (each region's relay owns its partition), so aggregation is a sum
+//! across regions per (hour, tenant). The trailing `{writer}` segment is the writing process's id, so
+//! two processes sharing a region's partition write disjoint rows instead of clobbering each other's
+//! read-modify-write; see [`ledger`] for the full contract, including that pre-writer-segment rows
+//! still parse.
 //!
-//! Storage occupancy is a SEPARATE axis under its own `storage_usage/{hour}/{tenant}` prefix (a
+//! Storage occupancy is a SEPARATE axis under its own `storage_usage/{hour}/{tenant}/{writer}` prefix (a
 //! [`StorageRow`]). Carriage counts bytes a relay moved and is drained on read; storage measures
 //! bytes a relay is currently HOLDING and is sampled repeatedly without draining. They answer
 //! different questions and are never folded into one number. The storage rows are written by the

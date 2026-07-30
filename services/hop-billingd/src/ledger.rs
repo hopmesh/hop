@@ -2,17 +2,26 @@
 //! parse them into reconciler inputs, and never let one bad row wedge billing.
 //!
 //! The producers' write contracts (mirrored EXACTLY here):
-//! - relays:     `usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`bundles` u64, `payload_bytes` u64)
-//! - collectors: `telemetry_usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`events` u64,
-//!   `payload_bytes` u64). Rows written before the byte measure existed are 8 bytes (`events` only)
-//!   and MUST still parse, as `(events, 0)`.
-//! - relays:     `carriage_usage/{hour}/{tenant_hex32}` -> 16 bytes LE (`bundles` u64,
-//!   `payload_bytes` u64). MEASUREMENT ONLY: carriage the relay performed that produced no delivery
-//!   event and is therefore currently UNBILLED (§40 telemetry is the systematic case). Parsed so it
-//!   is visible; it drives no reconciler and no Stripe meter, and it is deliberately a SEPARATE
-//!   prefix so it can never be summed into the live `usage/` reach ledger.
+//! - relays:     `usage/{hour}/{tenant_hex32}[/{writer_hex16}]` -> 16 bytes LE (`bundles` u64,
+//!   `payload_bytes` u64)
+//! - collectors: `telemetry_usage/{hour}/{tenant_hex32}[/{writer_hex16}]` -> 16 bytes LE (`events`
+//!   u64, `payload_bytes` u64). Rows written before the byte measure existed are 8 bytes (`events`
+//!   only) and MUST still parse, as `(events, 0)`.
+//! - relays:     `carriage_usage/{hour}/{tenant_hex32}[/{writer_hex16}]` -> 16 bytes LE (`bundles`
+//!   u64, `payload_bytes` u64). MEASUREMENT ONLY: carriage the relay performed that produced no
+//!   delivery event and is therefore currently UNBILLED (§40 telemetry is the systematic case).
+//!   Parsed so it is visible; it drives no reconciler and no Stripe meter, and it is deliberately a
+//!   SEPARATE prefix so it can never be summed into the live `usage/` reach ledger.
 //!
-//! Relays ALSO write `storage_usage/{hour}/{tenant_hex32}` -> 8 bytes LE (`byte_ms` u64), the
+//! The OPTIONAL fourth segment is the producer's per-process WRITER id (services-r19-05 / SVC-005):
+//! 16 lowercase-hex chars minted once per process. A producer's read-modify-write reads its own
+//! in-memory copy, not the durable row, so two processes sharing one node partition (a Cloud Run
+//! revision rollout does exactly that) would otherwise overwrite each other's totals and lose the
+//! difference silently. Writer-scoped rows are disjoint, and this collector already sums duplicate
+//! (hour, tenant) rows across sources, so the per-writer rows compose into the true total. Rows
+//! written before the writer segment existed are three-segment and MUST still parse.
+//!
+//! Relays ALSO write `storage_usage/{hour}/{tenant_hex32}[/{writer_hex16}]` -> 8 bytes LE, the
 //! mailbox-occupancy axis. It is deliberately NOT parsed here: the measurement is landing ahead of
 //! a pricing decision, so the rows accumulate durably while nothing collects or bills them. The
 //! unknown prefix falls through to `None` like any other kv key. Wiring it up is a one-arm change
@@ -20,9 +29,11 @@
 //! is priced.
 //!
 //! The kv namespace is SHARED (sessions, prekeys, and other node state live beside the ledger
-//! rows), so parsing is strict: exactly three `/`-separated segments, a decimal hour, a 32-char
-//! lowercase-hex tenant. Anything malformed is SKIPPED, never an error: corrupt values decode as
-//! zero in the producers themselves, and a hard failure here would wedge the watermark forever on
+//! rows), so parsing is strict: three or four `/`-separated segments, a decimal hour, a 32-char
+//! lowercase-hex tenant, and (when present) a 16-char lowercase-hex writer id. A four-segment key
+//! whose tail is not exactly that shape is NOT a ledger row and is skipped, so a `strm/`-style
+//! nested key can never be mistaken for one. Anything malformed is SKIPPED, never an error: corrupt
+//! values decode as zero in the producers themselves, and a hard failure would wedge the watermark on
 //! one bad doc. Both reconcilers sum duplicate (hour, tenant) rows across sources, so collection
 //! is pure concatenation across nodes.
 
@@ -48,12 +59,20 @@ pub trait LedgerSource {
 }
 
 /// Parse one kv pair into a ledger row, or `None` for everything that is not a well-formed ledger
-/// row (other kv keys, malformed hour/tenant, wrong-length values reading as zero and skipped).
+/// row (other kv keys, malformed hour/tenant/writer, wrong-length values reading as zero and
+/// skipped). A trailing writer segment is optional; see the module docs (SVC-005).
 pub fn parse_row(key: &str, value: &[u8]) -> Option<ParsedRow> {
     let mut parts = key.split('/');
     let (prefix, hour_s, tenant_s) = (parts.next()?, parts.next()?, parts.next()?);
+    // An optional fourth segment is the producer's per-process writer id, and nothing else: it must
+    // be exactly 16 lowercase-hex chars or this is not a ledger key at all.
+    if let Some(writer_s) = parts.next() {
+        if !is_writer_id(writer_s) {
+            return None;
+        }
+    }
     if parts.next().is_some() {
-        return None; // more than three segments: not a ledger key
+        return None; // more than four segments: not a ledger key
     }
     let hour: u64 = hour_s.parse().ok()?;
     let tenant = parse_tenant_hex(tenant_s)?;
@@ -107,6 +126,13 @@ fn decode_telemetry(bytes: &[u8]) -> TelemetryRow {
         },
         _ => TelemetryRow::default(),
     }
+}
+
+/// A producer's per-process writer id: exactly 16 lowercase-hex chars (SVC-005).
+fn is_writer_id(s: &str) -> bool {
+    s.len() == 16
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Parse a 32-char lowercase-hex string into a [`TenantId`].
@@ -178,11 +204,60 @@ mod tests {
 
     const T: &str = "000102030405060708090a0b0c0d0e0f";
     const TENANT: TenantId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    const W: &str = "a1b2c3d4e5f60718"; // a producer's per-process writer id (SVC-005)
 
     fn usage_val(bundles: u64, bytes: u64) -> Vec<u8> {
         let mut v = bundles.to_le_bytes().to_vec();
         v.extend_from_slice(&bytes.to_le_bytes());
         v
+    }
+
+    #[test]
+    fn writer_scoped_rows_parse_and_compose_with_legacy_rows() {
+        // SVC-005: two processes sharing one node partition (a Cloud Run revision rollout) write
+        // DISJOINT writer-scoped rows instead of clobbering one (hour, tenant) doc. The collector
+        // must parse both, and a three-segment row written before the writer segment existed must
+        // still parse, so the hour's total is the SUM of every writer's contribution.
+        let w2 = "00112233445566ff";
+        assert_eq!(
+            parse_row(&format!("usage/402/{T}/{W}"), &usage_val(3, 300)),
+            Some(ParsedRow::Usage(
+                402,
+                TENANT,
+                LedgerRow {
+                    bundles: 3,
+                    payload_bytes: 300,
+                    storage_byte_ms: 0
+                }
+            ))
+        );
+        let source = FakeSource {
+            nodes: vec![(
+                "relay-eu",
+                Ok(vec![
+                    (format!("usage/402/{T}/{W}"), usage_val(3, 300)),
+                    (format!("usage/402/{T}/{w2}"), usage_val(5, 500)),
+                    (format!("usage/402/{T}"), usage_val(1, 100)), // pre-writer-segment row
+                ]),
+            )],
+        };
+        let rows = collect_rows(&source).unwrap();
+        assert_eq!(
+            rows.usage.len(),
+            3,
+            "every writer's row survives collection"
+        );
+        let bundles: u64 = rows.usage.iter().map(|(_, _, r)| r.bundles).sum();
+        let bytes: u64 = rows.usage.iter().map(|(_, _, r)| r.payload_bytes).sum();
+        assert_eq!(
+            (bundles, bytes),
+            (9, 900),
+            "the hour's total is the sum of both live writers plus the legacy row, not one of them"
+        );
+        assert!(
+            rows.usage.iter().all(|(h, t, _)| *h == 402 && *t == TENANT),
+            "the writer segment does not disturb the (hour, tenant) the reconciler groups on"
+        );
     }
 
     #[test]
@@ -289,9 +364,14 @@ mod tests {
         for (key, value) in [
             ("session/abcd", b"x".to_vec()), // other kv state
             ("usage", usage_val(1, 1)),      // too few segments
-            (&format!("usage/402/{T}/extra")[..], usage_val(1, 1)), // too many segments
-            ("usage/notahour/deadbeef", usage_val(1, 1)), // non-numeric hour
-            ("usage/402/short", usage_val(1, 1)), // bad tenant hex
+            (&format!("usage/402/{T}/extra")[..], usage_val(1, 1)), // 4th segment is not a writer id
+            (&format!("usage/402/{T}/{W}/x")[..], usage_val(1, 1)), // too many segments
+            (
+                &format!("usage/402/{T}/{}", W.to_uppercase())[..],
+                usage_val(1, 1),
+            ), // uppercase writer
+            ("usage/notahour/deadbeef", usage_val(1, 1)),           // non-numeric hour
+            ("usage/402/short", usage_val(1, 1)),                   // bad tenant hex
             (
                 &format!("usage/402/{}", T.to_uppercase())[..],
                 usage_val(1, 1),

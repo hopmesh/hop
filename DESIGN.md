@@ -3192,6 +3192,25 @@ bills only when delivery is proven by a returning ACK or a §39 vaccine. Telemet
 `request_ack: false`, the collector never responds, and they are `Destination::Device` so no vaccine
 fires. A relay therefore accepts, stores, spools, and forwards every telemetry bundle and records zero
 `hop_backbone_delivery`: that carriage is free today, by construction and not by decision. Relays now
-record it per tenant on a separate `carriage_usage/{hour}/{tenant_hex}` ledger key so the volume is
-visible. Nothing bills off it, no Stripe event is emitted for it, and the existing `usage/` reach
-ledger is untouched. Whether to price it is the owner's call.
+record it per tenant on a separate `carriage_usage/{hour}/{tenant_hex}/{writer}` ledger key so the
+volume is visible. Nothing bills off it, no Stripe event is emitted for it, and the existing `usage/`
+reach ledger is untouched. Whether to price it is the owner's call.
+
+**Ledger rows are writer-scoped.** Every ledger key carries a trailing `{writer}` segment: the
+producing process's id, 8 random bytes as 16 lowercase-hex chars, minted once per process. This
+applies to all four prefixes (`usage/`, `carriage_usage/`, `storage_usage/` written by the relay,
+`telemetry_usage/` written by the collector). The reason is that the merge into a row is a
+read-modify-write whose read half answers from the process-local in-memory store copy, never the
+durable row, so two processes sharing a node partition would each write their own stale base plus
+their own delta and the later flush would silently discard the earlier one. That is not hypothetical:
+a Cloud Run revision rollout runs the retiring and the incoming instance of a region at the same time,
+both mount the same relay identity secret and take the same `--region`, so both derive the same node
+address and open the same partition. Scoping the row by writer makes two concurrent writers write
+DISJOINT rows, and the §37 reconciler already sums duplicate `(hour, tenant)` rows across sources, so
+an hour's total is the sum of every writer's contribution by construction. No lease, no fence, no
+distributed transaction. Every consumer therefore treats the fourth segment as optional and validates
+it as exactly 16 lowercase-hex chars: rows written before this change still parse as three segments,
+and a nested key that merely happens to have four segments is not mistaken for a ledger row. The cost
+is row cardinality: one row per `(hour, tenant)` per process incarnation, and ledger rows accumulate
+(kv docs carry no `expireAt`, so the Firestore TTL never reaps them, and the reconciler reads from a
+watermark without deleting). A retention sweep for reconciled hours is outstanding work.

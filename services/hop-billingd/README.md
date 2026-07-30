@@ -1,7 +1,7 @@
 # hop-billingd
 
 The Hop billing reconciler (DESIGN.md §37). It reads the relays' durable usage ledger
-(`usage/{hour}/{tenant}` rows written off the hot path) and turns it into idempotent Stripe meter
+(`usage/{hour}/{tenant}/{writer}` rows written off the hot path) and turns it into idempotent Stripe meter
 events, then rolls closed hours into BigQuery history.
 
 Capture and reconciliation are decoupled on purpose: the relays never call Stripe, so a billing

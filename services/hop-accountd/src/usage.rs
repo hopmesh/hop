@@ -1,10 +1,18 @@
 //! Near-realtime per-tenant usage for the console, read straight off the fleet's Firestore usage
 //! ledgers (~30s fresh) rather than BigQuery (hourly, lagging) or Stripe (reconciled hours only). The
-//! relays write `usage/{hour}/{tenant_hex}` (16 bytes LE: bundles, payload_bytes) into their own kv
-//! partition and collectors write `telemetry_usage/{hour}/{tenant_hex}` (8 bytes LE: events); the two
-//! customer meters are Reach = bundles delivered and Telemetry = events. Reading a tenant's total is a
-//! concatenation across every node partition (the same shape hop-billingd's reconciler collects), via
-//! the shared `hop_store_firestore::KvReader`.
+//! relays write `usage/{hour}/{tenant_hex}/{writer}` (16 bytes LE: bundles, payload_bytes) into their
+//! own kv partition and collectors write `telemetry_usage/{hour}/{tenant_hex}/{writer}` (8 or 16 bytes
+//! LE: events, payload_bytes); the two customer meters are Reach = bundles delivered and Telemetry =
+//! events. Reading a tenant's total is a concatenation across every node partition (the same shape
+//! hop-billingd's reconciler collects), via the shared `hop_store_firestore::KvReader`.
+//!
+//! The trailing `{writer}` segment is the producing process's per-process writer id (SVC-005): two
+//! processes that share one node partition (a Cloud Run revision rollout runs the retiring and the
+//! incoming instance of a region at once) write DISJOINT rows instead of clobbering one another's
+//! read-modify-write, so a (hour, tenant) total is the SUM of every writer's row. This reader must
+//! therefore aggregate the writer-scoped rows, exactly as `hop_billingd::ledger::parse_row` does.
+//! Three-segment rows written before that change still count, so the console total does not dip
+//! across the rollout.
 //!
 //!   GET /console/usage?tenant=..  -> {reach:{deliveries,included}, telemetry:{events,included}, ...}
 //!
@@ -30,9 +38,23 @@ pub const TELEMETRY_INCLUDED: u64 = 25_000_000;
 /// window is `now_hour - USAGE_WINDOW_HOURS ..= now_hour`.
 pub const USAGE_WINDOW_HOURS: u64 = 24 * 30;
 
+/// A producer's per-process ledger writer id: exactly 16 lowercase-hex chars (SVC-005). Kept as
+/// strict as `hop_billingd::ledger::is_writer_id` so a nested key that merely happens to have four
+/// segments can never be summed as a ledger row.
+fn is_writer_id(s: &str) -> bool {
+    s.len() == 16
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Sum one node partition's kv rows into `tenant_hex`'s totals for hours `>= since_hour`. Pure: rows
 /// that are not this tenant's `usage/`/`telemetry_usage/` ledger entries (or are malformed / wrong
 /// length / outside the window) are skipped, so other node state in the shared kv namespace is ignored.
+///
+/// The trailing writer segment is OPTIONAL and, when present, must be a well-formed writer id; every
+/// row that survives is ADDED, so the writer-scoped rows of two processes sharing one partition
+/// compose into the hour's true total instead of one of them being dropped (SVC-005). Skipping them
+/// would silently zero live usage in the console, which is why the test below pins both shapes.
 pub fn sum_tenant_usage(
     rows: &[(String, Vec<u8>)],
     tenant_hex: &str,
@@ -46,8 +68,16 @@ pub fn sum_tenant_usage(
         else {
             continue;
         };
-        if parts.next().is_some() || tenant_s != tenant_hex {
-            continue; // more than 3 segments, or a different tenant
+        if tenant_s != tenant_hex {
+            continue; // a different tenant
+        }
+        if let Some(writer_s) = parts.next() {
+            if !is_writer_id(writer_s) {
+                continue; // a four-segment key that is not writer-scoped is not a ledger row
+            }
+        }
+        if parts.next().is_some() {
+            continue; // more than four segments: not a ledger key
         }
         let Ok(hour) = hour_s.parse::<u64>() else {
             continue;
@@ -60,7 +90,11 @@ pub fn sum_tenant_usage(
                 // bundles = the first u64 LE = the delivery count (Reach).
                 totals.reach_deliveries += u64::from_le_bytes(value[..8].try_into().unwrap());
             }
-            "telemetry_usage" if value.len() == 8 => {
+            // The collector's CURRENT row is 16 bytes (events, payload_bytes); 8 bytes is the
+            // ORIGINAL events-only shape and still counts, so rows written by a pre-upgrade
+            // collector keep showing up. Accepting only 8 read every live row as zero, which is the
+            // same billing-invisibility failure as skipping the writer segment.
+            "telemetry_usage" if value.len() == 8 || value.len() == 16 => {
                 totals.telemetry_events += u64::from_le_bytes(value[..8].try_into().unwrap());
             }
             _ => {}
@@ -170,6 +204,87 @@ mod tests {
         let got = sum_tenant_usage(&rows, t, 1000);
         assert_eq!(got.reach_deliveries, 42); // 30 + 12 (the below-window 1000 excluded)
         assert_eq!(got.telemetry_events, 5_000);
+    }
+
+    /// SVC-005 consumer regression. Relays and collectors write WRITER-SCOPED rows
+    /// (`usage/{hour}/{tenant}/{writer}`) so two processes sharing one node partition compose rather
+    /// than clobber. A parser that accepts only three segments skips every one of those rows, and the
+    /// console meter reads zero while the tenant is being billed for real traffic. Against that
+    /// parser this test asserts 30 reach deliveries and finds 0.
+    #[test]
+    fn writer_scoped_rows_are_summed_not_skipped() {
+        let t = "a3f1c0d2e4b6a8091122334455667788";
+        let w1 = "0000000000000001";
+        let w2 = "00000000000000ff";
+        let rows = vec![
+            // two processes over one partition, same (hour, tenant), disjoint rows
+            (format!("usage/1000/{t}/{w1}"), le16(18, 1_800)),
+            (format!("usage/1000/{t}/{w2}"), le16(12, 1_200)),
+            (
+                format!("telemetry_usage/1000/{t}/{w1}"),
+                4_000u64.to_le_bytes().to_vec(),
+            ),
+            (
+                format!("telemetry_usage/1000/{t}/{w2}"),
+                1_000u64.to_le_bytes().to_vec(),
+            ),
+        ];
+        let got = sum_tenant_usage(&rows, t, 1000);
+        assert_eq!(
+            got.reach_deliveries, 30,
+            "both writers' rows must be summed"
+        );
+        assert_eq!(got.telemetry_events, 5_000);
+    }
+
+    /// The collector writes a 16-byte `(events, payload_bytes)` row today; an 8-byte events-only row
+    /// is the older shape. Accepting only the 8-byte shape read every live collector row as zero, so
+    /// the console's Telemetry meter showed 0 while the tenant was billed. Against the 8-byte-only
+    /// arm this asserts 900 and finds 400.
+    #[test]
+    fn both_telemetry_row_widths_count() {
+        let t = "a3f1c0d2e4b6a8091122334455667788";
+        let w = "0000000000000001";
+        let mut wide = 500u64.to_le_bytes().to_vec();
+        wide.extend_from_slice(&9_999u64.to_le_bytes()); // payload_bytes, not a billed meter
+        let rows = vec![
+            (format!("telemetry_usage/1000/{t}/{w}"), wide),
+            (
+                format!("telemetry_usage/1001/{t}"),
+                400u64.to_le_bytes().to_vec(),
+            ),
+            // any other width is malformed and reads as nothing
+            (format!("telemetry_usage/1002/{t}/{w}"), vec![1, 2, 3]),
+        ];
+        assert_eq!(sum_tenant_usage(&rows, t, 1000).telemetry_events, 900);
+    }
+
+    /// The optional fourth segment is a writer id and nothing else: a nested key that happens to be
+    /// four segments must not be mistaken for a ledger row, and a fifth segment ends it.
+    #[test]
+    fn only_a_well_formed_writer_segment_is_accepted() {
+        let t = "a3f1c0d2e4b6a8091122334455667788";
+        let rows = vec![
+            // not 16 hex chars -> not a ledger row
+            (format!("usage/1000/{t}/nope"), le16(5, 5)),
+            (format!("usage/1000/{t}/00000000000000FF"), le16(5, 5)), // uppercase
+            (format!("usage/1000/{t}/000000000000000"), le16(5, 5)),  // 15 chars
+            // five segments -> not a ledger row
+            (format!("usage/1000/{t}/0000000000000001/extra"), le16(5, 5)),
+        ];
+        assert_eq!(sum_tenant_usage(&rows, t, 1000), UsageTotals::default());
+    }
+
+    /// Three-segment rows written before the writer-scoping change must keep counting, so the
+    /// console total does not dip while a fleet rollout is in flight.
+    #[test]
+    fn pre_writer_scope_rows_still_count_alongside_scoped_ones() {
+        let t = "a3f1c0d2e4b6a8091122334455667788";
+        let rows = vec![
+            (format!("usage/1000/{t}"), le16(7, 700)),
+            (format!("usage/1000/{t}/0000000000000001"), le16(3, 300)),
+        ];
+        assert_eq!(sum_tenant_usage(&rows, t, 1000).reach_deliveries, 10);
     }
 
     #[test]

@@ -275,10 +275,31 @@ impl TelemetryMeter {
     }
 
     /// RMW-merge the accumulated per-tenant counts into the store's `telemetry_usage` ledger for the
-    /// current hour, then clear. Mirrors the relay's usage merge; only this node writes these keys, so
-    /// the read-modify-write is race-free. With a durable (Firestore) store the rows survive a restart
-    /// and the reconciler reads them; with `MemoryStore` they are in-process only.
+    /// current hour, then clear. With a durable (Firestore) store the rows survive a restart and the
+    /// reconciler reads them; with `MemoryStore` they are in-process only.
+    ///
+    /// The premise this depends on, stated exactly (SVC-005): the read half of the read-modify-write
+    /// reads the process-LOCAL in-memory kv copy, never the durable row, so it is safe ONLY against a
+    /// row no other process writes. This used to claim "only this node writes these keys, so the
+    /// read-modify-write is race-free", which is a deployment property and not a structural one:
+    /// any two collector processes that share a node identity share a Firestore partition, and the
+    /// later flush would write its own stale base plus its own delta and silently discard the other's
+    /// events. The row key now carries [`ledger_writer_id`], so the row this merge owns is private to
+    /// THIS process; concurrent writers compose because the reconciler sums the per-writer rows.
+    /// `telemetry_usage/` is one of the four prefixes the SVC-005 invariant names, and it is now
+    /// scoped on the same terms as the relay's three.
     fn flush_to_store<S: Store>(&mut self, store: &mut S, now_ms: u64) {
+        self.flush_to_store_with(store, now_ms, telemetry_usage_key)
+    }
+
+    /// The flush body against an explicit key function. Split out ONLY so a test can drive two
+    /// different writer ids in one process and prove their rows compose (SVC-005).
+    fn flush_to_store_with<S: Store>(
+        &mut self,
+        store: &mut S,
+        now_ms: u64,
+        key_for: impl Fn(u64, &TenantId) -> String,
+    ) {
         if self.counts.is_empty() {
             return;
         }
@@ -287,7 +308,7 @@ impl TelemetryMeter {
             if counts == TelemetryCounts::default() {
                 continue;
             }
-            let key = telemetry_usage_key(hour, &tenant);
+            let key = key_for(hour, &tenant);
             let mut total = store
                 .get_kv(&key)
                 .map(|b| decode_counts(&b))
@@ -302,11 +323,35 @@ impl TelemetryMeter {
     }
 }
 
-/// Ledger row key: `telemetry_usage/{hour}/{tenant_hex}`, distinct from the relay's `usage/` prefix so
-/// the two capture paths never collide (the reconciler reads them as separate dimensions).
-fn telemetry_usage_key(hour: u64, tenant: &TenantId) -> String {
+/// This process's ledger WRITER id: 8 random bytes as 16 lowercase-hex chars, minted once per process
+/// (SVC-005). Identical construction and meaning to hop-relayd's `ledger_writer_id`; see
+/// [`TelemetryMeter::flush_to_store`] for why the segment exists. `hop-billingd`'s `ledger::parse_row`
+/// accepts exactly 16 lowercase-hex chars as the optional fourth segment, so anything else here would
+/// make every row this collector writes unbillable.
+fn ledger_writer_id() -> &'static str {
+    static WRITER_ID: OnceLock<String> = OnceLock::new();
+    // Identity::generate draws from the OS CSPRNG; take 8 bytes of a throwaway address rather than
+    // adding an rng dependency for 64 bits. Collision between two live processes is ~2^-64.
+    WRITER_ID.get_or_init(|| {
+        Identity::generate().address()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    })
+}
+
+/// Ledger row key for an explicit writer. Split out from [`telemetry_usage_key`] so a test can stand
+/// up two DIFFERENT writers in one process and prove their rows compose rather than clobber.
+fn telemetry_usage_key_for(hour: u64, tenant: &TenantId, writer: &str) -> String {
     let hex: String = tenant.iter().map(|b| format!("{b:02x}")).collect();
-    format!("telemetry_usage/{hour}/{hex}")
+    format!("telemetry_usage/{hour}/{hex}/{writer}")
+}
+
+/// Ledger row key: `telemetry_usage/{hour}/{tenant_hex}/{writer}`, distinct from the relay's `usage/`
+/// prefix so the two capture paths never collide (the reconciler reads them as separate dimensions).
+/// The writer segment is [`ledger_writer_id`] (SVC-005).
+fn telemetry_usage_key(hour: u64, tenant: &TenantId) -> String {
+    telemetry_usage_key_for(hour, tenant, ledger_writer_id())
 }
 
 /// Row value: `events` then `payload_bytes`, both u64 LE (16 bytes total), mirroring the relay's
@@ -1503,6 +1548,96 @@ mod tests {
             store.get_kv(&key).map(|b| decode_counts(&b)),
             Some(counts(19, 190))
         );
+    }
+
+    #[test]
+    fn two_collector_processes_sharing_one_partition_compose_instead_of_clobbering() {
+        // SVC-005 for the fourth prefix the invariant names. `FirestoreStore`'s read half answers
+        // from the process-local in-memory copy (loaded at open) while writes mirror through to the
+        // shared partition, so a read-modify-write on a SHARED row silently discards a concurrent
+        // process's contribution. Model that asymmetry exactly: each handle opens on a snapshot of
+        // the durable partition and its writes are mirrored back.
+        let mut durable: std::collections::BTreeMap<String, Vec<u8>> =
+            std::collections::BTreeMap::new();
+        let tenant: TenantId = [3u8; 16];
+        let hour = 900u64;
+        let now = hour * 3_600_000 + 1_000;
+
+        // A handle onto `durable`: eagerly loads the rows that exist NOW (the stale base).
+        let open = |durable: &std::collections::BTreeMap<String, Vec<u8>>| {
+            let mut s = MemoryStore::default();
+            for (k, v) in durable.iter() {
+                s.put_kv(k, v.clone());
+            }
+            s
+        };
+        // Mirror this handle's ledger rows out to the shared partition (the write-through half).
+        let mirror =
+            |s: &MemoryStore, durable: &mut std::collections::BTreeMap<String, Vec<u8>>| {
+                for (k, v) in s.list_kv("telemetry_usage/") {
+                    durable.insert(k, v);
+                }
+            };
+
+        let old_key = |h: u64, t: &TenantId| telemetry_usage_key_for(h, t, "0000000000000001");
+        let new_key = |h: u64, t: &TenantId| telemetry_usage_key_for(h, t, "0000000000000002");
+
+        // The OLD instance opens first and flushes 10 events / 100 bytes.
+        let mut old = open(&durable);
+        let mut old_meter = TelemetryMeter::default();
+        old_meter.add(Some(tenant), counts(10, 100));
+        old_meter.flush_to_store_with(&mut old, now, old_key);
+        mirror(&old, &mut durable);
+
+        // The NEW instance opens while the old one is still serving and flushes 25 / 250. Its write
+        // lands FIRST; the old instance then flushes again from its own stale in-memory base.
+        let mut new = open(&durable);
+        let mut new_meter = TelemetryMeter::default();
+        new_meter.add(Some(tenant), counts(25, 250));
+        new_meter.flush_to_store_with(&mut new, now, new_key);
+        mirror(&new, &mut durable);
+
+        old_meter.add(Some(tenant), counts(5, 50));
+        old_meter.flush_to_store_with(&mut old, now, old_key);
+        mirror(&old, &mut durable);
+
+        // Sum the hour the way hop-billingd's reconciler does: duplicate (hour, tenant) rows are
+        // summed across sources. Against the pre-fix single-row key this asserts 40 and finds 15.
+        let want = format!(
+            "telemetry_usage/{hour}/{}",
+            tenant
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let mut total = TelemetryCounts::default();
+        for (key, value) in durable.iter() {
+            if key == &want || key.starts_with(&format!("{want}/")) {
+                total.add(&decode_counts(value));
+            }
+        }
+        assert_eq!(
+            total,
+            counts(40, 400),
+            "the partition total must be the sum of every writer's flush, not the last writer's view"
+        );
+    }
+
+    #[test]
+    fn the_collector_writer_segment_is_a_well_formed_16_hex_id_and_is_stable_in_process() {
+        // hop-billingd only accepts exactly 16 lowercase-hex chars as the 4th segment, so a
+        // malformed id here would make every row this collector writes unbillable.
+        let id = ledger_writer_id();
+        assert_eq!(id.len(), 16, "writer id is 16 hex chars: {id}");
+        assert!(
+            id.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "writer id is lowercase hex: {id}"
+        );
+        assert_eq!(id, ledger_writer_id(), "minted once per process");
+        let key = telemetry_usage_key(5, &[4u8; 16]);
+        assert!(key.ends_with(&format!("/{id}")), "writer-scoped: {key}");
+        assert_eq!(key.split('/').count(), 4, "exactly four segments: {key}");
     }
 
     /// Pump two nodes against each other over a synthetic bearer link until quiet: exactly what the

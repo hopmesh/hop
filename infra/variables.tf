@@ -138,6 +138,14 @@ variable "max_instances_per_region" {
     429s. The 429/wake-churn cause is already mitigated by the handoff-only default
     (mesh_fanout = 0) so regions don't full-mesh-dial each other; the real unlock for
     a higher ceiling is cross-instance directory/store sharing, a separate project.
+
+    Metering, stated plainly (services-r19-05 / SVC-005): a second instance also means
+    a second writer of the same Firestore partition's usage ledger. Rows are now
+    writer-scoped, so concurrent writers compose rather than clobber and raising this
+    no longer silently under-bills. Note this is a floor, not a ceiling: even at 1,
+    a revision rollout runs the retiring and the incoming instance concurrently while
+    the old one drains its in-flight WebSocket connections, so two live writers for
+    one region is a normal condition on every deploy, not only above 1.
   EOT
   type        = number
   default     = 1
