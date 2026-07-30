@@ -42,13 +42,29 @@ public final class BearerManager: Bearer {
     private var nextGlobal: LinkId = 1
     private var toGlobal: [ObjectIdentifier: [LinkId: LinkId]] = [:]
     private var fromGlobal: [LinkId: (Bearer, LinkId)] = [:]
-    /// Per-bearer enablement, keyed by `ObjectIdentifier`. Absent means enabled: a bearer is live the
-    /// moment it registers, so adding this could not change existing behaviour.
-    private var disabled: Set<ObjectIdentifier> = []
+    /// Enablement keyed by `transportName`, NOT by bearer object. Absent means enabled.
+    ///
+    /// The name is the key because the guarantee is stated per name ("no bearer carrying that
+    /// transportName may surface a new linkUp"), and `setEnabled`/`isEnabled`/`bearerStates` are all
+    /// addressed by name. Keyed by object identity instead, a bearer registered AFTER its tag was
+    /// disabled carried no entry, so it was started by `start()`, its links were accepted by `up()`,
+    /// and `bearerStates()` flipped the tag back to true because it ORs over the group: a disabled
+    /// transport silently live again, with the UI agreeing that it was on.
+    private var disabledNames: Set<String> = []
+    /// PLAT-001: bearers whose `stop()` has returned and which have not been started since. Absent
+    /// means "not stopped", so a bearer that was never driven through start()/stop() behaves exactly
+    /// as before. This is the manager's half of the enablement guarantee: enablement used to be
+    /// enforced only when the manager called INTO a bearer (start/stop) and never when a bearer
+    /// called BACK, so a link that finished its handshake after stop() re-registered a transport the
+    /// user had switched off.
+    private var stoppedBearers: Set<ObjectIdentifier> = []
     private var started = false
 
     public init(baseLinkId: LinkId = 1) { self.nextGlobal = baseLinkId }
 
+    /// Register a bearer. If its `transportName` is currently DISABLED it registers dormant: `start()`
+    /// skips it and `up()` refuses its links, until the tag is enabled. Registering into a disabled tag
+    /// used to be the hole in the per-name guarantee (see `disabledNames`).
     public func register(_ bearer: Bearer) {
         let lane = Lane(manager: self, bearer: bearer)
         bearer.sink = lane
@@ -67,25 +83,35 @@ public final class BearerManager: Bearer {
     // makes them a single addressable group; `setEnabled` deliberately applies to all of them rather
     // than picking one arbitrarily.
 
-    /// Enable or disable every registered bearer whose `transportName` matches, and return whether
-    /// anything matched. Idempotent.
+    /// Enable or disable the transport `transportName`, which covers EVERY bearer registered under that
+    /// name now or later. Returns whether any bearer currently matched. Idempotent.
     ///
-    /// Disabling STOPS the bearer *and tears down its live links*. Stopping alone would leave the
-    /// consumer holding links that can never carry bytes again, which is strictly worse than a
-    /// closed link: the node would keep choosing a dead path instead of re-offering over another
-    /// one. Enabling starts it if the manager itself is started, otherwise it goes live on `start()`.
+    /// Disabling calls each matching bearer's `stop()` and tears down its live links. Stopping alone
+    /// would leave the consumer holding links that can never carry bytes again, which is strictly worse
+    /// than a closed link: the node would keep choosing a dead path instead of re-offering over another
+    /// one. Enabling starts them if the manager itself is started, otherwise they go live on `start()`.
+    ///
+    /// WHAT IS GUARANTEED THE MOMENT THIS RETURNS, for `enabled == false`: no bearer under this name can
+    /// surface a new link to the consumer (`up()` refuses it, so no global id is minted, nothing reaches
+    /// `fromGlobal`, `send()` or `activeTransports()`), including a link that was mid-handshake when the
+    /// toggle landed and including a bearer registered under the name afterwards.
+    ///
+    /// WHAT IS NOT GUARANTEED: that the radio is off. `Bearer.stop()` is permitted to finish its hardware
+    /// teardown asynchronously, and one in-tree bearer does: the Apple BLE bearer defers its CoreBluetooth
+    /// teardown to `bleQueue` (see the drain-window note in `BleBearer+Radio.swift`), so after this call
+    /// returns it can still be advertising and scanning until that queue drains. It cannot form a usable
+    /// link while doing so. A host that needs true radio silence as a postcondition must get it from the
+    /// bearer, not from here.
     @discardableResult
     public func setEnabled(_ transportName: String, _ enabled: Bool) -> Bool {
         lock.lock()
         let matches = bearers.filter { $0.transportName == transportName }
         let isStarted = started
+        let wasEnabled = !disabledNames.contains(transportName)
         var toStart: [Bearer] = [], toStop: [Bearer] = []
-        for b in matches {
-            let oid = ObjectIdentifier(b)
-            let wasEnabled = !disabled.contains(oid)
-            guard wasEnabled != enabled else { continue }   // idempotent
-            if enabled { disabled.remove(oid); if isStarted { toStart.append(b) } }
-            else { disabled.insert(oid); toStop.append(b) }
+        if wasEnabled != enabled {                          // idempotent
+            if enabled { disabledNames.remove(transportName); if isStarted { toStart = matches } }
+            else { disabledNames.insert(transportName); toStop = matches }
         }
         lock.unlock()
         // Outside the lock: a bearer's start/stop touches radios and can block.
@@ -94,20 +120,19 @@ public final class BearerManager: Bearer {
         return !matches.isEmpty
     }
 
-    /// Is any bearer with this `transportName` enabled? False for an unknown name.
+    /// Is this transport enabled? False for a name no bearer is registered under.
     public func isEnabled(_ transportName: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return bearers.contains { $0.transportName == transportName && !disabled.contains(ObjectIdentifier($0)) }
+        guard bearers.contains(where: { $0.transportName == transportName }) else { return false }
+        return !disabledNames.contains(transportName)
     }
 
-    /// Every registered transport name mapped to its enablement, for a settings UI.
+    /// Every registered transport name mapped to its enablement, for a settings UI. One entry per NAME,
+    /// which is the unit enablement is keyed by, so two bearers sharing a name cannot disagree.
     public func bearerStates() -> [String: Bool] {
         lock.lock(); defer { lock.unlock() }
         var out: [String: Bool] = [:]
-        for b in bearers {
-            let on = !disabled.contains(ObjectIdentifier(b))
-            out[b.transportName] = (out[b.transportName] ?? false) || on
-        }
+        for b in bearers { out[b.transportName] = !disabledNames.contains(b.transportName) }
         return out
     }
 
@@ -127,7 +152,9 @@ public final class BearerManager: Bearer {
     /// Start only the ENABLED bearers. A disabled transport must stay down across a stop/start cycle,
     /// otherwise the setting silently reverts the next time the host restarts the mesh.
     public func start() {
-        lock.lock(); started = true; let live = bearers.filter { !disabled.contains(ObjectIdentifier($0)) }; lock.unlock()
+        lock.lock(); started = true
+        let live = bearers.filter { !disabledNames.contains($0.transportName) }
+        lock.unlock()
         live.forEach { do_start($0) }
     }
 
@@ -139,9 +166,25 @@ public final class BearerManager: Bearer {
     }
 
     // `Bearer.start()`/`stop()` are non-throwing in Swift (unlike the Kotlin kit, where F-10 wraps
-    // them), so these are plain forwards. They exist so enablement has ONE call site per direction.
-    private func do_start(_ b: Bearer) { b.start() }
-    private func do_stop(_ b: Bearer) { b.stop() }
+    // them), so these are plain forwards. They exist so enablement has ONE call site per direction,
+    // which is also where the manager records whether a bearer is currently meant to be running.
+    private func do_start(_ b: Bearer) {
+        lock.lock(); stoppedBearers.remove(ObjectIdentifier(b)); lock.unlock()
+        b.start()
+    }
+    private func do_stop(_ b: Bearer) {
+        // Mark BEFORE the call: a bearer can surface a link from another thread while its own stop()
+        // is still tearing radios down, and that link must not reach the consumer either.
+        lock.lock(); stoppedBearers.insert(ObjectIdentifier(b)); lock.unlock()
+        b.stop()
+    }
+
+    /// PLAT-001: may a link from this bearer reach the consumer right now? False once its TRANSPORT is
+    /// disabled (per name, so this holds for a bearer registered after the toggle too) or this bearer
+    /// itself has been stopped and not restarted. Callers hold `lock`.
+    private func acceptsLinksLocked(_ bearer: Bearer) -> Bool {
+        !disabledNames.contains(bearer.transportName) && !stoppedBearers.contains(ObjectIdentifier(bearer))
+    }
 
     public func send(_ bytes: Data, on link: LinkId) {
         lock.lock(); let route = fromGlobal[link]; lock.unlock()
@@ -165,9 +208,20 @@ public final class BearerManager: Bearer {
     }
 
     fileprivate func up(_ bearer: Bearer, _ local: LinkId, _ role: HopRole, _ peerId: Data) {
+        let oid = ObjectIdentifier(bearer)
         lock.lock()
+        // PLAT-001: a bearer that is disabled or stopped may still surface a link it had in flight
+        // when the toggle landed (a BLE channel that was open but had not yet completed HELLO). Drop
+        // it here, the ONE choke point both platforms share: minting a global id for it would put a
+        // "disabled" transport back into fromGlobal, make send() route node packets over it, and make
+        // activeTransports() disagree with bearerStates(). The bearer's own stop() closes the pipe;
+        // this makes sure the consumer never learns about it in the first place.
+        guard acceptsLinksLocked(bearer) else {
+            lock.unlock()
+            return
+        }
         let g = nextGlobal; nextGlobal += 1
-        toGlobal[ObjectIdentifier(bearer), default: [:]][local] = g
+        toGlobal[oid, default: [:]][local] = g
         fromGlobal[g] = (bearer, local)
         lock.unlock()
         sink?.linkUp(g, role: role, peerId: peerId)

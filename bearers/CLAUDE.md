@@ -48,6 +48,32 @@ platform clears the failure state at L2CAP-open and both do at HELLO-complete. I
 POINTS, not only the numbers. Do not rely on review to catch cross-platform drift; it already did
 not, twice.
 
+## The Apple BLE radio lifecycle is guarded structurally, because it cannot be tested
+
+`Central`/`CentralCore` and `Peripheral`/`PeripheralCore` are owned exclusively by `bleQueue` and
+therefore hold NO locks, and the bearer's STATUS timer lives on `bleRunLoop`, which has CFRunLoop
+thread affinity. No test can prove that: CoreBluetooth has no headless support and its delegate
+argument types have no public initializers, so `swift test` cannot construct either shell. Reverting
+all three of PLAT-002's threading controls left `HopBearerBle` at 117 tests, 0 failures, which is what
+an unguarded fix looks like.
+
+`tools/ble-threading-guard.sh` (self-tested by `tools/ble-threading-guard.test.sh`, both in the
+`automation` CI job) is the gate: it brace-matches `BleBearer.start()`/`stop()` and fails if the CB
+shells are constructed or torn down before the `bleQueue` hop, if a `Timer` is scheduled or
+invalidated without hopping to `bleRunLoop`, or if `markStopped()` moves after the dispatch. It fails
+CLOSED when its anchors go missing rather than passing vacuously.
+
+Note what the APPLE `BleBearer.stop()` does and does not promise, because the two platforms differ
+here. It stops the bearer as a LINK SOURCE synchronously (`markStopped()` runs before anything is
+dispatched, so nothing can be adopted or surfaced afterwards) but its RADIO teardown is deferred to
+`bleQueue`: the advertiser, the published GATT service and the scanner keep running until that block
+drains. `bleQueue` defaults to `.main` and is assigned by the host, so a `sync` hop would deadlock and
+there is no portable way to detect already-being-on-it. Android's `stop()` is synchronous by contrast:
+`stopScan`, `stopAdvertisingSet` and the GATT/server closes all run on the caller's thread. So
+`BearerManager.setEnabled(tag,false)` promises only the link-source half on both platforms, which is
+the weaker of the two behaviours; a host that needs true radio silence as a postcondition has to get
+it from the platform.
+
 ## Deferred: dead code inside wire-manifest files
 
 `core/hop-core/src/link.rs` is listed in `core/hop-core/vectors/wire-source-manifest.txt`, so

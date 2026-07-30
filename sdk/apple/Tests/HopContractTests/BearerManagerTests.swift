@@ -22,7 +22,9 @@ private final class FakeBearer: Bearer {
 
 /// Captures exactly what the consumer (the node) sees out of the manager.
 private final class CapturingSink: LinkSink {
-    struct Up { let link: LinkId; let role: HopRole; let peer: Data }
+    // Equatable so a test can assert the WHOLE capture at once (`XCTAssertEqual(sink.ups, [])`), which
+    // is the only way to say "nothing at all was surfaced" without also passing on a partial match.
+    struct Up: Equatable { let link: LinkId; let role: HopRole; let peer: Data }
     private(set) var ups: [Up] = []
     private(set) var bytes: [(LinkId, Data)] = []
     private(set) var downs: [LinkId] = []
@@ -234,6 +236,94 @@ final class BearerManagerTests: XCTestCase {
         XCTAssertFalse(mgr.isEnabled("Nope"))
     }
 
+    // MARK: - PLAT-001: a bearer that is disabled or stopped cannot surface a link
+    //
+    // The regression the audit named: enablement was enforced only where the manager called INTO a
+    // bearer (start/stop), never where a bearer called BACK. A BLE link that was open but had not yet
+    // completed HELLO when the user switched the transport off finished its handshake afterwards,
+    // called sink.linkUp, and the manager minted it a global id, so the "disabled" transport was
+    // routing node packets again while the UI still said disabled. Each of these fails without the
+    // guard in `up()`.
+
+    func testALinkSurfacedAfterDisablingIsRefused() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 700)
+        mgr.sink = sink
+        let ble = FakeBearer("BT")
+        mgr.register(ble)
+        mgr.start()
+
+        mgr.setEnabled("BT", false)
+        // The bearer's stop() has returned, but a channel that was mid-handshake completes now.
+        ble.sink?.linkUp(1, role: .acceptor, peerId: Data([0xAA]))
+
+        XCTAssertEqual(sink.ups, [], "a disabled bearer must not surface a link to the consumer")
+        XCTAssertEqual(mgr.activeTransports(), [:], "activeTransports must agree with bearerStates")
+        XCTAssertEqual(mgr.bearerStates(), ["BT": false])
+        XCTAssertNil(mgr.transportName(of: 700), "no global id may have been minted for it")
+        // And nothing routes over it: send on the id it would have been given is a no-op.
+        mgr.send(Data([0x01]), on: 700)
+        XCTAssertTrue(ble.sent.isEmpty, "a disabled bearer must never take a packet from send()")
+        // Its bytes/down callbacks are inert too (nothing was ever mapped).
+        ble.sink?.linkBytes(1, Data([0x02]))
+        ble.sink?.linkDown(1)
+        XCTAssertEqual(sink.bytes.count, 0)
+        XCTAssertEqual(sink.downs, [])
+    }
+
+    func testALinkSurfacedAfterTheManagerStoppedIsRefusedUntilRestart() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 800)
+        mgr.sink = sink
+        let ble = FakeBearer("BT")
+        mgr.register(ble)
+        mgr.start()
+        mgr.stop()
+
+        ble.sink?.linkUp(1, role: .dialer, peerId: Data([0xBB]))
+        XCTAssertEqual(sink.ups, [], "a stopped bearer must not surface a link")
+        XCTAssertEqual(mgr.activeTransports(), [:])
+
+        // Restarting the mesh re-arms it: the bearer is meant to be running again.
+        mgr.start()
+        ble.sink?.linkUp(2, role: .dialer, peerId: Data([0xBB]))
+        XCTAssertEqual(sink.ups.map(\.link), [800], "a restarted bearer surfaces links again")
+        XCTAssertEqual(mgr.activeTransports(), ["BT": 1])
+    }
+
+    func testReEnablingRestoresTheAbilityToSurfaceLinks() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 900)
+        mgr.sink = sink
+        let relay = FakeBearer("Relay")
+        mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+        relay.sink?.linkUp(1, role: .dialer, peerId: Data([0xCC]))
+        XCTAssertEqual(sink.ups, [])
+
+        mgr.setEnabled("Relay", true)
+        relay.sink?.linkUp(2, role: .dialer, peerId: Data([0xCC]))
+        XCTAssertEqual(sink.ups.map(\.link), [900], "re-enabling must not leave the transport muted")
+        mgr.send(Data([0x09]), on: 900)
+        XCTAssertEqual(relay.sent.count, 1)
+    }
+
+    func testDisablingOneTransportDoesNotMuteAnother() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 1_100)
+        mgr.sink = sink
+        let ble = FakeBearer("BT"), relay = FakeBearer("Relay")
+        mgr.register(ble); mgr.register(relay)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+
+        relay.sink?.linkUp(1, role: .dialer, peerId: Data([0x01]))   // refused
+        ble.sink?.linkUp(1, role: .dialer, peerId: Data([0x02]))     // still fine
+        XCTAssertEqual(sink.ups.map(\.link), [1_100])
+        XCTAssertEqual(mgr.activeTransports(), ["BT": 1])
+    }
+
     func testTwoBearersSharingANameToggleAsOneGroup() {
         // transportName is the handle, so a shared name is deliberately one addressable group rather
         // than an arbitrary pick between them.
@@ -244,5 +334,49 @@ final class BearerManagerTests: XCTestCase {
         mgr.setEnabled("Relay", false)
         XCTAssertEqual(a.stopped, 1); XCTAssertEqual(b.stopped, 1)
         XCTAssertEqual(mgr.bearerStates(), ["Relay": false])
+    }
+
+    // MARK: - PLAT-001 (closure): enablement is keyed by transportName, not by bearer object
+    //
+    // The invariant is stated PER NAME: "no bearer carrying that transportName may surface a new
+    // linkUp". Keyed by ObjectIdentifier, a bearer registered after the toggle carried no entry, so it
+    // started, its links were accepted, and bearerStates() ORed the tag back to true. These fail
+    // against an identity-keyed `disabled`.
+
+    func testABearerRegisteredUnderAnAlreadyDisabledNameIsDormant() {
+        let sink = CapturingSink()
+        let mgr = BearerManager(baseLinkId: 1_300)
+        mgr.sink = sink
+        let first = FakeBearer("Relay")
+        mgr.register(first)
+        mgr.start()
+        mgr.setEnabled("Relay", false)
+
+        // A second relay bearer joins the (disabled) group afterwards. A host does this on a config
+        // reload, or when a second relay endpoint is added while the transport is switched off.
+        let second = FakeBearer("Relay")
+        mgr.register(second)
+
+        XCTAssertEqual(second.started, 0, "registering into a disabled tag must not start the bearer")
+        XCTAssertFalse(mgr.isEnabled("Relay"))
+        XCTAssertEqual(mgr.bearerStates(), ["Relay": false], "one bearer cannot flip the group back on")
+
+        second.sink?.linkUp(1, role: .dialer, peerId: Data([0xDD]))
+        XCTAssertEqual(sink.ups, [], "a bearer under a disabled name must not surface a link either")
+        XCTAssertEqual(mgr.activeTransports(), [:])
+        XCTAssertNil(mgr.transportName(of: 1_300))
+
+        // A restart must not resurrect it either: the setting outlives the mesh lifecycle.
+        mgr.stop(); mgr.start()
+        XCTAssertEqual(second.started, 0)
+        second.sink?.linkUp(2, role: .dialer, peerId: Data([0xDD]))
+        XCTAssertEqual(sink.ups, [])
+
+        // Enabling the tag brings the whole group up, including the late arrival.
+        mgr.setEnabled("Relay", true)
+        XCTAssertEqual(second.started, 1)
+        second.sink?.linkUp(3, role: .dialer, peerId: Data([0xDD]))
+        XCTAssertEqual(sink.ups.map(\.link), [1_300])
+        XCTAssertEqual(mgr.activeTransports(), ["Relay": 1])
     }
 }
