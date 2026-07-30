@@ -10,6 +10,7 @@ git-cliff. Do not edit by hand.
 - keep the OTLP failure log aggregate-only + panic-isolate the worker (5c865d0)
 
 ### Documentation
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
@@ -24,4 +25,7 @@ git-cliff. Do not edit by hand.
 - durable telemetry ledger, so metered usage actually bills (1e46b05)
 - telemetry metering, tenant-attributed observability (§40 -> §37) (b823dcc)
 - hop-telemetryd, the OTel-over-Hop collector (DESIGN.md §40) (3b30ae9)
+
+### Other
+- make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
 

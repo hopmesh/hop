@@ -5,6 +5,10 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- let a coordinated version bump pass CI (b714f8b)
+- make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
+- disabling a transport now actually stops it (PLAT-001) (7b84c71)
+- name the unseeded credential that has blocked every publish (5d09ea3)
 - `git add -A` committed the swapped Apple manifest, and add the guard for it (228a20d)
 - kill the LAN reap-test flake by pinning the ordering (a16a715)
 - fmt drift, orphaned doc comments, and Android tests that raced the network (dc44ef4)
@@ -152,6 +156,11 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### CI
+- stop a disarmed audit being permanently red, and a test using a timeout as control flow (8be22a0)
+- name the third tracked tree the local mirror rewrites (0833e7f)
+- make the local mirror honest and delete the ESP release path it could never run (907520b)
+- close the release-engineering findings from the adversarial audit (aa04a89)
+- stop the wire-corpus step name pinning a version it cannot keep current (c7aa7ef)
 - stop the rust job exhausting the runner's disk (ffb04bc)
 - run the security surfaces that were never compiled, and close the ABI guard hole (59392bf)
 - name the wire-corpus step for the version it actually checks (f7e0e18)
@@ -184,6 +193,8 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- ignore Kotlin compile-daemon scratch in every gradle tree, not just sdk/android (27bce18)
+- drop two build artifacts a git add -A swept into the previous commit (4f1f1d3)
 - bump com.android.application to 9.3.1 to match the library plugin (dc777e1)
 - bump the github-actions group across 1 directory with 3 updates (1925d5e)
 - bump astro (bced08b)
@@ -225,6 +236,16 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- the deferred-teardown note was itself an overclaim (bc86421)
+- name where each anonymity caveat is mirrored in source, correctly (3f99766)
+- restate the gradient cap in its real unit, correct the 1-byte prefix figures, record two open residuals (a99af07)
+- record the deferred CLAIM-004 width edits where a reader will hit them (459a112)
+- correct claims stated more strongly than the code supports (CLAIM-001..009) (f3fbfbf)
+- record the dash violation I put in a commit message, and why it stands (75098fc)
+- pin the exact v14 corpus deltas instead of rounding them to 'all' (4cb8d8e)
+- record the three mint-step failure signatures (3bf0a06)
+- regenerate from conventional commits (b96e019)
+- tools/CLAUDE.md still listed the retired manifest exclusion (3138ea5)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
@@ -418,6 +439,20 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- rebuild sim/pkg for the 0.0.2 bump (20d8cae)
+- bump our crates in every standalone/vendored Cargo.lock (aad3ff7)
+- bump every published component to 0.0.2 (7b1ffab)
+- say plainly that SVC-001's literal wording is not met, not that it is (133b36f)
+- make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
+- writer-scope the usage ledger rows so concurrent flushes compose (SVC-005) (b66cac9)
+- gate the live log fan-out, not just its backlog (SVC-001) (935cba3)
+- give local-ci-mirror per-run scratch, so parallel runs stop corrupting each other (ef837fa)
+- scope two vaccine-budget claims to what they actually bound (bb5302b)
+- give the deferred vaccine drain its own pass budget so a flood cannot starve it (8d15430)
+- stop the vaccine deferral queue dropping genuine vaccines, bound the gradient quota hot path (975cdc7)
+- bind the gradient quota to the peer, stop vaccines occupying custody, fix three §39 defects (ca7c9dd)
+- scan fuzz, mockups, and business, which were in neither pass (a3cd04f)
+- repoint link_framing_reassembly at the framing that actually runs (97fa9fb)
 - extract Multipeer so EVERY bearer registers with the manager (f3949f7)
 - rate-limit inbound receiver-beacons per link (c1c0c49)
 - stop the receiver-beacon publishing address-to-mailbox in cleartext (5948b7c)
@@ -670,6 +705,7 @@ git-cliff. Do not edit by hand.
 - drop the short send TTL — it murdered slow DTN deliveries before they arrived (b238e3e)
 
 ### Testing
+- replace a tautological custody assertion and correct two more overclaiming comments (890cba1)
 - de-flake the WSS pending-cap recovery test (8dd7bbb)
 - export_pr validation probe (sdk/node) (dddb024)
 - cover a second retirement and wrapped retirement records (e53b687)

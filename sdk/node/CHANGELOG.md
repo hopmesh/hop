@@ -21,6 +21,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
 - regenerate from conventional commits (102ae67)
@@ -41,6 +42,7 @@ git-cliff. Do not edit by hand.
 - embeddable Hop endpoint SDK prototype (receive Hop messages in a Node app) (#120) (87c1592)
 
 ### Other
+- bump every published component to 0.0.2 (7b1ffab)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
 - local first-publish + OIDC trusted publishing on npm/PyPI/RubyGems (beefc71)
 - CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
