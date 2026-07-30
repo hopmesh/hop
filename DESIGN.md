@@ -2415,6 +2415,30 @@ another bundle.
   verifying stamp; `LOCAL_LINK` re-injections (durable re-ingest, mailbox pulls) are trusted
   first-accepts, and vaccines are exempt (anonymous anti-packets that must propagate to purge
   delivered copies; stamping would leak the recipient).
+  - **The vaccine exemption's residual, stated explicitly (security-privacy-r19-02).** A vaccine is
+    self-verifying from an attacker-chosen 32-byte token (`compute_vaccine_id` binds only the token),
+    so minting a valid, never-before-seen one needs no signature, no stamp, no tenant and no keyserver
+    entry: any party that completes the Noise handshake can mint them at will. The exemption buys no
+    free CARRIAGE and costs no revenue, because `metered_bytes` is the payload ciphertext length and
+    `verify()` forces a vaccine's ciphertext to be empty, so a vaccine that DID pass the gate would
+    meter zero either way. What it buys is RESOURCE: custody slots, onward-flood budget, and
+    held-store resolution passes (resolution is O(held private bundles), and on `hop-relayd` that is a
+    `SELECT` plus a postcard decode per held bundle on the single SQLite driver thread). Each is now
+    separately bounded rather than left to scale with the attacker's packet rate:
+    `MAX_RELAYED_VACCINES` carves held vaccines out of the `max_relayed` window and evicts them
+    oldest-first among THEMSELVES, so a flood eats its own tail instead of genuine carriage; and
+    `MAX_VACCINE_SCAN_PASSES_PER_WINDOW` makes total resolution cost a constant per window, with
+    over-budget tokens batched into later passes that hold their own separate budget so a flood cannot
+    starve them.
+  - **What still remains after those bounds.** A vaccine flood still consumes up to
+    `MAX_RELAYED_VACCINES` custody slots and a constant number of store passes per window, and it
+    still re-floods onward, which is the price of the anti-packet being anonymous by design. And under
+    a multi-identity flood deep enough to fill the deferral backlog (`MAX_PENDING_VACCINE_TOKENS`), a
+    GENUINE vaccine can lose its retroactive sweep over bundles the relay already holds, keeping only
+    its ability to purge a target that arrives later. The affected bundle then expires at its TTL
+    instead of being purged on proof of delivery, and the sender waits on the private ACK rather than
+    the vaccine for its "delivered" transition. No single identity inside `hop-relayd`'s per-identity
+    frame budget can reach that depth; a Sybil fleet can.
 - **The meter (delivery-justified).** Billing is NOT charged at custody. The relay records the
   tenant it VERIFIED at admission and bills it only when delivery is PROVEN: a returning ACK or
   a §39 delivery vaccine that purges the held copy. A bundle held but never delivered (evicts or
@@ -2929,9 +2953,27 @@ a target's bucket and watch it. What the prefix denies such an adversary is a un
 every other address colliding on that byte produces the same observation; what it does not deny is
 targeted suspicion. A host EMBEDDING hop-core can suppress the beacon entirely with
 `Node::set_route_to_me(false)`, at the cost of reachability (see the note below on how far that
-control reaches). Caps stop a neighbour bloating the table: one link may
-occupy at most `MAX_GRADIENT_BUCKETS_PER_LINK` buckets, evicting its OWN least-recently-seen entries, so
-grinding prefixes can never displace another link's genuine route; §35 keying gates relays. Anything that "remembers forever" is a storage and DoS liability.
+control reaches).
+
+Caps stop a neighbour bloating the table, and the **enforcement unit is the Noise-authenticated peer
+address, not the connection** (security-privacy-r19-01). One PEER may occupy at most
+`MAX_GRADIENT_BUCKETS_PER_PEER` buckets summed over every link it holds, evicting its OWN
+least-recently-seen entries, so grinding prefixes can never displace another peer's genuine route. The
+unit matters because a `LinkId` is a per-connection integer the far side mints for free: nothing in core
+limits how many connections one identity opens, and `hop-relayd` allocates a fresh id per inbound
+connection, so a per-link quota multiplied by the connection count. At
+`MAILBOX_ROUTE_PREFIX_BYTES = 1` there are only 256 buckets and the cap is 64, so one identity reaches
+at most a quarter of the route space however it connects; four connections under a per-link quota
+reached all of it. Dropping a connection drops its next-hops immediately (a dead link cannot forward),
+so reconnecting does not re-arm the quota either. §35 keying gates relays. Anything that "remembers
+forever" is a storage and DoS liability.
+
+What the cap does NOT do, stated because the weaker version of it is a false guarantee: it does not stop
+a bucket that one peer legitimately occupies from suppressing the epidemic flood fallback for that
+prefix. That suppression fires whenever a bucket has ANY live next-hop, hostile or honest
+(`security-privacy-r3-02`), and it is recovered by the durable spool and by the recipient's next beacon,
+which re-offers everything held. The cap bounds how much of the route space one identity can cover, not
+the existence of that behaviour.
 
 ### Costs (honest)
 
@@ -2960,22 +3002,45 @@ The model trades targeted routing for privacy, and the bill is real:
     decision with a real cost (a non-beaconing recipient off-relay cannot be recovered in a pure-P2P
     partition, above), so it is deliberately not wired through yet. If it ever is, it lands in
     `sdk/hop.h` first and this paragraph changes with it.
-  - **Honest scope at small N (security-privacy-r3-01 / r2-03).** The `~N/2^k` anonymity-set argument is a
-    *large-N* argument, and `k = MAILBOX_ROUTE_PREFIX_BYTES` is a **compile-time constant, NOT
-    adaptive to observed N**. It is **1 byte (8 bits, 256 buckets) as of wire v12**; it was 2 bytes
-    before that, and every figure here is derived from the shipped value, so re-derive them on any
-    width change. Below ~`2^k` (~256) reachable addresses in the observed region, a target's
-    prefix bucket is almost always occupied by the target ALONE, so against an **address-knower** who
-    computes the target's route and watches that bucket in a region, the "anonymity set" is effectively a
-    set of one: seeing the bucket active is, with near-certainty, a per-address reachability disclosure
-    ("this specific target is reachable here this epoch"). At the current fleet scale (single-digit to a
-    few hundred devices) the 1-byte prefix therefore provides **no meaningful sender/recipient
-    anonymity against an address-knower**; its only role at that scale is to keep routing buckets from
-    being unique KEYS on the wire (so a *passive* indexer without the address still can't derive it). The
-    real fix is to widen `k` as reachable-N grows (so `~N/2^k` stays >= a target set
-    size); `crypto.rs` carries the w=1 vs w=2 bucket-occupancy table and the trigger to widen. That is
-    **wire-affecting** (the private header carries this prefix, so its width is part of the
-    format) and rides a `BUNDLE_VERSION` bump, deliberately deferred until population demands it.
+  - **Honest scope at small N (security-privacy-r3-01 / r2-03 / r19-04).** The `~N/2^k` anonymity-set
+    argument is a *large-N* argument, and `k = 8 * MAILBOX_ROUTE_PREFIX_BYTES` is a **compile-time
+    constant, NOT adaptive to observed N**. `MAILBOX_ROUTE_PREFIX_BYTES` is **1** as shipped (wire v12
+    narrowed it from 2), so there are **256 buckets** and the set is `~N/256`. Below ~256 reachable
+    addresses in the observed region a target's prefix bucket is often occupied by the target ALONE, so
+    against an **address-knower** who computes the target's route and watches that bucket in a region the
+    "anonymity set" collapses toward a set of one: seeing the bucket active is then, with near-certainty,
+    a per-address reachability disclosure ("this specific target is reachable here this epoch"). The
+    threshold is ~256, not ~65k: a 1000-device fleet sits at set size ~4, which is small but is not one.
+    At single-digit to low-hundred fleet scale the 1-byte prefix therefore provides **no meaningful
+    sender/recipient anonymity against an address-knower**; its only role at that scale is to keep routing
+    buckets from being unique KEYS on the wire (so a *passive* indexer without the address still can't
+    derive it). The real fix is to widen `k` adaptively as observed reachable-N grows (so `~N/2^k` stays
+    >= a target set size). That is **wire-affecting** (the private header carries this prefix, so its
+    width is part of the format) and is deliberately deferred + tracked as future work.
+        Every figure in this bullet is derived from the SHIPPED width, so re-derive them all on
+        any change to `MAILBOX_ROUTE_PREFIX_BYTES`.
+  - **The overlap window doubles the observable selector (security-privacy-r19-06).** `MAILBOX_EPOCH_WINDOW
+    = 1`, and `publish_recv_beacon_on` emits the CURRENT and PREVIOUS epoch prefixes back to back on the
+    same link, so a recipient's footprint per publish is up to **2 route prefixes, not 1**. Both are pure
+    public functions of a public address (`H(addr, e)[0]` and `H(addr, e-1)[0]`), so an observer that can
+    attribute the pair to one source and holds a candidate address tests it at a false-positive rate of
+    `1/65536`, i.e. the set for THAT observer is `~N/(256^(1 + MAILBOX_EPOCH_WINDOW))` = `~N/65536`, not
+    `~N/256`. Watched across `d` epoch boundaries the chain of overlapping pairs yields `d + 1` bytes,
+    which is a stable long-lived fingerprint of the address, so "epoch rotation prevents cross-epoch
+    correlation" holds only against an observer that CANNOT attribute the pair. **Stated position on
+    scope:** the `~N/256` figure is the claim for a passive indexer at distance >= 1, which sees prefixes
+    relayed onward and un-attributed; the pair-attributing observer is a direct link peer or a party that
+    can correlate two records on one link, and against that observer the claim is `~N/65536`. A direct
+    link peer is a mutually-authenticated Noise neighbour that already knows the beacon came from us, so
+    the marginal loss to it is the selector width, not the fact of reachability. Closing the gap rather
+    than documenting it means not co-emitting the two epochs attributably (stagger them, or serve the
+    previous epoch only from the spool); that is deferred, and `route_to_me = false` remains the only way
+    to emit nothing at all.
+  - Where each caveat is mirrored in source, so it lives next to the code it constrains: the small-N one
+    at `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES`, which still carries the pre-v12 2-byte text (see the
+    known-stale-mirror note below); the overlap-window one at `node.rs` `publish_recv_beacon_on`, which is
+    current, and whose emitted-prefix count is pinned by
+    `a_recipients_beacon_footprint_per_publish_is_pinned`.
   - **Stale 2-byte prose still in the manifest files (CLAIM-004, deferred, read this before trusting
     a comment).** If you follow the pointer above into `crypto.rs`, trust the constant and the block
     comment *below* it, not the rustdoc *above* it. Four spots still say 2 bytes and were deliberately
@@ -3026,6 +3091,22 @@ The model trades targeted routing for privacy, and the bill is real:
 
 None are fatal; the latency, linkability, and mobility costs are inherent to (privacy + DTN + dormancy),
 exactly what Hop's thesis signs up for. (Operational flood-alerting can come later.)
+
+**Known stale mirror (security-privacy-r19-04, OPEN, deliberately not fixed here).** The doc block on
+`crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES` still carries the pre-v12 text: it says "Two bytes (16 bits) is
+the deliberate balance" above a constant whose value is `1`, sizes the small-N threshold at ~`2^16`
+instead of ~256, claims `mailbox_tag` "lets a relay verify a beacon's ownership ... a beacon is signed by
+that address, so it can't be forged for another" (false since v13 replaced the signed advert with the
+unsigned link-local `Wire::RecvBeacon`), and references an `owns_mailbox` binding that exists nowhere in
+the tree. **This file, not the text, is the blocker:** `core/hop-core/src/crypto.rs` is listed in
+`core/hop-core/vectors/wire-source-manifest.txt`, and `tools/wire-version-guard.sh` diffs raw file bytes,
+so editing even a comment there forces a `BUNDLE_VERSION` bump plus a corpus regenerate/rename plus a
+`sim/pkg` rebuild. Bumping the wire version for a comment is exactly the degradation into a build counter
+that the manifest's own header warns against, and it would break decode against the deployed fleet. So
+this section is the source of truth in the meantime, and the `crypto.rs` block gets corrected in the next
+change that bumps `BUNDLE_VERSION` for a real wire reason, together with the CI guard that would tie the
+documented bucket count to the constant (a guard added now would have to carve out the one file still
+wrong, which would encode the falsehood rather than catch it).
 
 ### Worked scenarios
 

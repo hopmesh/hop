@@ -72,6 +72,12 @@ sdk/android/local.properties
 sdk/android/.kotlin/
 sdk/android/build/
 
+# Kotlin compile-daemon session scratch, wherever a Gradle build runs. Only sdk/android/ was
+# listed, so a verify run under bearers/ or apps/android/ left an untracked .salive file that a
+# `git add -A` will happily commit. Cover every tree that has a Gradle build.
+.kotlin/
+**/.kotlin/
+
 # Android driver build
 drivers/android/**/build/
 
