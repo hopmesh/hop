@@ -50,6 +50,33 @@ xcodebuild -create-xcframework \
   -library "$SIM/$LIB"                         -headers "$HDR" \
   -library "$MAC/$LIB"                         -headers "$HDR" \
   -output "$DEST" >/dev/null
+# xcodebuild emits AvailableLibraries in a NONDETERMINISTIC order, so two builds of identical sources
+# produce a byte-different Info.plist, a byte-different zip, and a different SwiftPM checksum. That is
+# not cosmetic: sdk/apple/Package.swift pins that checksum and the release job asserts it against a
+# freshly built artifact, so the Apple, embedded, and Android releases could never pass except by luck,
+# and the pinned value read as "stale" every time when it had never been stable at all. Measured: two
+# main commits differing only by a doc, a test, and Package.swift itself produced different checksums,
+# and extracting both showed every compiled library byte-identical with ONLY the plist's slice order
+# changed. Applying this sort to both made the entire xcframework identical.
+#
+# Sort the slices by LibraryIdentifier so the plist is a pure function of its contents.
+python3 - "$DEST/Info.plist" <<'PY'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    plist = plistlib.load(handle)
+libraries = plist.get("AvailableLibraries")
+if libraries:
+    plist["AvailableLibraries"] = sorted(libraries, key=lambda entry: entry["LibraryIdentifier"])
+    # Each slice's architecture list is a set in meaning, not a sequence, so sort it too.
+    for entry in plist["AvailableLibraries"]:
+        if isinstance(entry.get("SupportedArchitectures"), list):
+            entry["SupportedArchitectures"] = sorted(entry["SupportedArchitectures"])
+    with open(path, "wb") as handle:
+        plistlib.dump(plist, handle, sort_keys=True)
+PY
 python3 "$ROOT/tools/native-artifacts.py" apple-manifest \
   --xcframework "$DEST" --output "$DEST/architecture-manifest.json"
 python3 "$ROOT/tools/native-artifacts.py" apple-verify \
