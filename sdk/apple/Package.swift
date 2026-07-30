@@ -26,10 +26,25 @@ let package = Package(
     ],
     targets: [
         .target(name: "HopContract"),   // pure Swift, no libhop
+        // CHop is the ONLY value in this repo that must be updated by measurement, never by hand.
+        // The release job downloads the native-artifacts build for the source commit it is releasing
+        // and asserts `swift package compute-checksum` on it equals the value below, so a stale
+        // checksum does not degrade gracefully: it blocks the Apple, embedded, and Android releases
+        // outright. It went stale twice because nothing recomputes it.
+        //
+        // The xcframework build IS reproducible: two different main commits (e01c12a6, ffbf377c)
+        // produce a byte-identical zip, so this value is stable until core's COMPILED output changes.
+        // That is the maintenance rule: a change to core/ (or sdk/hop.h) invalidates this checksum,
+        // and the same change must bump the workspace version and update whatever depends on it.
+        //
+        // Measured, not inferred, from the native-release bundle of the `Native artifacts` run for
+        // source ffbf377c490a33e3f5a5b35c2b199c09f1ab4b5a. To refresh: download that run's
+        // native-release-bundle and run `swift package compute-checksum libhop.xcframework.zip`.
+        // See docs/apple-release.md.
         .binaryTarget(
             name: "CHop",
-            url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.1/libhop.xcframework.zip",
-            checksum: "feb6e3e636a3e40c9b21487ced872b0edcd04122e70373484c406e4f51be43df"
+            url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.2/libhop.xcframework.zip",
+            checksum: "94c8986f199e158b866a619f473bf326bae7db9166f575f4bea0e182be864bc7"
         ),
         .target(name: "Hop", dependencies: ["CHop", "HopContract"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),

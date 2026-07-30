@@ -174,7 +174,13 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert os.access(apple / "install-local-xcframework.py", os.X_OK)
     assert os.access(apple / "with-local-framework.sh", os.X_OK)
     apple_manifest = (apple / "Package.swift").read_text()
-    assert "releases/download/v0.0.1/libhop.xcframework.zip" in apple_manifest
+    # Pin the URL to the ANCHOR version rather than a literal. Hardcoding v0.0.1 here meant a version
+    # bump left the published manifest pointing at the previous release's asset and the test still
+    # passed, which is half of why the Apple release stayed broken across two wire versions.
+    _anchor_version = exports.workspace_version(root)
+    assert (
+        f"releases/download/v{_anchor_version}/libhop.xcframework.zip" in apple_manifest
+    ), f"Apple manifest does not point at the v{_anchor_version} asset"
     assert '.binaryTarget(name: "CHop", path:' not in apple_manifest
     assert (apple / "Package.local.swift").is_file()
 
