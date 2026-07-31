@@ -222,6 +222,16 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         assert forbidden not in android_consumer_text
     assert "includeBuild(" not in android_consumer_text
     assert "project(" not in android_consumer_text
+    # validate-android-export asserts the APK's libhop.so is byte-identical to the AAR's, and the
+    # published libraries are not stripped, so AGP's stripDebugDebugSymbols rewrites them and that
+    # assertion cannot hold. Measured on the real arm64-v8a slice under AGP 9.2.1 + NDK 27.1: the AAR
+    # carries 5,045,168 bytes and the APK 3,949,848. The consumer therefore has to keep the symbols.
+    # This check exists because validate-android-export itself runs ONLY in the mirror's release
+    # workflow, so without it a regression here is invisible until a publish fails.
+    assert 'keepDebugSymbols += "**/libhop.so"' in android_consumer_text, (
+        "the Android verification consumer no longer keeps libhop symbols; AGP will strip the "
+        "library during packaging and the release's byte-identity check will fail at publish time"
+    )
 
     android_readme = (android / "README.md").read_text()
     assert "public v0.0.1 publication remains post-merge external state" in android_readme.lower()
