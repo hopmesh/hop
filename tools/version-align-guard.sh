@@ -44,6 +44,14 @@ check "sdk/python (pyproject.toml)" "$(ver_in sdk/python/pyproject.toml '^versio
 check "sdk/ruby (gemspec)"          "$(ver_in sdk/ruby/hop-endpoint.gemspec 'spec\.version')"
 check "sdk/crystal (shard.yml)"     "$(ver_in sdk/crystal/shard.yml '^version:')"
 check "sdk/elixir (mix.exs)"        "$(ver_in sdk/elixir/mix.exs 'version:')"
+# Both silently stayed on 0.0.1 through the 0.0.2 bump and were the last two components unable to
+# publish. Note what this guard can and cannot do about that: it compares MAJOR.MINOR only and
+# deliberately allows patch drift, so it would NOT have caught 0.0.1 against a 0.0.2 anchor. The fix
+# for that case is in tools/release/plan.py, which now resolves these two from the same files their
+# release workflows assert against instead of from the anchor. They are listed here for the drift the
+# guard does catch: a major or minor that wanders off the anchor.
+check "sdk/embedded (library.json)" "$(ver_in sdk/embedded/library.json '"version"')"
+check "sdk/android (build.gradle.kts)" "$(ver_in sdk/android/build.gradle.kts '^version *=')"
 # The release-consumable Go installer carries a default tag because `go run ...@VERSION` must select
 # the exact matching native manifest and artifact. Keep its embedded default on the protocol line.
 check "sdk/go installer (cmd/hop-install)" \

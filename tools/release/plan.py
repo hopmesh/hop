@@ -72,6 +72,22 @@ def resolve_version(prefix, root):
         if version:
             return version, "pyproject.toml"
 
+    # PlatformIO and Gradle carry their own version, and each one's release workflow asserts it equals
+    # the tag. Resolving them from the workspace anchor instead let the two disagree: the anchor moved
+    # to 0.0.2, these files stayed at 0.0.1, and the tagger duly created v0.0.2 tags whose releases then
+    # failed a bare `test` with no message. Read what the release actually checks.
+    library_json = directory / "library.json"
+    if library_json.is_file():
+        version = json.loads(library_json.read_text(encoding="utf-8")).get("version")
+        if version:
+            return version, "library.json"
+
+    gradle = directory / "build.gradle.kts"
+    if gradle.is_file():
+        version = _first_match(r'^version\s*=\s*"([0-9][^"]*)"', gradle.read_text(encoding="utf-8"))
+        if version:
+            return version, "build.gradle.kts"
+
     shard = directory / "shard.yml"
     if shard.is_file():
         version = _first_match(r"^version:\s*['\"]?([0-9][^'\"\s]*)", shard.read_text(encoding="utf-8"))
