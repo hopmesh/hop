@@ -21,8 +21,14 @@
 name: Release tags
 
 on:
+  # Two triggers, because a release needs BOTH halves and they finish far apart. The export puts the
+  # code on the mirror in seconds; the canonical CI gate and native artifacts take roughly twenty
+  # minutes, and the mirror's release job refuses a source commit whose either one is not green. Firing
+  # only on the export therefore created tags that could not publish, and since a tag is never moved,
+  # each one stranded that version permanently. Now the tagger defers when the source is not ready, and
+  # Native artifacts completing brings it straight back to finish the job.
   workflow_run:
-    workflows: ["Sync component"]
+    workflows: ["Sync component", "Native artifacts"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -34,6 +40,8 @@ on:
 
 permissions:
   contents: read
+  actions: read   # read native-artifacts runs for the source commit
+  checks: read    # read the canonical CI gate for the source commit
 
 concurrency:
   group: release-tags
@@ -69,6 +77,9 @@ jobs:
       - name: Tag each mirror that is not yet tagged at its declared version
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          # Reads the CANONICAL repo's CI gate + native-artifacts runs. The App token above is scoped
+          # to the mirrors and cannot see the monorepo, so the readiness check needs this one.
+          SOURCE_TOKEN: ${{ github.token }}
           PLAN: ${{ steps.plan.outputs.plan }}
           # A mirror's FIRST ever tag is that component's first release, not a routine bump, and every
           # untagged component qualifies simultaneously. Automatic runs never do it; only a deliberate
