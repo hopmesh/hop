@@ -129,6 +129,69 @@ assert 'os.environ.get("ALLOW_FIRST_TAG", "").strip().lower() == "yes"' in tagge
     "the first-tag opt-in is not read strictly from ALLOW_FIRST_TAG"
 )
 
+# --- the source must be RELEASABLE before a tag is created ----------------------------------------
+# Tagging starts a publish, and the mirror's release job refuses a source commit whose CI gate or
+# native-artifacts run is not green. The export finishes in seconds and those take ~20 minutes, so
+# tagging on export completion produced tags that could not publish, and since tags are never moved
+# each one stranded that version. These pin the readiness check so that race cannot come back.
+_calls = {}
+
+
+def _fake_source(responses):
+    def _request(path, token, method="GET", payload=None):
+        _calls[path] = _calls.get(path, 0) + 1
+        for fragment, value in responses.items():
+            if fragment in path:
+                return value
+        return None, 404
+    return _request
+
+
+def _checks(status, conclusion):
+    return ({"check_runs": [{"name": "CI gate", "status": status,
+                             "conclusion": conclusion, "started_at": "2026-01-01T00:00:00Z"}]}, 200)
+
+
+def _native(runs):
+    return ({"workflow_runs": [dict(r, head_sha="a" * 40) for r in runs]}, 200)
+
+
+_original_request = tag_mod.request
+try:
+    green = {"check-runs": _checks("completed", "success"),
+             "native-artifacts.yml/runs": _native([{"status": "completed", "conclusion": "success"}])}
+    tag_mod.request = _fake_source(green)
+    ok, why = tag_mod.source_is_releasable("a" * 40, "t")
+    assert ok, f"a fully green source was refused: {why}"
+
+    # CI gate still running, or failed, is not releasable.
+    for state, conclusion in (("in_progress", None), ("completed", "failure")):
+        tag_mod.request = _fake_source({**green, "check-runs": _checks(state, conclusion)})
+        ok, why = tag_mod.source_is_releasable("a" * 40, "t")
+        assert not ok, f"released from a source whose CI gate was {state}/{conclusion}"
+
+    # Native artifacts unfinished, failed, or absent is not releasable. This is the exact state that
+    # produced "canonical native artifact run is not successful" on every component.
+    for runs, label in (
+        ([{"status": "in_progress", "conclusion": None}], "still building"),
+        ([{"status": "completed", "conclusion": "failure"}], "failed"),
+        ([], "never started"),
+    ):
+        tag_mod.request = _fake_source({**green, "native-artifacts.yml/runs": _native(runs)})
+        ok, why = tag_mod.source_is_releasable("a" * 40, "t")
+        assert not ok, f"released from a source whose native artifacts were {label}"
+
+    # An unreadable canonical repo must fail CLOSED, never be treated as ready.
+    tag_mod.request = lambda *a, **k: (None, 403)
+    ok, why = tag_mod.source_is_releasable("a" * 40, "t")
+    assert not ok, "treated an unreadable canonical repo as releasable"
+finally:
+    tag_mod.request = _original_request
+
+# The GitOrigin-RevId trailer is how a mirror commit names its source; ambiguity must not resolve.
+assert tag_mod.GIT_ORIGIN_REV.findall("x\n\nGitOrigin-RevId: " + "b" * 40 + "\n") == ["b" * 40]
+assert tag_mod.GIT_ORIGIN_REV.findall("no trailer here") == []
+
 # --- the workflow's authority shape -------------------------------------------------------------
 # This workflow mints a write token on PUBLIC repositories and creates tags that publish packages, so
 # pin the boundary the same way the sync guard pins its own: it may write contents on exactly the
@@ -141,6 +204,10 @@ for required in (
     "permission-contents: write",
     "python3 tools/release/plan.py",                    # the fixed planner decides the scope
     "github.event.workflow_run.conclusion == 'success'",  # never tag after a failed export
+    # The readiness check needs a token that can read the CANONICAL repo; the mirror App token cannot.
+    "SOURCE_TOKEN: ${{ github.token }}",
+    # And Native artifacts completing must re-trigger the tagger, or a deferred component waits forever.
+    '"Native artifacts"',
 ):
     assert required in workflow, f"release-tags authority drifted, missing: {required}"
 for forbidden in (
