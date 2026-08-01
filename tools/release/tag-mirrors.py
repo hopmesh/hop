@@ -56,6 +56,13 @@ def version_from_text(filename, text):
     name = filename.rsplit("/", 1)[-1]
     if name == "package.json":
         return json.loads(text).get("version")
+    # library.json is the PlatformIO manifest (hop-embedded). plan.py resolves the version from it, so
+    # this parser MUST too: without it the mirror-side read returns None for a component whose plan
+    # source is library.json, which raises and aborts the WHOLE tagging run, blocking every other
+    # component's release. That is exactly what happened when sdk/embedded moved to 0.0.3: the new
+    # version had no tag yet, so the mirror check ran for the first time and found no parser here.
+    if name == "library.json":
+        return json.loads(text).get("version")
     if name == "pyproject.toml":
         return tomllib.loads(text).get("project", {}).get("version")
     if name == "Cargo.toml":
@@ -71,6 +78,12 @@ def version_from_text(filename, text):
         if not version.get("workspace"):
             return None
         return document.get("workspace", {}).get("package", {}).get("version")
+    # Gradle (hop-sdk-android), the sibling of the library.json gap above and equally load-bearing:
+    # sdk/android is also on 0.0.3 with no tag yet, so it would raise here the moment embedded stopped
+    # raising first. Same regex plan.py uses, so the two agree on what the version is.
+    if name == "build.gradle.kts":
+        match = re.search(r'^version\s*=\s*"([0-9][^"]*)"', text, re.MULTILINE)
+        return match.group(1) if match else None
     if name == "shard.yml":
         match = re.search(r"^version:\s*['\"]?([0-9][^'\"\s]*)", text, re.MULTILINE)
         return match.group(1) if match else None

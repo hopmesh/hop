@@ -48,6 +48,11 @@ assert not plan_mod.SEMVER.match("1.0.0-rc1")
 # --- manifest parsing, per ecosystem ------------------------------------------------------------
 cases = [
     ("package.json", '{"name":"x","version":"1.2.3"}', "1.2.3"),
+    # library.json is PlatformIO (hop-embedded). plan.py resolves a version from it, so this parser
+    # must agree: when it did not, the first untagged library.json version (sdk/embedded 0.0.3) made
+    # the mirror read return None, which raises and aborts tagging for EVERY component.
+    ("library.json", '{"name":"Hop","version":"1.2.3"}', "1.2.3"),
+    ("build.gradle.kts", 'group = "sh.hop"\nversion = "1.2.3"\n', "1.2.3"),
     ("pyproject.toml", '[project]\nname = "x"\nversion = "1.2.3"\n', "1.2.3"),
     ("Cargo.toml", '[package]\nname = "x"\nversion = "1.2.3"\n', "1.2.3"),
     ("shard.yml", "name: x\nversion: 1.2.3\n", "1.2.3"),
@@ -58,6 +63,33 @@ cases = [
 for filename, text, want in cases:
     got = tag_mod.version_from_text(filename, text)
     assert got == want, f"{filename}: parsed {got!r}, wanted {want!r}"
+
+# STRUCTURAL: every manifest plan.py can name as a `source` must be parseable by the tagger. The two
+# resolvers are a matched pair (plan picks the version, the tagger re-reads it off the mirror to
+# confirm the export landed), and a manifest known to only one of them is not a cosmetic mismatch: an
+# unparseable source raises and aborts the WHOLE tagging run, so ONE unknown manifest blocks EVERY
+# component's release. That is how library.json (hop-embedded) and build.gradle.kts (hop-sdk-android)
+# both sat unhandled here, latent until each got a version the mirror had not tagged yet. Enumerated
+# from plan.py's own source strings so a newly supported ecosystem cannot be added to one side alone.
+plan_source_text = (root / "tools/release/plan.py").read_text(encoding="utf-8")
+plan_sources = set(re.findall(r'return version, "([^"]+)"', plan_source_text))
+assert plan_sources, "no plan.py manifest sources found; this structural check stopped testing anything"
+# A fixture per ecosystem, all declaring the SAME version, so a parser that returns something other
+# than 1.2.3 (or nothing) is a failure. Gemspecs are matched by suffix, so plan.py names them
+# dynamically ("*.gemspec"); the table above already covers that parser by its real filename.
+fixtures = {filename: text for filename, text, _ in cases}
+unfixtured = sorted(s for s in plan_sources if s not in fixtures and not s.endswith(".gemspec"))
+assert not unfixtured, f"no parser fixture for plan.py sources {unfixtured}; add one to `cases` above"
+missing = sorted(
+    source
+    for source in plan_sources
+    if not source.endswith(".gemspec")
+    and tag_mod.version_from_text(source, fixtures[source]) != "1.2.3"
+)
+assert not missing, (
+    f"plan.py resolves versions from {missing} but tag-mirrors.version_from_text cannot; "
+    "an unparseable source aborts tagging for every component"
+)
 
 # An inherited Cargo version with NO workspace root in the same file is genuinely unverifiable.
 assert tag_mod.version_from_text("Cargo.toml", '[package]\nversion.workspace = true\n') is None
