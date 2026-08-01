@@ -32,15 +32,23 @@ CRITICAL=(
 fail=0
 
 # Per-component licenses (legal-01), TWO TIERS:
-#   - core/*  carries FSL-1.1-ALv2: the protocol is the moat (hop-core, libhop, hop-wasm, the stores).
-#   - EVERY other component (sdk, bearers, drivers, services, examples) carries Apache-2.0, permissive
-#     to maximize adoption of what people integrate or self-host.
+#   - services/*  carries FSL-1.1-ALv2: the hosted service layer is the thing a cloud provider could
+#     resell, so the non-compete belongs here (relayd, endpoint, gateway, telemetryd, accountd, billingd).
+#   - EVERY other component (core, sdk, bearers, drivers, examples) carries Apache-2.0, permissive so
+#     that the protocol and everything people embed or integrate carries no adoption friction.
+# The tiers were INVERTED on 2026-07-31. FSL previously sat on core/, which had it backwards in both
+# directions: every SDK binds libhop, so a legal review walked the dependency tree, hit FSL, and stopped,
+# meaning the Apache label on the wrappers was close to cosmetic and the adoption tax was paid anyway;
+# meanwhile hop-relayd was permissive, so the one component someone could actually stand up as a
+# competing managed service carried no restriction at all. The restriction was on the funnel instead of
+# on the moat. Revenue is metered infrastructure (deliveries, egress, mailbox), which wants maximum node
+# count and a defended service layer, so the licenses now follow the money.
 # Within EACH tier every LICENSE.md must be byte-identical; each must be above the floor and carry its
 # own tier's signature line. The failure modes this catches: a copy going 0-byte/truncated (the wasm-pack
 # self-copy regression this guard exists for), a copy drifting from the rest of its tier, or a copy
-# wearing the WRONG tier's license (a core/ file that says Apache, or a non-core file that says FSL). The
-# Apache marker is the header date "January 2004", NOT "Apache License": the FSL text references the
-# Apache License as its future license, so "Apache License" is not unique to the Apache tier.
+# wearing the WRONG tier's license (a services/ file that says Apache, or a non-services file that says
+# FSL). The Apache marker is the header date "January 2004", NOT "Apache License": the FSL text references
+# the Apache License as its future license, so "Apache License" is not unique to the Apache tier.
 fsl_canon=""
 apache_canon=""
 lic_count=0
@@ -53,22 +61,22 @@ while IFS= read -r lf; do
     continue
   fi
   case "$lf" in
-    ./core/*)  # FSL-1.1-ALv2 tier (the protocol core)
+    ./services/*)  # FSL-1.1-ALv2 tier (the hosted service layer)
       if ! grep -qF -- "Functional Source License" "$lf"; then
-        echo "repo-integrity-guard: CONTENT $lf under core/ must be FSL-1.1-ALv2 (its signature line is missing)" >&2
+        echo "repo-integrity-guard: CONTENT $lf under services/ must be FSL-1.1-ALv2 (its signature line is missing)" >&2
         fail=1
         continue
       fi
       if [ -z "$fsl_canon" ]; then
         fsl_canon="$lf"
       elif ! cmp -s "$lf" "$fsl_canon"; then
-        echo "repo-integrity-guard: DRIFT $lf differs from $fsl_canon (core/ FSL licenses must be identical)" >&2
+        echo "repo-integrity-guard: DRIFT $lf differs from $fsl_canon (services/ FSL licenses must be identical)" >&2
         fail=1
       fi
       ;;
-    *)         # Apache-2.0 tier (everything outside core/)
+    *)         # Apache-2.0 tier (everything outside services/)
       if ! grep -qF -- "January 2004" "$lf"; then
-        echo "repo-integrity-guard: CONTENT $lf outside core/ must be Apache-2.0 (its header is missing)" >&2
+        echo "repo-integrity-guard: CONTENT $lf outside services/ must be Apache-2.0 (its header is missing)" >&2
         fail=1
         continue
       fi

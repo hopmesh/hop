@@ -160,4 +160,5 @@ The dispatch self-test enforces the first three mappings. Then add the mirror to
 
 The components wired today: the 8 SDKs, plus `hop-core`, `libhop`, `hop-wasm`, the two stores, the two
 bearer repos, the two driver repos, and the three services. Each already carries its own `LICENSE.md`
-(Apache-2.0 for the SDKs, FSL-1.1-ALv2 for the rest), so it is ready to stand alone.
+(FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so it is ready to
+stand alone.

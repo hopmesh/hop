@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Self-test for tools/repo-integrity-guard.sh. A bare `-s` (size > 0) check is too weak: the
 # 0-byte-LICENSE regression this guard exists for could re-land as a 1-byte or marker-stripped file
-# and still pass. Licensing is PER-COMPONENT and now TWO-TIER: sdk/* wrapper packages carry Apache-2.0,
-# every other component carries FSL-1.1-ALv2, and each tier must be byte-identical within itself. This
-# test lays down a multi-component, two-tier fixture and asserts the guard (a) passes a healthy tree,
-# and fails on (b) a 0-byte copy, (c) a 1-byte/truncated copy, (d) a copy whose signature line was
-# stripped, (e) an FSL copy drifting from the rest, (f) an Apache copy drifting from the rest, (g) an
-# sdk/ file wearing the FSL license (wrong tier), (h) a non-sdk file wearing the Apache license (wrong
-# tier), and (i) no LICENSE.md present at all. No repo state.
+# and still pass. Licensing is PER-COMPONENT and TWO-TIER: services/* carries FSL-1.1-ALv2 (the hosted
+# layer a cloud provider could resell), EVERY other component including core/ and sdk/ carries
+# Apache-2.0, and each tier must be byte-identical within itself. This test lays down a
+# multi-component, two-tier fixture and asserts the guard (a) passes a healthy tree, and fails on (b) a
+# 0-byte copy, (c) a 1-byte/truncated copy, (d) a copy whose signature line was stripped, (e) an FSL
+# copy drifting from the rest, (f) an Apache copy drifting from the rest, (g) an sdk/ file wearing the
+# FSL license (wrong tier), (h) a services/ file wearing the Apache license (wrong tier), (i) a core/
+# file wearing FSL, which is the pre-2026-07-31 layout and must now be rejected, and (j) no LICENSE.md
+# present at all. No repo state.
+#
+# Case (i) is the regression net for the tier inversion: before 2026-07-31 core/ WAS the FSL tier, so a
+# revert would otherwise look healthy to a guard that only checked "each file matches some tier".
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HERE/repo-integrity-guard.sh"
@@ -31,14 +36,17 @@ print(body)
 PY
 )"
 
-# FSL-tier components (non-sdk) and Apache-tier components (sdk/*) the fixture lays down.
-FSL_LICENSES=("core/hop-core/LICENSE.md" "core/hop-wasm/LICENSE.md")
-APACHE_LICENSES=("sdk/node/LICENSE.md" "sdk/go/LICENSE.md")
+# FSL-tier components (services/*) and Apache-tier components (everything else) the fixture lays down.
+# core/ is deliberately in the APACHE list: it is what makes case (i) meaningful, so the fixture has to
+# exercise it rather than leaving the inversion asserted only by the real repo tree.
+FSL_LICENSES=("services/hop-relayd/LICENSE.md" "services/hop-gateway/LICENSE.md")
+APACHE_LICENSES=("sdk/node/LICENSE.md" "sdk/go/LICENSE.md" "core/hop-core/LICENSE.md")
 
 # lay_down DIR: a fully-healthy two-tier fixture tree. Callers then mutate one file to create a failure.
 lay_down() {
   local d="$1"
-  mkdir -p "$d/core/hop-core" "$d/core/hop-wasm" "$d/sdk/node" "$d/sdk/go" "$d/tools"
+  mkdir -p "$d/services/hop-relayd" "$d/services/hop-gateway" "$d/sdk/node" "$d/sdk/go" \
+    "$d/core/hop-core" "$d/tools"
   cp "$GUARD" "$d/tools/repo-integrity-guard.sh"
   local lf
   for lf in "${FSL_LICENSES[@]}"; do printf '%s\n' "$FSL_BODY" > "$d/$lf"; done
@@ -72,8 +80,9 @@ expect() {
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-FSLONE="core/hop-core/LICENSE.md"    # mutate this FSL-tier copy to create a failure
-APACHEONE="sdk/go/LICENSE.md"        # mutate this Apache-tier copy to create a failure
+FSLONE="services/hop-relayd/LICENSE.md"  # mutate this FSL-tier copy to create a failure
+APACHEONE="sdk/go/LICENSE.md"            # mutate this Apache-tier copy to create a failure
+COREONE="core/hop-core/LICENSE.md"       # core/ is Apache-tier since the 2026-07-31 inversion
 
 lay_down "$TMP/ok";         expect "$TMP/ok" pass "healthy_two_tier"
 lay_down "$TMP/zero";       : > "$TMP/zero/$FSLONE";                    expect "$TMP/zero" fail "zero_byte_license"
@@ -88,8 +97,11 @@ lay_down "$TMP/apachedrift"; printf '%s\nextra line makes this copy differ\n' "$
 expect "$TMP/apachedrift" fail "apache_licenses_drift"
 lay_down "$TMP/sdkwrongtier"; printf '%s\n' "$FSL_BODY" > "$TMP/sdkwrongtier/$APACHEONE"   # sdk/ wearing FSL
 expect "$TMP/sdkwrongtier" fail "sdk_wears_fsl_wrong_tier"
-lay_down "$TMP/corewrongtier"; printf '%s\n' "$APACHE_BODY" > "$TMP/corewrongtier/$FSLONE" # core/ wearing Apache
-expect "$TMP/corewrongtier" fail "core_wears_apache_wrong_tier"
+lay_down "$TMP/svcwrongtier"; printf '%s\n' "$APACHE_BODY" > "$TMP/svcwrongtier/$FSLONE"   # services/ wearing Apache
+expect "$TMP/svcwrongtier" fail "services_wears_apache_wrong_tier"
+# The inversion regression net: core/ carrying FSL is the pre-2026-07-31 layout and must now fail.
+lay_down "$TMP/corewrongtier"; printf '%s\n' "$FSL_BODY" > "$TMP/corewrongtier/$COREONE"
+expect "$TMP/corewrongtier" fail "core_wears_fsl_reverted_inversion"
 lay_down "$TMP/nolicense";  find "$TMP/nolicense" -name LICENSE.md -delete
 expect "$TMP/nolicense" fail "no_license_at_all"
 

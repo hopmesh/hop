@@ -24,9 +24,13 @@ check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the single
                            `CI gate` context (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
-                           empty, truncated, or drifted. TWO-TIER licenses: core/* byte-identical
-                           FSL-1.1-ALv2, every other component byte-identical Apache-2.0 (marker
-                           "January 2004", since FSL text references "Apache License"), no cross-tiers.
+                           empty, truncated, or drifted. TWO-TIER licenses: services/* byte-identical
+                           FSL-1.1-ALv2, every other component (core, sdk, bearers, drivers, examples)
+                           byte-identical Apache-2.0 (marker "January 2004", since FSL text references
+                           "Apache License"), no cross-tiers. The tiers were INVERTED on 2026-07-31:
+                           FSL used to sit on core/, which taxed every SDK (they all bind libhop, so a
+                           legal review hit FSL anyway) while leaving hop-relayd permissive. Its
+                           self-test pins the revert as a failing case.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.

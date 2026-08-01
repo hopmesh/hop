@@ -59,12 +59,13 @@ store suites and the client wrappers.
 
 This monorepo has no single repo-wide license. Instead every component licenses itself, in two tiers:
 
-- The protocol **core** (`core/*`: hop-core, libhop, hop-wasm, the stores) is **FSL-1.1-ALv2**
-  (source-available, and converts to Apache-2.0 after two years). That is the differentiated work, the
-  moat.
-- **Everything else**, the SDKs, the bearers, the drivers, and the services, is **Apache-2.0**, so you
-  can embed or self-host any of it with no strings attached. Adoption is the whole point of the layers
-  people build on.
+- The hosted **services** (`services/*`: relayd, endpoint, gateway, telemetryd, accountd, billingd) are
+  **FSL-1.1-ALv2** (source-available, and converts to Apache-2.0 after two years). That is the layer
+  someone could stand up as a competing managed service, so it is the layer worth defending.
+- **Everything else**, the protocol core, the SDKs, the bearers, and the drivers, is **Apache-2.0**, so
+  you can embed, self-host, or ship any of it with no strings attached. Every node someone else runs
+  makes the mesh more valuable, including nodes that never pay us, so adoption of the layers people
+  build on is the whole point.
 
 Each component carries its own `LICENSE.md`, so it stays licensed when it is split out into its own
 repository. See any component's `LICENSE.md`.
