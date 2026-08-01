@@ -1,6 +1,7 @@
-# Enable auto-merge on every non-draft PR as it opens (or leaves draft), so PRs merge themselves
-# ONCE the required CI gate passes. Branch protection still gates everything: a red or stale branch
-# never merges. This replaces dependabot-automerge.yml, which was broken in two ways:
+# Enable auto-merge on a maintainer's or Dependabot's non-draft PR as it opens (or leaves draft), so
+# those PRs merge themselves ONCE the required CI gate passes. Branch protection still gates
+# everything: a red or stale branch never merges. See the author gate on the job below for why this
+# is not armed for every PR. This replaces dependabot-automerge.yml, which was broken in two ways:
 #   1. It requested SQUASH auto-merge, but this repo forbids squash merges, so every enablement
 #      failed and Dependabot PRs piled up unmerged.
 #   2. It used GITHUB_TOKEN. Auto-merge performs the merge AS the enabling actor, and pushes made
@@ -19,7 +20,17 @@ permissions: {}
 
 jobs:
   enable-automerge:
-    if: ${{ !github.event.pull_request.draft }}
+    # Author gate. `main` requires no approving review, so "auto-merge armed + green CI gate" IS the
+    # entire path into main, and a merge to main triggers runtime-deploy. `pull_request_target` fires
+    # for FORK PRs too, so without this gate a public repo would arm and merge an unrelated
+    # contributor's PR with no human in the loop. Branch protection cannot express "only my own PRs
+    # auto-merge", so the gate lives here.
+    # NOTE: when the Copybara sync App starts opening import PRs, add its bot login below or those
+    # PRs will never auto-merge.
+    if: >-
+      ${{ !github.event.pull_request.draft
+        && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+          || github.event.pull_request.user.login == 'dependabot[bot]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Enable merge-commit auto-merge
