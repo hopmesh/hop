@@ -16,6 +16,18 @@ node_modules/
 *.db
 *.db.key
 
+# ---- OpenTofu / Terraform ----
+# State lives in GCS (the `backend "gcs"` blocks in infra/versions.tf, infra/billing/providers.tf,
+# infra/bootstrap/versions.tf) and tfvars can carry credentials. Nothing matching these is tracked
+# today; this stops a stray local `tofu` run from making one tracked by accident. The committed
+# .terraform.lock.hcl files stay tracked on purpose (provider pinning) and are not matched here, and
+# *.tfvars does not match the tracked terraform.tfvars.example templates.
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+.terraform/
+
 # ---- macOS ----
 .DS_Store
 
