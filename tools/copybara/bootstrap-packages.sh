@@ -187,6 +187,7 @@ create_hex() {  # hop-sdk-elixir -> hop on Hex (Hex has no OIDC; token-published
 }
 
 create_npm hop-sdk-node
+create_npm hop-sdk-react-native
 create_pypi
 create_gem
 create_hex
@@ -206,6 +207,7 @@ echo "== 3. turn on trusted publishing (GitHub OIDC, no token) for every release
 # For each OIDC registry, configure a Trusted Publisher in the package's registry settings with EXACTLY
 # these values. Provider = GitHub Actions; set the environment field to `release`.
 echo "  npm  @hop-mesh/endpoint   settings 'Trusted Publisher': owner hopmesh, repo hop-sdk-node, workflow release.yml, environment release"
+echo "  npm  @hop-mesh/react-native settings 'Trusted Publisher': owner hopmesh, repo hop-sdk-react-native, workflow release.yml, environment release"
 echo "  npm  @hop-mesh/wasm       settings 'Trusted Publisher': owner hopmesh, repo hop-wasm,     workflow release.yml, environment release"
 echo "  PyPI hop-endpoint         'Publishing' > 'Trusted Publishers': owner hopmesh, repo hop-sdk-python, workflow release.yml, environment release"
 echo "  RubyGems hop-endpoint     gem 'Trusted publishers': owner hopmesh, repo hop-sdk-ruby, workflow release.yml, environment release"

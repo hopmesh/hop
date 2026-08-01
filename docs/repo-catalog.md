@@ -51,6 +51,7 @@ Same Express/Fastify-shaped surface over `libhop`, one per language.
 | --- | --- | --- | --- |
 | `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps |
 | `hop-sdk-android` | `sdk/android` | Maven (AAR) | Android apps |
+| `hop-sdk-react-native` | `sdk/react-native` | npm `@hop-mesh/react-native` (wraps the apple + android SDKs) | React Native apps |
 | `hop-embedded` | `sdk/embedded` | PlatformIO (`Hop`) | ESP32 / Arduino / MCU firmware |
 
 ## Bearers (per-platform transports)
@@ -86,6 +87,6 @@ subsystems, not standalone deliverables.
 
 ## Rough count
 
-~18 public repos: 5 core, 6 server SDKs, 2 client SDKs, 2 bearer sets, 2 drivers, 3 services (minus any
-collapsed by the **(open)** decisions above). Each gets the marketable README + brand mark; the
-`hop-sdk-node` mirror is the first one live.
+~19 public repos: 5 core, 6 server SDKs, 3 client SDKs (apple, android, react-native), 2 bearer sets, 2
+drivers, 3 services (minus any collapsed by the **(open)** decisions above). Each gets the marketable
+README + brand mark; the `hop-sdk-node` mirror is the first one live.
