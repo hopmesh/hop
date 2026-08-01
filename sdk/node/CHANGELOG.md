@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- per-mirror repository, and retryable release artifacts (bf04449)
+- declare the repository so npm provenance validates (c70e006)
 - pass the PR ref as COPYBARA_SOURCEREF; drop the leaked probe (31cec8a)
 - guard fixed-32-byte C-ABI reads in all wrappers (ADV18-06) (c95c826)
 - pass-5 audit remediation - DNSSEC name-hijack (CRITICAL) + Node reply UAF (HIGH) (#138) (d207acc)
@@ -21,6 +23,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)

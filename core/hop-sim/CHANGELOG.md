@@ -8,10 +8,12 @@ git-cliff. Do not edit by hand.
 - cover Destination::Vaccine in every workspace crate (relay/relayd/hop-sim) + workspace fmt/clippy (e611c4d)
 
 ### Chore
+- invert the license tiers, FSL moves from core to services (14d7fec)
 - purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - correct claims stated more strongly than the code supports (CLAIM-001..009) (f3fbfbf)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)

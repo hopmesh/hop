@@ -5,4 +5,5 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Features
-- cross-platform React Native client SDK over the native iOS and Android Hop SDKs
+- cross-platform React Native client SDK (@hop-mesh/react-native) (26ac050)
+

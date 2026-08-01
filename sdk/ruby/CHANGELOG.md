@@ -4,6 +4,9 @@ Notable changes, generated from [conventional commits](https://www.conventionalc
 git-cliff. Do not edit by hand.
 ## Unreleased
 
+### Bug Fixes
+- per-mirror repository, and retryable release artifacts (bf04449)
+
 ### CI
 - bump create-github-app-token to v3.2.0 across all mirrored components (efc9f6c)
 - per-repo release workflows (publish on a vX.Y.Z tag) (277cf32)
@@ -12,6 +15,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)

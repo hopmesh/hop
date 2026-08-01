@@ -9,7 +9,11 @@ git-cliff. Do not edit by hand.
 - revive dead ingest, fail closed, bound stamps, measure bytes and carriage (1912c75)
 - keep the OTLP failure log aggregate-only + panic-isolate the worker (5c865d0)
 
+### Chore
+- invert the license tiers, FSL moves from core to services (14d7fec)
+
 ### Documentation
+- regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)

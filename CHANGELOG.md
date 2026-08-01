@@ -5,6 +5,19 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- the auto-merge author gate shipped dead, and add a guard for the cause (2c913f3)
+- gate auto-merge on the PR author, and ignore local tofu state (42a66b3)
+- parse library.json and build.gradle.kts in the mirror tagger (afa2c21)
+- the examples outgrew the board default partition table (8ad9d65)
+- the release check demanded bytes AGP had already stripped (2a1bb5a)
+- pin the checksum of the first reproducible xcframework (6be047b)
+- make the xcframework reproducible so its checksum can be pinned (82b1bf8)
+- point the published manifest at the v0.0.2 asset it can verify (806a538)
+- per-mirror repository, and retryable release artifacts (bf04449)
+- declare Apache-2.0 on the non-core packages (a9c580f)
+- refresh standalone lock checksums for the published sibling (b123888)
+- declare the repository so npm provenance validates (c70e006)
+- stop rejecting a safe in-tree symlink as unsafe (debacc4)
 - let a coordinated version bump pass CI (b714f8b)
 - make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
 - disabling a transport now actually stops it (PLAT-001) (7b84c71)
@@ -156,6 +169,7 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### CI
+- re-trigger CI (runner allocation failed on the prior run) (08e48a4)
 - stop a disarmed audit being permanently red, and a test using a timeout as control flow (8be22a0)
 - name the third tracked tree the local mirror rewrites (0833e7f)
 - make the local mirror honest and delete the ESP release path it could never run (907520b)
@@ -193,6 +207,8 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- invert the license tiers, FSL moves from core to services (14d7fec)
+- bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 - ignore Kotlin compile-daemon scratch in every gradle tree, not just sdk/android (27bce18)
 - drop two build artifacts a git add -A swept into the previous commit (4f1f1d3)
 - bump com.android.application to 9.3.1 to match the library plugin (dc777e1)
@@ -236,6 +252,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - name where each anonymity caveat is mirrored in source, correctly (3f99766)
 - restate the gradient cap in its real unit, correct the 1-byte prefix figures, record two open residuals (a99af07)
@@ -296,6 +313,8 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (47a86df)
 
 ### Features
+- cross-platform React Native client SDK (@hop-mesh/react-native) (26ac050)
+- tag only when the canonical source is actually releasable (0585d2e)
 - tag mirror releases so published packages can actually ship (0cd1018)
 - finish inbound (import), drop export_pr (41c095e)
 - auto-export changed components on merge to main (1c8c053)
@@ -439,6 +458,7 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - rebuild sim/pkg for the 0.0.2 bump (20d8cae)
 - bump our crates in every standalone/vendored Cargo.lock (aad3ff7)
 - bump every published component to 0.0.2 (7b1ffab)

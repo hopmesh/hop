@@ -21,9 +21,11 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### Chore
+- invert the license tiers, FSL moves from core to services (14d7fec)
 - purge em-dashes and en-dashes from source (d222435)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)

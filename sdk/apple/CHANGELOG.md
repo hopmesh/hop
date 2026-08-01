@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- pin the checksum of the first reproducible xcframework (6be047b)
+- make the xcframework reproducible so its checksum can be pinned (82b1bf8)
+- point the published manifest at the v0.0.2 asset it can verify (806a538)
 - make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
 - disabling a transport now actually stops it (PLAT-001) (7b84c71)
 - `git add -A` committed the swapped Apple manifest, and add the guard for it (228a20d)
@@ -20,6 +23,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
