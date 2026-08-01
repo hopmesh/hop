@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # bootstrap-mirrors.sh: create or update the standalone component repositories.
-# Covers the Apache-2.0 SDKs and the FSL-1.1-ALv2 core, service, bearer, and driver components (FSL is
-# source-available, so those are public too). RUN THIS YOURSELF: creating public repositories is a human
-# action, not something CI or an agent does for you. Idempotent and safe to re-run.
+# Covers the FSL-1.1-ALv2 services and the Apache-2.0 core, SDK, bearer, and driver components (FSL is
+# source-available, so the service mirrors are public too). RUN THIS YOURSELF: creating public
+# repositories is a human action, not something CI or an agent does for you. Idempotent and safe to
+# re-run.
 #
 # Requires: `gh` authenticated with repo + admin rights on the hopmesh org.
 #
-# The SDKs are Apache-2.0, so the mirrors are public. Creating an empty public repo publishes nothing
-# yet; the source only appears once you SEED it (the last section), which you do after the Copybara
-# configs for each component land. See tools/copybara/README.md.
+# Every mirror is public. Creating an empty public repo publishes nothing yet; the source only appears
+# once you SEED it (the last section), which you do after the Copybara configs for each component land.
+# See tools/copybara/README.md.
 set -euo pipefail
 
 ORG="hopmesh"
 
-# "repo|description" per public repo. The SDK repos are Apache-2.0; the core, service, bearer, and
-# driver repos are FSL-1.1-ALv2 (source-available, so still public). Descriptions say what each thing IS
+# "repo|description" per public repo. The service repos are FSL-1.1-ALv2 (source-available, so still
+# public); the core, SDK, bearer, and driver repos are Apache-2.0. Descriptions say what each thing IS
 # with no reference to any private source of truth. Kept bash-3.2 safe (no associative arrays) so it runs
 # on stock macOS.
 MIRRORS="

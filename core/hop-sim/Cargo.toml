@@ -2,7 +2,7 @@
 name = "hop-sim"
 version.workspace = true
 edition.workspace = true
-license-file = "LICENSE.md"
+license = "Apache-2.0"
 repository.workspace = true
 description = "Discrete-event mesh simulator for validating Hop routing (DESIGN.md §12)."
 

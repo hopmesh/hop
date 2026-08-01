@@ -27,9 +27,11 @@ HOP_HEADER = "sdk/hop.h"
 ELIXIR_WORKSPACE = "tools/copybara/elixir-native-Cargo.toml"
 ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"
 
-# (monorepo subtree prefix, standalone repo name). SDKs are Apache-2.0; core/services/bearers/drivers
-# are FSL-1.1-ALv2. All public. Keep this list in sync with tools/copybara/bootstrap-mirrors.sh and
-# docs/repo-catalog.md.
+# (monorepo subtree prefix, standalone repo name). services/* are FSL-1.1-ALv2; core, SDKs, bearers and
+# drivers are Apache-2.0. All public. (This comment previously claimed core/services/bearers/drivers
+# were all FSL, which was never true of bearers or drivers and stopped being true of core with the
+# 2026-07-31 tier inversion. tools/repo-integrity-guard.sh is the enforced source of truth.)
+# Keep this list in sync with tools/copybara/bootstrap-mirrors.sh and docs/repo-catalog.md.
 COMPONENTS = [
     ("sdk/node", "hop-sdk-node"),
     ("sdk/python", "hop-sdk-python"),

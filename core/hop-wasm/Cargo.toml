@@ -10,7 +10,7 @@ name = "hop-wasm"
 # sim/build-wasm.sh for the post-build non-empty assertion that backstops this.
 version.workspace = true
 edition.workspace = true
-license-file = "LICENSE.md"
+license = "Apache-2.0"
 repository.workspace = true
 description = "The wasm/browser binding of hop-core: a real Node<JsStore> (host-owned storage via a StoreBridge), JS-consumable via wasm-bindgen. Its primary consumer today is the browser swarm simulator."
 
