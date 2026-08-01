@@ -13,6 +13,7 @@ git-cliff. Do not edit by hand.
 - drop unused attestation read access (0137b19)
 
 ### Chore
+- bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 - purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
@@ -20,6 +21,7 @@ git-cliff. Do not edit by hand.
 - AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10 + core-ktx 1.19.0 (13 held bumps) (471edb7)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
@@ -35,6 +37,7 @@ git-cliff. Do not edit by hand.
 - self-certifying reachability records (core + ABI) for DNS-free endpoint discovery (#126) (7c31123)
 
 ### Other
+- bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - per-transport switches, and show when the SENDER sent a message (7a923c0)
 - let a host enable and disable individual bearers at runtime (c17b01a)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)

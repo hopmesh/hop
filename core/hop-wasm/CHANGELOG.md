@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- per-mirror repository, and retryable release artifacts (bf04449)
+- refresh standalone lock checksums for the published sibling (b123888)
 - exercise publish_recv_beacon/send_traced/set_default_lifetime_ms/inbox_debug through real wasm (#92) (00c8534)
 - dense contact chains everywhere, honest congestion, per-device bubble truth, real-street clockin (19b3580)
 - per-device delivery truth — sender learns delivery only via ACK (5868328)
@@ -15,10 +17,14 @@ git-cliff. Do not edit by hand.
 - bump create-github-app-token to v3.2.0 across all mirrored components (efc9f6c)
 - per-repo release workflows (publish on a vX.Y.Z tag) (277cf32)
 
+### Chore
+- invert the license tiers, FSL moves from core to services (14d7fec)
+
 ### Dependencies
 - land the grouped rust-dependencies bump (sha2, ed25519/x25519-dalek, chacha20poly1305, snow, rusqlite, p256, uniffi, tungstenite) (#89) (2038ce9)
 
 ### Documentation
+- regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
 - regenerate from conventional commits (096180b)
