@@ -1,0 +1,29 @@
+# Canonical CI for the @hop-mesh/react-native SDK, as a COMPOSITE ACTION so ONE definition is used by
+# both:
+#   - the monorepo root workflow:  uses: ./sdk/react-native/.github/actions/ci
+#   - the standalone hop-sdk-react-native: uses: ./.github/actions/ci  (Copybara strips the prefix)
+# Unlike the native client SDKs, the JS layer needs no libhop: the native halves (ios/, android/) are
+# compiled by a consuming app's build against the platform Hop SDKs, so CI validates the TypeScript
+# surface and the pure marshalling logic here (tsc + the node --test suite with a faked native module).
+name: "Hop React Native SDK CI"
+description: "Type-check and test @hop-mesh/react-native (the JS bridge layer; native halves build in a host app)."
+
+inputs:
+  pkg-dir:
+    description: "Directory of the SDK package. '.' in the standalone repo; 'sdk/react-native' in the monorepo."
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 20.20.2
+
+    - name: Type-check and test
+      shell: bash
+      working-directory: ${{ inputs.pkg-dir }}
+      run: |
+        npm ci
+        npm run typecheck
+        npm test

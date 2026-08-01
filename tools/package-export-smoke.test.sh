@@ -40,7 +40,7 @@ def rejected(call, label):
 
 
 components = exports.load_components(root)
-assert len(components) == 21
+assert len(components) == 22
 exports.check_copybara_contract(root, components)
 with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary:
     temporary = pathlib.Path(temporary)

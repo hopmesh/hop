@@ -49,7 +49,7 @@ assert changed(["sdk/hop.h"]) == sorted(
     ["hop-sdk-android", "hop-sdk-go"]
 ), "C ABI header change does not reach the two mirrors that carry it"
 assert changed(["tools/release-provenance.py"]) == sorted(components), (
-    "the release provenance verifier does not reach all 21 mirrors"
+    "the release provenance verifier does not reach all mirrors"
 )
 assert changed(["tools/release-artifact.py"]) == sorted(components), "release artifact helper misses mirrors"
 assert changed(["tools/package-export-smoke.py"]) == sorted(components), "export contract helper misses mirrors"

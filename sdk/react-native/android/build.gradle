@@ -1,0 +1,50 @@
+// Gradle build for the @hop-mesh/react-native Android module. It depends on the published Hop Android
+// client SDK (sh.hop:hop, from sdk/android / the hop-sdk-android mirror), which bundles libhop's native
+// ABI slices, and on the host app's React Native. Versions are read from the app's root project where
+// possible so this module tracks the app's toolchain.
+
+buildscript {
+  ext.getExtOr = { name, fallback -> rootProject.ext.has(name) ? rootProject.ext.get(name) : fallback }
+
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.5.2"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOr('kotlinVersion', '1.9.24')}"
+  }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+  namespace "sh.hop.reactnative"
+  compileSdkVersion getExtOr("compileSdkVersion", 34)
+
+  defaultConfig {
+    minSdkVersion getExtOr("minSdkVersion", 24)
+    targetSdkVersion getExtOr("targetSdkVersion", 34)
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-native:+"
+  // The Hop Android client SDK (sdk/android), published as sh.hop:hop with libhop native slices.
+  implementation "sh.hop:hop:0.0.2"
+}

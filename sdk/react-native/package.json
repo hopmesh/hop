@@ -1,0 +1,55 @@
+{
+  "name": "@hop-mesh/react-native",
+  "version": "0.0.2",
+  "description": "Run a Hop mesh node in a React Native app: one TypeScript API over the native iOS (sdk/apple) and Android (sdk/android) client SDKs.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hopmesh/hop-sdk-react-native.git"
+  },
+  "homepage": "https://github.com/hopmesh/hop-sdk-react-native",
+  "bugs": {
+    "url": "https://github.com/hopmesh/hop-sdk-react-native/issues"
+  },
+  "license": "Apache-2.0",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index.tsx",
+  "source": "src/index.tsx",
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "HopMesh.podspec",
+    "react-native.config.js",
+    "!android/build",
+    "!android/.gradle",
+    "*.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "hop",
+    "mesh",
+    "react-native",
+    "messaging",
+    "ble",
+    "delay-tolerant",
+    "privacy"
+  ],
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
