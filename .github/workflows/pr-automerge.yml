@@ -25,12 +25,20 @@ jobs:
     # for FORK PRs too, so without this gate a public repo would arm and merge an unrelated
     # contributor's PR with no human in the loop. Branch protection cannot express "only my own PRs
     # auto-merge", so the gate lives here.
-    # NOTE: when the Copybara sync App starts opening import PRs, add its bot login below or those
-    # PRs will never auto-merge.
-    if: >-
-      ${{ !github.event.pull_request.draft
-        && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
-          || github.event.pull_request.user.login == 'dependabot[bot]') }}
+    # NOTE: when the Copybara sync App starts opening import PRs, add its bot login to MAINTAINERS
+    # below or those PRs will never auto-merge.
+    #
+    # Keep this condition on ONE line. The first version of this gate wrapped it across three lines
+    # with `>-` and each continuation indented further than the first. In a YAML folded scalar,
+    # more-indented lines are kept LITERALLY, so the value reached GitHub with real newlines inside
+    # the `${{ }}` instead of folding to spaces, and the job silently skipped on every PR (#389 sat
+    # green and unmerged). A skipped job is not a failed one, so nothing went red.
+    #
+    # The login allowlist is deliberately belt-and-braces with author_association. association alone
+    # is the more elegant check but it is computed from a relationship that can change (org
+    # membership visibility, a role edit) and when it returns something unexpected this job skips
+    # SILENTLY, which is the worst failure shape for a merge gate. An exact login cannot drift.
+    if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
     runs-on: ubuntu-latest
     steps:
       - name: Enable merge-commit auto-merge

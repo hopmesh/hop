@@ -993,6 +993,14 @@ jobs:
         run: bash tools/repo-integrity-guard.test.sh
       - name: Repo integrity guard (critical files non-empty)
         run: bash tools/repo-integrity-guard.sh
+      # A workflow `if:` that retained a literal newline inside its ${{ }} does not evaluate as
+      # intended, and the job SKIPS rather than fails, so CI stays green while the gate does nothing.
+      # That shipped once already (pr-automerge's author gate) and left PRs sitting green and
+      # unmerged. Self-test the guard first, then run it against the tree.
+      - name: Self-test the workflow if guard
+        run: bash tools/workflow-if-guard.test.sh
+      - name: Workflow if guard (no newline inside an expression)
+        run: python3 tools/workflow-if-guard.py
       # Every published package tracks the protocol's major.minor (the Rust workspace version is the
       # anchor); patch may differ per package, but a major/minor bump must move them all together.
       - name: Self-test the version-alignment guard

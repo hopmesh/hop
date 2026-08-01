@@ -31,6 +31,13 @@ repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs,
                            FSL used to sit on core/, which taxed every SDK (they all bind libhop, so a
                            legal review hit FSL anyway) while leaving hop-relayd permissive. Its
                            self-test pins the revert as a failing case.
+workflow-if-guard.py       fails if any workflow `if:` kept a literal newline inside its `${{ }}`. A
+                           folded scalar whose continuation lines are indented FURTHER than the first
+                           preserves them literally instead of folding to spaces, so the expression
+                           never evaluates as written and the job SKIPS. A skip is not a failure, so
+                           CI stays green while a gate silently does nothing. That is exactly how
+                           pr-automerge's author gate shipped dead. Equal-indent folds are fine.
+                           Self-test: workflow-if-guard.test.sh.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
