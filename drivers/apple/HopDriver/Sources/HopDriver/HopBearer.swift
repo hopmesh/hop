@@ -92,12 +92,18 @@ public final class HopBearer: NSObject, ObservableObject {
         /// [`IdentityStore.dbKey()`]; empty = open unencrypted. Only encrypts when libhop is built
         /// `--features sqlcipher` (otherwise the key is accepted but the db stays plain).
         public var dbKey: Data
+        /// `host:port` of a SOCKS5 proxy every relay dial rides through, e.g. `127.0.0.1:9050` for a
+        /// local Tor listener (or an Arti instance the host embeds). Empty or nil dials direct.
+        /// This is what makes an `.onion` relay reachable; hop ships no Tor implementation. A value
+        /// that does not parse makes the relay bearer refuse to dial rather than fall back to the
+        /// clearnet. See `docs/tor.md`.
+        public var socksProxy: String?
         public init(dbPath: String, deviceSeed: Data, appSecret: Data,
                     displayName: String, defaultRelay: String?, role: Role = .full,
-                    dbKey: Data = Data()) {
+                    dbKey: Data = Data(), socksProxy: String? = nil) {
             self.dbPath = dbPath; self.deviceSeed = deviceSeed; self.appSecret = appSecret
             self.displayName = displayName; self.defaultRelay = defaultRelay; self.role = role
-            self.dbKey = dbKey
+            self.dbKey = dbKey; self.socksProxy = socksProxy
         }
     }
 
@@ -671,7 +677,8 @@ public final class HopBearer: NSObject, ObservableObject {
                     let next = self.node.relayNext()
                     return next.isEmpty ? nil : next
                 },
-                reportOutcome: { [weak self] url, ok in self?.node.relayReport(url: url, ok: ok) }
+                reportOutcome: { [weak self] url, ok in self?.node.relayReport(url: url, ok: ok) },
+                socksProxy: config.socksProxy
             ))
         }
         bearerMgr.start()

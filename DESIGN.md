@@ -811,6 +811,15 @@ WebSockets. That keeps one tested implementation serving Apple, Android, embedde
 the simulator, instead of the same failover logic being written once per platform and
 drifting.
 
+**Tor rides in for free, and its limit must be stated plainly.** Because the dial
+string is opaque, a `.onion` endpoint is an ordinary pool candidate: scored, backed
+off, and failed over by the same code as a `wss://` one, so an always-on relay can
+serve both front doors from one mailbox and a client that loses the clearnet path
+moves to Tor on health alone. A host supplies the SOCKS proxy (hop embeds no Tor).
+What that hides is the node's IP, from the relay and from the path. What it does NOT
+hide is the node's hop address: links are mutually authenticated Noise XX, so the
+relay learns who connected regardless of transport. See `docs/tor.md`.
+
 **The online store is an untrusted, best-effort mailbox keyed by destination.**
 - Bundles are already sealed end-to-end (§4), so the store holds **ciphertext it
   cannot read**. It indexes by `(AppId, Destination)` and topic, with TTL.

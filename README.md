@@ -48,6 +48,8 @@ store suites and the client wrappers.
 - `docs/libhop-architecture.md` - the libhop C-ABI architecture.
 - `docs/runbooks/` - operating the relay fleet: enable/disable, incident response,
   quota/429 handling.
+- `docs/tor.md` - reaching a relay over both the public internet and an onion
+  service, what Tor does and does not hide, and why it is not the only path.
 - `docs/release-engineering.md` - versioning, tagging, and publishing.
 - `docs/crash-reporting-design.md`, `docs/identity-backup-restore-design.md` -
   privacy-safe diagnostics and identity recovery designs (pending app work).
