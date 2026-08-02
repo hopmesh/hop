@@ -158,6 +158,24 @@ struct HopDemoApp: App {
         // The scheme/host/query parsing lives in HopDemoKit (unit-tested); the send stays here.
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = (comps?.queryItems ?? []).map { (name: $0.name, value: $0.value) }
+        // Bearer control is checked first and is a SEPARATE host, so it can never be confused with the
+        // send primitive above. It stays behind the same DEBUG gate: letting any co-installed app silence
+        // a transport in a shipped build is a denial-of-service primitive, the availability twin of
+        // apple-05's send-as-user concern.
+        if let bearer = DemoFormat.parseBearerURL(scheme: url.scheme, host: url.host, queryItems: items) {
+            switch bearer {
+            case let .setEnabled(tag, enabled):
+                let accepted = HopBearer.shared.setTransportEnabled(tag, enabled)
+                // Deliberately NOT reading the states here. setTransportEnabled hands the work to
+                // `bearerControl` and returns at once, so a read in this breath races the toggle and would
+                // report the OLD state as though the toggle had failed. `accepted` only means some bearer
+                // carries that tag. Query `hopdemo://bearerstates` afterwards for the real answer.
+                print("HOPLAB HOPAUTO bearer tag=\(tag) requested=\(enabled) accepted=\(accepted) (state read is async, query bearerstates)")
+            case .queryStates:
+                print("HOPLAB HOPAUTO bearerstates states=\(HopBearer.shared.transportStates()) active=\(HopBearer.shared.activeTransportCounts())")
+            }
+            return
+        }
         guard let parsed = DemoFormat.parseAutomationURL(scheme: url.scheme, host: url.host,
                                                          queryItems: items) else { return }
         HopBearer.shared.sendTo(addressBase58: parsed.to, text: parsed.text)

@@ -111,6 +111,51 @@ tk_send() {                 # tk_send <from-id> <to-addr> <marker>
   fi
 }
 
+# --- bearer control (PLAT-001 device leg) -----------------------------------
+# Drives the SAME setTransportEnabled the UI switch calls, via the DEBUG-only hopdemo://bearer link.
+# Without this the per-transport toggle is reachable only by tapping a screen, so PLAT-001's closure
+# contract cannot be re-run or regressed. Both hooks are DEBUG-gated in the apps.
+#
+# IMPORTANT, and the reason these are two calls and not one: setTransportEnabled is ASYNCHRONOUS on
+# both platforms (it hands off to a bearer-control thread). Reading state in the same breath races the
+# toggle and reports the OLD value, which reads as "the toggle failed" when it simply had not applied.
+# So tk_bearer flips, and tk_bearerstates reads AFTER a settle.
+tk_bearer() {               # tk_bearer <id> <tag> <on|off>
+  local id="$1" tag="$2" want="$3" plat handle en
+  case "$want" in
+    on|true|1)   en=true;;
+    off|false|0) en=false;;
+    *) echo "testkit: tk_bearer: want must be on|off, got '$want'" >&2; return 2;;
+  esac
+  plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
+  if [ "$plat" = android ]; then
+    adbx -s "$handle" shell "am start -a android.intent.action.VIEW -d 'hopdemo://bearer?tag=$tag&enabled=$en'" >/dev/null 2>&1
+    sleep "$SEND_SETTLE"
+  else
+    dctlx device process launch --device "$handle" --activate \
+      --payload-url "hopdemo://bearer?tag=$tag&enabled=$en" "$BUNDLE" >/dev/null 2>&1 \
+      || { echo "testkit: tk_bearer $id: URL launch failed, transport NOT toggled (tag=$tag want=$en)" >&2; return 1; }
+    sleep "$SEND_SETTLE"
+  fi
+}
+
+# Ask the app to print the BearerManager's own view. Reads states AND live link counts together,
+# because PLAT-001 is about the two AGREEING: a transport reported disabled must carry no links.
+tk_bearerstates() {         # tk_bearerstates <id>
+  local id="$1" plat handle
+  plat=$(dev_platform "$id"); handle=$(dev_handle "$id")
+  if [ "$plat" = android ]; then
+    adbx -s "$handle" shell "am start -a android.intent.action.VIEW -d 'hopdemo://bearerstates'" >/dev/null 2>&1
+    sleep 1
+    adbx -s "$handle" shell "logcat -d -t 400 | grep 'HOPAUTO bearerstates' | tail -1" 2>/dev/null
+  else
+    dctlx device process launch --device "$handle" --activate \
+      --payload-url "hopdemo://bearerstates" "$BUNDLE" >/dev/null 2>&1 || return 1
+    sleep 1
+    echo "testkit: tk_bearerstates $id: read the line from idevicesyslog (HOPLAB HOPAUTO bearerstates)" >&2
+  fi
+}
+
 # --- verify receipt on the RECEIVER -----------------------------------------
 # quality-net-06: Android's files/messages.json is a DEBOUNCED export that lags in-memory delivery by
 # >90s, so polling it alone false-negatives a real delivery inside the poll window. The driver now
