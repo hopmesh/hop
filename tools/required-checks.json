@@ -18,6 +18,7 @@
     "Ruby endpoint SDK (proofs)",
     "Crystal endpoint SDK (spec)",
     "Elixir endpoint SDK (mix test)",
+    "React Native SDK (typecheck + tests)",
     "CI gate"
   ]
 }

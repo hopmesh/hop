@@ -14,7 +14,23 @@ src/index.tsx   the Hop factory (ephemeral/withSecret/open) + HopAddress; wires 
 ios/            HopMesh.swift (RCTEventEmitter wrapping the Swift HopNode) + HopMesh.m (RCT_EXTERN)
 android/        HopMeshModule.kt (wraps the Kotlin HopNode) + HopMeshPackage.kt + build.gradle
 HopMesh.podspec React-Core + the hop-sdk-apple Swift package (spm_dependency when supported)
+.github/actions/ci  the composite action the ROOT ci.yml calls (this package's only gate)
 ```
+
+## Not mirrored, not published (deliberate)
+
+Unlike every other `sdk/*`, this one is monorepo-only: no `tools/copybara/components.json` entry, no
+mirror repo, no `release.yml`, and `package.json` carries `"private": true` so a stray `npm publish`
+cannot push it. The cross-platform approach is being reworked, so the package is not on npm and the
+README says so. Two consequences worth holding onto:
+
+- **The root `React Native SDK (typecheck + tests)` job is the ONLY gate.** The other SDKs get a second
+  pass in their mirror's own CI; this one does not, so if that job is skipped or removed the package is
+  unverified. It is wired through `changes.outputs.sdk_react_native` and listed in `gate.needs`.
+- **Re-registering means more than adding a components.json line:** restore the mirror workflows
+  (`ci.yml`, `release.yml`, `sync-back.yml`, `cla.yml`) plus `CLA.md`/`CONTRIBUTING.md`, drop
+  `"private": true`, point the repository/homepage URLs back at the mirror, and bump the component
+  count in `tools/package-export-smoke.test.sh`. See `docs/repo-catalog.md`.
 
 ## The bridge contract (keep all three sides in lockstep)
 
@@ -41,7 +57,7 @@ layer runs under plain Node. See `test/*.test.cjs`.
 ## Verify
 
 `npm install` then `npm test` (runs `tsc` to `lib/` and the `node --test` suite). `npm run typecheck`
-for types only. The native halves are compiled by a consuming app's build, not in this package's CI
+for types only. CI runs exactly this via `./sdk/react-native/.github/actions/ci`. The native halves are compiled by a consuming app's build, not in this package's CI
 (same shape as the other client SDKs: the native artifact is provided by the platform SDK, here the
 `hop-sdk-apple` Swift package and the `sh.hop:hop` AAR). Keep the surface in sync with `sdk/apple`
 `Sources/Hop/Hop.swift` and `sdk/android` `src/main/kotlin/sh/hop/Hop.kt`.

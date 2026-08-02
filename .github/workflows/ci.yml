@@ -78,6 +78,7 @@ jobs:
       sdk_ruby: ${{ steps.f.outputs.sdk_ruby }}
       sdk_crystal: ${{ steps.f.outputs.sdk_crystal }}
       sdk_elixir: ${{ steps.f.outputs.sdk_elixir }}
+      sdk_react_native: ${{ steps.f.outputs.sdk_react_native }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -168,6 +169,8 @@ jobs:
               - 'sdk/crystal/**'
             sdk_elixir:
               - 'sdk/elixir/**'
+            sdk_react_native:
+              - 'sdk/react-native/**'
 
   rust:
     name: Rust (test · clippy · fmt)
@@ -1248,6 +1251,21 @@ jobs:
   # filter is fine. Collapsing the required set to this one check lets jobs skip on unrelated PRs without
   # leaving a required check stuck pending (a skipped required check does not reliably satisfy branch
   # protection; a green gate always does).
+  react-native-sdk:
+    name: React Native SDK (typecheck + tests)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_react_native == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The cross-platform RN client SDK wraps sdk/apple + sdk/android through one native bridge. Only
+      # the JS layer is verified here: the ios/ and android/ halves compile in a consuming app's build
+      # against the platform SDKs, so there is no libhop to resolve. Unlike the other SDKs this one is
+      # not mirrored or published (docs/repo-catalog.md), so this job is its ONLY gate.
+      - uses: ./sdk/react-native/.github/actions/ci
+        with:
+          pkg-dir: sdk/react-native
+
   gate:
     name: CI gate
     runs-on: ubuntu-latest
@@ -1269,6 +1287,7 @@ jobs:
       - ruby-sdk
       - crystal-sdk
       - elixir-sdk
+      - react-native-sdk
       - changes
     steps:
       - name: Results

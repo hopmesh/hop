@@ -13,12 +13,14 @@ client SDKs, so your JavaScript talks to the same protocol core on both platform
 The protocol, the crypto, and the wire format all live in that native core; this package only marshals
 values across the React Native bridge and gives you an idiomatic, promise-based surface.
 
-## Install
+## Status: not published yet
+
+This package is **not on npm**. It lives in the Hop monorepo at `sdk/react-native` while the
+cross-platform approach is being reworked, so there is no published release and no mirror repository.
+To try it, depend on the directory from a local checkout:
 
 ```sh
-npm install @hop-mesh/react-native
-# or
-yarn add @hop-mesh/react-native
+npm install /path/to/monorepo/sdk/react-native
 ```
 
 `react` and `react-native` are peer dependencies. This library ships native code, so it needs a custom

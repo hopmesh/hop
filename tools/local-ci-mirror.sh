@@ -137,7 +137,8 @@ CI_COVERAGE=(
   "ruby-sdk|none|the endpoint SDK suites are not run here"
   "crystal-sdk|none|the endpoint SDK suites are not run here, including the crystal tool format check that has broken CI repeatedly"
   "elixir-sdk|none|the endpoint SDK suites are not run here, including the mix format check that has broken CI repeatedly"
-  "gate|none|the aggregate that depends on the other 17; it exists only in CI and is the ONE required context on main"
+  "react-native-sdk|none|the React Native SDK typecheck and JS bridge tests are not run here; unlike the other SDKs it has no mirror CI, so ci.yml is its only gate"
+  "gate|none|the aggregate that depends on the other 18; it exists only in CI and is the ONE required context on main"
 )
 
 step() { printf '%-46s' "$1"; shift; if "$@" >"$LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$LOG" | sed 's/^/    /'; fi; }

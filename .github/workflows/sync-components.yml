@@ -24,7 +24,6 @@ on:
           - hop-sdk-elixir
           - hop-sdk-apple
           - hop-sdk-android
-          - hop-sdk-react-native
           - hop-embedded
           - hop-core
           - libhop
