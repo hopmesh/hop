@@ -22,6 +22,7 @@ on:
           - hop-sdk-ruby
           - hop-sdk-crystal
           - hop-sdk-elixir
+          - hop-sdk-flutter
           - hop-sdk-apple
           - hop-sdk-android
           - hop-embedded

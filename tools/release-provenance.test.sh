@@ -191,6 +191,10 @@ publish_markers = (
     "hex.pm/api/packages/",
     "softprops/action-gh-release@",
     "pio pkg publish",
+    # `--force` on purpose: it matches the real publish step but NOT the build
+    # job's `dart pub publish --dry-run` validation, so the provenance-precedes-
+    # publish ordering check anchors on the actual publish.
+    "dart pub publish --force",
 )
 native_components = {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"}
 for workflow, component in expected_workflows.items():

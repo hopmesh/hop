@@ -100,6 +100,12 @@ def resolve_version(prefix, root):
         if version:
             return version, "mix.exs"
 
+    pubspec = directory / "pubspec.yaml"
+    if pubspec.is_file():
+        version = _first_match(r"^version:\s*['\"]?([0-9][^'\"\s]*)", pubspec.read_text(encoding="utf-8"))
+        if version:
+            return version, "pubspec.yaml"
+
     for gemspec in sorted(directory.glob("*.gemspec")):
         text = gemspec.read_text(encoding="utf-8")
         version = _first_match(r"\.version\s*=\s*['\"]([0-9][^'\"]*)['\"]", text)

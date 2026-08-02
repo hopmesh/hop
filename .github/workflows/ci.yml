@@ -78,6 +78,7 @@ jobs:
       sdk_ruby: ${{ steps.f.outputs.sdk_ruby }}
       sdk_crystal: ${{ steps.f.outputs.sdk_crystal }}
       sdk_elixir: ${{ steps.f.outputs.sdk_elixir }}
+      sdk_flutter: ${{ steps.f.outputs.sdk_flutter }}
       sdk_react_native: ${{ steps.f.outputs.sdk_react_native }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,6 +170,8 @@ jobs:
               - 'sdk/crystal/**'
             sdk_elixir:
               - 'sdk/elixir/**'
+            sdk_flutter:
+              - 'sdk/flutter/**'
             sdk_react_native:
               - 'sdk/react-native/**'
 
@@ -1244,6 +1247,51 @@ jobs:
           python3 tools/package-export-smoke.py validate \
             --component hop-sdk-elixir --work-root "$RUNNER_TEMP/package-validation"
 
+  flutter-sdk:
+    name: Flutter endpoint SDK (proofs)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_flutter == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Install the Dart SDK by download + checksum (same self-contained pattern as
+      # the XcodeGen step), so the job pins the toolchain by hash rather than an
+      # unpinnable third-party action tag.
+      - name: Install Dart SDK (pinned by sha256)
+        run: |
+          ver=3.5.4
+          archive="$RUNNER_TEMP/dartsdk.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://storage.googleapis.com/dart-archive/channels/stable/release/${ver}/sdk/dartsdk-linux-x64-release.zip" \
+            --output "$archive"
+          printf '%s  %s\n' 8d0c5e34f2a9d6b9f5ebf05252ae1703893f6087d547c631b390aef2d0cd6967 "$archive" \
+            | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/dart"
+          echo "$RUNNER_TEMP/dart/dart-sdk/bin" >> "$GITHUB_PATH"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-flutter-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-flutter-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Analyze + format + test (in-process + TCP + reach + WSS discovery)
+        working-directory: sdk/flutter
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          dart pub get
+          dart analyze
+          dart format --output=none --set-exit-if-changed .
+          dart test
+
   # Aggregate gate: the single required check for branch protection, and the only deploy trigger. The
   # runtime-deploy workflow fires on THIS workflow's success conclusion, so "CI is green" is the deploy
   # signal, no separate GCP-side re-verification. It `needs:` every other job and, via `if: always()`,
@@ -1287,6 +1335,7 @@ jobs:
       - ruby-sdk
       - crystal-sdk
       - elixir-sdk
+      - flutter-sdk
       - react-native-sdk
       - changes
     steps:

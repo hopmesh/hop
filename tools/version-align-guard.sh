@@ -44,6 +44,7 @@ check "sdk/python (pyproject.toml)" "$(ver_in sdk/python/pyproject.toml '^versio
 check "sdk/ruby (gemspec)"          "$(ver_in sdk/ruby/hop-endpoint.gemspec 'spec\.version')"
 check "sdk/crystal (shard.yml)"     "$(ver_in sdk/crystal/shard.yml '^version:')"
 check "sdk/elixir (mix.exs)"        "$(ver_in sdk/elixir/mix.exs 'version:')"
+check "sdk/flutter (pubspec.yaml)"  "$(ver_in sdk/flutter/pubspec.yaml '^version:')"
 # Both silently stayed on 0.0.1 through the 0.0.2 bump and were the last two components unable to
 # publish. Note what this guard can and cannot do about that: it compares MAJOR.MINOR only and
 # deliberately allows patch drift, so it would NOT have caught 0.0.1 against a 0.0.2 anchor. The fix

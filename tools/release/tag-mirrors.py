@@ -90,6 +90,9 @@ def version_from_text(filename, text):
     if name == "mix.exs":
         match = re.search(r"version:\s*\"([0-9][^\"]*)\"", text)
         return match.group(1) if match else None
+    if name == "pubspec.yaml":
+        match = re.search(r"^version:\s*['\"]?([0-9][^'\"\s]*)", text, re.MULTILINE)
+        return match.group(1) if match else None
     if name.endswith(".gemspec"):
         match = re.search(r"\.version\s*=\s*['\"]([0-9][^'\"]*)['\"]", text)
         return match.group(1) if match else None

@@ -57,6 +57,7 @@ cases = [
     ("Cargo.toml", '[package]\nname = "x"\nversion = "1.2.3"\n', "1.2.3"),
     ("shard.yml", "name: x\nversion: 1.2.3\n", "1.2.3"),
     ("mix.exs", 'defp project do\n[version: "1.2.3"]\nend\n', "1.2.3"),
+    ("pubspec.yaml", "name: x\nversion: 1.2.3\n", "1.2.3"),
     ("hop-endpoint.gemspec", 'Gem::Specification.new do |s|\n  s.version = "1.2.3"\nend\n', "1.2.3"),
     ("version.rb", 'module Hop\n  VERSION = "1.2.3"\nend\n', "1.2.3"),
 ]
