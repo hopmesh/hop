@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -423,6 +424,23 @@ def render_coverage(data: dict[str, Any]) -> str:
     return "".join(cards)
 
 
+# Break the document across lines before writing it. The renderer used to emit the entire <body> as
+# ONE line: 373,892 characters, 96% of a 387KB report. That is not a cosmetic problem. GitHub's
+# dorny/paths-filter failed outright on a PR carrying such a file, which reddened "Detect changed
+# areas" and cascaded to every downstream job, and the same report's 407KB JSON ledger passed in the
+# same PR because it is pretty-printed. Newlines between block-level closers are insignificant in
+# HTML outside <pre>, and any literal tag inside a <pre> has already been escaped by esc(), so this
+# cannot alter rendering.
+LINE_BREAK_BLOCKS = ("</section>", "</header>", "</footer>", "</article>", "</table>",
+                     "</tr>", "</ul>", "</ol>", "</details>", "</nav>", "</main>", "</div>")
+
+
+def line_break_html(html: str) -> str:
+    for tag in LINE_BREAK_BLOCKS:
+        html = html.replace(tag, tag + "\n")
+    return re.sub(r"\n{3,}", "\n\n", html)
+
+
 def render_report(data: dict[str, Any]) -> str:
     errors = validate_ledger(data)
     if errors:
@@ -611,7 +629,8 @@ def render_report(data: dict[str, Any]) -> str:
 def write_report(data: dict[str, Any], output: str | Path) -> None:
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report(data), encoding="utf-8")
+    path.write_text(line_break_html(render_report(data)), encoding="utf-8")
+
 
 
 def main() -> int:
