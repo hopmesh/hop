@@ -182,6 +182,35 @@ class MainActivity : ComponentActivity() {
                 android.util.Log.i("HOPLOG", "HOPAUTO sent to=${to.take(8)} text=$text")
             }
         }
+        // `hopdemo://bearer?tag=BT&enabled=false` drives the SAME setTransportEnabled the UI switch
+        // calls, and `hopdemo://bearerstates` prints the manager's view. Without these the per-transport
+        // toggle is reachable only by tapping a screen, so PLAT-001's closure contract (assert
+        // bearerStates()["BT"] == false agrees with activeTransports() while a peer is dialing) cannot be
+        // driven by a script and therefore cannot be re-run or regressed. A control that exists but
+        // cannot be exercised by the thing that needs to verify it is the defect class this audit keeps
+        // finding, so the toggle gets an automation path on the same DEBUG gate as the send hook above.
+        if (d.scheme == "hopdemo" && d.host == "bearer") {
+            val tag = d.getQueryParameter("tag")
+            val enabled = d.getQueryParameter("enabled")?.toBooleanStrictOrNull()
+            if (!tag.isNullOrBlank() && enabled != null) {
+                val accepted = bearer.setTransportEnabled(tag, enabled)
+                // Deliberately NOT reading transportStates() here. setTransportEnabled hands the work to
+                // the bearer-control thread and returns immediately, so a read in this breath races the
+                // toggle and would report the OLD state as if the toggle had failed. `accepted` only means
+                // a bearer carries that tag. Poll `hopdemo://bearerstates` afterwards for the real answer.
+                android.util.Log.i(
+                    "HOPLOG",
+                    "HOPAUTO bearer tag=$tag requested=$enabled accepted=$accepted (state read is async, query bearerstates)",
+                )
+            }
+        }
+        if (d.scheme == "hopdemo" && d.host == "bearerstates") {
+            android.util.Log.i(
+                "HOPLOG",
+                "HOPAUTO bearerstates states=${bearer.transportStates()} " +
+                    "active=${bearer.activeTransportCounts()}",
+            )
+        }
     }
 
     override fun onResume() {

@@ -14,6 +14,9 @@
 #   tk delivered <from-id> <marker> -> true/false (end-to-end ack on sender)
 #   tk fg <id> | tk bg <id>         foreground / background the app
 #   tk nodestate <id>               last NODESTATE log line (android)
+#   tk bearer <id> <tag> <on|off>   flip one transport (BT|LAN|Relay|P2P) via the debug hook
+#   tk bearerstates <id>            print the BearerManager's states + live link counts
+#     the toggle is ASYNC, so bearer then bearerstates, never one call expecting both
 #   tk logclear <id> | tk logcap <id> <outfile>
 #   tk pull <id>                    pull iOS automation.json
 #   tk name <id> | tk platform <id> | tk transport <id>
@@ -38,6 +41,8 @@ case "$cmd" in
   fg)         tk_fg "$@";;
   bg)         tk_bg "$@";;
   nodestate)  tk_nodestate "$@";;
+  bearer)     tk_bearer "$@";;
+  bearerstates) tk_bearerstates "$@";;
   logclear)   tk_logclear "$@";;
   logcap)     tk_logcap "$@";;
   pull)       tk_pull_automation "$@";;

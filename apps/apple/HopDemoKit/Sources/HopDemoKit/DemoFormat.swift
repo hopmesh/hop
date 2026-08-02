@@ -223,6 +223,41 @@ public enum DemoFormat {
         return (to, text)
     }
 
+    /// Parse `hopdemo://bearer?tag=<BT|LAN|Relay|P2P>&enabled=<true|false>` into (tag, enabled), and
+    /// `hopdemo://bearerstates` into a state-query request. Returns nil for anything else.
+    ///
+    /// This exists so PLAT-001's closure contract can be driven by a SCRIPT. The contract is to assert,
+    /// while a peer is dialing, that no `LINKFLOW SEAM UP xport=BT` follows the toggle and that
+    /// `bearerStates()["BT"] == false` agrees with `activeTransports()`. Before this, the toggle was
+    /// reachable only by tapping the UI, so the assertion could not be re-run or regressed. A control
+    /// that cannot be exercised by the thing meant to verify it is exactly the defect class this audit
+    /// keeps surfacing.
+    ///
+    /// `enabled` is parsed STRICTLY: only the exact strings "true" and "false". A permissive parse
+    /// would silently read a typo as `false` and a test would then "prove" a toggle that never ran.
+    public static func parseBearerURL(scheme: String?,
+                                      host: String?,
+                                      queryItems: [(name: String, value: String?)]) -> BearerAutomation? {
+        guard scheme == "hopdemo" else { return nil }
+        if host == "bearerstates" { return .queryStates }
+        guard host == "bearer" else { return nil }
+        guard let tag = queryItems.first(where: { $0.name == "tag" })?.value, !tag.isEmpty,
+              let raw = queryItems.first(where: { $0.name == "enabled" })?.value else { return nil }
+        switch raw {
+        case "true": return .setEnabled(tag: tag, enabled: true)
+        case "false": return .setEnabled(tag: tag, enabled: false)
+        default: return nil
+        }
+    }
+
+    /// What a `hopdemo://bearer*` link asked for.
+    public enum BearerAutomation: Equatable {
+        /// Flip one shared transport, the same call the UI switch makes.
+        case setEnabled(tag: String, enabled: Bool)
+        /// Report the manager's own view of transport states and live link counts.
+        case queryStates
+    }
+
     /// Parse a `HOP_AUTO=send|<base58>|<marker text>` launch-env spec into (to, text). Only the
     /// first two "|" are structural; any further pipes are rejoined into the marker text so a
     /// message body may itself contain "|". Returns nil unless there are >= 3 parts led by "send".

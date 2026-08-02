@@ -387,6 +387,23 @@ public final class HopBearer: NSObject, ObservableObject {
         return true
     }
 
+    /// Each shared transport's enabled flag, read straight from the `BearerManager` rather than from the
+    /// `@Published transports` mirror. Read-only; for tests and the debug automation hook.
+    ///
+    /// PLAT-001's closure contract can only be settled ON HARDWARE: assert, while a peer is dialing, that
+    /// `bearerStates()["BT"] == false` AGREES with ``activeTransportCounts()``. The published mirror
+    /// cannot answer that, because `setTransportEnabled` updates it from `bearerControl` and it can lag.
+    ///
+    /// Note what Apple's `stop()` does and does NOT promise, or a device test will chase a non-bug: it
+    /// stops the bearer as a LINK SOURCE synchronously, but the RADIO teardown is deferred to `bleQueue`,
+    /// so the advertiser and scanner keep running until that block drains. Assert "no new linkUp", never
+    /// "radio silent". Android's `stop()` is synchronous by contrast; see bearers/CLAUDE.md.
+    public func transportStates() -> [String: Bool] { bearerMgr.bearerStates() }
+
+    /// Live link count per transport: the other half of the PLAT-001 assertion, since a transport
+    /// reported disabled must not still be carrying links. Read-only.
+    public func activeTransportCounts() -> [String: Int] { bearerMgr.activeTransports() }
+
     /// Serial queue for transport enable/disable. Deliberately NOT `core`: a bearer's start/stop
     /// touches radios and can block, and `core` is the single serial queue that owns all node state,
     /// so blocking it would stall every other link, the relay, and `tick()`. That is the same coupling

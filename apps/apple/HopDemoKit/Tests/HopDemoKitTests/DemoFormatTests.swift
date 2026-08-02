@@ -507,4 +507,52 @@ final class DemoFormatTests: XCTestCase {
         XCTAssertEqual(DemoFormat.originStamp(withSeconds, now: now, calendar: utc), "11:30")
         XCTAssertFalse(DemoFormat.originStamp(withSeconds, now: now, calendar: utc).contains("59"))
     }
+
+    // MARK: parseBearerURL
+
+    func testBearerURLParsesATransportToggle() {
+        let q = [(name: "tag", value: Optional("BT")), (name: "enabled", value: Optional("false"))]
+        XCTAssertEqual(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer", queryItems: q),
+                       .setEnabled(tag: "BT", enabled: false))
+        let on = [(name: "tag", value: Optional("LAN")), (name: "enabled", value: Optional("true"))]
+        XCTAssertEqual(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer", queryItems: on),
+                       .setEnabled(tag: "LAN", enabled: true))
+    }
+
+    func testBearerStatesHostNeedsNoQuery() {
+        XCTAssertEqual(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearerstates", queryItems: []),
+                       .queryStates)
+    }
+
+    /// The case that matters most for the device harness. A permissive bool parse would read a typo as
+    /// `false`, the toggle would never run, and the test would then "prove" a control it never exercised.
+    func testBearerURLRejectsAnythingButExactlyTrueOrFalse() {
+        for bad in ["False", "TRUE", "0", "1", "yes", "no", "", "flase"] {
+            let q = [(name: "tag", value: Optional("BT")), (name: "enabled", value: Optional(bad))]
+            XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer", queryItems: q),
+                         "enabled=\(bad) must not parse: a loose parse silently fakes a passing test")
+        }
+    }
+
+    func testBearerURLRejectsWrongSchemeHostOrMissingItems() {
+        let q = [(name: "tag", value: Optional("BT")), (name: "enabled", value: Optional("false"))]
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "https", host: "bearer", queryItems: q))
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "send", queryItems: q))
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer",
+                                               queryItems: [(name: "tag", value: Optional("BT"))]))
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer",
+                                               queryItems: [(name: "enabled", value: Optional("false"))]))
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "bearer",
+                                               queryItems: [(name: "tag", value: Optional("")),
+                                                            (name: "enabled", value: Optional("false"))]))
+    }
+
+    /// The bearer link must not be mistaken for a send, and vice versa: the send hook is a
+    /// send-as-user primitive, so the two surfaces must stay disjoint.
+    func testBearerAndSendParsersDoNotOverlap() {
+        let bearerQ = [(name: "tag", value: Optional("BT")), (name: "enabled", value: Optional("false"))]
+        XCTAssertNil(DemoFormat.parseAutomationURL(scheme: "hopdemo", host: "bearer", queryItems: bearerQ))
+        let sendQ = [(name: "to", value: Optional("abc")), (name: "text", value: Optional("m"))]
+        XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "send", queryItems: sendQ))
+    }
 }
