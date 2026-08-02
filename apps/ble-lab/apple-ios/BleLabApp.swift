@@ -17,9 +17,9 @@
 import SwiftUI
 import CoreBluetooth
 import UIKit
-import HopBearerCore    // BearerManager + the contract
+import HopContract    // BearerManager + the contract
 import HopBearerBle     // BleBearer + the bleQueue/bleRunLoop/bleAppInBackground host hooks
-import HopBearerProof   // shared clean-room consumer: ProofSink (same one blepeer uses)
+   // shared clean-room consumer: ProofSink (same one blepeer uses)
 
 // MARK: - §8.1 Dedicated I/O thread (owns bleRunLoop) -------------------------------------------
 
@@ -67,8 +67,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     // what the beacon wake pokes; the sink is the proof consumer (kept alive, the manager holds it weakly).
     static var manager: BearerManager?
     static var bearer: BleBearer?
-    private var sink: ProofSink?
-    private var beacon: BeaconWake?
+    // Static so the URL hook can tear these down and rebuild them without a relaunch.
+    static var sink: ProofSink?
+    static var beacon: BeaconWake?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -85,7 +86,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let cbc = launchOptions?[.bluetoothCentrals] != nil
         log("STATE", "COLD LAUNCH background=\(bg) location=\(loc) bluetoothCentrals=\(cbc)")
 
-        // Same bootstrap shape as the macOS CLI (blepeer): manager ← register(bearer); proof consumer
+        // The dormant gate, checked BEFORE any CB manager is constructed. iOS relaunches this app on
+        // BLE events precisely BECAUSE a manager was created with a restore identifier, so returning
+        // here is what makes it STAY down rather than merely be closed. Terminating it never worked:
+        // it was observed back within seconds every time, which is what made the one-hop-service to
+        // two-hop-services transition impossible to stage on hardware. See LabRadio.swift.
+        guard LabRadio.isEnabled else {
+            log("STATE", "DORMANT radio=off: no CB manager, no beacon. Wake: blelab://radio?enabled=true")
+            return true
+        }
+
+        AppDelegate.startRadios()
+        return true
+    }
+
+    /// Bring the bearer up. Split out of the launch path so the URL hook can wake a dormant app
+    /// without a relaunch, and idempotent so waking an already-live app is a no-op rather than a
+    /// second CBCentralManager on the same restore identifier.
+    static func startRadios() {
+        guard manager == nil else {
+            log("STATE", "radio=on already, ignoring duplicate start")
+            return
+        }
+        // Same bootstrap shape as the macOS CLI (blepeer): manager <- register(bearer); proof consumer
         // wired; start(). start() re-creates the CB managers with the SAME restore IDs (Layer B).
         let manager = BearerManager()
         let bearer = BleBearer(myId: BleBearer.randomNodeId())
@@ -96,11 +119,39 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         manager.start()
         AppDelegate.manager = manager
         AppDelegate.bearer = bearer
-        self.sink = sink
+        AppDelegate.sink = sink
 
-        beacon = BeaconWake { reason in bearer.wake(reason) }   // Layer C
-        beacon?.start()
-        return true
+        let beacon = BeaconWake { reason in bearer.wake(reason) }   // Layer C
+        beacon.start()
+        AppDelegate.beacon = beacon
+        log("STATE", "radio=on: bearer started")
+    }
+
+    /// Drop the bearer and release the radio NOW, not at the next launch. The persisted flag is what
+    /// keeps it down across the state-restoration relaunch that follows any stray BLE event.
+    static func stopRadios() {
+        guard let m = manager else {
+            log("STATE", "radio=off already, nothing to stop")
+            return
+        }
+        m.stop()
+        manager = nil
+        bearer = nil
+        sink = nil
+        beacon = nil
+        log("STATE", "radio=off: bearer stopped and released")
+    }
+
+    /// `blelab://radio?enabled=true|false`. Persists FIRST so a relaunch triggered by the very BLE
+    /// event we are shutting down still comes back in the requested state.
+    static func handleRadioURL(_ url: URL) {
+        guard let want = LabRadio.parse(url: url) else {
+            log("STATE", "HOPAUTO blelab radio: unparsable url \(url), ignored")
+            return
+        }
+        LabRadio.isEnabled = want
+        if want { startRadios() } else { stopRadios() }
+        log("STATE", "HOPAUTO blelab radio=\(want ? "on" : "off") persisted=\(LabRadio.isEnabled)")
     }
 }
 
@@ -112,6 +163,10 @@ struct BleLabApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                // The dormant switch: blelab://radio?enabled=true|false. This app is the coexistence
+                // fixture for the multi-app BLE defect, so it must be parkable on demand rather than
+                // uninstalled, which would hide the defect instead of fixing it.
+                .onOpenURL { url in AppDelegate.handleRadioURL(url) }
         }
         .onChange(of: scenePhase) { phase in
             // SPEC R7: widen the liveness deadline when iOS sends the app to background.

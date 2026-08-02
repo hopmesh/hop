@@ -114,6 +114,9 @@ jobs:
               - 'drivers/apple/**'
               - 'sdk/apple/**'
               - 'apps/apple/**'
+              # ble-lab is under apps/ble-lab, NOT apps/apple, so the pattern above never matched it
+              # and an edit there ran no Apple job at all. That is how it stayed broken unnoticed.
+              - 'apps/ble-lab/**'
             wasm:
               - 'mockups/**'
             web:
@@ -619,6 +622,54 @@ jobs:
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build
+
+      # ble-lab is the clean-room BLE fixture and the ONLY thing that reproduces the multi-app BLE
+      # defect (two hop-embedded apps on one device publishing the same service UUID with different
+      # L2CAP PSMs). It was built by NO job, so when 2ae1d753 deleted apps/apple/HopBearers as
+      # "orphaned" this app silently stopped building and stayed broken: the only working copy was an
+      # old binary on one phone, unrecreatable from source. A fixture nothing compiles is a fixture
+      # that quietly rots, so it is gated here. Reuses the xcodegen fetched by the step above.
+      - name: Build HopBleLab (no signing)
+        working-directory: apps/ble-lab/apple-ios
+        run: |
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
+          xcodegen generate
+          xcodebuild \
+            -project HopBleLab.xcodeproj \
+            -scheme HopBleLab \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # The dormant switch is what makes the fixture usable: CoreBluetooth state restoration relaunches
+      # this app on any BLE event, so without a PERSISTED off-switch checked before any CB manager is
+      # constructed it cannot be parked, and the one-hop-service to two-hop-services transition cannot
+      # be staged. The strict true/false parse is the load-bearing part: a loose parse would read a typo
+      # as off, park the fixture, and let a coexistence run "prove" a scenario it never set up.
+      - name: Test the BLE Lab dormant switch
+        working-directory: apps/ble-lab/apple-ios
+        run: |
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
+          # Pick a simulator that actually EXISTS on this runner rather than naming one. The first
+          # version of this step hardcoded "name=iPhone 16" and failed with "Unable to find a device
+          # matching the provided destination specifier" on the self-hosted mac, which has a
+          # different simulator set. Fail loudly if there is no booted-capable iPhone at all, rather
+          # than skipping the tests and reporting green.
+          dest=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+                ids=[x['udid'] for v in d.values() for x in v if 'iPhone' in x['name']]; \
+                print(ids[0] if ids else '')")
+          if [ -z "$dest" ]; then
+            echo "no iPhone simulator available on this runner; cannot run HopBleLabTests" >&2
+            exit 1
+          fi
+          xcodebuild test \
+            -project HopBleLab.xcodeproj \
+            -scheme HopBleLab \
+            -destination "id=$dest" \
+            -only-testing:HopBleLabTests \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
   wasm:
     name: WASM sim (wasm32 build + swarm invariants)

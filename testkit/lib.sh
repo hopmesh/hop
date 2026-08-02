@@ -156,6 +156,47 @@ tk_bearerstates() {         # tk_bearerstates <id>
   fi
 }
 
+# --- BLE Lab dormant switch (multi-app coexistence fixture) ------------------
+# HopBleLab is the ONLY thing that reproduces the multi-app BLE defect: two hop-embedded apps on one
+# iOS device publish the SAME service UUID with different L2CAP PSMs, so a remote central reads
+# whichever the GATT stack returns and dials the wrong one. Measured on hardware: HopDemo psm=192,
+# HopBleLab psm=193, an Android read 193 while trying to reach HopDemo and the channel closed at
+# once. So the app STAYS installed; uninstalling would hide the defect rather than fix it.
+#
+# It could not be turned OFF either. CoreBluetooth state restoration relaunches it on any BLE event,
+# so terminating it is futile and it was observed back within seconds every time. That made the
+# decisive experiment (a device publishing ONE hop service, then a SECOND appearing) impossible to
+# stage. The app now carries a PERSISTED dormant switch, checked before any CB manager is
+# constructed, so it stays down across the relaunch. These drive it.
+tk_blelab() {               # tk_blelab <id> <on|off>
+  local id="$1" want="$2" handle en ok b
+  case "$want" in
+    on|true|1)   en=true;;
+    off|false|0) en=false;;
+    *) echo "testkit: tk_blelab: want must be on|off, got '$want'" >&2; return 2;;
+  esac
+  [ "$(dev_platform "$id")" = apple ] || { echo "testkit: tk_blelab: iOS only, BLE Lab is not installed on Android" >&2; return 2; }
+  handle=$(dev_handle "$id")
+  ok=1
+  # Try both bundle ids: the tree builds sh.hopme.blelab, older installs carry co.hopmesh.blelab.
+  for b in sh.hopme.blelab co.hopmesh.blelab; do
+    if dctlx device process launch --device "$handle" --activate \
+         --payload-url "blelab://radio?enabled=$en" "$b" >/dev/null 2>&1; then ok=0; break; fi
+  done
+  [ "$ok" -eq 0 ] || { echo "testkit: tk_blelab $id: could not reach BLE Lab under either bundle id" >&2; return 1; }
+  sleep 2
+  echo "testkit: tk_blelab $id radio=$en (verify with tk blelabstate $id)"
+}
+
+# Is BLE Lab running, and if so is it dormant? A running-but-DORMANT process is a PASS: the switch
+# is checked before any CB manager exists, so a relaunched dormant process holds no radio.
+tk_blelabstate() {          # tk_blelabstate <id>
+  local id="$1" handle n
+  handle=$(dev_handle "$id")
+  n=$(dctlx device info processes --device "$handle" 2>/dev/null | grep -ci blelab)
+  echo "blelab_procs=$n (running-but-dormant is expected; its log says DORMANT radio=off)"
+}
+
 # --- verify receipt on the RECEIVER -----------------------------------------
 # quality-net-06: Android's files/messages.json is a DEBOUNCED export that lags in-memory delivery by
 # >90s, so polling it alone false-negatives a real delivery inside the poll window. The driver now

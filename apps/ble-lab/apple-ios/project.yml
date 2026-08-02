@@ -8,10 +8,14 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
 packages:
-  HopBearers:
-    # The shared transport package. The iOS clean-room app now runs the SAME BleBearer the macOS CLI
-    # (blepeer) runs, a fix proven in the package is this app's fix with no copy. Was: ../apple/HopBleLab.swift.
-    path: ../../apple/HopBearers
+  # Repointed after 2ae1d753 deleted apps/apple/HopBearers as "orphaned". It was not orphaned: this
+  # app depended on it, and no CI job builds ble-lab, so the breakage went unnoticed and HopBleLab
+  # became unbuildable from source. The app still runs the SAME BleBearer the product runs, which is
+  # the entire point of the clean room; it now takes it from the real package.
+  HopBearerBle:
+    path: ../../../bearers/apple/HopBearerBle
+  apple:
+    path: ../../../sdk/apple
 targets:
   HopBleLab:
     type: application
@@ -20,13 +24,15 @@ targets:
       - BleLabApp.swift
       - BeaconWake.swift
       - ContentView.swift
+      - LabRadio.swift
+      - ProofSink.swift
     dependencies:
-      - package: HopBearers
-        product: HopBearerCore
-      - package: HopBearers
+      # HopBearerCore became HopContract and moved into sdk/apple; HopBearerProof is gone and its
+      # ProofSink is restored as an app source (ProofSink.swift).
+      - package: HopBearerBle
         product: HopBearerBle
-      - package: HopBearers
-        product: HopBearerProof
+      - package: apple
+        product: HopContract
     info:
       path: HopBleLab-Info.plist
       properties:
@@ -50,6 +56,22 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: 8H7HVPHS87
         CODE_SIGN_STYLE: Automatic
+
+  HopBleLabTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests/LabRadioTests.swift
+    dependencies:
+      - target: HopBleLab
+    settings:
+      base:
+        DEVELOPMENT_TEAM: 8H7HVPHS87
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HopBleLab.app/HopBleLab"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 
   HopBleLabUITests:
     type: bundle.ui-testing
