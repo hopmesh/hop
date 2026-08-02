@@ -17,6 +17,7 @@ git-cliff. Do not edit by hand.
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (b56bb49)
 
 ### Documentation
+- regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
@@ -54,5 +55,6 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (afd52df)
 
 ### Testing
+- make the per-transport toggle drivable from automation, so PLAT-001 can be proven on hardware (7c889a9)
 - headless-node suite raises HopBearer.swift 12.8% -> 88.5% (F -> A) + CI coverage floor (#64) (75f4507)
 
