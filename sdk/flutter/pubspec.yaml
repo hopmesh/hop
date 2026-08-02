@@ -1,0 +1,16 @@
+name: hop_endpoint
+description: >-
+  Receive Hop messages in your Dart or Flutter app. An embeddable, first-class
+  endpoint on the Hop mesh over the libhop C ABI via dart:ffi.
+version: 0.0.2
+repository: https://github.com/hopmesh/hop-sdk-flutter
+
+environment:
+  sdk: ^3.1.0
+
+dependencies:
+  ffi: ^2.1.0
+
+dev_dependencies:
+  lints: ^3.0.0
+  test: ^1.24.0

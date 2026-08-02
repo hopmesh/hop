@@ -1,0 +1,107 @@
+# Build and publish hop_endpoint from a verified package archive, then publish to
+# pub.dev via GitHub OIDC (automated publishing). The Dart SDK is installed by a
+# sha256-pinned download so the toolchain is fixed by hash rather than a tag.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+env:
+  DART_VERSION: '3.5.4'
+  DART_SHA256: '8d0c5e34f2a9d6b9f5ebf05252ae1703893f6087d547c631b390aef2d0cd6967'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Dart SDK (pinned by sha256)
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/dartsdk.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://storage.googleapis.com/dart-archive/channels/stable/release/${DART_VERSION}/sdk/dartsdk-linux-x64-release.zip" \
+            --output "$archive"
+          printf '%s  %s\n' "$DART_SHA256" "$archive" | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/dart"
+          echo "$RUNNER_TEMP/dart/dart-sdk/bin" >> "$GITHUB_PATH"
+      - name: Verify version and build a deterministic package archive
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//')"
+          test "${GITHUB_REF_NAME#v}" = "$version"
+          dart pub get
+          dart pub publish --dry-run
+          mkdir "$RUNNER_TEMP/release"
+          tar --exclude='./.dart_tool' --exclude='./.git' --exclude='./pubspec.lock' \
+            --sort=name --owner=0 --group=0 --numeric-owner --mtime='2020-01-01 00:00:00' \
+            -czf "$RUNNER_TEMP/release/hop_endpoint-$version.tar.gz" -C . .
+          python3 .github/release-artifact.py create --directory "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint canonical-source read token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
+          private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: monorepo
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+      - name: Verify canonical source provenance
+        id: provenance
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: python3 .github/release-provenance.py --component hop-sdk-flutter --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - name: Verify immutable package archive
+        run: >-
+          python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
+          --canonical-source-sha '${{ steps.provenance.outputs.source_sha }}'
+      - name: Install Dart SDK (pinned by sha256)
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/dartsdk.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://storage.googleapis.com/dart-archive/channels/stable/release/${DART_VERSION}/sdk/dartsdk-linux-x64-release.zip" \
+            --output "$archive"
+          printf '%s  %s\n' "$DART_SHA256" "$archive" | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/dart"
+          echo "$RUNNER_TEMP/dart/dart-sdk/bin" >> "$GITHUB_PATH"
+      - name: Publish verified package to pub.dev (OIDC automated publishing)
+        run: |
+          set -euo pipefail
+          dart pub get
+          dart pub publish --force
