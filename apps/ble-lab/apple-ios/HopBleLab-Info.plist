@@ -24,10 +24,10 @@
 	<string>BLE Lab tests Bluetooth LE connectivity between devices over L2CAP.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>BLE Lab advertises a BLE service and hosts an L2CAP channel for the proof-of-pipe test.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>BLE Lab detects a nearby Hop device beacon to reconnect.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>BLE Lab monitors a Hop iBeacon region so it can relaunch in the background and reconnect to nearby devices even when the app is closed.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BLE Lab detects a nearby Hop device beacon to reconnect.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
