@@ -1,14 +1,15 @@
 {
   "name": "@hop-mesh/react-native",
   "version": "0.0.2",
+  "private": true,
   "description": "Run a Hop mesh node in a React Native app: one TypeScript API over the native iOS (sdk/apple) and Android (sdk/android) client SDKs.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hopmesh/hop-sdk-react-native.git"
+    "url": "git+https://github.com/hopmesh/monorepo.git"
   },
-  "homepage": "https://github.com/hopmesh/hop-sdk-react-native",
+  "homepage": "https://github.com/hopmesh/monorepo/tree/main/sdk/react-native",
   "bugs": {
-    "url": "https://github.com/hopmesh/hop-sdk-react-native/issues"
+    "url": "https://github.com/hopmesh/monorepo/issues"
   },
   "license": "Apache-2.0",
   "main": "lib/index.js",
