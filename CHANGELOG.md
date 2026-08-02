@@ -169,6 +169,8 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### CI
+- discover an available simulator instead of naming iPhone 16 (4834a2c)
+- build and test ble-lab, so the BLE fixture cannot rot again (c86a8ff)
 - re-trigger CI (runner allocation failed on the prior run) (08e48a4)
 - stop a disarmed audit being permanently red, and a test using a timeout as control flow (8be22a0)
 - name the third tracked tree the local mirror rewrites (0833e7f)
@@ -207,6 +209,7 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- bump actions/checkout (3758596)
 - invert the license tiers, FSL moves from core to services (14d7fec)
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 - ignore Kotlin compile-daemon scratch in every gradle tree, not just sdk/android (27bce18)
@@ -252,6 +255,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (e6b97f2)
+- commit the 2026-07-29 adversarial audit baseline ledger and report (339ce3a)
 - regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - name where each anonymity caveat is mirrored in source, correctly (3f99766)
@@ -458,6 +463,10 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- stop the L2CAP open-error spin against an already-connected peer (79b9f22)
+- break the rendered report across lines, and commit the 2026-07-29 ledger (5eca76c)
+- seven Font Awesome glyphs overflowed their own viewBox, so every derived icon was cropped (bc156f5)
+- restore the app from source and give it a dormant switch (2c22322)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - rebuild sim/pkg for the 0.0.2 bump (20d8cae)
 - bump our crates in every standalone/vendored Cargo.lock (aad3ff7)
@@ -714,6 +723,7 @@ git-cliff. Do not edit by hand.
 - BLE scan BALANCED not LOW_LATENCY — free radio time for the peripheral role (f18f55c)
 
 ### Refactor
+- keep the React Native SDK in the monorepo, drop the mirror (34fb0ab)
 - GHA runtime-deploy via WIF; trim guards + delete deploy-provenance apparatus (956b711)
 - delete the GCP deploy trust apparatus from bootstrap + runtime TF (8c34b2c)
 - fold billing authz onto the shared authorize_tenant (9f529dd)
@@ -725,6 +735,7 @@ git-cliff. Do not edit by hand.
 - drop the short send TTL — it murdered slow DTN deliveries before they arrived (b238e3e)
 
 ### Testing
+- make the per-transport toggle drivable from automation, so PLAT-001 can be proven on hardware (7c889a9)
 - replace a tautological custody assertion and correct two more overclaiming comments (890cba1)
 - de-flake the WSS pending-cap recovery test (8dd7bbb)
 - export_pr validation probe (sdk/node) (dddb024)

@@ -18,6 +18,7 @@ git-cliff. Do not edit by hand.
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 
 ### Documentation
+- regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
 - regenerate from conventional commits (330c8c6)
