@@ -311,6 +311,13 @@ printf 'build artifact%bhere\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/targ
 printf 'vendored%bhere\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/node_modules/x/index.js"
 printf '## v1%bnotes\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/core/CHANGELOG.md"
 printf 'device log%bline\n' "$(printf '\xe2\x80\x94')" > "$FIX_GEN/testkit/results/r1.log"
+# THIRD-PARTY-NOTICES.md is rendered by tools/gen-third-party-notices.py and its bulk is the VERBATIM
+# licence text of the crates linked into libhop. We may not edit someone else's MIT notice, and we are
+# legally required to ship it, so a dash arriving there via a dependency bump would redden CI with no
+# remedy except deleting attribution. Without this exclusion the guard is one `cargo update` away from
+# a block nobody can legitimately clear.
+printf 'Copyright (c) 2020 Someone%bAll rights reserved.\n' "$(printf '\xe2\x80\x94')" \
+  > "$FIX_GEN/THIRD-PARTY-NOTICES.md"
 expect_tree_pass "$FIX_GEN"
 
 # --- the guard must read every tree ci.yml dispatches it on -------------------------------------

@@ -54,7 +54,7 @@ export async function GET() {
 
   L.push(
     '## Licensing & facts',
-    '- Licensing is two-tier and per-component: the protocol core (core/*: hop-core, libhop, hop-wasm, the stores) is source-available under FSL-1.1-ALv2 and converts to Apache-2.0 after two years; the SDKs, bearers, drivers and services are Apache-2.0. The protocol itself is never monetized.',
+    '- Licensing is two-tier and per-component: the hosted services (services/*: relay, endpoint, gateway, telemetry, account, billing) are source-available under FSL-1.1-ALv2 and convert to Apache-2.0 after two years; the protocol core, the SDKs, the bearers and the drivers are Apache-2.0. The protocol itself is never monetized.',
     '- Revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.',
     '- Pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.',
     '- End-to-end encrypted (X25519 + ChaCha20-Poly1305); identities are public keys, not phone numbers or accounts.',

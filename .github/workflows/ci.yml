@@ -226,6 +226,16 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # Attribution is a DISTRIBUTION obligation, not a nicety: MIT and Apache-2.0, which between them
+      # cover nearly all 168 crates compiled into libhop, each require the notice and licence text to
+      # accompany the binary. Nothing shipped one. This fails when the dependency graph moves and the
+      # committed notice does not, which is the only thing that keeps it true over time. Self-test the
+      # generator first: --check is the gate, and a gate that cannot fail is worse than no gate.
+      - name: Self-test the third-party notices generator
+        run: bash tools/gen-third-party-notices.test.sh
+      - name: Third-party notices are current
+        run: python3 tools/gen-third-party-notices.py --root hop --check
+
       - name: Self-test wire version guard
         run: bash tools/wire-version-guard.test.sh
 

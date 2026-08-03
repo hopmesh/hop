@@ -54,5 +54,19 @@ esac
 cargo run -p "$CRATE" --locked --features cli --bin uniffi-bindgen -- \
   generate --library "$HOST_LIB" --language kotlin --out-dir "$OUT/kotlin"
 
+# The notice travels with the binary, same reasoning as the Apple side: MIT and Apache-2.0 both
+# require the licence text to accompany a DISTRIBUTION, and someone who receives the AAR does not
+# have the repo. Regenerated when the generator is present so a dependency change cannot ship a
+# stale notice; missing entirely is a build FAILURE rather than an unattributed artifact.
+if [ -f tools/gen-third-party-notices.py ]; then
+  python3 tools/gen-third-party-notices.py --root hop --out THIRD-PARTY-NOTICES.md >/dev/null
+fi
+if [ ! -f THIRD-PARTY-NOTICES.md ]; then
+  echo "build-aar: THIRD-PARTY-NOTICES.md is missing; refusing to ship an unattributed binary" >&2
+  exit 1
+fi
+mkdir -p "$OUT"
+cp THIRD-PARTY-NOTICES.md "$OUT/THIRD-PARTY-NOTICES.md"
+
 echo "✓ $OUT/jniLibs/<abi>/libhop.so"
 echo "✓ $OUT/kotlin/uniffi/hop/hop.kt"
