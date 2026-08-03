@@ -30,6 +30,7 @@ let package = Package(
         .package(path: "../../../bearers/apple/HopBearerLan"),
         .package(path: "../../../bearers/apple/HopBearerMultipeer"),
         .package(path: "../../../bearers/apple/HopBearerRelay"),
+        .package(path: "../../../bearers/apple/HopBearerMeshtastic"),
     ],
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,
@@ -51,6 +52,7 @@ let package = Package(
             .product(name: "HopBearerLan",   package: "HopBearerLan"),
             .product(name: "HopBearerMultipeer", package: "HopBearerMultipeer"),
             .product(name: "HopBearerRelay", package: "HopBearerRelay"),
+            .product(name: "HopBearerMeshtastic", package: "HopBearerMeshtastic"),
         ]),
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.

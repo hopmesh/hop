@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "Canonical Meshtastic bearer wire contract, shared by bearers/apple/HopBearerMeshtastic",
+    "(MeshtasticWire.swift) and bearers/android/bearer-meshtastic (MeshtasticWire.kt). Like the BLE",
+    "dial-backoff table, this exists because bearers are per-platform packages with no shared core: the",
+    "two Meshtastic implementations must agree byte for byte or an Apple phone and an Android phone on",
+    "the same LoRa mesh cannot talk. tools/meshtastic-parity.sh fails CI if either side drifts from",
+    "these values.",
+    "hop_portnum: the Meshtastic PortNum Hop rides, inside the PRIVATE_APP range (256..511).",
+    "max_chunk / frag_header: a Hop link frame is split into fragments of at most max_chunk bytes, each",
+    "prefixed with a frag_header of [msgId:2][fragIndex:1][fragCount:1]. These two numbers ARE the",
+    "fragmentation contract; fragment_vectors pins the resulting fragment count for a set of frame",
+    "sizes so a change to max_chunk that silently reshapes the wire is caught.",
+    "frames: the 1-byte Hop link-frame type tags, identical to the LAN bearer (hello/ping/pong/data).",
+    "ping_ms / dead_ms: the keepalive cadence and liveness deadline (Swift declares seconds, Kotlin",
+    "declares milliseconds; the guard scales before comparing so a seconds/millis mixup cannot pass)."
+  ],
+  "hop_portnum": 260,
+  "max_chunk": 200,
+  "frag_header": 4,
+  "max_frags": 255,
+  "frames": {
+    "hello": 1,
+    "ping": 2,
+    "pong": 3,
+    "data": 16
+  },
+  "ping_ms": 30000,
+  "dead_ms": 180000,
+  "fragment_vectors": [
+    { "len": 0, "frags": 1 },
+    { "len": 1, "frags": 1 },
+    { "len": 200, "frags": 1 },
+    { "len": 201, "frags": 2 },
+    { "len": 400, "frags": 2 },
+    { "len": 401, "frags": 3 },
+    { "len": 1000, "frags": 5 }
+  ]
+}
