@@ -10,6 +10,41 @@ bearers/apple/HopBearerRelay  relay TCP/WS
 bearers/android/bearer-{ble,lan,relay}   the Android equivalents (+ hop-sdk, the shared sh.hop source)
 ```
 
+## Publishing (both platforms, and the switch that decides it)
+
+A component publishes **iff `<prefix>/.github/workflows/release.yml` exists**. `tools/release/plan.py`
+skips every component without one, so the file IS the switch, and its absence is silent: nothing warns,
+nothing fails, the component is simply never tagged. `bearers/android` had no such file, so every Apple
+bearer shipped for two releases while the Android bearers existed only as source, and
+`bearers/android/README.md` advertised `sh.hopme.bearers:bearer-ble`, a coordinate nothing had ever
+published to. If you add a component and expect it to ship, check `python3 tools/release/plan.py` lists
+it; that command is the whole truth about what releases.
+
+- **Apple** ships through SwiftPM, whose channel is the version tag: the mirror is tagged `vX.Y.Z` and
+  `release.yml` there globs `*/Package.swift`, so a NEW bearer package is validated and released with no
+  config change. Consumers must pin `from: "X.Y.Z"`, never `branch: "main"`, or they opt out of releases.
+- **Android** ships to Maven Central as `sh.hop:hop-bearer-<transport>`, one AAR per bearer. The
+  publishing convention lives in `bearers/android/build.gradle.kts` and applies to every `bearer-*`
+  module, so a new bearer publishes the moment it is in `settings.gradle.kts`. Coordinates reuse the
+  `sh.hop` namespace `sdk/android` already verified with Central; the Kotlin package names
+  (`sh.hopme.bearers.*`) are a separate namespace and unrelated.
+
+Two Android-specific traps, both already paid for:
+
+- **The POM is authored, not generated, and Gradle metadata is disabled.** These module dirs compile
+  under BOTH gradle builds and depend on `project(":hop-sdk")`, an in-tree shim that recompiles
+  `sdk/android`'s source and never publishes. A generated POM names that shim as a coordinate no
+  consumer can resolve, and the generated `.module` did exactly that (`hop-sdk:unspecified`) while
+  Gradle consumers PREFER `.module` over the POM. So the dependency list is derived from each module's
+  real `implementation` configuration with the shim rewritten to `sh.hop:hop`, and `.module` is off.
+- **The mirror build must be self-contained.** The shim's shared source and the `:hop-driver` include
+  both point outside `bearers/android`, the subtree copybara exports, so both detect which tree they are
+  in rather than relying on another copybara transform. Anything else that reaches outside the prefix
+  will break the mirror build, and the mirror is where publishing runs.
+
+Still unpublished: `hop-driver-android` (no `release.yml`), while `hop-driver-apple` ships. It reads its
+UniFFI bindings from the APP's generated dir, so publishing it needs that dependency resolved first.
+
 ## Testability + coverage
 
 - The pure link/dedup/handshake logic is extracted into headlessly-testable cores (CentralCore,
