@@ -1,6 +1,6 @@
 {
   "name": "Hop",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Hop for microcontrollers: a delay-tolerant, end-to-end-encrypted mesh over BLE, LoRa, and Wi-Fi, wrapping the libhop C ABI in a small Arduino / ESP-IDF C++ class. ESP32 today, more MCUs as the cross-compiles land. Bundles the Hop protocol core (hop-core, https://github.com/hopmesh/hop-core), Apache-2.0.",
   "keywords": [
     "mesh",
