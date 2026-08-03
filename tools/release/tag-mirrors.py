@@ -283,6 +283,21 @@ def main():
         tagged += 1 if process(entry, token, allow_first_tag, source_token) else 0
     print(f"release tags created: {tagged}")
 
+    # A component whose mirror does not exist was dropped from the token request by plan.py, because
+    # one unresolvable name fails the single installation token for the WHOLE list and takes tagging
+    # down for every component. Dropping it is what keeps the others releasable; it is NOT an
+    # acceptable resting state, since that component can never publish. So report it here, after
+    # everything that could be tagged has been, and fail. Loud beats silent: a component quietly
+    # missing from every release is exactly the failure this whole file exists to prevent.
+    missing = [name for name in (os.environ.get("MISSING") or "").split(",") if name]
+    if missing:
+        for name in missing:
+            print(f"{name}: NO MIRROR, {OWNER}/{name} does not exist so it can never be released")
+        raise TagError(
+            "these components have no mirror repository: " + ", ".join(missing) +
+            f"; create each one under {OWNER} (or drop its release.yml) so it can be tagged"
+        )
+
 
 if __name__ == "__main__":
     try:
