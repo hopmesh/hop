@@ -25,6 +25,7 @@ on:
           - hop-sdk-flutter
           - hop-sdk-apple
           - hop-sdk-android
+          - hop-sdk-compose
           - hop-embedded
           - hop-core
           - libhop

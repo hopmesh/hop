@@ -65,6 +65,7 @@ jobs:
       full: ${{ steps.f.outputs.full }}
       rust: ${{ steps.f.outputs.rust }}
       kotlin: ${{ steps.f.outputs.kotlin }}
+      compose: ${{ steps.f.outputs.compose }}
       android: ${{ steps.f.outputs.android }}
       apple: ${{ steps.f.outputs.apple }}
       wasm: ${{ steps.f.outputs.wasm }}
@@ -106,6 +107,8 @@ jobs:
               - '**/*.rs'
             kotlin:
               - 'sdk/android/**'
+            compose:
+              - 'sdk/compose/**'
             android:
               - 'bearers/android/**'
               - 'drivers/android/**'
@@ -382,6 +385,33 @@ jobs:
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: gradle test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+
+  compose-sdk:
+    name: Compose Multiplatform SDK tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.compose == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # The KMP build configures an androidTarget, so AGP needs an Android SDK location to resolve even
+      # for the desktop test task. No NDK / native library is needed: the compose SDK carries none.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      # No gradle wrapper is committed for this module (same as sdk/android), so pin gradle here.
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          gradle-version: "9.5.1"
+      # commonTest folded into the desktop JVM target: the reactive client, the pure state reducer, and
+      # the value types verified against the in-memory FakeHopEngine. Depends only on public artifacts
+      # (Compose Multiplatform + coroutines); the engine bindings stay behind the app-supplied seam, so
+      # there is no unpublished sh.hop:hop dependency and no native build here.
+      - name: Test Compose SDK (desktop JVM target)
+        working-directory: sdk/compose
+        run: gradle desktopTest --no-daemon --stacktrace
 
   android:
     name: Android bearers + driver (JVM unit tests)
@@ -1331,6 +1361,7 @@ jobs:
     needs:
       - rust
       - kotlin-sdk
+      - compose-sdk
       - android
       - apple
       - wasm

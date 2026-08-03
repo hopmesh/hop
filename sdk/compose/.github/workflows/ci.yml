@@ -1,0 +1,32 @@
+# CI for the Compose Multiplatform SDK mirror. The whole reactive surface (client, reducer, values) is
+# commonMain behind the HopEngine seam, so `allTests` runs against the in-memory FakeHopEngine with no
+# native libhop and no device. This file is carried in from the Hop monorepo subtree by Copybara; edit it
+# there, never in a mirror.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # The KMP build configures an androidTarget, so AGP needs an Android SDK location to resolve.
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          gradle-version: "9.5.1"
+      # commonTest is the gate: it depends only on public artifacts (Compose + coroutines), no native
+      # library and no unpublished node SDK, so it runs on every target here.
+      - name: Tests (all targets)
+        run: gradle allTests --stacktrace

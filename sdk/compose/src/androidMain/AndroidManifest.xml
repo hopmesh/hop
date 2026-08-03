@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Compose SDK is a pure library: no components, no permissions of its own. It renders whatever the
+     host node produces; the host app declares the radio permissions its bearers need. -->
+<manifest />
