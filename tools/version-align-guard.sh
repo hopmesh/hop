@@ -53,6 +53,7 @@ check "sdk/flutter (pubspec.yaml)"  "$(ver_in sdk/flutter/pubspec.yaml '^version
 # guard does catch: a major or minor that wanders off the anchor.
 check "sdk/embedded (library.json)" "$(ver_in sdk/embedded/library.json '"version"')"
 check "sdk/android (build.gradle.kts)" "$(ver_in sdk/android/build.gradle.kts '^version *=')"
+check "sdk/compose (build.gradle.kts)" "$(ver_in sdk/compose/build.gradle.kts '^version *=')"
 # The release-consumable Go installer carries a default tag because `go run ...@VERSION` must select
 # the exact matching native manifest and artifact. Keep its embedded default on the protocol line.
 check "sdk/go installer (cmd/hop-install)" \

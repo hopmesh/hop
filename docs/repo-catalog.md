@@ -51,6 +51,7 @@ Same Express/Fastify-shaped surface over `libhop`, one per language.
 | --- | --- | --- | --- |
 | `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps |
 | `hop-sdk-android` | `sdk/android` | Maven (AAR) | Android apps |
+| `hop-sdk-compose` | `sdk/compose` | Maven (`sh.hop:hop-compose`) | Compose Multiplatform apps (Android / Desktop / iOS) |
 | `hop-embedded` | `sdk/embedded` | PlatformIO (`Hop`) | ESP32 / Arduino / MCU firmware |
 
 ## Bearers (per-platform transports)

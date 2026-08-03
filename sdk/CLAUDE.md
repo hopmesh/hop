@@ -7,6 +7,9 @@ FFI, and the wrapper cannot drift from the header without the drift guard notici
 sdk/hop.h      the generated C ABI header: the universal contract for every platform
 sdk/apple      the Swift wrapper + xcframework packaging (its own sdk/apple/build-xcframework.sh)
 sdk/android    the Kotlin/JVM wrapper via JNA (loads libhop; Android bearers + the app use it)
+sdk/compose    the Compose Multiplatform CLIENT UI SDK (see sdk/compose/CLAUDE.md): a reactive HopClient
+               + drop-in composables over the HopEngine seam; commonMain logic runs on Android, Desktop,
+               iOS. On the JVM the seam is filled by sdk/android's JNA HopNode; on iOS by sdk/apple
 sdk/node       the SERVER-side endpoint SDK via koffi (see sdk/node/CLAUDE.md): host a mailbox in a
                backend with an Express/Fastify-shaped hop.on/reply surface over the same C ABI
 sdk/elixir     the Elixir SERVER endpoint SDK via a Rustler NIF (see sdk/elixir/CLAUDE.md): a
@@ -31,6 +34,11 @@ package, so the target dir *is* the package (no extra name level, unlike `bearer
 holds several). C-FFI targets (`node` koffi, `python` ctypes, `go` cgo, `ruby` Fiddle, `crystal` `lib`,
 `flutter` dart:ffi) bind `sdk/hop.h`; Rust-hosting runtimes (Elixir via Rustler) bind the `hop` crate
 directly. Design: `docs/endpoint-sdk.md`.
+
+`compose` is the one CLIENT SDK that binds no ABI itself: it is a UI layer that sits ABOVE the other
+client SDKs behind its own `HopEngine` seam (JVM fills it with `sdk/android`'s JNA `HopNode`, iOS with
+`sdk/apple`). So it is still `sdk/<target>` and still one package, but its "binding target" is Compose
+Multiplatform rather than a language FFI. See `sdk/compose/CLAUDE.md`.
 
 ## FFI discipline (do not "clean up")
 

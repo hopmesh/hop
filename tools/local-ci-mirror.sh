@@ -123,6 +123,7 @@ CI_COVERAGE=(
   "changes|none|dorny path-filter computation, no local analogue; it decides which jobs run, it gates nothing"
   "rust|full|fmt, clippy, the workspace tests, both wire guards, the deterministic corpus and every feature-matrix cargo invocation ci.yml runs, including the reqwest/sqlcipher/billingd clippy passes and the live and live+firestore telemetryd tests; the fuzz smoke needs cargo-fuzz and is named in NOT RUN without it"
   "kotlin-sdk|full|gradle test + jacocoTestReport + jacocoTestCoverageVerification, the same tasks ci.yml runs, when mise java/android-sdk and gradle are present"
+  "compose-sdk|none|the Compose Multiplatform desktopTest suite is not run here; it needs the Compose Multiplatform gradle toolchain, which the local mirror does not provision"
   "android|full|the bearers and HopDemo JVM unit suites AND all five per-module JaCoCo coverage-verification floors ci.yml gates on, when mise java/android-sdk and gradle are present"
   "apple|partial|swift test for all seven packages, when swift and xcodebuild are present; NOT the five apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
   "wasm|none|the swarm invariant test and the mockups suite are not run here"
