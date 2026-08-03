@@ -68,6 +68,30 @@ expect "$TMP/elixir_dep_drift" fail "elixir_dependency_drift"
 lay_down "$TMP/go_installer_drift" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.2.0" "0.1.9"
 expect "$TMP/go_installer_drift" fail "go_installer_drift"
 
+# The Android bearers name `sh.hop:hop` in every published POM, and that coordinate must be a version
+# that exists on Central. The SDK version and the bearers' own version are INDEPENDENT (the SDK ran
+# ahead after three tags stranded), so this pair is checked for EXACT equality rather than against the
+# anchor. An anchor-style check passes 0.0.2-vs-0.0.4 happily, which is precisely the POM that would
+# point at a version nobody published.
+# lay_down_android DIR SDK_VERSION BEARER_SDK_DEP [BEARER_VERSION]
+lay_down_android() {
+  local d="$1" sdk="$2" dep="$3" bearer="${4:-0.2.0}"
+  lay_down "$d" "0.2.0" "0.2.0" "0.2.0" "0.2.0"
+  mkdir -p "$d/sdk/android" "$d/bearers/android"
+  printf 'plugins { id("com.android.library") }\nversion = "%s"\n' "$sdk" > "$d/sdk/android/build.gradle.kts"
+  printf 'plugins { }\nversion = "%s"\ngroup = "sh.hop"\n' "$bearer" > "$d/bearers/android/build.gradle.kts"
+  [ -n "$dep" ] && printf 'hopSdkVersion=%s\n' "$dep" > "$d/bearers/android/gradle.properties"
+}
+
+lay_down_android "$TMP/android_dep_ok" "0.2.4" "0.2.4" "0.2.0"
+expect "$TMP/android_dep_ok" pass "android_sdk_dep_matches_even_when_patch_differs_from_bearers"
+
+lay_down_android "$TMP/android_dep_drift" "0.2.4" "0.2.0" "0.2.0"
+expect "$TMP/android_dep_drift" fail "android_sdk_dep_names_a_version_the_sdk_does_not_publish"
+
+lay_down_android "$TMP/android_dep_absent" "0.2.4" "" "0.2.0"
+expect "$TMP/android_dep_absent" fail "android_sdk_dep_missing_entirely"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "version-align-guard.test: all $pass cases passed"
