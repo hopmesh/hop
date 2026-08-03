@@ -1,5 +1,51 @@
 // swift-tools-version:5.9
 import PackageDescription
+import Foundation
+
+// SELF-ADAPTING DEPENDENCIES. This package is exported to the hop-driver-apple mirror, where the SDK and
+// the bearers are NOT on disk: every `.package(path: "../../../...")` below pointed outside the mirror
+// repository, so the published package could not be resolved by anyone. (`hop-driver-apple` has cut
+// tagged releases at v0.0.1 and v0.0.2 in that state.) A manifest is real Swift, so it detects which
+// tree it is in and depends on siblings locally, published packages in the mirror. That is the same
+// approach bearers/android uses for its shim, and it avoids teaching copybara another transform.
+//
+// Paths resolve against #filePath, not the process working directory, which SwiftPM does not promise.
+//
+// Note the SHAPE differs between the two, not just the spelling: in the monorepo each bearer is its own
+// package (five path dependencies), while the mirror consumes the single hop-bearers-apple package that
+// exposes all five as PRODUCTS. A path dependency's identity is its directory name, a remote one's is
+// the repository name, so the product references are computed rather than written twice.
+private let manifestDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+private let repositoryRoot = manifestDirectory.appendingPathComponent("../../..").standardized
+private func onDisk(_ relative: String) -> Bool {
+    FileManager.default.fileExists(
+        atPath: repositoryRoot.appendingPathComponent(relative).appendingPathComponent("Package.swift").path
+    )
+}
+private let inMonorepo = onDisk("sdk/apple") && onDisk("bearers/apple/HopBearerBle")
+
+private let bearerNames = [
+    "HopBearerBle",
+    "HopBearerLan",
+    "HopBearerMultipeer",
+    "HopBearerRelay",
+    "HopBearerMeshtastic",
+]
+
+private let sdkPackage = inMonorepo ? "apple" : "hop-sdk-apple"
+private func bearerPackage(_ bearer: String) -> String { inMonorepo ? bearer : "hop-bearers-apple" }
+
+private let packageDependencies: [Package.Dependency] = inMonorepo
+    ? [.package(path: "../../../sdk/apple")]
+        + bearerNames.map { .package(path: "../../../bearers/apple/\($0)") }
+    : [
+        .package(url: "https://github.com/hopmesh/hop-sdk-apple.git", from: "0.0.2"),
+        .package(url: "https://github.com/hopmesh/hop-bearers-apple.git", from: "0.0.2"),
+    ]
+
+private let driverDependencies: [Target.Dependency] =
+    ["HopFFIBindings", "HopObjC", .product(name: "HopContract", package: sdkPackage)]
+        + bearerNames.map { .product(name: $0, package: bearerPackage($0)) }
 
 // HopDriver, the reusable Apple driver for the Hop runtime (north-star drivers/apple location).
 //
@@ -22,16 +68,10 @@ let package = Package(
     // and the direct hops:// endpoints remain in-driver; the long-lived IOThread is retained purely as the
     // shared BLE runloop the BleBearer schedules its L2CAP streams + timers on. The old apple/HopBearers
     // package is gone.
-    dependencies: [
-        // The node API stays on UniFFI (HopFFI.xcframework). The bearers are now the INDEPENDENT
-        // packages, binding HopContract (pure Swift, no libhop), so no double-link of the Rust core.
-        .package(path: "../../../sdk/apple"),
-        .package(path: "../../../bearers/apple/HopBearerBle"),
-        .package(path: "../../../bearers/apple/HopBearerLan"),
-        .package(path: "../../../bearers/apple/HopBearerMultipeer"),
-        .package(path: "../../../bearers/apple/HopBearerRelay"),
-        .package(path: "../../../bearers/apple/HopBearerMeshtastic"),
-    ],
+    // The node API stays on UniFFI (HopFFI.xcframework). The bearers bind HopContract (pure Swift, no
+    // libhop), so there is no double-link of the Rust core. Siblings in the monorepo, published
+    // packages in the mirror; see the note at the top of this file.
+    dependencies: packageDependencies,
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,
         // ios-sim, macos). Built by tools/build-xcframework.sh.
@@ -45,15 +85,7 @@ let package = Package(
         .target(name: "HopFFIBindings", dependencies: ["hopFFI"]),
 
         // The bearer + transports.
-        .target(name: "HopDriver", dependencies: [
-            "HopFFIBindings", "HopObjC",
-            .product(name: "HopContract",    package: "apple"),
-            .product(name: "HopBearerBle",   package: "HopBearerBle"),
-            .product(name: "HopBearerLan",   package: "HopBearerLan"),
-            .product(name: "HopBearerMultipeer", package: "HopBearerMultipeer"),
-            .product(name: "HopBearerRelay", package: "HopBearerRelay"),
-            .product(name: "HopBearerMeshtastic", package: "HopBearerMeshtastic"),
-        ]),
+        .target(name: "HopDriver", dependencies: driverDependencies),
 
         // Headless macOS BLE-central node driving the driver in `.centralOnly` mode.
         .executableTarget(name: "hopmac", dependencies: ["HopDriver"]),
