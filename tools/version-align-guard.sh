@@ -67,6 +67,26 @@ check "copybara mirror preamble (copy.bara.sky)" "$(ver_in tools/copybara/copy.b
 check "copybara Elixir native workspace (elixir-native-Cargo.toml)" \
   "$(ver_in tools/copybara/elixir-native-Cargo.toml '^version = ')"
 
+check "bearers/android (build.gradle.kts)" "$(ver_in bearers/android/build.gradle.kts '^version *=')"
+
+# EXACT-MATCH check, not an anchor check. The Android bearers publish POMs that name `sh.hop:hop` as a
+# runtime dependency, and the coordinate they name has to be a version that actually exists on Maven
+# Central. Because the mirror build cannot read sdk/android (it is outside the exported subtree), that
+# version is declared separately in bearers/android/gradle.properties, which is exactly the kind of
+# second copy that drifts. Patch drift is FINE between components here but FATAL between these two: the
+# bearers are 0.0.2 while the SDK is 0.0.4, so an anchor-style major.minor check would happily pass a
+# POM pointing at a version nobody ever published.
+sdk_android="$(ver_in sdk/android/build.gradle.kts '^version *=')"
+bearer_sdk_dep="$(ver_in bearers/android/gradle.properties '^hopSdkVersion *=')"
+if [ -n "$sdk_android" ] && [ -n "$bearer_sdk_dep" ] && [ "$sdk_android" != "$bearer_sdk_dep" ]; then
+  echo "version-align-guard: DRIFT bearers/android hopSdkVersion is $bearer_sdk_dep but sdk/android declares $sdk_android - every published bearer POM would depend on sh.hop:hop:$bearer_sdk_dep" >&2
+  fail=1
+fi
+if [ -n "$sdk_android" ] && [ -z "$bearer_sdk_dep" ]; then
+  echo "version-align-guard: MISSING bearers/android/gradle.properties declares no hopSdkVersion, so the published bearer POMs would name no SDK version" >&2
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "version-align-guard: FAIL (a package's major.minor drifted from the anchor $anchor_mm)" >&2
   exit 1
