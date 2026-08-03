@@ -22,6 +22,8 @@ import os
 import re
 import sys
 import tomllib
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -149,18 +151,64 @@ def plan(root):
     return entries
 
 
+OWNER = "hopmesh"
+
+
+def mirror_exists(component, token):
+    """Is this component's public mirror actually there? None means we could not tell."""
+    request = urllib.request.Request(f"https://api.github.com/repos/{OWNER}/{component}")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("Accept", "application/vnd.github+json")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as error:
+        # 404 is the answer we are looking for. Anything else (403, 5xx) is us being unable to ask,
+        # and must NOT be reported as "missing" or a rate limit would silently drop every mirror.
+        return False if error.code == 404 else None
+    except OSError:
+        return None
+
+
+def partition_by_mirror(entries, token):
+    """Split the plan into components whose mirror exists and components whose mirror does not.
+
+    The token step mints ONE installation token for the whole repository list, so a single name that
+    does not resolve fails the entire request with "There is at least one repository that does not
+    exist or is not accessible to the parent installation" (422). That took down tagging for all
+    seventeen components when sdk/flutter gained a release.yml before hopmesh/hop-sdk-flutter was
+    created: nothing could be released because one mirror was missing. Ask first, so a component that
+    cannot possibly be tagged is reported instead of blocking every component that can.
+
+    A component we could not ask about stays IN the request. Failing the token step is the correct
+    outcome for an ambiguous answer; dropping it would silently skip a releasable component.
+    """
+    present, missing = [], []
+    for entry in entries:
+        (missing if mirror_exists(entry["component"], token) is False else present).append(entry)
+    return present, missing
+
+
 def main():
     root = Path(os.environ.get("GITHUB_WORKSPACE") or ".").resolve()
     entries = plan(root)
+    missing = []
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        entries, missing = partition_by_mirror(entries, token)
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
-        # Both single-line on purpose: a GITHUB_OUTPUT value containing a newline needs heredoc
+        # All single-line on purpose: a GITHUB_OUTPUT value containing a newline needs heredoc
         # framing, and create-github-app-token accepts a comma-separated repository list.
         with open(output, "a", encoding="utf-8") as handle:
             handle.write(f"plan={json.dumps(entries, separators=(',', ':'))}\n")
             handle.write("repos=" + ",".join(e["component"] for e in entries) + "\n")
+            handle.write("missing=" + ",".join(e["component"] for e in missing) + "\n")
     for entry in entries:
         print(f"{entry['component']}\t{entry['version']}\t({entry['source']})")
+    for entry in missing:
+        print(f"{entry['component']}\tNO MIRROR\t(hopmesh/{entry['component']} does not exist)")
 
 
 if __name__ == "__main__":

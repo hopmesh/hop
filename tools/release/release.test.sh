@@ -225,6 +225,40 @@ finally:
 assert tag_mod.GIT_ORIGIN_REV.findall("x\n\nGitOrigin-RevId: " + "b" * 40 + "\n") == ["b" * 40]
 assert tag_mod.GIT_ORIGIN_REV.findall("no trailer here") == []
 
+# --- one missing mirror must not block every other component ---------------------------------------
+# create-github-app-token mints ONE installation token for the whole repository list, so a single name
+# that does not resolve fails the request with 422 "at least one repository that does not exist or is
+# not accessible" and NOTHING gets tagged. That is exactly what happened when sdk/flutter gained a
+# release.yml before hopmesh/hop-sdk-flutter was created: seventeen components, all unreleasable,
+# because one mirror was missing. So the plan asks first and drops what cannot be tagged.
+_probe = {"hop-sdk-node": True, "hop-sdk-flutter": False, "hop-core": None}
+_original_exists = plan_mod.mirror_exists
+try:
+    plan_mod.mirror_exists = lambda component, token: _probe.get(component, True)
+    sample = [
+        {"component": "hop-sdk-node", "prefix": "sdk/node", "version": "1.2.3", "source": "package.json"},
+        {"component": "hop-sdk-flutter", "prefix": "sdk/flutter", "version": "1.2.3", "source": "pubspec.yaml"},
+        {"component": "hop-core", "prefix": "core/hop-core", "version": "1.2.3", "source": "Cargo.toml"},
+    ]
+    present, missing = plan_mod.partition_by_mirror(sample, "t")
+    present_names = [e["component"] for e in present]
+    missing_names = [e["component"] for e in missing]
+    assert missing_names == ["hop-sdk-flutter"], f"wrong component dropped: {missing_names}"
+    assert "hop-sdk-node" in present_names, "a component with a real mirror was dropped"
+    # An UNKNOWN answer (403, rate limit, network) must stay in the request. Dropping it would
+    # silently skip a releasable component, which is worse than failing the token step.
+    assert "hop-core" in present_names, "an unverifiable mirror was dropped instead of kept"
+finally:
+    plan_mod.mirror_exists = _original_exists
+
+# Dropping a component keeps the OTHERS releasable, but it is not an acceptable resting state: that
+# component can never publish. The tagger must therefore fail after tagging what it can, never exit 0.
+tagger_src = (root / "tools/release/tag-mirrors.py").read_text()
+assert 'os.environ.get("MISSING")' in tagger_src, "the tagger does not read the missing-mirror list"
+assert tagger_src.index('os.environ.get("MISSING")') > tagger_src.index("release tags created"), (
+    "the missing-mirror check runs BEFORE tagging, so one missing mirror still blocks the rest"
+)
+
 # --- the workflow's authority shape -------------------------------------------------------------
 # This workflow mints a write token on PUBLIC repositories and creates tags that publish packages, so
 # pin the boundary the same way the sync guard pins its own: it may write contents on exactly the
@@ -239,6 +273,8 @@ for required in (
     "github.event.workflow_run.conclusion == 'success'",  # never tag after a failed export
     # The readiness check needs a token that can read the CANONICAL repo; the mirror App token cannot.
     "SOURCE_TOKEN: ${{ github.token }}",
+    # The plan step needs a token to ask whether each mirror exists, and the tagger needs the answer.
+    "MISSING: ${{ steps.plan.outputs.missing }}",
     # And Native artifacts completing must re-trigger the tagger, or a deferred component waits forever.
     '"Native artifacts"',
 ):

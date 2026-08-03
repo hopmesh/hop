@@ -62,6 +62,10 @@ jobs:
 
       - name: Resolve each releasable component's declared version
         id: plan
+        env:
+          # Used ONLY to ask whether each mirror exists, so one missing repository cannot fail the
+          # single installation token minted below for the whole list.
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 tools/release/plan.py
 
       - name: Mint mirror tokens for the releasable components
@@ -81,6 +85,8 @@ jobs:
           # to the mirrors and cannot see the monorepo, so the readiness check needs this one.
           SOURCE_TOKEN: ${{ github.token }}
           PLAN: ${{ steps.plan.outputs.plan }}
+          # Components whose mirror does not exist. Reported AFTER everything taggable is tagged.
+          MISSING: ${{ steps.plan.outputs.missing }}
           # A mirror's FIRST ever tag is that component's first release, not a routine bump, and every
           # untagged component qualifies simultaneously. Automatic runs never do it; only a deliberate
           # dispatch with first_tag=yes does. Reaching the tagger as a value (not a raw expression in
