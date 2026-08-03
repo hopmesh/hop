@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
 - the examples outgrew the board default partition table (8ad9d65)
 - declare Apache-2.0 on the non-core packages (a9c580f)
 
@@ -14,10 +15,12 @@ git-cliff. Do not edit by hand.
 - drop unused attestation read access (0137b19)
 
 ### Chore
+- bump android + embedded to 0.0.4 so both can finally publish (9ceb2e6)
 - invert the license tiers, FSL moves from core to services (14d7fec)
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 
 ### Documentation
+- regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)
@@ -33,6 +36,7 @@ git-cliff. Do not edit by hand.
 - hop-embedded, the PlatformIO library (ESP32/Arduino/MCU) (4dcd152)
 
 ### Other
+- bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - label hop-embedded FSL-1.1-ALv2 + restore PlatformIO in bootstrap (b00cf47)
 

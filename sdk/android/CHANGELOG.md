@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
 - make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
 - disabling a transport now actually stops it (PLAT-001) (7b84c71)
 
@@ -13,6 +14,7 @@ git-cliff. Do not edit by hand.
 - drop unused attestation read access (0137b19)
 
 ### Chore
+- bump android + embedded to 0.0.4 so both can finally publish (9ceb2e6)
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 - purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
@@ -21,6 +23,7 @@ git-cliff. Do not edit by hand.
 - AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10 + core-ktx 1.19.0 (13 held bumps) (471edb7)
 
 ### Documentation
+- regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
@@ -38,6 +41,7 @@ git-cliff. Do not edit by hand.
 - self-certifying reachability records (core + ABI) for DNS-free endpoint discovery (#126) (7c31123)
 
 ### Other
+- bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - per-transport switches, and show when the SENDER sent a message (7a923c0)
 - let a host enable and disable individual bearers at runtime (c17b01a)
