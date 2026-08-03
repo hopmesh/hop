@@ -125,7 +125,7 @@ CI_COVERAGE=(
   "kotlin-sdk|full|gradle test + jacocoTestReport + jacocoTestCoverageVerification, the same tasks ci.yml runs, when mise java/android-sdk and gradle are present"
   "compose-sdk|none|the Compose Multiplatform desktopTest suite is not run here; it needs the Compose Multiplatform gradle toolchain, which the local mirror does not provision"
   "android|full|the bearers and HopDemo JVM unit suites AND all five per-module JaCoCo coverage-verification floors ci.yml gates on, when mise java/android-sdk and gradle are present"
-  "apple|partial|swift test for all seven packages, when swift and xcodebuild are present; NOT the five apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
+  "apple|partial|swift test for all eight packages, when swift and xcodebuild are present; NOT the six apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
   "wasm|none|the swarm invariant test and the mockups suite are not run here"
   "web|partial|the sim pkg freshness and wire-vector checks run here; NOT the scenario check, the wasm-glue check, npm ci, the Astro build, or the internal link check"
   "contract|partial|the ABI version guard runs here; NOT contract purity, the cbindgen header-drift diff, the C-ABI smoke, the wire vectors through the native C ABI, the embedded C++ host tests, or the ESP32 host example"
@@ -245,6 +245,7 @@ else
       :bearer-lan:jacocoLanReport :bearer-lan:jacocoLanCoverageVerification \
       :bearer-relay:jacocoRelayReport :bearer-relay:jacocoRelayCoverageVerification \
       :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification \
+      :bearer-meshtastic:jacocoMeshtasticReport :bearer-meshtastic:jacocoMeshtasticCoverageVerification \
       :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification --stacktrace'
     step "HopDemo android (+cov floor)"  bash -c 'cd apps/android/HopDemo && ./gradlew :app:testDebugUnitTest \
       :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --stacktrace'
@@ -267,7 +268,7 @@ else
     cp sdk/apple/Package.local.swift sdk/apple/Package.swift
     for p in sdk/apple drivers/apple/HopDriver apps/apple/HopDemoKit \
              bearers/apple/HopBearerBle bearers/apple/HopBearerLan bearers/apple/HopBearerRelay \
-             bearers/apple/HopBearerMultipeer; do
+             bearers/apple/HopBearerMultipeer bearers/apple/HopBearerMeshtastic; do
       step "swift test $p" bash -c "cd '$p' && swift test"
     done
         cp "$pkg_backup" sdk/apple/Package.swift

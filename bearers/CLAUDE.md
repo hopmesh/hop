@@ -4,11 +4,28 @@ Per-platform transport packages. A bearer moves opaque bytes between two `LinkId
 the radio. Each is an independent package so an app pulls in only the transports it wants.
 
 ```
-bearers/apple/HopBearerBle    BLE (GATT for the PSM handshake + L2CAP for data + iBeacon wake)
-bearers/apple/HopBearerLan    LAN (mDNS _hoplan._tcp + TCP)
-bearers/apple/HopBearerRelay  relay TCP/WS
-bearers/android/bearer-{ble,lan,relay}   the Android equivalents (+ hop-sdk, the shared sh.hop source)
+bearers/apple/HopBearerBle         BLE (GATT for the PSM handshake + L2CAP for data + iBeacon wake)
+bearers/apple/HopBearerLan         LAN (mDNS _hoplan._tcp + TCP)
+bearers/apple/HopBearerRelay       relay TCP/WS
+bearers/apple/HopBearerMeshtastic  Meshtastic/LoRa (relay through a connected Meshtastic radio's mesh)
+bearers/android/bearer-{ble,lan,relay,meshtastic}   the Android equivalents (+ hop-sdk, the shared sh.hop source)
 ```
+
+## The Meshtastic bearer is a datagram/tiny-MTU/lossy transport, not a byte stream
+
+Unlike BLE/LAN (byte-stream links a length prefix deframes), the Meshtastic bearer relays through a
+connected Meshtastic LoRa radio: a datagram mesh of ~200-byte packets that hop from radio to radio. So a
+Hop link frame (a HELLO, or a DATA carrying a sealed record) does NOT fit one packet and is FRAGMENTED
+into `MESH_MAX_CHUNK`-sized pieces, each shipped as one Meshtastic `MeshPacket` on a private app port
+(`MESH_HOP_PORTNUM`, in the PRIVATE_APP 256..511 range), and REASSEMBLED on the far side keyed by
+(sender node, message id). It reuses the SAME Hop link-frame grammar (HELLO/PING/PONG/DATA) as the LAN
+bearer, so the consumer sees identical linkUp/linkBytes/linkDown. LoRa is slow and duty-cycle limited,
+so the keepalive is lazy (30 s ping, 180 s dead); Hop's delay-tolerant design suits it. Two Hop phones
+interoperate only if their radios share a Meshtastic channel (PSK); that is device config, not bearer
+code. The protobuf codec, fragmentation, and reassembly are pure and unit-tested (the state machine runs
+against a fake radio); only the CoreBluetooth / Android-GATT connection to the radio is device-bound and
+excluded from coverage. Its cross-platform wire contract is pinned in `bearers/meshtastic-vectors.json`
+and enforced by `tools/meshtastic-parity.sh` (see below).
 
 ## Publishing (both platforms, and the switch that decides it)
 
@@ -82,6 +99,17 @@ platform clears the failure state at L2CAP-open and both do at HELLO-complete. I
 **Any policy a bearer implements on both platforms belongs in that table**, and pin the DECISION
 POINTS, not only the numbers. Do not rely on review to catch cross-platform drift; it already did
 not, twice.
+
+The Meshtastic bearer is the second instance of this pattern: `bearers/meshtastic-vectors.json` is
+canonical and `tools/meshtastic-parity.sh` (self-tested by `tools/meshtastic-parity.test.sh`, both in
+the `automation` job) fails if Apple's `MeshtasticWire.swift` and Android's `MeshtasticWire.kt` stop
+agreeing on the port, chunk size, fragment-header layout, frame tags, or keepalive timing. It pins
+decision points too, not only numbers: it asserts the port stays inside the Meshtastic PRIVATE_APP
+range (a first-party port would collide with real Meshtastic apps on the shared mesh) and recomputes
+the fragment-count vectors from `max_chunk` so a chunk-size change that silently reshapes every packet
+reddens CI. This table existed BEFORE the two implementations could diverge, which is the whole point:
+the BLE table was written after a divergence bug shipped, and this one is the cheaper version of that
+lesson applied up front.
 
 ## The Apple BLE radio lifecycle is guarded structurally, because it cannot be tested
 

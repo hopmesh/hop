@@ -56,6 +56,12 @@ release/                    plan.py resolves each publishing component's declare
                             secrets-read token; the weekly branch-protection-audit runs it when armed.
 infra-authority-guard.py    forbids bootstrap authority in the runtime root and bounds the hop-deploy grants.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
+meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical on Apple and Android
+                            (port, chunk size, fragment-header layout, frame tags, keepalive timing),
+                            canonical in bearers/meshtastic-vectors.json. Pins decision points too: the
+                            port must stay in the PRIVATE_APP range and the fragment-count vectors must
+                            follow from max_chunk. Self-test: meshtastic-parity.test.sh. Runs in the
+                            `automation` job alongside ble-backoff-parity.sh.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
 apple-cov-gate.sh           per-package Swift coverage floor.
 check-web-links.mjs         internal-link checker for apps/web/site/dist.

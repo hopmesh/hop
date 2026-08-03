@@ -13,6 +13,7 @@ import HopBearerBle
 import HopBearerLan
 import HopBearerMultipeer
 import HopBearerRelay
+import HopBearerMeshtastic
 // Re-export the generated FFI types (HopNode records like HpsTopicInfo, HpsAccess, TraceHopInfo…)
 // so a host that imports HopDriver sees them without importing HopFFIBindings directly.
 @_exported import HopFFIBindings
@@ -657,6 +658,10 @@ public final class HopBearer: NSObject, ObservableObject {
         }
         if isFull {
             bearerMgr.register(LanBearer(myId: bearerId))   // LAN (mDNS + TCP) - full host only
+            // Meshtastic/LoRa: relay Hop traffic through a connected Meshtastic radio's mesh, reaching
+            // peers far past BLE/Wi-Fi range. Surfaces as "LoRa"; with no radio paired it simply scans
+            // and forms no links. Full host only (needs the app's Bluetooth role, not the headless nodes).
+            bearerMgr.register(MeshtasticBearer(myId: bearerId))
         }
         // Cloud relay (WebSocket) as a shared bearer - ONE outbound link to the backbone, on any host that
         // wants a relay (full app, or the relay-only test client) with a relay configured.
@@ -682,7 +687,7 @@ public final class HopBearer: NSObject, ObservableObject {
             ))
         }
         bearerMgr.start()
-        let tags = [isRelayOnly ? nil : "BLE", isFull ? "LAN" : nil,
+        let tags = [isRelayOnly ? nil : "BLE", isFull ? "LAN" : nil, isFull ? "LoRa" : nil,
                     (wantsRelay && config.defaultRelay != nil) ? "Relay" : nil].compactMap { $0 }.joined(separator: "+")
         NSLog("HOPLOG shared bearers started (\(tags)) id=\(HopBearer.shortHex(bearerId))")
     }

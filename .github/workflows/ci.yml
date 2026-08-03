@@ -487,6 +487,7 @@ jobs:
           :bearer-lan:jacocoLanReport :bearer-lan:jacocoLanCoverageVerification
           :bearer-relay:jacocoRelayReport :bearer-relay:jacocoRelayCoverageVerification
           :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification
+          :bearer-meshtastic:jacocoMeshtasticReport :bearer-meshtastic:jacocoMeshtasticCoverageVerification
           :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification
           --no-daemon --stacktrace
 
@@ -602,6 +603,14 @@ jobs:
       # display-name parse, and the link table.
       - name: Test + coverage-gate the Multipeer bearer (>=80% of MultipeerBearer.swift)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerMultipeer Sources/HopBearerMultipeer/MultipeerBearer.swift 80 'MultipeerBearer\+Radio\.swift'
+
+      # The Meshtastic bearer's CoreBluetooth GATT client (MeshtasticBearer+Radio.swift) is device-bound
+      # and cannot run headlessly, so it is excluded from the denominator like every other bearer's radio
+      # glue. What IS gated is the interop-critical logic: the Meshtastic protobuf codec, the fragment/
+      # reassembly layer, the Hop link-frame grammar, and the MeshtasticBearer state machine (driven
+      # against a fake radio). tools/meshtastic-parity.sh separately pins the wire contract vs Android.
+      - name: Test + coverage-gate the Meshtastic bearer (>=80% of the radio-free cores)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerMeshtastic "Meshtastic cores" 80 'MeshtasticBearer\+Radio\.swift'
 
       # cov/apple-driver: the headless-node suite drives the driver's public API + snapshot-mapping +
       # persistence against a REAL libhop HopNode (no device), plus the Keychain identity store. The 80%
@@ -993,6 +1002,10 @@ jobs:
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
         run: bash tools/ble-backoff-parity.sh
+      - name: Self-test Meshtastic bearer wire parity guard
+        run: bash tools/meshtastic-parity.test.sh
+      - name: Enforce Meshtastic bearer wire parity across bearers
+        run: bash tools/meshtastic-parity.sh
       # PLAT-002: CoreBluetooth cannot run headless, so no test can redden a regression that moves the
       # Apple BLE bearer's shell lifecycle back off bleQueue. Measured, not assumed: reverting all three
       # controls left HopBearerBle at 117 tests, 0 failures. This is the gate.
