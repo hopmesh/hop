@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
 - guard fixed-32-byte C-ABI reads in all wrappers (ADV18-06) (c95c826)
 - register in-process responder before dialer (efe2b4d)
 - use-after-free-safe teardown across go/python/node (+ elixir safety test) (#134) (42a4a2e)
@@ -18,6 +19,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - regenerate from conventional commits (b96e019)

@@ -5,6 +5,16 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
+- point the bearer POMs at the SDK version that actually publishes (128e76a)
+- one missing mirror must not block every component's release (15cdc09)
+- make the published bearer and driver packages actually resolvable (b3eaec2)
+- publish a javadoc jar, and guard the declared version (9e8123e)
+- make HopClient.stop() teardown deterministic (3df729d)
+- let AGP 9 coexist with the KMP plugin (98acaa0)
+- match the non-native mirror workflow shape the self-test pins (341b4ee)
+- teach the local CI mirror about the Meshtastic bearer (b595cd5)
+- run the Meshtastic bearer tests under Robolectric (31b5605)
 - the auto-merge author gate shipped dead, and add a guard for the cause (2c913f3)
 - gate auto-merge on the PR author, and ignore local tofu state (42a66b3)
 - parse library.json and build.gradle.kts in the mirror tagger (afa2c21)
@@ -169,6 +179,9 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### CI
+- trigger a clean run (b713d7b)
+- correct the sync-back component identity (3972e24)
+- SHA-pin the mirror CI actions and exact java-version (09a7208)
 - discover an available simulator instead of naming iPhone 16 (4834a2c)
 - build and test ble-lab, so the BLE fixture cannot rot again (c86a8ff)
 - re-trigger CI (runner allocation failed on the prior run) (08e48a4)
@@ -209,6 +222,8 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- carry the exported-component count to 23 after merging main (79d98e3)
+- bump android + embedded to 0.0.4 so both can finally publish (9ceb2e6)
 - bump actions/checkout (3758596)
 - invert the license tiers, FSL moves from core to services (14d7fec)
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
@@ -255,8 +270,10 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - commit the 2026-07-29 adversarial audit baseline ledger and report (339ce3a)
+- tor.md, and say in DESIGN.md what Tor does not hide (20821e9)
 - regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - name where each anonymity caveat is mirrored in source, correctly (3f99766)
@@ -318,7 +335,11 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (47a86df)
 
 ### Features
+- wire Copybara mirror, Maven publish, and a CI gate (def84fe)
+- mint the Compose Multiplatform client UI SDK (9278580)
+- ship third-party attribution, and correct the site's licence copy (bb2f6e7)
 - cross-platform React Native client SDK (@hop-mesh/react-native) (26ac050)
+- add Meshtastic/LoRa bearer for iOS and Android (9335a6e)
 - tag only when the canonical source is actually releasable (0585d2e)
 - tag mirror releases so published packages can actually ship (0cd1018)
 - finish inbound (import), drop export_pr (41c095e)
@@ -463,10 +484,18 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
+- add the release workflow that makes the bearers publish (99d4317)
+- publish each bearer as sh.hop:hop-bearer-<transport> (b25227f)
+- declare the bearers' version so the tagger can see it (00dc696)
 - stop the L2CAP open-error spin against an already-connected peer (79b9f22)
 - break the rendered report across lines, and commit the 2026-07-29 ledger (5eca76c)
 - seven Font Awesome glyphs overflowed their own viewBox, so every derived icon was cropped (bc156f5)
 - restore the app from source and give it a dormant switch (2c22322)
+- rustfmt the new relay-pool onion tests (28abe6c)
+- let a host set the relay SOCKS proxy from driver config (51be0c1)
+- the same SOCKS hook on the Android relay bearer (ed4e9c5)
+- prove .onion relays flow through the pool, and add an Apple SOCKS hook (8a0d9f3)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
 - rebuild sim/pkg for the 0.0.2 bump (20d8cae)
 - bump our crates in every standalone/vendored Cargo.lock (aad3ff7)
@@ -735,6 +764,8 @@ git-cliff. Do not edit by hand.
 - drop the short send TTL — it murdered slow DTN deliveries before they arrived (b238e3e)
 
 ### Testing
+- run the loop/flow tests on an unconfined dispatcher (7fb1a24)
+- make the two coroutine tests deterministic (666b29d)
 - make the per-transport toggle drivable from automation, so PLAT-001 can be proven on hardware (7c889a9)
 - replace a tautological custody assertion and correct two more overclaiming comments (890cba1)
 - de-flake the WSS pending-cap recovery test (8dd7bbb)

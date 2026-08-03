@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
 - pin the checksum of the first reproducible xcframework (6be047b)
 - make the xcframework reproducible so its checksum can be pinned (82b1bf8)
 - point the published manifest at the v0.0.2 asset it can verify (806a538)
@@ -23,6 +24,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
