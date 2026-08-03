@@ -166,6 +166,12 @@ excludes=(
 #                     build-xcframework.sh), *.pbxproj
 #   generated prose   CHANGELOG.md (git-cliff renders these from commit history; see
 #                     tools/gen-changelogs.sh, so an edit here is reverted on the next run)
+#                     THIRD-PARTY-NOTICES.md (tools/gen-third-party-notices.py renders it from the
+#                     lockfile, and its bulk is the VERBATIM licence text of 168 crates we neither
+#                     author nor may alter). A dash inside someone else's MIT notice is not a thing
+#                     this repo can fix, so scanning it would eventually redden CI on a dependency
+#                     bump with no legitimate remedy except deleting attribution we are legally
+#                     required to ship. The dash law binds copy we write; this file is quoted.
 #   coverage report   tarpaulin-report.html
 # docs/audits/*.html (immutable historical audit artifacts) is already dropped by the shared
 # --exclude-dir=audits above.
@@ -174,7 +180,7 @@ src_excludes=(
   --exclude-dir=.next --exclude-dir=.gradle --exclude-dir=Frameworks --exclude-dir=coverage
   --exclude-dir=results --exclude-dir=logs
   --exclude='*.log' --exclude='CHANGELOG.md' --exclude='hop.swift' --exclude='*.pbxproj'
-  --exclude='tarpaulin-report.html'
+  --exclude='tarpaulin-report.html' --exclude='THIRD-PARTY-NOTICES.md'
   # This guard and its self-test have to SPELL every banned pattern to ban it (the encoded-dash
   # regex literally contains &mdash; and &#x2014). They are ASCII-clean by the tools/CLAUDE.md
   # rule (no literal dash byte is ever typed into either file) and docs-token-guard.test.sh is
