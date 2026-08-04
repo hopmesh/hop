@@ -40,11 +40,14 @@ it; that command is the whole truth about what releases.
 - **Apple** ships through SwiftPM, whose channel is the version tag: the mirror is tagged `vX.Y.Z` and
   `release.yml` there globs `*/Package.swift`, so a NEW bearer package is validated and released with no
   config change. Consumers must pin `from: "X.Y.Z"`, never `branch: "main"`, or they opt out of releases.
-- **Android** ships to Maven Central as `sh.hop:hop-bearer-<transport>`, one AAR per bearer. The
+- **Android** ships to Maven Central as `sh.hop.bearers:bearer-<transport>`, one AAR per bearer. The
   publishing convention lives in `bearers/android/build.gradle.kts` and applies to every `bearer-*`
-  module, so a new bearer publishes the moment it is in `settings.gradle.kts`. Coordinates reuse the
-  `sh.hop` namespace `sdk/android` already verified with Central; the Kotlin package names
-  (`sh.hopme.bearers.*`) are a separate namespace and unrelated.
+  module, so a new bearer publishes the moment it is in `settings.gradle.kts`. `sh.hop.bearers` is a
+  SUBGROUP of the `sh.hop` namespace `sdk/android` already verified with Central, and Central's
+  verification covers a verified root's subgroups, so it needs no separate ownership proof. That is
+  precisely what ruled out the READMEs' old `sh.hopme.bearers`: hopme.sh is a different root domain and
+  would have needed its own verification. The Kotlin package names (`sh.hopme.bearers.*`) are unrelated
+  to Maven coordinates and are unchanged.
 
 Two Android-specific traps, both already paid for:
 
