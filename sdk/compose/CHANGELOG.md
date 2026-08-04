@@ -13,6 +13,9 @@ git-cliff. Do not edit by hand.
 - correct the sync-back component identity (3972e24)
 - SHA-pin the mirror CI actions and exact java-version (09a7208)
 
+### Documentation
+- regenerate from conventional commits (e19ed95)
+
 ### Features
 - wire Copybara mirror, Maven publish, and a CI gate (def84fe)
 - mint the Compose Multiplatform client UI SDK (9278580)
