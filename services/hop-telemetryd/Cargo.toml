@@ -19,7 +19,7 @@ hop-gateway = { path = "../hop-gateway" }
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 bs58 = "0.5"
 # Base64 (std alphabet) for the `reach` field of the /.well-known/hop body, matching the endpoint SDK.
-base64 = "0.22"
+base64 = "0.23"
 # Durable store for the telemetry_usage ledger: local SQLite by default, Firestore on the cloud
 # deploy (same split as the relay). Without one the ledger dies with the process and nothing bills.
 hop-store-sqlite = { workspace = true, features = ["bundled"] }

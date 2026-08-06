@@ -6,7 +6,7 @@ GENERATED FILE. Regenerate with:
 python3 tools/gen-third-party-notices.py --root hop --out THIRD-PARTY-NOTICES.md
 ```
 
-This binary statically links 168 third-party crates. Their licences, chiefly
+This binary statically links 169 third-party crates. Their licences, chiefly
 MIT and Apache-2.0, require that the copyright notice and licence text accompany a
 distribution, so this file ships alongside every built artifact.
 
@@ -17,7 +17,7 @@ selection: picking one is a legal decision and not one this generator makes for 
 
 | Licence | Crates |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 92 |
+| `MIT OR Apache-2.0` | 93 |
 | `Apache-2.0 OR MIT` | 21 |
 | `MIT` | 15 |
 | `MIT/Apache-2.0` | 9 |
@@ -3239,11 +3239,10 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### libc 0.2.186
+### libc 0.2.189
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/rust-lang/libc
-- Authors: The Rust Project Developers
 
 <details><summary>LICENSE-MIT</summary>
 
@@ -4339,7 +4338,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### serde 1.0.228
+### serde 1.0.229
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/serde-rs/serde
@@ -4375,7 +4374,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### serde_core 1.0.228
+### serde_core 1.0.229
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/serde-rs/serde
@@ -4411,7 +4410,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### serde_derive 1.0.228
+### serde_derive 1.0.229
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/serde-rs/serde
@@ -4447,7 +4446,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### serde_json 1.0.150
+### serde_json 1.0.151
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/serde-rs/json
@@ -4943,6 +4942,42 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
+### syn 3.0.0
+
+- Licence: `MIT OR Apache-2.0`
+- Source: https://github.com/dtolnay/syn
+- Authors: David Tolnay <dtolnay@gmail.com>
+
+<details><summary>LICENSE-MIT</summary>
+
+```
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+</details>
+
 ### tempfile 3.27.0
 
 - Licence: `MIT OR Apache-2.0`
@@ -5015,7 +5050,7 @@ SOFTWARE.
 
 </details>
 
-### thiserror 2.0.18
+### thiserror 2.0.19
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/dtolnay/thiserror
@@ -5051,7 +5086,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### thiserror-impl 2.0.18
+### thiserror-impl 2.0.19
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/dtolnay/thiserror
