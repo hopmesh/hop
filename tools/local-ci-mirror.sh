@@ -193,6 +193,8 @@ step "ble-backoff-parity self-test"   bash tools/ble-backoff-parity.test.sh
 step "ble-backoff-parity"             bash tools/ble-backoff-parity.sh
 step "ble-threading self-test"        bash tools/ble-threading-guard.test.sh
 step "ble-threading guard"            bash tools/ble-threading-guard.sh
+step "mailbox-prefix-doc self-test"   bash tools/mailbox-prefix-doc-guard.test.sh
+step "mailbox-prefix-doc guard"       bash tools/mailbox-prefix-doc-guard.sh
 step "store-data-map self-test"       bash tools/store-data-map-guard.test.sh
 step "store-data-map guard"           python3 tools/store-data-map-guard.py
 step "abi-version guard self-test"    bash tools/codegen/check-abi-version.test.sh

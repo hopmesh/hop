@@ -3041,7 +3041,9 @@ decay (above); held private bundles evict at `lifetime` (§8); each node caps it
 **Mailbox-tags rotate per epoch (F-06):** `mailbox = H("v2" ‖ address ‖ epoch)` with a daily epoch, so a
 global observer can't correlate a recipient's mailbox across epochs. A recipient beacons the current epoch
 plus a one-epoch window (and a relay accepts that window), so a bundle addressed/spooled just before a
-rotation boundary still routes and pulls. Deriving from `(address, epoch)` rather than the prekey decouples
+rotation boundary still routes and pulls. The two epochs go out on SEPARATE publishes held apart in time
+(security-privacy-r19-06); co-emitting them handed an observer a two-byte selector and bridged the
+rotation, see the overlap-window bullet under Costs. Deriving from `(address, epoch)` rather than the prekey decouples
 rotation from the deterministic prekey (sessions/recognition are untouched). The relay-side ownership check
 (F-05, "recompute `H(publisher ‖ epoch)` and only lay a gradient if it matches") is GONE with the advert
 that carried the publisher: it required the recipient to publish its own address next to its own tag,
@@ -3118,96 +3120,105 @@ The model trades targeted routing for privacy, and the bill is real:
     derive it). The real fix is to widen `k` adaptively as observed reachable-N grows (so `~N/2^k` stays
     >= a target set size). That is **wire-affecting** (the private header carries this prefix, so its
     width is part of the format) and is deliberately deferred + tracked as future work.
-        Every figure in this bullet is derived from the SHIPPED width, so re-derive them all on
-        any change to `MAILBOX_ROUTE_PREFIX_BYTES`.
-  - **The overlap window doubles the observable selector (security-privacy-r19-06).** `MAILBOX_EPOCH_WINDOW
-    = 1`, and `publish_recv_beacon_on` emits the CURRENT and PREVIOUS epoch prefixes back to back on the
-    same link, so a recipient's footprint per publish is up to **2 route prefixes, not 1**. Both are pure
-    public functions of a public address (`H(addr, e)[0]` and `H(addr, e-1)[0]`), so an observer that can
-    attribute the pair to one source and holds a candidate address tests it at a false-positive rate of
-    `1/65536`, i.e. the set for THAT observer is `~N/(256^(1 + MAILBOX_EPOCH_WINDOW))` = `~N/65536`, not
-    `~N/256`. Watched across `d` epoch boundaries the chain of overlapping pairs yields `d + 1` bytes,
-    which is a stable long-lived fingerprint of the address, so "epoch rotation prevents cross-epoch
-    correlation" holds only against an observer that CANNOT attribute the pair. **Stated position on
-    scope:** the `~N/256` figure is the claim for a passive indexer at distance >= 1, which sees prefixes
-    relayed onward and un-attributed; the pair-attributing observer is a direct link peer or a party that
-    can correlate two records on one link, and against that observer the claim is `~N/65536`. A direct
-    link peer is a mutually-authenticated Noise neighbour that already knows the beacon came from us, so
-    the marginal loss to it is the selector width, not the fact of reachability. Closing the gap rather
-    than documenting it means not co-emitting the two epochs attributably (stagger them, or serve the
-    previous epoch only from the spool); that is deferred, and `route_to_me = false` remains the only way
-    to emit nothing at all.
+        Every figure in this bullet is derived from the SHIPPED width. They are no longer maintained
+        by attention: `tools/mailbox-prefix-doc-guard.sh` renders the canonical claim from the
+        constant and fails CI in every normative surface that disagrees with it, which is audit
+        PROTO-004's third closure item. The canonical line, verbatim, is:
+
+        MAILBOX_ROUTE_PREFIX_BYTES = 1 => 256 buckets, anonymity set ~N/256, set of one below ~256 reachable addresses
+
+  - **The overlap window is STAGGERED, not co-emitted (security-privacy-r19-06, CLOSED in wire v15).**
+    `MAILBOX_EPOCH_WINDOW = 1`, so a recipient has to keep the previous epoch's bucket routable as well
+    as the current one, or a bundle addressed or spooled just before the rotation boundary is stranded.
+    That window used to be emitted as a BURST: one `publish_recv_beacon_on` call put `H(addr, e)[0]` and
+    `H(addr, e-1)[0]` on the same link back to back, both freshly changed, so a forwarder re-emitted both
+    at distance 1 adjacently. Both are pure public functions of a public address, so an observer able to
+    attribute that PAIR to one source tested a candidate address at `1/65536` rather than the `1/256`
+    this section quotes, which is the 16-bit selector the wire-v12 narrowing existed to remove, and the
+    prefix shared between consecutive boundaries bridged the epochs the rotation exists to separate.
+
+    What ships now: a publish carries exactly ONE epoch's prefix, and the current epoch and the past
+    window are held at least `BEACON_EPOCH_STAGGER_MS` (half the beacon refresh interval) apart on the
+    wall clock, on the periodic path AND on the link-up path. The recipient's footprint per publish is
+    therefore **1 route prefix**, and every forwarder along the way records and re-emits the two
+    arrivals in separate passes, so nothing downstream ever sees two freshly-changed buckets arrive
+    together from one upstream. Each epoch's own gradient lease keeps a full `RECV_BEACON_REFRESH_MS`
+    cadence, so no bucket sits closer to `RECV_BEACON_TTL_MS` than it did before, PROVIDED the host
+    calls `tick` well under that interval, which is the assumption `RECV_BEACON_REFRESH_MS` already
+    makes. A host that ticks slower than the refresh interval cannot hold either lease inside the TTL
+    and could not before this change either; what the stagger must not do there is make one epoch
+    permanently unreachable, so the two branches serve whichever epoch has waited longer, and an
+    unserviceable window (a clock still inside epoch 0) can never win a tick and emit nothing. Five
+    tests pin it:
+    `a_recipients_beacon_footprint_per_publish_is_pinned` (the count),
+    `an_observer_never_sees_both_epoch_prefixes_co_arrive` (a distance-1 observer behind a forwarder
+    whose ONLY beaconing upstream is the recipient, the worst case, never learns both prefixes in one
+    pass, and their arrivals are at least the stagger apart),
+    `a_fresh_link_never_receives_both_epoch_prefixes_back_to_back` (the link-up path, which emits
+    outside the refresh timer and is where the stagger is easiest to lose), plus
+    `a_slow_ticking_host_still_gets_the_past_window_served` and
+    `an_epoch_zero_clock_keeps_beaconing_the_current_epoch` for the two starvation directions above.
+
+    **Stated position on observer scope**, since the fix is scoped and the unscoped version would be a
+    false guarantee. A DIRECT link peer is out of scope and always was: it is a mutually-authenticated
+    Noise neighbour that already knows the beacon is ours, so it can compute both epoch prefixes from
+    our address itself and the beacon tells it nothing it did not have. The in-scope observer is at
+    distance >= 1, and for it the claim is now `~N/256`, the same figure the rest of this section uses.
+    **Residual, bounded and named:** a forwarder with exactly one beaconing upstream still emits both of
+    that upstream's prefixes eventually, so an observer behind it that watches for a full refresh
+    interval can enumerate the SET of prefixes that forwarder carries, and in a one-upstream topology
+    that set is the recipient's pair. The stagger removes co-arrival attribution, not set enumeration in
+    a degenerate topology; in that topology the observer can also simply count its neighbour's upstreams.
+    What is NOT time-bounded, deliberately: the window stays live for the whole current epoch rather
+    than a short grace period after the boundary, because a sender always stamps its own current epoch,
+    so the previous epoch is only reached by a skewed clock or by a bundle that has been sitting in a
+    blind spool, and a delay-tolerant network must assume that spool drains hours later. Bounding the
+    window would trade a real delay-tolerance guarantee for a privacy nicety; bounding the observable
+    co-emission costs nothing. `route_to_me = false` remains the only way to emit nothing at all.
   - Where each caveat is mirrored in source, so it lives next to the code it constrains: the small-N one
-    at `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES`, which still carries the pre-v12 2-byte text (see the
-    known-stale-mirror note below); the overlap-window one at `node.rs` `publish_recv_beacon_on`, which is
-    current, and whose emitted-prefix count is pinned by
-    `a_recipients_beacon_footprint_per_publish_is_pinned`.
-  - **Stale 2-byte prose still in the manifest files (CLAIM-004, deferred, read this before trusting
-    a comment).** If you follow the pointer above into `crypto.rs`, trust the constant and the block
-    comment *below* it, not the rustdoc *above* it. Four spots still say 2 bytes and were deliberately
-    NOT corrected in the pass that fixed this section. Three of them are simply **wrong for the
-    shipped protocol**: `core/hop-core/src/crypto.rs:756` ("Two bytes (16 bits) is the deliberate
-    balance"), `crypto.rs:770` ("Do NOT rely on the fixed 2-byte prefix ... below ~2^16 reachable
-    addresses"), and the assertion comment inside the
-    `mailbox_route_is_a_prefix_and_forms_an_anonymity_set` test at `crypto.rs:1269-1272` ("With a
-    2-byte prefix there are only 2^16 buckets"). All three are wrong in the *conservative*
-    direction: they understate the delivered anonymity set (256 buckets, not 65_536) and overstate
-    the do-not-trust-it threshold (~256 addresses, not ~65k). The fourth,
-    `core/hop-core/src/bundle.rs:28` ("the mailbox-tag's 2-byte PREFIX"), is **not** wrong and must
-    NOT be renumbered: it is the dated `v3` entry in a per-version changelog, and the prefix really
-    was 2 bytes when v3 shipped. Rewriting it to 1 would falsify the history the list exists to
-    record. What is actually missing there is the narrowing itself, because that changelog stops at
-    `v9 -> v10` / `v10 -> v11` and has **no v12 or v13 entry at all**, so a reader scanning it for
-    the current width finds only the v3 line and reasonably takes it as current. The fix for that
-    one is an added v12 entry, not an edited v3 entry. The shipped
-    value is `MAILBOX_ROUTE_PREFIX_BYTES = 1`, stated correctly on the definition line
-    (`crypto.rs:776`), in the `WHY 1 BYTE` block comment immediately below it (`crypto.rs:778-798`,
-    with the full w=1 vs w=2 table), in `MECHANISMS.md`, and in `SECURITY.md`. `sdk/hop.h` is also
-    correct and is the surface every platform actually binds: it documents a FIXED 2-byte ABI
-    *slot* carrying a VARIABLE-WIDTH prefix, left-aligned and zero-padded, and names the 2 -> 1
-    narrowing in v12, so the published integration contract never encoded the stale width at all.
-    Why they were left: `crypto.rs` and `bundle.rs` are both listed in
-    `core/hop-core/vectors/wire-source-manifest.txt`, so `tools/wire-version-guard.sh` hashes them
-    and fails any edit that does not come with a `BUNDLE_VERSION` bump and a regenerated, renamed
-    wire corpus. Bumping the wire version to reword a comment is exactly the "false wire bump"
-    that degrades the version into a build counter, which the manifest header forbids, so these
-    three edits ride the next real wire bump instead of minting one.
-    **This deferral is only honest if it names its trigger, because a deferral that names no trigger
-    does not fire.** `tools/docs-token-guard.sh` carved these same manifest paths out of its source
-    pass on identical reasoning and closed with the identical prose promise ("clean them during the
-    NEXT real wire bump"), and wire v12 and v13 then both shipped with the files untouched, which is
-    what the audit's PROC-001 finding is about. So the trigger here is not this paragraph. The three
-    edits are owed by the branch that is **already** at `BUNDLE_VERSION = 14`, already rewriting
-    comments in both `crypto.rs` and `bundle.rs`, and already carrying the renamed
-    `vectors/bundle-v14.json` corpus: the width correction costs it nothing beyond the edit, because
-    the bump and the corpus rename it would otherwise force have already been paid. If that lane
-    lands without these three, the width prose is stale for a fourth wire version in a row and this
-    paragraph is the only thing standing between a reader and the wrong number. The guard the audit asks for
-    (fail when the documented width and `MAILBOX_ROUTE_PREFIX_BYTES` diverge) rides with them for a
-    second, independent reason: it would have to read those same comments, so it cannot pass until
-    they are corrected, and a version of it that skipped `crypto.rs` would check everything except
-    the one place the drift actually lives.
+    at `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES`; the overlap-window one at `node.rs`
+    `BEACON_EPOCH_STAGGER_MS` and `publish_recv_beacon_on`. Both mirrors are current as of wire v15, and
+    the width figures in the first one are machine-checked against the constant by
+    `tools/mailbox-prefix-doc-guard.sh` rather than trusted.
+  - **The width prose is now machine-checked, after going stale for three wire versions (CLAIM-004 /
+    PROTO-004, CLOSED in wire v15).** Every figure above is derived from the shipped constant, and until
+    v15 that derivation was maintained by attention alone, which failed: the rustdoc above
+    `crypto::MAILBOX_ROUTE_PREFIX_BYTES` described the pre-v12 2-byte / 16-bit prefix and its `~2^16`
+    small-N threshold above a constant whose value is `1`, claimed a receiver-beacon is signed by the address
+    that owns the mailbox (untrue since v13 replaced the signed advert with the unsigned link-local
+    `Wire::RecvBeacon`), and named an `owns_mailbox` binding that exists nowhere in the tree. It survived
+    v12, v13 and v14 because `crypto.rs` is listed in `core/hop-core/vectors/wire-source-manifest.txt`,
+    so `tools/wire-version-guard.sh` hashes it whole and a comment edit costs a `BUNDLE_VERSION` bump, a
+    regenerated and renamed corpus, and a `sim/pkg` rebuild. Three successive bumps each deferred it to
+    "the next real wire bump", which is the same shape of prose-named trigger PROC-001 indicted, so v15
+    paid the bump for the prose rather than deferring a fourth time.
+    Two things make that a closure and not another promise. First, `tools/mailbox-prefix-doc-guard.sh`
+    renders the canonical claim above from the constant and fails CI when any normative surface
+    disagrees, so the next change to the dial cannot land with stale figures; it also refuses a
+    mailbox-prefix width figure that neither matches the shipped width nor scopes itself (`w=2` in a
+    comparison, a `v<N>` history entry, or an ABI `slot`). Second, the per-version changelog in
+    `bundle.rs` gained its missing `v11 -> v12` and `v12 -> v13` entries. That gap was itself part of the
+    finding: the list jumped from v11 to v14, so a reader scanning it for the current prefix width found
+    only the `v3` line, which says the mailbox-tag's PREFIX was 2 bytes as of v3. That is correct as
+    HISTORY, since the prefix really was 2 bytes when v3 shipped, and must never be renumbered. `sdk/hop.h` was correct throughout
+    and is unchanged: it documents a FIXED 2-byte ABI *slot* carrying a VARIABLE-WIDTH prefix,
+    left-aligned and zero-padded, and names the 2 to 1 narrowing in v12, so the published integration
+    contract never encoded the stale width at all.
 - **Mobility → flood.** Move faster than your beacon refresh and gradients go stale; you degrade to
   flood (the safety net), less efficient but still delivered.
 
 None are fatal; the latency, linkability, and mobility costs are inherent to (privacy + DTN + dormancy),
 exactly what Hop's thesis signs up for. (Operational flood-alerting can come later.)
 
-**Known stale mirror (security-privacy-r19-04, OPEN, deliberately not fixed here).** The doc block on
-`crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES` still carries the pre-v12 text: it says "Two bytes (16 bits) is
-the deliberate balance" above a constant whose value is `1`, sizes the small-N threshold at ~`2^16`
-instead of ~256, claims `mailbox_tag` "lets a relay verify a beacon's ownership ... a beacon is signed by
-that address, so it can't be forged for another" (false since v13 replaced the signed advert with the
-unsigned link-local `Wire::RecvBeacon`), and references an `owns_mailbox` binding that exists nowhere in
-the tree. **This file, not the text, is the blocker:** `core/hop-core/src/crypto.rs` is listed in
-`core/hop-core/vectors/wire-source-manifest.txt`, and `tools/wire-version-guard.sh` diffs raw file bytes,
-so editing even a comment there forces a `BUNDLE_VERSION` bump plus a corpus regenerate/rename plus a
-`sim/pkg` rebuild. Bumping the wire version for a comment is exactly the degradation into a build counter
-that the manifest's own header warns against, and it would break decode against the deployed fleet. So
-this section is the source of truth in the meantime, and the `crypto.rs` block gets corrected in the next
-change that bumps `BUNDLE_VERSION` for a real wire reason, together with the CI guard that would tie the
-documented bucket count to the constant (a guard added now would have to carve out the one file still
-wrong, which would encode the falsehood rather than catch it).
+**The source mirror is current, and a guard keeps it that way (security-privacy-r19-04 / PROTO-004,
+CLOSED in wire v15).** The doc block on `crypto.rs` `MAILBOX_ROUTE_PREFIX_BYTES` states one width, one
+bucket count and one small-N threshold, all agreeing with the shipped constant, and it no longer claims a
+receiver-beacon is signature-verifiable or references an `owns_mailbox` binding. Neither this section nor
+that block is "the source of truth in the meantime" any more: they are checked against each other and
+against the constant by `tools/mailbox-prefix-doc-guard.sh` on every CI run. If the two ever disagree
+again, CI fails before merge rather than a reader finding out. The history of how they drifted for three
+wire versions is in the bullet above, kept because the mechanism that let it happen (a prose-named
+deferral trigger) is the thing worth remembering.
 
 ### Worked scenarios
 

@@ -311,6 +311,11 @@ impl WasmNode {
     /// mailbox route PREFIX, turning blind flood into directed route-toward (§39 P4). Re-emit before
     /// the 90s soft-state TTL lapses. Infallible: it writes a link-local record to each live link
     /// (nothing to sign, nothing to publish, so nothing to fail).
+    ///
+    /// One prefix per call, the CURRENT mailbox epoch's (security-privacy-r19-06). The past epoch of
+    /// the overlap window is emitted separately and staggered in time, so it rides `tick` rather than
+    /// this method; a caller that drives beacons manually and needs the window covered has to keep
+    /// ticking, not call this twice.
     pub fn publish_recv_beacon(&mut self) {
         self.node.publish_recv_beacon()
     }

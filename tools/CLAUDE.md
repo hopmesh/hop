@@ -38,6 +38,18 @@ workflow-if-guard.py       fails if any workflow `if:` kept a literal newline in
                            CI stays green while a gate silently does nothing. That is exactly how
                            pr-automerge's author gate shipped dead. Equal-indent folds are fine.
                            Self-test: workflow-if-guard.test.sh.
+mailbox-prefix-doc-guard.sh fails when the DOCUMENTED mailbox routing-prefix width disagrees with
+                           `crypto::MAILBOX_ROUTE_PREFIX_BYTES`. It renders one canonical claim
+                           sentence (buckets, anonymity set, small-N threshold) from the constant,
+                           requires it verbatim in crypto.rs and DESIGN.md, rejects the same sentence
+                           rendered for another width, and rejects any mailbox-prefix line carrying a
+                           wrong-width figure unless that line scopes itself (`w=<n>` counterfactual,
+                           `v<n>` version history, or the fixed 2-byte ABI `slot`). Exists because the
+                           rustdoc above that constant said "Two bytes (16 bits)" above a value of 1
+                           for wire v12, v13 AND v14 (audit PROTO-004): the file is manifest-listed, so
+                           each bump deferred the comment edit to "the next real wire bump", the same
+                           prose-named trigger PROC-001 indicted. Self-test:
+                           mailbox-prefix-doc-guard.test.sh.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
