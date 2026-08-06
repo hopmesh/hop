@@ -1019,6 +1019,14 @@ jobs:
         run: bash tools/ble-threading-guard.test.sh
       - name: Enforce Apple BLE radio single-homing (bleQueue / bleRunLoop)
         run: bash tools/ble-threading-guard.sh
+      # PROTO-004: crypto.rs's own doc block described a 2-byte mailbox routing prefix above a
+      # constant of 1 for three consecutive wire versions, because nothing in CI compared a documented
+      # constant against its symbol and wire_vectors.rs deliberately derives its vector from the
+      # constant so it cannot pin the width either.
+      - name: Self-test mailbox prefix documentation guard
+        run: bash tools/mailbox-prefix-doc-guard.test.sh
+      - name: Enforce documented mailbox prefix width against the constant
+        run: bash tools/mailbox-prefix-doc-guard.sh
       # SVC-004: DESIGN.md section 33 is the durable-store data map, and it had drifted two thirds
       # short of the code (no kv, no mailbox spool, no operation journal, no tenant registry). Prose
       # cannot be trusted to keep up with a store client, so the map is now enforced.

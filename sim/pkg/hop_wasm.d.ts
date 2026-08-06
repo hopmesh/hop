@@ -159,6 +159,11 @@ export class WasmNode {
      * mailbox route PREFIX, turning blind flood into directed route-toward (§39 P4). Re-emit before
      * the 90s soft-state TTL lapses. Infallible: it writes a link-local record to each live link
      * (nothing to sign, nothing to publish, so nothing to fail).
+     *
+     * One prefix per call, the CURRENT mailbox epoch's (security-privacy-r19-06). The past epoch of
+     * the overlap window is emitted separately and staggered in time, so it rides `tick` rather than
+     * this method; a caller that drives beacons manually and needs the window covered has to keep
+     * ticking, not call this twice.
      */
     publish_recv_beacon(): void;
     /**
@@ -218,6 +223,25 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_channelmsg_free: (a: number, b: number) => void;
+    readonly __wbg_delivered_free: (a: number, b: number) => void;
+    readonly __wbg_outpacket_free: (a: number, b: number) => void;
+    readonly __wbg_transfer_free: (a: number, b: number) => void;
+    readonly channelmsg_body: (a: number) => [number, number];
+    readonly channelmsg_id: (a: number) => [number, number];
+    readonly channelmsg_path: (a: number) => [number, number];
+    readonly channelmsg_sender: (a: number) => [number, number];
+    readonly delivered_body: (a: number) => [number, number];
+    readonly delivered_bundle: (a: number) => [number, number];
+    readonly delivered_content_type: (a: number) => [number, number];
+    readonly delivered_from: (a: number) => [number, number];
+    readonly delivered_hops: (a: number) => number;
+    readonly outpacket_data: (a: number) => [number, number];
+    readonly outpacket_link: (a: number) => number;
+    readonly transfer_bundle: (a: number) => [number, number];
+    readonly transfer_delivered: (a: number) => number;
+    readonly validate_wire_bundle: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly transfer_link: (a: number) => number;
     readonly __wbg_wasmnode_free: (a: number, b: number) => void;
     readonly wasmnode_accept_channel: (a: number, b: number, c: number) => [number, number, number];
     readonly wasmnode_accept_inbox: (a: number, b: number, c: number) => [number, number, number];
@@ -249,25 +273,6 @@ export interface InitOutput {
     readonly wasmnode_set_observe: (a: number, b: number) => void;
     readonly wasmnode_take_channel: (a: number) => [number, number];
     readonly wasmnode_tick: (a: number, b: number) => void;
-    readonly __wbg_channelmsg_free: (a: number, b: number) => void;
-    readonly __wbg_delivered_free: (a: number, b: number) => void;
-    readonly __wbg_outpacket_free: (a: number, b: number) => void;
-    readonly __wbg_transfer_free: (a: number, b: number) => void;
-    readonly channelmsg_body: (a: number) => [number, number];
-    readonly channelmsg_id: (a: number) => [number, number];
-    readonly channelmsg_path: (a: number) => [number, number];
-    readonly channelmsg_sender: (a: number) => [number, number];
-    readonly delivered_body: (a: number) => [number, number];
-    readonly delivered_bundle: (a: number) => [number, number];
-    readonly delivered_content_type: (a: number) => [number, number];
-    readonly delivered_from: (a: number) => [number, number];
-    readonly delivered_hops: (a: number) => number;
-    readonly outpacket_data: (a: number) => [number, number];
-    readonly outpacket_link: (a: number) => number;
-    readonly transfer_bundle: (a: number) => [number, number];
-    readonly transfer_delivered: (a: number) => number;
-    readonly validate_wire_bundle: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly transfer_link: (a: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
