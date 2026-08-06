@@ -3,10 +3,14 @@
 //! password-reset) is 256 bits of OS entropy. These are the security-critical bytes of the console,
 //! so they live in one small tested module the rest of the service calls into.
 
-use argon2::password_hash::rand_core::OsRng;
+// Both the OsRng VALUE and the RngCore TRAIT come from argon2's re-exported rand_core, deliberately.
+// They used to be split (OsRng from here, RngCore from the `rand` crate), which compiled only while
+// the two crates happened to agree on a rand_core version. The password-hash 0.5 to 0.6 bump broke
+// that: `OsRng` no longer implemented the `rand` trait, so `fill_bytes` vanished from a type that
+// plainly had it. Taking both from one crate makes that skew unrepresentable.
+use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand::RngCore;
 
 /// The password length band. A 12-char floor (NIST/OWASP-aligned for a B2B product) and a hard cap so
 /// a giant password can't turn argon2's deliberate slowness into a hashing-DoS.

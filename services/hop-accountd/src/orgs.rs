@@ -13,9 +13,11 @@ use crate::store::{Store, StoreError, StoreResult};
 /// A fresh 16-byte TenantId as 32 lowercase-hex chars, the fleet-wide tenant shape (matches
 /// `api::valid_tenant_hex`). From the OS CSPRNG.
 pub fn generate_tenant_hex() -> String {
-    use rand::RngCore;
+    // Same single-crate rule as auth.rs: rand_core's OsRng plus rand_core's RngCore. `rand::rngs::OsRng`
+    // does not exist in rand 0.10, and mixing the two crates is what broke this in the first place.
+    use argon2::password_hash::rand_core::{OsRng, RngCore};
     let mut b = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut b);
+    OsRng.fill_bytes(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
