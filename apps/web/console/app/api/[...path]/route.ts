@@ -33,6 +33,11 @@ const STRIP_REQUEST_HEADERS = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
+  // SVC-003: never forward a CLIENT-supplied x-hop-client-ip. This proxy sets the header itself
+  // below, but only when it can resolve one from its own XFF; without this entry, a request that
+  // arrives with no XFF (any non-Cloud-Run front, or a local run) would have its own attacker-chosen
+  // value pass straight through to accountd's rate-limit key.
+  "x-hop-client-ip",
 ]);
 
 // Same idea on the way back, plus content-encoding: fetch has already decoded the body, so echoing
@@ -63,6 +68,11 @@ async function proxy(request: NextRequest): Promise<Response> {
   // rate-limit key. Same model accountd uses on its own hop: the platform appends the real client
   // last, so the last entry of the request we received is the browser. If we can't resolve one,
   // leave it unset and accountd falls back to its X-Forwarded-For logic.
+  //
+  // SVC-003: this is a REFINEMENT, not an authentication. accountd cannot verify that the header came
+  // from this proxy (its ingress is open and we share no secret with it), so it treats the value as a
+  // sub-key inside a cap on the address its own platform appended. Do not add a control on the
+  // assumption that this header is trustworthy at the other end.
   const clientIp = request.headers
     .get("x-forwarded-for")
     ?.split(",")

@@ -34,7 +34,7 @@ mod live {
     use hop_accountd::api::{invoice_access, InvoiceAccess, Route};
     use hop_accountd::auth_api::{
         self, AuthResponse, AuthRoute, RateLimiter, REQUEST_LINK_MAX_PER_EMAIL,
-        REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
+        REQUEST_LINK_MAX_PER_HOP, REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS,
     };
     use hop_accountd::billing::Plan;
     use hop_accountd::billing::{PlanCatalog, StripeBilling};
@@ -129,6 +129,9 @@ mod live {
         store: PgStore,
         email_limiter: RateLimiter,
         peer_limiter: RateLimiter,
+        /// SVC-003: the per-hop backstop, keyed on the address the platform appended rather than on
+        /// anything the caller sends, so a rotated `X-Hop-Client-IP` cannot mint fresh budget.
+        hop_limiter: RateLimiter,
         sender: ResendSender,
         oauth_http: ReqwestOauth,
         console_base: String,
@@ -288,6 +291,7 @@ mod live {
                         REQUEST_LINK_MAX_PER_PEER,
                         REQUEST_LINK_WINDOW_MS,
                     ),
+                    hop_limiter: RateLimiter::new(REQUEST_LINK_MAX_PER_HOP, REQUEST_LINK_WINDOW_MS),
                     sender: ResendSender {
                         http: http.clone(),
                         api_key: resend_key,
@@ -426,11 +430,15 @@ mod live {
             } else if lower.starts_with("x-forwarded-for:") {
                 xff_hdr = Some(value());
             } else if lower.starts_with("x-hop-client-ip:") {
-                // The real end-user IP as resolved by the console proxy. accountd sits BEHIND that
-                // proxy, so its own X-Forwarded-For ends in the proxy's egress IP (one key for every
-                // user), which would collapse the per-peer rate limiter into a single global bucket.
-                // The console reads the browser IP from its own XFF (where Cloud Run did append the
-                // real client last) and forwards it here; peer_identity trusts it over the XFF.
+                // The end-user IP as resolved by the console proxy. accountd sits BEHIND that proxy,
+                // so its own X-Forwarded-For ends in the proxy's egress IP (one key for every user),
+                // which would collapse the per-peer rate limiter into a single global bucket. The
+                // console reads the browser IP from its own XFF (where Cloud Run did append the real
+                // client last) and forwards it here.
+                //
+                // SVC-003: this value is NOT trusted. accountd's ingress is open, so any host can send
+                // this header itself; `peer_identity` uses it only to SUBDIVIDE the bucket inside the
+                // per-hop cap, which is keyed on the address the platform appended.
                 client_ip_hdr = Some(value());
             } else if lower.starts_with("stripe-signature:") {
                 sig_hdr = Some(value());
@@ -564,7 +572,7 @@ mod live {
         method: &str,
         path: &str,
         cookie: Option<&str>,
-        peer: &str,
+        peer: &auth_api::PeerIdentity,
         body: &str,
     ) -> (u16, Vec<(String, String)>, String) {
         let mut headers: Vec<(String, String)> = vec![("Cache-Control".into(), "no-store".into())];
@@ -641,8 +649,11 @@ mod live {
             let r: AuthResponse = match auth_api::parse_auth_route(method, path) {
                 AuthRoute::RequestLink => auth_api::handle_request_link(
                     &st.store,
-                    &st.email_limiter,
-                    &st.peer_limiter,
+                    &auth_api::RequestLinkLimiters {
+                        email: &st.email_limiter,
+                        peer: &st.peer_limiter,
+                        hop: &st.hop_limiter,
+                    },
                     peer,
                     &st.sender,
                     &st.console_base,

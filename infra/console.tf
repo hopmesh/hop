@@ -37,6 +37,13 @@ data "terraform_remote_state" "billing" {
 # bearer (/v1/*), or the Stripe signature (/webhooks/stripe); /auth/* is a login surface by design. The
 # private-hardening follow-up (ingress INTERNAL_ONLY + a Direct VPC egress on the console so its calls
 # are classified internal) needs the live project's VPC/subnet to validate, so it is a first-apply item.
+#
+# SVC-003: because ingress is ALL, nothing here makes accountd reachable ONLY through the console proxy,
+# so no app-layer control may assume it. In particular the `X-Hop-Client-IP` header the console sets is
+# not authenticated: any internet host can reach /auth/request-link on the run.app URI and send its own.
+# accountd therefore bounds sign-in mail on the address the platform appends (REQUEST_LINK_MAX_PER_HOP in
+# auth_api.rs) and uses the forwarded value only to subdivide that bound. If this ingress ever becomes
+# INTERNAL_ONLY, that is when the forwarded value can be promoted to a trusted identity, not before.
 resource "google_cloud_run_v2_service" "accountd" {
   name     = "hop-accountd"
   location = var.example_region

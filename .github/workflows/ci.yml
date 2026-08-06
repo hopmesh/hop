@@ -1019,6 +1019,13 @@ jobs:
         run: bash tools/ble-threading-guard.test.sh
       - name: Enforce Apple BLE radio single-homing (bleQueue / bleRunLoop)
         run: bash tools/ble-threading-guard.sh
+      # SVC-004: DESIGN.md section 33 is the durable-store data map, and it had drifted two thirds
+      # short of the code (no kv, no mailbox spool, no operation journal, no tenant registry). Prose
+      # cannot be trusted to keep up with a store client, so the map is now enforced.
+      - name: Self-test durable-store data map guard
+        run: bash tools/store-data-map-guard.test.sh
+      - name: Enforce the durable-store data map (DESIGN.md section 33)
+        run: python3 tools/store-data-map-guard.py
       - name: Self-test exact branch-protection policy
         run: bash tools/check-branch-protection.test.sh
       - name: Self-test canonical sync authority

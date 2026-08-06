@@ -258,22 +258,136 @@ impl<T: OtlpTransport> OtlpSink<T> {
     }
 }
 
+/// SVC-002: is `ip` a target the collector must NEVER connect to? An exact twin of
+/// `hop_accountd::keys_api::ip_is_forbidden` and of `hop-gateway`'s `ip_is_forbidden`
+/// (services-r18-10). The v4 arm blocks every non-global range; the v6 arm is an ALLOWLIST (global
+/// unicast `2000::/3`), which is what refuses the IPv4-mapped/compatible/NAT64 spellings of an
+/// internal address, and the two translation ranges inside `2000::/3` (6to4, Teredo) are folded
+/// through the v4 arm on their embedded address. Three crates that share no dependency hold this
+/// function; a change to one belongs in all three.
+#[cfg(feature = "live")]
+fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
+                || (o[0] & 0xf0) == 240
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            if (seg[0] & 0xe000) != 0x2000 {
+                return true;
+            }
+            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
+                return true;
+            }
+            let embedded = if seg[0] == 0x2002 {
+                Some(std::net::Ipv4Addr::from(
+                    ((seg[1] as u32) << 16) | seg[2] as u32,
+                ))
+            } else if seg[0] == 0x2001 && seg[1] == 0x0000 {
+                Some(std::net::Ipv4Addr::from(
+                    !(((seg[6] as u32) << 16) | seg[7] as u32),
+                ))
+            } else {
+                None
+            };
+            embedded
+                .map(IpAddr::V4)
+                .map(ip_is_forbidden)
+                .unwrap_or(false)
+        }
+    }
+}
+
 /// The reqwest OTLP transport (live only). A short client timeout so one slow tenant endpoint holds
 /// the export thread for seconds, not minutes; the queue is bounded, so backpressure drops rather than
 /// blocks (see `main.rs`).
+///
+/// SVC-002: this transport is the CONNECT-TIME half of the SSRF boundary, and it does not delegate to
+/// the console's write-time validator. A tenant-set endpoint is a string; a string cannot say where a
+/// name RESOLVES, so a name whose A record is `169.254.169.254` (or one that 302s to it) would reach
+/// an internal address no matter how strict the write-time check is. Every POST therefore resolves the
+/// host, refuses any resolution that is not global unicast, PINS the client to the vetted addresses so
+/// DNS cannot rebind between the check and the connect, and disables redirect following. The client is
+/// built per request because the pinning is per host; the export path already runs off the driver
+/// thread on a bounded queue, so the extra build is not on any hot path.
 #[cfg(feature = "live")]
 pub struct ReqwestOtlpTransport {
-    client: reqwest::blocking::Client,
+    timeout: std::time::Duration,
+    /// Only a test (or a deliberately loopback-fronted dev run) may reach a private address. The
+    /// production constructor leaves this false, so the vetting is fail-safe by default.
+    allow_private_egress: bool,
 }
 
 #[cfg(feature = "live")]
 impl ReqwestOtlpTransport {
     pub fn new() -> std::result::Result<ReqwestOtlpTransport, String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+        Ok(ReqwestOtlpTransport {
+            timeout: std::time::Duration::from_secs(5),
+            allow_private_egress: false,
+        })
+    }
+
+    /// A transport that MAY reach loopback/private addresses. Tests only: a loopback responder is the
+    /// only way to exercise the redirect policy and the POST shape without a public collector.
+    #[cfg(test)]
+    fn new_allowing_private_egress() -> ReqwestOtlpTransport {
+        ReqwestOtlpTransport {
+            timeout: std::time::Duration::from_secs(5),
+            allow_private_egress: true,
+        }
+    }
+
+    /// Resolve `url`'s host, refuse any forbidden resolution, and return a client pinned to exactly
+    /// the vetted addresses with redirects disabled. Error strings never carry the host: a per-tenant
+    /// endpoint in an operator log breaks the services-03 aggregate-only guarantee.
+    fn vetted_client(&self, url: &str) -> std::result::Result<reqwest::blocking::Client, String> {
+        use std::net::ToSocketAddrs;
+        let parsed =
+            reqwest::Url::parse(url).map_err(|_| "otlp target: unparseable".to_string())?;
+        // host_str() keeps the brackets on an IPv6 literal; strip them so both the literal parse and
+        // to_socket_addrs see a bare address.
+        let raw_host = parsed
+            .host_str()
+            .ok_or_else(|| "otlp target: no host".to_string())?;
+        let host = raw_host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(raw_host);
+        let port = parsed
+            .port_or_known_default()
+            .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+        let addrs: Vec<std::net::SocketAddr> = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            vec![std::net::SocketAddr::new(ip, port)]
+        } else {
+            (host, port)
+                .to_socket_addrs()
+                .map_err(|_| "otlp target: unresolvable".to_string())?
+                .collect()
+        };
+        if addrs.is_empty() {
+            return Err("otlp target: unresolvable".to_string());
+        }
+        if !self.allow_private_egress && addrs.iter().any(|a| ip_is_forbidden(a.ip())) {
+            return Err("otlp target: refused (non-global address)".to_string());
+        }
+        reqwest::blocking::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addrs)
             .build()
-            .map_err(|e| format!("otlp http client: {e}"))?;
-        Ok(ReqwestOtlpTransport { client })
+            .map_err(|e| format!("otlp http client: {e}"))
     }
 }
 
@@ -285,8 +399,8 @@ impl OtlpTransport for ReqwestOtlpTransport {
         body: &str,
         auth: Option<&str>,
     ) -> std::result::Result<(u16, String), String> {
-        let mut req = self
-            .client
+        let client = self.vetted_client(url)?;
+        let mut req = client
             .post(url)
             .header("Content-Type", "application/json")
             .body(body.to_string());
@@ -473,5 +587,76 @@ mod tests {
             s.export(&TENANT, &batch()),
             ExportOutcome::Failed(_)
         ));
+    }
+
+    /// SVC-002, the connect-time half. The production transport must refuse a target that RESOLVES
+    /// to a non-global address, whatever the console wrote, and it must refuse every literal
+    /// spelling of one. Nothing here needs the network: `localhost` resolves from the hosts file and
+    /// the literals never leave the process.
+    #[cfg(feature = "live")]
+    #[test]
+    fn the_production_transport_refuses_a_target_that_resolves_to_a_forbidden_address() {
+        let t = ReqwestOtlpTransport::new().expect("transport");
+        for url in [
+            "https://localhost/v1/metrics",
+            "https://127.0.0.1/v1/metrics",
+            "https://169.254.169.254/v1/metrics",
+            "https://10.0.0.5:4318/v1/metrics",
+            "https://[::1]/v1/metrics",
+            "https://[::ffff:169.254.169.254]/v1/metrics",
+            "https://[64:ff9b::a9fe:a9fe]/v1/metrics",
+            "https://[2002:a9fe:a9fe::]/v1/metrics",
+        ] {
+            let err = t
+                .post_json(url, "{}", None)
+                .expect_err(&format!("must be refused: {url}"));
+            assert!(err.contains("refused"), "{url} -> {err}");
+            // services-03: the refusal must not name the tenant's endpoint.
+            assert!(!err.contains("169.254"), "error leaks the target: {err}");
+        }
+        // A global-unicast target still builds a client. Literals, so the assertion needs no DNS
+        // (CI has no egress and an unresolvable name would make this pass for the wrong reason).
+        assert!(t.vetted_client("https://93.184.216.34/v1/metrics").is_ok());
+        assert!(t
+            .vetted_client("https://[2606:4700:4700::1111]:4318/v1/metrics")
+            .is_ok());
+    }
+
+    /// SVC-002: a tenant-owned name may legitimately resolve public and then 302 into an internal
+    /// address. The transport must not follow it. The twin of
+    /// `hop-gateway::production_client_does_not_follow_redirects`.
+    #[cfg(feature = "live")]
+    #[test]
+    fn the_transport_does_not_follow_a_redirect() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let redirect_target = TcpListener::bind("127.0.0.1:0").expect("bind target");
+        redirect_target.set_nonblocking(true).expect("nonblocking");
+        let moved = format!("http://{}/private", redirect_target.local_addr().unwrap());
+
+        let origin = TcpListener::bind("127.0.0.1:0").expect("bind origin");
+        let origin_url = format!("http://{}/v1/metrics", origin.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = origin.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .expect("read request line");
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {moved}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write 302");
+        });
+
+        // Loopback is forbidden in production; the test transport is the only way to serve one.
+        let t = ReqwestOtlpTransport::new_allowing_private_egress();
+        let (status, _) = t.post_json(&origin_url, "{}", None).expect("post");
+        assert_eq!(status, 302, "the 302 is returned, not followed");
+        assert!(
+            matches!(redirect_target.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the redirect target must never be dialed"
+        );
     }
 }

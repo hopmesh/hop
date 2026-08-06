@@ -24,14 +24,81 @@ pub fn valid_carriage_pubkey(hex: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// SVC-002: is `ip` a target the telemetry collector must NEVER be pointed at? The v4 arm is a
+/// blocklist of every non-global range; the v6 arm is an ALLOWLIST (global unicast `2000::/3` only),
+/// which is what closes the bypass class this function exists for. The old validator tested only
+/// `is_loopback`/`is_unspecified`/`is_multicast`/`fc00::/7`/`fe80::/10`, and every alternate spelling
+/// of an internal v4 address has a segment-0 that misses all five: IPv4-mapped `::ffff:169.254.169.254`,
+/// IPv4-compatible `::169.254.169.254`, and NAT64 `64:ff9b::169.254.169.254` all passed. Requiring
+/// `2000::/3` rejects those three by construction (their segment 0 is `0x0000`/`0x0064`), and the two
+/// translation ranges INSIDE `2000::/3` (6to4 `2002::/16`, Teredo `2001::/32`) are folded through the
+/// v4 arm on their embedded address, so `2002:a9fe:a9fe::` (169.254.169.254 in 6to4) is refused too.
+///
+/// The same fold exists in `hop-gateway` (`ip_is_forbidden`, services-r18-10); these are deliberate
+/// twins in two crates that share no dependency, so a change to one belongs in the other.
+fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                // "This network" 0.0.0.0/8 and carrier-grade NAT 100.64.0.0/10.
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                // Benchmarking 198.18.0.0/15 and reserved 240.0.0.0/4.
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
+                || (o[0] & 0xf0) == 240
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            // Fail closed outside global unicast: loopback, unspecified, multicast, unique-local,
+            // link-local, IPv4-mapped, IPv4-compatible and NAT64 all live outside 2000::/3.
+            if (seg[0] & 0xe000) != 0x2000 {
+                return true;
+            }
+            // Documentation 2001:db8::/32.
+            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
+                return true;
+            }
+            // 6to4 2002::/16 carries its v4 in segments 1-2; Teredo 2001::/32 carries the client's
+            // v4 (obfuscated, hence the complement) in segments 6-7. Vet the embedded address.
+            let embedded = if seg[0] == 0x2002 {
+                Some(std::net::Ipv4Addr::from(
+                    ((seg[1] as u32) << 16) | seg[2] as u32,
+                ))
+            } else if seg[0] == 0x2001 && seg[1] == 0x0000 {
+                Some(std::net::Ipv4Addr::from(
+                    !(((seg[6] as u32) << 16) | seg[7] as u32),
+                ))
+            } else {
+                None
+            };
+            embedded
+                .map(IpAddr::V4)
+                .map(ip_is_forbidden)
+                .unwrap_or(false)
+        }
+    }
+}
+
 /// A managed-OTLP forward endpoint the fleet's telemetry collector will POST this tenant's telemetry
-/// to. This validator IS the trust boundary that keeps a dangerous target out of the registry, so it
-/// is strict: `https://` only (telemetry never leaves in the clear), bounded, no whitespace/control
-/// bytes, a non-empty host, NO embedded credentials, and NOT an internal/metadata address (loopback,
-/// link-local incl. 169.254.169.254, RFC1918/unique-local, unspecified, multicast) nor an
-/// internal-only hostname (`localhost`, a bare name with no dot, or a `.local`/`.internal` suffix).
-/// This blocks the SSRF where a tenant admin points their own export target at cloud metadata or an
-/// internal service.
+/// to. This is the WRITE-TIME half of the SSRF boundary, and it is deliberately not the only half:
+/// the collector vets the resolved connect address independently (`hop-telemetryd`'s
+/// `ReqwestOtlpTransport`), because no string check can see where a hostname RESOLVES. This half is
+/// strict: `https://` only (telemetry never leaves in the clear), bounded, no whitespace/control
+/// bytes, a non-empty host, NO embedded credentials, an IP literal that is global unicast in EVERY
+/// spelling ([`ip_is_forbidden`] normalizes IPv4-mapped/compatible/NAT64/6to4/Teredo forms, so
+/// `[::ffff:169.254.169.254]` is refused exactly like `169.254.169.254`), and a hostname that is not
+/// internal-only (`localhost`, a bare name with no dot, a `.local`/`.internal` suffix) and whose
+/// rightmost label is not all digits (no real TLD is, so this refuses every alternate spelling of a
+/// dotted IPv4 literal, e.g. the octal `0177.0.0.1`, which used to slip past the IP arm entirely and
+/// land in the hostname arm).
 pub fn valid_otlp_endpoint(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
@@ -61,34 +128,23 @@ pub fn valid_otlp_endpoint(url: &str) -> bool {
     if host.is_empty() {
         return false;
     }
-    // An IP literal must be a public (global-unicast-ish) address.
+    // An IP literal must be a global-unicast address in every spelling it can be written in.
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => {
-                !(v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_multicast()
-                    || v4.is_broadcast())
-            }
-            std::net::IpAddr::V6(v6) => {
-                let seg0 = v6.segments()[0];
-                !(v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || (seg0 & 0xfe00) == 0xfc00  // unique-local fc00::/7
-                    || (seg0 & 0xffc0) == 0xfe80) // link-local  fe80::/10
-            }
-        };
+        return !ip_is_forbidden(ip);
     }
-    // A hostname must look like a public DNS name: has a dot, and no internal-only suffix.
+    // A hostname must look like a public DNS name: dotted, no internal-only suffix, no empty label,
+    // and a rightmost label carrying at least one non-digit. That last clause is what refuses the
+    // alternate IPv4 spellings the parse above does not accept (`0177.0.0.1`, `0x7f.0.0.1`,
+    // `2130706433.1`): a registry TLD is never all digits, so nothing legitimate is lost.
     let lower = host.to_ascii_lowercase();
+    let tld = lower.rsplit('.').next().unwrap_or("");
     lower.contains('.')
         && lower != "localhost"
         && !lower.ends_with(".localhost")
         && !lower.ends_with(".local")
         && !lower.ends_with(".internal")
+        && !lower.split('.').any(str::is_empty)
+        && !tld.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// POST /keys/carriage. Register or rotate the tenant's carriage-stamp public key. Idempotent: the
@@ -201,8 +257,9 @@ mod tests {
         assert!(valid_otlp_endpoint(
             "https://collector.example.com:4318/v1/metrics"
         ));
-        assert!(valid_otlp_endpoint("https://203.0.113.10:443/v1")); // public IP literal
-                                                                     // scheme / shape
+        assert!(valid_otlp_endpoint("https://93.184.216.34:443/v1")); // public IP literal
+        assert!(valid_otlp_endpoint("https://[2606:4700:4700::1111]/v1")); // public IPv6 literal
+                                                                           // scheme / shape
         assert!(!valid_otlp_endpoint("http://otlp.example.com")); // must be https
         assert!(!valid_otlp_endpoint("https://x.com/ path")); // whitespace
         assert!(!valid_otlp_endpoint(&format!(
@@ -226,6 +283,52 @@ mod tests {
         assert!(!valid_otlp_endpoint(
             "https://user:pass@internal-collector.example.com/"
         )); // userinfo
+    }
+
+    /// SVC-002. Every literal spelling of an internal address the parser accepts must be refused.
+    /// Before the [`ip_is_forbidden`] normalization, each of these returned TRUE and landed in the
+    /// tenant registry: the v6 arm tested only `is_loopback`/`is_unspecified`/`is_multicast`/
+    /// `fc00::/7`/`fe80::/10`, which every embedded-v4 form misses, and the octal spelling failed the
+    /// IP parse entirely and passed the hostname arm (it has a dot and no internal suffix).
+    #[test]
+    fn otlp_rejects_every_mapped_and_translated_spelling_of_an_internal_target() {
+        for url in [
+            // IPv4-mapped: the metadata service, loopback, RFC1918.
+            "https://[::ffff:169.254.169.254]/",
+            "https://[::ffff:127.0.0.1]/v1",
+            "https://[::ffff:10.0.0.5]/",
+            "https://[::ffff:169.254.169.254]:4318/v1/metrics",
+            // IPv4-compatible (deprecated, still parses).
+            "https://[::169.254.169.254]/",
+            "https://[::127.0.0.1]/",
+            // NAT64 well-known prefix.
+            "https://[64:ff9b::169.254.169.254]/",
+            "https://[64:ff9b::a00:5]/",
+            // 6to4 and Teredo, both INSIDE 2000::/3, carrying an internal v4.
+            "https://[2002:a9fe:a9fe::]/",
+            "https://[2002:7f00:1::]/",
+            "https://[2001:0:0:0:0:0:5601:5601]/", // Teredo, client v4 = 169.254.169.254
+            // Alternate dotted spellings of 127.0.0.1 that the IpAddr parse rejects.
+            "https://0177.0.0.1/",
+            "https://0x7f.0.0.1/",
+            "https://2130706433.1/",
+            // Other non-global v4 ranges the old blocklist missed.
+            "https://100.64.0.1/",   // carrier-grade NAT
+            "https://0.0.0.0/",      // this network
+            "https://198.18.0.1/",   // benchmarking
+            "https://240.0.0.1/",    // reserved
+            "https://192.0.2.10/",   // documentation (TEST-NET-1)
+            "https://203.0.113.10/", // documentation (TEST-NET-3)
+            // Non-global v6 outside 2000::/3, plus documentation inside it.
+            "https://[::]/",
+            "https://[fe80::1]/",
+            "https://[ff02::1]/",
+            "https://[2001:db8::1]/",
+            // Empty labels cannot form a resolvable public name.
+            "https://collector..example.com/",
+        ] {
+            assert!(!valid_otlp_endpoint(url), "must be refused: {url}");
+        }
     }
 
     #[test]

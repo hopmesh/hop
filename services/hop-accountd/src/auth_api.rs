@@ -121,36 +121,55 @@ pub fn authorize_tenant(
     Ok((user, org))
 }
 
-/// The client identity used for per-peer limiting.
+/// The caller's rate-limit identity, split by how much of it the caller can choose.
 ///
-/// `trusted_client_ip` is the `X-Hop-Client-IP` the console proxy sets: when accountd is reached
-/// through the console, its own `X-Forwarded-For` ends in the PROXY's egress IP (identical for every
-/// user), which would collapse the per-peer limiter into one global bucket. The console resolves the
-/// real browser IP from its own XFF and forwards it here, so it wins when present.
-///
-/// Absent that (accountd hit directly, or dev): on Cloud Run the platform APPENDS the real client
-/// address as the LAST `X-Forwarded-For` entry; anything earlier is client-supplied and spoofable,
-/// so only the last entry counts. Absent the header too, fall back to the socket peer, port stripped.
+/// SVC-003: this used to be one string, and `X-Hop-Client-IP` won outright. That header is set by the
+/// console proxy, but accountd's own ingress is `INGRESS_TRAFFIC_ALL` with `invoker_iam_disabled`
+/// (`infra/console.tf`), so ANY internet host can reach `/auth/request-link` on the run.app URI and
+/// supply the header itself. Rotating it per request put every request in its own bucket and the
+/// per-peer cap became no cap at all. There is no shared secret between the console and accountd
+/// today (the console service deliberately holds none), so the header cannot be authenticated; it is
+/// therefore demoted from "the identity" to "a subdivision inside a bound that does not depend on it".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerIdentity {
+    /// The hop the INFRASTRUCTURE guarantees, and the only key a caller cannot choose: the last
+    /// `X-Forwarded-For` entry (Cloud Run appends the real peer address there; everything earlier is
+    /// client-supplied), or the socket peer when there is no XFF at all (dev, or a direct dial).
+    pub trusted: String,
+    /// The ordinary per-peer bucket: `trusted`, refined by the console-forwarded client IP when one
+    /// is present, so real users behind the proxy keep individual buckets instead of collapsing into
+    /// the proxy's single egress key. Caller-influenced, hence never the only bound.
+    pub bucket: String,
+}
+
+/// Build the split identity. `forwarded_client_ip` is the `X-Hop-Client-IP` value; it is accepted only
+/// as a bucket refinement and only when it parses as a bare IP address, so the key space cannot be
+/// filled with arbitrary attacker-chosen strings.
 pub fn peer_identity(
-    trusted_client_ip: Option<&str>,
+    forwarded_client_ip: Option<&str>,
     xff: Option<&str>,
     socket_peer: &str,
-) -> String {
-    if let Some(ip) = trusted_client_ip.map(str::trim).filter(|s| !s.is_empty()) {
-        return ip.to_string();
-    }
-    if let Some(last) = xff
+) -> PeerIdentity {
+    let trusted = if let Some(last) = xff
         .and_then(|h| h.split(',').next_back())
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        return last.to_string();
-    }
-    socket_peer
-        .rsplit_once(':')
-        .map(|(host, _port)| host)
-        .unwrap_or(socket_peer)
-        .to_string()
+        last.to_string()
+    } else {
+        socket_peer
+            .rsplit_once(':')
+            .map(|(host, _port)| host)
+            .unwrap_or(socket_peer)
+            .to_string()
+    };
+    let bucket = forwarded_client_ip
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .map(|ip| format!("{trusted}|{ip}"))
+        .unwrap_or_else(|| trusted.clone());
+    PeerIdentity { trusted, bucket }
 }
 
 /// Pull a single string field out of a small JSON body (`{"email": "..."}`) without exposing the
@@ -232,24 +251,44 @@ impl RateLimiter {
 }
 
 /// Production defaults. Per-address: 3 links per token-TTL window, so at most ~3 live links exist
-/// per address. Per-peer: a coarser cap on distinct-address sends from one peer, the anti-spam /
-/// anti-relay control; it is a REQUIRED argument to [`handle_request_link`] so no socket wiring can
-/// ship without it.
+/// per address. Per-peer: a coarser cap on distinct-address sends from one peer bucket, the ordinary
+/// anti-spam control. Per-hop: the SVC-003 backstop, a cap on the whole unforgeable hop, which holds
+/// even when the per-peer bucket key is attacker-chosen. It is deliberately ~10x the per-peer cap:
+/// every legitimate console user shares the proxy's single egress hop, so this ceiling must sit above
+/// real concurrent-login volume while still bounding total outbound sign-in mail. That is a real
+/// tradeoff, not a free win: a spammer who burns the shared bucket degrades login for other users of
+/// the same hop for the rest of the window. It is strictly better than the unbounded amplifier it
+/// replaces, and the tighter fix (an AUTHENTICATED forwarded client IP, so the per-peer bucket is
+/// itself unforgeable) needs a shared secret between the console and accountd that does not exist yet.
 pub const REQUEST_LINK_MAX_PER_EMAIL: u32 = 3;
 pub const REQUEST_LINK_WINDOW_MS: u64 = LOGIN_TOKEN_TTL_MS;
 pub const REQUEST_LINK_MAX_PER_PEER: u32 = 12;
+pub const REQUEST_LINK_MAX_PER_HOP: u32 = 120;
+
+/// The three volumetric bounds on the sign-in-link surface, grouped so no wiring can supply two of
+/// them and silently omit the third.
+pub struct RequestLinkLimiters<'a> {
+    /// Per normalized email address: bounds mail per victim inbox.
+    pub email: &'a RateLimiter,
+    /// Per [`PeerIdentity::bucket`]: the ordinary per-user cap. Caller-influenced.
+    pub peer: &'a RateLimiter,
+    /// Per [`PeerIdentity::trusted`]: the bound that survives a forged `X-Hop-Client-IP`.
+    pub hop: &'a RateLimiter,
+}
 
 /// POST /auth/request-link. Always 202 for a well-formed address, whether or not an account exists
 /// (no enumeration; the email itself is the only difference). 400 is purely a shape error, 429 is
-/// volume; neither depends on account existence. `peer` is the caller's network identity (the
-/// LB-provided client address); the per-peer limiter is what stops one host from spraying sign-in
-/// mail at arbitrary inboxes, so it is a required argument, not an optional socket-layer nicety.
-#[allow(clippy::too_many_arguments)]
+/// volume; neither depends on account existence.
+///
+/// `peer` is the caller's split network identity. Both volumetric gates are required arguments, not
+/// optional socket-layer niceties, and they are checked in order of trust: the per-hop cap on the
+/// address the infrastructure appended (which a caller cannot rotate), THEN the finer per-peer bucket.
+/// SVC-003: with only the per-peer gate, a caller who rotated `X-Hop-Client-IP` landed every request
+/// in a fresh bucket and the anti-spam control did nothing at all.
 pub fn handle_request_link(
     store: &dyn Store,
-    email_limiter: &RateLimiter,
-    peer_limiter: &RateLimiter,
-    peer: &str,
+    limiters: &RequestLinkLimiters,
+    peer: &PeerIdentity,
     sender: &dyn EmailSender,
     console_base: &str,
     body: &str,
@@ -261,11 +300,14 @@ pub fn handle_request_link(
     if !is_valid_email(&email) {
         return AuthResponse::json(400, r#"{"error":"invalid_email"}"#);
     }
-    if !peer_limiter.allow(peer, now_ms) {
+    if !limiters.hop.allow(&peer.trusted, now_ms) {
+        return AuthResponse::json(429, r#"{"error":"slow_down"}"#);
+    }
+    if !limiters.peer.allow(&peer.bucket, now_ms) {
         return AuthResponse::json(429, r#"{"error":"slow_down"}"#);
     }
     let key = normalize_email(&email);
-    if !email_limiter.allow(&key, now_ms) {
+    if !limiters.email.allow(&key, now_ms) {
         return AuthResponse::json(429, r#"{"error":"slow_down"}"#);
     }
     let link = match session::request_login(store, &email, now_ms) {
@@ -279,10 +321,11 @@ pub fn handle_request_link(
     );
     if sender.send(&msg).is_err() {
         // The send failed AFTER minting; the token simply expires unused (only its hash is stored).
-        // Refund both rate-limit hits: a provider outage must not consume the caller's attempts and
+        // Refund every rate-limit hit: a provider outage must not consume the caller's attempts and
         // lock them out for the window. Surface a retryable error rather than a silent 202.
-        email_limiter.refund(&key, now_ms);
-        peer_limiter.refund(peer, now_ms);
+        limiters.email.refund(&key, now_ms);
+        limiters.peer.refund(&peer.bucket, now_ms);
+        limiters.hop.refund(&peer.trusted, now_ms);
         return AuthResponse::json(502, r#"{"error":"email_failed"}"#);
     }
     AuthResponse::json(202, r#"{"ok":true}"#)
@@ -382,8 +425,18 @@ mod tests {
         RateLimiter::new(REQUEST_LINK_MAX_PER_PEER, REQUEST_LINK_WINDOW_MS)
     }
 
-    /// The full request-link call with one email limiter and a fresh, roomy peer limiter.
-    #[allow(clippy::too_many_arguments)]
+    fn hop_limiter() -> RateLimiter {
+        RateLimiter::new(REQUEST_LINK_MAX_PER_HOP, REQUEST_LINK_WINDOW_MS)
+    }
+
+    /// One caller with no forwarded header: `trusted` and `bucket` are both the socket peer.
+    fn one_peer(ip: &str) -> PeerIdentity {
+        peer_identity(None, None, &format!("{ip}:4444"))
+    }
+
+    /// The full request-link call from one fixed peer, with a caller-owned email + peer limiter and a
+    /// FRESH per-hop limiter each call (the per-hop backstop has its own dedicated test below, and a
+    /// shared one here would just re-assert the per-peer cap at a different number).
     fn req(
         store: &dyn Store,
         lim: &RateLimiter,
@@ -392,7 +445,19 @@ mod tests {
         body: &str,
         now: u64,
     ) -> AuthResponse {
-        handle_request_link(store, lim, peers, "9.9.9.9", sender, BASE, body, now)
+        handle_request_link(
+            store,
+            &RequestLinkLimiters {
+                email: lim,
+                peer: peers,
+                hop: &hop_limiter(),
+            },
+            &one_peer("9.9.9.9"),
+            sender,
+            BASE,
+            body,
+            now,
+        )
     }
 
     /// Pull the raw token back out of the emailed link.
@@ -624,15 +689,127 @@ mod tests {
         // a different peer is unaffected
         let r = handle_request_link(
             &store,
-            &lim,
-            &peers,
-            "8.8.8.8",
+            &RequestLinkLimiters {
+                email: &lim,
+                peer: &peers,
+                hop: &hop_limiter(),
+            },
+            &one_peer("8.8.8.8"),
             &sender,
             BASE,
             r#"{"email":"other@x.co"}"#,
             T0 + 101,
         );
         assert_eq!(r.status, 202);
+    }
+
+    /// SVC-003, the load-bearing regression. A caller who rotates `X-Hop-Client-IP` gets a fresh
+    /// per-peer bucket every request, which is exactly what the old single-key identity allowed. The
+    /// per-hop cap must still bound the total number of outbound sign-in emails inside one window.
+    /// Without the hop gate this loop sends 500 emails to 500 distinct inboxes from one host.
+    #[test]
+    fn rotating_the_client_ip_header_cannot_exceed_the_per_hop_mail_bound() {
+        let store = MemStore::new();
+        let sender = FakeSender::default();
+        let (lim, peers, hop) = (limiter(), peer_limiter(), hop_limiter());
+        let limiters = RequestLinkLimiters {
+            email: &lim,
+            peer: &peers,
+            hop: &hop,
+        };
+        let mut accepted = 0;
+        for i in 0..500u32 {
+            // Every request: a different attacker-chosen forwarded IP AND a different victim inbox,
+            // so neither the per-peer bucket nor the per-email cap ever repeats a key.
+            let forged = format!("198.51.100.{}", i % 256);
+            let peer = peer_identity(Some(&forged), Some("203.0.113.9"), "10.0.0.1:5555");
+            assert_eq!(peer.trusted, "203.0.113.9", "the appended hop is the key");
+            let r = handle_request_link(
+                &store,
+                &limiters,
+                &peer,
+                &sender,
+                BASE,
+                &format!(r#"{{"email":"victim{i}@x.co"}}"#),
+                T0 + u64::from(i),
+            );
+            if r.status == 202 {
+                accepted += 1;
+            } else {
+                assert_eq!(r.status, 429, "the only other outcome is a throttle");
+            }
+        }
+        assert_eq!(
+            accepted, REQUEST_LINK_MAX_PER_HOP,
+            "the per-hop cap bounds total sign-in mail from one unforgeable hop"
+        );
+        assert_eq!(
+            sender.sent.lock().unwrap().len(),
+            REQUEST_LINK_MAX_PER_HOP as usize,
+            "no email is sent past the cap"
+        );
+    }
+
+    /// SVC-003: a forged header must not be able to steal ANOTHER hop's budget either. Two callers on
+    /// different appended hops keep independent buckets even when both claim the same client IP.
+    #[test]
+    fn the_per_hop_bound_is_scoped_to_the_appended_hop() {
+        let store = MemStore::new();
+        let sender = FakeSender::default();
+        let (lim, peers, hop) = (limiter(), peer_limiter(), hop_limiter());
+        let limiters = RequestLinkLimiters {
+            email: &lim,
+            peer: &peers,
+            hop: &hop,
+        };
+        // Burn the noisy hop's whole budget, rotating the forwarded IP so the per-peer cap (12) is
+        // never what stops the loop: only the per-hop cap is under test here.
+        for i in 0..REQUEST_LINK_MAX_PER_HOP {
+            let forged = format!("198.51.100.{i}");
+            let peer = peer_identity(Some(&forged), Some("203.0.113.9"), "10.0.0.1:1");
+            assert_eq!(
+                handle_request_link(
+                    &store,
+                    &limiters,
+                    &peer,
+                    &sender,
+                    BASE,
+                    &format!(r#"{{"email":"v{i}@x.co"}}"#),
+                    T0 + u64::from(i),
+                )
+                .status,
+                202
+            );
+        }
+        let same_hop = peer_identity(Some("198.51.100.200"), Some("203.0.113.9"), "10.0.0.1:1");
+        assert_eq!(
+            handle_request_link(
+                &store,
+                &limiters,
+                &same_hop,
+                &sender,
+                BASE,
+                r#"{"email":"blocked@x.co"}"#,
+                T0 + 1_000,
+            )
+            .status,
+            429
+        );
+        let other_hop = peer_identity(Some("198.51.100.7"), Some("192.0.2.44"), "10.0.0.1:1");
+        assert_eq!(
+            handle_request_link(
+                &store,
+                &limiters,
+                &other_hop,
+                &sender,
+                BASE,
+                r#"{"email":"innocent@x.co"}"#,
+                T0 + 1_001,
+            )
+            .status,
+            202,
+            "a different hop keeps its own budget"
+        );
     }
 
     #[test]
@@ -716,36 +893,56 @@ mod tests {
     #[test]
     fn peer_identity_trusts_only_the_appended_xff_entry() {
         // Cloud Run appends the REAL client last; spoofed leading entries are ignored.
+        let p = peer_identity(None, Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:33112");
         assert_eq!(
-            peer_identity(None, Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:33112"),
-            "1.2.3.4"
+            (p.trusted.as_str(), p.bucket.as_str()),
+            ("1.2.3.4", "1.2.3.4")
         );
-        assert_eq!(
-            peer_identity(None, Some(" 1.2.3.4 "), "10.0.0.9:1"),
-            "1.2.3.4"
-        );
+        let p = peer_identity(None, Some(" 1.2.3.4 "), "10.0.0.9:1");
+        assert_eq!(p.trusted, "1.2.3.4");
         // no header: socket peer, port stripped (IPv6 bracket form included)
-        assert_eq!(peer_identity(None, None, "9.9.9.9:5124"), "9.9.9.9");
-        assert_eq!(peer_identity(None, None, "[::1]:5124"), "[::1]");
+        assert_eq!(peer_identity(None, None, "9.9.9.9:5124").trusted, "9.9.9.9");
+        assert_eq!(peer_identity(None, None, "[::1]:5124").trusted, "[::1]");
         // empty header falls back too
-        assert_eq!(peer_identity(None, Some(""), "9.9.9.9:5124"), "9.9.9.9");
+        assert_eq!(
+            peer_identity(None, Some(""), "9.9.9.9:5124").trusted,
+            "9.9.9.9"
+        );
     }
 
+    /// SVC-003: `X-Hop-Client-IP` is client-supplied, so it may only SUBDIVIDE the bucket inside the
+    /// hop the platform appended. It must never become the trusted key, and a value that is not a bare
+    /// IP must not enter the key space at all.
     #[test]
-    fn peer_identity_prefers_the_trusted_console_client_ip() {
-        // Behind the console proxy, XFF ends in the proxy IP; the forwarded real client wins.
-        assert_eq!(
-            peer_identity(
-                Some("203.0.113.7"),
-                Some("10.8.0.2, 10.8.0.9"),
-                "10.8.0.9:4432"
-            ),
-            "203.0.113.7"
+    fn the_forwarded_client_ip_refines_the_bucket_but_never_the_trusted_hop() {
+        // Behind the console proxy, XFF ends in the proxy's egress IP: that is the trusted hop, and
+        // the forwarded browser IP splits the bucket so real users do not share one key.
+        let p = peer_identity(
+            Some("203.0.113.7"),
+            Some("10.8.0.2, 10.8.0.9"),
+            "10.8.0.9:4432",
         );
-        // Empty/whitespace trusted header falls through to the XFF logic.
-        assert_eq!(
-            peer_identity(Some("  "), Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:1"),
-            "1.2.3.4"
-        );
+        assert_eq!(p.trusted, "10.8.0.9", "the appended hop, not the header");
+        assert_eq!(p.bucket, "10.8.0.9|203.0.113.7");
+        // A forged header on a DIRECT dial (no XFF) cannot displace the socket peer.
+        let forged = peer_identity(Some("203.0.113.7"), None, "45.9.9.9:5555");
+        assert_eq!(forged.trusted, "45.9.9.9");
+        assert_eq!(forged.bucket, "45.9.9.9|203.0.113.7");
+        // Empty/whitespace, or anything that is not a bare IP, is ignored entirely: the bucket
+        // collapses back onto the trusted hop, so no attacker-chosen string ever becomes a key.
+        for junk in [
+            "  ",
+            "not-an-ip",
+            "1.2.3.4, 5.6.7.8",
+            "1.2.3.4:80",
+            "veryloooooooooooooooooooooooooooooooooooooooooooong",
+        ] {
+            let p = peer_identity(Some(junk), Some("6.6.6.6, 1.2.3.4"), "10.0.0.9:1");
+            assert_eq!(p.trusted, "1.2.3.4", "junk header: {junk}");
+            assert_eq!(
+                p.bucket, "1.2.3.4",
+                "junk header must not key a bucket: {junk}"
+            );
+        }
     }
 }
