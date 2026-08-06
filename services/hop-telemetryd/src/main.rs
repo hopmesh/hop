@@ -458,8 +458,15 @@ fn load_registry_keys(project: &str) -> std::result::Result<Vec<(TenantId, [u8; 
 
 /// The per-tenant OTLP endpoints from the Firestore tenant registry. A read error is logged and yields
 /// an empty list, so the collector keeps the static file endpoints and stays up (fail-open). A row
-/// with no OTLP endpoint or a malformed tenant hex is skipped. The url is trusted as the console
-/// SSRF-validated it at write time (5a); `OtlpEndpointMap::insert` re-checks the http(s) scheme.
+/// with no OTLP endpoint or a malformed tenant hex is skipped.
+///
+/// SVC-002: the url arriving here is NOT trusted. This comment used to say it was, because the console
+/// SSRF-validated it at write time, and that delegation was the whole defect: the write-time validator
+/// accepted `[::ffff:169.254.169.254]` and, being a string check, could never see where a hostname
+/// resolves. The boundary now lives at the connect, in `otlp::ReqwestOtlpTransport` (resolve, refuse
+/// non-global, pin the address, no redirects), so a hostile registry row is refused even if it was
+/// written by a validator with a hole in it. `OtlpEndpointMap::insert` still re-checks the http(s)
+/// scheme, which is a shape check and nothing more.
 #[cfg(all(feature = "live", feature = "firestore"))]
 fn load_registry_otlp(project: &str) -> Vec<(TenantId, otlp::OtlpEndpoint)> {
     let registry = hop_store_firestore::TenantRegistry::new(project);

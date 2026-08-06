@@ -2047,29 +2047,115 @@ member keeps whatever it could already read (keys aren't retroactively secret).
 > personal data the backbone persists, where it physically lives, and which knobs move it.
 
 The only place Hop persists user-derived data at rest is the **durable Firestore store** (§27/§28).
-Everything else is ephemeral compute or on-device. Three things land there, and they are **not**
-equal under GDPR:
+Everything else is ephemeral compute or on-device. This inventory is **exhaustive and enforced**: it
+lists every collection `hop-store-firestore` addresses, and `tools/store-data-map-guard.py` fails CI
+if the code addresses one this section does not name (SVC-004, which found this list naming three
+surfaces while the store was also writing five more: the kv side store, the §39 mailbox spool, the
+critical-operation journal and its fence, the liveness registry, and the tenant registry). The
+surfaces are **not** equal under GDPR:
 
 - **Sealed bundles** (`relays/{node}/bundles`), **ciphertext**. Relays carry the payload
   end-to-end encrypted and **never hold keys**, so message *content* is opaque to the store. But
   the bundle header carries **source + destination public keys, timestamps, size, and app/topic
   labels**. A persistent pseudonymous identifier tied to an individual is personal data (GDPR
   Recital 26 / *Breyer*), so the **metadata** is in scope even though the content is not.
+  **Delivery ACKs** (`AckTo`) ride the same collection with the same metadata character.
 - **Presence index** (`presence/{index}` = region + heartbeat, §28), the sharp one. It maps a device
   to a coarse **location + activity timeline**. Movement/timing metadata over time is the most
   sensitive dataset in the system. sec-relay-p1-01 keys the document id (and the body) on a
   fleet-keyed `PresenceIndex` rather than the device address, so the collection is no longer a
   readable address-to-location log for anyone without the fleet key; the relay fleet itself still
   resolves it, so this is a limit on onward disclosure, not on the operator.
-- **Delivery ACKs** (`AckTo`), same metadata character as bundles.
+- **Relay KV side store** (`relays/{node}/kv`, stores-07), the one this section used to omit. Values
+  are opaque bytes; the **key is a cleartext, indexed string** and that is where the identifiers are.
+  A partition holds whichever of these its node writes: one document per peer it has a forward-secret
+  session with (`session/<base58 peer public key>`, the sharp one on a relay), carrier-stream chunks
+  (`strm/<base58 sender public key>/<stream id>/<seq>`), inbox and dedup rows (`inbox/`,
+  `inbox-seen/`, keyed by bundle id), `hps/` service, subscription and membership rows keyed by
+  service path when the node hosts services, `response/` rows keyed by request id, and the metering
+  ledger (`usage/`, `carriage_usage/`, `telemetry_usage/`, `storage_usage/`, each
+  `{hour}/{tenant}/{writer}`, tenant identifiers rather than device ones). The **values** on the
+  session and prekey rows are ratchet and prekey material: the node's own key material for the
+  sessions it terminates, not user content keys. Unlike bundles and presence, kv carries **no
+  `expireAt` and therefore no TTL policy** (`infra/bootstrap/core.tf` declares TTL fields on
+  `bundles`, `presence`, `registry` and `operations` only), so a kv row persists until the relay
+  deletes it. That combination, a durable indexed device address with no retention bound, is the real
+  exposure here, and it is accepted rather than fixed: see "Why the kv key space is cleartext" below.
+- **Blind mailbox spool** (`mailboxes/{mailbox-tag}/bundles`, §39 P5). The one surface whose key space
+  is derived rather than literal: the tag is `H("v2" | address | epoch)` (`crypto::mailbox_tag`), so a
+  reader sees spooled ciphertext bucketed by a rotating pseudonym instead of by a recipient address.
+  Read the strength precisely, because the code does (`mailbox_tag_prefix_len`): the tag is a **public
+  deterministic** function of an address, so it is unlinkable only to an observer who does not already
+  know the address. It is the derived-key-space precedent, and its limit is exactly why the same
+  treatment does not rescue the kv keys below.
+- **Critical-operation journal** (`relays/{node}/operations` plus the single
+  `relays/{node}/control/critical-operation-fence` document). Idempotency markers for durable batches.
+  The `mutations` field is the serialized batch, so it transitively holds the same kv keys (and thus
+  the same device addresses) as an opaque `bytesValue` rather than as an indexed string. TTL-bounded.
+- **Liveness registry** (`registry/{node}` = endpoint + heartbeat, §28). Relay node identities and
+  addresses, not user devices. TTL-bounded.
+- **Tenant registry** (`tenants/{tenant-hex}`, written by hop-accountd, read by the fleet). Commercial
+  identifiers: tenant id, carriage public key, OTLP endpoint, active flag. No device identifiers.
 
 ### What the design already gets right (data protection by design, Art. 25)
 
-- **End-to-end encryption, relays hold no keys.** Content exposure at rest is essentially nil, a
-  strong Art. 32 safeguard and the core of any transfer-risk argument.
+- **End-to-end encryption, relays hold no keys.** *Message content* exposure at rest is essentially
+  nil, a strong Art. 32 safeguard and the core of any transfer-risk argument. Read it precisely: it is
+  a statement about user content, not about all key material. The relay holds the ratchet state for
+  the sessions it terminates itself, and on the Firestore path that state is stored under Google's
+  at-rest encryption and IAM, with no application-level key on top (see the SQLCipher divergence
+  below).
 - **No central identity/name registry (§23).** Addresses are pseudonymous public keys with no
   account mapping. Pseudonymization and data minimization by construction.
-- **TTL eviction** on bundles (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on every write) and heartbeat staleness on presence, storage limitation (Art. 5(1)(e)) is built in, not bolted on.
+- **TTL eviction** on bundles, presence, the liveness registry and the operation journal
+  (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on those writes)
+  and heartbeat staleness on presence, so storage limitation (Art. 5(1)(e)) is built in for those
+  four. It is **not** built in for `kv`, which has no `expireAt` at all.
+
+### Why the kv key space is cleartext, and what that exposes
+
+A decision, recorded so it is not mistaken for an oversight. Blinding the kv key was evaluated and
+rejected. Start with why the cheap version does not work at all: applying the mailbox-tag treatment
+(`H(address | epoch)`) to `session/<address>` would not stop the adversary in this threat model,
+because a Firestore reader also reads `relays/{node}/bundles`, whose headers carry source and
+destination public keys. It can hash the addresses it already holds and match them against the hashed
+keys. Any scheme here therefore has to be **keyed** with a secret that reader does not have (the relay
+identity, which lives in Secret Manager), and that is what makes all three of the following
+load-bearing rather than incidental:
+
+1. **The key is the durable cursor.** `query_kv_page` runs server-side Firestore range filters and an
+   `orderBy` on the cleartext `key` field, and the pagination cursor handed back to core IS a key
+   (`list_kv_page_bounded`, the `strm/` lazy split). A hash or MAC scrambles lexicographic order, so
+   ordered, bounded paging (the control that keeps attacker-influenced carrier chunks from being
+   loaded in one gulp) would break, not merely slow down.
+2. **The relay must reverse it.** Rehydration recovers the peer address FROM the key
+   (`node.rs`: `list_kv("session/")` then base58-decode the suffix), so the transform would have to be
+   reversible, not a MAC, which means a deterministic-encryption construct and a relay-held key.
+3. **A second service reads the key space.** hop-billingd reconciles `usage/{hour}/{tenant}/{writer}`
+   rows across every partition with a read-only Firestore credential and no relay secret. Those keys
+   must stay parseable by a party that must never hold relay key material, so any scheme would have to
+   be per-prefix, which is a partial control that reads as complete.
+
+**What remains exposed, precisely:** a holder of Firestore read access (a project operator, an
+over-broad `roles/datastore.viewer` credential, a backup export, or lawful process against the single
+US database) can list `relays/{node}/kv` and recover, for each relay partition, the base58 public key
+of every device that held a session with that relay, the sender public key of every carrier stream,
+and per-document `createTime`/`updateTime` as an attachment timeline, with no TTL bounding how long
+those rows live. That is the same correlation the relay's logging discipline (netlog vs netlog_private)
+exists to prevent, stored durably instead of logged. It is bounded by IAM and by the fact that the
+value side stays opaque; it is not bounded cryptographically. The honest fix is a durable-cursor
+redesign (opaque page tokens) plus a per-prefix keyed index, and until that is built this stays on the
+exposure list rather than being described as mitigated.
+
+**SQLCipher divergence.** `hop-store-sqlite` requires an application-level at-rest key (`open_keyed`,
+SQLCipher) for exactly this class of material, and the Firestore path has no equivalent: it relies on
+Google-managed encryption at rest plus IAM. That difference is deliberate and it is a difference in
+threat model, not a gap in one implementation. The sqlite store runs **on a user's device**, where the
+adversary is whoever picks the device up, so the key has to be held outside the file. The Firestore
+store runs **in the fleet's own project**, where an application-level key would have to live in that
+same project's Secret Manager and would therefore fall to the same credential compromise it claims to
+defend against, while breaking hop-billingd's independent read. If the durable-cursor redesign above
+is ever built, the value-side key rides along with it; on its own it would be theatre.
 
 ### The actual exposures
 
