@@ -72,6 +72,15 @@ _lib.hop_address_from_base58.restype = c_bool
 _lib.hop_sign_reach_record.argtypes = [c_void_p, c_char_p, c_uint32, REACH_SIGN_SINK, c_void_p]
 _lib.hop_verify_reach_record.argtypes = [c_char_p, c_size_t, c_uint64, REACH_VERIFY_SINK, c_void_p]
 _lib.hop_verify_reach_record.restype = c_bool
+# §19 relay pool. PLAT-003: the four calls the v4 -> v5 ABI bump this wrapper pins was taken for,
+# which no C-ABI wrapper bound, so a host on the published SDKs could not fail over off a dead relay.
+_lib.hop_relay_add.argtypes = [c_void_p, c_char_p, c_bool]
+_lib.hop_relay_add.restype = c_bool
+_lib.hop_relay_next.argtypes = [c_void_p, c_char_p, c_size_t]
+_lib.hop_relay_next.restype = c_size_t
+_lib.hop_relay_report.argtypes = [c_void_p, c_char_p, c_bool]
+_lib.hop_relay_pool_size.argtypes = [c_void_p, POINTER(c_size_t)]
+_lib.hop_relay_pool_size.restype = c_size_t
 # Endpoint clustering (DESIGN.md §40).
 _lib.hop_cluster_join.argtypes = [c_void_p, c_char_p]
 _lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
@@ -244,6 +253,36 @@ def verify_reach(record: bytes, now_secs: int) -> dict | None:
 
     ok = _lib.hop_verify_reach_record(record, len(record), now_secs, sink, None)
     return info if ok and info else None
+
+
+def relay_add(node, url: str, configured: bool = True) -> bool:
+    """Offer a relay endpoint to the §19 pool; True if it is now pooled."""
+    return bool(_lib.hop_relay_add(node, url.encode(), configured))
+
+
+def relay_next(node) -> str | None:
+    """The relay to dial right now, or None when there is nothing dialable.
+
+    None with a non-zero ``relay_pool()`` total is the degraded "every candidate is backed off"
+    state (wait and retry, this is not offline); None with a zero total is an empty pool. The 2 KiB
+    buffer is far past any real endpoint URL; the C call writes nothing and returns 0 if a URL would
+    not fit, which surfaces here as "nothing to dial".
+    """
+    out = C.create_string_buffer(2048)
+    n = int(_lib.hop_relay_next(node, out, len(out)))
+    return out.raw[:n].decode() if n else None
+
+
+def relay_report(node, url: str, ok: bool) -> None:
+    """Feed a dial outcome back to the pool so it can score the endpoint."""
+    _lib.hop_relay_report(node, url.encode(), ok)
+
+
+def relay_pool(node) -> tuple[int, int]:
+    """(total pooled endpoints, how many are dialable right now)."""
+    available = c_size_t(0)
+    total = int(_lib.hop_relay_pool_size(node, C.byref(available)))
+    return total, int(available.value)
 
 
 def cluster_join(node, secret: bytes) -> None:

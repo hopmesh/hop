@@ -11,11 +11,18 @@ import com.sun.jna.NativeLong
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.ByteByReference
 import com.sun.jna.ptr.IntByReference
+import com.sun.jna.ptr.NativeLongByReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 /** Which side opened a bearer link (the Noise role). */
 enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
+
+/** §19 relay-pool counts: [total] endpoints known, [available] dialable right now.
+ *
+ *  `total > 0` with `available == 0` is the degraded "everything backed off" state a UI should show
+ *  as such rather than as offline; the pool still knows where to retry. */
+data class HopRelayPool(val total: Int, val available: Int)
 
 /** A decrypted message delivered to this node.
  *
@@ -109,6 +116,13 @@ internal interface CHop : Library {
     fun hop_send_to(node: Pointer?, dst: ByteArray, contentType: String, body: ByteArray?, bodyLen: NativeLong, requestAck: Boolean, outId: ByteArray?): Byte
     fun hop_send_service_request(node: Pointer?, dst: ByteArray, service: String, method: String, args: ByteArray?, argsLen: NativeLong, outId: ByteArray?): Byte
     fun hop_send_service_response(node: Pointer?, to: ByteArray, forRequestId: ByteArray, status: Short, body: ByteArray?, bodyLen: NativeLong): Byte
+    // §19 relay pool: the surface the v4 -> v5 ABI bump was taken for (PLAT-003). `out` for
+    // hop_relay_next is a NUL-terminated C string buffer, so it marshals as a ByteArray like
+    // hop_address_to_base58's; `out_available` is a `uintptr_t *`, hence NativeLongByReference.
+    fun hop_relay_add(node: Pointer?, url: String, configured: Boolean): Byte
+    fun hop_relay_next(node: Pointer?, out: ByteArray, outCap: NativeLong): NativeLong
+    fun hop_relay_report(node: Pointer?, url: String, ok: Boolean)
+    fun hop_relay_pool_size(node: Pointer?, outAvailable: NativeLongByReference?): NativeLong
     fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
     fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
     fun hop_accept_service_response(node: Pointer?, requestId: ByteArray): Byte
@@ -299,6 +313,42 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     fun address(): ByteArray = native { handle -> ByteArray(32).also { C.hop_node_address(handle, it) } }
     fun tick(nowMs: Long) = native { handle -> C.hop_node_tick(handle, nowMs) }
     fun publishPrekey(): Boolean = native { handle -> C.hop_publish_prekey(handle).toBool() }
+
+    // ---- §19 relay pool ----------------------------------------------------------------------
+    //
+    // PLAT-003: the four calls the v4 -> v5 ABI bump was taken for. No C-ABI wrapper bound them, so
+    // an SDK-only host had no way to reach the pool and was stuck retrying one fixed relay URL
+    // forever, which is the failure §19 exists to remove. tools/codegen/check-abi-version.sh now
+    // fails if a wrapper pinned to an ABI level stops binding the calls that level's note names.
+
+    /** Offer a relay endpoint to the pool. [configured] marks an operator/user choice, which a
+     *  gossiped endpoint can never demote. Returns true if the endpoint is now pooled. */
+    fun relayAdd(url: String, configured: Boolean = true): Boolean = native { handle ->
+        C.hop_relay_add(handle, url, configured).toBool()
+    }
+
+    /** The relay to dial right now, or null when there is nothing dialable.
+     *
+     *  null with a non-zero [relayPool] total is the degraded "every candidate is backed off" state:
+     *  WAIT and retry, do not report the node offline. null with a zero total is an empty pool. The
+     *  2 KiB buffer is far past any real endpoint URL; the C call writes nothing and returns 0 if a
+     *  URL would not fit, which surfaces here as "nothing to dial". */
+    fun relayNext(): String? = native { handle ->
+        val out = ByteArray(2048)
+        val n = C.hop_relay_next(handle, out, NativeLong(out.size.toLong())).toInt()
+        if (n > 0) String(out, 0, n, Charsets.UTF_8) else null
+    }
+
+    /** Report a dial outcome so the pool can score it. A success clears that endpoint's failure
+     *  history; failures back it off exponentially and always eventually recover. */
+    fun relayReport(url: String, ok: Boolean) = native { handle -> C.hop_relay_report(handle, url, ok) }
+
+    /** Pooled endpoint counts: total known, and how many are dialable right now. */
+    fun relayPool(): HopRelayPool = native { handle ->
+        val available = NativeLongByReference()
+        val total = C.hop_relay_pool_size(handle, available).toInt()
+        HopRelayPool(total = total, available = available.value.toInt())
+    }
 
     fun linkUp(link: Long, role: HopRole) = native { handle -> C.hop_link_up(handle, link, role.c) }
     fun linkDown(link: Long) = native { handle -> C.hop_link_down(handle, link) }

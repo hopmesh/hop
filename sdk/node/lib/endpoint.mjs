@@ -125,6 +125,47 @@ export class HopEndpoint extends EventEmitter {
     return this
   }
 
+  // ---- §19 relay pool ------------------------------------------------------------------------
+  //
+  // PLAT-003: these four are the calls the v4 -> v5 ABI bump this SDK pins was taken for. No C-ABI
+  // wrapper bound them, so a host built on the published SDKs had no way to reach the pool and
+  // retried one fixed relay URL forever, the exact failure §19 exists to remove.
+
+  // Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a gossiped
+  // endpoint can never demote. Returns true if the endpoint is now pooled.
+  relayAdd(url, configured = true) {
+    return this.#native((node) => hop.relay_add(node, url, !!configured))
+  }
+
+  // The relay to dial right now, or null when there is nothing dialable. null with a non-zero
+  // `relayPool().total` is the degraded "every candidate is backed off" state (wait and retry, the
+  // endpoint is not offline); null with a zero total is an empty pool.
+  relayNext() {
+    return this.#native((node) => {
+      // 2 KiB is far past any real endpoint URL. The C call writes nothing and returns 0 if a URL
+      // would not fit, which surfaces here as "nothing to dial".
+      const out = Buffer.alloc(2048)
+      const n = hop.relay_next(node, out, out.length)
+      return n === 0 ? null : out.toString('utf8', 0, n)
+    })
+  }
+
+  // Report a dial outcome so the pool can score the endpoint. A success clears its failure history;
+  // failures back it off exponentially and always eventually recover. Returns this.
+  relayReport(url, ok) {
+    this.#native((node) => hop.relay_report(node, url, !!ok))
+    return this
+  }
+
+  // Pooled endpoint counts: { total } known and { available } dialable right now.
+  relayPool() {
+    return this.#native((node) => {
+      const available = [0]
+      const total = hop.relay_pool_size(node, available)
+      return { total, available: available[0] }
+    })
+  }
+
   // Register a receiver for a hops:// service (the endpoint's "route"). handler(req, reply).
   on(service, handler) {
     if (typeof service === 'string' && typeof handler === 'function') {

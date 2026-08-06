@@ -166,6 +166,43 @@ class TestHop < Minitest::Test
     e&.close
   end
 
+  # PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
+  # asserts ABI 5 at load while binding none of them, so an SDK-only host could not fail over: the only
+  # reachable behavior was retrying one configured URL forever. This drives the failover the header
+  # describes through the published Endpoint surface, on ONE endpoint that is never restarted.
+  def test_relay_pool_fails_over_without_restarting_the_endpoint
+    e = Hop::Endpoint.new(tick_ms: 1000)
+    # An empty pool is distinguishable from a backed-off one: nothing to dial, nothing pooled.
+    assert_nil e.relay_next
+    assert_equal [0, 0], e.relay_pool
+
+    a = "wss://relay-a.example/_hop"
+    b = "wss://relay-b.example/_hop"
+    assert e.relay_add(a)
+    assert e.relay_add(b)
+    assert_equal [2, 2], e.relay_pool
+
+    first = e.relay_next
+    assert_includes [a, b], first
+
+    # A working relay is kept: no needless churn between two healthy candidates.
+    assert_same e, e.relay_report(first, true) # chainable
+    assert_equal first, e.relay_next
+
+    # It goes dark. THIS is the case the header promised and the SDK could not reach: the same live
+    # endpoint must hand back the other candidate, with no restart and no new node.
+    e.relay_report(first, false)
+    second = e.relay_next
+    refute_nil second, "failover target missing after the configured relay died"
+    refute_equal first, second, "no failover: still dialing the dead relay #{first}"
+
+    # Everything down is WAIT, not offline, and the SDK can tell the two apart.
+    [first, first, second, second].each { |url| e.relay_report(url, false) }
+    assert_nil e.relay_next
+    assert_equal [2, 0], e.relay_pool
+  ensure
+    e&.close
+  end
 
   private
 

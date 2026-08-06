@@ -89,6 +89,12 @@ const rawHop = {
   verify_reach_record: lib.func(
     'bool hop_verify_reach_record(uint8_t *bytes, size_t len, uint64_t now_secs, ReachVerifySink *sink, void *ctx)',
   ),
+  // §19 relay pool. PLAT-003: the four calls the v4 -> v5 ABI bump this wrapper pins was taken for,
+  // which no C-ABI wrapper bound, so an SDK-only host could not fail over off a dead relay.
+  relay_add: lib.func('bool hop_relay_add(void *node, const char *url, bool configured)'),
+  relay_next: lib.func('size_t hop_relay_next(void *node, char *out, size_t out_cap)'),
+  relay_report: lib.func('void hop_relay_report(void *node, const char *url, bool ok)'),
+  relay_pool_size: lib.func('size_t hop_relay_pool_size(void *node, _Out_ size_t *out_available)'),
   // Endpoint clustering (DESIGN.md §40): join a cluster and dedup applies transparently to the poll.
   cluster_join: lib.func('void hop_cluster_join(void *node, uint8_t *secret)'),
   cluster_join_passphrase: lib.func('void hop_cluster_join_passphrase(void *node, uint8_t *pass, size_t pass_len)'),

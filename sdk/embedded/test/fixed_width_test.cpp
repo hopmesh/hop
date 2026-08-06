@@ -31,6 +31,20 @@ int bytes_received_calls = 0;
 int link_down_calls = 0;
 int address_calls = 0;
 int secret_calls = 0;
+int relay_add_calls = 0;
+int relay_next_calls = 0;
+int relay_report_calls = 0;
+int relay_pool_size_calls = 0;
+
+// §19 relay pool: the fake pool the stubs below operate on (PLAT-003).
+struct FakeRelay {
+  std::string url;
+  bool configured;
+  bool failed;
+};
+
+std::vector<FakeRelay> relay_pool;
+bool last_relay_report_ok = false;
 
 bool mock_secured = true;
 bool emit_message = false;
@@ -241,6 +255,58 @@ bool hop_address_from_base58(const char *text, uint8_t *out) {
   }
   std::memset(out, 3, hop::kIdSize);
   return true;
+}
+
+// §19 relay pool. A miniature stand-in for the Rust pool: enough policy (a failed endpoint yields to
+// a healthy one, everything failed means nothing to dial) to prove the WRAPPER marshals the calls,
+// which is the layer under test here. The real backoff and eviction policy is proven in hop-core.
+bool hop_relay_add(const HopNode *, const char *url, bool configured) {
+  ++relay_add_calls;
+  if (url == nullptr || relay_pool.size() >= 4) {
+    return false;
+  }
+  relay_pool.push_back(FakeRelay{std::string(url), configured, false});
+  return true;
+}
+
+uintptr_t hop_relay_next(const HopNode *, char *out, uintptr_t out_cap) {
+  ++relay_next_calls;
+  for (const FakeRelay &relay : relay_pool) {
+    if (relay.failed) {
+      continue;
+    }
+    if (out == nullptr || relay.url.size() + 1 > out_cap) {
+      return 0;
+    }
+    std::copy(relay.url.begin(), relay.url.end(), out);
+    out[relay.url.size()] = '\0';
+    return static_cast<uintptr_t>(relay.url.size());
+  }
+  return 0;
+}
+
+void hop_relay_report(const HopNode *, const char *url, bool ok) {
+  ++relay_report_calls;
+  last_relay_report_ok = ok;
+  for (FakeRelay &relay : relay_pool) {
+    if (url != nullptr && relay.url == url) {
+      relay.failed = !ok;
+    }
+  }
+}
+
+uintptr_t hop_relay_pool_size(const HopNode *, uintptr_t *out_available) {
+  ++relay_pool_size_calls;
+  if (out_available != nullptr) {
+    uintptr_t available = 0;
+    for (const FakeRelay &relay : relay_pool) {
+      if (!relay.failed) {
+        ++available;
+      }
+    }
+    *out_available = available;
+  }
+  return static_cast<uintptr_t>(relay_pool.size());
 }
 
 } // extern "C"
@@ -508,6 +574,64 @@ void testRpcCorrelationAndCallbackCopies() {
   assert(bodyEquals(last_response_body, "copied"));
 }
 
+// PLAT-003: HOP_EMBEDDED_ABI_VERSION was bumped to 5 for the §19 relay-pool calls and this wrapper
+// bound none of them, so firmware built on it could not fail over off a dead relay. Drives all four
+// through the wrapper: the pre-begin() guards, the string out-parameter, the nullable available
+// out-parameter, and the failover itself, on ONE node that is never restarted.
+void testRelayPoolSurface() {
+  relay_pool.clear();
+
+  hop::Hop before_begin;
+  // Before begin() there is no node, so every call is a safe no-op rather than a null dereference.
+  assert(!before_begin.relayAdd("wss://relay-a.example/_hop"));
+  assert(before_begin.relayNext().empty());
+  before_begin.relayReport("wss://relay-a.example/_hop", false);
+  size_t available = 7;
+  assert(before_begin.relayPoolSize(&available) == 0);
+  assert(available == 0);
+
+  hop::Hop node;
+  assert(node.begin());
+  assert(node.relayNext().empty());
+  assert(node.relayPoolSize() == 0);
+
+  const std::string a = "wss://relay-a.example/_hop";
+  const std::string b = "wss://relay-b.example/_hop";
+  const int adds_before = relay_add_calls;
+  assert(node.relayAdd(a.c_str()));
+  assert(node.relayAdd(b.c_str(), false));
+  assert(relay_add_calls == adds_before + 2);
+  assert(!node.relayAdd(nullptr)); // a null URL never reaches libhop
+  assert(relay_add_calls == adds_before + 2);
+
+  available = 0;
+  assert(node.relayPoolSize(&available) == 2);
+  assert(available == 2);
+  assert(node.relayNext() == a);
+
+  // A working relay is kept: no needless churn between two healthy candidates.
+  node.relayReport(a.c_str(), true);
+  assert(last_relay_report_ok);
+  assert(node.relayNext() == a);
+
+  // It goes dark. The same live node must hand back the other candidate, with no restart.
+  node.relayReport(a.c_str(), false);
+  assert(!last_relay_report_ok);
+  assert(node.relayNext() == b);
+
+  // Everything down is WAIT, not offline: nothing to dial, but the pool still knows where to retry.
+  node.relayReport(b.c_str(), false);
+  assert(node.relayNext().empty());
+  available = 99;
+  assert(node.relayPoolSize(&available) == 2);
+  assert(available == 0);
+
+  assert(relay_next_calls > 0);
+  assert(relay_report_calls > 0);
+  assert(relay_pool_size_calls > 0);
+  relay_pool.clear();
+}
+
 } // namespace
 
 int main() {
@@ -515,6 +639,7 @@ int main() {
   testMonotonicRolloverAndRestart();
   testFixedWidthGuardsAndSymbolRouting();
   testRpcCorrelationAndCallbackCopies();
+  testRelayPoolSurface();
   assert(new_calls > 0);
   assert(free_calls > 0);
   assert(inbox_poll_calls > 0);

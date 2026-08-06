@@ -66,6 +66,12 @@ void hop_drain_outgoing(const HopNode *node,
 uintptr_t hop_address_to_base58(const uint8_t *addr, char *out, uintptr_t out_cap);
 bool hop_address_from_base58(const char *text, uint8_t *out32);
 
+// §19 relay pool.
+bool hop_relay_add(const HopNode *node, const char *url, bool configured);
+uintptr_t hop_relay_next(const HopNode *node, char *out, uintptr_t out_cap);
+void hop_relay_report(const HopNode *node, const char *url, bool ok);
+uintptr_t hop_relay_pool_size(const HopNode *node, uintptr_t *out_available);
+
 } // extern "C"
 
 namespace hop {
@@ -323,6 +329,49 @@ void Hop::setName(const char *name) {
   if (node_ != nullptr) {
     hop_node_set_name(node_, name);
   }
+}
+
+bool Hop::relayAdd(const char *url, bool configured) {
+  if (node_ == nullptr || url == nullptr) {
+    return false;
+  }
+  return hop_relay_add(node_, url, configured);
+}
+
+std::string Hop::relayNext() const {
+  if (node_ == nullptr) {
+    return std::string();
+  }
+  // 512 bytes is far past any real endpoint URL and the whole buffer lives on the stack, which
+  // matters on a chip with tens of KiB of RAM. The C call writes nothing and returns 0 if a URL
+  // would not fit, which surfaces here as "nothing to dial".
+  char buffer[512] = {};
+  uintptr_t written = hop_relay_next(node_, buffer, sizeof(buffer));
+  if (written == 0) {
+    return std::string();
+  }
+  return std::string(buffer, static_cast<size_t>(written));
+}
+
+void Hop::relayReport(const char *url, bool ok) {
+  if (node_ != nullptr && url != nullptr) {
+    hop_relay_report(node_, url, ok);
+  }
+}
+
+size_t Hop::relayPoolSize(size_t *out_available) const {
+  if (out_available != nullptr) {
+    *out_available = 0;
+  }
+  if (node_ == nullptr) {
+    return 0;
+  }
+  uintptr_t available = 0;
+  uintptr_t total = hop_relay_pool_size(node_, &available);
+  if (out_available != nullptr) {
+    *out_available = static_cast<size_t>(available);
+  }
+  return static_cast<size_t>(total);
 }
 
 void Hop::outgoingTrampoline(void *ctx, uint64_t link, const uint8_t *bytes, size_t len) {

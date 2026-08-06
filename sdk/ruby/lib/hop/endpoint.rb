@@ -71,6 +71,31 @@ module Hop
       self
     end
 
+    # ---- §19 relay pool ------------------------------------------------------------------------
+    #
+    # PLAT-003: the four calls the v4 -> v5 ABI bump this SDK pins was taken for. No C-ABI wrapper
+    # bound them, so a host built on the published SDKs had no way to reach the pool and retried one
+    # fixed relay URL forever, the exact failure §19 exists to remove.
+
+    # Offer a relay endpoint to the pool. +configured+ marks an operator/user choice, which a gossiped
+    # endpoint can never demote. Returns true if the endpoint is now pooled.
+    def relay_add(url, configured = true) = with_node { |n| Hop::FFI.relay_add(n, url, configured) }
+
+    # The relay to dial right now, or nil when there is nothing dialable. nil with a non-zero
+    # +relay_pool+ total is the degraded "every candidate is backed off" state (wait and retry, this
+    # endpoint is not offline); nil with a zero total is an empty pool.
+    def relay_next = with_node { |n| Hop::FFI.relay_next(n) }
+
+    # Feed a dial outcome back to the pool. A success clears that endpoint's failure history; failures
+    # back it off exponentially and always eventually recover. Returns self.
+    def relay_report(url, ok)
+      with_node { |n| Hop::FFI.relay_report(n, url, ok) }
+      self
+    end
+
+    # [total pooled endpoints, how many are dialable right now].
+    def relay_pool = with_node { |n| Hop::FFI.relay_pool(n) }
+
     # Register a receiver for a hops:// service. The block gets (req, reply); reply is a callable
     # reply.call(status, body).
     def on(service, &block)

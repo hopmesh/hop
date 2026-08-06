@@ -15,24 +15,39 @@ Two versions travel independently and MUST NOT be conflated:
    - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
      format. A change here is a protocol break and needs the wire-stability test
      updated deliberately.
-   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently `4`): the C-ABI contract every
+   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 5): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
 
 Rule: a product-version bump does NOT imply a wire/ABI bump, and vice versa. State
 both in the release notes.
 
-### Keep the ABI version in sync (three copies)
+### Keep the ABI version in sync (twelve copies, all guarded)
 
-`HOP_ABI_VERSION` is hand-duplicated in three places and they must agree:
+`HOP_ABI_VERSION` is hand-duplicated across the contract and every language wrapper,
+and they must all agree:
 
-- `core/hop/src/cabi.rs` (`pub const HOP_ABI_VERSION`), generated into `sdk/hop.h`.
-- `sdk/apple/Sources/Hop/Hop.swift` (`expectedABIVersion`).
-- `sdk/android/.../Hop.kt` (`HOP_ABI_VERSION`).
+- `core/hop/src/cabi.rs` (`pub const HOP_ABI_VERSION`), the source of truth, generated
+  into `core/hop/include/hop.h` and `sdk/hop.h`.
+- one compiled-in expectation per wrapper: `sdk/apple/Sources/Hop/Hop.swift`
+  (`expectedABIVersion`), `sdk/android/.../Hop.kt`, `sdk/embedded/src/Hop.h`
+  (`HOP_EMBEDDED_ABI_VERSION`), `sdk/go/hop.go` (`abiExpected`), `sdk/node/lib/ffi.mjs`,
+  `sdk/python/hop_endpoint/_ffi.py`, `sdk/ruby/lib/hop/ffi.rb`,
+  `sdk/crystal/src/hop/ffi.cr` (`ABI_EXPECTED`).
+- `sdk/go/cmd/hop-install/main.go`, which validates an installed header.
 
-CI regenerates `sdk/hop.h` from `cabi.rs` and checks the Rust, header, Swift, and
-Kotlin values together. An ABI bump updates `cabi.rs`, regenerates the header, and
-updates both wrappers in the same commit.
+`tools/codegen/check-abi-version.sh` does not work from that list. It SWEEPS the tree for
+ABI-version literals, fails on any that disagrees with `cabi.rs`, fails on any it cannot
+classify (so a thirteenth copy is caught the day it lands), fails when a listed site stops
+declaring the constant, and fails when a wrapper pinned to the current level does not bind
+the `hop_*` calls that level's bump note in `sdk/hop.h` names. It also holds prose that
+states an ABI level ("asserts ABI 5") to the constant. It used to check six of twelve, and
+that gap is how the v4 -> v5 bump shipped with a release validator still asserting the
+retired level (PLAT-004).
+
+An ABI bump therefore updates `cabi.rs`, regenerates the headers, updates every wrapper's
+pinned constant, binds any new calls in every wrapper, and corrects the docs that state the
+level, all in the same change. Run the guard locally; it names every location.
 
 ## Git tag scheme
 
@@ -232,7 +247,8 @@ separate from these code licenses.
 
 1. CI green on the release SHA (tests, clippy, fmt, contract purity, header drift).
 2. `cargo deny check` clean (advisories, licenses, bans, sources) per `deny.toml`.
-3. All three `HOP_ABI_VERSION` copies agree.
+3. `tools/codegen/check-abi-version.sh` passes (every `HOP_ABI_VERSION` copy, every
+   wrapper's bound surface, and every doc claim agree with `cabi.rs`).
 4. `CHANGELOG.md` `[Unreleased]` promoted to the new version + date.
 5. `Cargo.toml` version bumped and the git tag matches it.
 6. For any wire/ABI change, the wire-stability test was updated deliberately and the

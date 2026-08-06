@@ -139,6 +139,42 @@ func (e *Endpoint) ClusterQuorum(min uint32) {
 	e.withNode(func(n *node) { n.clusterSetQuorum(min) })
 }
 
+// RelayAdd offers a relay endpoint to the §19 pool. configured marks an operator/user choice, which a
+// gossiped endpoint can never demote. Reports whether the endpoint is now pooled.
+//
+// PLAT-003: the relay-pool calls are the whole stated reason for the v4 -> v5 ABI bump this SDK pins,
+// and no C-ABI wrapper bound them, so a host built on the published SDKs had no way to fail over off a
+// dead relay and retried one fixed URL forever.
+func (e *Endpoint) RelayAdd(url string, configured bool) bool {
+	var ok bool
+	e.withNode(func(n *node) { ok = n.relayAdd(url, configured) })
+	return ok
+}
+
+// RelayNext reports the relay to dial right now. The second return is false when there is nothing
+// dialable: with a non-zero RelayPool total that is the degraded "every candidate is backed off"
+// state (WAIT and retry, the endpoint is not offline), and with a zero total it is an empty pool.
+func (e *Endpoint) RelayNext() (string, bool) {
+	var (
+		url string
+		ok  bool
+	)
+	e.withNode(func(n *node) { url, ok = n.relayNext() })
+	return url, ok
+}
+
+// RelayReport feeds a dial outcome back to the pool so it can score the endpoint. A success clears
+// that endpoint's failure history; failures back it off exponentially and always eventually recover.
+func (e *Endpoint) RelayReport(url string, ok bool) {
+	e.withNode(func(n *node) { n.relayReport(url, ok) })
+}
+
+// RelayPool reports how many endpoints are pooled and how many are dialable right now.
+func (e *Endpoint) RelayPool() (total, available int) {
+	e.withNode(func(n *node) { total, available = n.relayPool() })
+	return total, available
+}
+
 // On registers a receiver for a hops:// service.
 func (e *Endpoint) On(service string, h Handler) {
 	e.mu.Lock()

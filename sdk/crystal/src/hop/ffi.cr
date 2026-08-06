@@ -31,6 +31,12 @@ lib LibHop
   fun address_from_base58 = hop_address_from_base58(text : LibC::Char*, out32 : UInt8*) : Bool
   fun sign_reach_record = hop_sign_reach_record(node : Void*, endpoint : LibC::Char*, ttl_secs : UInt32, sink : (Void*, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
   fun verify_reach_record = hop_verify_reach_record(bytes : UInt8*, len : LibC::SizeT, now_secs : UInt64, sink : (Void*, UInt8*, LibC::Char*, UInt64, UInt32 ->), ctx : Void*) : Bool
+  # §19 relay pool. PLAT-003: the four calls the v4 -> v5 ABI bump this wrapper pins was taken for,
+  # which no C-ABI wrapper bound, so a host on the published SDKs could not fail over off a dead relay.
+  fun relay_add = hop_relay_add(node : Void*, url : LibC::Char*, configured : Bool) : Bool
+  fun relay_next = hop_relay_next(node : Void*, out_buf : LibC::Char*, out_cap : LibC::SizeT) : LibC::SizeT
+  fun relay_report = hop_relay_report(node : Void*, url : LibC::Char*, ok : Bool) : Void
+  fun relay_pool_size = hop_relay_pool_size(node : Void*, out_available : LibC::SizeT*) : LibC::SizeT
   # Endpoint clustering (DESIGN.md §40).
   fun cluster_join = hop_cluster_join(node : Void*, secret : UInt8*) : Void
   fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
@@ -99,6 +105,33 @@ module Hop
 
     def self.subscribe(node : Void*, topic : String) : Nil
       LibHop.subscribe(node, topic)
+    end
+
+    # ---- §19 relay pool ----
+
+    def self.relay_add(node : Void*, url : String, configured : Bool = true) : Bool
+      LibHop.relay_add(node, url, configured)
+    end
+
+    # The relay to dial right now, or nil when there is nothing dialable. nil with a non-zero
+    # `relay_pool` total is the degraded "every candidate is backed off" state (wait and retry, this is
+    # not offline); nil with a zero total is an empty pool. The 2 KiB buffer is far past any real
+    # endpoint URL; the C call writes nothing and returns 0 if a URL would not fit.
+    def self.relay_next(node : Void*) : String?
+      buf = Bytes.new(2048)
+      n = LibHop.relay_next(node, buf.to_unsafe.as(LibC::Char*), buf.size)
+      n == 0 ? nil : String.new(buf.to_unsafe, n)
+    end
+
+    def self.relay_report(node : Void*, url : String, ok : Bool) : Nil
+      LibHop.relay_report(node, url, ok)
+    end
+
+    # {total pooled endpoints, how many are dialable right now}.
+    def self.relay_pool(node : Void*) : Tuple(Int32, Int32)
+      available = uninitialized LibC::SizeT
+      total = LibHop.relay_pool_size(node, pointerof(available))
+      {total.to_i, available.to_i}
     end
 
     def self.cluster_join(node : Void*, secret : Bytes) : Nil

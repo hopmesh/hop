@@ -167,4 +167,55 @@ final class HopRuntimeTests: XCTestCase {
         rt.start()   // brings up global link 1_000_000
         XCTAssertEqual(rt.bearers.transportName(of: 1_000_000), "LOOP")
     }
+
+    // MARK: §19 relay pool (PLAT-003)
+
+    /// sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this wrapper
+    /// asserted ABI 5 on first use while binding none of them, so an SDK-only integrator could not
+    /// fail over: with no relay call on HopNode, the only usable RelayBearer constructor is the
+    /// fixed-URL one, and one dead endpoint ended internet reach until the app restarted.
+    ///
+    /// This drives the failover through the SAME closure shape RelayBearer's pooled constructor takes
+    /// (`resolveURL` / `reportOutcome`), built ONLY from the published SDK, on one node that is never
+    /// recreated. That is the SDK-only host surviving its configured relay going dark.
+    func testRelayPoolFailsOverThroughAnSdkBuiltResolverWithoutRestarting() {
+        guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
+        node.tick(nowMs: 1_700_000_000_000)
+
+        // Exactly what a host hands RelayBearer(resolveURL:reportOutcome:), with nothing but the SDK.
+        let resolveURL: () -> String? = { node.relayNext() }
+        let reportOutcome: (String, Bool) -> Void = { url, ok in node.relayReport(url, ok: ok) }
+
+        // An empty pool is distinguishable from a backed-off one: nothing to dial, nothing pooled.
+        XCTAssertNil(resolveURL())
+        XCTAssertEqual(node.relayPool().total, 0)
+        XCTAssertEqual(node.relayPool().available, 0)
+
+        let a = "wss://relay-a.example/_hop"
+        let b = "wss://relay-b.example/_hop"
+        XCTAssertTrue(node.relayAdd(a), "a configured endpoint must be pooled")
+        XCTAssertTrue(node.relayAdd(b), "a second configured endpoint must be pooled")
+        XCTAssertEqual(node.relayPool().total, 2)
+        XCTAssertEqual(node.relayPool().available, 2)
+
+        guard let first = resolveURL() else { return XCTFail("a pooled endpoint should be dialable") }
+        XCTAssertTrue(first == a || first == b, "unexpected first dial target \(first)")
+
+        // A working relay is kept: no needless churn between two healthy candidates.
+        reportOutcome(first, true)
+        XCTAssertEqual(resolveURL(), first, "a healthy relay must not be abandoned")
+
+        // It goes dark. The resolver must now hand back the other candidate, with no restart.
+        reportOutcome(first, false)
+        guard let second = resolveURL() else {
+            return XCTFail("failover target missing after the configured relay died")
+        }
+        XCTAssertNotEqual(second, first, "no failover: still dialing the dead relay \(first)")
+
+        // Everything down is WAIT, not offline, and the SDK can tell the two apart.
+        for url in [first, first, second, second] { reportOutcome(url, false) }
+        XCTAssertNil(resolveURL(), "every candidate is backed off, so there is nothing to dial")
+        XCTAssertEqual(node.relayPool().total, 2)
+        XCTAssertEqual(node.relayPool().available, 0)
+    }
 }

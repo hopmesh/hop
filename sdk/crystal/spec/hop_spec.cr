@@ -255,4 +255,43 @@ describe Hop do
       e.close
     end
   end
+
+  # PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
+  # asserts ABI 5 at load while binding none of them, so an SDK-only host could not fail over: the only
+  # reachable behavior was retrying one configured URL forever. This drives the failover the header
+  # describes through the published Endpoint surface, on ONE endpoint that is never restarted.
+  it "fails the relay pool over to another endpoint without restarting the endpoint" do
+    e = Hop::Endpoint.new(tick_ms: 1000)
+    begin
+      # An empty pool is distinguishable from a backed-off one: nothing to dial, nothing pooled.
+      e.relay_next.should be_nil
+      e.relay_pool.should eq({0, 0})
+
+      a, b = "wss://relay-a.example/_hop", "wss://relay-b.example/_hop"
+      e.relay_add(a).should be_true
+      e.relay_add(b).should be_true
+      e.relay_pool.should eq({2, 2})
+
+      first = e.relay_next
+      [a, b].should contain(first)
+
+      # A working relay is kept: no needless churn between two healthy candidates.
+      e.relay_report(first.not_nil!, true).should be(e) # chainable
+      e.relay_next.should eq first
+
+      # It goes dark. THIS is the case the header promised and the SDK could not reach: the same live
+      # endpoint must hand back the other candidate, with no restart and no new node.
+      e.relay_report(first.not_nil!, false)
+      second = e.relay_next
+      second.should_not be_nil
+      second.should_not eq first
+
+      # Everything down is WAIT, not offline, and the SDK can tell the two apart.
+      [first, first, second, second].each { |url| e.relay_report(url.not_nil!, false) }
+      e.relay_next.should be_nil
+      e.relay_pool.should eq({2, 0})
+    ensure
+      e.close
+    end
+  end
 end

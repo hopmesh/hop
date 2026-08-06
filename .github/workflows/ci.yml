@@ -868,10 +868,16 @@ jobs:
       - name: Contract purity (no transport symbols in the SDK/contract)
         run: bash tools/codegen/check-contract-purity.sh
 
-      # core-ffi-08: HOP_ABI_VERSION must agree across cabi.rs, both hop.h headers, and the Swift +
-      # Kotlin wrappers. A one-sided bump makes the wrappers' load-time assertion check the wrong
-      # number, so the ABI-drift safety net (F-28) silently stops working. Fails on any disagreement.
-      - name: ABI version consistency (cabi.rs ↔ headers ↔ Swift/Kotlin)
+      # core-ffi-08 / PLAT-004: HOP_ABI_VERSION must agree across cabi.rs, both hop.h headers, EVERY
+      # language wrapper, the packaging validators, and the docs that state the level, and a wrapper
+      # pinned to a level must bind the calls that level's bump note names. A one-sided bump makes the
+      # wrappers' load-time assertion check the wrong number, so the ABI-drift safety net (F-28)
+      # silently stops working. The guard used to read six hand-listed paths out of twelve; it now
+      # sweeps the tree, so the self-test runs first to prove that coverage is real.
+      - name: ABI version guard self-test
+        run: bash tools/codegen/check-abi-version.test.sh
+
+      - name: ABI version consistency (cabi.rs ↔ headers ↔ every wrapper ↔ docs)
         run: bash tools/codegen/check-abi-version.sh
 
       - name: Embedded C++ wrapper host tests (strict warnings)

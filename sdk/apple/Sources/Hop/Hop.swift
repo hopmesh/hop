@@ -130,6 +130,46 @@ public final class HopNode {
 
     public func setName(_ name: String) { name.withCString { hop_node_set_name(raw, $0) } }
 
+    // MARK: relay pool (DESIGN.md §19)
+
+    // PLAT-003: these four were the whole stated reason for the v4 -> v5 ABI bump and no C-ABI
+    // wrapper bound them, so an SDK-only integrator could reach the pool through nothing and was
+    // stuck with a single fixed relay URL: exactly the failure §19 exists to remove. The wrapper
+    // now exposes them, and tools/codegen/check-abi-version.sh fails if a wrapper pinned to an ABI
+    // level stops binding the calls that level's bump note names.
+
+    /// Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a
+    /// gossiped endpoint can never demote. Returns true if the endpoint is now pooled.
+    @discardableResult
+    public func relayAdd(_ url: String, configured: Bool = true) -> Bool {
+        url.withCString { hop_relay_add(raw, $0, configured) }
+    }
+
+    /// The relay to dial right now, or nil when there is nothing dialable.
+    ///
+    /// nil with a non-zero `relayPool().total` is the degraded "every candidate is backed off"
+    /// state: WAIT and retry, do not report the node offline. nil with a zero total is an empty
+    /// pool. The 2 KiB buffer is far past any real endpoint URL; the C call writes nothing and
+    /// returns 0 if a URL would not fit, which this reports as "nothing to dial".
+    public func relayNext() -> String? {
+        var buf = [CChar](repeating: 0, count: 2048)
+        let n = hop_relay_next(raw, &buf, UInt(buf.count))
+        return n == 0 ? nil : String(cString: buf)
+    }
+
+    /// Report a dial outcome so the pool can score it. A success clears that endpoint's failure
+    /// history; failures back it off exponentially and always eventually recover.
+    public func relayReport(_ url: String, ok: Bool) {
+        url.withCString { hop_relay_report(raw, $0, ok) }
+    }
+
+    /// Pooled endpoints: `total` known, `available` dialable right now.
+    public func relayPool() -> (total: Int, available: Int) {
+        var available: UInt = 0
+        let total = hop_relay_pool_size(raw, &available)
+        return (Int(total), Int(available))
+    }
+
     // MARK: clock + directory
 
     public func tick(nowMs: UInt64) { hop_node_tick(raw, nowMs) }

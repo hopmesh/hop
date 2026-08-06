@@ -9,6 +9,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tarfile
@@ -437,7 +438,11 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     (stage / "lib").mkdir(parents=True)
     (stage / "include").mkdir()
     (stage / "lib/libhop.so").write_bytes(b"fixture-libhop")
-    (stage / "include/hop.h").write_bytes(b"#define HOP_ABI_VERSION 4\n")
+    # PLAT-004: this fixture used to hard-code a retired ABI level, the same stale literal the Apple
+    # validator asserted, so the two drifted together and could never disagree. Derive it from the Rust
+    # const so the fixture tracks the real ABI instead of freezing an old one.
+    abi = re.search(r"HOP_ABI_VERSION:\s*u32\s*=\s*(\d+)", (root / "core/hop/src/cabi.rs").read_text()).group(1)
+    (stage / "include/hop.h").write_bytes(f"#define HOP_ABI_VERSION {abi}\n".encode())
     archives = {}
     for target, filename in native.NATIVE_TARGET_FILENAMES.items():
         archive_path = fixture / filename
