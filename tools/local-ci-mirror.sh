@@ -128,7 +128,7 @@ CI_COVERAGE=(
   "apple|partial|swift test for all eight packages, when swift and xcodebuild are present; NOT the six apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
   "wasm|none|the swarm invariant test and the mockups suite are not run here"
   "web|partial|the sim pkg freshness and wire-vector checks run here; NOT the scenario check, the wasm-glue check, npm ci, the Astro build, or the internal link check"
-  "contract|partial|the ABI version guard runs here; NOT contract purity, the cbindgen header-drift diff, the C-ABI smoke, the wire vectors through the native C ABI, the embedded C++ host tests, or the ESP32 host example"
+  "contract|partial|the ABI version guard AND its self-test run here; NOT contract purity, the cbindgen header-drift diff, the C-ABI smoke, the wire vectors through the native C ABI, the embedded C++ host tests, or the ESP32 host example"
   "infra|partial|the required-checks guard runs here; NOT tofu fmt, the three tofu init/validate roots, or the infra authority guards"
   "automation|partial|the docs token guard, the BLE backoff parity pair, the repo integrity guard and the package export smoke run here; NOT the native attestation npm tests, the agent output guard, the executable reference guard, the sync/pages/release/artifact-publication/workflow-secrets guards, or the audit skill tests"
   "docs-tokens|partial|the docs token guard and the repo integrity guard run here; NOT the release provenance self-test, the full export generation, the coverage-floor gate self-test, or the version alignment guard"
@@ -193,6 +193,7 @@ step "ble-backoff-parity self-test"   bash tools/ble-backoff-parity.test.sh
 step "ble-backoff-parity"             bash tools/ble-backoff-parity.sh
 step "ble-threading self-test"        bash tools/ble-threading-guard.test.sh
 step "ble-threading guard"            bash tools/ble-threading-guard.sh
+step "abi-version guard self-test"    bash tools/codegen/check-abi-version.test.sh
 step "abi-version guard"              bash tools/codegen/check-abi-version.sh
 step "required-checks guard"          bash tools/check-required-checks.sh
 step "repo-integrity guard"           bash tools/repo-integrity-guard.sh

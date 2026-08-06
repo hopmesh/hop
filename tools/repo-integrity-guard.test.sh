@@ -19,6 +19,9 @@ GUARD="$HERE/repo-integrity-guard.sh"
 pass=0
 fail=0
 
+# The real C-ABI version, read from the source of truth so this test never carries a second copy of it.
+ABI_VERSION="$(grep -Eo 'HOP_ABI_VERSION: *u32 *= *[0-9]+' "$HERE/../core/hop/src/cabi.rs" | grep -Eo '[0-9]+' | tail -n1)"
+
 # A healthy FSL body (well above the 1500-byte floor, carries the FSL signature line).
 FSL_BODY="$(python3 - <<'PY'
 body = "# Functional Source License, Version 1.1, ALv2 Future License\n\n"
@@ -60,8 +63,12 @@ PY
   python3 - "$d/MECHANISMS.md" <<'PY'
 import sys; open(sys.argv[1],"w").write("# Hop mechanisms\n" + "mechanism prose. "*400 + "\n")
 PY
-  python3 - "$d/sdk/hop.h" <<'PY'
-import sys; open(sys.argv[1],"w").write("/* libhop */\n#define HOP_ABI_VERSION 2\n" + "// api decl\n"*400)
+  # This fixture only needs the HOP_ABI_VERSION marker and enough bulk to clear the size floor the
+  # guard checks; the number is irrelevant to it. It used to be a hard-coded 2, which
+  # tools/codegen/check-abi-version.sh now (correctly) flags as a stale copy of the ABI constant, so
+  # pass the real one in rather than freezing a value that means nothing here (PLAT-004).
+  python3 - "$d/sdk/hop.h" "$ABI_VERSION" <<'PY'
+import sys; open(sys.argv[1],"w").write("/* libhop */\n#define HOP_ABI_VERSION %s\n" % sys.argv[2] + "// api decl\n"*400)
 PY
 }
 

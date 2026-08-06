@@ -58,6 +58,12 @@ module Hop
     ADDRESS_FROM_BASE58    = fn("hop_address_from_base58", [P, P], CH)
     SIGN_REACH_RECORD      = fn("hop_sign_reach_record", [P, P, I, P, P], V)
     VERIFY_REACH_RECORD    = fn("hop_verify_reach_record", [P, SZ, LL, P, P], CH)
+    # §19 relay pool. PLAT-003: the four calls the v4 -> v5 ABI bump this wrapper pins was taken for,
+    # which no C-ABI wrapper bound, so a host on the published SDKs could not fail over off a dead relay.
+    RELAY_ADD              = fn("hop_relay_add", [P, P, CH], CH)
+    RELAY_NEXT             = fn("hop_relay_next", [P, P, SZ], SZ)
+    RELAY_REPORT           = fn("hop_relay_report", [P, P, CH], V)
+    RELAY_POOL_SIZE        = fn("hop_relay_pool_size", [P, P], SZ)
     # Endpoint clustering (DESIGN.md §40).
     CLUSTER_JOIN            = fn("hop_cluster_join", [P, P], V)
     CLUSTER_JOIN_PASSPHRASE = fn("hop_cluster_join_passphrase", [P, P, SZ], V)
@@ -160,6 +166,28 @@ module Hop
       raise "not a valid Hop address: #{text}" if ADDRESS_FROM_BASE58.call(text, out).zero?
 
       out[0, 32].b
+    end
+
+    # ---- §19 relay pool ------------------------------------------------------------------------
+
+    def self.relay_add(node, url, configured = true) = RELAY_ADD.call(node, url, configured ? 1 : 0) != 0
+    def self.relay_report(node, url, ok) = RELAY_REPORT.call(node, url, ok ? 1 : 0)
+
+    # The relay to dial right now, or nil when there is nothing dialable. nil with a non-zero
+    # +relay_pool+ total is the degraded "every candidate is backed off" state (wait and retry, this
+    # is not offline); nil with a zero total is an empty pool. The 2 KiB buffer is far past any real
+    # endpoint URL; the C call writes nothing and returns 0 if a URL would not fit.
+    def self.relay_next(node)
+      out = Fiddle::Pointer.malloc(2048, Fiddle::RUBY_FREE)
+      n = RELAY_NEXT.call(node, out, 2048)
+      n.zero? ? nil : out[0, n]
+    end
+
+    # [total pooled endpoints, how many are dialable right now].
+    def self.relay_pool(node)
+      out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_SIZE_T, Fiddle::RUBY_FREE)
+      total = RELAY_POOL_SIZE.call(node, out)
+      [total, out[0, Fiddle::SIZEOF_SIZE_T].unpack1(Fiddle::SIZEOF_SIZE_T == 8 ? "Q" : "L")]
     end
 
     def self.sign_reach(node, endpoint, ttl_secs)

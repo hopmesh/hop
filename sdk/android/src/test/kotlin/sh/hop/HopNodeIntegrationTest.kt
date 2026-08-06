@@ -244,4 +244,47 @@ class HopNodeIntegrationTest {
             assertNull(HopAddress.fromBase58("not valid base58 !!!"), "invalid base58 chars decode to null")
         }
     }
+
+    // ---- §19 relay pool (PLAT-003) ----
+
+    /**
+     * sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this wrapper
+     * asserted ABI 5 at load while binding none of them, so a host built on the published SDK could
+     * not fail over: the only reachable behavior was retrying one configured URL forever. Drives the
+     * failover the header describes on ONE node that is never recreated.
+     */
+    @Test
+    fun relayPoolFailsOverToAnotherEndpointWithoutRecreatingTheNode() {
+        assumeLibhop()
+        HopNode.ephemeral().use { n ->
+            n.tick(1_700_000_000_000L)
+            // An empty pool is distinguishable from a backed-off one: nothing to dial, nothing pooled.
+            assertNull(n.relayNext(), "an empty pool has nothing to dial")
+            assertEquals(HopRelayPool(total = 0, available = 0), n.relayPool())
+
+            val a = "wss://relay-a.example/_hop"
+            val b = "wss://relay-b.example/_hop"
+            assertTrue(n.relayAdd(a), "a configured endpoint must be pooled")
+            assertTrue(n.relayAdd(b), "a second configured endpoint must be pooled")
+            assertEquals(HopRelayPool(total = 2, available = 2), n.relayPool())
+
+            val first = n.relayNext()
+            assertTrue(first == a || first == b, "unexpected first dial target: $first")
+
+            // A working relay is kept: no needless churn between two healthy candidates.
+            n.relayReport(first, true)
+            assertEquals(first, n.relayNext(), "a healthy relay must not be abandoned")
+
+            // It goes dark. THIS is the case the header promised and the wrapper could not reach.
+            n.relayReport(first, false)
+            val second = n.relayNext()
+            assertNotNull(second, "failover target missing after the configured relay died")
+            assertTrue(second != first, "no failover: still dialing the dead relay $first")
+
+            // Everything down is WAIT, not offline, and the wrapper can tell the two apart.
+            for (url in listOf(first, first, second, second)) n.relayReport(url, false)
+            assertNull(n.relayNext(), "every candidate is backed off, so there is nothing to dial")
+            assertEquals(HopRelayPool(total = 2, available = 0), n.relayPool())
+        }
+    }
 }

@@ -253,6 +253,26 @@ public:
   // Human-readable name reported via presence.
   void setName(const char *name);
 
+  // §19 relay pool. PLAT-003: these four calls are the whole stated reason for the v4 -> v5 ABI bump
+  // HOP_EMBEDDED_ABI_VERSION pins, and no C-ABI wrapper bound them, so a firmware built on this
+  // wrapper could not fail over off a dead relay.
+
+  // Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a gossiped
+  // endpoint can never demote. True if the endpoint is now pooled; false before begin().
+  bool relayAdd(const char *url, bool configured = true);
+
+  // The relay to dial right now, or an empty string when there is nothing dialable. Empty with a
+  // non-zero relayPoolSize() is the degraded "every candidate is backed off" state (wait and retry,
+  // this node is not offline); empty with a zero size is an empty pool.
+  std::string relayNext() const;
+
+  // Feed a dial outcome back to the pool. A success clears that endpoint's failure history; failures
+  // back it off exponentially and always eventually recover.
+  void relayReport(const char *url, bool ok);
+
+  // Total pooled endpoints; `out_available` (may be null) receives how many are dialable right now.
+  size_t relayPoolSize(size_t *out_available = nullptr) const;
+
 private:
   // Trampolines: the C ABI sinks are plain C function pointers taking a void* context. Each casts the
   // context back to this Hop and calls the stored std::function.

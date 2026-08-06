@@ -166,7 +166,9 @@ node.begin(secret, sizeof(secret));
 | `tick` after clock validation | `hop_node_tick` |
 | bearer seam | `hop_link_up` / `hop_bytes_received` / `hop_drain_outgoing` |
 
-`begin()` asserts ABI 4 through `hop_abi_version()` so a stale prebuilt archive fails at startup.
+`begin()` asserts ABI 5 through `hop_abi_version()` so a stale prebuilt archive fails at startup.
+`tools/codegen/check-abi-version.sh` holds this sentence to the constant, so an ABI bump that forgets
+this line reddens CI instead of leaving integrators a stale number to trust.
 Every wrapper input consumed by C as exactly 32 bytes is size-checked before that pointer enters C.
 
 ## Host Tests

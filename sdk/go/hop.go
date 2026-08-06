@@ -170,6 +170,40 @@ func (n *node) clusterMembers() uint32 { return uint32(C.hop_cluster_members(n.p
 
 func (n *node) clusterSetQuorum(min uint32) { C.hop_cluster_set_quorum(n.p, C.uint32_t(min)) }
 
+// §19 relay pool. PLAT-003: these four calls are the whole stated reason for the v4 -> v5 ABI bump,
+// and no C-ABI wrapper bound them, so an SDK-only host had no way to fail over off a dead relay.
+
+func (n *node) relayAdd(url string, configured bool) bool {
+	cs := C.CString(url)
+	defer C.free(unsafe.Pointer(cs))
+	return bool(C.hop_relay_add(n.p, cs, C.bool(configured)))
+}
+
+// relayNext returns the relay to dial right now and whether there is one at all. The 2 KiB buffer is
+// far past any real endpoint URL; the C call writes nothing and returns 0 if a URL would not fit,
+// which surfaces here as "nothing to dial".
+func (n *node) relayNext() (string, bool) {
+	buf := make([]byte, 2048)
+	got := C.hop_relay_next(n.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
+	runtime.KeepAlive(buf)
+	if got == 0 {
+		return "", false
+	}
+	return string(buf[:int(got)]), true
+}
+
+func (n *node) relayReport(url string, ok bool) {
+	cs := C.CString(url)
+	defer C.free(unsafe.Pointer(cs))
+	C.hop_relay_report(n.p, cs, C.bool(ok))
+}
+
+func (n *node) relayPool() (total, available int) {
+	var avail C.size_t
+	t := C.hop_relay_pool_size(n.p, &avail)
+	return int(t), int(avail)
+}
+
 func (n *node) drainOutgoing() []OutPacket {
 	var out []OutPacket
 	h := cgo.NewHandle(&out)

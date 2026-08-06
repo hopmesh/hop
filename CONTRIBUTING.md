@@ -52,9 +52,12 @@ cargo test -p hop-relayd --features firestore
 
 1. Regenerate the header: `bash core/hop/regen-header.sh` and commit the result. CI
    fails if the committed `sdk/hop.h` drifts from `cabi.rs`.
-2. If you bump `HOP_ABI_VERSION`, update ALL THREE copies in the same commit:
-   `cabi.rs`, the Swift `Hop.swift`, and the Kotlin `Hop.kt`. Only the
-   `cabi.rs`->`hop.h` leg is CI-checked today.
+2. If you bump `HOP_ABI_VERSION`, update EVERY copy in the same commit: `cabi.rs`, both
+   generated headers, and the pinned constant in each language wrapper under `sdk/`. If the
+   bump adds `hop_*` calls, name them in the header's bump note AND bind them in every
+   wrapper; the note is machine-checked against the wrappers. Also correct any doc that
+   states the ABI level in prose. `tools/codegen/check-abi-version.sh` (CI, and in the local
+   mirror) sweeps the tree for all of it and names every location it finds.
 3. Keep the contract PURE: no transport/bearer symbols leak into the SDK/contract.
    CI runs `tools/codegen/check-contract-purity.sh`.
 
