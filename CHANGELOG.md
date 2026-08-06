@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- make the accountd bump coherent, and route one RNG through argon2 (78b8c56)
+- refresh the hop-store-firestore standalone lock for the base64 bump (e13d67a)
+- rustfmt drift and two overstated lines in the sec-relay-p1 write-up (b25d258)
 - stop the native bundle tag check from blocking patch-drifted SDKs (9e2428c)
 - point the bearer POMs at the SDK version that actually publishes (128e76a)
 - one missing mirror must not block every component's release (15cdc09)
@@ -27,6 +30,7 @@ git-cliff. Do not edit by hand.
 - declare Apache-2.0 on the non-core packages (a9c580f)
 - refresh standalone lock checksums for the published sibling (b123888)
 - declare the repository so npm provenance validates (c70e006)
+- stop a test hang-guard from being its own flake (a0f93a8)
 - stop rejecting a safe in-tree symlink as unsafe (debacc4)
 - let a coordinated version bump pass CI (b714f8b)
 - make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
@@ -222,6 +226,9 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- regenerate THIRD-PARTY-NOTICES.md for the bumped crate set (ec17bb5)
+- bump the rust-dependencies group across 1 directory with 7 updates (ce964ad)
+- bump the web-dependencies group (9b6d1da)
 - carry the exported-component count to 23 after merging main (79d98e3)
 - bump android + embedded to 0.0.4 so both can finally publish (9ceb2e6)
 - bump actions/checkout (3758596)
@@ -270,12 +277,16 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- tighten the section 33 rewrite (ebf2d34)
+- record the relay link-identity gap, and what sec-relay-p1 did and did not close (951093a)
+- regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
 - regenerate from conventional commits (e19ed95)
 - regenerate from conventional commits (7a81fb6)
 - regenerate from conventional commits (e6b97f2)
 - commit the 2026-07-29 adversarial audit baseline ledger and report (339ce3a)
 - tor.md, and say in DESIGN.md what Tor does not hide (20821e9)
+- point the section 39 epoch-window summary at the stagger (10923b9)
 - regenerate from conventional commits (2741000)
 - the deferred-teardown note was itself an overclaim (bc86421)
 - name where each anonymity caveat is mirrored in source, correctly (3f99766)
@@ -486,6 +497,10 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (ff6318f)
 
 ### Other
+- drop the dead label branch in the hostname arm (5c1a141)
+- close SVC-002, SVC-003 and SVC-004 (5081fc2)
+- rebuild pkg so the browser sim carries the vaccine change too (f4d31ba)
+- key the presence index, de-fingerprint the delivery vaccine (e25fff5)
 - publish the bearers under sh.hop.bearers (06414bf)
 - bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
 - add the release workflow that makes the bearers publish (99d4317)
@@ -500,6 +515,10 @@ git-cliff. Do not edit by hand.
 - the same SOCKS hook on the Android relay bearer (ed4e9c5)
 - prove .onion relays flow through the pool, and add an Apple SOCKS hook (8a0d9f3)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
+- drive relay failover through the real §19 node pool (PLAT-003) (bed478d)
+- bind the relay pool in every C-ABI wrapper, and make the ABI guard cover all twelve declarations (PLAT-003, PLAT-004) (ab53d1a)
+- narrow the mailbox-prefix guard's version scope to a real time claim (21f23df)
+- close PROTO-004 and PROTO-006 (wire v15) (47794bb)
 - rebuild sim/pkg for the 0.0.2 bump (20d8cae)
 - bump our crates in every standalone/vendored Cargo.lock (aad3ff7)
 - bump every published component to 0.0.2 (7b1ffab)
@@ -767,6 +786,7 @@ git-cliff. Do not edit by hand.
 - drop the short send TTL — it murdered slow DTN deliveries before they arrived (b238e3e)
 
 ### Testing
+- re-draw the hop blind instead of failing when it lands on zero (40ae390)
 - run the loop/flow tests on an unconfined dispatcher (7fb1a24)
 - make the two coroutine tests deterministic (666b29d)
 - make the per-transport toggle drivable from automation, so PLAT-001 can be proven on hardware (7c889a9)

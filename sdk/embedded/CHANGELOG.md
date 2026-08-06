@@ -20,6 +20,7 @@ git-cliff. Do not edit by hand.
 - bump android + embedded to 0.0.3 to release the two fixes (4e8924f)
 
 ### Documentation
+- regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
 - regenerate from conventional commits (e19ed95)
 - regenerate from conventional commits (7a81fb6)
@@ -40,5 +41,6 @@ git-cliff. Do not edit by hand.
 ### Other
 - bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
+- bind the relay pool in every C-ABI wrapper, and make the ABI guard cover all twelve declarations (PLAT-003, PLAT-004) (ab53d1a)
 - label hop-embedded FSL-1.1-ALv2 + restore PlatformIO in bootstrap (b00cf47)
 
