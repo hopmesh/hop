@@ -954,7 +954,8 @@ affordable rather than a flood amplifier.
 **Status.** Split by signal, because they differ. **Presence is implemented AND live**:
 `hop-store-firestore` records it (`set_presence` / `region_of`, TTL-fresh reads that wake no node,
 `PRESENCE_TTL_MS` 90s) and the `hop-relayd` handoff loop writes an undeliverable bundle into the
-destination region's partition; unknown or stale presence simply means no handoff yet.
+destination region's partition; unknown or stale presence simply means no handoff yet. The record is
+filed under a fleet-keyed `PresenceIndex`, never the device address (sec-relay-p1-01, §39).
 **Per-region decayed demand is NOT implemented.** The `RegionRouter` type this section used to name
 lived in a `hop-relay` crate that no longer exists, so treat the symbol as removed, not as
 shippable code.
@@ -2054,9 +2055,12 @@ equal under GDPR:
   the bundle header carries **source + destination public keys, timestamps, size, and app/topic
   labels**. A persistent pseudonymous identifier tied to an individual is personal data (GDPR
   Recital 26 / *Breyer*), so the **metadata** is in scope even though the content is not.
-- **Presence index** (`presence/{device}` = region + heartbeat, §28), the sharp one. It maps a
-  pseudonymous device address to a coarse **location + activity timeline**. Movement/timing
-  metadata over time is the most sensitive dataset in the system.
+- **Presence index** (`presence/{index}` = region + heartbeat, §28), the sharp one. It maps a device
+  to a coarse **location + activity timeline**. Movement/timing metadata over time is the most
+  sensitive dataset in the system. sec-relay-p1-01 keys the document id (and the body) on a
+  fleet-keyed `PresenceIndex` rather than the device address, so the collection is no longer a
+  readable address-to-location log for anyone without the fleet key; the relay fleet itself still
+  resolves it, so this is a limit on onward disclosure, not on the operator.
 - **Delivery ACKs** (`AckTo`), same metadata character as bundles.
 
 ### What the design already gets right (data protection by design, Art. 25)
@@ -3207,6 +3211,78 @@ the removed `InternetEgress` pull verb.) Reuses: `Broadcast` flood + BundleId de
 regions (§28), regional spools + online-only relay epidemic (§28/§34), and §38 RBSR for cross-region
 catch-up. Supersedes the §10 metadata-privacy non-goal for unicast content; keeps §28's regional DBs
 unchanged (no global/continental store).
+
+### What a relay still learns (OPEN, sec-relay-p1)
+
+Everything above hides the *bundle*. None of it hides the *link*. Every link runs mutually
+authenticated Noise XX keyed on `Identity::link_secret()`, which is derived from the node's long-term
+Ed25519 identity, and `Node::auth_payload` additionally states our address inside the handshake and
+binds it to that static key. So **the operator of any relay learns the permanent hop address of every
+node that dials it**, and re-recognizes the same address on every reconnect. A bundle that arrives at
+that relay reading one travelled hop is then attributable to that address no matter what §39 removed
+from the envelope, unless its count starts at a blind (private bundles, and now vaccines: everything
+else still starts at 0). Running a relay is the cheapest deanonymisation position in the system, and Tor
+would not fix it: Noise authenticates the hop identity independently of the transport underneath.
+
+This is stated here because it is NOT fixed, and it is asserted in code
+(`a_relay_learns_the_permanent_address_of_every_node_that_connects_to_it`) so it cannot quietly be
+believed fixed.
+
+**What sec-relay-p1 did land**, both narrow on purpose:
+
+- **sec-relay-p1-01, the presence index is keyed.** §28 cross-region handoff records where each device
+  last checked in. That record was keyed by the device's base58 address and repeated it in the document
+  body, which made the one collection §33 calls "the sharp one" a plaintext directory of every online
+  node's permanent address and its coarse location over time. It is now keyed by a `PresenceIndex`, a
+  BLAKE3 keyed hash under a subkey of the fleet's shared base seed (the same secret every region
+  already needs to derive peer regions' node addresses, so no new key distribution). Keyed, not plainly
+  hashed: addresses are public (§23), so a plain hash would still be a perfect membership oracle.
+  Routing is untouched because both sides derive the index from an address they already hold, the
+  writer from its link peer and the reader from the bundle's cleartext `Device` destination. This does
+  not hide anything from the relay process, which authenticated that peer; it removes the durable,
+  externally readable copy (an operator, a backup, a leaked read-only credential, a demand served on
+  the database rather than on the fleet).
+- **sec-relay-p1-02, the delivery vaccine no longer fingerprints its emitter.** A vaccine is flooded by
+  the RECIPIENT the instant it recognizes a private bundle, and it was the last anonymous class still
+  carrying an emitter tell. It has no `PrivateHeader`, so `add_hop` treated it as an ordinary traced
+  bundle and wrote the emitter's 8-byte short address into `trace[0]`, which then travelled the entire
+  flood and told relays with no link to that node what an adjacent relay would otherwise have had to
+  infer. It also left the emitter with `hops = 0`, so the first relay read exactly 1 and could pin the
+  delivery on its Noise-identified link peer. Vaccines now carry no provenance (and strip any an older
+  or hostile forwarder injected) and start at a per-vaccine blind keyed on the emitter's identity and
+  the token, the twin of the private bundle's `hop_blind_from_shared`. Keyed on the identity because
+  the token itself rides in the clear: a token-only offset would be recomputable by the relay. Nothing
+  consumes a vaccine's hop count, so unlike the private blind it never has to be undone.
+
+**What the real fix would cost**, so the next person picks with their eyes open:
+
+1. **Ephemeral relay-link identity** (the actual fix): use a per-relay, per-session identity as the
+   Noise static on relay links only, keeping mesh links on the real identity. The link still ends with
+   an authenticated peer, so this is NOT the XX-to-NN anonymous-link attempt that was reverted (`node.rs`
+   drops any link that finishes without an authenticated peer, and apps assume every link yields an
+   identified peer). The costs are real and stacked: relay-ness is known at the host at handshake time
+   (both drivers already branch on `transportName == "Relay"` before calling `node.connected()`), but
+   plumbing a link class through `hop_link_up` is `HOP_ABI_VERSION` 5 to 6 and touches both drivers,
+   both SDKs, hop-wasm and esp32. Worse, it breaks §28 cross-region delivery by construction: presence
+   and the `Device(X)` handoff are keyed on the device's real address, and a relay that never learns it
+   cannot file or find that device. Under an ephemeral link identity, reachability through a relay has
+   to become §39-only (mailbox tags, blind spool, want beacons), because that path already keys on a
+   rotatable pseudonym rather than an address. That is the actual design fork, not the ABI bump.
+2. **A stable per-relay pseudonym** (unlinkable across relays, linkable within one). Cheaper on the
+   client, useless for the presence dependency: the relay looking up a destination knows the address,
+   not the pseudonym that destination presents to some other relay, so cross-region handoff still
+   breaks. It also leaves the single-relay observer, which is the threat model that matters.
+3. **Dropping the address from `auth_payload`.** Tempting because it is one line, and worth almost
+   nothing: the Noise static key IS the address's derived X25519 key, and the Ed25519-to-Curve25519 map
+   inverts to two candidate addresses (the sign bit is the only thing lost), either of which any signed
+   advert from that node resolves. The relay recovers the address from the handshake regardless.
+   Recorded here so nobody spends a wire bump on a one-bit improvement.
+
+**Residual after sec-relay-p1, stated plainly:** the relay still learns and can log every connected
+node's permanent address in memory, still sees arrival timing on its own links, and a first-hop relay
+can still infer origination from a hop count of 1 on any bundle class that starts at 0 (everything
+except private bundles and, now, vaccines). sec-relay-p1 reduced what is written down and what the
+flood carries onward. It did not reduce what the relay knows.
 
 ## 40. OTel-over-Hop, telemetry that rides the mesh to a collector
 
