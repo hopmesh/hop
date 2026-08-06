@@ -10,9 +10,11 @@ git-cliff. Do not edit by hand.
 - keep the OTLP failure log aggregate-only + panic-isolate the worker (5c865d0)
 
 ### Chore
+- bump the rust-dependencies group across 1 directory with 7 updates (ce964ad)
 - invert the license tiers, FSL moves from core to services (14d7fec)
 
 ### Documentation
+- regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
 - regenerate from conventional commits (e19ed95)
 - regenerate from conventional commits (7a81fb6)
@@ -35,5 +37,6 @@ git-cliff. Do not edit by hand.
 - hop-telemetryd, the OTel-over-Hop collector (DESIGN.md §40) (3b30ae9)
 
 ### Other
+- close SVC-002, SVC-003 and SVC-004 (5081fc2)
 - make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
 

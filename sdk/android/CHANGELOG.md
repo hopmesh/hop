@@ -23,6 +23,7 @@ git-cliff. Do not edit by hand.
 - AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10 + core-ktx 1.19.0 (13 held bumps) (471edb7)
 
 ### Documentation
+- regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
 - regenerate from conventional commits (e19ed95)
 - regenerate from conventional commits (7a81fb6)
@@ -45,6 +46,7 @@ git-cliff. Do not edit by hand.
 ### Other
 - bump android and embedded to 0.0.5 for a taggable commit (fb6966a)
 - bump embedded and android to 0.0.2, and stop the tagger guessing their version (b655972)
+- bind the relay pool in every C-ABI wrapper, and make the ABI guard cover all twelve declarations (PLAT-003, PLAT-004) (ab53d1a)
 - per-transport switches, and show when the SENDER sent a message (7a923c0)
 - let a host enable and disable individual bearers at runtime (c17b01a)
 - wire the relay pool end to end, and stop the wire guard false-firing (35946e0)

@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- make the accountd bump coherent, and route one RNG through argon2 (78b8c56)
 - land logins in the app; center the dashboard content (7023e3f)
 - stop the per-peer limiter from throttling all logins at once (e3a4e39)
 - route the GitHub OAuth callback through the /api proxy (0b9b103)
@@ -21,10 +22,12 @@ git-cliff. Do not edit by hand.
 - Dockerfiles for hop-billingd and hop-accountd (20d6d81)
 
 ### Chore
+- bump the rust-dependencies group across 1 directory with 7 updates (ce964ad)
 - invert the license tiers, FSL moves from core to services (14d7fec)
 - purge em-dashes and en-dashes from source (d222435)
 
 ### Documentation
+- regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
 - regenerate from conventional commits (e19ed95)
 - regenerate from conventional commits (7a81fb6)
@@ -59,6 +62,8 @@ git-cliff. Do not edit by hand.
 - hop-accountd, the native invoice backend (stripe-account-key consumer) (62dbaef)
 
 ### Other
+- drop the dead label branch in the hostname arm (5c1a141)
+- close SVC-002, SVC-003 and SVC-004 (5081fc2)
 - make the writer-scoped ledger readable end to end, and stop overclaiming (5ee2555)
 - rustfmt the oauth redirect_uri assertion (6ee3865)
 - accountd firestore image + the deploy plan (P4) (d51be5d)
