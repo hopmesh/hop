@@ -85,6 +85,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (1f83a56)
 
 ### Documentation
+- regenerate from conventional commits (3912d31)
 - marketable README template + brand mark + public-repo catalog (#148) (95645ec)
 - concrete specs for the three remaining follow-ups (#137) (ac5fed6)
 - decouple hop-core's vocabulary from the sim (comments only) (#119) (48243e4)

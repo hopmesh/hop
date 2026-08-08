@@ -7,6 +7,9 @@ git-cliff. Do not edit by hand.
 ### Chore
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (2e68a4b)
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Testing
 - cover the REST layer to 96.7% (from 40.5%) (#58) (885f89b)
 
