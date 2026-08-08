@@ -226,6 +226,8 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- bump the node-sdk-dependencies group (0baa485)
+- bump astro (e49e3cc)
 - regenerate THIRD-PARTY-NOTICES.md for the bumped crate set (ec17bb5)
 - bump the rust-dependencies group across 1 directory with 7 updates (ce964ad)
 - bump the web-dependencies group (9b6d1da)
@@ -277,6 +279,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (910695c)
 - regenerate from conventional commits (7160289)
 - tighten the section 33 rewrite (ebf2d34)
 - record the relay link-identity gap, and what sec-relay-p1 did and did not close (951093a)

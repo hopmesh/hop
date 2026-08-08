@@ -18,11 +18,13 @@ git-cliff. Do not edit by hand.
 - sdk/node CI as a canonical composite action (shared monorepo <-> standalone repo) (#149) (85d885b)
 
 ### Chore
+- bump the node-sdk-dependencies group (0baa485)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (9e3f7c8)
 - bump the node-sdk-dependencies group across 1 directory with 2 updates (#158) (1af6155)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (910695c)
 - regenerate from conventional commits (7160289)
 - regenerate from conventional commits (3b47a5f)
 - regenerate from conventional commits (ffb2acb)
