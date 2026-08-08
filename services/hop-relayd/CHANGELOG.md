@@ -16,6 +16,9 @@ git-cliff. Do not edit by hand.
 ### Dependencies
 - land the grouped rust-dependencies bump (sha2, ed25519/x25519-dalek, chacha20poly1305, snow, rusqlite, p256, uniffi, tungstenite) (#89) (f09a43f)
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Other
 - make the TLS-served reach record the only name path (drop DNSSEC-over-DoH) (#139) (549e4fc)
 - remove Destination::InternetEgress (mesh-visible internet-bound leak) (e99eb3c)

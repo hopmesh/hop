@@ -8,6 +8,9 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (2e68a4b)
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (edaf8fc)
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Other
 - make the TLS-served reach record the only name path (drop DNSSEC-over-DoH) (#139) (549e4fc)
 - lift HopBearer+Hns.swift 59% -> 99% + add a per-file coverage floor (#83) (a166f1d)

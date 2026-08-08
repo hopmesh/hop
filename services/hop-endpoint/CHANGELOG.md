@@ -14,6 +14,9 @@ git-cliff. Do not edit by hand.
 ### Dependencies
 - land the grouped rust-dependencies bump (sha2, ed25519/x25519-dalek, chacha20poly1305, snow, rusqlite, p256, uniffi, tungstenite) (#89) (f09a43f)
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Features
 - phase 3 hold-until-coordinated quorum (CP; never double-process) (#159) (65d8103)
 - self-clustering endpoints (phase 1 dedup) as a hop-endpoint-core layer over the mesh (#153) (9b56cd5)

@@ -8,6 +8,9 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (2e68a4b)
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (edaf8fc)
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Other
 - route dedup through the pure keep-rule cores; fix inverted Android dedup-ordering docs (#72) (d8174fd)
 - strip em-dashes from this session's Apple coverage test files (#67) (f3a12f0)

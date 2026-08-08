@@ -4,6 +4,9 @@ Notable changes, generated from [conventional commits](https://www.conventionalc
 git-cliff. Do not edit by hand.
 ## Unreleased
 
+### Documentation
+- regenerate from conventional commits (3912d31)
+
 ### Features
 - phase 3 hold-until-coordinated quorum (CP; never double-process) (#159) (65d8103)
 - phase 2 rendezvous ownership (exactly-once when the owner is up) (#155) (890a543)
