@@ -14,6 +14,7 @@ git-cliff. Do not edit by hand.
 - SHA-pin the mirror CI actions and exact java-version (09a7208)
 
 ### Documentation
+- regenerate from conventional commits (fc4e725)
 - regenerate from conventional commits (910695c)
 - regenerate from conventional commits (7160289)
 - regenerate from conventional commits (3b47a5f)

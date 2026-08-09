@@ -24,6 +24,7 @@ git-cliff. Do not edit by hand.
 - land the grouped rust-dependencies bump (sha2, ed25519/x25519-dalek, chacha20poly1305, snow, rusqlite, p256, uniffi, tungstenite) (#89) (2038ce9)
 
 ### Documentation
+- regenerate from conventional commits (fc4e725)
 - regenerate from conventional commits (910695c)
 - regenerate from conventional commits (7160289)
 - regenerate from conventional commits (3b47a5f)
