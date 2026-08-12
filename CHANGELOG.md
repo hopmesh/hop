@@ -5,6 +5,10 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- drop a Swift 6.1-only trailing comma the self-hosted toolchain allowed (40c44f8)
+- split a type-check-timeout expression the fast runner was hiding (549f046)
+- move Apple CI off the self-hosted runner and pin the last loose WIF identity (9807df3)
+- repoint the two guards that keyed off retired components (926107e)
 - make the accountd bump coherent, and route one RNG through argon2 (78b8c56)
 - refresh the hop-store-firestore standalone lock for the base64 bump (e13d67a)
 - rustfmt drift and two overstated lines in the sec-relay-p1 write-up (b25d258)
@@ -226,8 +230,10 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
-- bump the node-sdk-dependencies group (0baa485)
+- cut every in-tree reference off the 20 deleted mirrors (5c12557)
 - bump astro (e49e3cc)
+- bump the node-sdk-dependencies group (0baa485)
+- retire 20 mirrors, keep the three package managers require (8b9c693)
 - regenerate THIRD-PARTY-NOTICES.md for the bumped crate set (ec17bb5)
 - bump the rust-dependencies group across 1 directory with 7 updates (ce964ad)
 - bump the web-dependencies group (9b6d1da)
@@ -279,6 +285,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- correct an appendix whose premise this PR deletes (0c1392a)
+- regenerate from conventional commits (b0b159a)
 - regenerate from conventional commits (d195880)
 - regenerate from conventional commits (9fece1e)
 - regenerate from conventional commits (fc4e725)
@@ -355,6 +363,8 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (47a86df)
 
 ### Features
+- add the root licence, and resolve the audit identifiers in public (98fa950)
+- add the internal_export and public_export split workflows (a1a9714)
 - wire Copybara mirror, Maven publish, and a CI gate (def84fe)
 - mint the Compose Multiplatform client UI SDK (9278580)
 - ship third-party attribution, and correct the site's licence copy (bb2f6e7)

@@ -20,10 +20,12 @@ git-cliff. Do not edit by hand.
 - per-repo release workflows (publish on a vX.Y.Z tag) (277cf32)
 
 ### Chore
+- cut every in-tree reference off the 20 deleted mirrors (5c12557)
 - purge em-dashes and en-dashes from source (d222435)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
 
 ### Documentation
+- regenerate from conventional commits (b0b159a)
 - regenerate from conventional commits (d195880)
 - regenerate from conventional commits (9fece1e)
 - regenerate from conventional commits (fc4e725)
