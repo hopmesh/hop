@@ -118,18 +118,20 @@ drifting.
 ## The Hop family
 
 Same node, your language. The SDKs:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
+android.
 The protocol core:
-[hop-core](https://github.com/hopmesh/hop-core) /
-[libhop](https://github.com/hopmesh/libhop) /
-[hop-wasm](https://github.com/hopmesh/hop-wasm).
+[hop-mesh-core](https://crates.io/crates/hop-mesh-core) /
+libhop /
+[@hop-mesh/wasm](https://www.npmjs.com/package/@hop-mesh/wasm).
+The in-tree crate is hop-core, published under the hop-mesh- prefix. The Android SDK is not published
+yet, and libhop is the C ABI it exposes, not a separate release.
 
 ## License
 

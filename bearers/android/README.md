@@ -36,30 +36,37 @@ and its own dedup; the core never sees a socket, and you pull in only the pipes 
 
 ## Install
 
-Each bearer publishes its own AAR to Maven Central, so you add only the transports you want
-(`minSdk` 29, the floor for L2CAP CoC). No extra repository is needed:
+The bearers aren't published. Nothing under `sh.hop.bearers` is on Maven Central, so there is no
+coordinate to depend on: they're consumed as sibling Gradle modules inside the Hop monorepo, one module
+per transport, and you include only the ones you want (`minSdk` 29, the floor for L2CAP CoC). The `../`
+depth below is from `apps/android/HopDemo`, adjust for wherever yours sits:
 
 ```kotlin
 // settings.gradle.kts
-dependencyResolutionManagement {
-    repositories { google(); mavenCentral() }
-}
+include(":hop-sdk", ":bearer-ble", ":bearer-lan", ":bearer-relay", ":bearer-meshtastic")
+project(":hop-sdk").projectDir            = file("../../../bearers/android/hop-sdk")
+project(":bearer-ble").projectDir         = file("../../../bearers/android/bearer-ble")
+project(":bearer-lan").projectDir         = file("../../../bearers/android/bearer-lan")
+project(":bearer-relay").projectDir       = file("../../../bearers/android/bearer-relay")
+project(":bearer-meshtastic").projectDir  = file("../../../bearers/android/bearer-meshtastic")
 ```
 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("sh.hop.bearers:bearer-ble:0.0.2")
-    implementation("sh.hop.bearers:bearer-lan:0.0.2")
-    implementation("sh.hop.bearers:bearer-relay:0.0.2")
-    implementation("sh.hop.bearers:bearer-meshtastic:0.0.2")
+    implementation(project(":bearer-ble"))
+    implementation(project(":bearer-lan"))
+    implementation(project(":bearer-relay"))
+    implementation(project(":bearer-meshtastic"))
 }
 ```
 
-Each bearer declares the Hop Android SDK (`sh.hop:hop`) as a dependency and pulls it in for you; that
-is what carries the `Bearer` / `LinkSink` / `HopRole` contract and the registry. The bearers publish
-under `sh.hop.bearers`, a subgroup of the SDK's own verified `sh.hop` namespace. Kotlin package names
-are unrelated to Maven coordinates and stay `sh.hopme.bearers.*`.
+Every bearer declares `implementation(project(":hop-sdk"))`, the in-tree shim that compiles
+`sdk/android`'s shared source; that is what carries the `Bearer` / `LinkSink` / `HopRole` contract and
+the registry, which is why the snippet above maps it alongside the transports. The publishing convention
+in `bearers/android/build.gradle.kts` still names `sh.hop.bearers`, a subgroup of the SDK's own verified
+`sh.hop` namespace, for the day these do ship. Kotlin package names are unrelated to Maven coordinates
+and stay `sh.hopme.bearers.*`.
 
 ## Usage
 
@@ -129,15 +136,17 @@ follows the Ditto design: GATT only for the PSM handshake, data always on L2CAP.
 ## The Hop family
 
 Hop is one protocol with many faces. The endpoint SDKs, same surface in your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [hop-core](https://github.com/hopmesh/hop-core) / [libhop](https://github.com/hopmesh/libhop).
+android.
+The protocol core is [hop-mesh-core](https://crates.io/crates/hop-mesh-core), which is the in-tree
+`hop-core` crate under its published name, plus libhop.
+The unlinked ones live in the Hop monorepo and aren't separately published yet.
 
 ## License
 

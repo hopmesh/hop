@@ -28,7 +28,7 @@ jobs:
   publish:
     needs: [authorize-ci, build]
     steps:
-      - run: gh release create "$VERSION" --repo hopmesh/libhop out.a
+      - run: gh release create "$VERSION" --repo hopmesh/example-artifacts out.a
 """
 
 

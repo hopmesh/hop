@@ -14,8 +14,9 @@ every artifact-producing and artifact-publishing job depends on. Two implementat
 is how one of them drifts, so a workflow re-deriving the check itself fails this guard.
 
 Background: libhop-esp-release.yml published static libraries plus sdk/hop.h to the PUBLIC
-hopmesh/libhop repo while checking only the repository, ref, ref-protected flag, sha shape and version
-shape. Nothing tied the build to a passing test suite, header-drift gate, or wire-version guard. That
+hopmesh/libhop repo, since RETIRED along with the rest of the mirror fleet, while checking only the
+repository, ref, ref-protected flag, sha shape and version shape. Nothing tied the build to a passing
+test suite, header-drift gate, or wire-version guard. That
 workflow has since been DELETED (its credentials were never provisionable and native-artifacts.yml
 builds a superset of its targets under signature), so this repo currently has NO workflow in scope. The
 rule is still enforced on every run, by the fixtures in tools/artifact-publication-guard.test.sh; what

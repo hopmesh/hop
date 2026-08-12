@@ -1,83 +1,60 @@
-# Public repo catalog (swag)
+# Public repo catalog
 
-A rough cut of the public repos we split out of this monorepo (source of truth stays here; each is
-mirrored via Copybara, see `tools/copybara/`). Every one is intended to be public and carries its own
-`LICENSE.md` in one of TWO tiers: the protocol core (`core/*`) is FSL-1.1-ALv2, everything else (SDKs,
-bearers, drivers, services) is Apache-2.0. See the License section of `README.md`;
-`tools/repo-integrity-guard.sh` fails CI on a cross-tier license, so this file is not a second source
-of truth. Names are proposals; boundaries marked **(open)** are real decisions to make.
+This monorepo is the source of truth. Copybara mirrors a component subtree to its own standalone repo
+and brings external contributions back without forking (see `tools/copybara/`).
 
-## Core (the protocol)
+As of the 2026-08 mirror retirement, **three** components mirror. Twenty were retired and their repos
+deleted from the `hopmesh` org. This file records both sets, because the difference is load bearing:
+a name in the retired table is a repo that no longer exists, and any link to it 404s.
 
-| Repo | From | What it is | Ships as | Audience |
-| --- | --- | --- | --- | --- |
-| `hop-core` | `core/hop-core` | The Hop protocol in pure Rust: bundles, wire format, Noise links, epidemic routing with delivery-vaccine reclamation routing, the §39 untraceable path, crypto. | crates.io | Rust embedders, auditors |
-| `libhop` | `core/hop` | The C ABI (`hop.h`, cbindgen) over hop-core: the universal client + bearer contract every non-Rust SDK binds. | prebuilt binaries + crate | SDK authors, C/C++/embedded |
-| `hop-wasm` | `core/hop-wasm` | hop-core compiled to WASM: a real Hop node in the browser. | npm | web / browser mesh |
-| `hop-store-sqlite` | `core/stores/hop-store-sqlite` | SQLite + SQLCipher persistence behind the `Store` trait. | crates.io | Rust embedders |
-| `hop-store-firestore` | `core/stores/hop-store-firestore` | Firestore persistence for the cloud relay/mailbox. | crates.io | operators |
+Licensing has two tiers and `tools/repo-integrity-guard.sh` fails CI on a cross-tier license, so this
+file is not a second source of truth. The services (`services/*`) are FSL-1.1-ALv2, which is
+source-available; everything else, including the protocol core, is Apache-2.0. See the License section
+of `README.md`.
 
-**(decided)** the Rust crates depend on `hop-core` by path in the monorepo. Across repos they resolve by
-**crates.io version**, so each stays its own repo. On export Copybara injects a self-contained
-`[workspace]` preamble into every Rust mirror's `Cargo.toml` (see `tools/copybara/copy.bara.sky`),
-rewriting the inter-crate path deps to those crates.io versions; cargo resolves the inheritance to
-concrete values at publish time. `hop-core` is the leaf, so it publishes first, then the stores /
-`hop-wasm`; `libhop` and the services also pull `hop-endpoint-core` (`core/hop-endpoint`), which is not
-mirrored yet, so publish that crate before their first release.
-
-The crates.io names `hop-core` and `hop` are already taken by an unrelated project, so the published
-crates use the `hop-mesh-*` convention (matches the `@hop-mesh` npm scope): `hop-core` -> `hop-mesh-core`,
-`hop` -> `libhop`, `hop-store-sqlite` -> `hop-mesh-store-sqlite`, `hop-store-firestore` ->
-`hop-mesh-store-firestore`, `hop-endpoint-core` -> `hop-mesh-endpoint-core`. This is a publish-name-only
-rename in the mirror transform: the monorepo keeps the bare names and consumer code keeps `use hop_core`
-(the preamble deps alias via `package = "..."`). Mirror repo names are unchanged.
-
-## Server SDKs (host an endpoint)
-
-Same Express/Fastify-shaped surface over `libhop`, one per language.
-
-| Repo | From | Package |
-| --- | --- | --- |
-| `hop-sdk-node` | `sdk/node` | npm `@hop-mesh/endpoint` (**mirror already live, private**) |
-| `hop-sdk-python` | `sdk/python` | PyPI |
-| `hop-sdk-go` | `sdk/go` | Go module |
-| `hop-sdk-ruby` | `sdk/ruby` | RubyGems |
-| `hop-sdk-crystal` | `sdk/crystal` | shards |
-| `hop-sdk-elixir` | `sdk/elixir` | Hex |
-
-## Client SDKs (run a node on a device)
+## The three live mirrors
 
 | Repo | From | Ships as | Audience |
 | --- | --- | --- | --- |
+| `hop-sdk-go` | `sdk/go` | Go module | Go services hosting an endpoint |
+| `hop-sdk-crystal` | `sdk/crystal` | shards | Crystal services hosting an endpoint |
 | `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps |
-| `hop-sdk-android` | `sdk/android` | Maven (AAR) | Android apps |
-| `hop-sdk-compose` | `sdk/compose` | Maven (`sh.hop:hop-compose`) | Compose Multiplatform apps (Android / Desktop / iOS) |
-| `hop-embedded` | `sdk/embedded` | PlatformIO (`Hop`) | ESP32 / Arduino / MCU firmware |
 
-## Bearers (per-platform transports)
+All three publish by pushing a git tag: the repo is the package. None of them needs a registry account,
+a registry token, or a trusted-publisher configuration, which is why these three are the set that
+survived. `tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky`
+holds the matching list; their CI self-test rejects any drift between the two.
 
-| Repo | From | Ships as |
-| --- | --- | --- |
-| `hop-bearers-apple` | `bearers/apple/*` | SwiftPM (BLE / LAN / Relay) |
-| `hop-bearers-android` | `bearers/android` | Maven (BLE / LAN / Relay) |
+## Retired mirrors (the repos are deleted)
 
-**(open)** the three Apple bearer packages could be one repo with three products, or three repos. One
-repo is simpler.
+Each component below still lives in the monorepo at the prefix shown. It is built and tested here, and
+it is not separately published. Only the standalone mirror repo went away.
 
-## Drivers (app-facing client layer)
+| Retired repo | Monorepo home |
+| --- | --- |
+| `hop-core` | `core/hop-core` |
+| `libhop` | `core/hop` |
+| `hop-wasm` | `core/hop-wasm` |
+| `hop-store-sqlite` | `core/stores/hop-store-sqlite` |
+| `hop-store-firestore` | `core/stores/hop-store-firestore` |
+| `hop-sdk-node` | `sdk/node` |
+| `hop-sdk-python` | `sdk/python` |
+| `hop-sdk-ruby` | `sdk/ruby` |
+| `hop-sdk-elixir` | `sdk/elixir` |
+| `hop-sdk-android` | `sdk/android` |
+| `hop-sdk-compose` | `sdk/compose` |
+| `hop-sdk-flutter` | `sdk/flutter` |
+| `hop-embedded` | `sdk/embedded` |
+| `hop-bearers-apple` | `bearers/apple/*` |
+| `hop-bearers-android` | `bearers/android` |
+| `hop-driver-apple` | `drivers/apple/HopDriver` |
+| `hop-driver-android` | `drivers/android/hop-driver` |
+| `hop-relayd` | `services/hop-relayd` |
+| `hop-endpoint` | `services/hop-endpoint` |
+| `hop-gateway` | `services/hop-gateway` |
 
-| Repo | From | Ships as |
-| --- | --- | --- |
-| `hop-driver-apple` | `drivers/apple/HopDriver` | SwiftPM |
-| `hop-driver-android` | `drivers/android/hop-driver` | Maven |
-
-## Services (operator daemons)
-
-| Repo | From | What it is |
-| --- | --- | --- |
-| `hop-relayd` | `services/hop-relayd` | The relay: the most internet-exposed process; store-and-forward for offline peers. |
-| `hop-endpoint` | `services/hop-endpoint` | The `hops://` origin endpoint (HTTP-over-mesh, bound to one domain). |
-| `hop-gateway` | `services/hop-gateway` | The gateway. |
+Do not re-add one of these names to `components.json` expecting the repo to be there. Restoring a
+mirror means creating the repo again and seeding it with a fresh `init_history` export.
 
 ## Not extracted (stay in the monorepo)
 
@@ -85,13 +62,130 @@ repo is simpler.
 apps), `assets/`, `learn/`, `mockups/`, `infra/`, `docs/`, `tools/`. These are the monorepo's own
 subsystems, not standalone deliverables.
 
-`sdk/react-native` also stays here for now. It is a real client SDK, but the cross-platform surface is
-being reworked, so it is deliberately NOT mirrored or published yet: no `components.json` entry, no
-Copybara workflows, and no release pipeline. It is verified by the monorepo's own `React Native SDK`
-CI job. Re-register it here when the approach settles.
+`sdk/react-native` also stays here. It is a real client SDK, but the cross-platform surface is being
+reworked, so it is deliberately not mirrored or published: no `components.json` entry, no Copybara
+workflows, and no release pipeline. It is verified by the monorepo's own `React Native SDK` CI job.
 
-## Rough count
+## Registry fallout of the mirror retirement
 
-~18 public repos: 5 core, 6 server SDKs, 2 client SDKs, 2 bearer sets, 2 drivers, 3 services (minus any
-collapsed by the **(open)** decisions above). Each gets the marketable README + brand mark; the
-`hop-sdk-node` mirror is the first one live.
+Deleting a mirror does not unpublish anything that already shipped from it. This section is the durable
+record of what is published, what is not, and which published artifact now carries a dead source link,
+so it does not have to be rediscovered by hand. All of it was verified at retirement time.
+
+### Published, and affected
+
+- **npm `@hop-mesh/endpoint` v0.0.2** is published. Its `repository` field points at
+  `hopmesh/hop-sdk-node`, which is being deleted, so the source link on its
+  [npm page](https://www.npmjs.com/package/@hop-mesh/endpoint) will 404.
+
+### Published, and unaffected by mirror deletion
+
+- **npm `@hop-mesh/wasm` v0.0.2**, whose `repository` field points at `hopmesh/monorepo` rather than
+  at a mirror. See [its npm page](https://www.npmjs.com/package/@hop-mesh/wasm).
+- **Three crates on crates.io**, all v0.0.2, all naming `hopmesh/monorepo` in `repository`. They
+  publish under a RENAMED scheme because our natural names were already taken, so the crate you want
+  is never the name the directory has:
+
+| Monorepo crate | Published as | Page |
+| --- | --- | --- |
+| `core/hop-core` | `hop-mesh-core` | [crates.io/crates/hop-mesh-core](https://crates.io/crates/hop-mesh-core) |
+| `core/stores/hop-store-sqlite` | `hop-mesh-store-sqlite` | [crates.io/crates/hop-mesh-store-sqlite](https://crates.io/crates/hop-mesh-store-sqlite) |
+| `core/stores/hop-store-firestore` | `hop-mesh-store-firestore` | [crates.io/crates/hop-mesh-store-firestore](https://crates.io/crates/hop-mesh-store-firestore) |
+
+**Keep that mapping.** It used to live in `CRATE_RENAMES` in `tools/copybara/copy.bara.sky`, which the
+retirement emptied out because no Rust crate MIRROR survived. True about mirrors, but it deleted the
+only in-tree record of the local-to-published naming for three crates that are still live. Someone
+grepping crates.io for `hop-store-sqlite` lands on a 404 and concludes we never shipped it.
+
+**Those three crates now have no publishing path, and that is a real gap rather than a tidy-up.** They
+were published FROM the Rust mirrors: `tools/crates-publish.py` reached a mirror only through
+`RUST_EXPORTS` in `tools/package-export-smoke.py`, which copies it to `.github/crates-publish.py`, and
+that copy is gated on `component in RUST_MIRRORS`. With `RUST_MIRRORS` empty, nothing exports it, and no
+monorepo workflow invokes `crates-publish.py publish` either (verified: zero hits across
+`.github/workflows/`). So a new version of any of the three cannot currently be cut from anywhere.
+
+Worse, the obvious repair is a trap. Publishing straight from the monorepo would use each crate's own
+`[package] name`, which is `hop-core`, `hop-store-sqlite` and `hop-store-firestore`. `hop-core` on
+crates.io belongs to an unrelated third party, so that publish would either fail or, for the two store
+crates, silently claim NEW names and orphan the `hop-mesh-*` ones already depended on. Whoever wires
+monorepo-side crate publishing has to carry the rename forward deliberately; it is a release contract,
+not a naming preference.
+
+Everything above is confirmed ours by scope or namespace AND by the `repository` field, which is the
+standard to meet before calling any package ours. A URL returning 200 proves the name is taken, not
+that we own it.
+
+### Maven: no Central release, but the LOCAL publication path is live
+
+Searched 2026-08: group ids `sh.hop` and `sh.hop.bearers` return ZERO artifacts on Maven Central, so
+nothing of ours is published there and no released POM carries a stale URL.
+
+That is NOT the same as the publication path being dead, and an earlier draft of this section wrongly
+said it was. `sdk/android/build-aar.sh` runs `publishHopPublicationToHopRepository` into a local Maven
+repository, and `tools/package-export-smoke.py` runs that script and asserts the resulting AAR. So a POM
+IS generated and verified on every exercise of that path, which means the values inside it are live
+inputs rather than decoration.
+
+Because of that, the three POM blocks in `bearers/android/build.gradle.kts`,
+`sdk/android/build.gradle.kts` and `sdk/compose/build.gradle.kts` were CHANGED rather than left alone:
+each `url` now points at `https://hopme.sh`, and the `scm` block was removed outright. A POM `scm` is
+optional, and there was no truthful public value left for it once the mirrors were deleted, since the
+only remaining git home is the private monorepo. Pointing it at a private URL would have been worse
+than omitting it.
+
+### The endpoint SDKs ARE published, under `hop-endpoint`
+
+Corrected after an initial sweep searched the wrong names (`hop-mesh`, `hop`) and wrongly concluded
+these were unpublished. All three are ours, at v0.0.2, in lockstep with `sdk/python/pyproject.toml`:
+
+| Registry | Package | Ownership evidence |
+| --- | --- | --- |
+| PyPI | [`hop-endpoint`](https://pypi.org/project/hop-endpoint/) | summary is verbatim our `sdk/python` description; v0.0.2 lockstep. No author or homepage field is set, which is worth fixing on the next publish. |
+| RubyGems | [`hop-endpoint`](https://rubygems.org/gems/hop-endpoint) | authors `Jason Waldrip`, `homepage_uri` `https://hopme.sh` |
+| Hex | [`hop_endpoint`](https://hex.pm/packages/hop_endpoint) | owners `["jwaldrip"]`, `meta.links.Homepage` `https://hopme.sh` |
+
+**Known fallout that only a re-publish can fix:** Hex's own `meta.links.GitHub` for `hop_endpoint`
+still points at `hopmesh/hop-sdk-elixir`, which is deleted. That value lives in the published release
+metadata on hex.pm, not in this tree, so removing the dead `source_url` from `sdk/elixir/mix.exs` (done)
+only stops the NEXT publish from repeating it. The live page keeps the dead link until a new version
+ships.
+
+The standard applied throughout this section: a package is ours only when its scope, maintainer, or
+metadata ties it back to `hopmesh` or `hopme.sh`. A URL returning 200 proves the name is taken, nothing
+more. That trap caught this catalog twice, on `hop-core` and again on the endpoint SDKs.
+
+### Names that are NOT ours, and names that do not exist
+
+Never link these, and never invent one:
+
+- **`hop-core` and `hop` on crates.io belong to unrelated third parties.** `hop-core` is JROChub's
+  crate (`JROChub/hop-corr`) and `hop` is `hopinc/rs`. Our equivalents are the `hop-mesh-*` names
+  above. This is the exact trap that a liveness check walks into.
+- **These `hop-mesh-*` names are confirmed 404 on crates.io**, so do not cite them as though they
+  resolve: `hop-mesh-wasm`, `hop-mesh-sim`, `hop-mesh-ffi`, `libhop-sys`, `hop-mesh-relayd`,
+  `hop-mesh-endpoint`, `hop-mesh-gateway`.
+- **The bare `hop` names on PyPI, Hex and pub.dev belong to unrelated authors.** They are `balor/hop`,
+  `seanmor5/hop` and `kevmoo/hop`. Our endpoint SDKs do NOT use that name, so a search for `hop` finds
+  a stranger every time. Narrow warning, not a blanket one: see the endpoint packages below, which ARE
+  ours.
+- **pub.dev and PlatformIO genuinely have nothing of ours.** `hop_endpoint` on pub.dev is a confirmed
+  404 and no `Hop` library exists on the PlatformIO registry, so the Flutter and embedded SDKs are the
+  two that really are unpublished.
+
+### The source links are already broken, and the flip is the fix
+
+Worth stating plainly so the sequence is not misread. All three crates and `@hop-mesh/wasm` point
+their `repository` field at `hopmesh/monorepo`, which is PRIVATE today. Those source links are
+therefore ALREADY broken for the public, independently of anything the mirror retirement does. Making
+the public repo public FIXES that; it does not cause it. The one link the retirement genuinely breaks
+is `@hop-mesh/endpoint`, because it points at a mirror that is being deleted rather than at a private
+repo that is due to open.
+
+### Release assets held by the retired repos
+
+`hopmesh/libhop` held the only real release assets among the retired fleet: a single `v0.0.1` carrying
+`hop.h`, `libhop-esp32-xtensa.a` and `libhop-esp32-riscv.a`. That release was already documented as
+unsupported and superseded before the retirement. See the ESP32 section of
+`docs/release-engineering.md`.
+
+The other nineteen retired repos hold **zero** release assets.

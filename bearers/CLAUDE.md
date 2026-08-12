@@ -37,12 +37,17 @@ bearer shipped for two releases while the Android bearers existed only as source
 published to. If you add a component and expect it to ship, check `python3 tools/release/plan.py` lists
 it; that command is the whole truth about what releases.
 
-- **Apple** ships through SwiftPM, whose channel is the version tag: the mirror is tagged `vX.Y.Z` and
-  `release.yml` there globs `*/Package.swift`, so a NEW bearer package is validated and released with no
-  config change. Consumers must pin `from: "X.Y.Z"`, never `branch: "main"`, or they opt out of releases.
-- **Android** ships to Maven Central as `sh.hop.bearers:bearer-<transport>`, one AAR per bearer. The
-  publishing convention lives in `bearers/android/build.gradle.kts` and applies to every `bearer-*`
-  module, so a new bearer publishes the moment it is in `settings.gradle.kts`. `sh.hop.bearers` is a
+Both bearer trees lost their `release.yml` when the public mirrors were retired, so neither publishes
+today: `python3 tools/release/plan.py` now lists only the three SDKs package managers still require
+(apple, crystal, go). Consumers take the bearers as in-tree siblings instead, per each README's Install
+section. The machinery below is dormant rather than deleted, because it is the shape a future release
+would take.
+
+- **Apple** would ship through SwiftPM, whose channel is the version tag, and its `release.yml` globbed
+  `*/Package.swift`, so a NEW bearer package needed no config change to be validated and released.
+- **Android** would ship to Maven Central as `sh.hop.bearers:bearer-<transport>`, one AAR per bearer.
+  The publishing convention lives in `bearers/android/build.gradle.kts` and applies to every `bearer-*`
+  module, so a new bearer is covered the moment it is in `settings.gradle.kts`. `sh.hop.bearers` is a
   SUBGROUP of the `sh.hop` namespace `sdk/android` already verified with Central, and Central's
   verification covers a verified root's subgroups, so it needs no separate ownership proof. That is
   precisely what ruled out the READMEs' old `sh.hopme.bearers`: hopme.sh is a different root domain and
@@ -57,13 +62,13 @@ Two Android-specific traps, both already paid for:
   consumer can resolve, and the generated `.module` did exactly that (`hop-sdk:unspecified`) while
   Gradle consumers PREFER `.module` over the POM. So the dependency list is derived from each module's
   real `implementation` configuration with the shim rewritten to `sh.hop:hop`, and `.module` is off.
-- **The mirror build must be self-contained.** The shim's shared source and the `:hop-driver` include
-  both point outside `bearers/android`, the subtree copybara exports, so both detect which tree they are
-  in rather than relying on another copybara transform. Anything else that reaches outside the prefix
-  will break the mirror build, and the mirror is where publishing runs.
+- **Reaching outside `bearers/android` is no longer conditional.** The shim's shared source and the
+  `:hop-driver` include both point outside this subtree, and both used to detect which tree they were
+  in, because the subtree was exported to a mirror where those paths did not exist. With that mirror
+  retired both are unconditional, and the monorepo is the only tree they have to work in.
 
-Still unpublished: `hop-driver-android` (no `release.yml`), while `hop-driver-apple` ships. It reads its
-UniFFI bindings from the APP's generated dir, so publishing it needs that dependency resolved first.
+Neither driver publishes either. The Android one (`drivers/android/hop-driver`) never did: it reads its
+UniFFI bindings from the APP's generated dir, so publishing it would need that resolved first.
 
 ## Testability + coverage
 

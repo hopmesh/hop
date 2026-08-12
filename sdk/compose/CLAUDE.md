@@ -50,10 +50,9 @@ coroutines), no native library and no unpublished SDK. Monorepo CI runs `gradle 
 `compose-sdk` job), which is the fast JVM slice of that. Keep everything ASCII (the repo-wide no-dash
 rule; `tools/docs-token-guard.sh` scans this tree).
 
-## Copybara + publish
+## Publish
 
-Registered like every sibling SDK: `tools/copybara/components.json` + the COMPONENTS/`_register` pair in
-`copy.bara.sky` + the `sync-components.yml` choice list mirror `sdk/compose` out to `hop-sdk-compose`
-(kept in step by `tools/copybara/dispatch.test.sh`). `.github/workflows/release.yml` is the non-native
-publish path (`tools/release/plan.py` tags the mirror once its `build.gradle.kts` version matches),
-publishing the Kotlin Multiplatform Maven publication to Maven Central under `sh.hop:hop-compose`.
+Not mirrored. The Copybara mirror was retired in 2026-08, so `sdk/compose` lives only in the Hop
+monorepo: no `tools/copybara/components.json` entry, no separate repo, and no per-component
+`release.yml`. `build.gradle.kts` still declares the Kotlin Multiplatform Maven publication
+(`sh.hop:hop-compose`), but nothing publishes it today.

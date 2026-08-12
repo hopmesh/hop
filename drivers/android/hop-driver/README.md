@@ -27,23 +27,20 @@ radios, and a store together itself.
 
 ## Install
 
-Publishes as an Android library (Maven / AAR). Point Gradle at the package repo (`minSdk` 29, the floor
-for L2CAP CoC):
+hop-driver isn't published to a Maven repo. It's consumed as a sibling Gradle module inside the Hop
+monorepo (`minSdk` 29, the floor for L2CAP CoC), so a consuming app includes it by path (the `../`
+depth below is from `apps/android/HopDemo`, adjust for wherever yours sits):
 
 ```kotlin
 // settings.gradle.kts
-dependencyResolutionManagement {
-    repositories {
-        google(); mavenCentral()
-        maven("https://maven.pkg.github.com/hopmesh/hop-driver-android")
-    }
-}
+include(":hop-driver")
+project(":hop-driver").projectDir = file("../../../drivers/android/hop-driver")
 ```
 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("sh.hopme:hop-driver:0.0.1")
+    implementation(project(":hop-driver"))
 }
 ```
 
@@ -121,15 +118,17 @@ and covered by the on-device workflow.
 ## The Hop family
 
 Hop is one protocol with many faces. The endpoint SDKs, same surface in your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [hop-core](https://github.com/hopmesh/hop-core) / [libhop](https://github.com/hopmesh/libhop).
+android.
+The protocol core is [hop-mesh-core](https://crates.io/crates/hop-mesh-core), which is the in-tree
+`hop-core` crate under its published name, plus libhop.
+The unlinked ones live in the Hop monorepo and aren't separately published yet.
 
 ## License
 

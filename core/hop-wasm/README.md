@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/hop-wasm"><img src="https://img.shields.io/npm/v/hop-wasm?color=654ff0&label=npm" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@hop-mesh/wasm"><img src="https://img.shields.io/npm/v/@hop-mesh/wasm?color=654ff0&label=npm" alt="npm"></a>
   <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/wasm-browser%20%2F%20node-654ff0" alt="wasm">
 </p>
@@ -38,7 +38,7 @@ Give each node a 32-byte identity seed and a synchronous `StoreBridge` (a Map he
 real Worker). JS pumps each node's drained packets into the other, and A sends B a message:
 
 ```js
-import { WasmNode } from 'hop-wasm'
+import { WasmNode } from '@hop-mesh/wasm'
 
 // A minimal in-memory host store. In a browser Worker this is SQLite over an OPFS sync-access handle.
 const bridge = () => {
@@ -98,16 +98,17 @@ browser swarm simulator (15 real-world scenarios, each delivered and ACKed). The
 ## The Hop family
 
 `@hop-mesh/wasm` is the browser binding of the core, a peer of the C ABI. The protocol core is
-[hop-core](https://github.com/hopmesh/hop-core); the C ABI is
-[libhop](https://github.com/hopmesh/libhop). The language SDKs:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[hop-mesh-core](https://crates.io/crates/hop-mesh-core) (`hop-core` in this tree); the C ABI is libhop.
+The language SDKs:
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
+android.
+The unlinked ones live in the Hop monorepo and are not separately published yet.
 
 ## License
 

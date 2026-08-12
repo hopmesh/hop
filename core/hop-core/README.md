@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/hop-core"><img src="https://img.shields.io/crates/v/hop-core?color=dea584&label=crates.io" alt="crates.io"></a>
+  <a href="https://crates.io/crates/hop-mesh-core"><img src="https://img.shields.io/crates/v/hop-mesh-core?color=dea584&label=crates.io" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/rust-2021-dea584" alt="rust 2021">
 </p>
@@ -29,9 +29,12 @@ contain is the radio: a bearer hands it opaque bytes, and it does the rest.
 
 ## Install
 
+This crate is `hop-core` in the tree and publishes to crates.io as `hop-mesh-core`; the bare `hop-core`
+name there belongs to an unrelated crate. Alias it back so the import below reads `hop_core`:
+
 ```toml
 [dependencies]
-hop-core = "0.0"
+hop-core = { package = "hop-mesh-core", version = "0.0" }
 ```
 
 ## Two nodes, one link
@@ -112,17 +115,17 @@ and routing are exercised hard by the core suite and the WebAssembly swarm simul
 
 ## The Hop family
 
-`hop-core` is the protocol everything binds. The C ABI over it is
-[libhop](https://github.com/hopmesh/libhop); the browser build is
-[hop-wasm](https://github.com/hopmesh/hop-wasm). The language SDKs:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+`hop-core` is the protocol everything binds. The C ABI over it is libhop; the browser build is
+[hop-wasm](https://www.npmjs.com/package/@hop-mesh/wasm). The language SDKs:
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
+android.
+The unlinked ones live in the Hop monorepo and are not separately published yet.
 
 ## License
 

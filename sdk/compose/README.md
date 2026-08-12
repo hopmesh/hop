@@ -75,7 +75,7 @@ The message appears in `state` optimistically as `HopDelivery.Pending`, and the 
 
 ### Android / Desktop (JVM)
 
-Bring a `HopNode` from the [`sh.hop:hop`](https://github.com/hopmesh/hop-sdk-android) node SDK and wrap it
+Bring a `HopNode` from the `sh.hop:hop` node SDK (`sdk/android` in the Hop monorepo) and wrap it
 with the ready-made adapter in [`examples/jvm/JnaHopEngine.kt`](./examples/jvm/JnaHopEngine.kt) (copy it
 into your app; it is shipped as an example so the library itself stays binding-neutral):
 
@@ -116,19 +116,21 @@ adapters are app-supplied examples: `examples/jvm/JnaHopEngine.kt` for Android a
 ## The Hop family
 
 Same node, your language. The SDKs:
-[node](https://github.com/hopmesh/hop-sdk-node) &middot;
-[python](https://github.com/hopmesh/hop-sdk-python) &middot;
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) &middot;
+[python](https://pypi.org/project/hop-endpoint/) &middot;
 [go](https://github.com/hopmesh/hop-sdk-go) &middot;
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) &middot;
+[ruby](https://rubygems.org/gems/hop-endpoint) &middot;
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) &middot;
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) &middot;
+[elixir](https://hex.pm/packages/hop_endpoint) &middot;
 [apple](https://github.com/hopmesh/hop-sdk-apple) &middot;
-[android](https://github.com/hopmesh/hop-sdk-android) &middot;
-[compose](https://github.com/hopmesh/hop-sdk-compose).
+android &middot;
+compose.
 The protocol core:
-[hop-core](https://github.com/hopmesh/hop-core) /
-[libhop](https://github.com/hopmesh/libhop) /
-[hop-wasm](https://github.com/hopmesh/hop-wasm).
+[hop-mesh-core](https://crates.io/crates/hop-mesh-core) /
+libhop /
+[@hop-mesh/wasm](https://www.npmjs.com/package/@hop-mesh/wasm).
+The in-tree crate is hop-core, published under the hop-mesh- prefix. The Android and Compose SDKs are
+not published yet, and libhop is the C ABI it exposes, not a separate release.
 
 ## License
 

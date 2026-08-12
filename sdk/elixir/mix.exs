@@ -7,7 +7,6 @@ defmodule Hop.MixProject do
       version: "0.0.2",
       elixir: "~> 1.15",
       deps: deps(),
-      source_url: "https://github.com/hopmesh/hop-sdk-elixir",
       package: package(),
       description:
         "Receive Hop messages in Elixir: an embeddable endpoint over hop-core via Rustler.",
@@ -25,10 +24,7 @@ defmodule Hop.MixProject do
       name: "hop_endpoint",
       # The Elixir wrapper is Apache-2.0. The checksum-covered vendored protocol crates retain FSL.
       licenses: ["Apache-2.0"],
-      links: %{
-        "GitHub" => "https://github.com/hopmesh/hop-sdk-elixir",
-        "Homepage" => "https://hopme.sh"
-      },
+      links: %{"Homepage" => "https://hopme.sh"},
       files: [
         "lib",
         "native/hop_endpoint/src",

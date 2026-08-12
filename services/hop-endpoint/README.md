@@ -66,7 +66,8 @@ Domain binding is enforced at the protocol layer, before the backend is ever tou
 - Redirects are disabled, so the backend can't bounce the endpoint off-origin either.
 
 There is no code path by which this process fetches anything other than your configured origin. If you
-want general, allowlisted egress instead of a single origin, that's a [gateway](https://github.com/hopmesh/hop-gateway).
+want general, allowlisted egress instead of a single origin, that's the gateway, a sibling service in the
+Hop monorepo.
 
 ## Configure
 
@@ -92,15 +93,16 @@ identity, membership plus handled-message gossip) is off unless `HOP_CLUSTER_SEC
 ## The Hop family
 
 Hop is one protocol with many faces. The endpoint SDKs, same surface in your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [hop-core](https://github.com/hopmesh/hop-core) / [libhop](https://github.com/hopmesh/libhop).
+android.
+The protocol core is [hop-mesh-core](https://crates.io/crates/hop-mesh-core) (`hop-core` in this tree) / libhop.
+The unlinked ones live in the Hop monorepo and are not separately published yet.
 
 ## License
 

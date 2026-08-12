@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/hop-store-firestore"><img src="https://img.shields.io/crates/v/hop-store-firestore?color=dea584&label=crates.io" alt="crates.io"></a>
+  <a href="https://crates.io/crates/hop-mesh-store-firestore"><img src="https://img.shields.io/crates/v/hop-mesh-store-firestore?color=dea584&label=crates.io" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/rust-2021-dea584" alt="rust 2021">
 </p>
@@ -26,9 +26,14 @@ container spins up. It's the persistence layer under a serverless Hop relay, not
 
 ## Install
 
+This crate is `hop-store-firestore` in the tree and publishes to crates.io as
+`hop-mesh-store-firestore`. Alias both crates back so the imports below read `hop_core` and
+`hop_store_firestore`:
+
 ```toml
 [dependencies]
-hop-store-firestore = "0.0"
+hop-core = { package = "hop-mesh-core", version = "0.0" }
+hop-store-firestore = { package = "hop-mesh-store-firestore", version = "0.0" }
 ```
 
 ## Use it
@@ -74,18 +79,19 @@ the store contract).
 
 ## The Hop family
 
-`hop-store-firestore` is one backend behind [hop-core](https://github.com/hopmesh/hop-core)'s `Store`
-trait; [hop-store-sqlite](https://crates.io/crates/hop-store-sqlite) is the on-device/self-host backend.
-The C ABI over the core is [libhop](https://github.com/hopmesh/libhop); the browser build is
-[hop-wasm](https://github.com/hopmesh/hop-wasm). The language SDKs:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+`hop-store-firestore` is one backend behind [hop-mesh-core](https://crates.io/crates/hop-mesh-core)'s
+`Store` trait; [hop-mesh-store-sqlite](https://crates.io/crates/hop-mesh-store-sqlite) is the
+on-device/self-host backend. The C ABI over the core is libhop; the browser build is
+[hop-wasm](https://www.npmjs.com/package/@hop-mesh/wasm). The language SDKs:
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
+android.
+The unlinked ones live in the Hop monorepo and are not separately published yet.
 
 ## License
 

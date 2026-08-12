@@ -8,7 +8,7 @@ This package is the **cross-platform client SDK**. One TypeScript API sits over 
 client SDKs, so your JavaScript talks to the same protocol core on both platforms:
 
 - **iOS / macOS**: the Swift SDK (`Hop`, from `hop-sdk-apple`).
-- **Android**: the Kotlin SDK (`sh.hop:hop`, from `hop-sdk-android`), which bundles the native `libhop`.
+- **Android**: the Kotlin SDK (`sh.hop:hop`, from `sdk/android`), which bundles the native `libhop`.
 
 The protocol, the crypto, and the wire format all live in that native core; this package only marshals
 values across the React Native bridge and gives you an idiomatic, promise-based surface.

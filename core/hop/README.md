@@ -10,7 +10,6 @@
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/hop"><img src="https://img.shields.io/crates/v/hop?color=dea584&label=crates.io" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/ABI-C%20%2F%20cbindgen-555555" alt="C ABI">
 </p>
@@ -24,7 +23,7 @@ Wi-Fi, and the internet, until they reach the person you meant. Held, never drop
 cbindgen), one poll-model contract, and every SDK, Swift, Kotlin, Go, Python, Ruby, Crystal, C, C++, and
 an ESP32, binds the same bytes. Write a bearer that moves opaque frames and a loop that drains and polls,
 and you have a real Hop node. It ships as prebuilt static and dynamic libraries per platform, plus the
-`hop` crate on crates.io for Rust callers and header regeneration.
+`hop` crate in the Hop monorepo for Rust callers and header regeneration.
 
 ## Install
 
@@ -111,16 +110,17 @@ currently `3`; the header is regenerated in the same change as any ABI edit and 
 ## The Hop family
 
 `libhop` is what the non-Rust SDKs bind. Same surface, your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [hop-core](https://github.com/hopmesh/hop-core); the browser build is
-[hop-wasm](https://github.com/hopmesh/hop-wasm).
+android.
+The protocol core is [hop-mesh-core](https://crates.io/crates/hop-mesh-core) (`hop-core` in this tree);
+the browser build is [hop-wasm](https://www.npmjs.com/package/@hop-mesh/wasm).
+The unlinked ones live in the Hop monorepo and are not separately published yet.
 
 ## License
 

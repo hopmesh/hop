@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # bootstrap-mirrors.sh: create or update the standalone component repositories.
-# Covers the FSL-1.1-ALv2 services and the Apache-2.0 core, SDK, bearer, and driver components (FSL is
-# source-available, so the service mirrors are public too). RUN THIS YOURSELF: creating public
+# Covers the THREE components that still mirror after the 2026-08 mirror retirement: hop-sdk-go,
+# hop-sdk-crystal, and hop-sdk-apple. All three are Apache-2.0 and all three publish by pushing a git
+# tag, so none of them needs a registry account or token. RUN THIS YOURSELF: creating public
 # repositories is a human action, not something CI or an agent does for you. Idempotent and safe to
 # re-run.
 #
 # Requires: `gh` authenticated with repo + admin rights on the hopmesh org.
+#
+# The twenty other components were retired and their repos deleted. They live on in the monorepo and
+# are not separately published, so do not add one back here without recreating its repo first. See
+# docs/repo-catalog.md for the full retired list and the registry fallout.
 #
 # Every mirror is public. Creating an empty public repo publishes nothing yet; the source only appears
 # once you SEED it (the last section), which you do after the Copybara configs for each component land.
@@ -14,33 +19,13 @@ set -euo pipefail
 
 ORG="hopmesh"
 
-# "repo|description" per public repo. The service repos are FSL-1.1-ALv2 (source-available, so still
-# public); the core, SDK, bearer, and driver repos are Apache-2.0. Descriptions say what each thing IS
-# with no reference to any private source of truth. Kept bash-3.2 safe (no associative arrays) so it runs
-# on stock macOS.
+# "repo|description" per public repo, for the three surviving mirrors. All three are Apache-2.0.
+# Descriptions say what each thing IS with no reference to any private source of truth. Kept bash-3.2
+# safe (no associative arrays) so it runs on stock macOS.
 MIRRORS="
-hop-sdk-node|Receive Hop mesh messages in Node with an Express/Fastify-shaped API over the libhop C ABI. npm: @hop-mesh/endpoint.
-hop-sdk-python|Receive Hop mesh messages in Python: an embeddable endpoint over the libhop C ABI (ctypes). On PyPI.
 hop-sdk-go|Receive Hop mesh messages in Go with a net/http-shaped surface over the libhop C ABI (cgo). A Go module.
-hop-sdk-ruby|Receive Hop mesh messages in Ruby with a Sinatra/Rails-shaped surface over the libhop C ABI (Fiddle). On RubyGems.
 hop-sdk-crystal|Receive Hop mesh messages in Crystal with a Sinatra/Rails-shaped surface over the libhop C ABI. On shards.
-hop-sdk-elixir|Receive Hop mesh messages in Elixir with a Phoenix/Plug-shaped surface over hop-core via a Rustler NIF. On Hex.
 hop-sdk-apple|The Hop client SDK for Apple platforms: run a node on iOS/macOS. SwiftPM + xcframework.
-hop-sdk-android|The Hop client SDK for Android: run a node on-device. Maven (AAR).
-hop-sdk-compose|Hop for Compose Multiplatform: a reactive client and drop-in composables for Android, Desktop, and iOS. Maven.
-hop-embedded|Hop for microcontrollers: an Arduino/ESP-IDF C++ library over the libhop C ABI (ESP32). On the PlatformIO registry.
-hop-core|The Hop protocol in pure Rust: bundles, the wire format, Noise links, epidemic routing, the untraceable metadata path, and the crypto.
-libhop|The Hop C ABI (hop.h) over hop-core: the universal client and bearer contract every non-Rust SDK binds. Prebuilt binaries + a crate.
-hop-wasm|hop-core compiled to WASM: a real Hop node in the browser.
-hop-store-sqlite|SQLite + SQLCipher persistence for Hop, behind the Store trait.
-hop-store-firestore|Firestore persistence for the Hop cloud relay and mailbox.
-hop-bearers-apple|Hop transport bearers for Apple platforms: BLE, LAN, and Relay. SwiftPM.
-hop-bearers-android|Hop transport bearers for Android: BLE, LAN, and Relay. Maven.
-hop-driver-apple|The Hop app-facing client for Apple platforms: a node plus bearers plus the UI glue. SwiftPM.
-hop-driver-android|The Hop app-facing client for Android: a node plus bearers plus the UI glue. Maven.
-hop-relayd|The Hop relay: store-and-forward for offline peers, the most internet-exposed process in the mesh.
-hop-endpoint|The Hop hops:// origin endpoint: HTTP-over-mesh bound to one domain.
-hop-gateway|The Hop gateway.
 "
 
 echo "== 1. create / publish the mirror repos =="
@@ -58,25 +43,25 @@ printf '%s\n' "$MIRRORS" | while IFS='|' read -r repo desc; do
 done
 
 echo
-echo "== 2. configure the three GitHub Apps =="
-echo "  Sync App: install on $ORG/hop and every mirror; Actions read/write, Contents read/write, Pull requests read."
+echo "== 2. configure the GitHub Apps =="
+echo "  Sync App: install on $ORG/monorepo and every mirror; Actions read/write, Contents read/write, Pull requests read."
 echo "  Store HOP_SYNC_APP_ID and HOP_SYNC_APP_PRIVATE_KEY only in protected component-sync environments."
-echo "  Source App: install only on $ORG/hop; Actions, Attestations, Checks, and Contents read."
+echo "  Source App: install only on $ORG/monorepo; Actions, Attestations, Checks, and Contents read."
 echo "  Store HOP_SOURCE_APP_ID and HOP_SOURCE_APP_PRIVATE_KEY in each publishing mirror's release environment."
-echo "  Release App: install only on $ORG/libhop with Contents write; store its credentials in $ORG/hop's release environment."
+echo "  The libhop-only Release App retired with its repo: no HOP_RELEASE_APP_* credential is needed."
 echo "  Do not create COPYBARA_TOKEN or HOP_SYNC_TOKEN PAT secrets."
 
 echo
 echo "== 3. protect authority environments =="
-echo "  Create component-sync on $ORG/hop and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
+echo "  Create component-sync on $ORG/monorepo and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
 echo "  For every mirror with release.yml, create environment 'release' with a required reviewer."
-echo "  Configure registry trusted publishers with environment 'release'."
+echo "  The three surviving mirrors are tag-only, so no registry trusted publisher is needed."
 
 echo
 echo "== 4. seed each mirror (one-time, per component) =="
 echo "  The FIRST export of a component passes init_history=true:"
-echo "      gh workflow run sync-components.yml -f component=hop-sdk-node -f direction=export -f init_history=true"
-echo "  Repeat per component (hop-sdk-python, hop-core, libhop, hop-relayd, ...); later exports omit it."
+echo "      gh workflow run sync-components.yml -f component=hop-sdk-go -f direction=export -f init_history=true"
+echo "  Repeat for hop-sdk-crystal and hop-sdk-apple; later exports omit init_history."
 
 echo
 echo "== 5. enable security features on every repo =="

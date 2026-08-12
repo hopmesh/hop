@@ -159,18 +159,12 @@ publishing {
             pom {
                 name.set("Hop for Android")
                 description.set("Hop mesh client SDK for Android, including libhop native ABI slices.")
-                url.set("https://github.com/hopmesh/hop-sdk-android")
+                url.set("https://hopme.sh")
                 licenses {
                     license {
                         name.set("Apache License, Version 2.0")
                         url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
                     }
-                }
-                scm {
-                    connection.set("scm:git:https://github.com/hopmesh/hop-sdk-android.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/hopmesh/hop-sdk-android.git")
-                    url.set("https://github.com/hopmesh/hop-sdk-android")
-                    tag.set("v${project.version}")
                 }
                 developers {
                     developer {

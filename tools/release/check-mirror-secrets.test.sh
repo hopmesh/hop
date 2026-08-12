@@ -81,8 +81,8 @@ def fake_gh_json(path):
             ]
         }
     if path == "orgs/hopmesh/actions/secrets/SELECTED_SCOPE/repositories":
-        return {"repositories": [{"name": "hop-sdk-node"}]}
-    if path == "repos/hopmesh/hop-sdk-node":
+        return {"repositories": [{"name": "hop-sdk-go"}]}
+    if path == "repos/hopmesh/hop-sdk-go":
         return {"private": False}   # mirrors are public
     if path == "repos/hopmesh/secret-repo":
         return {"private": True}
@@ -92,12 +92,12 @@ def fake_gh_json(path):
 original = mod.gh_json
 mod.gh_json = fake_gh_json
 try:
-    public = mod.org_secret_names_for("hop-sdk-node", cache={})
+    public = mod.org_secret_names_for("hop-sdk-go", cache={})
     assert "ALL_SCOPE" in public, "visibility=all must resolve"
     assert "SELECTED_SCOPE" in public, "selected list including the repo must resolve"
     assert "PRIVATE_SCOPE" not in public, "visibility=private must NOT resolve in a public mirror"
 
-    other = mod.org_secret_names_for("hop-sdk-python", cache={})
+    other = mod.org_secret_names_for("hop-sdk-crystal", cache={})
     assert "SELECTED_SCOPE" not in other, "selected list excluding the repo must not resolve"
 
     private_repo = mod.org_secret_names_for("secret-repo", cache={})

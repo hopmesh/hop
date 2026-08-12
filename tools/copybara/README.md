@@ -5,9 +5,11 @@ This monorepo is the source of truth. Copybara mirrors a component subtree to it
 forking. It is the Meta react-native / relay pattern, done with [Copybara](https://github.com/google/copybara)
 instead of fbshipit.
 
-Every component is wired up: `tools/copybara/components.json` is the dispatch allowlist and
-`tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an export and
-import workflow for each. Their CI self-test rejects any drift between the two.
+Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`.
+`tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky` holds the
+matching `COMPONENTS` list used to generate an export and import workflow for each. Their CI self-test
+rejects any drift between the two. Twenty other components were mirrored until the 2026-08 retirement;
+those repos are deleted and the components now live only in the monorepo. See `docs/repo-catalog.md`.
 
 ## What it does
 
@@ -28,9 +30,9 @@ The GitHub Action is `.github/workflows/sync-components.yml`, a single dispatch 
 You can see the exact extraction Copybara automates with plain git:
 
 ```sh
-ref=$(git subtree split --prefix=sdk/node origin/main)
-git ls-tree --name-only "$ref"     # the mirror's root: package.json, lib/, examples/, ...
-git log --oneline "$ref"           # each commit is a real monorepo commit that touched sdk/node
+ref=$(git subtree split --prefix=sdk/go origin/main)
+git ls-tree --name-only "$ref"     # the mirror's root: go.mod, hop.go, endpoint.go, examples/, ...
+git log --oneline "$ref"           # each commit is a real monorepo commit that touched sdk/go
 ```
 
 Copybara does the same extraction, plus the `CLAUDE.md` filter, the prefix move, and the incremental
@@ -38,10 +40,11 @@ state tracking so it can run continuously.
 
 ## One-time bootstrap
 
-1. **Create the empty destination repo** `hopmesh/hop-sdk-node` (no README, no license, no commit):
+1. **Create the empty destination repo** `hopmesh/hop-sdk-go` (no README, no license, no commit):
 
    ```sh
-   gh repo create hopmesh/hop-sdk-node --public --description "Hop endpoint SDK for Node (mirror of hopmesh/monorepo:sdk/node)"
+   gh repo create hopmesh/hop-sdk-go --public \
+     --description "Receive Hop mesh messages in Go with a net/http-shaped surface over the libhop C ABI (cgo). A Go module."
    ```
 
 2. **Create the sync GitHub App.** Install it on `hopmesh/monorepo` and every mirror. Grant Actions
@@ -69,19 +72,16 @@ state tracking so it can run continuously.
     workflow mirrors the same provenance to GitHub's attestation API when the repository plan supports
     hosted storage; the attached Sigstore bundle is always authoritative.
 
-   The canonical environment also needs `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
-   from a separate App installed only on `hopmesh/libhop` with Contents write.
-
-   Android additionally needs `MAVEN_USERNAME`, `MAVEN_PASSWORD`, `MAVEN_GPG_KEY`, and
-   `MAVEN_GPG_PASSPHRASE` in its protected release environment. Embedded
-   needs `PLATFORMIO_AUTH_TOKEN`; Elixir needs `HEX_API_KEY`. The standalone Node CI still needs its
-   legacy libhop checksum variables until it is moved to the shared native manifest installer.
+   The libhop-only Release App that used to supply `HOP_RELEASE_APP_ID` and
+   `HOP_RELEASE_APP_PRIVATE_KEY` retired along with its repo, and so did every registry credential the
+   old fleet needed (`MAVEN_*`, `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All three surviving mirrors
+   publish by pushing a git tag, so none of them needs a registry secret at all.
 
 5. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
    so the FIRST export passes `init_history=true`:
 
    ```sh
-   gh workflow run "Sync component" -f component=hop-sdk-node -f direction=export -f init_history=true
+   gh workflow run "Sync component" -f component=hop-sdk-go -f direction=export -f init_history=true
    ```
 
    After the first run, leave `init_history` off; subsequent exports are incremental.
@@ -123,45 +123,65 @@ reviewed monorepo merge still flows out with no extra approval when it is not he
 To import a mirror PR by hand instead:
 
 ```sh
-gh workflow run "Sync component" -f component=hop-sdk-node -f direction=import
+gh workflow run "Sync component" -f component=hop-sdk-go -f direction=import
 ```
 
 ## Running Copybara locally
 
-Copybara is a JVM tool, easiest via its container. Against a **local** bare repo as the destination you
-can prove the whole export without touching GitHub:
+Copybara is a JVM tool, easiest via its container. Two things about the pinned image and the committed
+config trip people up, so read both before trying.
+
+**The pinned image is ENV-driven, not argv-driven.** `olivr/copybara` takes its subcommand, config,
+workflow, and extra flags from environment variables. Passing them as arguments
+(`copybara migrate <config> <workflow>`) does not error: the entrypoint ignores them and silently falls
+through to looking for a migration named `default`, which this config does not define. Set the
+variables instead, and keep the trailing `copybara` argument that invokes the wrapper:
 
 ```sh
-# a throwaway local "mirror"
-git init --bare /tmp/hop-sdk-node.git
-# point a scratch config at file:// URLs, then:
 docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
   -v ~/.gitconfig:/root/.gitconfig \
-  olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 \
-  copybara tools/copybara/copy.bara.sky export --init-history --force
+  -e COPYBARA_SUBCOMMAND=migrate \
+  -e COPYBARA_CONFIG=tools/copybara/copy.bara.sky \
+  -e COPYBARA_WORKFLOW=hop-sdk-go_export \
+  -e COPYBARA_OPTIONS='--init-history --force' \
+  olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
 ```
 
+A fifth variable, `COPYBARA_SOURCEREF`, is appended by the wrapper as copybara's LAST positional
+argument. `sync-components.yml` uses it to hand `github_pr_origin` the mirror PR number on import, and
+a seed run uses it to name the source ref. Leave it unset and the origin's own `ref` applies, which for
+every workflow here is `main`.
+
+**The committed config cannot be rehearsed against a local destination.** Each component's `_import`
+workflow uses `git.github_pr_destination`, which rejects a non-GitHub URL outright, so pointing
+`copy.bara.sky` at a `file://` bare repo fails at config load and proves nothing. To exercise an export
+locally, copy the config to a scratch file and rewrite the destination there. Do not expect `file://`
+to work against the committed config.
+
 CI uses the digest-pinned `olivr/copybara:20230129` image with a read-only filesystem, isolated
-credentials, and a fixed dispatch map. Local tests should use that same digest.
+credentials, and a fixed dispatch map. Local runs should use that same digest.
 
-## The standalone repo needs libhop
+## A standalone mirror needs libhop
 
-`sdk/node` binds `libhop` via `koffi`, resolved from `HOP_LIBDIR` or a local `target/{debug,release}`
-build. The monorepo builds `libhop` from `core/`; the standalone mirror has no `core/`, so its own CI (and
-its consumers) must provide `libhop`: either a published prebuilt binary the package downloads, or
-`HOP_LIBDIR` pointing at one. That is a packaging decision for the mirror, independent of the sync.
+Every endpoint SDK binds `libhop`, the C ABI built from `core/`. The monorepo builds it in tree; a
+standalone mirror has no `core/`, so its own CI and its consumers must supply `libhop`: either a
+prebuilt binary the package downloads, or `HOP_LIBDIR` pointing at one. `sdk/go` binds it through cgo
+and `sdk/crystal` binds the C ABI directly, so both need this. `sdk/apple` is the exception: it ships a
+prebuilt xcframework inside the package, so the binary travels with the source. That is a packaging
+decision per mirror, independent of the sync.
 
 ## Adding another component
 
 Add the component to `components.json`, the matching tuple to `copy.bara.sky`, the fixed workflow
 choice to `sync-components.yml`, and its literal component name to the subtree's `sync-back.yml`.
 The dispatch self-test enforces the first three mappings. Then add the mirror to
-`bootstrap-mirrors.sh`, create it, and run the seed command above.
+`bootstrap-mirrors.sh`, create the repo, and run the seed command above.
 
-The components wired today: the 8 SDKs, plus `hop-core`, `libhop`, `hop-wasm`, the two stores, the two
-bearer repos, the two driver repos, and the three services. Each already carries its own `LICENSE.md`
-(FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so it is ready to
-stand alone.
+The components wired today are the three that survived the 2026-08 retirement: `hop-sdk-go`,
+`hop-sdk-crystal`, and `hop-sdk-apple`. Every component subtree still carries its own `LICENSE.md`
+(FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so any of them is
+ready to stand alone if it is mirrored again. Bringing back one of the twenty retired names means
+recreating its repository first, because the old one was deleted; `docs/repo-catalog.md` lists them.
 
 ## The split: moving the private trees out and the public repo in
 
@@ -189,9 +209,14 @@ as the complete archive. That is the whole reason Copybara beats a rewrite here.
 
 ### Before the first run
 
-- **Set `PUBLIC_REPO`.** It ships as `hopmesh/REPLACE-ME` on purpose. `hopmesh/hop` is NOT available:
-  it is a rename redirect to `hopmesh/monorepo` (same repository id), so claiming that name breaks the
-  redirect. Decide the name, create the repo EMPTY and PRIVATE, and set the constant.
+- **`PUBLIC_REPO` is `hopmesh/hop`, and that is deliberate.** `hopmesh/hop` is a real, distinct,
+  freshly created repository (id 1326204869), currently private and seeded at roughly 165 MB. It is NOT
+  `hopmesh/monorepo` (id 1273816715). Creating it did break the old `hop` to `monorepo` rename
+  redirect. That was an accepted naming decision rather than an accident, so do not try to restore the
+  redirect by renaming anything back.
+- **Both destination repos already exist, and both are private.** `hopmesh/hop` is the public-repo seed
+  and `hopmesh/internal` holds the split-out `docs/audits` and `business` trees. Making the public one
+  actually public is a MANUAL visibility change that has not happened yet, so nothing is published.
 - **Convert the audit corpus first.** 79 files cite `F-xx`, 24 cite `SVC-xxx`, 15 cite `PROC-xxx`, and
   9 link `docs/audits` directly. Excluding the directory without publishing an advisory set leaves
   every one of those a dangling pointer in public source.
@@ -200,13 +225,32 @@ as the complete archive. That is the whole reason Copybara beats a rewrite here.
 
 ### The runs
 
-```sh
-# once, into the private repo
-copybara migrate tools/copybara/copy.bara.sky internal_export --init-history
+Both are ONE-TIME `--init-history` seeds, not routine dispatches. Use the env-driven form above; the
+argv form silently looks for a migration named `default` and does nothing you asked for.
 
-# once, into the public repo (AFTER the private trees are deleted from the monorepo)
-copybara migrate tools/copybara/copy.bara.sky public_export --init-history
+```sh
+# once, into hopmesh/internal
+docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
+  -v ~/.gitconfig:/root/.gitconfig \
+  -e COPYBARA_SUBCOMMAND=migrate \
+  -e COPYBARA_CONFIG=tools/copybara/copy.bara.sky \
+  -e COPYBARA_WORKFLOW=internal_export \
+  -e COPYBARA_OPTIONS='--init-history' \
+  -e COPYBARA_SOURCEREF=origin/main \
+  olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+
+# once, into hopmesh/hop (AFTER the private trees are deleted from the monorepo)
+#   same command with COPYBARA_WORKFLOW=public_export
 ```
 
-Verify the second before making anything public: `git log --all --oneline -- docs/audits business` in
-the exported repo must return nothing.
+**Name the source ref, and reconcile file counts afterwards.** As committed, both migrations take their
+origin from the remote `hopmesh/monorepo` at `main`. A seed is usually rehearsed from a scratch config
+pointed at a local checkout instead, and then the ref decides everything: a stale local `main` exports a
+stale tree and says nothing about it. One run whose local `main` sat 51 commits behind `origin/main`
+produced an export missing nine files and carrying `bundle-v14.json` where `main` had v15. The boundary
+check still passed, because the path boundary was correct and only the contents were old. So set
+`COPYBARA_SOURCEREF=origin/main` rather than trusting whatever `main` points at locally, then compare
+the exported file count against the source before trusting the run.
+
+Verify the public one before making anything public: `git log --all --oneline -- docs/audits business`
+in the exported repo must return nothing.

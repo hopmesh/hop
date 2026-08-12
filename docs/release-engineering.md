@@ -129,7 +129,7 @@ To arm publishing:
    ```
 
 3. Confirm with `python3 tools/release/check-mirror-secrets.py` (expects
-   `all 15 publishing mirrors have every referenced secret seeded`), then re-run one mirror's failed
+   `all 3 publishing mirrors have every referenced secret seeded`), then re-run one mirror's failed
    `release` workflow to publish that component without creating a new tag.
 
 Seeding the secrets is NOT sufficient on its own, and the three failure signatures at the mint step
@@ -142,39 +142,43 @@ say which piece is missing. Read the error rather than re-seeding:
 | a 401, or `integration not found` | the id and the private key are not from the same App. |
 | a permissions error naming actions/checks/contents | installed, but that permission was added after installation and the pending request was never approved. |
 
-Prefer a tag-only mirror (`hop-bearers-apple`, `hop-driver-apple`, `hop-sdk-apple`, `hop-sdk-crystal`)
-when testing the credential: those exercise mint, provenance, and artifact verification without pushing
-to any registry, so a misconfiguration costs nothing irreversible. Do not test on `hop-sdk-python`,
-whose 0.0.1 already exists on PyPI from the bootstrap publish and would fail on a duplicate version
-even when everything else is correct.
+All three surviving mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`) are tag-only, so any of
+them is safe to test the credential on: each exercises mint, provenance, and artifact verification
+without pushing to a registry, so a misconfiguration costs nothing irreversible. The registry-pushing
+mirrors that once made this a choice were retired in 2026-08.
 
 The `release` environment on each mirror is an approval gate, so a release still waits for a human
 even once the credential exists.
 
-### ESP32 prebuilt archives: the `hopmesh/libhop` path is REMOVED
+### ESP32 prebuilt archives: the download path is RETIRED
 
 `libhop-esp-release.yml` used to build two ESP32 `libhop.a` archives plus `sdk/hop.h` and publish them
-as a GitHub Release on the public `hopmesh/libhop` repo. It is deleted, for two reasons:
+as a GitHub Release on a standalone `libhop` repo. That workflow is deleted, and the embedded prebuilt
+download is explicitly retired in this same change.
 
-1. **It could not run.** Its publish job minted a token from `HOP_RELEASE_APP_ID` /
-   `HOP_RELEASE_APP_PRIVATE_KEY`, and neither name was ever provisioned in the org, the repository, or
-   the `release` environment. Creating that App is an org-owner action, so the workflow sat in the tree
-   as a documented path that nothing could exercise.
-2. **It is superseded.** `native-artifacts.yml` builds a superset of those targets (`esp32`, `esp32s2`,
-   `esp32s3`, `esp32c3`, plus the RISC-V pair) under a signed manifest with a Sigstore bundle, and
-   `sdk/embedded`'s own `release.yml` consumes THAT bundle from `hopmesh/hop-embedded`, verifying the
-   signature, the source SHA, and the full subject inventory before staging. `install-libhop.py` points
-   at `hopmesh/hop-embedded`. Nothing consumes `hopmesh/libhop`.
+1. **The publishing workflow could not run.** Its publish job minted a token from `HOP_RELEASE_APP_ID`
+   / `HOP_RELEASE_APP_PRIVATE_KEY`, and neither name was ever provisioned in the org, the repository,
+   or the `release` environment. Creating that App is an org-owner action, so the workflow sat in the
+   tree as a documented path that nothing could exercise.
+2. **The consumer repo is gone too.** `sdk/embedded`'s `release.yml` used to consume the signed native
+   bundle from a standalone `hop-embedded` repo, and `install-libhop.py` pointed at the same place.
+   That repo is being deleted and it had ZERO releases, which is why the download is retired outright
+   rather than repointed at something else.
+3. **The build is unaffected.** `native-artifacts.yml` still builds the embedded targets in tree
+   (`xtensa-esp32-espidf`, `xtensa-esp32s2-espidf`, `xtensa-esp32s3-espidf`, `riscv32imc-esp-espidf`,
+   `riscv32imac-esp-espidf`) under a signed manifest with a Sigstore bundle. What is retired is the
+   standalone repo that redistributed the output, not the ability to produce it.
 
 For the record, because an earlier comment in that workflow claimed the opposite: the path DID publish
-once. `hopmesh/libhop` release `v0.0.1` (2026-07-17) carries `hop.h`,
+once. The retired `libhop` repo's release `v0.0.1` (2026-07-17) carried `hop.h`,
 `libhop-esp32-xtensa.a` and `libhop-esp32-riscv.a`, produced by the pre-`4d5344a` version of the
-workflow, which used the org `HOP_SYNC_TOKEN` rather than a libhop-only App. That release predates the
-signed release-manifest inventory and stays where it is; it is not the supported way to get libhop.
+workflow, which used the org `HOP_SYNC_TOKEN` rather than a libhop-only App. Those are the only real
+release assets the retired fleet ever held, and they were already documented as unsupported and
+superseded. See `docs/repo-catalog.md`.
 
-To publish ESP32 archives again, tag `hop-embedded` (the signed native path). If a libhop-only GitHub
-Release is ever wanted back, restore the workflow from history AND provision the App first, or the same
-dead path returns.
+Restoring an ESP32 download path means deciding where it publishes FIRST, then restoring the workflow
+from history and provisioning the App. Do not restore the workflow on its own: with no destination it
+recreates the same dead path.
 
 ### Secret inventory: what checks that a workflow's credentials exist
 

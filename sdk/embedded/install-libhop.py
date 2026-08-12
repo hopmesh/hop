@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Install signed exact-target archives for an Embedded source checkout."""
+"""Install signed exact-target archives for an Embedded source checkout from a local bundle."""
 
 import argparse
 import importlib.util
 import re
 import shutil
 import tempfile
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 
-REPOSITORY = "hopmesh/hop-embedded"
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 TARGETS = (
     "xtensa-esp32-espidf",
@@ -21,30 +17,29 @@ TARGETS = (
     "riscv32imc-esp-espidf",
     "riscv32imac-esp-espidf",
 )
+NO_BUNDLE_MESSAGE = (
+    "--bundle is required. There is no published prebuilt libhop bundle for embedded targets, so "
+    "there is nothing to download; the remote install path has been removed rather than pointed at "
+    "a URL that serves no releases. The supported path is to build the exact-target archives "
+    "locally and pass the signed bundle directory: install-libhop.py --bundle "
+    "/path/to/release-assets. tools/native-artifacts.py in the Hop monorepo produces that bundle "
+    "(pack one archive per target, then create and sign native-artifacts.json next to its .sig and "
+    "Sigstore provenance). This installer still verifies every one of those before staging."
+)
 
 
 def fail(message):
     raise SystemExit(f"embedded libhop install rejected: {message}")
 
 
-def download(url, destination):
-    request = urllib.request.Request(url, headers={"User-Agent": "hop-embedded-installer/1"})
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response, Path(destination).open("wb") as output:
-            host = urllib.parse.urlparse(response.url).hostname
-            if host not in ("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"):
-                fail(f"release download redirected to an unexpected host: {host}")
-            shutil.copyfileobj(response, output)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
-        fail(f"download failed for {url}: {error}")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", default="v0.0.1")
     parser.add_argument("--target", action="append", choices=TARGETS)
-    parser.add_argument("--bundle")
+    parser.add_argument("--bundle", help="required: directory holding the signed native release bundle")
     args = parser.parse_args()
+    if not args.bundle:
+        fail(NO_BUNDLE_MESSAGE)
     if not TAG_RE.fullmatch(args.version):
         fail("version must be an exact vX.Y.Z tag")
     selected_targets = tuple(args.target or TARGETS)
@@ -62,18 +57,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="hop-embedded-install-") as temporary:
             temporary = Path(temporary)
-            if args.bundle:
-                bundle = Path(args.bundle).resolve()
-            else:
-                bundle = temporary / "release"
-                bundle.mkdir()
-                base = f"https://github.com/{REPOSITORY}/releases/download/{args.version}"
-                download(base + "/native-artifacts.json", bundle / "native-artifacts.json")
-                download(base + "/native-artifacts.json.sig", bundle / "native-artifacts.json.sig")
-                download(
-                    base + "/native-artifacts.provenance.sigstore.json",
-                    bundle / "native-artifacts.provenance.sigstore.json",
-                )
+            bundle = Path(args.bundle).resolve()
             manifest_path = bundle / "native-artifacts.json"
             signature_path = bundle / "native-artifacts.json.sig"
             provenance_path = bundle / "native-artifacts.provenance.sigstore.json"
@@ -87,10 +71,6 @@ def main():
                 signature_path,
                 provenance_path,
             )
-            if not args.bundle:
-                for target in selected_targets:
-                    artifact = helper.select_artifact(manifest, target)
-                    download(base + "/" + artifact["filename"], bundle / artifact["filename"])
             staged_artifacts = temporary / "artifacts"
             staged_artifacts.mkdir()
             for target in selected_targets:

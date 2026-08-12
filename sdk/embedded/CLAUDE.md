@@ -1,11 +1,11 @@
-# Hop for Embedded (`sdk/embedded` / the `hop-embedded` repo)
+# Hop for Embedded (`sdk/embedded`)
 
-The embedded SDK: a thin Arduino / ESP-IDF C++ library (`hop::Hop`) over the `libhop` C ABI, published
-to the PlatformIO registry as `Hop`. It is the MCU sibling of the other SDKs (a node on a
-microcontroller, not a server), and it mirrors to the public `hop-embedded` repo.
+The embedded SDK: a thin Arduino / ESP-IDF C++ library (`hop::Hop`) over the `libhop` C ABI. It is the
+MCU sibling of the other SDKs (a node on a microcontroller, not a server).
 
-This file helps you develop this component whether you are in the Hop monorepo or in the standalone
-`hop-embedded` repo (the two stay in sync; the monorepo is the source of truth).
+This component lives only in the Hop monorepo. It is not mirrored to a standalone repo and it is not
+published to the PlatformIO registry, so there is no separately distributed `Hop` package to consume;
+prebuilt distribution is not wired yet.
 
 ```
 library.json          the PlatformIO manifest (name "Hop", Apache-2.0, framework arduino/espidf,
@@ -42,14 +42,17 @@ examples/service_rpc/ complete addressed request/response example, separate from
   with `begin(secret, 32)`.
 - **ABI version pin.** `HOP_EMBEDDED_ABI_VERSION` must track the C ABI's `HOP_ABI_VERSION`; `begin()`
   asserts `hop_abi_version()` matches, so a wrapper paired with a stale prebuilt archive fails loudly.
-- **Exact target archives.** The release build cross-compiles each supported Xtensa and RISC-V target
-  separately. `link-libhop.py` rejects unsigned, missing, duplicate, unexpected, traversing,
-  wrong-target, or wrong-digest assets before extraction.
+- **Exact target archives.** The native artifact build cross-compiles each supported Xtensa and
+  RISC-V target separately. `link-libhop.py` rejects unsigned, missing, duplicate, unexpected,
+  traversing, wrong-target, or wrong-digest assets before extraction.
 
 ## Verify / build
 
-PlatformIO: `pio pkg pack` (packages the library), and build the example with
-`pio run -d examples/blink_send`. A full on-device build needs the prebuilt `libhop.a`, which the
-release workflow produces; without it, gate on the manifest + a compile of the wrapper against a stub.
+PlatformIO: `pio pkg pack` (packages the library and validates `library.json`), and build the example
+with `pio run -d examples/blink_send`. A full on-device build needs the prebuilt `libhop.a`. No
+release publishes one, so build the exact-target archives locally with `tools/native-artifacts.py`
+and stage them with `python3 install-libhop.py --bundle <dir>`; without a bundle, gate on the
+manifest + a compile of the wrapper against a stub.
 Run `bash test/run-host-tests.sh` for the strict-warning mock-C host contract suite.
-Publish is `pio pkg publish` on a `vX.Y.Z` tag (see `.github/workflows/release.yml`).
+There is no publish step: `install-libhop.py` requires a locally built `--bundle` and fails closed
+without one.

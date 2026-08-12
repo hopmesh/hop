@@ -15,29 +15,36 @@ C ABI used by the other SDKs.
 
 ## Install
 
+Hop for Embedded lives only in the Hop monorepo, at `sdk/embedded`. It is consumed as a sibling from
+inside that tree, not as a separately published dependency: there is no PlatformIO registry package
+and no release to fetch, because prebuilt distribution is not wired yet.
+
+Point PlatformIO at the checkout:
+
 ```ini
 [env:esp32dev]
 platform = espressif32
 framework = arduino
-lib_deps = hopmesh/Hop
+board = esp32dev
+lib_deps = symlink:///path/to/monorepo/sdk/embedded
 ```
 
-The package supplies `Hop.h` and a prebuilt `libhop` archive for each exact supported Rust target.
-Each archive is bound to the canonical repository, full source SHA, tag/version, builder workflow/run,
-target, size, and SHA-256 by a detached-signed manifest. `link-libhop.py` verifies the signature and
-archive inventory before extracting only the target mapped to the selected MCU. The PlatformIO build
-does not need the network after the signed package has been installed.
+The library supplies `Hop.h` and needs a prebuilt `libhop` archive for each exact supported Rust
+target. Each archive is bound to the canonical repository, full source SHA, tag/version, builder
+workflow/run, target, size, and SHA-256 by a detached-signed manifest. `link-libhop.py` verifies the
+signature and archive inventory before extracting only the target mapped to the selected MCU. The
+PlatformIO build does not need the network once the signed archives are staged.
 
-For a source checkout or an offline mirror, stage the same verified release payload with:
+Build those archives locally with `tools/native-artifacts.py`, then stage the signed bundle:
 
 ```sh
-python3 install-libhop.py --version v0.0.1
-# or: python3 install-libhop.py --bundle /path/to/release-assets
+python3 install-libhop.py --bundle /path/to/release-assets
 ```
 
-Use repeated `--target <exact-triple>` options to install only the boards this checkout builds.
-The source installer requires the GitHub CLI (`gh`) to verify the attached Sigstore bundle and its
-canonical workflow, source commit, runner, and subject inventory before downloading native archives.
+`--bundle` is required and the installer fails closed without it. Use repeated
+`--target <exact-triple>` options to install only the boards this checkout builds. The installer
+requires the GitHub CLI (`gh`) to verify the bundle's Sigstore attestation and its canonical
+workflow, source commit, runner, and subject inventory before anything is staged.
 
 ## Clock Contract
 
@@ -183,5 +190,6 @@ bash test/run-host-tests.sh
 
 ## License
 
-[Apache-2.0](./LICENSE.md). The protocol core (`hop-core`) is FSL-1.1-ALv2 and converts to Apache-2.0
+[Apache-2.0](./LICENSE.md). The protocol core (`hop-core`, published on crates.io as
+[hop-mesh-core](https://crates.io/crates/hop-mesh-core)) is FSL-1.1-ALv2 and converts to Apache-2.0
 after two years.

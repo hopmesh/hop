@@ -134,7 +134,7 @@ for entry in entries:
     assert tagged, f"{entry['component']}: a synced mirror still cannot be tagged ({reason})"
 
 # --- the tag/skip policy ------------------------------------------------------------------------
-manifest = {"component": "hop-sdk-node", "version": "1.2.3", "source": "package.json"}
+manifest = {"component": "hop-sdk-crystal", "version": "1.2.3", "source": "shard.yml"}
 anchor = {"component": "hop-sdk-go", "version": "1.2.3", "source": tag_mod.ANCHOR_SOURCE}
 
 
@@ -235,25 +235,26 @@ assert tag_mod.GIT_ORIGIN_REV.findall("no trailer here") == []
 # create-github-app-token mints ONE installation token for the whole repository list, so a single name
 # that does not resolve fails the request with 422 "at least one repository that does not exist or is
 # not accessible" and NOTHING gets tagged. That is exactly what happened when sdk/flutter gained a
-# release.yml before hopmesh/hop-sdk-flutter was created: seventeen components, all unreleasable,
-# because one mirror was missing. So the plan asks first and drops what cannot be tagged.
-_probe = {"hop-sdk-node": True, "hop-sdk-flutter": False, "hop-core": None}
+# release.yml before its mirror was created: seventeen components, all unreleasable, because one
+# mirror was missing. (That fleet was retired in 2026-08; the names below are the three that survive.)
+# So the plan asks first and drops what cannot be tagged.
+_probe = {"hop-sdk-go": True, "hop-sdk-crystal": False, "hop-sdk-apple": None}
 _original_exists = plan_mod.mirror_exists
 try:
     plan_mod.mirror_exists = lambda component, token: _probe.get(component, True)
     sample = [
-        {"component": "hop-sdk-node", "prefix": "sdk/node", "version": "1.2.3", "source": "package.json"},
-        {"component": "hop-sdk-flutter", "prefix": "sdk/flutter", "version": "1.2.3", "source": "pubspec.yaml"},
-        {"component": "hop-core", "prefix": "core/hop-core", "version": "1.2.3", "source": "Cargo.toml"},
+        {"component": "hop-sdk-go", "prefix": "sdk/go", "version": "1.2.3", "source": "go.mod"},
+        {"component": "hop-sdk-crystal", "prefix": "sdk/crystal", "version": "1.2.3", "source": "shard.yml"},
+        {"component": "hop-sdk-apple", "prefix": "sdk/apple", "version": "1.2.3", "source": "Package.swift"},
     ]
     present, missing = plan_mod.partition_by_mirror(sample, "t")
     present_names = [e["component"] for e in present]
     missing_names = [e["component"] for e in missing]
-    assert missing_names == ["hop-sdk-flutter"], f"wrong component dropped: {missing_names}"
-    assert "hop-sdk-node" in present_names, "a component with a real mirror was dropped"
+    assert missing_names == ["hop-sdk-crystal"], f"wrong component dropped: {missing_names}"
+    assert "hop-sdk-go" in present_names, "a component with a real mirror was dropped"
     # An UNKNOWN answer (403, rate limit, network) must stay in the request. Dropping it would
     # silently skip a releasable component, which is worse than failing the token step.
-    assert "hop-core" in present_names, "an unverifiable mirror was dropped instead of kept"
+    assert "hop-sdk-apple" in present_names, "an unverifiable mirror was dropped instead of kept"
 finally:
     plan_mod.mirror_exists = _original_exists
 

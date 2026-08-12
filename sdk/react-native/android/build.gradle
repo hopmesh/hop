@@ -1,5 +1,5 @@
 // Gradle build for the @hop-mesh/react-native Android module. It depends on the published Hop Android
-// client SDK (sh.hop:hop, from sdk/android / the hop-sdk-android mirror), which bundles libhop's native
+// client SDK (sh.hop:hop, from sdk/android in the Hop monorepo), which bundles libhop's native
 // ABI slices, and on the host app's React Native. Versions are read from the app's root project where
 // possible so this module tracks the app's toolchain.
 

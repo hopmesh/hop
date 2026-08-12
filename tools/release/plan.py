@@ -177,8 +177,9 @@ def partition_by_mirror(entries, token):
     The token step mints ONE installation token for the whole repository list, so a single name that
     does not resolve fails the entire request with "There is at least one repository that does not
     exist or is not accessible to the parent installation" (422). That took down tagging for all
-    seventeen components when sdk/flutter gained a release.yml before hopmesh/hop-sdk-flutter was
-    created: nothing could be released because one mirror was missing. Ask first, so a component that
+    seventeen components when sdk/flutter gained a release.yml before its mirror was created: nothing
+    could be released because one mirror was missing. (That fleet was retired in 2026-08 and those
+    repos are deleted; three components mirror now.) Ask first, so a component that
     cannot possibly be tagged is reported instead of blocking every component that can.
 
     A component we could not ask about stays IN the request. Failing the token step is the correct

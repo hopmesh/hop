@@ -8,12 +8,11 @@ plugins {
     id("org.jetbrains.kotlin.jvm") version "2.4.10" apply false
 }
 
-// The version every published bearer carries. THREE things read this one line, so they cannot disagree:
-// tools/release/plan.py resolves the mirror's tag from it (build.gradle.kts is one of the manifests it
-// parses), the mirror's release.yml asserts the pushed tag equals it, and the publications below stamp
-// it into every POM. tools/version-align-guard.sh keeps it within major/minor of the Rust workspace
-// anchor. Before this existed, hop-bearers-android had no release.yml at all, so plan.py skipped it and
-// the Android bearers were mirrored but never published, while every Apple counterpart shipped.
+// The version every bearer POM carries. tools/release/plan.py parses this line as one of its manifests
+// and the publications below stamp it into every POM, so the two cannot disagree, and
+// tools/version-align-guard.sh keeps it within major/minor of the Rust workspace anchor. This tree no
+// longer has a release.yml, so plan.py skips it and nothing here is published today; the line still has
+// to be right for the day it is.
 version = "0.0.2"
 // The bearers get their OWN namespace under the SDK's, so a transport is obviously a transport in a
 // dependency list rather than sitting flat beside `sh.hop:hop`. Maven Central verifies namespaces per
@@ -120,18 +119,12 @@ subprojects {
                             "Hop mesh transport for Android over $transportLabel. Implements the Bearer / " +
                                 "LinkSink contract from the Hop Android SDK; carries no protocol logic.",
                         )
-                        url.set("https://github.com/hopmesh/hop-bearers-android")
+                        url.set("https://hopme.sh")
                         licenses {
                             license {
                                 name.set("Apache License, Version 2.0")
                                 url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
                             }
-                        }
-                        scm {
-                            connection.set("scm:git:https://github.com/hopmesh/hop-bearers-android.git")
-                            developerConnection.set("scm:git:ssh://git@github.com/hopmesh/hop-bearers-android.git")
-                            url.set("https://github.com/hopmesh/hop-bearers-android")
-                            tag.set("v${rootProject.version}")
                         }
                         developers {
                             developer {

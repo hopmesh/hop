@@ -61,7 +61,7 @@ jobs:
           # version, while each component releases at its own version, and the repo explicitly allows
           # patch to differ per component (tools/version-align-guard.sh). Requiring the two to be equal
           # therefore made it impossible for any component that had drifted a patch to EVER publish:
-          # hop-sdk-android sat at 0.0.4 against a 0.0.2 anchor and failed every release with
+          # a component sitting at 0.0.4 against a 0.0.2 anchor failed every release with
           # "native artifact rejected: manifest tag is not the requested release", which is why
           # sh.hop:hop never reached Maven Central despite three tags. What actually binds this bundle
           # to this release is --source-sha (the canonical commit release-provenance.py just verified),

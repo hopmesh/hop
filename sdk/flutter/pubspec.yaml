@@ -3,7 +3,7 @@ description: >-
   Receive Hop messages in your Dart or Flutter app. An embeddable, first-class
   endpoint on the Hop mesh over the libhop C ABI via dart:ffi.
 version: 0.0.2
-repository: https://github.com/hopmesh/hop-sdk-flutter
+homepage: https://hopme.sh
 
 environment:
   sdk: ^3.1.0

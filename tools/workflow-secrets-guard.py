@@ -8,7 +8,7 @@ libhop-esp-release.yml shipped referencing HOP_RELEASE_APP_ID and HOP_RELEASE_AP
 names set in NO scope (not org, not repo, not the `release` environment), so from the commit that
 introduced them (4d5344a) its publish job could never complete. It has since been deleted; see
 docs/release-engineering.md, which also records that the EARLIER form of that workflow, using the org
-HOP_SYNC_TOKEN, did publish hopmesh/libhop v0.0.1.
+HOP_SYNC_TOKEN, did publish v0.0.1 to hopmesh/libhop, a repo since RETIRED with the mirror fleet.
 
 Detection here is STATIC and always runs: tools/workflow-secrets.json declares the one scope each name
 lives in, this guard asserts the workflows and that file agree in both directions, and, for an

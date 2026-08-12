@@ -27,11 +27,13 @@ radios, and a store together itself.
 
 ## Install
 
-Add the package with Swift Package Manager:
+HopDriver isn't published as a standalone package. It's consumed as a sibling inside the Hop monorepo,
+so a consumer depends on it by path (the `../` depth below is from `apps/apple/HopDemo`, adjust for
+wherever yours sits):
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/hopmesh/hop-driver-apple.git", branch: "main"),
+    .package(path: "../../../drivers/apple/HopDriver"),
 ]
 ```
 
@@ -115,15 +117,17 @@ denominator and covered by the on-device workflow.
 ## The Hop family
 
 Hop is one protocol with many faces. The endpoint SDKs, same surface in your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) ·
+[elixir](https://hex.pm/packages/hop_endpoint) ·
 [apple](https://github.com/hopmesh/hop-sdk-apple) ·
-[android](https://github.com/hopmesh/hop-sdk-android).
-The protocol core is [hop-core](https://github.com/hopmesh/hop-core) / [libhop](https://github.com/hopmesh/libhop).
+android.
+The protocol core is [hop-mesh-core](https://crates.io/crates/hop-mesh-core), which is the in-tree
+`hop-core` crate under its published name, plus libhop.
+The unlinked ones live in the Hop monorepo and aren't separately published yet.
 
 ## License
 

@@ -101,8 +101,15 @@ def published_crate_names(root):
     has_entries = bool(re.search(r'"\s*,\s*"', block.group(1)))
     require(bool(names) or not has_entries,
             "copy.bara.sky CRATE_RENAMES has entries but the parser matched none")
-    # Crates absent from the rename map publish under their monorepo name.
-    return names | {"hop-wasm"}
+    # NO implicit additions. This used to union in a literal "hop-wasm" on the theory that a crate absent
+    # from the rename map publishes under its monorepo name. That name is not ours: crates.io/crates/
+    # hop-wasm does not exist (404), so the literal widened a deliberate hole in a safety check to cover a
+    # crate that can never resolve. Verified 2026-08: the only crates.io releases that are ours are
+    # hop-mesh-core, hop-mesh-store-sqlite and hop-mesh-store-firestore, all v0.0.2, all published FROM
+    # the retired Rust mirrors via CRATE_RENAMES. With that map empty the correct answer is the empty set,
+    # which makes the tolerance below tolerate nothing and the lock check strict. That is the safe
+    # direction: a carve-out that accepts an unresolvable dependency is worse than no carve-out.
+    return names
 
 
 def workspace_version(root):

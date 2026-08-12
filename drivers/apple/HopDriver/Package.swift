@@ -1,29 +1,15 @@
 // swift-tools-version:5.9
 import PackageDescription
-import Foundation
 
-// SELF-ADAPTING DEPENDENCIES. This package is exported to the hop-driver-apple mirror, where the SDK and
-// the bearers are NOT on disk: every `.package(path: "../../../...")` below pointed outside the mirror
-// repository, so the published package could not be resolved by anyone. (`hop-driver-apple` has cut
-// tagged releases at v0.0.1 and v0.0.2 in that state.) A manifest is real Swift, so it detects which
-// tree it is in and depends on siblings locally, published packages in the mirror. That is the same
-// approach bearers/android uses for its shim, and it avoids teaching copybara another transform.
+// MONOREPO-ONLY MANIFEST. HopDriver is built and consumed as a sibling inside the Hop monorepo, so every
+// dependency below is a path dependency and there is no published-package fallback. This file used to be
+// real Swift that detected which tree it was in, because the subtree was also exported to a public mirror
+// where the SDK and the bearers were not on disk. That mirror is retired, so the remote branch could only
+// ever resolve a repository that no longer exists, and it is gone along with the detection.
 //
-// Paths resolve against #filePath, not the process working directory, which SwiftPM does not promise.
-//
-// Note the SHAPE differs between the two, not just the spelling: in the monorepo each bearer is its own
-// package (five path dependencies), while the mirror consumes the single hop-bearers-apple package that
-// exposes all five as PRODUCTS. A path dependency's identity is its directory name, a remote one's is
-// the repository name, so the product references are computed rather than written twice.
-private let manifestDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-private let repositoryRoot = manifestDirectory.appendingPathComponent("../../..").standardized
-private func onDisk(_ relative: String) -> Bool {
-    FileManager.default.fileExists(
-        atPath: repositoryRoot.appendingPathComponent(relative).appendingPathComponent("Package.swift").path
-    )
-}
-private let inMonorepo = onDisk("sdk/apple") && onDisk("bearers/apple/HopBearerBle")
-
+// A path dependency's identity is its DIRECTORY name. That is why the SDK is referenced as package
+// "apple" (sdk/apple) and each bearer as its own package name (bearers/apple/HopBearer*), rather than as
+// five products of one umbrella package.
 private let bearerNames = [
     "HopBearerBle",
     "HopBearerLan",
@@ -32,20 +18,13 @@ private let bearerNames = [
     "HopBearerMeshtastic",
 ]
 
-private let sdkPackage = inMonorepo ? "apple" : "hop-sdk-apple"
-private func bearerPackage(_ bearer: String) -> String { inMonorepo ? bearer : "hop-bearers-apple" }
-
-private let packageDependencies: [Package.Dependency] = inMonorepo
-    ? [.package(path: "../../../sdk/apple")]
+private let packageDependencies: [Package.Dependency] =
+    [.package(path: "../../../sdk/apple")]
         + bearerNames.map { .package(path: "../../../bearers/apple/\($0)") }
-    : [
-        .package(url: "https://github.com/hopmesh/hop-sdk-apple.git", from: "0.0.2"),
-        .package(url: "https://github.com/hopmesh/hop-bearers-apple.git", from: "0.0.2"),
-    ]
 
 private let driverDependencies: [Target.Dependency] =
-    ["HopFFIBindings", "HopObjC", .product(name: "HopContract", package: sdkPackage)]
-        + bearerNames.map { .product(name: $0, package: bearerPackage($0)) }
+    ["HopFFIBindings", "HopObjC", .product(name: "HopContract", package: "apple")]
+        + bearerNames.map { .product(name: $0, package: $0) }
 
 // HopDriver, the reusable Apple driver for the Hop runtime (north-star drivers/apple location).
 //
@@ -69,8 +48,8 @@ let package = Package(
     // shared BLE runloop the BleBearer schedules its L2CAP streams + timers on. The old apple/HopBearers
     // package is gone.
     // The node API stays on UniFFI (HopFFI.xcframework). The bearers bind HopContract (pure Swift, no
-    // libhop), so there is no double-link of the Rust core. Siblings in the monorepo, published
-    // packages in the mirror; see the note at the top of this file.
+    // libhop), so there is no double-link of the Rust core. Every dependency is an in-tree sibling; see
+    // the note at the top of this file.
     dependencies: packageDependencies,
     targets: [
         // The Rust core, compiled to a static lib and packaged as an xcframework (ios-arm64,

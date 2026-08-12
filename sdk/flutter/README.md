@@ -10,7 +10,6 @@
 </p>
 
 <p align="center">
-  <a href="https://pub.dev/packages/hop_endpoint"><img src="https://img.shields.io/pub/v/hop_endpoint?color=0175c2&label=pub" alt="pub"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
   <img src="https://img.shields.io/badge/dart-%E2%89%A53.1-0175c2" alt="dart >=3.1">
 </p>
@@ -33,8 +32,8 @@ dart pub add hop_endpoint
 
 You also need `libhop`, the Rust protocol core, as a prebuilt binary or a local build. For `dart test`
 and CLI use, point `HOP_LIBDIR` at it (or build in-repo with `cargo build -p hop`). In a Flutter app,
-bundle the platform shared library so the loader finds it by name (see [Flutter](#flutter) below). See
-[libhop](https://github.com/hopmesh/libhop). Dart 3.1+.
+bundle the platform shared library so the loader finds it by name (see [Flutter](#flutter) below). It
+is a sibling crate in the Hop monorepo and is not separately published. Dart 3.1+.
 
 ## Quick start
 
@@ -145,14 +144,16 @@ hosting are on the roadmap (each an SDK-level follow-up, not a core change).
 ## The Hop family
 
 `hop_endpoint` is one of several SDKs over the same C ABI. Same surface, your language:
-[node](https://github.com/hopmesh/hop-sdk-node) &middot;
-[python](https://github.com/hopmesh/hop-sdk-python) &middot;
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) &middot;
+[python](https://pypi.org/project/hop-endpoint/) &middot;
 [go](https://github.com/hopmesh/hop-sdk-go) &middot;
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) &middot;
+[ruby](https://rubygems.org/gems/hop-endpoint) &middot;
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) &middot;
-[elixir](https://github.com/hopmesh/hop-sdk-elixir) &middot;
-[flutter](https://github.com/hopmesh/hop-sdk-flutter).
-The protocol core is [libhop](https://github.com/hopmesh/libhop) / [hop-core](https://github.com/hopmesh/hop-core).
+[elixir](https://hex.pm/packages/hop_endpoint) &middot;
+flutter.
+The protocol core is libhop / [hop-mesh-core](https://crates.io/crates/hop-mesh-core).
+The in-tree crate is hop-core, published under the hop-mesh- prefix. The Flutter SDK is not published
+yet, and libhop is the C ABI it exposes, not a separate release.
 
 ## License
 

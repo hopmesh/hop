@@ -38,7 +38,8 @@ dependencies:
 
 You also need `libhop`, the Rust protocol core, as a prebuilt binary or a local build. Crystal links it
 at compile time; its default `-L` points at a local build, or add your `libhop` dir to
-`CRYSTAL_LIBRARY_PATH` (or `HOP_LIBDIR`). See [libhop](https://github.com/hopmesh/libhop).
+`CRYSTAL_LIBRARY_PATH` (or `HOP_LIBDIR`). It is a sibling crate in the Hop monorepo and is not
+separately published.
 
 ## Quick start
 
@@ -147,13 +148,15 @@ change).
 ## The Hop family
 
 `hop-endpoint` is one of several SDKs over the same C ABI. Same surface, your language:
-[node](https://github.com/hopmesh/hop-sdk-node) ·
-[python](https://github.com/hopmesh/hop-sdk-python) ·
+[node](https://www.npmjs.com/package/@hop-mesh/endpoint) ·
+[python](https://pypi.org/project/hop-endpoint/) ·
 [go](https://github.com/hopmesh/hop-sdk-go) ·
-[ruby](https://github.com/hopmesh/hop-sdk-ruby) ·
+[ruby](https://rubygems.org/gems/hop-endpoint) ·
 [crystal](https://github.com/hopmesh/hop-sdk-crystal) ·
-[elixir](https://github.com/hopmesh/hop-sdk-elixir).
-The protocol core is [libhop](https://github.com/hopmesh/libhop) / [hop-core](https://github.com/hopmesh/hop-core).
+[elixir](https://hex.pm/packages/hop_endpoint).
+The protocol core is libhop / [hop-mesh-core](https://crates.io/crates/hop-mesh-core).
+The in-tree crate is hop-core, published under the hop-mesh- prefix. libhop is the C ABI it
+exposes, not a separate release.
 
 ## License
 
