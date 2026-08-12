@@ -91,7 +91,11 @@ public enum HopKeychain {
             random: randomBytes,
             isWrapped: SecureEnclaveWrap.isWrapped,
             wrap: { secret in try SecureEnclaveWrap.wrap(secret) ?? secret },
-            unwrap: SecureEnclaveWrap.unwrap,
+            // No trailing comma after this argument. Trailing commas in a function-call argument list
+            // are Swift 6.1+ (SE-0439); the GitHub-hosted macOS runner's toolchain is older and rejects
+            // it with "unexpected ',' separator". It compiled only because the self-hosted mac ran a
+            // newer Swift, which is a portability trap rather than a style question.
+            unwrap: SecureEnclaveWrap.unwrap
         )
     }
 

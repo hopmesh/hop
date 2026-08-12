@@ -112,7 +112,13 @@ for component in sorted(smoke.RUST_MIRRORS):
     assert got is not None, f"{component}: the real exported Cargo.toml reads as unverifiable"
     assert got == planned, f"{component}: exported manifest declares {got!r}, plan wants {planned!r}"
     rust_export_versions[component] = got
-assert "hop-core" in rust_export_versions, "hop-core is not a releasable Rust mirror any more"
+# No Rust crate mirror survives the 2026-08 retirement (COMPONENTS is sdk/go, sdk/crystal, sdk/apple
+# only), so the loop above is empty BY CONSTRUCTION and this used to hard-assert on hop-core. The
+# check is kept as a conditional rather than deleted: its point is that the injected
+# [workspace.package] preamble still resolves an inherited version in a REAL export, and if a Rust
+# crate is ever mirrored again that guard comes back on its own instead of staying silently off.
+if smoke.RUST_MIRRORS:
+    assert rust_export_versions, "Rust mirrors are registered but none resolved an exported version"
 
 # Every releasable component must be able to REACH a tagging decision once its mirror is synced. A
 # component that can never be tagged is a release path that silently does nothing forever, which is

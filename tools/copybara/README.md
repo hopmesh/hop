@@ -162,3 +162,51 @@ The components wired today: the 8 SDKs, plus `hop-core`, `libhop`, `hop-wasm`, t
 bearer repos, the two driver repos, and the three services. Each already carries its own `LICENSE.md`
 (FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so it is ready to
 stand alone.
+
+## The split: moving the private trees out and the public repo in
+
+Two whole-repo workflows in `copy.bara.sky`, distinct from everything above. The per-component
+workflows export a SUBTREE and make it a mirror's root; these export the repository AS a repository,
+prefixes intact.
+
+Both are ONE-TIME migrations, run by hand with `--init-history`. They are deliberately NOT dispatch
+choices in `sync-components.yml`: that input is validated against `components.json`, and a migration
+is not a component. `dispatch.test.sh` enforces that the two agree, which is worth keeping.
+
+### Why this is not a standing sync
+
+A standing sync would leave `docs/audits/` and `business/` present in BOTH repos, and in the public
+repo's history forever, which is exactly what moving them is meant to prevent. The sequence is:
+
+1. `internal_export` copies the private trees into `hopmesh/internal`, paths intact
+2. delete those trees from the monorepo in an ordinary commit
+3. `public_export` seeds the public repo with `--init-history`
+
+Step 3 is what replaces a `git filter-repo` rewrite. Under `--init-history` an excluded path is
+excluded from HISTORY too, so a commit that only ever touched `docs/audits/` never appears in the
+exported history at all. Nothing is rewritten, no SHA is rebased, and the monorepo survives untouched
+as the complete archive. That is the whole reason Copybara beats a rewrite here.
+
+### Before the first run
+
+- **Set `PUBLIC_REPO`.** It ships as `hopmesh/REPLACE-ME` on purpose. `hopmesh/hop` is NOT available:
+  it is a rename redirect to `hopmesh/monorepo` (same repository id), so claiming that name breaks the
+  redirect. Decide the name, create the repo EMPTY and PRIVATE, and set the constant.
+- **Convert the audit corpus first.** 79 files cite `F-xx`, 24 cite `SVC-xxx`, 15 cite `PROC-xxx`, and
+  9 link `docs/audits` directly. Excluding the directory without publishing an advisory set leaves
+  every one of those a dangling pointer in public source.
+- **Settle the root licence.** 812 tracked files sit outside every mirror prefix and there is no root
+  `LICENSE`, so they would publish with no declared licence at all.
+
+### The runs
+
+```sh
+# once, into the private repo
+copybara migrate tools/copybara/copy.bara.sky internal_export --init-history
+
+# once, into the public repo (AFTER the private trees are deleted from the monorepo)
+copybara migrate tools/copybara/copy.bara.sky public_export --init-history
+```
+
+Verify the second before making anything public: `git log --all --oneline -- docs/audits business` in
+the exported repo must return nothing.

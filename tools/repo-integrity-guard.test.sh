@@ -43,7 +43,10 @@ PY
 # core/ is deliberately in the APACHE list: it is what makes case (i) meaningful, so the fixture has to
 # exercise it rather than leaving the inversion asserted only by the real repo tree.
 FSL_LICENSES=("services/hop-relayd/LICENSE.md" "services/hop-gateway/LICENSE.md")
-APACHE_LICENSES=("sdk/node/LICENSE.md" "sdk/go/LICENSE.md" "core/hop-core/LICENSE.md")
+# The ROOT LICENSE.md is in this list too: it is Apache-tier like any other non-services/ licence,
+# and CRITICAL now pins it, so a fixture without one fails the missing-file check rather than the
+# tier checks these cases are actually about.
+APACHE_LICENSES=("LICENSE.md" "sdk/node/LICENSE.md" "sdk/go/LICENSE.md" "core/hop-core/LICENSE.md")
 
 # lay_down DIR: a fully-healthy two-tier fixture tree. Callers then mutate one file to create a failure.
 lay_down() {

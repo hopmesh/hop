@@ -305,12 +305,22 @@ enum MirrorStore {
                   (stored.imageData?.count ?? 0) <= RetentionPolicy.defaults.attachmentBytes,
                   (stored.images ?? []).allSatisfy({ $0.count <= RetentionPolicy.defaults.attachmentBytes })
             else { return false }
-            aggregate += Data(stored.peer.utf8).count + Data(stored.text.utf8).count +
-                Data(stored.contentType.utf8).count + (stored.peerAddr?.count ?? 0) +
-                (stored.imageData?.count ?? 0) + (stored.images ?? []).reduce(0, { $0 + $1.count }) +
-                Data(stored.imageRef?.utf8 ?? "".utf8).count +
-                (stored.imageRefs ?? []).reduce(0, { $0 + Data($1.utf8).count }) +
-                (stored.bundleId?.count ?? 0) + (stored.inboxId?.count ?? 0)
+            // Split into explicitly-typed steps rather than one ten-term `+` chain. Swift's type
+            // checker has to consider every overload of `+` across the whole expression, and the
+            // combined form exceeded its budget on a GitHub-hosted macOS runner ("unable to
+            // type-check this expression in reasonable time") while compiling fine on the faster
+            // self-hosted mac. Same arithmetic, and no longer dependent on which machine builds it.
+            let textBytes = Data(stored.peer.utf8).count
+                + Data(stored.text.utf8).count
+                + Data(stored.contentType.utf8).count
+            let idBytes: Int = (stored.peerAddr?.count ?? 0)
+                + (stored.bundleId?.count ?? 0)
+                + (stored.inboxId?.count ?? 0)
+            let inlineImageBytes: Int = (stored.imageData?.count ?? 0)
+                + (stored.images ?? []).reduce(0) { $0 + $1.count }
+            let refBytes = Data(stored.imageRef?.utf8 ?? "".utf8).count
+                + (stored.imageRefs ?? []).reduce(0) { $0 + Data($1.utf8).count }
+            aggregate += textBytes + idBytes + inlineImageBytes + refBytes
             if aggregate > RetentionPolicy.defaults.messageMirrorBytes { return false }
         }
         return true

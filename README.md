@@ -55,11 +55,18 @@ store suites and the client wrappers.
   privacy-safe diagnostics and identity recovery designs (pending app work).
 - `CONTRIBUTING.md` - how to build, test, and contribute.
 - `SECURITY.md` - how to report a vulnerability privately.
+- `docs/audit-history.md` - what the `F-xx` / `SVC-xxx` / `PROC-xxx` identifiers cited in code
+  mean, where the audit corpus lives, and why it is not published raw.
 - `CHANGELOG.md` - what changed, per release.
 
 ## License
 
-This monorepo has no single repo-wide license. Instead every component licenses itself, in two tiers:
+The root `LICENSE.md` is **Apache-2.0** and covers everything that does not carry its own. That
+matters because 812 tracked files sit outside every component directory (apps, tools, sim, testkit,
+infra, docs, assets) and would otherwise publish with no declared licence at all, which is not the
+same as being permissive: no licence means no rights granted.
+
+Components that carry their own `LICENSE.md` are licensed by it, in two tiers:
 
 - The hosted **services** (`services/*`: relayd, endpoint, gateway, telemetryd, accountd, billingd) are
   **FSL-1.1-ALv2** (source-available, and converts to Apache-2.0 after two years). That is the layer

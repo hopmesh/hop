@@ -287,13 +287,11 @@ as a set, so it is indifferent to plist order; only the archive bytes care. That
 archive fully reproducible and turns the committed checksum into a genuine fixed point, at the cost
 of one release cycle where the checksum has to be re-read because the archive bytes moved.
 
-## Appendix: untracking the 178 MB xcframework in drivers/apple/HopDriver
+## Appendix: the 178 MB xcframework in drivers/apple/HopDriver
 
 Separate problem, same shape. `drivers/apple/HopDriver/Frameworks/HopFFI.xcframework` is 178 MB of
 build output across ten files, and it is tracked in git even though `.gitignore:1` lists the
-directory (an ignore rule does not untrack an already-tracked path). `tools/copybara/components.json`
-maps `drivers/apple/HopDriver` to the mirror `hop-driver-apple`, which is public and which GitHub
-reports at roughly 140 MB.
+directory (an ignore rule does not untrack an already-tracked path).
 
 The package consumes it as a local path binary target:
 
@@ -301,13 +299,23 @@ The package consumes it as a local path binary target:
 .binaryTarget(name: "hopFFI", path: "Frameworks/HopFFI.xcframework")
 ```
 
-Deleting the tracked copy requires switching that to a remote binary target with a `url` and
-`checksum`, exactly like `sdk/apple/Package.swift`. **Do not do this yet.** The moment the path
-target becomes a URL target, `hop-driver-apple` stops resolving for everyone until a release exists
-at that URL, and `hopmesh/hop-driver-apple` has zero releases today (it has a `v0.0.1` tag and no
-release, the same state `hop-sdk-apple` is in).
+**The mirror retirement changed what this appendix is for.** It used to argue against converting that
+to a remote `url` + `checksum` target on the grounds that `hop-driver-apple` would stop resolving for
+everyone until a release existed at that URL. `hop-driver-apple` is gone: `components.json` retains
+only `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`, and the driver is consumed solely as a
+monorepo sibling. With no published driver package there is no external resolver to break, and so no
+reason to convert at all. The local path target is the correct permanent design, not a stopgap.
 
-What the conversion actually needs, in dependency order:
+That removes the work. It does not remove the bytes, and the part that survives is worth stating
+plainly: 178 MB of build output sits in monorepo history, and the monorepo is headed for public.
+Untracking shrinks a fresh checkout and reclaims nothing from `.git`, because the blobs stay in every
+commit that carried them. Only a history rewrite reclaims that, and that decision was already made
+the other way for `docs/audits` and `business`, which were split out with Copybara specifically to
+avoid rewriting 717 commits. The same reasoning applies here, so the bytes stay unless something
+else forces a rewrite.
+
+The list below is retained as research, not as a plan. It applies only if a published driver package
+ever returns, in which case these are its prerequisites, in dependency order:
 
 1. **A canonical build for this artifact.** `HopFFI.xcframework` is not the C-ABI framework. It is
    the UniFFI framework built by `tools/build-xcframework.sh` (UniFFI bindgen plus
@@ -355,6 +363,5 @@ What the conversion actually needs, in dependency order:
    after.
 
 7. **Only then, untracking.** `git rm --cached -r drivers/apple/HopDriver/Frameworks/` plus a
-   `repo-integrity-guard.sh` check that keeps it out. Note that this shrinks the checkout, not
-   `.git`: the blobs stay in history in both the monorepo and the public mirror, so the 178 MB is
-   only reclaimed by a history rewrite, which is a separate decision with its own blast radius.
+   `repo-integrity-guard.sh` check that keeps it out. This shrinks the checkout, not `.git`, so it is
+   cosmetic with respect to the 178 MB; see the note above the list.

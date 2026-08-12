@@ -28,18 +28,12 @@ ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true }'
 OWNER = "hopmesh"
 MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/monorepo"'
 
-RUST_MIRRORS = {
-    "hop-core",
-    "libhop",
-    "hop-wasm",
-    "hop-store-sqlite",
-    "hop-store-firestore",
-    "hop-relayd",
-    "hop-endpoint",
-    "hop-gateway",
-}
-NATIVE_COMPONENTS = {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"}
-PACKAGE_COMPONENTS = ("hop-sdk-go", "hop-sdk-elixir", "hop-sdk-apple", "hop-sdk-android", "hop-embedded")
+# Emptied by the 2026-08 mirror retirement: COMPONENTS is now sdk/go, sdk/crystal and sdk/apple only,
+# and none of those is a Rust crate. Kept as an empty set rather than deleted so every code path that
+# consumes it stays live and re-arms automatically if a Rust crate is mirrored again.
+RUST_MIRRORS: set[str] = set()
+NATIVE_COMPONENTS = {"hop-sdk-go", "hop-sdk-apple"}
+PACKAGE_COMPONENTS = ("hop-sdk-go", "hop-sdk-apple")
 ANDROID_GRADLE_VERSION = "9.5.1"
 ANDROID_AGP_VERSION = "9.2.1"
 ANDROID_KOTLIN_VERSION = "2.4.0"
@@ -100,7 +94,13 @@ def published_crate_names(root):
     block = re.search(r"CRATE_RENAMES = \{(.*?)\n\}", text, re.S)
     require(block is not None, "copy.bara.sky CRATE_RENAMES block not found")
     names = set(re.findall(r'\(\s*"[^"]+"\s*,\s*"([^"]+)"\s*\)', block.group(1)))
-    require(bool(names), "copy.bara.sky CRATE_RENAMES parsed empty")
+    # An EMPTY CRATE_RENAMES is legitimate since the 2026-08 retirement: no Rust crate is mirrored any
+    # more, so there is nothing to rename for crates.io. The guard used to require non-empty, which
+    # caught a parser that silently matched nothing. Keep that protection where it still applies: if the
+    # block has entries, the parse must find them. Empty block and empty parse agree, and that is fine.
+    has_entries = bool(re.search(r'"\s*,\s*"', block.group(1)))
+    require(bool(names) or not has_entries,
+            "copy.bara.sky CRATE_RENAMES has entries but the parser matched none")
     # Crates absent from the rename map publish under their monorepo name.
     return names | {"hop-wasm"}
 

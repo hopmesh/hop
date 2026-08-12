@@ -33,7 +33,7 @@ rejected("actor replay", workflow.replace('os.environ["ACTOR"] == os.environ["TR
 rejected("mutable image", workflow.replace("@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679", "", 1))
 rejected("broad token", workflow.replace("repositories: ${{ needs.select.outputs.repository }}", "repositories: hop", 1))
 rejected("raw input", workflow.replace("SOURCE_TOKEN: ${{ github.token }}", "SOURCE_TOKEN: ${{ inputs.component }}", 1))
-rejected("mapping drift", workflow.replace("          - hop-sdk-node\n", "", 1))
+rejected("mapping drift", workflow.replace("          - hop-sdk-go\n", "", 1))
 # import must pass the sanitized mirror PR ref to copybara; dropping COPYBARA_SOURCEREF trips the check.
 rejected(
     "import missing PR ref",
@@ -52,13 +52,13 @@ rejected("auto_export write direction", workflow.replace("SYNC_DIRECTION=export 
 rejected("auto_export skips preflight", workflow.replace("python3 tools/copybara/auto-export-plan.py", "true", 1))
 rejected("auto_export broad token", workflow.replace("repositories: ${{ steps.plan.outputs.repos }}", "repositories: hop", 1))
 
-sync_back = (root / "core/hop-core/.github/workflows/sync-back.yml").read_text()
-guard.check_sync_back_text(sync_back, "hop-core")
+sync_back = (root / "sdk/go/.github/workflows/sync-back.yml").read_text()
+guard.check_sync_back_text(sync_back, "hop-sdk-go")
 
 
 def rejected_sync_back(name, changed):
     try:
-        guard.check_sync_back_text(changed, "hop-core")
+        guard.check_sync_back_text(changed, "hop-sdk-go")
     except guard.SyncAuthorityError:
         return
     raise AssertionError(f"sync-back authority guard accepted: {name}")
@@ -67,7 +67,7 @@ def rejected_sync_back(name, changed):
 rejected_sync_back("repository secret fallback", sync_back.replace("      name: component-sync\n", "", 1))
 rejected_sync_back("canonical repository drift", sync_back.replace("repositories: monorepo", "repositories: fork"))
 rejected_sync_back("mirror code checkout", sync_back.replace("    steps:\n", "    steps:\n      - uses: actions/checkout@" + "0" * 40 + " # v4\n", 1))
-rejected_sync_back("component drift", sync_back.replace("component=hop-core", "component=hop-wasm"))
+rejected_sync_back("component drift", sync_back.replace("component=hop-sdk-go", "component=hop-sdk-apple"))
 
 print("sync authority guard tests passed")
 PY

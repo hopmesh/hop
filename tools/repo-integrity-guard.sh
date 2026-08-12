@@ -12,10 +12,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-# Tracked files that must always carry content (paths relative to repo root). There is no repo-wide
-# root license: this is a monorepo, and each component carries its OWN FSL-1.1-ALv2 LICENSE.md (the
-# per-component licenses are checked dynamically below). These are the load-bearing docs + the C ABI
-# header.
+# Tracked files that must always carry content (paths relative to repo root). There IS a repo-wide
+# root LICENSE.md now (Apache-2.0), covering the 812 tracked files that sit outside every component
+# directory; components that carry their own LICENSE.md are licensed by it instead. The root copy is
+# in the Apache tier like any other non-services/ licence and is checked by the same dynamic pass
+# below. These are the load-bearing docs + the C ABI header.
 #
 # Each entry is "path|min_bytes|marker". `-s` (size > 0) alone is too weak: the regression this guard
 # exists for could re-land as a 1-byte or wrong-content file and still pass a bare -s check. So we also
@@ -23,6 +24,11 @@ cd "$ROOT" || exit 1
 # contains it (an FSL license truncated to its title, or a header stripped of its ABI define, is just
 # as broken as a 0-byte one). Keep floors comfortably below real sizes so honest edits don't trip them.
 CRITICAL=(
+  # The root licence is the most load-bearing file here: it is the ONLY thing granting rights over the
+  # 812 tracked files that carry no LICENSE.md of their own. The dynamic pass below checks its tier and
+  # byte-identity; this entry additionally pins it against going missing, which the dynamic pass cannot
+  # catch (it iterates whatever it finds, so a deleted root licence is simply one fewer file).
+  "LICENSE.md|1500|January 2004"
   "README.md|200|"
   "DESIGN.md|1000|"
   "MECHANISMS.md|1000|"

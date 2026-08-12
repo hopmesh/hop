@@ -261,9 +261,12 @@ assert "native-artifacts.provenance.sigstore.json" in native_workflow
 assert "workflow_run" not in native_workflow
 assert "continue-on-error" not in native_workflow
 
-embedded_release = (root / "sdk/embedded/.github/workflows/release.yml").read_text()
-embedded_publish = embedded_release.split("uses: softprops/action-gh-release@", 1)[1]
-assert "release/native/native-artifacts.provenance.sigstore.json" in embedded_publish
+# This pinned that hop-embedded's release attached the sigstore provenance bundle to its GitHub
+# release. hop-embedded is retired (2026-08) and its release.yml is gone, so there is nothing to read.
+# The property is asserted one level up instead, on the workflow that PRODUCES the bundle, which is
+# where it still has a subject. Restore the per-release assertion alongside any component whose
+# release.yml publishes native artifacts again.
+assert "native-artifacts.provenance.sigstore.json" in native_workflow
 
 ci_workflow = (root / ".github/workflows/ci.yml").read_text()
 assert "npm test --prefix tools/native-attestation" in ci_workflow

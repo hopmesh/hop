@@ -33,29 +33,9 @@ ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"
 # 2026-07-31 tier inversion. tools/repo-integrity-guard.sh is the enforced source of truth.)
 # Keep this list in sync with tools/copybara/bootstrap-mirrors.sh and docs/repo-catalog.md.
 COMPONENTS = [
-    ("sdk/node", "hop-sdk-node"),
-    ("sdk/python", "hop-sdk-python"),
     ("sdk/go", "hop-sdk-go"),
-    ("sdk/ruby", "hop-sdk-ruby"),
     ("sdk/crystal", "hop-sdk-crystal"),
-    ("sdk/elixir", "hop-sdk-elixir"),
-    ("sdk/flutter", "hop-sdk-flutter"),
     ("sdk/apple", "hop-sdk-apple"),
-    ("sdk/android", "hop-sdk-android"),
-    ("sdk/compose", "hop-sdk-compose"),
-    ("sdk/embedded", "hop-embedded"),
-    ("core/hop-core", "hop-core"),
-    ("core/hop", "libhop"),
-    ("core/hop-wasm", "hop-wasm"),
-    ("core/stores/hop-store-sqlite", "hop-store-sqlite"),
-    ("core/stores/hop-store-firestore", "hop-store-firestore"),
-    ("bearers/apple", "hop-bearers-apple"),
-    ("bearers/android", "hop-bearers-android"),
-    ("drivers/apple/HopDriver", "hop-driver-apple"),
-    ("drivers/android/hop-driver", "hop-driver-android"),
-    ("services/hop-relayd", "hop-relayd"),
-    ("services/hop-endpoint", "hop-endpoint"),
-    ("services/hop-gateway", "hop-gateway"),
 ]
 
 def mirror_url(name):
@@ -80,8 +60,8 @@ def internal_files(prefix):
 # published too. KEEP THIS PREAMBLE IN SYNC WITH THE ROOT Cargo.toml: tools/version-align-guard.sh checks
 # the version line against the workspace anchor.
 RUST_MIRRORS = [
-    "hop-core", "libhop", "hop-wasm", "hop-store-sqlite", "hop-store-firestore",
-    "hop-relayd", "hop-endpoint", "hop-gateway",
+    # None of the surviving mirrors is a Rust crate. The Rust crates publish from the
+    # monorepo now; see the retirement note above.
 ]
 
 # crates.io CRATE NAMES: `hop-core` and `hop` are already taken on crates.io by an unrelated project, so
@@ -92,16 +72,13 @@ RUST_MIRRORS = [
 # package differs. Map: mirror -> (monorepo [package] name, crates.io name). Crates not listed keep their
 # name (hop-wasm publishes to npm; the services are binaries, not crates.io crates).
 CRATE_RENAMES = {
-    "hop-core": ("hop-core", "hop-mesh-core"),
-    "libhop": ("hop", "libhop"),  # package "hop" is taken; libhop is free + the canonical C-ABI name
-    "hop-store-sqlite": ("hop-store-sqlite", "hop-mesh-store-sqlite"),
-    "hop-store-firestore": ("hop-store-firestore", "hop-mesh-store-firestore"),
+    # Empty for the same reason as RUST_MIRRORS: no Rust crate mirrors survive.
 }
 
 # Native wrappers receive the same verifier, schema, and public signing key. Release jobs download the
 # canonical native-artifacts workflow output by immutable run and artifact ID, then this verifier checks
 # the signed manifest, target, archive inventory, size, and digest before any extraction.
-NATIVE_COMPONENTS = ["hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"]
+NATIVE_COMPONENTS = ["hop-sdk-go", "hop-sdk-apple"]
 
 # Go uses monorepo-relative header and target paths while it is in this tree. The public module keeps a
 # standalone hop.h contract and resolves the installed header and library through the versioned hop.pc.
@@ -398,27 +375,62 @@ def _register(prefix, name):
 # This pinned Copybara runtime does not support tuple-unpacking comprehensions. Keep these explicit
 # registrations in the same order as COMPONENTS; dispatch.test.sh rejects drift between them.
 REGISTERED = [
-    _register("sdk/node", "hop-sdk-node"),
-    _register("sdk/python", "hop-sdk-python"),
     _register("sdk/go", "hop-sdk-go"),
-    _register("sdk/ruby", "hop-sdk-ruby"),
     _register("sdk/crystal", "hop-sdk-crystal"),
-    _register("sdk/elixir", "hop-sdk-elixir"),
-    _register("sdk/flutter", "hop-sdk-flutter"),
     _register("sdk/apple", "hop-sdk-apple"),
-    _register("sdk/android", "hop-sdk-android"),
-    _register("sdk/compose", "hop-sdk-compose"),
-    _register("sdk/embedded", "hop-embedded"),
-    _register("core/hop-core", "hop-core"),
-    _register("core/hop", "libhop"),
-    _register("core/hop-wasm", "hop-wasm"),
-    _register("core/stores/hop-store-sqlite", "hop-store-sqlite"),
-    _register("core/stores/hop-store-firestore", "hop-store-firestore"),
-    _register("bearers/apple", "hop-bearers-apple"),
-    _register("bearers/android", "hop-bearers-android"),
-    _register("drivers/apple/HopDriver", "hop-driver-apple"),
-    _register("drivers/android/hop-driver", "hop-driver-android"),
-    _register("services/hop-relayd", "hop-relayd"),
-    _register("services/hop-endpoint", "hop-endpoint"),
-    _register("services/hop-gateway", "hop-gateway"),
 ]
+
+# ---------------------------------------------------------------------------------------------------
+# THE SPLIT: two whole-repo workflows, distinct from the per-component mirrors above.
+#
+# Everything above exports a SUBTREE and makes it a mirror's root. These two export the repository AS a
+# repository, prefixes intact, and exist for the one-time reorganisation:
+#
+#   internal_export  the trees that must NOT ship with public source, into a private repo
+#   public_export    everything else, into the public repo
+#
+# Both are ONE-TIME migrations seeded with --init-history, not standing syncs. That distinction is the
+# whole point for internal_export: a standing sync would leave docs/audits and business/ present in BOTH
+# repos and in the public repo's history forever, which is exactly what moving them is meant to prevent.
+# Run it once, delete the trees from the monorepo in a normal commit, and let public_export's
+# --init-history do the rest: a commit that only ever touched an excluded path never appears in the
+# exported history at all, so there is nothing to purge afterwards.
+
+# The trees that stay private. Kept as one list so the two workflows cannot disagree about the boundary:
+# public_export excludes exactly what internal_export includes.
+PRIVATE_TREES = [
+    "docs/audits/**",   # 28 files: the dated adversarial-audit corpus, immutable point-in-time reports
+    "business/**",      # 4 files: pitch-deck plan and pricing/packaging strategy
+]
+
+INTERNAL_REPO = "https://github.com/hopmesh/internal.git"
+
+# The public repository. NOT hopmesh/hop: that name is a rename redirect to hopmesh/monorepo (same repo
+# id), so claiming it would break the redirect. Set this to the agreed name before the first run; the
+# bootstrap refuses to run against a placeholder.
+PUBLIC_REPO = "https://github.com/hopmesh/hop.git"
+
+core.workflow(
+    name = "internal_export",
+    origin = git.origin(url = MONOREPO, ref = "main"),
+    destination = git.destination(url = INTERNAL_REPO, push = "main"),
+    # Paths are NOT stripped: docs/audits/ lands at docs/audits/ so every F-xx reference that survives
+    # in the public tree still names a path a reader can find, just in a repo they need access to.
+    origin_files = glob(PRIVATE_TREES),
+    destination_files = glob(["**"]),
+    authoring = authoring.pass_thru(default = BOT),
+    mode = "ITERATIVE",
+)
+
+core.workflow(
+    name = "public_export",
+    origin = git.origin(url = MONOREPO, ref = "main"),
+    destination = git.destination(url = PUBLIC_REPO, push = "main"),
+    # The whole repository minus the private trees. Excluded here means excluded from HISTORY too under
+    # --init-history, which is why this replaces a git filter-repo rewrite: nothing is rewritten, the
+    # commits simply never carry those paths, and the monorepo is left untouched as the archive.
+    origin_files = glob(["**"], exclude = PRIVATE_TREES),
+    destination_files = glob(["**"]),
+    authoring = authoring.pass_thru(default = BOT),
+    mode = "ITERATIVE",
+)

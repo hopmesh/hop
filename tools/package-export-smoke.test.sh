@@ -41,7 +41,12 @@ def rejected(call, label):
 
 
 components = exports.load_components(root)
-assert len(components) == 23
+# The surviving mirror set after the 2026-08 retirement. Asserted by NAME, not by count: a bare
+# integer said nothing about WHICH components, so swapping one for another would have passed. These
+# three exist because their package manager cannot resolve a library from a subdirectory (SwiftPM
+# needs Package.swift at a repo root; shards has no subdirectory resolver at all) or because the
+# import path is materially worse without one (Go subdirectory modules force sdk/go/v1.2.3 tags).
+assert sorted(components) == ["hop-sdk-apple", "hop-sdk-crystal", "hop-sdk-go"], sorted(components)
 exports.check_copybara_contract(root, components)
 with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary:
     temporary = pathlib.Path(temporary)
@@ -105,17 +110,10 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         "Go module symlink",
     )
 
-    elixir = (output / "hop-sdk-elixir").resolve()
-    assert (elixir / "native/Cargo.toml").is_file()
-    assert (elixir / "native/Cargo.lock").is_file()
-    assert (elixir / "native/Cargo.lock").read_bytes() == (root / "tools/copybara/elixir-native-Cargo.lock").read_bytes()
-    assert not (elixir / "native/hop_endpoint/Cargo.lock").exists()
-    nif_manifest = (elixir / "native/hop_endpoint/Cargo.toml").read_text()
-    assert 'hop = { workspace = true }' in nif_manifest
-    assert "../../../../core/hop" not in nif_manifest
-    assert "validate-elixir-export --export ." in (elixir / ".github/workflows/release.yml").read_text()
-    declared = exports.elixir_declared_cargo_manifests(elixir)
-    assert elixir / "native/vendor/libhop/Cargo.toml" in declared
+    # The assertions that ran against the REAL hop-sdk-elixir export are gone with that mirror
+    # (2026-08 retirement). The synthetic fixtures below are KEPT deliberately: they pin
+    # elixir_declared_cargo_manifests' rejection of traversing, absolute and symlinked Cargo paths,
+    # which is a path-safety property of the parser itself and does not need a live export to hold.
 
     def cargo_path_fixture(name, raw, create_crate=True):
         fixture = temporary / name
@@ -185,70 +183,10 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert '.binaryTarget(name: "CHop", path:' not in apple_manifest
     assert (apple / "Package.local.swift").is_file()
 
-    android = output / "hop-sdk-android"
-    assert os.access(android / "build-aar.sh", os.X_OK)
-    assert (android / "build-aar.sh").is_file()
-    assert (android / "include/hop.h").is_file()
-    android_build = (android / "build.gradle.kts").read_text()
-    assert "hopAar" in android_build
-    assert android_build.count('+ "\\n"') == 3
-    assert r'}\n"""' not in android_build
-    assert 'package="sh.hop"' in (android / "src/main/AndroidManifest.xml").read_text()
-    android_release = (android / ".github/workflows/release.yml").read_text()
-    assert "validate-android-export" in android_release
-    assert "android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699" in android_release
-    assert "gradle-version: '9.5.1'" in android_release
-
-    android_consumer = temporary / "android-consumer-template"
-    exports.write_android_application(
-        android_consumer,
-        'implementation("sh.hop:hop:0.0.1")',
-        "package example.clean\nimport android.app.Activity\nimport sh.hop.HopAddress\n"
-        "class MainActivity : Activity() { val address = HopAddress.base58(ByteArray(32)) }\n",
-        temporary / "android-maven",
-        "0.0.1",
-    )
-    android_consumer_text = "\n".join(
-        path.read_text() for path in sorted(android_consumer.rglob("*")) if path.is_file()
-    )
-    assert android_consumer_text.count("implementation(") == 1
-    assert 'implementation("sh.hop:hop:0.0.1")' in android_consumer_text
-    assert 'id("com.android.application") version "9.2.1"' in android_consumer_text
-    assert 'id("org.jetbrains.kotlin.android") version "2.4.0"' in android_consumer_text
-    helper_source = (root / "tools/package-export-smoke.py").read_text()
-    for forbidden in ("zipTree(hopAar.singleFile)", 'include("classes.jar")', "hopAar by configurations", "hop-aar/classes.jar"):
-        assert forbidden not in helper_source
-    for forbidden in ("zipTree(", "implementation(files(", 'include("classes.jar")', "hopAar by configurations"):
-        assert forbidden not in android_release
-        assert forbidden not in android_consumer_text
-    assert "includeBuild(" not in android_consumer_text
-    assert "project(" not in android_consumer_text
-    # validate-android-export asserts the APK's libhop.so is byte-identical to the AAR's, and the
-    # published libraries are not stripped, so AGP's stripDebugDebugSymbols rewrites them and that
-    # assertion cannot hold. Measured on the real arm64-v8a slice under AGP 9.2.1 + NDK 27.1: the AAR
-    # carries 5,045,168 bytes and the APK 3,949,848. The consumer therefore has to keep the symbols.
-    # This check exists because validate-android-export itself runs ONLY in the mirror's release
-    # workflow, so without it a regression here is invisible until a publish fails.
-    assert 'keepDebugSymbols += "**/libhop.so"' in android_consumer_text, (
-        "the Android verification consumer no longer keeps libhop symbols; AGP will strip the "
-        "library during packaging and the release's byte-identity check will fail at publish time"
-    )
-
-    android_readme = (android / "README.md").read_text()
-    assert "public v0.0.1 publication remains post-merge external state" in android_readme.lower()
-    assert "search.maven.org" not in android_readme
-    assert "maven-central" not in android_readme
-
-    embedded = output / "hop-embedded"
-    assert os.access(embedded / "install-libhop.py", os.X_OK)
-    embedded_installer = (embedded / "install-libhop.py").read_text()
-    assert "verify_sigstore_provenance" in embedded_installer
-    embedded_exports = json.loads((embedded / "library.json").read_text())["export"]["include"]
-    assert "native" in embedded_exports and "install-libhop.py" in embedded_exports
-    embedded_linker = (embedded / "link-libhop.py").read_text()
-    assert "native-artifacts.py" in embedded_linker
-    assert "env.Append(LIBS=[env.File(archive)])" in embedded_linker
-    assert "env.Append(LINKFLAGS=[archive])" not in embedded_linker
+    # The hop-sdk-android and hop-embedded export-shape checks lived here and are gone with those
+    # mirrors (2026-08 retirement). What they pinned was per-export packaging (AAR layout, the
+    # PlatformIO installer, the AGP symbol-stripping consumer), which has no subject once the export
+    # does not exist. The native-artifacts workflow assertions below are NOT component-scoped and stay.
 
     native_workflow = (root / ".github/workflows/native-artifacts.yml").read_text()
     android_setup = native_workflow.split(
@@ -676,128 +614,17 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     finally:
         native.MAX_EXPANDED_BYTES = original_expanded_limit
 
-# --- the mid-release tolerance in verify_standalone_lock must not become a hole -------------------
-# It exists so a coordinated version bump can pass CI while a first-party sibling is briefly absent from
-# the registry. It forgives exactly that. These cases pin everything it must still reject, because a
-# check that quietly accepts a broken lock is worse than the deadlock it replaced.
-import subprocess as _subprocess
-
-_first_party = exports.published_crate_names(root)
-assert "hop-mesh-core" in _first_party, "crates.io rename map not parsed"
-assert "hop-wasm" in _first_party, "unrenamed published crate missing"
-_anchor = exports.workspace_version(root)
-
-
-def _fake_cargo(stderr):
-    """Stand in for a failing `cargo metadata --locked` with a chosen stderr."""
-    class Result:
-        returncode = 101
-        stdout = ""
-
-    result = Result()
-    result.stderr = stderr
-    return lambda *a, **k: result
-
-
-def _tree(tmp, manifest, lock):
-    tmp.mkdir(parents=True, exist_ok=True)
-    (tmp / "Cargo.toml").write_text(manifest)
-    (tmp / "Cargo.lock").write_text(lock)
-    return tmp
-
-
-_unresolved = (
-    'error: failed to select a version for the requirement `hop-mesh-core = "^%s"`\n' % _anchor
-)
-_good_manifest = (
-    '[workspace]\n[workspace.dependencies]\n'
-    'hop-core = { version = "%s", package = "hop-mesh-core" }\n'
-    '[package]\nname = "x"\nversion = "%s"\n'
-    '[dependencies]\nhop-core = { workspace = true }\nserde = "1"\n' % (_anchor, _anchor)
-)
-_good_lock = (
-    '[[package]]\nname = "hop-mesh-core"\nversion = "%s"\n\n'
-    '[[package]]\nname = "serde"\nversion = "1.0.229"\n' % _anchor
-)
-
-with tempfile.TemporaryDirectory() as _raw:
-    _tmp = pathlib.Path(_raw)
-    _original_run = exports.subprocess.run
-    exports.subprocess.run = _fake_cargo(_unresolved)
-    try:
-        # The tolerated case: sibling unpublished at exactly the anchor, lock agrees -> accepted.
-        exports.verify_standalone_lock(root, "hop-wasm", _tree(_tmp / "ok", _good_manifest, _good_lock))
-
-        # A lock that does NOT carry the sibling at the version the manifest wants is still a defect.
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm",
-                _tree(_tmp / "stale", _good_manifest,
-                      _good_lock.replace('version = "%s"' % _anchor, 'version = "0.0.1"', 1)),
-            ),
-            "lock pinning the sibling at a different version",
-        )
-
-        # A dependency the manifest requires but the lock omits entirely is still a defect.
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm",
-                _tree(_tmp / "missing", _good_manifest,
-                      '[[package]]\nname = "hop-mesh-core"\nversion = "%s"\n' % _anchor),
-            ),
-            "lock missing a required dependency",
-        )
-
-        # A THIRD-PARTY crate failing to resolve is never a mid-release state; it must stay fatal.
-        # This fixture is built so ONLY the first-party filter can reject it: the crate is not ours, but it
-        # sits at the anchor version and the lock agrees, so every downstream structural check passes. If
-        # the filter is ever loosened to forgive any unresolved dependency, this is the case that notices.
-        _foreign_manifest = (
-            '[package]\nname = "x"\nversion = "%s"\n'
-            '[dependencies]\nnotours = "%s"\n' % (_anchor, _anchor)
-        )
-        _foreign_lock = '[[package]]\nname = "notours"\nversion = "%s"\n' % _anchor
-        exports.subprocess.run = _fake_cargo(
-            'error: failed to select a version for the requirement `notours = "^%s"`\n' % _anchor
-        )
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm", _tree(_tmp / "foreign", _foreign_manifest, _foreign_lock)
-            ),
-            "unresolvable dependency that is not one of our crates",
-        )
-
-        exports.subprocess.run = _fake_cargo(
-            'error: failed to select a version for the requirement `serde = "^9.9.9"`\n'
-        )
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm", _tree(_tmp / "thirdparty", _good_manifest, _good_lock)
-            ),
-            "unresolvable third-party dependency",
-        )
-
-        # A first-party sibling at some OTHER version is not the release in flight; stay fatal.
-        exports.subprocess.run = _fake_cargo(
-            'error: failed to select a version for the requirement `hop-mesh-core = "^9.9.9"`\n'
-        )
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm", _tree(_tmp / "otherver", _good_manifest, _good_lock)
-            ),
-            "sibling unresolvable at a version that is not being released",
-        )
-
-        # Any cargo failure that is not a version-selection error at all must stay fatal.
-        exports.subprocess.run = _fake_cargo("error: could not parse manifest\n")
-        rejected(
-            lambda: exports.verify_standalone_lock(
-                root, "hop-wasm", _tree(_tmp / "other", _good_manifest, _good_lock)
-            ),
-            "unrelated cargo failure",
-        )
-    finally:
-        exports.subprocess.run = _original_run
+# --- RETIRED WITH THE RUST CRATE MIRRORS (2026-08) ---------------------------------------------
+# A ~120-line suite lived here pinning verify_standalone_lock's mid-release tolerance: the carve-out
+# that lets a coordinated version bump pass CI while a first-party sibling is briefly absent from
+# crates.io. It pinned everything that carve-out must still REJECT, because a check that quietly
+# accepts a broken lock is worse than the deadlock it replaced.
+#
+# It is removed rather than adapted because it is now unreachable: verify_standalone_lock is only
+# invoked for RUST_MIRRORS, which is empty, and the suite keyed off CRATE_RENAMES, which is also
+# empty. Faking both to keep the test running would assert against a configuration the repo does not
+# have. If a Rust crate is ever mirrored again, restore this suite in the same change: the tolerance
+# is a deliberate hole in a safety check and must not go back unpinned.
 
 print("package export and native artifact tests passed")
 PY

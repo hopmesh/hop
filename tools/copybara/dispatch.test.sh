@@ -86,12 +86,12 @@ done < <(python3 "$dispatch" --list)
 
 # shellcheck disable=SC2016 # This is a literal injection payload, not a command substitution.
 malicious=(
-  '../hop-core'
-  'hop-core;id'
-  'hop-core_export'
+  '../hop-sdk-go'
+  'hop-sdk-go;id'
+  'hop-sdk-go_export'
   '$(id)'
-  'hop-core/../../etc'
-  $'hop-core\nworkflow=evil'
+  'hop-sdk-go/../../etc'
+  $'hop-sdk-go\nworkflow=evil'
   'olivr/copybara:latest'
 )
 for value in "${malicious[@]}"; do
@@ -102,12 +102,12 @@ for value in "${malicious[@]}"; do
   fi
 done
 
-if SYNC_COMPONENT=hop-core SYNC_DIRECTION='export;id' SYNC_INIT_HISTORY=false \
+if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION='export;id' SYNC_INIT_HISTORY=false \
     python3 "$dispatch" --json >/dev/null 2>&1; then
   echo "dispatch accepted malicious direction" >&2
   exit 1
 fi
-if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=true \
+if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=import SYNC_INIT_HISTORY=true \
     python3 "$dispatch" --json >/dev/null 2>&1; then
   echo "dispatch accepted init_history on import" >&2
   exit 1
@@ -115,7 +115,7 @@ fi
 
 # import requires a valid pr_number, emitted as source_ref (NOT folded into options, which the olivr
 # wrapper places first; source_ref is appended last, where the positional PR ref belongs).
-json="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+json="$(SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
   python3 "$dispatch" --json)"
 opts="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
 sref="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
@@ -124,28 +124,28 @@ if [ "$opts" != "--ignore-noop --force" ] || [ "$sref" != "292" ]; then
   exit 1
 fi
 # export carries no source_ref.
-sref_export="$(SYNC_COMPONENT=hop-core SYNC_DIRECTION=export SYNC_INIT_HISTORY=false \
+sref_export="$(SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=export SYNC_INIT_HISTORY=false \
   python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["source_ref"])')"
 if [ -n "$sref_export" ]; then
   echo "export unexpectedly carries a source_ref: $sref_export" >&2
   exit 1
 fi
 # import with no pr_number is rejected.
-if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" \
+if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" \
     python3 "$dispatch" --json >/dev/null 2>&1; then
   echo "dispatch accepted import with no pr_number" >&2
   exit 1
 fi
 # A non-numeric / injection pr_number is rejected.
 for bad in 'abc' '1;id' '$(id)' '-1' '0' '../7' '12345678'; do
-  if SYNC_COMPONENT=hop-core SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="$bad" \
+  if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=import SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="$bad" \
       python3 "$dispatch" --json >/dev/null 2>&1; then
     echo "dispatch accepted malicious pr_number: $bad" >&2
     exit 1
   fi
 done
 # pr_number is rejected on the non-PR directions.
-if SYNC_COMPONENT=hop-core SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
+if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_PR_NUMBER=292 \
     python3 "$dispatch" --json >/dev/null 2>&1; then
   echo "dispatch accepted pr_number on export" >&2
   exit 1

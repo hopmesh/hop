@@ -26,13 +26,17 @@ def changed(files):
 
 
 # changed_components: prefix ownership, including the nested core/hop vs core/hop-core boundary.
+# Retargeted by the 2026-08 mirror retirement. The nested core/hop vs core/hop-core boundary and the
+# Elixir vendor fan-out are gone with those mirrors, so the cases that pinned them would now assert
+# against components that do not exist. What still needs pinning is the same property: a change under a
+# prefix exports exactly that component, and a change under no prefix exports nothing.
 cases = [
-    (["sdk/node/lib/ffi.mjs", "README.md"], ["hop-sdk-node"]),
-    # core/hop and core/hop-core are distinct prefixes, and the Elixir mirror vendors both.
-    (["core/hop/src/lib.rs"], ["hop-sdk-elixir", "libhop"]),
-    (["core/hop-core/src/lib.rs"], ["hop-core", "hop-sdk-elixir"]),
+    (["sdk/go/hop.go", "README.md"], ["hop-sdk-go"]),
+    (["sdk/crystal/src/hop.cr"], ["hop-sdk-crystal"]),
+    (["sdk/apple/Package.swift"], ["hop-sdk-apple"]),
+    # A retired prefix must now own nothing rather than silently matching a live component.
+    (["core/hop-core/src/lib.rs", "services/hop-relayd/main.rs"], []),
     (["docs/x.md", ".github/workflows/ci.yml", "tools/copybara/dispatch.py"], []),
-    (["services/hop-relayd/main.rs", "sdk/go/x"], ["hop-relayd", "hop-sdk-go"]),
 ]
 for files, expect in cases:
     got = changed(files)
@@ -42,12 +46,12 @@ for files, expect in cases:
 # prefix-only trigger exported NOTHING when they changed: a native signing-key rotation left all four
 # native mirrors verifying release bundles against the superseded key until an unrelated commit landed
 # under one of their prefixes. These four cases fail against prefix-only detection.
-native = ["hop-embedded", "hop-sdk-android", "hop-sdk-apple", "hop-sdk-go"]
+native = ["hop-sdk-apple", "hop-sdk-go"]
 assert changed(["tools/native-artifacts-public.pem"]) == sorted(native), "key rotation exports nothing"
 assert changed(["tools/native-artifacts.py"]) == sorted(native), "native verifier change exports nothing"
 assert changed(["sdk/hop.h"]) == sorted(
-    ["hop-sdk-android", "hop-sdk-go"]
-), "C ABI header change does not reach the two mirrors that carry it"
+    ["hop-sdk-go"]
+), "C ABI header change does not reach the mirror that carries it"
 assert changed(["tools/release-provenance.py"]) == sorted(components), (
     "the release provenance verifier does not reach all mirrors"
 )

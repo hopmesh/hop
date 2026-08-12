@@ -41,11 +41,21 @@ for entry in reqs:
 # registry secret at all: they publish over OIDC trusted publishing, so the *_TOKEN secrets seeded on
 # those repos are unreferenced leftovers, not something this checker should expect.
 by_name = {e["component"]: e for e in reqs}
-assert "HEX_API_KEY" in by_name["hop-sdk-elixir"]["required"], "registry secret not detected"
-assert "PLATFORMIO_AUTH_TOKEN" in by_name["hop-embedded"]["required"], "registry secret not detected"
-assert "MAVEN_GPG_KEY" in by_name["hop-sdk-android"]["required"], "registry secret not detected"
-# And a token-free (OIDC) mirror must NOT be reported as needing one.
-assert "PYPI_API_TOKEN" not in by_name["hop-sdk-python"]["required"], "OIDC mirror wrongly needs a token"
+# The positive cases (Hex, PlatformIO, Maven) named hop-sdk-elixir, hop-embedded and hop-sdk-android,
+# all retired in 2026-08. They have no replacement: EVERY surviving mirror distributes by git tag
+# (SwiftPM, shards, the Go proxy), so not one of them references a registry credential. Asserting a
+# positive detection now would need a fabricated fixture, which would test the fixture rather than the
+# parser. Restore these alongside any future mirror that carries a registry secret.
+#
+# The negative case survives and is retargeted, because it still has a real subject: a mirror that
+# needs no registry token must not be reported as needing one. That is the direction that matters
+# here, since a false positive would send someone seeding a secret that nothing reads.
+for _component in sorted(by_name):
+    for _token in ("HEX_API_KEY", "PLATFORMIO_AUTH_TOKEN", "MAVEN_GPG_KEY", "PYPI_API_TOKEN", "NPM_TOKEN"):
+        assert _token not in by_name[_component]["required"], (
+            f"{_component} publishes by git tag and needs no registry credential, "
+            f"but the audit reports {_token} as required"
+        )
 
 # --- the reference parser -------------------------------------------------------------------------
 assert mod.SECRET_REF.findall("app-id: ${{ secrets.FOO_BAR }}") == ["FOO_BAR"]
