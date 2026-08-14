@@ -7,6 +7,9 @@ git-cliff. Do not edit by hand.
 ### Bug Fixes
 - root-cause + close the bearer-lan JaCoCo coverage wobble (F-3) (#103) (27c4ffa)
 
+### Build
+- bump gradle-wrapper from 9.6.1 to 9.7.0 in /bearers/android (af85df6)
+
 ### Chore
 - bump org.robolectric:robolectric in /apps/android/HopDemo (#110) (d10dfaf)
 - bump androidx.test:core in /bearers/android (#113) (ac1ef41)
@@ -19,6 +22,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (1f83a56)
 
 ### Documentation
+- regenerate from conventional commits (2302369)
 - regenerate from conventional commits (4fb4c3a)
 - regenerate from conventional commits (b85390e)
 - regenerate from conventional commits (3dd7f37)

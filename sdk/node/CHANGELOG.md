@@ -8,6 +8,9 @@ git-cliff. Do not edit by hand.
 - pass-5 audit remediation - DNSSEC name-hijack (CRITICAL) + Node reply UAF (HIGH) (#138) (74fd6ca)
 - use-after-free-safe teardown across go/python/node (+ elixir safety test) (#134) (f174422)
 
+### Build
+- bump ws in /sdk/node in the node-sdk-dependencies group (3e1054a)
+
 ### CI
 - sdk/node CI as a canonical composite action (shared monorepo <-> standalone repo) (#149) (2eb8226)
 
@@ -16,6 +19,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (2e68a4b)
 
 ### Documentation
+- regenerate from conventional commits (2302369)
 - regenerate from conventional commits (4fb4c3a)
 - regenerate from conventional commits (b85390e)
 - regenerate from conventional commits (3dd7f37)

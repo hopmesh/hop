@@ -51,6 +51,12 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (9f13dea)
 - gate Certificate Manager resources on API enablement (phase 1 retry) (50aa219)
 
+### Build
+- bump the github-actions group with 2 updates (6083eb3)
+- bump gradle-wrapper in /apps/android/HopDemo (ceb60f5)
+- bump gradle-wrapper from 9.6.1 to 9.7.0 in /bearers/android (af85df6)
+- bump ws in /sdk/node in the node-sdk-dependencies group (3e1054a)
+
 ### CI
 - auto-merge Dependabot PRs on green (squash) (#157) (8cda2bf)
 - sdk/node CI as a canonical composite action (shared monorepo <-> standalone repo) (#149) (2eb8226)
@@ -85,6 +91,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (1f83a56)
 
 ### Documentation
+- regenerate from conventional commits (2302369)
 - regenerate from conventional commits (4fb4c3a)
 - regenerate from conventional commits (b85390e)
 - regenerate from conventional commits (3dd7f37)
