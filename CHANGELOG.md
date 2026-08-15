@@ -230,6 +230,7 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (44a55f6)
 
 ### Chore
+- bump ws in /sdk/node in the node-sdk-dependencies group (2d57105)
 - cut every in-tree reference off the 20 deleted mirrors (5c12557)
 - bump astro (e49e3cc)
 - bump the node-sdk-dependencies group (0baa485)
@@ -285,6 +286,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (d4844bd)
 
 ### Documentation
+- regenerate from conventional commits (aa9cd27)
 - regenerate from conventional commits (d962196)
 - regenerate from conventional commits (dab3ffb)
 - correct an appendix whose premise this PR deletes (0c1392a)
