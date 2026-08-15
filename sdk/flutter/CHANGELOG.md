@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Documentation
+- regenerate from conventional commits (3ba58ed)
 - regenerate from conventional commits (2302369)
 - regenerate from conventional commits (4fb4c3a)
 - regenerate from conventional commits (b85390e)
