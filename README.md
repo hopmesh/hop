@@ -1,12 +1,35 @@
-# Hop
+<p align="center">
+  <img alt="Hop" src="https://hopme.sh/hop-mark.svg" width="200">
+</p>
 
-Hop is a metadata-privacy messaging mesh. Devices carry messages for each other over
-whatever transports are around (BLE, LAN, and a scale-to-zero cloud relay, with more
-bearers possible), so messages move even with no internet, and the network does not
-learn who is talking to whom. Content is always end-to-end forward-secret.
+<h1 align="center">Hop</h1>
 
-This README is the entrypoint. For the full protocol and threat model, read
-`DESIGN.md`; for a shorter mechanisms tour, `MECHANISMS.md`.
+<p align="center">
+  <b>A metadata-privacy messaging mesh.</b><br>
+  Devices carry messages for each other over whatever transports are around, so messages move with no
+  internet and the network does not learn who is talking to whom.
+</p>
+
+<p align="center">
+  <a href="https://hopme.sh">hopme.sh</a> &middot;
+  <a href="DESIGN.md">Protocol &amp; threat model</a> &middot;
+  <a href="MECHANISMS.md">Mechanisms tour</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
+  <img src="https://img.shields.io/badge/services-FSL--1.1--ALv2-6ea8fe" alt="services FSL-1.1-ALv2">
+  <img src="https://img.shields.io/badge/rust-1.97.0-dea584" alt="rust 1.97.0">
+</p>
+
+---
+
+Devices carry messages for each other over BLE, LAN, and a scale-to-zero cloud relay, with more
+bearers possible. Content is always end-to-end forward-secret, and the mesh is delay-tolerant: a
+message survives the gap between one carrier and the next.
+
+This README is the entrypoint. For the full protocol and threat model, read `DESIGN.md`; for a
+shorter mechanisms tour, `MECHANISMS.md`.
 
 ## What is here
 

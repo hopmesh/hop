@@ -11,12 +11,16 @@ members = [
     "services/hop-relayd",
     "services/hop-gateway",
     "services/hop-endpoint",
-    "services/hop-billingd",
     "services/hop-telemetryd",
-    "services/hop-accountd",
     "examples/hop-example-origin",
 ]
-exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz"]
+# hop-accountd and hop-billingd are the COMMERCIAL backend (Stripe, orgs, billing) and are excluded
+# from the public export. The exclusion has to fall on a workspace edge, not through the middle of one:
+# while they were members, removing their directories left the root Cargo.lock carrying 371 lines of
+# their exclusive dependency graph, so `cargo metadata --locked` failed in the exported tree and the
+# published repo could not be built reproducibly. Own workspace, own lock, same on-disk location. Same
+# pattern `fuzz` and the Elixir NIF already use.
+exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz", "services/hop-accountd", "services/hop-billingd"]
 
 [workspace.package]
 version = "0.0.2"

@@ -165,12 +165,16 @@ step "clippy gateway (reqwest)"       cargo clippy -p hop-gateway --features req
 step "C ABI (sqlcipher feature)"      cargo test -p hop --no-default-features --features sqlcipher --locked
 step "clippy C ABI (sqlcipher)"       cargo clippy -p hop --no-default-features --features sqlcipher --all-targets --locked -- -D warnings
 step "relayd (firestore feature)"     cargo test -p hop-relayd --features firestore
-step "accountd (firestore feature)"   cargo test -p hop-accountd --features firestore
+# accountd and billingd are OUTSIDE the cargo workspace (root Cargo.toml `exclude`) because they are the
+# commercial backend and are excluded from the public export; the boundary has to fall on a workspace
+# edge or the public tree's lock carries their dependency graph. `-p` cannot reach a non-member, so these
+# use --manifest-path, which runs each crate in its own workspace against its own lock.
+step "accountd (firestore feature)"   cargo test --manifest-path services/hop-accountd/Cargo.toml --features firestore
 step "telemetryd (firestore feature)" cargo test -p hop-telemetryd --features firestore
 step "telemetryd (live feature)"      cargo test -p hop-telemetryd --features live
 step "telemetryd (live + firestore)"  cargo test -p hop-telemetryd --features live,firestore
-step "billingd (live feature)"        cargo test -p hop-billingd --features live
-step "clippy billingd (live)"         cargo clippy -p hop-billingd --features live --all-targets -- -D warnings
+step "billingd (live feature)"        cargo test --manifest-path services/hop-billingd/Cargo.toml --features live
+step "clippy billingd (live)"         cargo clippy --manifest-path services/hop-billingd/Cargo.toml --features live --all-targets -- -D warnings
 step "store (sqlcipher feature)"      cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 step "minimal embedded C-ABI build"   cargo build -p hop --no-default-features --features minimal
 

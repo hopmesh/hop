@@ -402,9 +402,46 @@ REGISTERED = [
 
 # The trees that stay private. Kept as one list so the two workflows cannot disagree about the boundary:
 # public_export excludes exactly what internal_export includes.
+# The boundary is the BUSINESS, not the licence tier. Every service is FSL-1.1-ALv2, including relayd,
+# endpoint, gateway and telemetryd, so the licence does not separate what is commercial from what is
+# protocol. The line drawn here is money and identity versus mesh: anything that takes payment, holds a
+# customer, or runs our production estate stays private. The mesh itself, its SDKs, drivers, bearers and
+# the relay/endpoint/gateway/telemetry services are the product and stay public.
 PRIVATE_TREES = [
-    "docs/audits/**",   # 28 files: the dated adversarial-audit corpus, immutable point-in-time reports
-    "business/**",      # 4 files: pitch-deck plan and pricing/packaging strategy
+    # Already private before this change.
+    "docs/audits/**",                     # the dated adversarial-audit corpus, immutable point-in-time reports
+    "business/**",                        # pitch-deck plan and pricing/packaging strategy
+
+    # The commercial backend: money and customer identity.
+    "services/hop-accountd/**",           # Stripe API + webhook, orgs, teams, sessions, OAuth, usage, pg schema
+    "services/hop-billingd/**",           # usage ledger, BigQuery rollups, Stripe metering
+    "apps/web/console/**",                # the customer console: signup, dashboard, invites, team management
+
+    # The production estate. infra/ is the runtime root (relay, load balancer, DNS, certs, observability,
+    # the BigQuery usage dataset), infra/bootstrap/ is administrator-only (APIs, IAM, service accounts,
+    # secrets, Workload Identity Federation, Firestore policy, Artifact Registry), and infra/billing/ is
+    # the Stripe catalog. Publishing it maps our attack surface for free; it is disclosure, not source.
+    "infra/**",
+
+    # Commercial strategy and internal operating docs.
+    "docs/pricing-cost-model.md",         # unit economics: GCP rates, cost model, pricing rationale
+    "docs/positioning.md",                # strategy note, the source of truth behind public messaging
+    "docs/console-local-verification.md", # walkthrough for running the customer console locally
+    "mockups/**",                         # design references for the console and internal dashboards; none ship
+
+    # The ROOT workflows are the private estate expressed as YAML, so excluding infra/ while publishing
+    # them would be an incoherent boundary. runtime-deploy.yml and bootstrap-apply.yml hardcode the GCP
+    # project (hop-mesh) and name the Workload Identity providers and deploy service accounts;
+    # billing-catalog.yml drives the LIVE Stripe catalog and the Resend sending domain and names
+    # STRIPE_API_KEY, RESEND_API_KEY and BOOTSTRAP_TFVARS. Excluding this directory also stops the public
+    # repo inheriting our automation and running it against itself: the seeded copy had been opening and
+    # merging its own daily changelog PRs since it was created, plus a Dependabot branch, because it
+    # received .github/dependabot.yml and changelog.yml along with everything else. The monorepo is the
+    # source of truth and runs CI; the public repo is a publication and does not need to.
+    #
+    # This does NOT touch the three surviving mirrors' own workflows, which live under
+    # sdk/<component>/.github/ and are a different path.
+    ".github/**",
 ]
 
 INTERNAL_REPO = "https://github.com/hopmesh/internal.git"

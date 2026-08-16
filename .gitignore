@@ -3,7 +3,12 @@ drivers/apple/HopDriver/Sources/HopFFIBindings/hop_ffi.swift
 drivers/apple/HopDriver/.build-staging/
 # ---- Rust ----
 /target
+# Every crate OUTSIDE the root workspace builds into its OWN target/, and these rules are anchored, so
+# each one needs its own line. Missing them is not cosmetic: it silently stages thousands of build
+# artifacts (this cost 8435 files in one commit before it was caught by reading the diffstat).
 /fuzz/target
+/services/hop-accountd/target
+/services/hop-billingd/target
 /fuzz/artifacts
 /fuzz/coverage
 **/*.rs.bk
