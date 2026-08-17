@@ -44,16 +44,16 @@ done
 
 echo
 echo "== 2. configure the GitHub Apps =="
-echo "  Sync App: install on $ORG/monorepo and every mirror; Actions read/write, Contents read/write, Pull requests read."
+echo "  Sync App: install on $ORG/hop and every mirror; Actions read/write, Contents read/write, Pull requests read."
 echo "  Store HOP_SYNC_APP_ID and HOP_SYNC_APP_PRIVATE_KEY only in protected component-sync environments."
-echo "  Source App: install only on $ORG/monorepo; Actions, Attestations, Checks, and Contents read."
+echo "  Source App: install only on $ORG/hop; Actions, Attestations, Checks, and Contents read."
 echo "  Store HOP_SOURCE_APP_ID and HOP_SOURCE_APP_PRIVATE_KEY in each publishing mirror's release environment."
 echo "  The libhop-only Release App retired with its repo: no HOP_RELEASE_APP_* credential is needed."
 echo "  Do not create COPYBARA_TOKEN or HOP_SYNC_TOKEN PAT secrets."
 
 echo
 echo "== 3. protect authority environments =="
-echo "  Create component-sync on $ORG/monorepo and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
+echo "  Create component-sync on $ORG/hop and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
 echo "  For every mirror with release.yml, create environment 'release' with a required reviewer."
 echo "  The three surviving mirrors are tag-only, so no registry trusted publisher is needed."
 

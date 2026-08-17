@@ -1,25 +1,30 @@
 # Component mirroring with Copybara
 
-This monorepo is the source of truth. Copybara mirrors a component subtree to its own standalone repo
-(so it has its own npm package page, issues, and PRs) and brings external contributions back, without
-forking. It is the Meta react-native / relay pattern, done with [Copybara](https://github.com/google/copybara)
-instead of fbshipit.
+This repo, `hopmesh/hop`, is the canonical monorepo and the source of truth. Copybara mirrors a
+component subtree to its own standalone repo (so it has its own package page, issues, and PRs) and
+brings external contributions back, without forking. It is the Meta react-native / relay pattern,
+done with [Copybara](https://github.com/google/copybara) instead of fbshipit.
 
 Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`.
 `tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky` holds the
 matching `COMPONENTS` list used to generate an export and import workflow for each. Their CI self-test
 rejects any drift between the two. Twenty other components were mirrored until the 2026-08 retirement;
-those repos are deleted and the components now live only in the monorepo. See `docs/repo-catalog.md`.
+those repos are deleted and the components now live only here. See `docs/repo-catalog.md`.
+
+These three mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
+`Package.swift` at the repository root, shards needs `shard.yml` there, and the Go module proxy
+resolves a module from its repo root. Every other component publishes an artifact to a registry that
+hosts the artifact itself, so it does not need a standalone repo.
 
 ## What it does
 
 For each component, `copy.bara.sky` generates two workflows, `<mirror>_export` and `<mirror>_import`:
 
-- **export** (`monorepo:<prefix>` -> `hopmesh/<mirror>`): replays every monorepo commit that touches the
+- **export** (`hop:<prefix>` -> `hopmesh/<mirror>`): replays every monorepo commit that touches the
   subtree, commit-for-commit, into the mirror, stripping the prefix so the subtree becomes the mirror's
   root. `CLAUDE.md` (monorepo-internal dev guidance) is left out of the public mirror.
 - **import** (`<mirror>` PR -> monorepo PR): takes a PR opened on the mirror, re-adds the prefix, and
-  opens it as a **PR on the monorepo** (never a direct push to `main`), so external contributions still
+  opens it as a **PR on this repo** (never a direct push to `main`), so external contributions still
   go through review. It never rewrites the monorepo-internal files.
 
 The GitHub Action is `.github/workflows/sync-components.yml`, a single dispatch parameterized by
@@ -47,8 +52,8 @@ state tracking so it can run continuously.
      --description "Receive Hop mesh messages in Go with a net/http-shaped surface over the libhop C ABI (cgo). A Go module."
    ```
 
-2. **Create the sync GitHub App.** Install it on `hopmesh/monorepo` and every mirror. Grant Actions
-   read/write, Contents read/write, and Pull requests read. In `hopmesh/monorepo`, create a protected
+2. **Create the sync GitHub App.** Install it on `hopmesh/hop` and every mirror. Grant Actions
+   read/write, Contents read/write, and Pull requests read. In `hopmesh/hop`, create a protected
    `component-sync` environment restricted to `main`, require a reviewer other than the dispatcher,
    enable prevention of self-review, and store `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` only as
    environment secrets. Mirror dispatch workflows that retain these credentials need the same protected
@@ -57,7 +62,7 @@ state tracking so it can run continuously.
    them and does not create or verify the environment policy.
 
 3. **Create the source-verifier GitHub App.** Install this separate read-only App on
-   `hopmesh/monorepo` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as
+   `hopmesh/hop` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as
    `HOP_SOURCE_APP_ID` and `HOP_SOURCE_APP_PRIVATE_KEY` in each publishing mirror's `release`
    environment. Release jobs use it to prove that the mirror tag exactly matches a successful canonical
    `main` commit before any registry or GitHub publish step runs.
@@ -72,9 +77,9 @@ state tracking so it can run continuously.
     workflow mirrors the same provenance to GitHub's attestation API when the repository plan supports
     hosted storage; the attached Sigstore bundle is always authoritative.
 
-   The libhop-only Release App that used to supply `HOP_RELEASE_APP_ID` and
-   `HOP_RELEASE_APP_PRIVATE_KEY` retired along with its repo, and so did every registry credential the
-   old fleet needed (`MAVEN_*`, `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All three surviving mirrors
+   The libhop-only Release App that used to supply `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
+   retired along with its repo, and so did every registry credential the old fleet needed (`MAVEN_*`,
+   `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All three surviving mirrors
    publish by pushing a git tag, so none of them needs a registry secret at all.
 
 5. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
@@ -88,16 +93,16 @@ state tracking so it can run continuously.
 
 ## Where the conversation happens, and where the merge happens
 
-One rule: **`main` on the monorepo is the source of truth, and every merge happens there.** What varies
+One rule: **`main` on this repo is the source of truth, and every merge happens here.** What varies
 is where the *conversation* is:
 
 | Work | Conversation | Merge | How it reaches the other side |
 | --- | --- | --- | --- |
-| **Public** (external contribution, open by design) | a **PR on the mirror** (public) | the monorepo (the PR is imported there) | import (mirror PR -> monorepo PR), then export cascades back out |
-| **Internal / confidential** | a **PR on the monorepo** (private, can be locked) | the monorepo | export cascades to the mirror on merge (unless held back, below) |
+| **External contribution** | a **PR on the mirror** (public) | this repo (the PR is imported here) | import (mirror PR -> monorepo PR), then export cascades back out |
+| **First-party work** | a **PR on this repo** | this repo | export cascades to the mirror on merge (unless held back, below) |
 
 So a public contributor discusses on the mirror; the change is imported as a monorepo PR, reviewed and
-merged there, and the export publishes the result back to the mirror. The mirror PR is the public
+merged here, and the export publishes the result back to the mirror. The mirror PR is the public
 record; the monorepo PR is the merge of record.
 
 ### Sync-back (mirror PR -> monorepo PR)
@@ -109,13 +114,13 @@ component name; edit it in the monorepo, never in a mirror.
 
 No loop guard is needed: the export cascades out as a **push**, and a push does not fire pull-request
 events, so the sync-back never sees the export's own commits. It runs under `pull_request_target` and
-only dispatches, never checking out PR code. It mints a token scoped only to `hopmesh/monorepo` with
+only dispatches, never checking out PR code. It mints a token scoped only to `hopmesh/hop` with
 Actions write from the sync App credentials; fork code never executes in the privileged job.
 
 ### Confidentiality (what the export publishes)
 
-The export only ever ships a component's **own subtree** (minus `CLAUDE.md`), so nothing else in the
-private monorepo is visible to a public mirror. For a per-change embargo on top of that, gate the
+The export only ever ships a component's **own subtree** (minus `CLAUDE.md`), so nothing outside that
+subtree is visible to a mirror. For a per-change embargo on top of that, gate the
 cascade on a label: publish a merge only if its monorepo PR is **not** labeled `confidential` (or require
 an explicit `publish` label). That gate lives in the export trigger, not in a change-request, so a
 reviewed monorepo merge still flows out with no extra approval when it is not held back.
@@ -158,6 +163,14 @@ workflow uses `git.github_pr_destination`, which rejects a non-GitHub URL outrig
 locally, copy the config to a scratch file and rewrite the destination there. Do not expect `file://`
 to work against the committed config.
 
+**Name the source ref explicitly, and reconcile file counts afterwards.** The workflows take their
+origin from the remote at `main`, but any rehearsal from a local checkout is only as fresh as that
+checkout's `main`, and a stale one fails silently: one run whose local `main` sat 51 commits behind
+`origin/main` produced an export missing nine files and carrying `bundle-v14.json` where `main` had
+v15. The boundary check still passed, because the path boundary was correct and only the contents were
+old. So set `COPYBARA_SOURCEREF=origin/main` rather than trusting whatever `main` points at locally,
+then compare the exported file count against the source before trusting the run.
+
 CI uses the digest-pinned `olivr/copybara:20230129` image with a read-only filesystem, isolated
 credentials, and a fixed dispatch map. Local runs should use that same digest.
 
@@ -183,74 +196,16 @@ The components wired today are the three that survived the 2026-08 retirement: `
 ready to stand alone if it is mirrored again. Bringing back one of the twenty retired names means
 recreating its repository first, because the old one was deleted; `docs/repo-catalog.md` lists them.
 
-## The split: moving the private trees out and the public repo in
+## Historical note: the 2026-08 handover (already done)
 
-Two whole-repo workflows in `copy.bara.sky`, distinct from everything above. The per-component
-workflows export a SUBTREE and make it a mirror's root; these export the repository AS a repository,
-prefixes intact.
-
-Both are ONE-TIME migrations, run by hand with `--init-history`. They are deliberately NOT dispatch
-choices in `sync-components.yml`: that input is validated against `components.json`, and a migration
-is not a component. `dispatch.test.sh` enforces that the two agree, which is worth keeping.
-
-### Why this is not a standing sync
-
-A standing sync would leave `docs/audits/` and `business/` present in BOTH repos, and in the public
-repo's history forever, which is exactly what moving them is meant to prevent. The sequence is:
-
-1. `internal_export` copies the private trees into `hopmesh/internal`, paths intact
-2. delete those trees from the monorepo in an ordinary commit
-3. `public_export` seeds the public repo with `--init-history`
-
-Step 3 is what replaces a `git filter-repo` rewrite. Under `--init-history` an excluded path is
-excluded from HISTORY too, so a commit that only ever touched `docs/audits/` never appears in the
-exported history at all. Nothing is rewritten, no SHA is rebased, and the monorepo survives untouched
-as the complete archive. That is the whole reason Copybara beats a rewrite here.
-
-### Before the first run
-
-- **`PUBLIC_REPO` is `hopmesh/hop`, and that is deliberate.** `hopmesh/hop` is a real, distinct,
-  freshly created repository (id 1326204869), currently private and seeded at roughly 165 MB. It is NOT
-  `hopmesh/monorepo` (id 1273816715). Creating it did break the old `hop` to `monorepo` rename
-  redirect. That was an accepted naming decision rather than an accident, so do not try to restore the
-  redirect by renaming anything back.
-- **Both destination repos already exist, and both are private.** `hopmesh/hop` is the public-repo seed
-  and `hopmesh/internal` holds the split-out `docs/audits` and `business` trees. Making the public one
-  actually public is a MANUAL visibility change that has not happened yet, so nothing is published.
-- **Convert the audit corpus first.** 79 files cite `F-xx`, 24 cite `SVC-xxx`, 15 cite `PROC-xxx`, and
-  9 link `docs/audits` directly. Excluding the directory without publishing an advisory set leaves
-  every one of those a dangling pointer in public source.
-- **Settle the root licence.** 812 tracked files sit outside every mirror prefix and there is no root
-  `LICENSE`, so they would publish with no declared licence at all.
-
-### The runs
-
-Both are ONE-TIME `--init-history` seeds, not routine dispatches. Use the env-driven form above; the
-argv form silently looks for a migration named `default` and does nothing you asked for.
-
-```sh
-# once, into hopmesh/internal
-docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
-  -v ~/.gitconfig:/root/.gitconfig \
-  -e COPYBARA_SUBCOMMAND=migrate \
-  -e COPYBARA_CONFIG=tools/copybara/copy.bara.sky \
-  -e COPYBARA_WORKFLOW=internal_export \
-  -e COPYBARA_OPTIONS='--init-history' \
-  -e COPYBARA_SOURCEREF=origin/main \
-  olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
-
-# once, into hopmesh/hop (AFTER the private trees are deleted from the monorepo)
-#   same command with COPYBARA_WORKFLOW=public_export
-```
-
-**Name the source ref, and reconcile file counts afterwards.** As committed, both migrations take their
-origin from the remote `hopmesh/monorepo` at `main`. A seed is usually rehearsed from a scratch config
-pointed at a local checkout instead, and then the ref decides everything: a stale local `main` exports a
-stale tree and says nothing about it. One run whose local `main` sat 51 commits behind `origin/main`
-produced an export missing nine files and carrying `bundle-v14.json` where `main` had v15. The boundary
-check still passed, because the path boundary was correct and only the contents were old. So set
-`COPYBARA_SOURCEREF=origin/main` rather than trusting whatever `main` points at locally, then compare
-the exported file count against the source before trusting the run.
-
-Verify the public one before making anything public: `git log --all --oneline -- docs/audits business`
-in the exported repo must return nothing.
+This repo is itself the product of a one-time Copybara migration, not an ongoing sync target.
+`copy.bara.sky` used to live in the old private monorepo (`hopmesh/monorepo`) and carry two whole-repo
+`--init-history` migrations: `internal_export`, which moved the commercial backend and production
+estate (`services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, `infra/`) into
+`hopmesh/platform` and the audit/business/mockups trees (`docs/audits`, `business/`, `mockups/`) into
+`hopmesh/internal`, and `public_export`, which seeded this repo with everything else, the private
+paths excluded from history entirely (which is why no history rewrite was needed). Both migrations ran,
+the private trees were deleted from the source, and the old monorepo was archived. Those workflows and
+their `PRIVATE_TREES` boundary list were removed from the config when this repo became canonical; there
+is no public/private split left to maintain here. The audit-corpus cross-references (`F-xx`,
+`SVC-xxx`, `PROC-xxx`) and the root licence question were settled as part of that handover.

@@ -1,6 +1,6 @@
 # copy.bara.sky - mirror every first-party component subtree to its own standalone public repo.
 #
-# The Hop monorepo is the SOURCE OF TRUTH. Copybara replays each subtree OUT to its mirror commit-for-
+# The Hop monorepo (this repo, hopmesh/hop) is the SOURCE OF TRUTH. Copybara replays each subtree OUT to its mirror commit-for-
 # commit (export) and brings external PRs BACK as monorepo PRs (import), so a component can live in its
 # own repo (its package page, issues, PRs) without forking. This is the Meta react-native / relay
 # pattern, done with Copybara instead of fbshipit.
@@ -13,7 +13,10 @@
 #
 # See tools/copybara/README.md for the one-time bootstrap + how the first (--init-history) run works.
 
-MONOREPO = "https://github.com/hopmesh/monorepo.git"
+# This repository, hopmesh/hop, IS the monorepo now: the canonical source of truth every export below
+# reads from and every import writes back to. It used to point at the old private monorepo, whose
+# handover to this repo already ran; see the historical note at the bottom of this file.
+MONOREPO = "https://github.com/hopmesh/hop.git"
 BOT = "hop-sync <sync@hopme.sh>"
 PROVENANCE_HELPER = "tools/release-provenance.py"
 RELEASE_ARTIFACT_HELPER = "tools/release-artifact.py"
@@ -158,7 +161,7 @@ resolver = "2"
 [workspace.package]
 version = "0.0.2"
 edition = "2021"
-repository = "https://github.com/hopmesh/monorepo"
+repository = "https://github.com/hopmesh/hop"
 
 [workspace.dependencies]
 hop-core = { version = "0.0.2", package = "hop-mesh-core" }
@@ -202,9 +205,9 @@ def _strip_workspace():
     )
 
 # The preamble is shared by every Rust mirror, so it can only name one repository, and it names the
-# monorepo. That is wrong twice over on a published artifact: the monorepo is PRIVATE, so the link is
-# dead for anyone who installs the package, and npm REJECTS a package whose repository does not match
-# the one its sigstore provenance attests to:
+# monorepo. That is wrong on a published artifact: npm REJECTS a package whose repository does not
+# match the one its sigstore provenance attests to, and the mirror, not the monorepo, is what the
+# provenance names:
 #   Failed to validate repository information: package.json: "repository.url" is "...",
 #   expected to match "https://github.com/hopmesh/<mirror>" from provenance
 # So the shared value is rewritten to each crate's OWN mirror on export, and reversed on import before
@@ -214,7 +217,7 @@ def _strip_workspace():
 # so nothing exercises it today. It is kept rather than deleted for the same reason as the RUST_MIRRORS
 # conditionals themselves: it re-arms automatically if a Rust crate is mirrored again, and the npm
 # provenance rejection it prevents is a real failure that already bit two components.
-MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/monorepo"'
+MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/hop"'
 
 def _mirror_repository(name):
     return core.replace(
@@ -385,95 +388,21 @@ REGISTERED = [
 ]
 
 # ---------------------------------------------------------------------------------------------------
-# THE SPLIT: two whole-repo workflows, distinct from the per-component mirrors above.
+# HISTORICAL NOTE: the 2026-08 handover. Already run, one-time, do not re-add.
 #
-# Everything above exports a SUBTREE and makes it a mirror's root. These two export the repository AS a
-# repository, prefixes intact, and exist for the one-time reorganisation:
+# This file used to carry two whole-repo migration workflows, internal_export and public_export, plus
+# the PRIVATE_TREES boundary list they shared. They were ONE-TIME --init-history migrations, not
+# standing syncs, and they replayed the OLD private monorepo (hopmesh/monorepo, since archived) out
+# into two repos:
 #
-#   internal_export  the trees that must NOT ship with public source, into a private repo
-#   public_export    everything else, into the public repo
+#   internal_export -> hopmesh/platform and hopmesh/internal (private)
+#     the commercial backend and production estate (services/hop-accountd, services/hop-billingd,
+#     apps/web/console, infra/) went to hopmesh/platform; the audit corpus, business docs and mockups
+#     (docs/audits, business/, mockups/) went to hopmesh/internal
+#   public_export   -> hopmesh/hop, THIS repo
+#     everything else, with the private trees excluded from history entirely
 #
-# Both are ONE-TIME migrations seeded with --init-history, not standing syncs. That distinction is the
-# whole point for internal_export: a standing sync would leave docs/audits and business/ present in BOTH
-# repos and in the public repo's history forever, which is exactly what moving them is meant to prevent.
-# Run it once, delete the trees from the monorepo in a normal commit, and let public_export's
-# --init-history do the rest: a commit that only ever touched an excluded path never appears in the
-# exported history at all, so there is nothing to purge afterwards.
-
-# The trees that stay private. Kept as one list so the two workflows cannot disagree about the boundary:
-# public_export excludes exactly what internal_export includes.
-# The boundary is the BUSINESS, not the licence tier. Every service is FSL-1.1-ALv2, including relayd,
-# endpoint, gateway and telemetryd, so the licence does not separate what is commercial from what is
-# protocol. The line drawn here is money and identity versus mesh: anything that takes payment, holds a
-# customer, or runs our production estate stays private. The mesh itself, its SDKs, drivers, bearers and
-# the relay/endpoint/gateway/telemetry services are the product and stay public.
-PRIVATE_TREES = [
-    # Already private before this change.
-    "docs/audits/**",                     # the dated adversarial-audit corpus, immutable point-in-time reports
-    "business/**",                        # pitch-deck plan and pricing/packaging strategy
-
-    # The commercial backend: money and customer identity.
-    "services/hop-accountd/**",           # Stripe API + webhook, orgs, teams, sessions, OAuth, usage, pg schema
-    "services/hop-billingd/**",           # usage ledger, BigQuery rollups, Stripe metering
-    "apps/web/console/**",                # the customer console: signup, dashboard, invites, team management
-
-    # The production estate. infra/ is the runtime root (relay, load balancer, DNS, certs, observability,
-    # the BigQuery usage dataset), infra/bootstrap/ is administrator-only (APIs, IAM, service accounts,
-    # secrets, Workload Identity Federation, Firestore policy, Artifact Registry), and infra/billing/ is
-    # the Stripe catalog. Publishing it maps our attack surface for free; it is disclosure, not source.
-    "infra/**",
-
-    # Commercial strategy and internal operating docs.
-    "docs/pricing-cost-model.md",         # unit economics: GCP rates, cost model, pricing rationale
-    "docs/positioning.md",                # strategy note, the source of truth behind public messaging
-    "docs/console-local-verification.md", # walkthrough for running the customer console locally
-    "mockups/**",                         # design references for the console and internal dashboards; none ship
-
-    # The ROOT workflows are the private estate expressed as YAML, so excluding infra/ while publishing
-    # them would be an incoherent boundary. runtime-deploy.yml and bootstrap-apply.yml hardcode the GCP
-    # project (hop-mesh) and name the Workload Identity providers and deploy service accounts;
-    # billing-catalog.yml drives the LIVE Stripe catalog and the Resend sending domain and names
-    # STRIPE_API_KEY, RESEND_API_KEY and BOOTSTRAP_TFVARS. Excluding this directory also stops the public
-    # repo inheriting our automation and running it against itself: the seeded copy had been opening and
-    # merging its own daily changelog PRs since it was created, plus a Dependabot branch, because it
-    # received .github/dependabot.yml and changelog.yml along with everything else. The monorepo is the
-    # source of truth and runs CI; the public repo is a publication and does not need to.
-    #
-    # This does NOT touch the three surviving mirrors' own workflows, which live under
-    # sdk/<component>/.github/ and are a different path.
-    ".github/**",
-]
-
-INTERNAL_REPO = "https://github.com/hopmesh/internal.git"
-
-# The public repository. `hopmesh/hop` is a genuinely NEW repository (id 1326204869), NOT the old rename
-# redirect that pointed that name at `hopmesh/monorepo` (id 1273816715). Creating it deliberately broke
-# that redirect, which was an accepted naming decision rather than an accident, so the earlier comment
-# here warning the name away was wrong and is gone. Both this repo and INTERNAL_REPO exist today and are
-# PRIVATE; making this one public is a manual visibility flip that has not happened yet.
-PUBLIC_REPO = "https://github.com/hopmesh/hop.git"
-
-core.workflow(
-    name = "internal_export",
-    origin = git.origin(url = MONOREPO, ref = "main"),
-    destination = git.destination(url = INTERNAL_REPO, push = "main"),
-    # Paths are NOT stripped: docs/audits/ lands at docs/audits/ so every F-xx reference that survives
-    # in the public tree still names a path a reader can find, just in a repo they need access to.
-    origin_files = glob(PRIVATE_TREES),
-    destination_files = glob(["**"]),
-    authoring = authoring.pass_thru(default = BOT),
-    mode = "ITERATIVE",
-)
-
-core.workflow(
-    name = "public_export",
-    origin = git.origin(url = MONOREPO, ref = "main"),
-    destination = git.destination(url = PUBLIC_REPO, push = "main"),
-    # The whole repository minus the private trees. Excluded here means excluded from HISTORY too under
-    # --init-history, which is why this replaces a git filter-repo rewrite: nothing is rewritten, the
-    # commits simply never carry those paths, and the monorepo is left untouched as the archive.
-    origin_files = glob(["**"], exclude = PRIVATE_TREES),
-    destination_files = glob(["**"]),
-    authoring = authoring.pass_thru(default = BOT),
-    mode = "ITERATIVE",
-)
+# Both ran, the private trees were deleted from the source, the old monorepo was archived, and this
+# repo became the canonical monorepo. There is no public/private split left for Copybara to maintain
+# here: the only standing syncs are the per-component mirror workflows above, and the three mirror
+# repos (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) are the only destinations.

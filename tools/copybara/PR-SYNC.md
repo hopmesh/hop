@@ -1,6 +1,7 @@
-# PR-level sync: private monorepo and public mirrors
+# PR-level sync: the hop monorepo and the public mirrors
 
-The monorepo is the source of truth. Each first-party subtree is mirrored to its own public repo so a
+This repo, `hopmesh/hop`, is the monorepo and the source of truth. Each first-party subtree is mirrored
+to its own public repo so a
 component can have its own package page, issues, and PRs. Copybara moves the code; three named
 directions do the work, all dispatched through `.github/workflows/sync-components.yml` and gated by the
 `authorize` preflight (protected `main`, `workflow_dispatch`, human actor, current SHA) and the
@@ -12,10 +13,10 @@ protected `component-sync` environment.
 | ----------- | ----------------------- | -------------------- | -------------- | ---- |
 | `export`    | monorepo `main` commits | mirror `main` (push) | ITERATIVE      | carry MERGED commits out, one for one |
 | `import`    | a mirror PR             | a monorepo PR        | CHANGE_REQUEST | bring an externally authored mirror PR in for review + merge |
-| `export_pr` | an open monorepo PR     | a mirror PR          | CHANGE_REQUEST | surface a private PR on the mirror for public CI + discussion before it merges |
+| `export_pr` | an open monorepo PR     | a mirror PR          | CHANGE_REQUEST | surface a monorepo PR on the mirror for the mirror's own CI + discussion before it merges |
 
-`export_pr` is the newest piece. A PR opened on the private monorepo becomes a PR on each public mirror
-whose subtree it touches, so the mirror's own CI runs on it (free, on public runners) and public review
+`export_pr` is the newest piece. A PR opened on the monorepo becomes a PR on each public mirror
+whose subtree it touches, so the mirror's own CI runs on it and public review
 can happen before anything merges. The canonical MERGE still happens once, in the monorepo, where `main`
 is branch protected. After the merge, `export` (the ITERATIVE push) carries the merged commits out to
 mirror `main`, the open mirror PR goes empty, and it closes.
