@@ -20,8 +20,8 @@ import textwrap
 import urllib.request
 from pathlib import Path
 
-API = "https://api.github.com/repos/hopmesh/monorepo/"
-EXPECTED = "hopmesh/monorepo"
+API = "https://api.github.com/repos/hopmesh/hop/"
+EXPECTED = "hopmesh/hop"
 
 
 def _api(path, token):

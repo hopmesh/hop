@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license      = { :type => "Apache-2.0", :file => "LICENSE.md" }
   s.authors      = { "Hop Mesh, LLC" => "jason@waldrip.net" }
   s.platforms    = { :ios => "15.1", :osx => "12.0" }
-  s.source       = { :git => "https://github.com/hopmesh/monorepo.git", :tag => "v#{s.version}" }
+  s.source       = { :git => "https://github.com/hopmesh/hop.git", :tag => "v#{s.version}" }
 
   s.source_files = "ios/**/*.{h,m,mm,swift}"
   s.swift_version = "5.9"

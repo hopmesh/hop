@@ -26,7 +26,7 @@ exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz", "services/hop-accou
 version = "0.0.2"
 edition = "2021"
 # No repo-wide license: this is a monorepo; components carry their own license as they split out.
-repository = "https://github.com/hopmesh/monorepo"
+repository = "https://github.com/hopmesh/hop"
 
 # CI-DISK: test/dev binaries carry full debug info by default, which is the single largest consumer
 # of target/ space. This job builds the workspace plus SIX additional feature-set permutations, so
