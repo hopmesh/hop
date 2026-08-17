@@ -1,0 +1,41 @@
+# When a Dependabot PR goes red, summon Claude to do the actual migration. A failed required run on
+# a dependabot branch means the bump needs real work (an AGP/Gradle/Kotlin migration, an API change),
+# not a rebase; this posts ONE @claude comment asking for the fix, which the Claude GitHub app picks
+# up as a work request with full CI context. The marker comment keeps reruns from re-tagging.
+name: Tag Claude on failing dep PRs
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  tag-claude:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment once, tagging Claude with the failure
+        run: |
+          PR_NUMBER=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "no open PR for $BRANCH; nothing to tag"; exit 0
+          fi
+          MARKER="<!-- dep-fix-tag -->"
+          if gh pr view "$PR_NUMBER" --repo "$REPO" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
+            echo "already tagged; not re-tagging on rerun"; exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(printf '%s\n\n%s\n%s' \
+            "$MARKER" \
+            "@claude CI is failing on this dependency bump. Do the actual migration this update needs (build-config, API, or toolchain changes), keep the bumped version, verify with the full suite, and push the fix to this branch. Failed run: $RUN_URL" \
+            "If the bump is genuinely incompatible with the codebase, say so on this PR instead of downgrading.")"
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

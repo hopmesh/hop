@@ -1,0 +1,51 @@
+# Catch the failure mode that hid three breakages at once in 2026-08: a workflow that reports success
+# while doing nothing.
+#
+# A job gated on an `if` that evaluates false is SKIPPED, and a run whose only meaningful job skipped
+# still shows a green tick. Nothing in this repo distinguished that from a real run, so runtime-deploy
+# sat dead for nine days, sync-components for four, and bootstrap-apply's IAM drifted from main for
+# weeks. Every one of them was green the whole time.
+#
+# This workflow used to answer two questions; only one still has a subject in this repo:
+#
+#   freshness  For jobs that fire on EVERY merge to main, "has this genuinely executed lately" is a real
+#              signal, and a skipped job is indistinguishable from a working one without asking.
+#
+#   drift      Deleted here. The drift half ran `tofu plan -detailed-exitcode` against the bootstrap
+#              root under the infra tree, which moved to hopmesh/platform; platform's own copy of this
+#              workflow carries that job now. Keeping a tofu job here would point at a tree that does
+#              not exist.
+#
+# Scheduled rather than per-merge on purpose: the question is not about the commit under test, and the
+# check costs API calls.
+name: Workflow freshness
+
+on:
+  schedule:
+    # Daily, mid-morning UTC, after the changelog merge that guarantees main moves at least once a day.
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    name: Deploy-critical jobs have really run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reading job conclusions for past runs is the whole check; the default token cannot do it.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Self-test the freshness guard
+        run: bash tools/workflow-freshness-guard.test.sh
+
+      - name: Every deploy-critical job has really run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/workflow-freshness-guard.py

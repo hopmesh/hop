@@ -12,8 +12,8 @@ class PagesPathError(RuntimeError):
 
 
 def check_authority(text):
-    repository_check = 'test "$REPOSITORY" = hopmesh/monorepo'
-    main_api = "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main"
+    repository_check = 'test "$REPOSITORY" = hopmesh/hop'
+    main_api = "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main"
     hidden_artifacts = "include-hidden-files: true"
     if text.count(repository_check) != 1:
         raise PagesPathError("Pages canonical repository check drifted")

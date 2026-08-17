@@ -1,0 +1,168 @@
+name: Branch protection audit
+
+# quality-net-r2-03: the merge gate's INTENT half - that `main` actually requires the CI checks so a
+# red commit can't land - lives in GitHub repo settings (branch protection), which no repo file can
+# set. That single external config, if missing or drifted (a renamed job), silently turns the whole
+# pre-merge gate into advisory. This job re-derives the required check set from ci.yml and asserts the
+# live branch-protection rule on `main` requires EXACTLY that set, so drift is caught IN-REPO (a failing
+# scheduled run) instead of being trusted forever.
+#
+# Needs a token that can READ branch protection, which requires repo-administration access. The default
+# GITHUB_TOKEN CANNOT be granted this: `administration` is not a valid `permissions:` scope (GitHub
+# rejects the whole workflow file if you try, which is exactly what broke this audit, it ran 0 jobs), and
+# the token has no admin access by default regardless. So the live assertion needs a
+# BRANCH_PROTECTION_TOKEN secret (a fine-grained PAT / app token with `administration: read` on this repo).
+#
+# Without that secret this job FAILS. It used to print a notice and exit 0, which meant the one live
+# assertion of the merge gate's intent half could be disarmed by deleting a single secret, after which
+# the audit reported green forever and any later drift in the live rule went unreported. Being unable to
+# read the configuration is an unknown, not a pass.
+# To arm the drift-detector: create that PAT and add it as the BRANCH_PROTECTION_TOKEN repo secret.
+#
+# A DELETED secret is caught two ways, and neither of them is the static guard on its own:
+#   1. This job's own step above fails, because BRANCH_PROTECTION_TOKEN resolves to the empty string.
+#   2. The secret-presence jobs below report every name in tools/workflow-secrets.json as set or unset
+#      from inside a job in the scope that name claims, and fail when the answer contradicts the file.
+# tools/workflow-secrets-guard.py's STATIC pass cannot see a deletion at all: it only proves the
+# workflows and the manifest agree with each other. Saying otherwise was the overclaim here. What the
+# static pass does add is that every declared name must be covered by a presence job below, so a secret
+# cannot be inventoried without something asserting it still exists.
+
+on:
+  schedule:
+    - cron: "17 13 * * 1" # Mondays, 13:17 UTC
+  workflow_dispatch:
+  # Also run when the gate's inputs change, so a job rename is caught immediately (not just weekly).
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/branch-protection-audit.yml"
+      - "tools/check-required-checks.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # First: the in-repo pair (ci.yml <-> _REQUIRED_CHECKS) must already agree. If this fails, the
+      # audit below would compare against a self-inconsistent expectation.
+      - name: Required-check allowlist is in sync (in-repo)
+        run: bash tools/check-required-checks.sh
+
+      # Every secret name the workflows read has a declared scope, and every declared name is covered by
+      # one of the presence jobs below. This is the STATIC half: it proves the workflows and the manifest
+      # agree, and that nothing was inventoried without an assertion. It does NOT observe the live
+      # inventory, so it cannot tell you a secret was deleted; the presence jobs do that.
+      - name: Workflow secret scopes are declared
+        run: python3 tools/workflow-secrets-guard.py
+
+      # Then: assert the LIVE branch protection on main requires exactly the ci.yml job names. This
+      # needs a real admin-read PAT (BRANCH_PROTECTION_TOKEN); the default GITHUB_TOKEN 403s on the
+      # protection API. A MISSING secret fails this step. The whole point of this job is to detect
+      # drift in a configuration no repo file can hold, so "I could not read it" must never be
+      # reported as "it is correct".
+      - name: Assert main branch protection requires the CI checks
+        env:
+          BP_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "${BP_TOKEN:-}" ]; then
+            echo "::error title=branch-protection audit disarmed::BRANCH_PROTECTION_TOKEN is not set, so the live protection rule on main could not be read and this audit proves nothing (the default GITHUB_TOKEN lacks administration:read). Add a fine-grained PAT with 'administration: read' on this repo as the BRANCH_PROTECTION_TOKEN secret to re-arm the drift-detector."
+            exit 1
+          fi
+          GH_TOKEN="$BP_TOKEN" bash tools/check-branch-protection.sh
+
+  # Same shape, for the OTHER live-config drift that went unnoticed far longer: every mirror's
+  # release.yml references HOP_SOURCE_APP_ID / HOP_SOURCE_APP_PRIVATE_KEY, and because GitHub resolves
+  # an unset secret to the empty string the only symptom was a third-party action erroring on an empty
+  # input. Reading secret METADATA (names only, never values) on the mirrors needs a token with
+  # secrets read there plus admin:org for org-scoped secrets, and no such token is provisioned.
+  #
+  # A control that cannot run must not report success, AND a job that is red on every single run
+  # trains everyone to read red as noise, which costs more than the check is worth. So the DECLARED
+  # state in tools/workflow-secrets.json decides, and the job fails the moment the declaration and
+  # reality disagree:
+  #
+  #   provisioned false + token absent  -> declared-disarmed. Warns, and the step name says so. The
+  #                                        deferral is recorded in the manifest with blocked_on, not
+  #                                        in prose that nobody re-reads (that is PROC-001's lesson).
+  #   provisioned true  + token absent  -> FAIL. The manifest claims a credential that is not there.
+  #   token present                     -> run the real audit, whatever the manifest says.
+  #
+  # Flipping "provisioned" to true in the manifest is therefore the single arming switch, and arming
+  # it without seeding the PAT is itself caught. To retire the job instead, delete it AND its manifest
+  # entry, and run `python3 tools/release/check-mirror-secrets.py` by hand (docs/release-engineering.md).
+  mirror-secrets:
+    name: Mirror release secrets are seeded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assert every publishing mirror has the secrets its release workflow references
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_SECRET_AUDIT_TOKEN }}
+        run: |
+          declared="$(python3 -c "import json;print(str(json.load(open('tools/workflow-secrets.json'))['secrets']['MIRROR_SECRET_AUDIT_TOKEN'].get('provisioned', False)).lower())")"
+          if [ -z "${MIRROR_TOKEN:-}" ] && [ "$declared" = "true" ]; then
+            echo "::error title=mirror-secret audit is armed but unseeded::tools/workflow-secrets.json declares MIRROR_SECRET_AUDIT_TOKEN provisioned, but the secret is empty here, so the audit proves nothing. Seed the PAT ('secrets: read' on the hopmesh mirrors, plus admin:org for organization-scoped secrets) or set provisioned back to false with a blocked_on reason."
+            exit 1
+          fi
+          if [ -z "${MIRROR_TOKEN:-}" ]; then
+            echo "::warning title=mirror-secret audit is declared disarmed::MIRROR_SECRET_AUDIT_TOKEN is absent and tools/workflow-secrets.json declares provisioned false, so this run proves NOTHING about whether the mirrors can publish. See blocked_on in that manifest. Seeding the PAT and flipping provisioned to true arms it."
+            exit 0
+          fi
+          GH_TOKEN="$MIRROR_TOKEN" python3 tools/release/check-mirror-secrets.py
+
+  # The live half of the secret inventory, with NO credential: a job can read exactly the secrets its
+  # scope allows, so each job passes an is-it-non-empty BOOLEAN per secret (never a value) for every
+  # name tools/workflow-secrets.json declares in that scope, and the guard fails when what a real job
+  # can see contradicts the manifest. `--verify-live` answers the same question through the API, but it
+  # needs admin:org plus secrets read, which nothing here has, so it stays an operator command.
+  # tools/workflow-secrets-guard.py requires every declared name to appear in one of these jobs.
+  # BOOTSTRAP_TFVARS, STRIPE_API_KEY and RESEND_API_KEY used to be asserted here. They belong to the
+  # deploy and billing workflows, which live in hopmesh/platform now, and they are not readable from
+  # this repository. They were dropped from tools/workflow-secrets.json in the same change, so the
+  # static guard's coverage rule still holds: every declared name is asserted by a job below.
+  secret-presence:
+    name: Declared org and repository secrets are set
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assert the declared organization and repository secrets exist
+        env:
+          BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN != '' }}
+          MIRROR_SECRET_AUDIT_TOKEN: ${{ secrets.MIRROR_SECRET_AUDIT_TOKEN != '' }}
+          HOP_SYNC_TOKEN: ${{ secrets.HOP_SYNC_TOKEN != '' }}
+        run: python3 tools/workflow-secrets-guard.py --assert-present organization repository
+
+  # The `release` environment admits only `main` (a deployment branch policy), so from any other ref
+  # these secrets are unreadable and a run there would prove nothing rather than something.
+  secret-presence-release:
+    name: Declared release-environment secrets are set
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assert the declared release-environment secrets exist
+        env:
+          NATIVE_ARTIFACT_SIGNING_KEY: ${{ secrets.NATIVE_ARTIFACT_SIGNING_KEY != '' }}
+        run: python3 tools/workflow-secrets-guard.py --assert-present environment:release
+
+  secret-presence-component-sync:
+    name: Declared component-sync-environment secrets are set
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assert the declared component-sync-environment secrets exist
+        env:
+          HOP_SYNC_APP_ID: ${{ secrets.HOP_SYNC_APP_ID != '' }}
+          HOP_SYNC_APP_PRIVATE_KEY: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY != '' }}
+        run: python3 tools/workflow-secrets-guard.py --assert-present environment:component-sync

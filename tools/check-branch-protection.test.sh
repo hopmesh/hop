@@ -9,7 +9,7 @@ mkdir "$tmp/bin"
 
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env sh
-expected="https://api.github.com/repos/hopmesh/monorepo/branches/main/protection"
+expected="https://api.github.com/repos/hopmesh/hop/branches/main/protection"
 found=false
 for argument in "$@"; do
   if [ "$argument" = "$expected" ]; then

@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Workflows that fire on EVERY merge to main, and the job inside each that has to have really run.",
+    "",
+    "Every entry exists because a run reporting `success` is not evidence that anything happened. A job",
+    "gated on an `if` that evaluates false is SKIPPED, and a run whose only meaningful job skipped still",
+    "shows a green tick, so a dashboard, a required-check list, and a human scanning Actions all read it",
+    "as healthy. In the old monorepo, runtime-deploy was dead for nine days that way and sync-components",
+    "for four. runtime-deploy itself is not listed here: it moved to hopmesh/platform with the infra",
+    "tree, and platform's own copy of this manifest covers it.",
+    "",
+    "`job` is matched against the job NAME as it appears in the run, not the key in the workflow yaml.",
+    "Matrix jobs are never listed: their run names carry the matrix values, so an exact match would",
+    "never find them. List a non-matrix job that must have executed for the workflow to have done its",
+    "work (for native-artifacts that is the attest job: if the authorize gate skips, everything",
+    "downstream of it skips too, which is exactly the green-tick failure mode).",
+    "",
+    "ON max_age_days, AND WHY THE FIRST ATTEMPT AT THIS FILE WAS USELESS. It originally carried 14 days",
+    "for runtime-deploy and 120 for bootstrap-apply's apply job, which was picked from how often each job",
+    "COULD fire rather than how often it MUST. Checked against real history, both numbers would have sat",
+    "green through the incident they were written for: runtime-deploy's outage was nine days, inside 14,",
+    "and bootstrap-apply's apply had genuinely run five times on 2026-07-22, twenty-five days before the",
+    "break, comfortably inside 120. A window wider than the outage it is meant to catch is decoration.",
+    "",
+    "So the rule now is: only list a job that fires on EVERY merge to main, and set the window to a small",
+    "multiple of the merge cadence. This repo merges at least daily (the changelog workflow alone",
+    "guarantees it), so three days is roughly three missed merges, which is an anomaly worth failing on",
+    "while still surviving a genuinely quiet weekend."
+  ],
+  "workflows": [
+    {
+      "file": "sync-components.yml",
+      "job": "Auto-export changed components",
+      "max_age_days": 3,
+      "why": "Publishes the three surviving mirrors on every merge to main. It failed on four consecutive daily merges in 2026-08 because two retired components could not export, and it was fixed incidentally by deleting them rather than by anyone noticing the red. hop owns the mirrors now, so this gate belongs here."
+    },
+    {
+      "file": "native-artifacts.yml",
+      "job": "Sign and attest native release bundle",
+      "max_age_days": 3,
+      "why": "Builds and signs the native release bundle on every merge to main; the bundle is what release-tags.yml and the mirrors' release jobs consume. Every job in the workflow hangs off the authorize gate, whose repository check can skip the whole workflow silently, which is exactly the failure mode this manifest exists to catch. It was also roughly a fifth of the old private-repo CI bill, so a quiet death here is the expensive kind."
+    }
+  ]
+}

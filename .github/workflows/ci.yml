@@ -1,0 +1,1347 @@
+name: CI
+
+# The code safety net (F-01). Runs on every push and PR across all four product surfaces:
+#   - rust        : full test suite, clippy, formatting, plus firestore/sqlcipher feature runs.
+#   - kotlin-sdk  : the transport-multiplexer JVM tests (via the gradle wrapper).
+#   - android     : the Android bearer + driver modules, incl. the :bearer-ble dial-backoff
+#                   regression (quality-net-01 / android-08 / infra-03), plus the HopDemo app's
+#                   non-UI helpers under a >=80% line-coverage gate (cov/android-demo).
+#   - apple       : swift-build of the four SwiftPM bearer packages + HopDriver, and a build-only
+#                   xcodebuild of the HopDemo app (no signing) (quality-net-02 / infra-04).
+#   - wasm        : wasm32 build of hop-wasm (simwasm-01 / infra-05). The swarm sim invariant tests
+#                   used to run here out of the mockups tree, which moved to hopmesh/internal.
+#   - web         : rebuilds the sim wasm from core (web-05 / simwasm-02), runs the sim scenario-check
+#                   plus the wasm-glue check (F-5: publish_recv_beacon/send_traced/
+#                   set_default_lifetime_ms/inbox_debug), builds the Astro site, and link-checks
+#                   apps/web/site/dist (web-04 / quality-net-05 / infra-12).
+#   - contract    : contract-purity guardrail, cbindgen header-drift, the ABI-version consistency guard
+#                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
+#                   pinned so an upstream release can't churn the gate.
+#
+# The monorepo's infra job (tofu fmt/validate/plan) is gone from this repo: the infra tree moved
+# to hopmesh/platform, which carries its own copy of that gate.
+#
+# DEPLOY GATE (infra-01 / quality-net-09): GitHub is change management. Branch protection on `main`
+# requires the aggregate `CI gate`, so path-filtered jobs may skip without leaving a required context
+# pending. The runtime deploy that used to fire on this workflow's success moved to hopmesh/platform
+# with the infra tree; nothing in this repo deploys.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (but let main runs finish).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_FUZZ_VERSION: "0.13.2"
+  CARGO_FUZZ_TOOLCHAIN: nightly-2026-07-07
+  # cbindgen is pinned so an upstream release can't churn the header-drift gate (infra-13). This is
+  # the version that produced the committed sdk/hop.h. When bumping, regenerate the header with the
+  # same cbindgen version (core/hop/regen-header.sh) in the same PR so the drift check stays green.
+  CBINDGEN_VERSION: "0.29.4"
+
+jobs:
+  # Detect which product areas changed so the heavy jobs can skip on an unrelated PR (cost control).
+  # SAFETY BACKBONE: `full` is true for any change to the shared foundation (core/**, sdk/hop.h, the
+  # Cargo lock/manifest) OR to CI/tooling (ci.yml, tools/** except the copybara mirror machinery), and
+  # `full` forces EVERY job to run. So a core or C-ABI change always runs the whole matrix; only changes
+  # scoped to one product area (one SDK, docs, sim, a single platform, the copybara scripts) skip.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    # dorny/paths-filter lists a PR's changed files via the API (the checkout is shallow), which needs
+    # pull-requests:read. The repo's default GITHUB_TOKEN is contents/metadata/packages-read only, and an
+    # explicit permissions: block replaces that default, so re-grant contents:read for the checkout too.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      full: ${{ steps.f.outputs.full }}
+      rust: ${{ steps.f.outputs.rust }}
+      kotlin: ${{ steps.f.outputs.kotlin }}
+      compose: ${{ steps.f.outputs.compose }}
+      android: ${{ steps.f.outputs.android }}
+      apple: ${{ steps.f.outputs.apple }}
+      web: ${{ steps.f.outputs.web }}
+      contract: ${{ steps.f.outputs.contract }}
+      docs: ${{ steps.f.outputs.docs }}
+      sdk_node: ${{ steps.f.outputs.sdk_node }}
+      sdk_python: ${{ steps.f.outputs.sdk_python }}
+      sdk_go: ${{ steps.f.outputs.sdk_go }}
+      sdk_ruby: ${{ steps.f.outputs.sdk_ruby }}
+      sdk_crystal: ${{ steps.f.outputs.sdk_crystal }}
+      sdk_elixir: ${{ steps.f.outputs.sdk_elixir }}
+      sdk_flutter: ${{ steps.f.outputs.sdk_flutter }}
+      sdk_react_native: ${{ steps.f.outputs.sdk_react_native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: f
+        with:
+          filters: |
+            full:
+              - 'core/**'
+              - 'sdk/hop.h'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain*'
+              - '.github/workflows/ci.yml'
+              # tools/ EXCEPT tools/copybara/** (mirror machinery, affects no build). A `!` negation would
+              # not work here: dorny's default predicate-quantifier is `some`, under which "!tools/copybara/**"
+              # is true for every file NOT under copybara, matching almost everything. So enumerate instead:
+              # top-level tool files + the codegen subdir. Add any NEW tools/ subdir (besides copybara) here.
+              - 'tools/*'
+              - 'tools/codegen/**'
+              - 'tools/native-attestation/**'
+              - 'tools/release/**'
+            rust:
+              - 'services/**'
+              - '**/*.rs'
+            kotlin:
+              - 'sdk/android/**'
+            compose:
+              - 'sdk/compose/**'
+            android:
+              - 'bearers/android/**'
+              - 'drivers/android/**'
+              - 'sdk/android/**'
+              - 'apps/android/**'
+            apple:
+              - 'bearers/apple/**'
+              - 'drivers/apple/**'
+              - 'sdk/apple/**'
+              - 'apps/apple/**'
+              # ble-lab is under apps/ble-lab, NOT apps/apple, so the pattern above never matched it
+              # and an edit there ran no Apple job at all. That is how it stayed broken unnoticed.
+              - 'apps/ble-lab/**'
+            web:
+              - 'sim/**'
+              - 'apps/web/**'
+              - 'learn/**'
+            contract:
+              - 'apps/esp32/**'
+              # GT-03: this job owns the strict-warning C++ host test that compiles
+              # sdk/embedded/src/Hop.cpp|Hop.h, so a PR touching ONLY those files must fire it.
+              # It previously skipped on exactly the changes it exists to check.
+              - 'sdk/embedded/**'
+            # The docs-tokens job runs tools/docs-token-guard.sh, which since docs-drift-03 enforces
+            # the repo-wide em/en-dash ban over the SOURCE trees too, not just docs and site copy.
+            # So this filter has to fire on a source-only change as well, or a Rust/Swift/Kotlin
+            # comment could reintroduce a dash with the guard skipped. core/** and tools/* already
+            # force `full` (which runs every job), so the trees listed below are the remainder.
+            docs:
+              - '.github/workflows/**'
+              - '**/.github/workflows/**'
+              - 'docs/**'
+              - 'learn/**'
+              - 'README.md'
+              - '**/README.md'
+              - 'LICENSE.md'
+              - '**/LICENSE.md'
+              - 'tools/copybara/**'
+              - 'services/**'
+              - 'drivers/**'
+              - 'sdk/**'
+              - 'bearers/**'
+              - 'apps/**'
+              - 'examples/**'
+              - 'testkit/**'
+              - 'assets/**'
+            sdk_node:
+              - 'sdk/node/**'
+            sdk_python:
+              - 'sdk/python/**'
+            sdk_go:
+              - 'sdk/go/**'
+            sdk_ruby:
+              - 'sdk/ruby/**'
+            sdk_crystal:
+              - 'sdk/crystal/**'
+            sdk_elixir:
+              - 'sdk/elixir/**'
+            sdk_flutter:
+              - 'sdk/flutter/**'
+            sdk_react_native:
+              - 'sdk/react-native/**'
+
+  rust:
+    name: Rust (test · clippy · fmt)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # CI-DISK: this job runs 14+ cargo invocations across DISTINCT feature sets (workspace,
+      # firestore x3, reqwest, sqlcipher with VENDORED OpenSSL, the minimal embedded build, a
+      # nightly fuzz toolchain plus cargo-fuzz), and each feature set is its own set of target
+      # artifacts. On 2026-07-25 that exhausted the runner's disk mid-job: the worker process died
+      # with "System.IO.IOException: No space left on device", which surfaces as a job failure with
+      # NO failing step and NO retrievable logs (the runner cannot upload them after it dies), and
+      # is only visible through the check-run annotations API. It cost an hour of misdiagnosis, so
+      # the reclaim is documented rather than terse.
+      #
+      # The removed trees are preinstalled SDKs this job never uses. Reclaims roughly 25 GB.
+      - name: Reclaim runner disk before the cargo matrix
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          echo "after:"; df -h / | tail -1
+      - name: Install Rust toolchain
+        run: rustup component add clippy rustfmt --toolchain 1.97.0
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # quality-net-14: hard gate. A repo-wide `cargo fmt --all` pass has landed, so formatting drift
+      # now fails the build instead of accumulating silently. Run `cargo fmt --all` before pushing.
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Attribution is a DISTRIBUTION obligation, not a nicety: MIT and Apache-2.0, which between them
+      # cover nearly all 168 crates compiled into libhop, each require the notice and licence text to
+      # accompany the binary. Nothing shipped one. This fails when the dependency graph moves and the
+      # committed notice does not, which is the only thing that keeps it true over time. Self-test the
+      # generator first: --check is the gate, and a gate that cannot fail is worse than no gate.
+      - name: Self-test the third-party notices generator
+        run: bash tools/gen-third-party-notices.test.sh
+      - name: Third-party notices are current
+        run: python3 tools/gen-third-party-notices.py --root hop --check
+
+      - name: Self-test wire version guard
+        run: bash tools/wire-version-guard.test.sh
+
+      - name: Fetch canonical main and enforce wire version bump
+        env:
+          WIRE_BASE_REF: ${{ github.event_name == 'push' && github.event.before || 'refs/remotes/origin/main' }}
+        run: |
+          git fetch --no-tags --prune --force origin "+refs/heads/main:refs/remotes/origin/main"
+          bash tools/wire-version-guard.sh
+
+      # Deliberately NOT version-pinned in the label: it read "(v11)" while the committed corpus was
+      # v13, because a hand-typed version in a step name has nothing keeping it honest. The step
+      # regenerates from live code and byte-compares whatever bundle-v<N>.json is committed.
+      - name: Check deterministic wire corpus (regenerate and byte-compare)
+        run: cargo run -p hop-core --example wire-vectors --features wire-vectors
+
+      - name: Install pinned fuzz toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install "$CARGO_FUZZ_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+
+      - name: Deterministic fuzz smoke (all targets)
+        env:
+          FUZZ_RUNS: "256"
+          FUZZ_SEED: "424242"
+        run: bash tools/fuzz-smoke.sh
+
+      # hop-relayd's cloud path (handoff/spool/want-beacon worker + F-18 cross-region test) is behind
+      # the optional `firestore` feature, which the default workspace test run doesn't enable.
+      - name: Test relayd (firestore feature)
+        run: cargo test -p hop-relayd --features firestore
+
+      # GT-01: hop-gateway's BIN sets required-features = ["reqwest"], and 15 lib regions are
+      # cfg'd on it, so the DEFAULT workspace run compiles NEITHER. Measured: 13 tests run without
+      # the feature, 22 with it. The 9 that never ran include the SSRF resolved-IP filter, the
+      # redirect refusal, the hop-by-hop header stripping, and the vetted-client loopback/metadata
+      # check, i.e. exactly the egress security surface, plus main.rs (855 lines) was never even
+      # type-checked. Security tests that do not compile are worse than no tests: they read as
+      # coverage.
+      - name: Clippy gateway (reqwest feature)
+        run: cargo clippy -p hop-gateway --features reqwest --all-targets -- -D warnings
+      - name: Test gateway (reqwest feature)
+        run: cargo test -p hop-gateway --features reqwest
+
+      # GT-02: `open_store_persistent`'s at-rest-encryption arm selection (core/hop/src/lib.rs) is
+      # sqlcipher-gated, including the PRODUCTION migration arm, and the sqlcipher step below runs
+      # against hop-store-sqlite, a DIFFERENT crate. So the crate mobile actually links had its
+      # keyed-open migration and fail-closed branches neither run nor compiled.
+      - name: Test C ABI (sqlcipher feature)
+        run: cargo test -p hop --no-default-features --features sqlcipher --locked
+      - name: Clippy C ABI (sqlcipher feature)
+        run: cargo clippy -p hop --no-default-features --features sqlcipher --all-targets --locked -- -D warnings
+
+      # hop-telemetryd's durable telemetry_usage ledger (what the §37 reconciler bills from) is behind
+      # the same optional `firestore` feature, so the default workspace run never compiles that path.
+      - name: Test telemetryd (firestore feature)
+        run: cargo test -p hop-telemetryd --features firestore
+
+      # The accountd firestore feature test used to run here via --manifest-path; the crate moved
+      # to hopmesh/platform with the rest of the commercial backend, so the step went with it.
+      # CI-DISK: a breadcrumb after the heaviest feature builds. If this job ever dies with no
+      # failing step again, this line is the last thing in the log and says whether disk was the
+      # cause, instead of needing the annotations API to find out.
+      - name: Report remaining disk
+        if: always()
+        run: df -h / | tail -1
+
+      # hop-telemetryd's OTLP-export path (translate + forward telemetry to a tenant's OTel endpoint)
+      # is behind the `live` feature (reqwest). The pure builders/routing are tested in the default
+      # run; this compiles the reqwest transport shim so a live-build break is caught in CI.
+      - name: Test telemetryd (live feature)
+        run: cargo test -p hop-telemetryd --features live
+
+      # GT-04's billingd live-feature test + clippy steps used to run here via --manifest-path;
+      # the crate moved to hopmesh/platform with the rest of the commercial backend, so they
+      # went with it.
+
+      # The OTLP-endpoint-from-registry routing (a tenant's console-set endpoint reaches the export
+      # worker) needs BOTH features together: live for the POST, firestore for the registry read.
+      # Neither single-feature run above compiles that merge path.
+      - name: Test telemetryd (live + firestore)
+        run: cargo test -p hop-telemetryd --features live,firestore
+
+      # At-rest encryption (F-25) is behind the `sqlcipher` feature (SQLite + SQLCipher, vendored
+      # OpenSSL) which the default workspace run doesn't build. This exercises open_keyed end-to-end.
+      - name: Test store (sqlcipher feature)
+        run: cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
+
+      # quality-net-r2-01 / core-ffi-r2-03: the embedded/no_std-adjacent C-ABI build (core-ffi-03,
+      # the whole ESP32 story) is `cargo build -p hop --no-default-features --features minimal`, which
+      # DROPS UniFFI + the SQLite store and heavily re-gates lib.rs (#[cfg(feature = "minimal")]). The
+      # default workspace test run only builds the full (bundled) surface, so a compile break on the
+      # minimal path lands silently. Compile it here on every push so the config can't rot. `--locked`
+      # keeps it from silently resolving a different dep set than Cargo.lock pins.
+      - name: Build minimal C-ABI (embedded feature, host smoke)
+        run: cargo build -p hop --no-default-features --features minimal --locked
+
+  kotlin-sdk:
+    name: Kotlin SDK tests (BearerManager)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.kotlin == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # infra-14: this module has no gradle wrapper, so pin gradle via the setup action instead
+      # of relying on whatever version the runner image happens to ship (which drifts over time).
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "8.9"
+      # cov/kotlin: the SDK's JNA/native surface (HopNode + its Companion + FreeAction + HopRuntime +
+      # the HopAddress base58 path) is exercised against a REAL libhop, so build the host cdylib first
+      # and point JNA at it via HOP_LIBDIR. Without the lib those tests self-skip (assumeLibhop) and only
+      # the pure-Kotlin suite runs; the 80% coverage gate below would then fail, keeping the grade honest.
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-kotlin-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-kotlin-${{ runner.os }}-
+      - name: Build libhop (host cdylib for the JNA integration tests)
+        run: cargo build -p hop --locked
+      # F-34 + cov/kotlin: the radio-free transport-multiplexer tests AND the native HopNode/HopRuntime
+      # integration tests, then the JaCoCo 80%-line floor (jacocoTestCoverageVerification) that locks
+      # the grade. Plain JVM module, no Android SDK needed.
+      - name: Test Kotlin SDK (+ 80% coverage gate)
+        working-directory: sdk/android
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: gradle test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+
+  compose-sdk:
+    name: Compose Multiplatform SDK tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.compose == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # The KMP build configures an androidTarget, so AGP needs an Android SDK location to resolve even
+      # for the desktop test task. No NDK / native library is needed: the compose SDK carries none.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      # No gradle wrapper is committed for this module (same as sdk/android), so pin gradle here.
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "9.5.1"
+      # commonTest folded into the desktop JVM target: the reactive client, the pure state reducer, and
+      # the value types verified against the in-memory FakeHopEngine. Depends only on public artifacts
+      # (Compose Multiplatform + coroutines); the engine bindings stay behind the app-supplied seam, so
+      # there is no unpublished sh.hop:hop dependency and no native build here.
+      - name: Test Compose SDK (desktop JVM target)
+        working-directory: sdk/compose
+        run: gradle desktopTest --no-daemon --stacktrace
+
+  android:
+    name: Android bearers + driver (JVM unit tests)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.android == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # The Android SDK + the AGP/platform packages the bearer + driver modules compile against.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-android-${{ runner.os }}-
+      # :hop-driver compiles against the UniFFI Kotlin bindings (uniffi.hop.*), which are GITIGNORED
+      # generated output (drivers/android/hop-driver reads ../../../apps/android/HopDemo/generated/kotlin).
+      # Generate them from the host libhop cdylib before gradle - the same bindings tools/build-aar.sh
+      # produces - so the driver resolves addressBase58 etc. The jniLibs (.so per ABI) are NOT needed for
+      # JVM unit tests; an empty dir keeps AGP's srcDir happy.
+      - name: Generate the UniFFI Kotlin bindings
+        run: |
+          cargo build -p hop
+          cargo run -p hop --features cli --bin uniffi-bindgen -- \
+            generate --library target/debug/libhop.so --language kotlin \
+            --out-dir apps/android/HopDemo/generated/kotlin
+          mkdir -p apps/android/HopDemo/generated/jniLibs
+      # quality-net-01 / android-08 / infra-03: build the whole bearers/android gradle project
+      # (:hop-sdk, :bearer-ble, :bearer-lan, :bearer-relay, :hop-driver) and run its JVM unit tests,
+      # including :bearer-ble:testDebugUnitTest which is the dial-backoff (R7) regression. Uses the
+      # committed gradle wrapper (gradlew) so the build is reproducible.
+      #
+      # quality-net-r3-03 (PRINCIPLED DEVICE-GATED RESIDUAL, not a defect): KeystoreSecret.kt
+      # (drivers/android/hop-driver, the source of both long-term device secrets: the Ed25519 identity
+      # seed and the SQLCipher db key) has NO JVM unit test, and cannot have one. Every code path calls
+      # Android framework classes that don't exist / throw on a plain JVM and are not backable by
+      # Robolectric: KeyStore.getInstance("AndroidKeyStore") + KeyGenerator.getInstance(AES,
+      # "AndroidKeyStore") (a real secure element / TEE), the android.security.keystore.* KeyGenParameter
+      # spec, StrongBox, and android.util.Base64. So the unwrap-recovery fall-through (a one-time identity
+      # reset on a lost Keystore key, KeystoreSecret.kt:51-56) and the StrongBox->TEE fallback are
+      # exercisable ONLY on-device. This is the exact same situation as the iOS Keychain identity/db-key
+      # store (sec-priv-02), which is likewise device-gated and JVM-untestable. The verification for this
+      # path is therefore the device-test workflow (MEMORY: "libhop rewrite deployed to fleet" verified
+      # identities are preserved across reinstall), not a JVM CI lane. Adding a spun-up-emulator
+      # androidTest lane here is possible but heavy (an emulator per CI run) and still would not cover a
+      # true StrongBox secure element; it is intentionally not added for the pre-prod P2P test phase.
+      # cov/android-driver + cov/android-bearers: run every module's JVM unit tests (test) AND the
+      # per-module JaCoCo 80% LINE floors. HOP_LIBDIR points JNA at the host cdylib generated above (the
+      # driver's Robolectric suite calls the real libhop for the UniFFI free functions). Each module gates
+      # on its DOCUMENTED denominator (build.gradle.kts): LAN + Relay are driven end-to-end over loopback
+      # sockets / an OkHttp MockWebServer under Robolectric (only the platform-delivered NSD listeners /
+      # the 20s stable-reset lambda are excluded); the BLE bearer's testable wire + dial logic was lifted
+      # into the pure LinkProtocol + DialState (the radio-bound Link/Peripheral/Central/BleBearer shells
+      # are excluded, covered by the on-device workflow); the driver excludes the generated uniffi
+      # bindings + the device-gated KeystoreSecret. Previously CI ran no coverage task here.
+      - name: Test Android bearers + driver (+ per-module coverage floors)
+        working-directory: bearers/android
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: >-
+          ./gradlew :bearer-ble:testDebugUnitTest test
+          :bearer-lan:jacocoLanReport :bearer-lan:jacocoLanCoverageVerification
+          :bearer-relay:jacocoRelayReport :bearer-relay:jacocoRelayCoverageVerification
+          :bearer-ble:jacocoBleReport :bearer-ble:jacocoBleCoverageVerification
+          :bearer-meshtastic:jacocoMeshtasticReport :bearer-meshtastic:jacocoMeshtasticCoverageVerification
+          :hop-driver:jacocoDriverReport :hop-driver:jacocoDriverCoverageVerification
+          --no-daemon --stacktrace
+
+      # cov/android-demo: the demo app (apps/android/HopDemo) is a SEPARATE gradle build from bearers/android
+      # (its settings.gradle.kts points :hop-driver + the bearer modules at the SAME on-disk locations,
+      # so it reuses the uniffi bindings generated above under apps/android/HopDemo/generated/kotlin). It had
+      # NO test source set and no coverage task at all. Its pure, non-UI helpers were lifted out of the
+      # wall-to-wall @Composable MainActivity.kt into DemoFormat.kt (platformLabel / transportIcon /
+      # makeQrBitmap / jpegDownscale / messageMeta / normalizeHops / statusText) and are now unit-tested
+      # under Robolectric alongside the HopApp crash handler; jacocoDemoReport + jacocoDemoCoverageVerification
+      # produce and ENFORCE a >=80% LINE floor over that non-UI denominator. The @Composable screen render
+      # bodies + the Activity/permission/camera/zxing-scan code are EXCLUDED from the denominator (UI/
+      # device-bound, brittle under Robolectric; verified on-device), the same principled posture as the
+      # driver's uniffi/** + KeystoreSecret exclusions. No HOP_LIBDIR: the demo tests never call libhop
+      # (messageMeta formats a Message via the driver's pure companion helpers), so the driver compiles
+      # against the generated bindings and the tests run without the native cdylib.
+      - name: Test HopDemo app (+ non-UI 80% line-coverage gate)
+        working-directory: apps/android/HopDemo
+        run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
+
+  apple:
+    name: Apple bearers + driver + app (build-only)
+    # GitHub-hosted, and it must stay that way. This ran on the self-hosted `cirunner-m5max` (an
+    # isolated LaunchDaemon on the M5 Max) to avoid the 10x macOS minute multiplier, which only
+    # applies to PRIVATE repositories. Hosted macOS is free on public repos, so the minutes this
+    # existed to save are already free, and the runner is pure liability: GitHub is explicit that
+    # self-hosted runners should only be used with private repos, because a fork can run arbitrary
+    # code on the machine via a pull request. ci.yml runs on `pull_request`, so on a public repo
+    # any stranger's fork PR would execute on that hardware. Do not re-add a self-hosted runner
+    # here; the saving it offers no longer exists.
+    runs-on: macos-14
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # On GitHub-hosted macos-14 the default Xcode is 15.4, too old for xcodegen's project format, so
+      # select the latest-stable.
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: 16.2
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-apple-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-apple-${{ runner.os }}-
+
+      # quality-net-02 / infra-04: the SwiftPM stack (Hop SDK wrapper, four bearer packages,
+      # HopDriver) links libhop via two gitignored xcframeworks. Build them first from the Rust
+      # core (the same scripts a developer runs), then swift-build each package and build-only the
+      # app. HOP_SQLCIPHER=0 skips the vendored-OpenSSL cross-compile: this job is a compile gate,
+      # not an at-rest-encryption test (the rust job already exercises sqlcipher).
+      - name: Build the libhop + HopFFI xcframeworks
+        env:
+          HOP_SQLCIPHER: "0"
+        run: |
+          bash sdk/apple/build-xcframework.sh
+          bash tools/build-xcframework.sh
+          # Every in-tree Apple package resolves sdk/apple by path. Keep the published manifest
+          # remote-only, but use the verified local artifact throughout this disposable CI checkout.
+          cp sdk/apple/Package.local.swift sdk/apple/Package.swift
+
+      # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
+      # runs the BearerManager multiplexer + full HopRuntime deliver/ACK tests (core-ffi-09); the BLE
+      # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
+      # (sec-priv-02). `swift test` also builds, so these subsume the build-only step for those packages.
+      - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
+        run: bash sdk/apple/with-local-framework.sh swift test
+
+      # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at
+      # >=80% line coverage of their testable (radio-free) source. LAN + Relay run REAL loopback-socket
+      # integration tests; BLE cannot (CoreBluetooth has no simulator/headless support and its delegate
+      # arg types have no public initializers), so its Central/Peripheral DECISION logic was extracted
+      # into pure CentralCore/PeripheralCore + a DedupLink seam and is driven directly by tests. The
+      # CoreBluetooth glue (BleBearer+Radio.swift = Link/Central/Peripheral shells + start/stop/wake) and
+      # the CoreLocation wake (BeaconWake.swift) are EXCLUDED from the BLE denominator (covered by the
+      # on-device hopmac/testkit workflow). Previously all three re-modeled their logic in the test file
+      # and sat at ~7-10% line coverage. `swift test` also builds, so these subsume the old build-only step.
+      - name: Test + coverage-gate the BLE bearer (>=80% of the CB-free cores)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerBle "BleBearer.swift + CentralCore.swift + PeripheralCore.swift" 80 'BleBearer\+Radio\.swift|BeaconWake\.swift'
+
+      - name: Test + coverage-gate the LAN bearer (>=80% of LanBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerLan Sources/HopBearerLan/LanBearer.swift 80
+
+      - name: Test + coverage-gate the Relay bearer (>=80% of RelayBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerRelay Sources/HopBearerRelay/RelayBearer.swift 80
+
+      # The Multipeer bearer's MCSession/advertiser/browser glue is device-bound and cannot run in CI,
+      # so it is excluded from the denominator exactly like the BLE bearer's CoreBluetooth surface.
+      # What IS gated is the logic whose silent change breaks interop: the invite tiebreak, the
+      # display-name parse, and the link table.
+      - name: Test + coverage-gate the Multipeer bearer (>=80% of MultipeerBearer.swift)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerMultipeer Sources/HopBearerMultipeer/MultipeerBearer.swift 80 'MultipeerBearer\+Radio\.swift'
+
+      # The Meshtastic bearer's CoreBluetooth GATT client (MeshtasticBearer+Radio.swift) is device-bound
+      # and cannot run headlessly, so it is excluded from the denominator like every other bearer's radio
+      # glue. What IS gated is the interop-critical logic: the Meshtastic protobuf codec, the fragment/
+      # reassembly layer, the Hop link-frame grammar, and the MeshtasticBearer state machine (driven
+      # against a fake radio). tools/meshtastic-parity.sh separately pins the wire contract vs Android.
+      - name: Test + coverage-gate the Meshtastic bearer (>=80% of the radio-free cores)
+        run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerMeshtastic "Meshtastic cores" 80 'MeshtasticBearer\+Radio\.swift'
+
+      # cov/apple-driver: the headless-node suite drives the driver's public API + snapshot-mapping +
+      # persistence against a REAL libhop HopNode (no device), plus the Keychain identity store. The 80%
+      # line-coverage floor keeps the grade honest. The former god-object (HopBearer.swift) was decomposed
+      # into per-concern collaborators + sibling extension files (HopModels / Multipart / MirrorStore /
+      # RefreshMapper / HopBearer+Hps / +Services / +Messaging / +Hns), so the floor is now the AGGREGATE
+      # line coverage across that whole pure-logic surface (like the BLE bearer's aggregate gate) rather than
+      # one file (a file-count-invariant total), so moving code between these files cannot game it. The
+      # genuinely device/radio/UIKit-bound surface (HopBearer+Radios.swift = BLE/Wi-Fi/relay/endpoint radio +
+      # well-known fetch + notifications; HopLink.swift = the L2CAP I/O runloop thread) is EXCLUDED from the denominator:
+      # it cannot run under macOS `swift test` and is covered by the on-device / cross-platform workflow
+      # (testkit + real devices). Keychain.swift has its own dedicated tests and is not part of this surface.
+      - name: Test HopDriver (headless node + Keychain) + aggregate & per-file coverage floors
+        working-directory: drivers/apple/HopDriver
+        run: |
+          set -euo pipefail
+          swift test --enable-code-coverage
+          BIN_DIR="$(swift build --show-bin-path)"
+          XCTEST="$BIN_DIR/HopDriverPackageTests.xctest/Contents/MacOS/HopDriverPackageTests"
+          PROF="$BIN_DIR/codecov/default.profdata"
+          # pass-18 F-CI-7: gate from the STRUCTURED JSON export (each metric keyed by name), NOT the text
+          # `llvm-cov report` table with a positional `awk $(NF-3)`. The text table's column count depends
+          # on whether branch-coverage columns are present, so NF-3 would silently read the wrong field
+          # (likely function %, which reads higher) and PASS falsely if a future toolchain changes the
+          # layout. tools/cov-floor-gate.py reads summary.lines.percent, which cannot drift. It enforces
+          # the aggregate 80% floor AND a per-file 70% floor (so no untested file hides behind the
+          # aggregate). The device/thread-bound files (radios, L2CAP runloop, Keychain) stay excluded.
+          xcrun llvm-cov export "$XCTEST" -instr-profile "$PROF" \
+            -ignore-filename-regex='HopBearer\+Radios\.swift|HopLink\.swift|Keychain\.swift' \
+            Sources/HopDriver/ \
+            | python3 "$GITHUB_WORKSPACE/tools/cov-floor-gate.py" "$PWD/Sources/HopDriver" 80 70
+
+      # cov/apple-demo: the demo app's pure, non-UI logic (transport-icon/tag mapping, peer subline,
+      # message-meta formatting, hops:// URL normalization, MIME/request-path parsing, QR payload
+      # encode/decode, the automation URL/env parsers, and the CoreImage/ImageIO QR-bitmap + photo-
+      # downscale builders) lives in the HopDemoKit SwiftPM package so it is unit-tested headlessly
+      # (no simulator). The whole DemoFormat.swift surface is coverage-GATED at >=95% line coverage.
+      # The app's SwiftUI View bodies + the AVFoundation camera scanner / WKWebView / PhotosUI /
+      # BackgroundTasks glue are UI/device-bound, are NOT in this package, and are covered only by the
+      # build-only step below + the on-device workflow (the same rationale as the driver's radio-layer
+      # exclusion). `swift test` also builds, so this doubles as HopDemoKit's build gate.
+      - name: Test + coverage-gate HopDemoKit (>=95% of DemoFormat.swift)
+        run: bash tools/apple-cov-gate.sh apps/apple/HopDemoKit Sources/HopDemoKit/DemoFormat.swift 95
+
+      # Build-only xcodebuild of the demo app: generate the project (XcodeGen), then build for the
+      # simulator with signing disabled. This catches Swift/ABI breakage in the app half of the
+      # product that a package-level swift build cannot (SwiftUI + Info.plist wiring).
+      - name: Build HopDemo (no signing)
+        working-directory: apps/apple/HopDemo
+        run: |
+          archive="$RUNNER_TEMP/xcodegen-2.46.0.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            --output "$archive"
+          printf '%s  %s\n' 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806 "$archive" \
+            | shasum -a 256 -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/xcodegen-2.46.0"
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
+          xcodegen generate
+          xcodebuild \
+            -project HopDemo.xcodeproj \
+            -scheme HopDemo \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # ble-lab is the clean-room BLE fixture and the ONLY thing that reproduces the multi-app BLE
+      # defect (two hop-embedded apps on one device publishing the same service UUID with different
+      # L2CAP PSMs). It was built by NO job, so when 2ae1d753 deleted apps/apple/HopBearers as
+      # "orphaned" this app silently stopped building and stayed broken: the only working copy was an
+      # old binary on one phone, unrecreatable from source. A fixture nothing compiles is a fixture
+      # that quietly rots, so it is gated here. Reuses the xcodegen fetched by the step above.
+      - name: Build HopBleLab (no signing)
+        working-directory: apps/ble-lab/apple-ios
+        run: |
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
+          xcodegen generate
+          xcodebuild \
+            -project HopBleLab.xcodeproj \
+            -scheme HopBleLab \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # The dormant switch is what makes the fixture usable: CoreBluetooth state restoration relaunches
+      # this app on any BLE event, so without a PERSISTED off-switch checked before any CB manager is
+      # constructed it cannot be parked, and the one-hop-service to two-hop-services transition cannot
+      # be staged. The strict true/false parse is the load-bearing part: a loose parse would read a typo
+      # as off, park the fixture, and let a coexistence run "prove" a scenario it never set up.
+      - name: Test the BLE Lab dormant switch
+        working-directory: apps/ble-lab/apple-ios
+        run: |
+          export PATH="$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin:$PATH"
+          # Pick a simulator that actually EXISTS on this runner rather than naming one. The first
+          # version of this step hardcoded "name=iPhone 16" and failed with "Unable to find a device
+          # matching the provided destination specifier" on the self-hosted mac, which has a
+          # different simulator set. Fail loudly if there is no booted-capable iPhone at all, rather
+          # than skipping the tests and reporting green.
+          dest=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+                ids=[x['udid'] for v in d.values() for x in v if 'iPhone' in x['name']]; \
+                print(ids[0] if ids else '')")
+          if [ -z "$dest" ]; then
+            echo "no iPhone simulator available on this runner; cannot run HopBleLabTests" >&2
+            exit 1
+          fi
+          xcodebuild test \
+            -project HopBleLab.xcodeproj \
+            -scheme HopBleLab \
+            -destination "id=$dest" \
+            -only-testing:HopBleLabTests \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+  wasm:
+    name: WASM (wasm32 build)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Full-only now: the dedicated `wasm` path filter only matched the mockups tree, which moved to
+    # hopmesh/internal, and core/** (which covers core/hop-wasm) already forces `full`.
+    if: needs.changes.outputs.full == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust + wasm32 target
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.0
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-wasm-${{ runner.os }}-
+
+      # simwasm-01 / infra-05 / quality-net-04: hop-wasm is only ever compiled for the host target
+      # in the rust job. Build it for the real browser target so a wasm32-only break (getrandom
+      # backend, JsStore bridge) is caught pre-merge.
+      - name: Build hop-wasm for wasm32
+        run: cargo build -p hop-wasm --target wasm32-unknown-unknown
+
+      # The DOM-free swarm sim invariant harness used to run here out of the mockups tree, which
+      # moved to hopmesh/internal, so the harness went with it; what remains in this repo is the
+      # compile gate above.
+      #
+      # Freshness note: the wasm32 build above proves the sim's SOURCE still compiles for the browser
+      # target. The recipe-based drift guard (simwasm-02) now lives in the `web` job below, which
+      # rebuilds sim/pkg from core via tools/build-sim-wasm.sh and fails if the committed JS/typings
+      # drift. A byte-for-byte .wasm diff stays out of scope (wasm-opt output varies by toolchain).
+
+  web:
+    name: Web + sim (Astro build · scenario-check · link check)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.web == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # web-04 / quality-net-05 / infra-12: the marketing site + the homepage sim had NO PR-time gate;
+      # a broken Astro build, a dead internal link, or a sim-scenario regression only surfaced as a
+      # failed post-merge Pages deploy (site silently stale). This job runs the same build + the sim's
+      # own end-to-end validator BEFORE merge. No deploy here (that stays in pages.yml on main).
+
+      - name: Install Rust + wasm32 target
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.0
+
+      - name: Install wasm-pack
+        run: bash core/hop-wasm/install-wasm-pack.sh
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-web-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-web-${{ runner.os }}-
+
+      # web-05 / simwasm-02: build the sim wasm FROM SOURCE (core/hop-wasm at HEAD) via the checked-in
+      # recipe rather than trust the hand-committed sim/pkg artifact. build-wasm.sh produces both the
+      # committed sim/pkg (--target web) and core/hop-wasm/pkg-node/ (--target nodejs, gitignored) that
+      # scenario-check requires. See sim/PKG-PROVENANCE.md for why sim/pkg is committed.
+      - name: Build sim wasm (node + web) from core/hop-wasm
+        run: bash sim/build-wasm.sh
+
+      # web-05 drift guard: fail if the committed sim/pkg no longer matches a fresh build, so the site
+      # can't ship a stale "your browser is running the real Hop protocol" artifact. check-pkg-fresh.sh
+      # compares the deterministic wasm-bindgen interface (JS glue + typings), not the optimized .wasm
+      # bytes (which vary by toolchain).
+      - name: Guard sim/pkg against drift from core
+        run: bash sim/check-pkg-fresh.sh
+
+      - name: Deterministic wire vectors through WASM
+        run: node sim/wire-vector-check.mjs
+
+      # simwasm-02: the sim's end-to-end validator (every homepage scenario actually completes: each
+      # scripted send delivers AND its ACK returns within budget). Runs against the pkg-node just built.
+      - name: Sim scenario-check (all scenarios complete)
+        run: node sim/scenario-check.mjs
+
+      # F-5: scenario-check's scripted scenarios never call publish_recv_beacon, send_traced,
+      # set_default_lifetime_ms, or inbox_debug (WasmNode methods with real behavior but no scenario
+      # call site). This drives all four directly against the same real wasm build, asserting an
+      # observable effect for each (see wasm_glue.rs's header comment + sim/wasm-glue-check.mjs).
+      - name: Sim wasm-glue check (direct WasmNode API coverage)
+        run: node sim/wasm-glue-check.mjs
+
+      # Astro 7 requires Node >=22.12 (dropped Node 20 support).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: apps/web/site/package-lock.json
+
+      - name: Install web deps
+        working-directory: apps/web/site
+        run: npm ci
+
+      # The Astro build (prebuild syncs sim/ + learn/ into public/). A broken build fails here.
+      - name: Build the marketing site (astro build)
+        working-directory: apps/web/site
+        run: npm run build
+
+      # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
+      - name: Internal link check (apps/web/site/dist)
+        run: node tools/check-web-links.mjs apps/web/site/dist
+
+  contract:
+    name: Contract purity + header drift + C smoke
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.contract == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust + cbindgen (pinned)
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          # infra-13: pin cbindgen so an upstream release can't change the emitted header format
+          # and break (or mask) the drift check for every PR at once.
+          cargo install cbindgen --locked --version "$CBINDGEN_VERSION"
+
+      - name: Contract purity (no transport symbols in the SDK/contract)
+        run: bash tools/codegen/check-contract-purity.sh
+
+      # core-ffi-08 / PLAT-004: HOP_ABI_VERSION must agree across cabi.rs, both hop.h headers, EVERY
+      # language wrapper, the packaging validators, and the docs that state the level, and a wrapper
+      # pinned to a level must bind the calls that level's bump note names. A one-sided bump makes the
+      # wrappers' load-time assertion check the wrong number, so the ABI-drift safety net (F-28)
+      # silently stops working. The guard used to read six hand-listed paths out of twelve; it now
+      # sweeps the tree, so the self-test runs first to prove that coverage is real.
+      - name: ABI version guard self-test
+        run: bash tools/codegen/check-abi-version.test.sh
+
+      - name: ABI version consistency (cabi.rs ↔ headers ↔ every wrapper ↔ docs)
+        run: bash tools/codegen/check-abi-version.sh
+
+      - name: Embedded C++ wrapper host tests (strict warnings)
+        run: bash sdk/embedded/test/run-host-tests.sh
+
+      - name: Header drift (sdk/hop.h matches cabi.rs)
+        run: |
+          cbindgen --config core/hop/cbindgen.toml --crate hop --output /tmp/hop.h core/hop
+          if ! diff -u sdk/hop.h /tmp/hop.h; then
+            echo "::error::sdk/hop.h is out of date. Run core/hop/regen-header.sh and commit the result."
+            exit 1
+          fi
+          echo "sdk/hop.h is in sync with cabi.rs"
+
+      # core-ffi-01 / core-ffi-04: compile + run the pure-C smoke against the C ABI. This is the
+      # only end-to-end exercise of hop.h from a non-Rust consumer in CI (the ESP32 + Swift/Kotlin
+      # smokes need hardware/macOS); it drives a real §39 send -> deliver + ACK from clang.
+      - name: C-ABI smoke (smoke.c end-to-end)
+        run: bash core/hop/examples/smoke.sh
+
+      - name: Committed wire vectors through native C ABI
+        run: bash core/hop/examples/wire_vectors.sh
+
+      # quality-net-r2-06: the "libhop is a first-class client from embedded C" claim (apps/esp32/
+      # hop-sensor/main.c) had NO compile check at all. The on-device ESP-IDF build needs hardware, but
+      # the host-runnable example binds ONLY sdk/hop.h, so compile + run it here against the generated
+      # header (identical to core/hop/include/hop.h, enforced by the header-drift step above). This
+      # guards the embedded C example against ABI drift on every push (compounds quality-net-r2-01's
+      # minimal build check: that proves libhop compiles for embedded; this proves the C consumer still
+      # binds it). smoke.sh already built target/debug/libhop above.
+      - name: ESP32 host example compiles + runs against sdk/hop.h
+        run: |
+          clang apps/esp32/hop-sensor/main.c -I sdk -L target/debug -lhop \
+            -Wl,-rpath,target/debug -o /tmp/hop-sensor-host
+          /tmp/hop-sensor-host
+
+  # The infra job (tofu fmt/validate/plan, plus the infra-authority guard) is deleted: the infra
+  # tree moved to hopmesh/platform, which runs its own tofu gates and owns infra-authority-guard.
+  # The required-check contract steps it housed moved into the automation job below.
+
+  automation:
+    name: Automation authority guards
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: tools/native-attestation/package-lock.json
+      - name: Test the local native provenance signer
+        run: |
+          npm ci --ignore-scripts --omit=dev --prefix tools/native-attestation
+          npm test --prefix tools/native-attestation
+      - name: Self-test sensitive agent output policy
+        run: node --test tools/agent-output-guard.test.mjs
+      - name: Enforce sensitive agent output policy
+        run: node tools/agent-output-guard.mjs
+      - name: Self-test executable-reference policy
+        run: bash tools/executable-reference-guard.test.sh
+      - name: Enforce immutable executable and publication references
+        run: python3 tools/executable-reference-guard.py
+      - name: Self-test BLE dial-backoff parity guard
+        run: bash tools/ble-backoff-parity.test.sh
+      - name: Enforce BLE dial-backoff parity across bearers
+        run: bash tools/ble-backoff-parity.sh
+      - name: Self-test Meshtastic bearer wire parity guard
+        run: bash tools/meshtastic-parity.test.sh
+      - name: Enforce Meshtastic bearer wire parity across bearers
+        run: bash tools/meshtastic-parity.sh
+      # PLAT-002: CoreBluetooth cannot run headless, so no test can redden a regression that moves the
+      # Apple BLE bearer's shell lifecycle back off bleQueue. Measured, not assumed: reverting all three
+      # controls left HopBearerBle at 117 tests, 0 failures. This is the gate.
+      - name: Self-test BLE radio single-homing guard
+        run: bash tools/ble-threading-guard.test.sh
+      - name: Enforce Apple BLE radio single-homing (bleQueue / bleRunLoop)
+        run: bash tools/ble-threading-guard.sh
+      # PROTO-004: crypto.rs's own doc block described a 2-byte mailbox routing prefix above a
+      # constant of 1 for three consecutive wire versions, because nothing in CI compared a documented
+      # constant against its symbol and wire_vectors.rs deliberately derives its vector from the
+      # constant so it cannot pin the width either.
+      - name: Self-test mailbox prefix documentation guard
+        run: bash tools/mailbox-prefix-doc-guard.test.sh
+      - name: Enforce documented mailbox prefix width against the constant
+        run: bash tools/mailbox-prefix-doc-guard.sh
+      # SVC-004: DESIGN.md section 33 is the durable-store data map, and it had drifted two thirds
+      # short of the code (no kv, no mailbox spool, no operation journal, no tenant registry). Prose
+      # cannot be trusted to keep up with a store client, so the map is now enforced.
+      - name: Self-test durable-store data map guard
+        run: bash tools/store-data-map-guard.test.sh
+      - name: Enforce the durable-store data map (DESIGN.md section 33)
+        run: python3 tools/store-data-map-guard.py
+      - name: Self-test exact branch-protection policy
+        run: bash tools/check-branch-protection.test.sh
+      - name: Self-test canonical sync authority
+        run: bash tools/sync-authority-guard.test.sh
+      - name: Enforce canonical sync authority
+        run: python3 tools/sync-authority-guard.py
+      - name: Self-test fixed Copybara mapping
+        run: bash tools/copybara/dispatch.test.sh
+      - name: Self-test auto-export plan (preflight + changed components)
+        run: bash tools/copybara/auto-export-plan.test.sh
+      - name: Self-test Pages dependency graph
+        run: bash tools/pages-path-guard.test.sh
+      - name: Enforce Pages dependency graph
+        run: python3 tools/pages-path-guard.py
+      - name: Self-test release plan + mirror tagger
+        run: bash tools/release/release.test.sh
+      # A build artifact on a PUBLIC download surface must come from a commit whose canonical CI gate
+      # passed, proved with the same authority the rest of the release chain uses. The ESP32 archives
+      # were published to a since-retired standalone repo with no such proof at all.
+      # Only the SELF-TEST runs here. The live freshness check needs actions:read to read past job
+      # conclusions and only means anything on a schedule, so it lives in workflow-freshness.yml. What
+      # this pins is that the guard can still FAIL: it exists because three workflows reported success
+      # while doing nothing, and a freshness check that cannot detect that is the same class of lie.
+      - name: Self-test deploy-critical workflow freshness guard
+        run: bash tools/workflow-freshness-guard.test.sh
+      - name: Self-test artifact publication authority
+        run: bash tools/artifact-publication-guard.test.sh
+      - name: Enforce artifact publication authority
+        run: python3 tools/artifact-publication-guard.py
+      # Every secret name a workflow reads must be provisioned in a scope that job can see. Names only
+      # are printed here; no secret value is read, and the API does not return one.
+      - name: Self-test workflow secret scopes
+        run: bash tools/workflow-secrets-guard.test.sh
+      - name: Enforce workflow secret scopes
+        run: python3 tools/workflow-secrets-guard.py
+      # The local pre-push script must declare what it does about EVERY ci.yml job, so its verdict can
+      # never read broader than the set it executed.
+      - name: Self-test local CI mirror coverage
+        run: bash tools/local-ci-mirror-coverage.test.sh
+      - name: Enforce local CI mirror coverage
+        run: bash tools/local-ci-mirror-coverage.sh
+      # infra-r2-02: keep the aggregate CI gate honest (it must `needs:` every job and fail closed) and
+      # keep tools/required-checks.json (release-provenance's canonical job set) locked to the actual CI
+      # job names, so a renamed/added/dropped job forces a matching config edit in the same PR. First
+      # self-test the guard (it must fail a drifted gate, a nameless job, and a drifted config), then run
+      # it against the real tree. These two steps lived in the deleted infra job; the contract they
+      # guard is repo-local, so they moved here rather than dying with the job that housed them.
+      - name: Self-test the required-check guard
+        run: bash tools/check-required-checks.test.sh
+      - name: Required-check contract is in sync
+        run: bash tools/check-required-checks.sh
+      - name: Self-test mirror release-secret audit
+        run: bash tools/release/check-mirror-secrets.test.sh
+      - name: Self-test immutable release artifacts
+        run: bash tools/release-artifact.test.sh
+      - name: Self-test exact crates.io publication payloads
+        run: bash tools/crates-publish.test.sh
+      - name: Self-test verified PlatformIO inputs
+        run: bash sdk/embedded/tools/platformio-offline.test.sh
+      - name: Test the portable HOP adversarial audit skill
+        run: |
+          python3 .agents/skills/hop-adversarial-audit/scripts/test_tools.py
+          python3 .agents/skills/hop-adversarial-audit/scripts/validate_ledger.py \
+            .agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json
+          bash tools/docs-token-guard.sh .agents/skills/hop-adversarial-audit
+
+  docs-tokens:
+    name: Docs token guard (banned copy)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Self-test mirror release provenance
+        run: bash tools/release-provenance.test.sh
+      - name: Self-test clean package exports and signed native artifacts
+        run: bash tools/package-export-smoke.test.sh
+      - name: Generate every exact Copybara export in isolated directories
+        run: |
+          mkdir "$RUNNER_TEMP/package-exports"
+          python3 tools/package-export-smoke.py check --output-root "$RUNNER_TEMP/package-exports"
+      # First prove the guard itself still flags what it should and ignores legit API identifiers /
+      # removal notes, then run it against the tree.
+      - name: Self-test the docs token guard
+        run: bash tools/docs-token-guard.test.sh
+      # F-CI-7: the HopDriver coverage floor (in the apple job, which needs a Mac) parses llvm-cov's JSON
+      # export via tools/cov-floor-gate.py. Self-test that pure-python gate here on ubuntu (no swift
+      # needed) so an aggregate/per-file/empty-denominator regression is caught pre-merge.
+      - name: Self-test the coverage-floor gate
+        run: bash tools/cov-floor-gate.test.sh
+      # docs-drift-02: fail on em-dash/en-dash and removed-API / mispositioned terms in docs + site
+      # copy (InternetEgress, Wi-Fi Direct, bare "Bluetooth"), scoped to avoid legit API identifiers.
+      # docs-drift-03: the same run now also sweeps the SOURCE trees for em/en/lookalike/encoded
+      # dashes (the dash bans only), so the repo-wide "no dashes anywhere" law is enforced in code
+      # and comments too, not just docs. See the `docs` path filter above.
+      - name: Run docs token guard
+        run: bash tools/docs-token-guard.sh
+      # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is
+      # empty, missing, truncated below a sane floor, stripped of its signature line, or (for the two
+      # LICENSE copies) drifted apart. A 0-byte LICENSE.md shipped TWICE before (restored, then
+      # re-emptied by a squash-merge) with every CI job green, because nothing asserted a tracked file
+      # has real content. Self-test the guard first, then run it against the tree.
+      - name: Self-test the repo integrity guard
+        run: bash tools/repo-integrity-guard.test.sh
+      - name: Repo integrity guard (critical files non-empty)
+        run: bash tools/repo-integrity-guard.sh
+      # A workflow `if:` that retained a literal newline inside its ${{ }} does not evaluate as
+      # intended, and the job SKIPS rather than fails, so CI stays green while the gate does nothing.
+      # That shipped once already (pr-automerge's author gate) and left PRs sitting green and
+      # unmerged. Self-test the guard first, then run it against the tree.
+      - name: Self-test the workflow if guard
+        run: bash tools/workflow-if-guard.test.sh
+      - name: Workflow if guard (no newline inside an expression)
+        run: python3 tools/workflow-if-guard.py
+      # Every published package tracks the protocol's major.minor (the Rust workspace version is the
+      # anchor); patch may differ per package, but a major/minor bump must move them all together.
+      - name: Self-test the version-alignment guard
+        run: bash tools/version-align-guard.test.sh
+      - name: Version-alignment guard (SDK major.minor tracks the anchor)
+        run: bash tools/version-align-guard.sh
+
+  # ---- server endpoint SDKs -------------------------------------------------------------------------
+  # Each SDK builds a host libhop and runs its own proofs (the runnable examples + tests that complete a
+  # real hops round trip, incl. the WSS + WebPKI discovery chain against an in-process dev cert). This is
+  # what keeps the SDKs from rotting, since an ABI bump, a wire change, or a sdk/hop.h regen that breaks
+  # a binding now reddens CI instead of being found by hand. `cargo build -p hop` is cached per SDK.
+  node-sdk:
+    name: Node endpoint SDK (proofs)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_node == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The sdk/node CI, kept as a composite action. Its standalone mirror was retired in 2026-08, so
+      # there is no second consumer and no prebuilt to download: the action always builds libhop from
+      # the in-tree Rust core, with HOP_LIBDIR as the only escape hatch. See sdk/node/.github/.
+      - uses: ./sdk/node/.github/actions/ci
+        with:
+          pkg-dir: sdk/node
+
+  python-sdk:
+    name: Python endpoint SDK (proofs)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_python == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.13"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-python-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-python-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Test Python SDK (in-process + TCP + reach + WSS discovery)
+        working-directory: sdk/python
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
+          python -m unittest discover -s tests
+          python examples/discovery.py
+
+  go-sdk:
+    name: Go endpoint SDK (race)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_go == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.22.12"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-go-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-go-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Test Go SDK (gofmt + vet + race)
+        working-directory: sdk/go
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          test -z "$(gofmt -l . | grep -v _test || true)"
+          go vet ./...
+          go test -race ./...
+
+  ruby-sdk:
+    name: Ruby endpoint SDK (proofs)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_ruby == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3.12"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ruby-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-ruby-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Test Ruby SDK (in-process + reach + WSS discovery)
+        working-directory: sdk/ruby
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: ruby -Ilib test/test_hop.rb
+
+  crystal-sdk:
+    name: Crystal endpoint SDK (spec)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_crystal == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@d8ef131ecec0352ce0e39b81b0a6d95def58fe2f # v1.9.2
+        with:
+          crystal: 1.17.1
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-crystal-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-crystal-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Format check + spec (in-process + reach + WSS discovery)
+        working-directory: sdk/crystal
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          crystal tool format --check
+          crystal spec
+
+  elixir-sdk:
+    name: Elixir endpoint SDK (mix test)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_elixir == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.3.4.3"
+          elixir-version: "1.18.4"
+          rebar3-version: "3.27.0"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-elixir-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-elixir-${{ runner.os }}-
+      - name: mix format check + test (compiles the Rustler NIF)
+        working-directory: sdk/elixir
+        run: |
+          mix local.hex 2.2.1 --force
+          mix deps.get
+          mix format --check-formatted
+          mix test
+      # The Elixir EXPORT validation lived here and is gone with the hop-sdk-elixir mirror (2026-08
+      # retirement): it built the vendored Hex archive from a Copybara export that no longer exists.
+      # The Elixir SDK itself is unchanged and still fully tested above (compile --warnings-as-errors,
+      # credo, dialyzer, format --check-formatted, mix test). What is no longer covered is the
+      # PACKAGING, which is correct, because nothing packages it until monorepo-side publishing exists.
+
+  flutter-sdk:
+    name: Flutter endpoint SDK (proofs)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_flutter == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Install the Dart SDK by download + checksum (same self-contained pattern as
+      # the XcodeGen step), so the job pins the toolchain by hash rather than an
+      # unpinnable third-party action tag.
+      - name: Install Dart SDK (pinned by sha256)
+        run: |
+          ver=3.5.4
+          archive="$RUNNER_TEMP/dartsdk.zip"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://storage.googleapis.com/dart-archive/channels/stable/release/${ver}/sdk/dartsdk-linux-x64-release.zip" \
+            --output "$archive"
+          printf '%s  %s\n' 8d0c5e34f2a9d6b9f5ebf05252ae1703893f6087d547c631b390aef2d0cd6967 "$archive" \
+            | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/dart"
+          echo "$RUNNER_TEMP/dart/dart-sdk/bin" >> "$GITHUB_PATH"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-flutter-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-flutter-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      - name: Analyze + format + test (in-process + TCP + reach + WSS discovery)
+        working-directory: sdk/flutter
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          dart pub get
+          dart analyze
+          dart format --output=none --set-exit-if-changed .
+          dart test
+
+  # Aggregate gate: the single required check for branch protection. The runtime deploy it used to
+  # trigger moved to hopmesh/platform with the infra tree, so nothing fires on success here.
+  # It `needs:` every other job and, via `if: always()`,
+  # runs even when one failed. It passes iff no job FAILED or was CANCELLED; a job SKIPPED by a path
+  # filter is fine. Collapsing the required set to this one check lets jobs skip on unrelated PRs without
+  # leaving a required check stuck pending (a skipped required check does not reliably satisfy branch
+  # protection; a green gate always does).
+  react-native-sdk:
+    name: React Native SDK (typecheck + tests)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_react_native == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The cross-platform RN client SDK wraps sdk/apple + sdk/android through one native bridge. Only
+      # the JS layer is verified here: the ios/ and android/ halves compile in a consuming app's build
+      # against the platform SDKs, so there is no libhop to resolve. Unlike the other SDKs this one is
+      # not mirrored or published (docs/repo-catalog.md), so this job is its ONLY gate.
+      - uses: ./sdk/react-native/.github/actions/ci
+        with:
+          pkg-dir: sdk/react-native
+
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - rust
+      - kotlin-sdk
+      - compose-sdk
+      - android
+      - apple
+      - wasm
+      - web
+      - contract
+      - automation
+      - docs-tokens
+      - node-sdk
+      - python-sdk
+      - go-sdk
+      - ruby-sdk
+      - crystal-sdk
+      - elixir-sdk
+      - flutter-sdk
+      - react-native-sdk
+      - changes
+    steps:
+      - name: Results
+        run: echo "job results:${{ format(' {0}', join(needs.*.result, ' ')) }}"
+      - name: Fail if any required job failed or was cancelled
+        if: >-
+          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
+          needs.changes.result != 'success' || needs.automation.result != 'success'
+        run: |
+          echo "::error::a required CI job did not pass (see the results above)"
+          exit 1

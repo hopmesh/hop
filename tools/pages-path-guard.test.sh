@@ -34,12 +34,24 @@ assert module.transitive_workspace_crates(root, metadata) == {
 
 pages_workflow = (root / ".github/workflows/pages.yml").read_text(encoding="utf-8")
 module.check_authority(pages_workflow)
+# The two repository names swapped roles in the hopmesh/hop cutover, so this substitution reverses
+# direction: hop used to be the stale pre-rename name and monorepo the canonical one, and it is now the
+# other way round. A blanket find-and-replace turns this line into a no-op that asserts nothing.
+#
+# Swap ONLY the shell authority line, not every occurrence of the name. A wholesale swap also changes
+# the two API URLs, so the guard's main_api count fires and the case passes without the repository
+# check ever being consulted: neutering that check left this test green. Isolating it means this case
+# fails if, and only if, the repository authority check stops working.
 try:
-    module.check_authority(pages_workflow.replace("hopmesh/monorepo", "hopmesh/hop"))
+    module.check_authority(
+        pages_workflow.replace(
+            'test "$REPOSITORY" = hopmesh/hop', 'test "$REPOSITORY" = hopmesh/monorepo'
+        )
+    )
 except module.PagesPathError:
     pass
 else:
-    raise AssertionError("legacy Pages repository was accepted")
+    raise AssertionError("archived Pages repository was accepted")
 try:
     module.check_authority(pages_workflow.replace("          include-hidden-files: true\n", ""))
 except module.PagesPathError:

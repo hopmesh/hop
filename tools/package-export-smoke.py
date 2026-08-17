@@ -26,7 +26,7 @@ GO_CGO_EXPORT = """#cgo pkg-config: hop
 ELIXIR_HOP_PATH_DEP = 'hop = { path = "../../../../core/hop" }'
 ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true }'
 OWNER = "hopmesh"
-MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/monorepo"'
+MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/hop"'
 
 # Emptied by the 2026-08 mirror retirement: COMPONENTS is now sdk/go, sdk/crystal and sdk/apple only,
 # and none of those is a Rust crate. Kept as an empty set rather than deleted so every code path that
@@ -359,7 +359,7 @@ def expected_export_tree(source_root, component, components=None, available=None
     if component in RUST_MIRRORS:
         preamble = workspace_preamble(source_root / "tools/copybara/copy.bara.sky")
         replace_text(tree, "Cargo.toml", "[package]\n", preamble, f"{component} workspace injection")
-        # The shared preamble can only name one repository and it names the private monorepo, which is
+        # The shared preamble can only name one repository and it names the canonical monorepo, which is
         # a dead link for anyone who installs the package AND makes npm reject hop-wasm, since its
         # sigstore provenance attests to the mirror. Point each crate at its own mirror; copy.bara.sky
         # applies the same rewrite (and reverses it on import before stripping the preamble).

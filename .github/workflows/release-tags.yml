@@ -1,0 +1,95 @@
+# Tag a release on every PUBLIC mirror whose declared version is not tagged there yet.
+#
+# This is the missing link in the release chain. Each mirror already ships a release.yml that fires on
+# a `vX.Y.Z` tag and publishes via OIDC trusted publishing, but nothing ever created those tags, so no
+# mirror had a single tag or release. A version bump is therefore the release gate: bump a component's
+# manifest, merge it, and once the export carries that bump to the mirror this tags it and the mirror
+# publishes itself.
+#
+# It runs after "Sync component" finishes on main (the auto-export that pushes the bump to the
+# mirrors), never before, plus on demand. Every step is idempotent and self-healing:
+#
+#   - a version already tagged on that mirror is skipped, so ordinary merges tag nothing;
+#   - a mirror whose main does NOT yet carry the version is skipped, not forced. The tag would
+#     otherwise point at code whose manifest says something else, and the mirror's own release.yml
+#     asserts tag == manifest version, so it would fail the publish. Skipping lets the next run (or the
+#     dispatch) pick it up once the export lands;
+#   - tags are created through the git refs API, which never overwrites an existing ref.
+#
+# Auth is the same GitHub App the sync uses, minted for exactly the mirrors in the plan with
+# contents:write (creating a ref) and nothing else. The monorepo's own GITHUB_TOKEN stays read-only.
+name: Release tags
+
+on:
+  # Two triggers, because a release needs BOTH halves and they finish far apart. The export puts the
+  # code on the mirror in seconds; the canonical CI gate and native artifacts take roughly twenty
+  # minutes, and the mirror's release job refuses a source commit whose either one is not green. Firing
+  # only on the export therefore created tags that could not publish, and since a tag is never moved,
+  # each one stranded that version permanently. Now the tagger defers when the source is not ready, and
+  # Native artifacts completing brings it straight back to finish the job.
+  workflow_run:
+    workflows: ["Sync component", "Native artifacts"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      first_tag:
+        description: 'Type "yes" to also tag mirrors that have NO tags at all (a component first release)'
+        required: false
+        default: "no"
+
+permissions:
+  contents: read
+  actions: read   # read native-artifacts runs for the source commit
+  checks: read    # read the canonical CI gate for the source commit
+
+concurrency:
+  group: release-tags
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    # Only after a SUCCESSFUL export (a failed sync means the mirrors may not carry the bump yet), and
+    # only from canonical main.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve each releasable component's declared version
+        id: plan
+        env:
+          # Used ONLY to ask whether each mirror exists, so one missing repository cannot fail the
+          # single installation token minted below for the whole list.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/release/plan.py
+
+      - name: Mint mirror tokens for the releasable components
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: write
+
+      - name: Tag each mirror that is not yet tagged at its declared version
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          # Reads the CANONICAL repo's CI gate + native-artifacts runs. The App token above is scoped
+          # to the mirrors and cannot see the monorepo, so the readiness check needs this one.
+          SOURCE_TOKEN: ${{ github.token }}
+          PLAN: ${{ steps.plan.outputs.plan }}
+          # Components whose mirror does not exist. Reported AFTER everything taggable is tagged.
+          MISSING: ${{ steps.plan.outputs.missing }}
+          # A mirror's FIRST ever tag is that component's first release, not a routine bump, and every
+          # untagged component qualifies simultaneously. Automatic runs never do it; only a deliberate
+          # dispatch with first_tag=yes does. Reaching the tagger as a value (not a raw expression in
+          # the script) keeps dispatch data out of the shell.
+          ALLOW_FIRST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.first_tag || 'no' }}
+        run: python3 tools/release/tag-mirrors.py

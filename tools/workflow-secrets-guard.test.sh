@@ -232,12 +232,14 @@ def presence(label, environ, scopes, expect_error):
     assert not expect_error, f"{label}: guard accepted it"
 
 
+# Only the names this repository actually declares in the organization/repository scope. BOOTSTRAP_TFVARS,
+# STRIPE_API_KEY and RESEND_API_KEY were here until the deploy and billing workflows moved to
+# hopmesh/platform. Leaving them would have made the unmapped-name case below vacuous: the guard only
+# demands names the manifest declares, so a fixture keyed to an undeclared name is accepted and the
+# assertion tests nothing.
 live = {
-    "BOOTSTRAP_TFVARS": "true",
     "BRANCH_PROTECTION_TOKEN": "true",
     "MIRROR_SECRET_AUDIT_TOKEN": "false",
-    "RESEND_API_KEY": "true",
-    "STRIPE_API_KEY": "true",
     "HOP_SYNC_TOKEN": "true",
 }
 presence("the live inventory as it stands", live, ["organization", "repository"], None)
@@ -255,19 +257,22 @@ presence(
     ["organization", "repository"],
     "clear provisioned:false",
 )
-# A name the workflow forgot to pass is UNKNOWN, never assumed present.
+# A name the workflow forgot to pass is UNKNOWN, never assumed present. Keyed to a name the manifest
+# really declares, so removing it genuinely leaves the guard with an unanswered question.
 presence(
     "unmapped name",
-    {name: value for name, value in live.items() if name != "STRIPE_API_KEY"},
+    {name: value for name, value in live.items() if name != "HOP_SYNC_TOKEN"},
     ["organization", "repository"],
-    "STRIPE_API_KEY was not passed",
+    "HOP_SYNC_TOKEN was not passed",
 )
-# And a secret value must never be what gets passed: only the boolean form is accepted.
+# And a secret value must never be what gets passed: only the boolean form is accepted. Keyed to a
+# DECLARED name for the same reason as the case above; an undeclared name is simply ignored, so the
+# old STRIPE_API_KEY fixture would have asserted nothing once that secret moved to hopmesh/platform.
 presence(
     "a value instead of a boolean",
-    {**live, "STRIPE_API_KEY": "sk_live_notarealkey"},
+    {**live, "HOP_SYNC_TOKEN": "ghp_notarealtoken"},
     ["organization", "repository"],
-    "STRIPE_API_KEY was not passed",
+    "HOP_SYNC_TOKEN was not passed",
 )
 
 print("workflow secrets guard tests passed")
