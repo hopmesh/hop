@@ -56,21 +56,36 @@ it is not separately published. Only the standalone mirror repo went away.
 Do not re-add one of these names to `components.json` expecting the repo to be there. Restoring a
 mirror means creating the repo again and seeding it with a fresh `init_history` export.
 
-## Not extracted (stay in the monorepo)
+## Not extracted (stay in this repo)
 
-`sim/` + `core/hop-sim` (the swarm simulator, also the site's scenario player), `apps/*` (the demo
-apps), `assets/`, `learn/`, `mockups/`, `infra/`, `docs/`, `tools/`. These are the monorepo's own
-subsystems, not standalone deliverables.
+`sim/` + `core/hop-sim` (the swarm simulator, also the site's scenario player), `apps/*` except the
+console (the demo apps), `assets/`, `learn/`, `docs/`, `tools/`. These are this repo's own subsystems,
+not standalone deliverables.
+
+Moved OUT, and no longer here at all, so do not look for them in this tree:
+
+| tree | now lives in |
+| --- | --- |
+| `services/hop-accountd`, `services/hop-billingd` | `hopmesh/platform` (private) |
+| `apps/web/console` | `hopmesh/platform` |
+| `infra/` | `hopmesh/platform` |
+| `mockups/` | `hopmesh/internal` (private) |
+| `docs/audits/`, `business/` | `hopmesh/internal` |
 
 `sdk/react-native` also stays here. It is a real client SDK, but the cross-platform surface is being
 reworked, so it is deliberately not mirrored or published: no `components.json` entry, no Copybara
-workflows, and no release pipeline. It is verified by the monorepo's own `React Native SDK` CI job.
+workflows, and no release pipeline. It is verified by this repo's own `React Native SDK` CI job.
 
 ## Registry fallout of the mirror retirement
 
 Deleting a mirror does not unpublish anything that already shipped from it. This section is the durable
 record of what is published, what is not, and which published artifact now carries a dead source link,
 so it does not have to be rediscovered by hand. All of it was verified at retirement time.
+
+Every published package whose `repository` field still points at the archived `hopmesh/monorepo` is
+enumerated below, and the resolution is in "The published source links are permanently dead, and the
+in-tree fix is already in" at the end of this section. Short version: those links cannot be repaired
+retroactively, and the in-tree metadata already names `hopmesh/hop` for the next publish.
 
 ### Published, and affected
 
@@ -172,14 +187,26 @@ Never link these, and never invent one:
   404 and no `Hop` library exists on the PlatformIO registry, so the Flutter and embedded SDKs are the
   two that really are unpublished.
 
-### The source links are already broken, and the flip is the fix
+### The published source links are permanently dead, and the in-tree fix is already in
 
-Worth stating plainly so the sequence is not misread. All three crates and `@hop-mesh/wasm` point
-their `repository` field at `hopmesh/monorepo`, which is PRIVATE today. Those source links are
-therefore ALREADY broken for the public, independently of anything the mirror retirement does. Making
-the public repo public FIXES that; it does not cause it. The one link the retirement genuinely breaks
-is `@hop-mesh/endpoint`, because it points at a mirror that is being deleted rather than at a private
-repo that is due to open.
+Worth stating plainly so the sequence is not misread, and this paragraph has been REWRITTEN because its
+earlier conclusion is now obsolete.
+
+All three crates and `@hop-mesh/wasm` at v0.0.2 point their `repository` field at `hopmesh/monorepo`.
+That was already broken for the public before the mirror retirement, because the repo was private, so
+the retirement did not cause it. What has changed is the resolution. The earlier version of this
+paragraph said making that repo public would fix the links. It is not being made public: it is being
+ARCHIVED, and the canonical source is now `hopmesh/hop`. So those v0.0.2 links stay dead permanently,
+because a package's metadata is baked in at publish time and cannot be rewritten in place.
+
+The in-tree fix is landed rather than pending. The workspace `repository` field, which every crate and
+the wasm package inherit, now names `hopmesh/hop`, and `sdk/node/package.json` carries an explicit
+`repository` with `directory: sdk/node` (it previously had none, and its published metadata came from
+the deleted `hop-sdk-node` mirror). So the NEXT publish of each resolves. Nothing retroactively fixes
+v0.0.2.
+
+`@hop-mesh/endpoint` is the one the retirement genuinely broke on its own, because it pointed at a
+mirror that was deleted rather than at a repo that was due to open.
 
 ### Release assets held by the retired repos
 
