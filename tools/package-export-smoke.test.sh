@@ -449,7 +449,7 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
                     "buildConfigURI": native.NATIVE_CERT_IDENTITY,
                     "buildConfigDigest": "1" * 40,
                     "buildTrigger": "push",
-                    "runInvocationURI": "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/1",
+                    "runInvocationURI": "https://github.com/hopmesh/hop/actions/runs/7/attempts/1",
                 }
             },
             "statement": {
@@ -479,7 +479,7 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
                     "runDetails": {
                         "builder": {"id": native.NATIVE_CERT_IDENTITY},
                         "metadata": {
-                            "invocationId": "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/1"
+                            "invocationId": "https://github.com/hopmesh/hop/actions/runs/7/attempts/1"
                         },
                     },
                 },
@@ -507,7 +507,7 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert "--bundle" in captured_command and "--deny-self-hosted-runners" in captured_command
     wrong_certificate = json.loads(json.dumps(verification))
     wrong_certificate[0]["verificationResult"]["signature"]["certificate"]["runInvocationURI"] = (
-        "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/2"
+        "https://github.com/hopmesh/hop/actions/runs/7/attempts/2"
     )
     rejected(
         lambda: native.validate_provenance_result(

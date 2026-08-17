@@ -9,6 +9,7 @@ import re
 import tempfile
 from pathlib import Path
 import sys
+import subprocess
 
 root = Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("provenance", root / "tools/release-provenance.py")
@@ -118,7 +119,7 @@ rejected(
 
 check = {
     "name": "Rust",
-    "details_url": "https://github.com/hopmesh/monorepo/actions/runs/42/job/1",
+    "details_url": "https://github.com/hopmesh/hop/actions/runs/42/job/1",
     "status": "completed",
     "conclusion": "success",
 }
@@ -171,11 +172,23 @@ expected_workflows = {
     for name, entry in components.items()
     if (root / entry["prefix"] / ".github/workflows/release.yml").is_file()
 }
+# Only files git TRACKS count as being in this repository. A bare filesystem glob also walks nested
+# checkouts: an agent worktree under .claude/worktrees/ carries its own copy of every component's
+# release.yml, and each copy read as a workflow outside the component map. That made this assertion fail
+# locally while passing in CI, which is the wrong way round for a guard. Tracked-files is also the
+# stricter reading, since an untracked stray copy is not part of the repo either.
+tracked = subprocess.run(
+    ["git", "-C", str(root), "ls-files", "-z", "*/.github/workflows/release.yml", ".github/workflows/release.yml"],
+    capture_output=True, text=True, check=True,
+).stdout.split("\0")
 actual_workflows = {
-    path for path in root.glob("**/.github/workflows/release.yml")
-    if "node_modules" not in path.relative_to(root).parts
+    root / name for name in tracked
+    if name and "node_modules" not in Path(name).parts
 }
-assert actual_workflows == set(expected_workflows), "release workflow is outside the component map"
+assert actual_workflows == set(expected_workflows), (
+    "release workflow is outside the component map: "
+    f"{sorted(str(p.relative_to(root)) for p in actual_workflows ^ set(expected_workflows))}"
+)
 
 token_action = (
     "actions/create-github-app-token@"
@@ -209,8 +222,8 @@ for workflow, component in expected_workflows.items():
     assert "permission-actions: read" in text
     assert "permission-checks: read" in text
     assert "permission-contents: read" in text
-    assert "repositories: monorepo" in text
-    assert "repositories: hopmesh/monorepo" not in text
+    assert "repositories: hop\n" in text
+    assert "repositories: hopmesh/hop" not in text
     lines = text.splitlines()
     verify_line = next(index for index, line in enumerate(lines) if "release-provenance.py" in line)
     publish_lines = [

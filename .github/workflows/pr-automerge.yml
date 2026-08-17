@@ -1,0 +1,55 @@
+# Enable auto-merge on a maintainer's or Dependabot's non-draft PR as it opens (or leaves draft), so
+# those PRs merge themselves ONCE the required CI gate passes. Branch protection still gates
+# everything: a red or stale branch never merges. See the author gate on the job below for why this
+# is not armed for every PR. This replaces dependabot-automerge.yml, which was broken in two ways:
+#   1. It requested SQUASH auto-merge, but this repo forbids squash merges, so every enablement
+#      failed and Dependabot PRs piled up unmerged.
+#   2. It used GITHUB_TOKEN. Auto-merge performs the merge AS the enabling actor, and pushes made
+#      by GITHUB_TOKEN do not trigger workflows, so the merge commit on main would skip ci.yml and
+#      pages.yml, and the Cloud Build deploy gate (which requires a green ci.yml run FOR the
+#      commit) would silently never deploy. HOP_SYNC_TOKEN (a real PAT) attributes the merge to a
+#      user, so push-triggered workflows and the deploy gate behave normally.
+# Nothing here runs untrusted PR code (API call only), so pull_request_target is safe.
+name: PR auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  enable-automerge:
+    # Author gate. `main` requires no approving review, so "auto-merge armed + green CI gate" IS the
+    # entire path into main. `pull_request_target` fires for FORK PRs too, and this repo is PUBLIC,
+    # so without this gate a stranger could fork, open a PR, and have it merge itself the moment CI
+    # went green, with no human in the loop. GitHub's fork-PR approval covers RUNNING a workflow, not
+    # merging, so approving someone's CI run would be the same click that arms their merge. Branch
+    # protection cannot express "only maintainer PRs auto-merge", so the gate lives here.
+    # IMPORT PRs MUST NEVER AUTO-MERGE. Copybara's import path takes a PR opened on a public mirror
+    # by an OUTSIDE contributor, re-adds the path prefix, and opens it here, authored by
+    # github-actions[bot] (the import job uses the workflow token). An import PR is third-party code
+    # wearing the workflow's identity, so do NOT add github-actions[bot] (or the sync App's login) to
+    # the allowlist below: allowlisting the identity that opens an import PR would let a stranger's
+    # mirror PR automerge to main, which is the exact hole this gate exists to close, made less
+    # visible. Import PRs merge by hand after review. Changelog PRs arrive under the PAT user's
+    # login (jwaldrip), so they are already covered below.
+    #
+    # Keep this condition on ONE line. The first version of this gate wrapped it across three lines
+    # with `>-` and each continuation indented further than the first. In a YAML folded scalar,
+    # more-indented lines are kept LITERALLY, so the value reached GitHub with real newlines inside
+    # the `${{ }}` instead of folding to spaces, and the job silently skipped on every PR (#389 sat
+    # green and unmerged). A skipped job is not a failed one, so nothing went red.
+    #
+    # The login allowlist is deliberately belt-and-braces with author_association. association alone
+    # is the more elegant check but it is computed from a relationship that can change (org
+    # membership visibility, a role edit) and when it returns something unexpected this job skips
+    # SILENTLY, which is the worst failure shape for a merge gate. An exact login cannot drift.
+    if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable merge-commit auto-merge
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}

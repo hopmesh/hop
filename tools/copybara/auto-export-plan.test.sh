@@ -85,11 +85,30 @@ except SystemExit as error:
 else:
     raise AssertionError("guard accepted a subtree-prefix trigger that misses the shared export inputs")
 
-# preflight rejects anything that is not a push to canonical protected main (no network on the fast path:
-# every rejection here is a local check that fires before the API call).
+# preflight rejects anything that is not a push to canonical protected main. Every rejection below is a
+# local check that fires before preflight's single API call.
+#
+# The happy path is asserted FIRST, and that assertion is the point. Without it this block was a check
+# that could not fail: when the canonical repository moved from hopmesh/monorepo to hopmesh/hop, `base`
+# stopped matching EXPECTED, so every tweak below was still "rejected" but no longer for the reason it
+# names, and the suite stayed green while testing nothing. Asserting acceptance pins `base` to a
+# genuinely accepted env, which is what makes each rejection attributable to its own tweak.
+#
+# _api is stubbed so acceptance is checkable offline. It is the only network call preflight makes, and
+# it is reached only after every local check has passed, so stubbing it does not weaken the cases here.
+calls = []
+
+
+def _stub_api(path, token):
+    calls.append(path)
+    return {"object": {"sha": "0" * 40}}
+
+
+plan._api = _stub_api
+
 base = {
-    "REPOSITORY": "hopmesh/monorepo",
-    "EVENT_REPOSITORY": "hopmesh/monorepo",
+    "REPOSITORY": "hopmesh/hop",
+    "EVENT_REPOSITORY": "hopmesh/hop",
     "EVENT_NAME": "push",
     "REF": "refs/heads/main",
     "DEFAULT_BRANCH": "main",
@@ -97,12 +116,18 @@ base = {
     "SHA": "0" * 40,
     "GH_TOKEN": "x",
 }
+try:
+    plan.preflight(base)
+except SystemExit as error:
+    raise AssertionError(f"preflight rejected the canonical push it must accept: {error}")
+assert calls, "preflight never reached its API call, so acceptance was not actually proven"
+
 for tweak in (
     {"EVENT_NAME": "workflow_dispatch"},
     {"REF": "refs/heads/dev"},
     {"REF_PROTECTED": "false"},
-    {"REPOSITORY": "fork/monorepo"},
-    {"EVENT_REPOSITORY": "fork/monorepo"},
+    {"REPOSITORY": "fork/hop"},
+    {"EVENT_REPOSITORY": "fork/hop"},
     {"DEFAULT_BRANCH": "dev"},
     {"SHA": "nothex"},
 ):

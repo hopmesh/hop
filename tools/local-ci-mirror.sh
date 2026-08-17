@@ -121,16 +121,15 @@ trap cleanup EXIT
 # summary of EVERY run, so the terminal verdict can never read broader than what was executed.
 CI_COVERAGE=(
   "changes|none|dorny path-filter computation, no local analogue; it decides which jobs run, it gates nothing"
-  "rust|full|fmt, clippy, the workspace tests, both wire guards, the deterministic corpus and every feature-matrix cargo invocation ci.yml runs, including the reqwest/sqlcipher/billingd clippy passes and the live and live+firestore telemetryd tests; the fuzz smoke needs cargo-fuzz and is named in NOT RUN without it"
+  "rust|full|fmt, clippy, the workspace tests, both wire guards, the deterministic corpus and every feature-matrix cargo invocation ci.yml runs, including the reqwest and sqlcipher clippy passes and the live and live+firestore telemetryd tests; the fuzz smoke needs cargo-fuzz and is named in NOT RUN without it"
   "kotlin-sdk|full|gradle test + jacocoTestReport + jacocoTestCoverageVerification, the same tasks ci.yml runs, when mise java/android-sdk and gradle are present"
   "compose-sdk|none|the Compose Multiplatform desktopTest suite is not run here; it needs the Compose Multiplatform gradle toolchain, which the local mirror does not provision"
   "android|full|the bearers and HopDemo JVM unit suites AND all five per-module JaCoCo coverage-verification floors ci.yml gates on, when mise java/android-sdk and gradle are present"
   "apple|partial|swift test for all eight packages, when swift and xcodebuild are present; NOT the six apple-cov-gate floors, the HopDriver llvm-cov floor, or the build-only xcodebuild of the demo app"
-  "wasm|none|the swarm invariant test and the mockups suite are not run here"
+  "wasm|none|the wasm32 browser-target build of hop-wasm is not run here; sim/build-wasm.sh builds the node target for the sim vectors, which is a different target"
   "web|partial|the sim pkg freshness and wire-vector checks run here; NOT the scenario check, the wasm-glue check, npm ci, the Astro build, or the internal link check"
   "contract|partial|the ABI version guard AND its self-test run here; NOT contract purity, the cbindgen header-drift diff, the C-ABI smoke, the wire vectors through the native C ABI, the embedded C++ host tests, or the ESP32 host example"
-  "infra|partial|the required-checks guard runs here; NOT tofu fmt, the three tofu init/validate roots, or the infra authority guards"
-  "automation|partial|the docs token guard, the BLE backoff parity pair, the durable-store data map pair, the repo integrity guard and the package export smoke run here; NOT the native attestation npm tests, the agent output guard, the executable reference guard, the sync/pages/release/artifact-publication/workflow-secrets guards, or the audit skill tests"
+  "automation|partial|the docs token guard, the BLE backoff parity pair, the durable-store data map pair, the repo integrity guard, the package export smoke and the required-checks guard run here; NOT the native attestation npm tests, the agent output guard, the executable reference guard, the sync/pages/release/artifact-publication/workflow-secrets guards, or the audit skill tests"
   "docs-tokens|partial|the docs token guard and the repo integrity guard run here; NOT the release provenance self-test, the full export generation, the coverage-floor gate self-test, or the version alignment guard"
   "node-sdk|none|the endpoint SDK suites are not run here"
   "python-sdk|none|the endpoint SDK suites are not run here"
@@ -165,16 +164,12 @@ step "clippy gateway (reqwest)"       cargo clippy -p hop-gateway --features req
 step "C ABI (sqlcipher feature)"      cargo test -p hop --no-default-features --features sqlcipher --locked
 step "clippy C ABI (sqlcipher)"       cargo clippy -p hop --no-default-features --features sqlcipher --all-targets --locked -- -D warnings
 step "relayd (firestore feature)"     cargo test -p hop-relayd --features firestore
-# accountd and billingd are OUTSIDE the cargo workspace (root Cargo.toml `exclude`) because they are the
-# commercial backend and are excluded from the public export; the boundary has to fall on a workspace
-# edge or the public tree's lock carries their dependency graph. `-p` cannot reach a non-member, so these
-# use --manifest-path, which runs each crate in its own workspace against its own lock.
-step "accountd (firestore feature)"   cargo test --manifest-path services/hop-accountd/Cargo.toml --features firestore
+# The accountd and billingd feature-matrix steps used to run here via --manifest-path (both crates sit
+# outside the workspace). They moved to hopmesh/platform with the rest of the commercial backend, so
+# their mirror steps went with them.
 step "telemetryd (firestore feature)" cargo test -p hop-telemetryd --features firestore
 step "telemetryd (live feature)"      cargo test -p hop-telemetryd --features live
 step "telemetryd (live + firestore)"  cargo test -p hop-telemetryd --features live,firestore
-step "billingd (live feature)"        cargo test --manifest-path services/hop-billingd/Cargo.toml --features live
-step "clippy billingd (live)"         cargo clippy --manifest-path services/hop-billingd/Cargo.toml --features live --all-targets -- -D warnings
 step "store (sqlcipher feature)"      cargo test -p hop-store-sqlite --no-default-features --features sqlcipher
 step "minimal embedded C-ABI build"   cargo build -p hop --no-default-features --features minimal
 

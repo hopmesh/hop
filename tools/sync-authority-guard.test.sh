@@ -26,7 +26,7 @@ def rejected(name, changed):
 
 
 rejected("missing environment", workflow.replace("      name: component-sync\n", "", 1))
-rejected("wrong repository", workflow.replace('expected = "hopmesh/monorepo"', 'expected = "fork/monorepo"'))
+rejected("wrong repository", workflow.replace('expected = "hopmesh/hop"', 'expected = "fork/hop"'))
 rejected("missing main ref", workflow.replace('os.environ["REF"] == "refs/heads/main"', "True"))
 rejected("unprotected ref", workflow.replace('os.environ["REF_PROTECTED"] == "true"', "True"))
 rejected("actor replay", workflow.replace('os.environ["ACTOR"] == os.environ["TRIGGERING_ACTOR"]', "True"))
@@ -65,7 +65,7 @@ def rejected_sync_back(name, changed):
 
 
 rejected_sync_back("repository secret fallback", sync_back.replace("      name: component-sync\n", "", 1))
-rejected_sync_back("canonical repository drift", sync_back.replace("repositories: monorepo", "repositories: fork"))
+rejected_sync_back("canonical repository drift", sync_back.replace("repositories: hop", "repositories: fork"))
 rejected_sync_back("mirror code checkout", sync_back.replace("    steps:\n", "    steps:\n      - uses: actions/checkout@" + "0" * 40 + " # v4\n", 1))
 rejected_sync_back("component drift", sync_back.replace("component=hop-sdk-go", "component=hop-sdk-apple"))
 

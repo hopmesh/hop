@@ -3,3 +3,7 @@
 *.out
 /tcp
 /examples/tcp/tcp
+
+# `go build ./cmd/hop-install` drops the binary here, next to the module root. It got left
+# untracked once during the hopmesh/hop cutover; ignore it so it cannot be committed.
+/hop-install

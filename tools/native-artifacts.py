@@ -18,8 +18,12 @@ from pathlib import Path, PurePosixPath
 
 
 SCHEMA = "https://hopme.sh/schemas/native-artifacts-v1.json"
-CANONICAL_REPOSITORY = "https://github.com/hopmesh/monorepo"
-CANONICAL_GITHUB_REPOSITORY = "hopmesh/monorepo"
+# The builder moved to hopmesh/hop when hopmesh/monorepo was archived. This module only ever
+# PRODUCES and verifies artifacts from the run it is executing in, so a single current value is
+# right here. The CONSUMER (sdk/go/cmd/hop-install) must additionally keep verifying the already
+# published v0.0.1 and v0.0.2, which are immutable and signed by the archived repo: see builderFor.
+CANONICAL_REPOSITORY = "https://github.com/hopmesh/hop"
+CANONICAL_GITHUB_REPOSITORY = "hopmesh/hop"
 NATIVE_WORKFLOW = ".github/workflows/native-artifacts.yml"
 PROVENANCE_FILENAME = "native-artifacts.provenance.sigstore.json"
 SLSA_PROVENANCE_TYPE = "https://slsa.dev/provenance/v1"

@@ -31,9 +31,7 @@ prefixes = [meta["prefix"] for meta in json.load(
 prefixes += [
     "core/hop-endpoint",
     "core/hop-sim",
-    "services/hop-billingd",
     "services/hop-telemetryd",
-    "services/hop-accountd",
 ]
 for prefix in prefixes:
     if not os.path.isdir(os.path.join(root, prefix)):

@@ -49,7 +49,7 @@ def check_text(text, components):
     import_job = job(text, "import")
 
     for literal in (
-        'expected = "hopmesh/monorepo"',
+        'expected = "hopmesh/hop"',
         'os.environ["EVENT_NAME"] == "workflow_dispatch"',
         'os.environ["REF"] == "refs/heads/main"',
         'os.environ["DEFAULT_BRANCH"] == "main"',
@@ -60,7 +60,7 @@ def check_text(text, components):
         # human-only, carved out ONLY for import so the sync App bot can auto-import a mirror PR; if
         # this scope drifted (e.g. to export), a bot could trigger a write-y direction.
         'if os.environ["DIRECTION"] != "import":',
-        "https://api.github.com/repos/hopmesh/monorepo/git/ref/heads/main",
+        "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
         'current != os.environ["SHA"]',
     ):
         require(literal in authorize, f"canonical preflight check is absent: {literal}")
@@ -140,7 +140,12 @@ def check_text(text, components):
     require("${{ inputs." not in auto, "auto_export consumes raw dispatch data")
 
     require(text.count(COPYBARA_IMAGE) == 3, "Copybara image count drifted")
-    require("github.com/hopmesh/hop" not in text, "legacy canonical repository remains")
+    # This assertion is INVERTED from what it was, and the inversion is the point. hopmesh/hop was
+    # once the stale pre-rename name of this repository, so the guard forbade it to stop a revert to a
+    # dead URL. hop is now the canonical public source and hopmesh/monorepo is the archived one, so the
+    # stale literal is the other one. Left as it was, this guard would have demanded the archived
+    # repository and rejected the live one, while its message still said "legacy".
+    require("github.com/hopmesh/monorepo" not in text, "archived canonical repository remains")
 
 
 def check_sync_back_text(text, component):
@@ -151,10 +156,13 @@ def check_sync_back_text(text, component):
         f"sync-back protected environment drifted: {component}",
     )
     require(text.count(TOKEN_ACTION) == 1, f"sync-back App token action drifted: {component}")
-    require("repositories: monorepo" in text, f"sync-back token is not scoped to canonical monorepo: {component}")
+    # Newline-anchored on purpose: a bare "repositories: hop" substring also matches
+    # "repositories: hop-sdk-go", which would let a token scoped to the MIRROR satisfy a check that
+    # exists to prove it is scoped to the canonical repo.
+    require("repositories: hop\n" in text, f"sync-back token is not scoped to the canonical repo: {component}")
     require("permission-actions: write" in text, f"sync-back token cannot dispatch: {component}")
     require("permission-contents: write" not in text, f"sync-back token can write contents: {component}")
-    require("--repo hopmesh/monorepo" in text, f"sync-back dispatch repository drifted: {component}")
+    require("--repo hopmesh/hop" in text, f"sync-back dispatch repository drifted: {component}")
     require(
         f"-f component={component}" in text,
         f"sync-back component identity drifted: {component}",
@@ -176,7 +184,7 @@ def check(root):
     # The push path's authority lives in the plan script; keep its preflight from being weakened.
     plan = (root / "tools/copybara/auto-export-plan.py").read_text(encoding="utf-8")
     for literal in (
-        'EXPECTED = "hopmesh/monorepo"',
+        'EXPECTED = "hopmesh/hop"',
         'env.get("EVENT_NAME") == "push"',
         'env.get("REF") == "refs/heads/main"',
         'env.get("REF_PROTECTED") == "true"',

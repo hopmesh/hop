@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical CI job set (job names, in .github/workflows/ci.yml order). tools/check-required-checks.sh keeps this in lockstep with ci.yml; tools/release-provenance.py verifies a mirror release tag's CI ran every one of these. There is no separate GCP deploy gate: runtime-deploy.yml fires on the CI workflow's own success conclusion, and branch protection requires only the aggregate 'CI gate'.",
+  "_comment": "Canonical CI job set (job names, in .github/workflows/ci.yml order). tools/check-required-checks.sh keeps this in lockstep with ci.yml; tools/release-provenance.py verifies a mirror release tag's CI ran every one of these. There is no deploy gate in this repo: the runtime deploy moved to hopmesh/platform with the infra tree, and branch protection requires only the aggregate 'CI gate'.",
   "required_checks": [
     "Detect changed areas",
     "Rust (test · clippy · fmt)",
@@ -7,10 +7,9 @@
     "Compose Multiplatform SDK tests",
     "Android bearers + driver (JVM unit tests)",
     "Apple bearers + driver + app (build-only)",
-    "WASM sim (wasm32 build + swarm invariants)",
+    "WASM (wasm32 build)",
     "Web + sim (Astro build · scenario-check · link check)",
     "Contract purity + header drift + C smoke",
-    "Terraform (fmt · validate · plan)",
     "Automation authority guards",
     "Docs token guard (banned copy)",
     "Node endpoint SDK (proofs)",

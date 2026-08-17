@@ -26,14 +26,14 @@ jobs:
           app-id: ${{ secrets.HOP_SYNC_APP_ID }}
           private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
           owner: hopmesh
-          repositories: monorepo
+          repositories: hop
           permission-actions: write
-      - name: Ask the monorepo to import this PR
+      - name: Ask the canonical repo to import this PR
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
         run: |
           gh workflow run sync-components.yml \
-            --repo hopmesh/monorepo \
+            --repo hopmesh/hop \
             -f component=hop-sdk-apple \
             -f direction=import \
             -f pr_number=${{ github.event.pull_request.number }}

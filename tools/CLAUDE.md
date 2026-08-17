@@ -23,6 +23,7 @@ check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:
                            could gate merges while hiding from the aggregate). No bootstrap allowlist.
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the single
                            `CI gate` context (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
+                           Defaults to hopmesh/hop; override with GH_REPO for a fork or staging repo.
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
                            empty, truncated, or drifted. TWO-TIER licenses: services/* byte-identical
                            FSL-1.1-ALv2, every other component (core, sdk, bearers, drivers, examples)
@@ -66,7 +67,6 @@ release/                    plan.py resolves each publishing component's declare
                             unset secret resolves to "" rather than erroring, so nothing ever published and
                             the only symptom was an action complaining about an empty input. Needs a
                             secrets-read token; the weekly branch-protection-audit runs it when armed.
-infra-authority-guard.py    forbids bootstrap authority in the runtime root and bounds the hop-deploy grants.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical on Apple and Android
                             (port, chunk size, fragment-header layout, frame tags, keepalive timing),

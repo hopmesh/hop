@@ -1,0 +1,395 @@
+# Mirror one fixed first-party component subtree to its standalone repository, or import a mirror PR.
+# Dispatch values are data only: tools/copybara/dispatch.py maps every accepted choice to fixed paths,
+# repository names, workflow names, and Copybara options before either privileged job starts.
+name: Sync component
+
+on:
+  # Auto-export: a merge to protected main publishes the changed subtrees to their mirrors. This path
+  # is EXPORT ONLY (main -> public mirror, publish-only of already-reviewed code); import (which opens a
+  # canonical PR) stays workflow_dispatch. See the auto_export job's push-scoped preflight.
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Component mirror"
+        required: true
+        type: choice
+        options:
+          - hop-sdk-go
+          - hop-sdk-crystal
+          - hop-sdk-apple
+      direction:
+        description: "Sync direction"
+        type: choice
+        options:
+          - export
+          - import
+        default: export
+      init_history:
+        description: "Seed full history on the first export only"
+        type: boolean
+        default: false
+      pr_number:
+        description: "Source mirror PR number (required for import; ignored otherwise)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: component-publication
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    # The authority gate covers the dispatch path (manual export + import). Manual export stays
+    # human-only; import may also be the sync App bot (see the human-actor carve-out below). The push
+    # path is gated by auto_export's own push-scoped preflight.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Authorize canonical protected main
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.context.outputs.source_sha }}
+    steps:
+      - name: Bind dispatch to the current protected hopmesh/hop main commit
+        id: context
+        env:
+          ACTOR: ${{ github.actor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DIRECTION: ${{ inputs.direction }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          EVENT_SENDER: ${{ github.event.sender.login }}
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          expected = "hopmesh/hop"
+          checks = {
+              "repository": os.environ["REPOSITORY"] == expected,
+              "event repository": os.environ["EVENT_REPOSITORY"] == expected,
+              "event": os.environ["EVENT_NAME"] == "workflow_dispatch",
+              "ref": os.environ["REF"] == "refs/heads/main",
+              "default branch": os.environ["DEFAULT_BRANCH"] == "main",
+              "protected ref": os.environ["REF_PROTECTED"] == "true",
+              "same triggering actor": os.environ["ACTOR"] == os.environ["TRIGGERING_ACTOR"],
+              "event sender": os.environ["ACTOR"] == os.environ["EVENT_SENDER"],
+              "full SHA": re.fullmatch(r"[0-9a-f]{40}", os.environ["SHA"]) is not None,
+          }
+          # Manual dispatch of a write direction stays human-only. import may ALSO be dispatched by the
+          # sync App bot (a mirror's sync-back reacting to a public PR): import only OPENS a canonical PR
+          # (still human-reviewed and merged) and only the App holds canonical Actions:write, so no other
+          # bot can trigger it.
+          if os.environ["DIRECTION"] != "import":
+              checks["human actor"] = not os.environ["ACTOR"].endswith("[bot]")
+          failed = [name for name, passed in checks.items() if not passed]
+          if failed:
+              raise SystemExit("sync authority rejected: " + ", ".join(failed))
+
+          request = urllib.request.Request(
+              "https://api.github.com/repos/hopmesh/hop/git/ref/heads/main",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "User-Agent": "hop-component-sync",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response).get("object", {}).get("sha", "")
+          if current != os.environ["SHA"]:
+              raise SystemExit("sync authority rejected: dispatch SHA is not current canonical main")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"source_sha={current}\n")
+          PY
+
+  select:
+    needs: authorize
+    runs-on: ubuntu-latest
+    outputs:
+      repository: ${{ steps.map.outputs.repository }}
+      workflow: ${{ steps.map.outputs.workflow }}
+      copybara_options: ${{ steps.map.outputs.copybara_options }}
+      direction: ${{ steps.map.outputs.direction }}
+      # import needs the source mirror PR number to reach the copybara container; without this line
+      # needs.select.outputs.source_ref is empty and github_pr_origin gets no PR reference.
+      source_ref: ${{ steps.map.outputs.source_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Map dispatch to fixed component configuration
+        id: map
+        env:
+          SYNC_COMPONENT: ${{ inputs.component }}
+          SYNC_DIRECTION: ${{ inputs.direction }}
+          SYNC_INIT_HISTORY: ${{ inputs.init_history }}
+          SYNC_PR_NUMBER: ${{ inputs.pr_number }}
+        run: python3 tools/copybara/dispatch.py
+
+  export:
+    needs: [authorize, select]
+    if: needs.select.outputs.direction == 'export'
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Mint destination-only mirror token
+        id: mirror-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: ${{ needs.select.outputs.repository }}
+          permission-contents: write
+          # The mirror carries its own .github/workflows (ci.yml, release.yml, sync-back.yml, cla.yml)
+          # that copy.bara.sky manages, and GitHub refuses to let an App create/update a workflow file
+          # without this scope ("refusing to allow a GitHub App to create or update workflow ...
+          # without `workflows` permission"). The App must also be granted Workflows: read/write.
+          permission-workflows: write
+      - name: Export selected component with isolated Copybara
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          DESTINATION_TOKEN: ${{ steps.mirror-token.outputs.token }}
+          DESTINATION_REPOSITORY: ${{ needs.select.outputs.repository }}
+          COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
+          COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
+          cleanup() { rm -f "$gitconfig"; }
+          trap cleanup EXIT
+          # Authenticate git by rewriting the canonical https URLs to carry the per-repo token
+          # (url.insteadOf), NOT a credential.helper store. The store helper writes a lock file on
+          # `credential approve` after a push, and every writable path in this hardened container is
+          # read-only, so the push died "unable to get credential storage lock: Read-only file system".
+          # insteadOf needs no helper and no writable state. The tokens are Actions secrets
+          # (github.token + the App token), so they are masked if they ever surface in a log line. 644
+          # because the container runs as a non-root user whose UID does not match the runner's; the
+          # file lives only on the ephemeral runner and is removed on exit.
+          cat > "$gitconfig" <<CONFIG
+          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/hop"]
+              insteadOf = https://github.com/hopmesh/hop
+          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/${DESTINATION_REPOSITORY}"]
+              insteadOf = https://github.com/hopmesh/${DESTINATION_REPOSITORY}
+          [user]
+              name = hop-sync
+              email = sync@hopme.sh
+          CONFIG
+          chmod 644 "$gitconfig"
+          set +e
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
+            -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
+            -v "$gitconfig:/etc/gitconfig:ro" \
+            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
+            -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
+            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS \
+            olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "synced: changes migrated to the mirror"
+          elif [ "$rc" -eq 4 ]; then
+            echo "no-op: mirror already up to date"
+          else
+            echo "::error::copybara exited $rc"
+            exit "$rc"
+          fi
+
+  import:
+    needs: [authorize, select]
+    if: needs.select.outputs.direction == 'import'
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - name: Mint source-mirror read token
+        id: mirror-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: ${{ needs.select.outputs.repository }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Import selected component with isolated Copybara
+        env:
+          SOURCE_TOKEN: ${{ steps.mirror-token.outputs.token }}
+          DESTINATION_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ needs.select.outputs.repository }}
+          COPYBARA_WORKFLOW: ${{ needs.select.outputs.workflow }}
+          COPYBARA_OPTIONS: ${{ needs.select.outputs.copybara_options }}
+          # The source mirror PR number. The olivr wrapper appends COPYBARA_SOURCEREF as the last
+          # copybara arg, exactly where github_pr_origin wants the positional PR reference. Sanitized to
+          # a bare integer by dispatch.py and surfaced as a select output.
+          COPYBARA_SOURCEREF: ${{ needs.select.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
+          gitcreds="$(mktemp "$RUNNER_TEMP/copybara-gitcreds.XXXXXX")"
+          cleanup() { rm -f "$gitconfig" "$gitcreds"; }
+          trap cleanup EXIT
+          # Two auth surfaces, both per-repo. (1) git TRANSPORT (clone mirror, push the canonical PR
+          # branch) carries the token in the URL via url.insteadOf. (2) copybara's GitHub API client
+          # (github_pr_origin reads the mirror PR, github_pr_destination opens the canonical hop PR)
+          # resolves a token via `git credential fill`, so it needs a helper: a read-only store file
+          # with useHttpPath, so each repo path draws its own token, mirror -> App token, canonical ->
+          # github.token. Only `fill` (read) runs, so the read-only store is never written.
+          cat > "$gitconfig" <<CONFIG
+          [url "https://x-access-token:${SOURCE_TOKEN}@github.com/hopmesh/${SOURCE_REPOSITORY}"]
+              insteadOf = https://github.com/hopmesh/${SOURCE_REPOSITORY}
+          [url "https://x-access-token:${DESTINATION_TOKEN}@github.com/hopmesh/hop"]
+              insteadOf = https://github.com/hopmesh/hop
+          [credential]
+              helper = store --file=/etc/hop-git-credentials
+              useHttpPath = true
+          [user]
+              name = hop-sync
+              email = sync@hopme.sh
+          CONFIG
+          chmod 644 "$gitconfig"
+          # Per-repo API tokens for `git credential fill`, both path forms (the copybara web URL may or
+          # may not carry .git). printf so no indentation leaks into the credential lines.
+          {
+            printf 'https://x-access-token:%s@github.com/hopmesh/%s\n' "$SOURCE_TOKEN" "$SOURCE_REPOSITORY"
+            printf 'https://x-access-token:%s@github.com/hopmesh/%s.git\n' "$SOURCE_TOKEN" "$SOURCE_REPOSITORY"
+            printf 'https://x-access-token:%s@github.com/hopmesh/hop\n' "$DESTINATION_TOKEN"
+            printf 'https://x-access-token:%s@github.com/hopmesh/hop.git\n' "$DESTINATION_TOKEN"
+          } > "$gitcreds"
+          chmod 644 "$gitcreds"
+          set +e
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
+            -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
+            -v "$gitconfig:/etc/gitconfig:ro" \
+            -v "$gitcreds:/etc/hop-git-credentials:ro" \
+            -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
+            -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
+            -e COPYBARA_WORKFLOW -e COPYBARA_OPTIONS -e COPYBARA_SOURCEREF \
+            olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "synced: changes migrated to hopmesh/hop"
+          elif [ "$rc" -eq 4 ]; then
+            echo "no-op: canonical repository already up to date"
+          else
+            echo "::error::copybara exited $rc"
+            exit "$rc"
+          fi
+
+  auto_export:
+    # Publish changed subtrees to their mirrors on merge to protected main. EXPORT ONLY: the push path
+    # can never select import (SYNC_DIRECTION is hardcoded to export in the loop below), and
+    # the plan step re-validates this is the current canonical protected main before anything runs.
+    if: ${{ github.event_name == 'push' }}
+    name: Auto-export changed components
+    runs-on: ubuntu-latest
+    environment:
+      name: component-sync
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Preflight + detect changed components
+        id: plan
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/copybara/auto-export-plan.py
+      - name: Mint mirror tokens for the changed components
+        id: token
+        if: steps.plan.outputs.any == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          # Scoped to exactly the changed mirrors, so the token can write no more than this push needs.
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: write
+          permission-workflows: write
+      - name: Export each changed component with isolated Copybara
+        if: steps.plan.outputs.any == 'true'
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          DESTINATION_TOKEN: ${{ steps.token.outputs.token }}
+          COMPONENTS: ${{ steps.plan.outputs.components }}
+        run: |
+          set -euo pipefail
+          umask 077
+          fail=0
+          for component in $COMPONENTS; do
+            echo "::group::export ${component}"
+            # Data-only mapping: dispatch.py validates the component and returns fixed paths/options.
+            json="$(SYNC_COMPONENT="$component" SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_PR_NUMBER="" python3 tools/copybara/dispatch.py --json)"
+            repo="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["repository"])')"
+            workflow="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["workflow"])')"
+            opts="$(printf '%s' "$json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
+            gitconfig="$(mktemp "$RUNNER_TEMP/copybara-gitconfig.XXXXXX")"
+            # printf (not a heredoc) so indentation cannot leak in; git config tolerates the tab indent.
+            {
+              printf '[url "https://x-access-token:%s@github.com/hopmesh/hop"]\n\tinsteadOf = https://github.com/hopmesh/hop\n' "$SOURCE_TOKEN"
+              printf '[url "https://x-access-token:%s@github.com/hopmesh/%s"]\n\tinsteadOf = https://github.com/hopmesh/%s\n' "$DESTINATION_TOKEN" "$repo" "$repo"
+              printf '[user]\n\tname = hop-sync\n\temail = sync@hopme.sh\n'
+            } > "$gitconfig"
+            chmod 644 "$gitconfig"
+            set +e
+            docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+              --tmpfs /tmp:rw,nosuid,size=1g --tmpfs /root:rw,nosuid,size=1g \
+              -v "$PWD/tools/copybara/copy.bara.sky:/usr/src/app/copy.bara.sky:ro" \
+              -v "$gitconfig:/etc/gitconfig:ro" \
+              -w /usr/src/app -e HOME=/root -e GIT_CONFIG_GLOBAL=/etc/gitconfig \
+              -e COPYBARA_SUBCOMMAND=migrate -e COPYBARA_CONFIG=copy.bara.sky \
+              -e COPYBARA_WORKFLOW="$workflow" -e COPYBARA_OPTIONS="$opts" \
+              olivr/copybara:20230129@sha256:87e2e9089344e64693faebb2ee0ed33b8797358c0420b0fa98325ca611e98679 copybara
+            rc=$?
+            set -e
+            rm -f "$gitconfig"
+            if [ "$rc" -eq 0 ]; then echo "synced: ${component}"
+            elif [ "$rc" -eq 4 ]; then echo "no-op: ${component} already up to date"
+            else echo "::error::${component}: copybara exited ${rc}"; fail=1; fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then echo "::error::one or more components failed to export"; exit 1; fi

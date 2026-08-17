@@ -102,15 +102,17 @@ PY
 expect "full job missing a ci.yml gradle task" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-nocov.sh"
 
 # Same rule for the cargo feature matrix: a feature-gated clippy pass CI runs, dropped here while the
-# rust entry claims full, must redden. This is how the reqwest/sqlcipher/billingd clippy gap hid.
+# rust entry claims full, must redden. This is how the reqwest/sqlcipher clippy gap hid. (The fixture
+# was originally keyed to the billingd clippy step; that crate moved to hopmesh/platform, so the case
+# now drops the gateway reqwest clippy step, which exercises the same rule against a surviving step.)
 python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-noclippy.sh" <<'PY'
 import re
 import sys
 
 source, destination = sys.argv[1], sys.argv[2]
 text = open(source, encoding="utf-8").read()
-replaced, count = re.subn(r'(?m)^step "clippy billingd \(live\)".*\n', "", text, count=1)
-assert count == 1, "the billingd live clippy step is not run by the mirror"
+replaced, count = re.subn(r'(?m)^step "clippy gateway \(reqwest\)".*\n', "", text, count=1)
+assert count == 1, "the gateway reqwest clippy step is not run by the mirror"
 open(destination, "w", encoding="utf-8").write(replaced)
 PY
 expect "full job missing a ci.yml cargo pass" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-noclippy.sh"

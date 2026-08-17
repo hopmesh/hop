@@ -12,11 +12,11 @@
 #
 # Env:
 #   GH_TOKEN  a token that can read branch protection (administration:read) on the repo.
-#   GH_REPO   owner/name (defaults to hopmesh/monorepo).
+#   GH_REPO   owner/name (defaults to hopmesh/hop).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CI="$ROOT/.github/workflows/ci.yml"
-REPO="${GH_REPO:-hopmesh/monorepo}"
+REPO="${GH_REPO:-hopmesh/hop}"
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error:: GH_TOKEN not set; cannot read branch protection for $REPO"; exit 1
@@ -66,7 +66,7 @@ body="$(printf '%s' "$resp" | sed '$d')"
 
 if [ "$code" = "404" ]; then
   echo "::error:: branch 'main' has NO protection rule (or it is not visible to this token)."
-  echo "  Set protection so 'Require status checks to pass' includes the 'CI gate' check (see infra/README.md)."
+  echo "  Set protection so 'Require status checks to pass' includes the 'CI gate' check."
   exit 1
 fi
 if [ "$code" = "403" ] || [ "$code" = "401" ]; then

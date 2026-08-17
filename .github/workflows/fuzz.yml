@@ -1,0 +1,42 @@
+name: Deep fuzz
+
+on:
+  schedule:
+    - cron: "17 4 * * 2"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Iterations per fuzz target
+        required: true
+        default: "100000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-fuzz
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_FUZZ_VERSION: "0.13.2"
+  CARGO_FUZZ_TOOLCHAIN: nightly-2026-07-07
+  FUZZ_SEED: "424242"
+
+jobs:
+  fuzz:
+    name: Deep deterministic fuzz iterations
+    runs-on: ubuntu-24.04
+    container: rust:1.97.0-bookworm@sha256:8fa55b2f3ddf97471ab6a767bfa3f37e6bad0986ba823e75fea57e2a2a5c3073
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned fuzz toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install "$CARGO_FUZZ_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+      - name: Run every fuzz target by iteration count
+        env:
+          FUZZ_RUNS: ${{ inputs.runs || '100000' }}
+        run: bash tools/fuzz-smoke.sh

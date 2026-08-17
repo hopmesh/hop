@@ -29,10 +29,16 @@ import (
 )
 
 const (
-	currentVersion      = "v0.0.1"
-	manifestSchema      = "https://hopme.sh/schemas/native-artifacts-v1.json"
-	canonicalRepository = "https://github.com/hopmesh/monorepo"
-	canonicalBuilder    = "hopmesh/monorepo"
+	currentVersion = "v0.0.1"
+	manifestSchema = "https://hopme.sh/schemas/native-artifacts-v1.json"
+	// The canonical source moved: hopmesh/monorepo was archived and hopmesh/hop became the public
+	// source of truth. Published artifacts are immutable, so v0.0.2 keeps a manifest and a Sigstore
+	// certificate naming the OLD repo forever, and everything from the migration forward names the
+	// new one. Both values are therefore live, but they are not interchangeable: see builderFor.
+	canonicalRepository = "https://github.com/hopmesh/hop"
+	canonicalBuilder    = "hopmesh/hop"
+	legacyRepository    = "https://github.com/hopmesh/monorepo"
+	legacyBuilder       = "hopmesh/monorepo"
 	canonicalWorkflow   = ".github/workflows/native-artifacts.yml"
 	releaseRepository   = "hopmesh/hop-sdk-go"
 	maxManifestBytes    = 10 << 20
@@ -40,6 +46,23 @@ const (
 	maxArchiveFiles     = 20_000
 	maxExpandedBytes    = int64(4 << 30)
 )
+
+// builderFor returns the ONE repository pair permitted to have signed the given release tag.
+//
+// A set of accepted builders would be the easy shape and the wrong one: it would let either repo
+// authorize any tag, so an artifact naming the archived repo would still verify for a release cut
+// years later. Pinning each tag to a single exact builder keeps the anchor exact while letting the
+// already-published tags stay verifiable.
+//
+// The archived repo signed exactly the tags below and can never sign another, because an archived
+// repository cannot run workflows. Anything not listed must come from the current source.
+func builderFor(tag string) (repository string, builder string) {
+	switch tag {
+	case "v0.0.1", "v0.0.2":
+		return legacyRepository, legacyBuilder
+	}
+	return canonicalRepository, canonicalBuilder
+}
 
 var (
 	versionPattern  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -371,15 +394,18 @@ func validateManifest(value manifest, version, sourceSHA string) error {
 	if value.Schema != manifestSchema || value.Tag != version || value.Version != strings.TrimPrefix(version, "v") {
 		return fmt.Errorf("manifest schema or version does not match %s", version)
 	}
-	if value.Repository != canonicalRepository || !shaPattern.MatchString(value.SourceSHA) {
+	// value.Tag is already proven equal to version above, so the tag drives the expected builder and
+	// an attacker cannot pick a laxer one by editing the manifest.
+	wantRepository, wantBuilder := builderFor(version)
+	if value.Repository != wantRepository || !shaPattern.MatchString(value.SourceSHA) {
 		return fmt.Errorf("manifest repository or source SHA is invalid")
 	}
 	if sourceSHA != "" && value.SourceSHA != sourceSHA {
 		return fmt.Errorf("manifest source SHA does not match the required source")
 	}
-	if value.Builder.Repository != canonicalBuilder || value.Builder.Workflow != canonicalWorkflow ||
+	if value.Builder.Repository != wantBuilder || value.Builder.Workflow != canonicalWorkflow ||
 		value.Builder.RunID < 1 || value.Builder.RunAttempt < 1 ||
-		value.Builder.Identity != fmt.Sprintf("https://github.com/%s/actions/runs/%d", canonicalBuilder, value.Builder.RunID) {
+		value.Builder.Identity != fmt.Sprintf("https://github.com/%s/actions/runs/%d", wantBuilder, value.Builder.RunID) {
 		return fmt.Errorf("manifest builder attestation is invalid")
 	}
 	if len(value.Artifacts) == 0 {
