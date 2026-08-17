@@ -1219,12 +1219,21 @@ jobs:
         with:
           otp-version: "27.3.4.3"
           elixir-version: "1.18.4"
-          # No rebar3-version. It was pinned to 3.27.0, and erlang/rebar3 now publishes ZERO GitHub
-          # releases, so setup-beam resolves the version from an empty list and hard-fails with
-          # "Requested loose rebar3 version (3.27.0) not found in version list". Confirmed empty with
-          # an authenticated API call returning HTTP 200 and [], so it is not rate limiting. Nothing
-          # here needs rebar3 anyway: mix.exs depends on rustler and jason, and mix.lock resolves only
-          # hex packages, none built with rebar. Re-add a pin only alongside a dep that requires it.
+          # No rebar3-version, and the reason is NOT that the release is missing. An earlier version of
+          # this comment claimed erlang/rebar3 publishes zero releases. That was wrong, and it is worth
+          # recording how: GitHub's releases-LIST endpoint was returning an empty array (HTTP 200, so it
+          # looked like an answer rather than a failure) while /releases/tags/3.27.0 returned the release
+          # perfectly well. It coincided with a GitHub API outage. setup-beam resolves rebar3 by LISTING
+          # releases, so it reported "Requested loose rebar3 version (3.27.0) not found in version list"
+          # for a version that exists. The identical symptom hit espup in native-artifacts.yml at the
+          # same time, against esp-rs/rust-build: list empty, tags/v1.95.0.0 present.
+          #
+          # The pin is still gone, because pinning a tool this project does not use buys nothing and
+          # adds a dependency on that endpoint. mix.exs needs rustler and jason; mix.lock resolves only
+          # hex packages, none built with rebar. Removing it did turn the job green.
+          #
+          # If a dep ever needs rebar3, re-add the pin. And if a version pin here ever fails as
+          # "not found", check /releases/tags/<version> directly before believing the list.
       - name: Install Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo
