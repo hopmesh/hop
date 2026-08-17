@@ -101,7 +101,7 @@ dependencies {
     // with the app's compose-bom (below in apps/android/HopDemo/app) since both land in the same final APK's
     // dependency graph; only mutableStateOf/mutableStateListOf/mutableStateMapOf are used here (no
     // @Composable functions), so this module needs no Kotlin Compose compiler plugin.
-    api(platform("androidx.compose:compose-bom:2026.06.01"))
+    api(platform("androidx.compose:compose-bom:2026.08.00"))
     api("androidx.compose.runtime:runtime")
 
     // Cloud relay bearer: WebSocket (path B, wss:// → Cloud Run) + the okio ByteString it speaks.
