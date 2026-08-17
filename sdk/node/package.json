@@ -3,6 +3,14 @@
   "version": "0.0.2",
   "description": "Receive Hop messages in your Node app: an Express/Fastify-shaped endpoint over the libhop C ABI.",
   "homepage": "https://hopme.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hopmesh/hop.git",
+    "directory": "sdk/node"
+  },
+  "bugs": {
+    "url": "https://github.com/hopmesh/hop/issues"
+  },
   "type": "module",
   "main": "lib/endpoint.mjs",
   "exports": {
