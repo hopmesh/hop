@@ -25,7 +25,7 @@ document, and equally why it is not deleted.
 
 ## How to read a citation you find in the code
 
-A comment like `// GT-04: hop-billingd's live feature carries the Stripe HTTP transport` is telling you
+A comment like `// GT-04: hopmesh/platform/services/hop-billingd's live feature carries the Stripe HTTP transport` is telling you
 WHY a piece of code or a guard exists. The reasoning is in the comment; the identifier is provenance,
 not a required lookup. Nothing in this repository needs the corpus to be understood.
 

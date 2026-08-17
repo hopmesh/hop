@@ -17,10 +17,10 @@ Prerequisites shared by all runbooks:
 - Access to the Terraform state bucket `gs://hop-mesh-tfstate`.
 - The deploy path is GitOps: pushing to `main` triggers a Cloud Build run that
   builds both images and runs the runtime apply. Do not apply locally. A local
-  apply from a checkout that is behind plans a partial destroy of everything in
-  remote state that your files no longer declare. `infra/bootstrap` is applied
-  only by dispatching `.github/workflows/bootstrap-apply.yml`, and `infra/billing`
-  only by `.github/workflows/billing-catalog.yml`.
+apply from a checkout that is behind plans a partial destroy of everything in
+remote state that your files no longer declare. `hopmesh/platform/infra/bootstrap` is applied
+only by dispatching `.github/workflows/bootstrap-apply.yml`, and `hopmesh/platform/infra/billing`
+only by `.github/workflows/billing-catalog.yml`.
 
 Ground truth for what the fleet is doing right now:
 

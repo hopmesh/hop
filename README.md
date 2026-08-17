@@ -6,8 +6,7 @@
 
 <p align="center">
   <b>A metadata-privacy messaging mesh.</b><br>
-  Devices carry messages for each other over whatever transports are around, so messages move with no
-  internet and the network does not learn who is talking to whom.
+  Devices carry messages for each other over whatever transports are around, so messages survive no internet and the network does not learn who is talking to whom.
 </p>
 
 <p align="center">
@@ -40,7 +39,7 @@ shorter mechanisms tour, `MECHANISMS.md`.
 | Bearers | `bearers/` | One isolated package per transport (BLE, LAN, relay). Apple Multipeer (Wi-Fi P2P) is a live transport but stays in-driver, not an extracted package. |
 | Drivers | `drivers/` | The per-platform host layer. |
 | Services | `services/` | The relay (`hop-relayd`), gateway, endpoint, and example origin. |
-| Infra | `infra/` | OpenTofu for the cloud relay fleet. See `docs/runbooks/`. |
+| Infra | `hopmesh/platform/infra/` | OpenTofu for the cloud relay fleet. See `docs/runbooks/`. |
 | Apps | `apps/` | Every app: `apps/apple/HopDemo`, `apps/android/HopDemo`, `apps/web/site`, `apps/ble-lab`, `apps/esp32`. |
 | Sim | `sim/` | The browser swarm sim (real `hop-core` compiled to wasm) plus the scenario checks. |
 
@@ -72,7 +71,7 @@ store suites and the client wrappers.
 - `docs/runbooks/` - operating the relay fleet: enable/disable, incident response,
   quota/429 handling.
 - `docs/tor.md` - reaching a relay over both the public internet and an onion
-  service, what Tor does and does not hide, and why it is not the only path.
+  service, what the mesh does and does not hide.
 - `docs/release-engineering.md` - versioning, tagging, and publishing.
 - `docs/crash-reporting-design.md`, `docs/identity-backup-restore-design.md` -
   privacy-safe diagnostics and identity recovery designs (pending app work).
@@ -93,11 +92,10 @@ Components that carry their own `LICENSE.md` are licensed by it, in two tiers:
 
 - The hosted **services** (`services/*`: relayd, endpoint, gateway, telemetryd, accountd, billingd) are
   **FSL-1.1-ALv2** (source-available, and converts to Apache-2.0 after two years). That is the layer
-  someone could stand up as a competing managed service, so it is the layer worth defending.
+  worth defending.
 - **Everything else**, the protocol core, the SDKs, the bearers, and the drivers, is **Apache-2.0**, so
-  you can embed, self-host, or ship any of it with no strings attached. Every node someone else runs
-  makes the mesh more valuable, including nodes that never pay us, so adoption of the layers people
-  build on is the whole point.
+  you can embed, self-host, or ship any of it with no strings attached. Each node someone else runs
+  makes the mesh more valuable.
 
 Each component carries its own `LICENSE.md`, so it stays licensed when it is split out into its own
 repository. See any component's `LICENSE.md`.
