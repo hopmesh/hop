@@ -122,4 +122,37 @@ fi
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "branch protection on main requires exactly the single CI gate check"
+
+# Same class of defect, one setting over: pr-automerge.yml calls `gh pr merge --auto`, which GitHub
+# REFUSES unless the repository has "Allow auto-merge" turned on. That is repo settings, not a repo
+# file, so nothing in the tree could hold it and nothing was asserting it. hopmesh/hop shipped with it
+# off, and every pr-automerge run failed with "Auto merge is not allowed for this repository
+# (enablePullRequestAutoMerge)" while the required CI gate stayed green, so PRs simply stopped merging
+# themselves and the only signal was a red check on a non-required job.
+#
+# Read it from the repo endpoint rather than the protection endpoint; it needs no extra token scope
+# beyond what is already required here. An API error is a failure, not a pass, matching the rest of
+# this script: being unable to read the setting is an unknown.
+repo_api="https://api.github.com/repos/${REPO}"
+repo_resp="$(curl -sSL -w '\n%{http_code}' \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  "$repo_api")"
+repo_code="$(printf '%s' "$repo_resp" | tail -n1)"
+repo_body="$(printf '%s' "$repo_resp" | sed '$d')"
+if [ "$repo_code" != "200" ]; then
+  echo "::error:: unexpected HTTP $repo_code reading repository settings from $repo_api"
+  printf '%s\n' "$repo_body" | head -5
+  exit 1
+fi
+auto_merge="$(printf '%s' "$repo_body" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("allow_auto_merge"))')"
+if [ "$auto_merge" != "True" ]; then
+  echo "::error:: 'Allow auto-merge' is DISABLED on $REPO, so pr-automerge.yml cannot arm a merge."
+  echo "  Every pr-automerge run fails with 'Auto merge is not allowed for this repository' while the"
+  echo "  CI gate stays green, so PRs stop merging themselves with no required check to show it."
+  echo "  Fix: gh api -X PATCH /repos/$REPO -F allow_auto_merge=true"
+  exit 1
+fi
+
+echo "branch protection on main requires exactly the single CI gate check, and auto-merge is enabled"
