@@ -14207,64 +14207,89 @@ mod tests {
         //     the emitter's short address into `trace[0]` and every downstream relay inherited it;
         //   * an unblinded hop count, which arrived at the first relay reading exactly 1.
         // Both are checked here against the copy the relay actually receives.
+        // The blind is keyed on Bob's secret AND the vaccine token, and the token is fresh per exchange
+        // (seeding all three identities does NOT pin it; ephemeral key material feeds it). So the blind
+        // is effectively uniform over 0..=MAX_HOP_BLIND, and it lands on ZERO about one run in 101.
+        //
+        // Zero is the degenerate case: it makes `hops` read exactly 1, which is the unblinded value this
+        // test exists to reject, so that run cannot tell a fixed implementation from a broken one. The
+        // fixture check below used to abort on it, which turned a ~1% coin toss into a red build; it
+        // failed twice in forty local runs.
+        //
+        // So the scenario is re-run until the token yields a non-degenerate blind, rather than asserting
+        // that one lucky draw was non-zero. The equation `hops == blind + 1` is checked on whichever
+        // attempt lands, and the bound makes a false pass impossible: forty consecutive zeros has
+        // probability (1/101)^40. That the blind is secret-derived and per-vaccine is proven separately
+        // by `vaccine_hop_blind_is_secret_bounded_and_per_vaccine`.
         let bob_seed = [0x5bu8; 32];
         let bob_identity = Identity::from_secret_bytes(&bob_seed);
         let bob_short = short_addr(&bob_identity.address());
-        let mut nodes = [
-            Node::new(Identity::generate()),                   // 0 Alice (sender)
-            Node::new(Identity::generate()),                   // 1 Carol (the relay in between)
-            Node::new(Identity::from_secret_bytes(&bob_seed)), // 2 Bob (recipient, emits the vaccine)
-        ];
-        let mut net = Wire2::new();
-        net.connect(&mut nodes, 0, 1, 1, 1); // Alice <-> Carol
-        net.connect(&mut nodes, 1, 2, 2, 2); // Carol <-> Bob
-        exchange_prekeys(&mut net, &mut nodes);
 
-        let bob = nodes[2].address();
-        nodes[0]
-            .send_message(bob, "text/plain".into(), b"meet at dawn".to_vec(), true)
-            .unwrap();
-        net.pump(&mut nodes);
-        assert_eq!(nodes[2].inbox_items().len(), 1, "Bob received the message");
-        // Accepting the inbox item is what emits the delivery ACK and its vaccine (sec-priv-07).
-        accept_all(&mut nodes[2]);
-        net.pump(&mut nodes);
+        let mut checked = false;
+        for _ in 0..40 {
+            let mut nodes = [
+                Node::new(Identity::generate()),                   // 0 Alice (sender)
+                Node::new(Identity::generate()),                   // 1 Carol (the relay in between)
+                Node::new(Identity::from_secret_bytes(&bob_seed)), // 2 Bob (recipient, emits the vaccine)
+            ];
+            let mut net = Wire2::new();
+            net.connect(&mut nodes, 0, 1, 1, 1); // Alice <-> Carol
+            net.connect(&mut nodes, 1, 2, 2, 2); // Carol <-> Bob
+            exchange_prekeys(&mut net, &mut nodes);
 
-        // The vaccine Carol holds is the copy Bob handed her: one forward from its emitter.
-        let (token, vaccine) = nodes[1]
-            .store
-            .have()
-            .ids
-            .into_iter()
-            .filter_map(|id| nodes[1].store.get(&id))
-            .find_map(|b| match b.inner.dst {
-                Destination::Vaccine(token) => Some((token, b)),
-                _ => None,
-            })
-            .expect("the relay carries the delivery vaccine Bob emitted");
+            let bob = nodes[2].address();
+            nodes[0]
+                .send_message(bob, "text/plain".into(), b"meet at dawn".to_vec(), true)
+                .unwrap();
+            net.pump(&mut nodes);
+            assert_eq!(nodes[2].inbox_items().len(), 1, "Bob received the message");
+            // Accepting the inbox item is what emits the delivery ACK and its vaccine (sec-priv-07).
+            accept_all(&mut nodes[2]);
+            net.pump(&mut nodes);
 
+            // The vaccine Carol holds is the copy Bob handed her: one forward from its emitter.
+            let (token, vaccine) = nodes[1]
+                .store
+                .have()
+                .ids
+                .into_iter()
+                .filter_map(|id| nodes[1].store.get(&id))
+                .find_map(|b| match b.inner.dst {
+                    Destination::Vaccine(token) => Some((token, b)),
+                    _ => None,
+                })
+                .expect("the relay carries the delivery vaccine Bob emitted");
+
+            // These two hold on EVERY attempt, degenerate blind or not, so they are checked every time
+            // rather than only on the attempt that happens to carry a non-zero blind.
+            assert!(
+                vaccine.env.trace.is_empty(),
+                "a vaccine must carry no provenance; trace[0] would be its emitter, the recipient"
+            );
+            assert!(
+                !vaccine.trace().iter().any(|h| h.node == bob_short),
+                "the recipient's short address must not ride the vaccine"
+            );
+
+            let blind = vaccine_hop_blind(&bob_identity, &token);
+            assert_eq!(
+                vaccine.env.hops,
+                blind.saturating_add(1),
+                "the vaccine arrives at the relay carrying the emitter's blind plus its one real hop"
+            );
+            if blind == 0 {
+                continue; // degenerate draw: hops == 1 here is correct, and proves nothing either way.
+            }
+            assert_ne!(
+                vaccine.env.hops, 1,
+                "hops == 1 over an authenticated link would pin the delivery on the relay's link peer"
+            );
+            checked = true;
+            break;
+        }
         assert!(
-            vaccine.env.trace.is_empty(),
-            "a vaccine must carry no provenance; trace[0] would be its emitter, the recipient"
-        );
-        assert!(
-            !vaccine.trace().iter().any(|h| h.node == bob_short),
-            "the recipient's short address must not ride the vaccine"
-        );
-
-        let blind = vaccine_hop_blind(&bob_identity, &token);
-        assert_ne!(
-            blind, 0,
-            "fixture check: this seed must give a non-zero blind for the assertion below to mean anything"
-        );
-        assert_eq!(
-            vaccine.env.hops,
-            blind.saturating_add(1),
-            "the vaccine arrives at the relay carrying the emitter's blind plus its one real hop"
-        );
-        assert_ne!(
-            vaccine.env.hops, 1,
-            "hops == 1 over an authenticated link would pin the delivery on the relay's link peer"
+            checked,
+            "forty consecutive zero blinds is not chance ((1/101)^40); the blind is no longer secret-derived"
         );
     }
 
