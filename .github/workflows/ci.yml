@@ -1219,7 +1219,12 @@ jobs:
         with:
           otp-version: "27.3.4.3"
           elixir-version: "1.18.4"
-          rebar3-version: "3.27.0"
+          # No rebar3-version. It was pinned to 3.27.0, and erlang/rebar3 now publishes ZERO GitHub
+          # releases, so setup-beam resolves the version from an empty list and hard-fails with
+          # "Requested loose rebar3 version (3.27.0) not found in version list". Confirmed empty with
+          # an authenticated API call returning HTTP 200 and [], so it is not rate limiting. Nothing
+          # here needs rebar3 anyway: mix.exs depends on rustler and jason, and mix.lock resolves only
+          # hex packages, none built with rebar. Re-add a pin only alongside a dep that requires it.
       - name: Install Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal
       - name: Cache cargo

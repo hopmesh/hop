@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	currentVersion      = "v0.0.1"
-	manifestSchema      = "https://hopme.sh/schemas/native-artifacts-v1.json"
+	currentVersion = "v0.0.1"
+	manifestSchema = "https://hopme.sh/schemas/native-artifacts-v1.json"
 	// The canonical source moved: hopmesh/monorepo was archived and hopmesh/hop became the public
 	// source of truth. Published artifacts are immutable, so v0.0.2 keeps a manifest and a Sigstore
 	// certificate naming the OLD repo forever, and everything from the migration forward names the
