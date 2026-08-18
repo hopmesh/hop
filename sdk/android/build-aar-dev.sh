@@ -77,8 +77,17 @@ fi
 
 fail() { echo "build-aar-dev: $*" >&2; exit 1; }
 
+# The version below is a LITERAL on purpose. tools/executable-reference-guard.py requires every cargo
+# install in this repo to name an exact version, and it caught this script for suggesting a bare
+# `cargo install cargo-ndk`. It was right: an unpinned install instruction is an unpinned supply-chain
+# reference even when it only ever appears in an error message a human copies.
+#
+# The guard DOES accept a variable, but only in the workflow-YAML shape (`NAME: "1.2.3"` on its own
+# line, as ci.yml does for CARGO_FUZZ_VERSION and CBINDGEN_VERSION). A shell assignment with `=` does
+# not match that, so a variable here would fail the guard for a reason unrelated to being unpinned. A
+# literal is also the better error message: it is copy-pasteable with no indirection.
 command -v cargo >/dev/null || fail "cargo not found. Install rustup; this repo pins its version in rust-toolchain.toml."
-command -v cargo-ndk >/dev/null || fail "cargo-ndk not found. Install it with: cargo install cargo-ndk"
+command -v cargo-ndk >/dev/null || fail "cargo-ndk not found. Install it with: cargo install cargo-ndk --locked --version 4.1.2"
 command -v java >/dev/null || fail "no JDK on PATH. Toolchains here come from mise, not global installs, so try: mise exec -- $0"
 command -v gradle >/dev/null || fail "gradle not found on PATH. Try: mise exec -- $0"
 
