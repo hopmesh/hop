@@ -9,9 +9,13 @@
     "start": "react-native start",
     "test": "jest",
     "e2e:build:ios": "detox build --configuration ios.sim.debug",
-    "e2e:build:android": "detox build --configuration android.emu.debug",
+    "e2e:build:android": "detox build -c android.emu.debug",
     "e2e:ios": "detox test --configuration ios.sim.debug",
-    "e2e:android": "detox test --configuration android.emu.debug"
+    "e2e:android": "detox test -c android.emu.debug",
+    "e2e:guard": "jest e2e/testids.test.js",
+    "e2e:dry": "cucumber-js --dry-run  # informational only: cannot fail, see cucumber.js",
+    "e2e:android:smoke": "detox test -c android.emu.debug -- --profile smoke",
+    "e2e:multi": "cucumber-js --profile multi --dry-run"
   },
   "dependencies": {
     "react": "19.2.3",

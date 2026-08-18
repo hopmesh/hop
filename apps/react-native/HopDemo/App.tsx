@@ -229,15 +229,20 @@ export default function App(): React.JSX.Element {
             scrollEnabled={false}
             data={peers}
             keyExtractor={p => p.address}
-            renderItem={({item}) => (
+            renderItem={({item, index}) => (
+              // testID is index-based on purpose. A test cannot know a peer's address before it renders,
+              // so an address-keyed id is unaddressable from a test; the address is exposed as its own
+              // element below for any test that needs to read it.
               <TouchableOpacity
-                testID={`peer-row-${item.address}`}
+                testID={`peer-row-${index}`}
                 style={[styles.row, selected === item.address && styles.rowOn]}
                 onPress={() => setSelected(item.address)}>
                 <Text style={styles.rowIcon}>{transportIcon(item.transport)}</Text>
                 <View>
                   <Text style={styles.rowTitle}>{item.label}</Text>
-                  <Text style={styles.dim}>{shortAddress(item.address)}</Text>
+                  <Text style={styles.dim} testID={`peer-address-${index}`}>
+                    {shortAddress(item.address)}
+                  </Text>
                 </View>
               </TouchableOpacity>
             )}
