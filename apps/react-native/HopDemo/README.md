@@ -1,97 +1,104 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# HopDemo, React Native
 
-# Getting Started
+The Hop demo app built once in React Native and run on both iOS and Android, alongside the two native
+implementations in `apps/apple/HopDemo` (SwiftUI) and `apps/android/HopDemo` (Compose). Having the same
+demo three ways is the point: it is the sharpest available test of whether the client SDKs really present
+the same surface, and `src/demoFormat.ts` is a direct port of presentation logic that already exists twice
+natively, so there is a parity target rather than a guess.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+This replaces the React Native CLI's template README, which was generic boilerplate.
 
-## Step 1: Start Metro
+## State of the build
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+| platform | status |
+|---|---|
+| Android | builds and runs. `./gradlew :app:assembleDebug` produces a debug APK carrying `libhop.so` and `libjnidispatch.so` for arm64-v8a, armeabi-v7a, x86 and x86_64. |
+| iOS | does not build. `import Hop` cannot resolve, for the reason below. This is a defect in `sdk/react-native/HopMesh.podspec`, not a missing step here. |
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+### Why iOS does not build
 
-```sh
-# Using npm
-npm start
+`sdk/react-native/ios/HopMesh.swift` does `import Hop`, and the podspec only supplies that module through
+`s.spm_dependency`, guarded by `if s.respond_to?(:spm_dependency)`. Under CocoaPods 1.17.0 that method
+does not exist, so the guard silently skips and the pod is published without the dependency:
 
-# OR using Yarn
-yarn start
+```
+$ pod ipc spec sdk/react-native/HopMesh.podspec   # no spm keys, React-Core is the only dependency
+$ grep -c XCRemoteSwiftPackageReference ios/Pods/Pods.xcodeproj/project.pbxproj   # 0
 ```
 
-## Step 2: Build and run your app
+Fixing it is an SDK decision (vendor the Apple SDK into the pod, or publish a podspec for `sdk/apple`),
+so it is not worked around here. `.detoxrc.js` keeps an accurate `ios.sim.debug` configuration so the
+suite runs as soon as the module is available.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+## What this app actually demonstrates
 
-### Android
+The React Native SDK ships no transport. Its surface is `linkUp` / `bytesReceived` / `onOutgoing`, and the
+native demos get their radios from `drivers/apple` and `drivers/android`. So this app opens **two** Hop
+nodes and pairs them over an in-process loopback bearer in `src/loopback.ts`. The UI says so on screen
+rather than implying otherwise.
 
-```sh
-# Using npm
-npm run android
+That loopback is not a mock. Bytes are produced by the real Rust core, sealed with real crypto, and
+delivered through the real inbox, so a message shown as received genuinely round-tripped through
+`hop-core`. What it cannot show is radio discovery or true multi-device relay, which is exactly why the
+test suite splits along that line.
 
-# OR using Yarn
-yarn android
-```
+Two helpers are deliberately absent rather than stubbed: `makeQrBitmap` and `jpegDownscale` are platform
+graphics APIs with no bundled React Native equivalent, and the UI states the QR code is unavailable
+instead of rendering an empty box.
 
-### iOS
+## Prerequisites
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+The Android SDK and NDK, a JDK, and the Rust Android targets. `mise` provides the JDK and Gradle in this
+repo, so prefer `mise exec -- gradle` over a global install.
 
 ```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export PATH="$JAVA_HOME/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"   # rustup's cargo, not Homebrew's, which has no Android targets
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+Build and publish the Android SDK AAR to a local Maven repository first, because this app consumes
+`sh.hop:hop` as a real Maven artifact so the JNA dependency arrives with it:
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+```sh
+# from the repo root
+sdk/android/build-aar-dev.sh --repository sdk/react-native/android/.hop-maven
+```
 
-## Step 3: Modify your app
+Then install and build:
 
-Now that you have successfully run the app, let's make changes!
+```sh
+npm ci
+(cd android && ./gradlew :app:assembleDebug)
+```
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+## Running the tests
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+```sh
+npm run e2e:guard          # the gate. Fast, no device. Keeps steps and app testIDs in lockstep.
+npm run e2e:dry            # informational listing of scenarios and steps
+npm run e2e:build:android  # detox build
+npm run e2e:android        # detox run on an emulator
+npm run e2e:multi          # lists the scenarios that need real hardware
+```
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+`npm run e2e:guard` is the gate, and the dry run is not. `cucumber-js` does **not** fail on an undefined
+step: it prints `Undefined` and exits 0, and neither `strict` in the config nor `--strict` on the command
+line changes that. `e2e/testids.test.js` does fail, and it was proven to fail by sabotage in three
+directions: renaming an app testID, deleting a step definition, and adding an undefined step to the
+feature file.
 
-## Congratulations! :tada:
+Scenarios tagged `@multi-device` need two or three physical phones. Their steps throw pending naming the
+hardware required and assert nothing, because a scenario that appeared to prove a mesh relay while running
+alone on an emulator would be worse than no test at all.
 
-You've successfully run and modified your React Native App. :partying_face:
+## Notes
 
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+- Kotlin metadata: `sdk/android` builds with Kotlin 2.4.10 and React Native 0.87 pins the compiler at
+  2.2.0, which cannot read that metadata. `android/build.gradle` carries a clearly labelled DEV-ONLY
+  `-Xskip-metadata-version-check` and names the durable fix, which is to align the versions.
+- The app declares the local Maven repository itself, not only in the SDK module. Gradle resolves
+  transitive dependencies against the consumer's repository list, so without this `sh.hop:hop` is not
+  found even when the module declares it.
