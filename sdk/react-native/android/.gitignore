@@ -1,0 +1,4 @@
+
+# Local, unsigned Maven repo published by sdk/android/build-aar-dev.sh. Build output, and it
+# carries a 17 MB AAR per publish; never commit it.
+.hop-maven/

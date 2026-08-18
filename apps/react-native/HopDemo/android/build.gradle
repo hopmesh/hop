@@ -1,0 +1,77 @@
+buildscript {
+    ext {
+        buildToolsVersion = "37.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 37
+        targetSdkVersion = 36
+        ndkVersion = "27.1.12297006"
+        // Must be able to READ Kotlin metadata 2.4. sdk/android builds the Hop Android SDK with
+        // kotlin("jvm") 2.4.10, so hop-0.0.5.aar carries metadata 2.4.0. RN 0.87's template default of
+        // 2.2.0 reads only up to 2.3.0 and fails with "Class 'sh.hop.HopNode' was compiled with an
+        // incompatible version of Kotlin". Keep this at or above the version sdk/android uses.
+        kotlinVersion = "2.4.10"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
+    }
+}
+
+apply plugin: "com.facebook.react.rootproject"
+
+// The Hop Android SDK (sh.hop:hop) is not on Maven Central, so a consumer has to point at the local
+// repository the AAR was published into. See docs/react-native-quickstart.md.
+//
+// WHY THIS IS HERE AND NOT ONLY IN THE SDK MODULE. @hop-mesh/react-native's own build.gradle already
+// declares this repository, and that is necessary but NOT sufficient: `sh.hop:hop` is a TRANSITIVE
+// dependency from the app's point of view, and Gradle resolves transitives against the CONSUMER's
+// repositories. Without this block the app's :app:debugRuntimeClasspath searched only Central, Google
+// and JitPack and failed with "Could not find sh.hop:hop:0.0.5", even though the module had the
+// repository and the AAR was on disk. Only a real consumer build surfaces that.
+//
+// Resolution order matches the SDK module's, so both agree: an explicit -PhopMavenRepository wins, then
+// HOP_MAVEN_REPOSITORY, then the SDK's module-relative default, which works because npm links the
+// package by symlink.
+allprojects {
+    repositories {
+        maven {
+            url = uri(
+                project.hasProperty("hopMavenRepository")
+                    ? project.property("hopMavenRepository").toString()
+                    : (System.getenv("HOP_MAVEN_REPOSITORY")
+                        ?: new File(rootDir, "../node_modules/@hop-mesh/react-native/android/.hop-maven").canonicalPath)
+            )
+            // Scoped, so this local path is never consulted for anything but the Hop SDK.
+            content { includeGroup "sh.hop" }
+        }
+    }
+}
+
+// DEV-ONLY WORKAROUND, and the durable fix is named below so this does not become permanent by default.
+//
+// The Hop Android SDK (sdk/android) is built with Kotlin 2.4.10, so hop-0.0.5.aar carries metadata
+// version 2.4.0. React Native 0.87 pins the Kotlin compiler at 2.2.0 through its included
+// @react-native/gradle-plugin build, which reads metadata only up to 2.3.0. Raising kotlinVersion in this
+// app does NOT help: `gradlew :hop-mesh_react-native:buildEnvironment` shows the module requesting
+// kotlin-gradle-plugin 2.4.10 while the compiler that actually runs is still RN's 2.2.0, because Gradle
+// applies one Kotlin plugin per build and RN's included build wins.
+//
+// -Xskip-metadata-version-check lets 2.2.0 read the newer metadata. That is what the flag exists for, and
+// the API surface the module touches is plain classes and functions, but it IS a suppression: skipping the
+// check can hide genuine incompatibilities in inline functions, default arguments and nullability.
+//
+// THE DURABLE FIX is to align the versions rather than suppress: build sdk/android with a Kotlin whose
+// metadata RN can read (2.2.x or 2.3.x), or wait for a React Native that ships Kotlin 2.4. That is a
+// decision about the shared Android SDK, not something this demo app should make unilaterally.
+subprojects { sub ->
+    sub.plugins.withId("org.jetbrains.kotlin.android") {
+        sub.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")
+        }
+    }
+}
