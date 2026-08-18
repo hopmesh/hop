@@ -38,6 +38,9 @@ README says so. Two consequences worth holding onto:
 implemented in BOTH `ios/HopMesh.swift` (+ the `RCT_EXTERN_METHOD` selector in `HopMesh.m`) and
 `android/.../HopMeshModule.kt`. Change one, change all three, or a call silently no-ops on one platform.
 
+This rule is enforced by `tools/rn-bridge-lockstep-guard.py`, which runs in CI and fails the build if
+any method is missing from any side.
+
 - **Binary crosses as base64, addresses as base58.** The RN bridge only carries JSON scalars. Bodies,
   32-byte ids, and secrets are base64 strings; addresses are base58 strings (the native `HopAddress`
   helpers do the conversion so `send`/`isSecured` can take the human-facing form). `base64.ts` is the

@@ -8,7 +8,7 @@ This package is the **cross-platform client SDK**. One TypeScript API sits over 
 client SDKs, so your JavaScript talks to the same protocol core on both platforms:
 
 - **iOS / macOS**: the Swift SDK (`Hop`, from `hop-sdk-apple`).
-- **Android**: the Kotlin SDK (`sh.hop:hop`, from `sdk/android`), which bundles the native `libhop`.
+- **Android**: the Kotlin SDK (`sh.hop:hop`, from `hop-sdk-android`), which bundles the native `libhop`.
 
 The protocol, the crypto, and the wire format all live in that native core; this package only marshals
 values across the React Native bridge and gives you an idiomatic, promise-based surface.
@@ -37,10 +37,12 @@ supports it (CocoaPods 1.16+, React Native 0.75+). On older toolchains, add the
 [`hop-sdk-apple`](https://github.com/hopmesh/hop-sdk-apple) Swift package to your app target in Xcode;
 the bridge's `import Hop` then resolves against it.
 
+**Note:** The podspec's `s.source` references git tag `v0.0.2`, but the `hopmesh/hop` repository carries
+no tags. This only affects remote pod consumption; a development pod by local path is unaffected.
+
 ### Android
 
-Autolinking wires the module in. The Hop Android SDK (`sh.hop:hop`) is pulled from Maven Central and
-ships the `libhop` native slices for every ABI, so there is nothing else to configure.
+Autolinking wires the module in. The Hop Android SDK (`sh.hop:hop`) is pulled from a local Maven repository (see [React Native Quickstart](../../docs/react-native-quickstart.md)), not from Maven Central, and ships the `libhop` native slices for every ABI, so there is nothing else to configure.
 
 ## Quick start
 
