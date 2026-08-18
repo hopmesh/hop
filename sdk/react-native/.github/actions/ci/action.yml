@@ -3,11 +3,19 @@
 # It is a COMPOSITE ACTION rather than inline steps so the package's verification lives next to the
 # package, and so it can be lifted into a standalone repo unchanged if this SDK is ever split out. This
 # SDK is NOT mirrored or published today; see docs/repo-catalog.md for why.
-# Unlike the native client SDKs, the JS layer needs no libhop: the native halves (ios/, android/) are
-# compiled by a consuming app's build against the platform Hop SDKs, so CI validates the TypeScript
-# surface and the pure marshalling logic here (tsc + the node --test suite with a faked native module).
+#
+# WHAT THIS GATE MISSED FOR ITS ENTIRE LIFE, and why the steps below exist.
+#
+# The JS layer is unit-tested against a FAKE native module, and this action only ran tsc plus that
+# suite. So nothing ever RESOLVED a native coordinate, and two dependencies rotted in plain sight:
+#   * `implementation "sh.hop:hop:0.0.2"` against Maven Central, where the sh.hop group does not exist
+#     at all, and where 0.0.2 was stale anyway because sdk/android declares 0.0.5.
+#   * `implementation "com.facebook.react:react-native:+"`, a coordinate that stops at 0.71.0-rc.0;
+#     modern React Native publishes com.facebook.react:react-android.
+# Both were invisible because nothing resolved them, not because nothing compiled. A step that only
+# type-checks Kotlin would still have gone green on a 404 dependency. So the checks below RESOLVE.
 name: "Hop React Native SDK CI"
-description: "Type-check and test @hop-mesh/react-native (the JS bridge layer; native halves build in a host app)."
+description: "Type-check, test, coverage-floor and coordinate-check @hop-mesh/react-native."
 
 inputs:
   pkg-dir:
@@ -28,3 +36,60 @@ runs:
         npm ci
         npm run typecheck
         npm test
+
+    # A ratchet on the numbers this package happened to have, not a target. Function coverage sits at
+    # 45%, meaning about half the HopNode surface is never called by a test; the floor exists so that
+    # known gap cannot widen unnoticed. See scripts/coverage-floor.cjs.
+    - name: Coverage floor
+      shell: bash
+      working-directory: ${{ inputs.pkg-dir }}
+      run: npm run coverage
+
+    # The bridge is written three times (TypeScript contract, Swift + ObjC, Kotlin) and kept in sync by
+    # hand. CLAUDE.md states the rule in prose; this enforces it, selectors included, because
+    # @objc(foo:bar:) against RCT_EXTERN_METHOD(foo:baz:) compiles and only throws when JS calls it.
+    - name: Bridge lockstep (contract, Swift, ObjC, Kotlin)
+      shell: bash
+      run: python3 tools/rn-bridge-lockstep-guard.py
+
+    # RESOLUTION, not compilation. These four assertions are exactly the ones that would have caught
+    # the two rotted coordinates, and they are cheap and deterministic: no Android SDK, no NDK, no
+    # gradle daemon. Native COMPILATION still is not covered here, and saying so plainly is better than
+    # implying it is: the Swift and Kotlin halves are built by a consuming app, and by the example app.
+    - name: Native coordinates resolve
+      shell: bash
+      working-directory: ${{ inputs.pkg-dir }}
+      run: |
+        set -euo pipefail
+        gradle_file="android/build.gradle"
+        fail() { echo "::error::native coordinates: $1"; exit 1; }
+
+        # 1. No dynamic versions. `+` is how react-native:+ silently resolved to a 2022 artifact.
+        if grep -nE '^[^/]*implementation .*:\+"' "$gradle_file"; then
+          fail "a dynamic '+' version is declared; pin a floor instead"
+        fi
+
+        # 2. The dead coordinate must not come back.
+        if grep -nE 'com\.facebook\.react:react-native[:"]' "$gradle_file"; then
+          fail "com.facebook.react:react-native is retired at 0.71.0-rc.0; use react-android"
+        fi
+
+        # 3. The Hop SDK version here must match sdk/android, which is the source of truth. This is the
+        #    axis that was wrong independently of the artifact being unpublished.
+        declared="$(sed -n 's/.*getExtOr("hopSdkVersion", "\([^"]*\)").*/\1/p' "$gradle_file" | head -1)"
+        source_of_truth="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' ../../sdk/android/build.gradle.kts | head -1)"
+        [ -n "$declared" ] || fail "could not read hopSdkVersion from $gradle_file"
+        [ -n "$source_of_truth" ] || fail "could not read version from sdk/android/build.gradle.kts"
+        [ "$declared" = "$source_of_truth" ] || \
+          fail "hopSdkVersion is $declared but sdk/android declares $source_of_truth"
+
+        # 4. The React floor must actually exist on Maven Central. A 404 here is the same class of
+        #    defect as sh.hop:hop, caught before anyone builds an app against it. A non-200/404 answer
+        #    is an unknown and fails too, rather than being read as present.
+        floor="$(sed -n "s/.*getExtOr('reactNativeVersion', '\([^']*\)').*/\1/p" "$gradle_file" | head -1)"
+        [ -n "$floor" ] || fail "could not read the react-android floor from $gradle_file"
+        url="https://repo1.maven.org/maven2/com/facebook/react/react-android/${floor}/react-android-${floor}.pom"
+        code="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 2 "$url" || echo 000)"
+        [ "$code" = "200" ] || fail "react-android:${floor} did not resolve on Maven Central (HTTP $code)"
+
+        echo "native coordinates OK: react-android floor ${floor} resolves, sh.hop:hop ${declared} matches sdk/android"

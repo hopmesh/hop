@@ -38,13 +38,62 @@ android {
   }
 }
 
+// The Hop Android SDK version. sdk/android/build.gradle.kts is the source of truth for it; the
+// previous pin here said 0.0.2, which was stale as well as unpublished.
+def hopSdkVersion = getExtOr("hopSdkVersion", "0.0.5")
+
+// Where sh.hop:hop is resolved from. It is NOT on Maven Central: the group does not exist there at
+// all, so the old `implementation "sh.hop:hop:0.0.2"` could never resolve for anyone. It is produced
+// locally as an unsigned AAR, because the signed release path needs a native-artifacts bundle whose
+// signing job is currently red, and the one published bundle carries no Android slices.
+//
+// Order: an explicit rootProject ext wins, then the HOP_MAVEN_REPOSITORY environment variable, then a
+// module-relative default so a consuming app that installed this package by path just works.
+def hopMavenRepository = rootProject.ext.has("hopMavenRepository")
+  ? rootProject.ext.get("hopMavenRepository").toString()
+  : (System.getenv("HOP_MAVEN_REPOSITORY") ?: new File(projectDir, ".hop-maven").absolutePath)
+
+// Fail with something a human can act on. Without this, a missing repository surfaces as gradle's
+// generic "Could not find sh.hop:hop:0.0.5" wall listing every repository it tried, which names
+// neither the prerequisite nor the override.
+def hopAar = new File(hopMavenRepository, "sh/hop/hop/${hopSdkVersion}/hop-${hopSdkVersion}.aar")
+if (!hopAar.isFile()) {
+  throw new GradleException("""
+@hop-mesh/react-native: the Hop Android SDK is not available.
+
+  expected: ${hopAar}
+
+sh.hop:hop is not published to Maven Central, so it has to be built locally first. From the Hop
+monorepo, build libhop for the four Android ABIs and publish the AAR into a local Maven repository:
+
+  cargo ndk -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 -o /tmp/hop-native-android build -p hop --release
+  cd sdk/android && gradle hopAar publishHopPublicationToHopRepository \\
+      -PhopNativeDir=/tmp/hop-native-android -PhopMavenRepository=<repo-path>
+
+then point this module at it with HOP_MAVEN_REPOSITORY=<repo-path>, or place it at the default path
+above. See docs/react-native-quickstart.md.
+""")
+}
+
 repositories {
   google()
   mavenCentral()
+  // Consumed as a REPOSITORY, deliberately, not as files("...hop.aar") or a flatDir. The generated
+  // POM declares net.java.dev.jna:jna:5.19.1 as a runtime dependency. A file or flatDir dependency
+  // carries no POM, so that transitive would be dropped silently: the module compiles, the APK
+  // builds, and JNA is missing at runtime, surfacing as a ClassNotFoundError the first time JS calls
+  // into the bridge. A green build that proves nothing is worse than a red one.
+  maven {
+    url = uri(hopMavenRepository)
+    content { includeGroup "sh.hop" }
+  }
 }
 
 dependencies {
-  implementation "com.facebook.react:react-native:+"
-  // The Hop Android client SDK (sdk/android), published as sh.hop:hop with libhop native slices.
-  implementation "sh.hop:hop:0.0.2"
+  // com.facebook.react:react-native tops out at 0.71.0-rc.0 on Maven Central; the coordinate for
+  // modern React Native is com.facebook.react:react-android, which carries 0.77.3 through 0.87.0.
+  // The old `react-native:+` therefore resolved to a years-old artifact on any current app. This is a
+  // FLOOR, not a pin: a host app on a newer React Native wins by normal version conflict resolution.
+  implementation "com.facebook.react:react-android:${getExtOr('reactNativeVersion', '0.77.3')}"
+  implementation "sh.hop:hop:${hopSdkVersion}"
 }
