@@ -84,12 +84,19 @@ runs:
           fail "hopSdkVersion is $declared but sdk/android declares $source_of_truth"
 
         # 4. The React floor must actually exist on Maven Central. A 404 here is the same class of
-        #    defect as sh.hop:hop, caught before anyone builds an app against it. A non-200/404 answer
-        #    is an unknown and fails too, rather than being read as present.
+        #    defect as sh.hop:hop, caught before anyone builds an app against it.
+        #
+        #    A HEAD request, deliberately. Nothing is downloaded, so there is no artifact to checksum,
+        #    and this must not look like one: tools/executable-reference-guard.py rightly demands
+        #    independent SHA-256 verification of anything fetched with `curl -o`, and an existence
+        #    probe that discarded the body to /dev/null tripped that rule. --head is both honest about
+        #    the intent and cheaper. --fail makes any non-2xx, including a 404, a non-zero exit, so an
+        #    unreachable Maven Central is an unknown that fails rather than a silent pass.
         floor="$(sed -n "s/.*getExtOr('reactNativeVersion', '\([^']*\)').*/\1/p" "$gradle_file" | head -1)"
         [ -n "$floor" ] || fail "could not read the react-android floor from $gradle_file"
         url="https://repo1.maven.org/maven2/com/facebook/react/react-android/${floor}/react-android-${floor}.pom"
-        code="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 2 "$url" || echo 000)"
-        [ "$code" = "200" ] || fail "react-android:${floor} did not resolve on Maven Central (HTTP $code)"
+        if ! curl -sSf --head --retry 3 --retry-delay 2 "$url" >/dev/null 2>&1; then
+          fail "react-android:${floor} did not resolve on Maven Central"
+        fi
 
         echo "native coordinates OK: react-android floor ${floor} resolves, sh.hop:hop ${declared} matches sdk/android"

@@ -64,14 +64,18 @@ if (!hopAar.isFile()) {
   expected: ${hopAar}
 
 sh.hop:hop is not published to Maven Central, so it has to be built locally first. From the Hop
-monorepo, build libhop for the four Android ABIs and publish the AAR into a local Maven repository:
+monorepo, one command builds libhop for all four Android ABIs and publishes the AAR:
 
-  cargo ndk -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 -o /tmp/hop-native-android build -p hop --release
-  cd sdk/android && gradle hopAar publishHopPublicationToHopRepository \\
-      -PhopNativeDir=/tmp/hop-native-android -PhopMavenRepository=<repo-path>
+  ./sdk/android/build-aar-dev.sh --repository ${hopMavenRepository}
 
-then point this module at it with HOP_MAVEN_REPOSITORY=<repo-path>, or place it at the default path
-above. See docs/react-native-quickstart.md.
+Then either leave it there, or point this module elsewhere with HOP_MAVEN_REPOSITORY=<repo-path>.
+
+Note it is build-aar-dev.sh, not build-aar.sh. build-aar.sh is the SIGNED release path: it verifies a
+native-artifacts bundle against its signature, which needs NATIVE_ARTIFACT_SIGNING_KEY and a bundle
+carrying Android slices. Neither exists today, so the dev script builds the slices from source and
+publishes unsigned. That output is for local development and is not publishable.
+
+See docs/react-native-quickstart.md.
 """)
 }
 
