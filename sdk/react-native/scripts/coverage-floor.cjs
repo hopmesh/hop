@@ -9,6 +9,13 @@
 // written down here so it cannot quietly get worse while nobody is looking. Raise these when you add
 // tests. Do not lower them to make a red build green.
 //
+// THE FLOOR IS DELIBERATELY BELOW WHAT CI REPORTS, so do not "correct" it upward to match a green
+// run. Node's coverage attribution differs by version: the same suite and the same sources measure
+// 80.33 / 90.91 / 45.28 on Node 26 locally and 88.01 / 93.28 / 54.46 on the Node 20.20.2 that CI
+// pins. The floor has to be the LOWER of the versions this package is run on, or a developer on a
+// newer Node fails a floor derived from CI while having changed nothing. Raise it only when the
+// lowest measurement across supported Node versions rises.
+//
 // Why a script instead of node's own thresholds: --test-coverage-lines and friends landed after Node
 // 20, and the CI action pins node 20.20.2. Parsing the summary keeps the floor working on the version
 // CI actually runs, rather than silently doing nothing there.
