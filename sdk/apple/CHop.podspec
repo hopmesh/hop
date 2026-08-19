@@ -21,12 +21,14 @@ manifest = File.read(manifest_path)
 asset_url = manifest[%r{(https://\S+/releases/download/v[0-9][^/\s"]*/libhop\.xcframework\.zip)}, 1]
 version = manifest[%r{/releases/download/v([0-9][^/\s"]*)/libhop\.xcframework\.zip}, 1]
 checksum = manifest[/checksum:\s*"([0-9a-f]{64})"/, 1]
+license_path = File.join(__dir__, "LICENSE.md")
 
 # Raise rather than fall back. A nil here would produce a pod with no version or an unverified download,
 # which is exactly the kind of silent degradation this repo keeps having to dig out.
 raise "CHop.podspec: no libhop.xcframework release URL found in #{manifest_path}" if asset_url.nil?
 raise "CHop.podspec: no version in the release URL in #{manifest_path}" if version.nil?
 raise "CHop.podspec: no 64 character checksum found in #{manifest_path}" if checksum.nil?
+raise "CHop.podspec: no license file at #{license_path}" unless File.exist?(license_path)
 
 Pod::Spec.new do |s|
   s.name = "CHop"
@@ -39,7 +41,14 @@ Pod::Spec.new do |s|
     CHop binaryTarget.
   DESC
   s.homepage = "https://github.com/hopmesh/hop-sdk-apple"
-  s.license = { :type => "Apache-2.0" }
+  # :text, not :file. The other two pods point :file at the LICENSE.md in their git checkout, but this
+  # pod's source is the release ZIP, which carries the xcframework and nothing else, so a :file would
+  # resolve inside the archive and find nothing. That is not cosmetic: `pod spec lint` reported
+  # "WARN | license: Unable to find a license file", and CocoaPods generates the consumer's
+  # acknowledgements from this attribute, so an app shipping the Hop core would have carried no Apache
+  # notice at all. Reading the sibling file keeps one copy of the license in the tree and bakes the
+  # text into the published spec, which is what the registry stores.
+  s.license = { :type => "Apache-2.0", :text => File.read(license_path) }
   s.authors = { "Hop Mesh, LLC" => "jason@waldrip.net" }
   s.platforms = { :ios => "16.0", :osx => "13.0" }
 

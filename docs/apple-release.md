@@ -92,8 +92,8 @@ workflow verifies canonical provenance).
 a deployment tag policy of `v*`. The one release attempt so far, run `30128992818` on 2026-07-24,
 recorded a `prepare` job that ran for 19 minutes and 41 seconds with zero steps in its step list and
 a `cancelled` conclusion, which is what a job blocked on the environment gate looks like. Approve the
-deployment when the run appears, or it will sit there. Two jobs request the environment, so expect
-two approvals.
+deployment when the run appears, or it will sit there. Three jobs request the environment (`prepare`,
+`publish`, `publish-pods`), so expect three approvals.
 
 ### 3. The existing `v0.0.1` tag cannot be reused where it stands
 
@@ -122,6 +122,31 @@ Two ways out:
   version` in the root `Cargo.toml` makes `release-tags.yml` create a fresh tag on the next successful
   sync. This costs more: the four `v0.0.1` hardcodes above all have to move in the same change, and
   `tools/package-export-smoke.py` is a CI guard, so missing one reddens the build.
+
+### 4. CocoaPods trunk has no credential, and no one but Jason can create it
+
+`publish-pods` pushes `CHop`, `HopContract` and `HopSDK` to the CocoaPods trunk registry, which
+authenticates with a session token. `cocoapods-trunk` reads it from `ENV['COCOAPODS_TRUNK_TOKEN']`
+first and `~/.netrc` second (`lib/pod/command/trunk.rb`), and a fresh runner has no `.netrc`, so the
+environment variable is the only route. The token is minted by an interactive, email-verified
+registration against a person, so CI cannot obtain one and neither can an agent:
+
+```
+pod trunk register jason@waldrip.net "Jason Waldrip" --description="hop release"
+```
+
+That mails a verification link. Clicking it activates the session and writes the token into
+`~/.netrc` under the `trunk.cocoapods.org` machine entry. Copy that password value into a secret named
+`COCOAPODS_TRUNK_TOKEN` on the **`release` environment of `hopmesh/hop-sdk-apple`**, the mirror, not
+this repository, because the release workflow only ever runs there.
+
+Checked against the live registry: `CHop`, `HopContract` and `HopSDK` all return
+`{"error":"No pod found with the specified name."}` from `https://trunk.cocoapods.org/api/v1/pods/<name>`,
+so no name is taken and the first push makes the registering account the owner of all three.
+
+Until the secret exists the job FAILS rather than skipping. That is deliberate: a publish step that
+reports success while publishing nothing is the defect this repository keeps finding, so the absence
+of a credential is a red build that names the missing secret.
 
 ## The runbook
 
@@ -187,8 +212,8 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
      -f ref=refs/tags/v0.0.1 -f sha=<mirror main sha>
    ```
 
-8. **Approve the `release` environment** when the run shows up under Actions on `hop-sdk-apple`. Two
-   jobs request it, `prepare` and `publish`, so expect two approvals.
+8. **Approve the `release` environment** when the run shows up under Actions on `hop-sdk-apple`.
+   Three jobs request it, `prepare`, `publish` and `publish-pods`, so expect three approvals.
 
 ## What the workflow then does
 
@@ -218,6 +243,27 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
 
 - `release-artifact.py verify` re-checks the manifest against the canonical source SHA and run
   attempt, then `softprops/action-gh-release` creates the release with generated notes.
+
+`publish-pods` (macos-14, environment `release`)
+
+- macOS, not ubuntu, and that is forced rather than chosen: `pod trunk push` lints by BUILDING the pod
+  for every platform it declares (cocoapods-trunk's `validate_podspec` constructs the same `Validator`
+  as `pod spec lint`), and these pods declare iOS, so the step needs Xcode.
+- It runs after `publish`, also forced: `CHop.podspec`'s source is
+  `releases/download/v<version>/libhop.xcframework.zip`, so the lint downloads the release asset that
+  the `publish` job has just created. Reversing the order gives a 404.
+- `release-artifact.py verify` first, on the same downloaded artifact the GitHub release used, so the
+  pods are published on the same evidence rather than on the tag alone.
+- A guard step fails the job if `COCOAPODS_TRUNK_TOKEN` is unset, naming the secret.
+- `trunk-publish.py publish` then pushes in dependency order, `CHop`, `HopContract`, `HopSDK`, because
+  the validator resolves dependencies from the trunk CDN rather than from the sibling files on disk.
+  It waits for each pushed spec to become readable from the CDN before starting the dependent push,
+  reads every version back from the registry instead of trusting the CLI's exit code, and asserts the
+  version the podspecs derive from `Package.swift` equals the tag being released. The only tolerated
+  error is a version that is already published; a lint failure stays fatal.
+
+Published pods: `CHop`, `HopContract`, `HopSDK`, all at the release version. A consumer then needs
+only `pod 'HopSDK'`.
 
 Published assets: `libhop.xcframework.zip`, `native-artifacts.json`, `native-artifacts.json.sig`,
 `native-artifacts.provenance.sigstore.json`, `release-manifest.json`.

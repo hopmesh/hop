@@ -56,6 +56,15 @@ Pod::Spec.new do |s|
   s.swift_version = "5.9"
   s.frameworks = "Foundation"
 
+  # MEASURED, not defensive. Under `use_frameworks!` (the CocoaPods default, and what `pod trunk push`
+  # lints with) this pod is built as its own linkage unit. The Hop symbols it calls live in the STATIC
+  # libhop.a that CHop vendors, and a dynamic framework does not absorb a static dependency, so the
+  # link ended with "Undefined symbols for architecture x86_64" while `pod lib lint --use-libraries`
+  # on the identical sources passed. Declaring the pod static makes CocoaPods link libhop.a into it,
+  # which is what the SwiftPM product does too. Without this line the pod lints only in static mode
+  # and breaks for any consumer whose Podfile says `use_frameworks!`.
+  s.static_framework = true
+
   s.dependency "CHop", version
   s.dependency "HopContract", version
 end
