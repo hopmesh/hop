@@ -5,11 +5,23 @@ buildscript {
         compileSdkVersion = 37
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
-        // Must be able to READ Kotlin metadata 2.4. sdk/android builds the Hop Android SDK with
-        // kotlin("jvm") 2.4.10, so hop-0.0.5.aar carries metadata 2.4.0. RN 0.87's template default of
-        // 2.2.0 reads only up to 2.3.0 and fails with "Class 'sh.hop.HopNode' was compiled with an
-        // incompatible version of Kotlin". Keep this at or above the version sdk/android uses.
-        kotlinVersion = "2.4.10"
+        // The Kotlin this app ACTUALLY compiles with, measured, not chosen here. The versionless
+        // classpath entry below resolves by ordinary conflict resolution: React Native 0.87's included
+        // @react-native/gradle-plugin build pulls AGP 9.2.1 (which depends on kotlin-gradle-plugin
+        // 2.2.10) plus its own KGP 2.2.0 request, and 2.2.10 wins. No kotlinVersion set here can
+        // change that: even @hop-mesh/react-native's own buildscript request for
+        // ${kotlinVersion} is shadowed, because parent-first classloader delegation serves the Kotlin
+        // plugin classes from this root classpath (its kotlinCompilerClasspath still resolves
+        // kotlin-compiler-embeddable:2.2.10 when it asks for 2.4.10). What this ext DOES select is the
+        // kotlin-stdlib that third-party RN libraries (react-native-safe-area-context and friends)
+        // compile against, so it must match the real compiler: with 2.4.10 here those libraries pulled
+        // a metadata-2.4.0 stdlib that the 2.2.10 compiler could not read. sdk/android is therefore
+        // pinned at Kotlin 2.2.10 so the published AAR carries metadata 2.2.0, the most this compiler
+        // family can be assumed to emit. The previous comment's claim that RN "pins the compiler at
+        // 2.2.0 through its included build" was wrong in the detail: RN requests 2.2.0, but AGP's
+        // transitive 2.2.10 is what wins, and the old Kotlin metadata-check suppression this file
+        // used to carry was covering BOTH the hop AAR metadata and this stdlib mismatch.
+        kotlinVersion = "2.2.10"
     }
     repositories {
         google()
@@ -52,26 +64,3 @@ allprojects {
     }
 }
 
-// DEV-ONLY WORKAROUND, and the durable fix is named below so this does not become permanent by default.
-//
-// The Hop Android SDK (sdk/android) is built with Kotlin 2.4.10, so hop-0.0.5.aar carries metadata
-// version 2.4.0. React Native 0.87 pins the Kotlin compiler at 2.2.0 through its included
-// @react-native/gradle-plugin build, which reads metadata only up to 2.3.0. Raising kotlinVersion in this
-// app does NOT help: `gradlew :hop-mesh_react-native:buildEnvironment` shows the module requesting
-// kotlin-gradle-plugin 2.4.10 while the compiler that actually runs is still RN's 2.2.0, because Gradle
-// applies one Kotlin plugin per build and RN's included build wins.
-//
-// -Xskip-metadata-version-check lets 2.2.0 read the newer metadata. That is what the flag exists for, and
-// the API surface the module touches is plain classes and functions, but it IS a suppression: skipping the
-// check can hide genuine incompatibilities in inline functions, default arguments and nullability.
-//
-// THE DURABLE FIX is to align the versions rather than suppress: build sdk/android with a Kotlin whose
-// metadata RN can read (2.2.x or 2.3.x), or wait for a React Native that ships Kotlin 2.4. That is a
-// decision about the shared Android SDK, not something this demo app should make unilaterally.
-subprojects { sub ->
-    sub.plugins.withId("org.jetbrains.kotlin.android") {
-        sub.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-            compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")
-        }
-    }
-}

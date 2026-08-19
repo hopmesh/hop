@@ -7,7 +7,18 @@ import org.gradle.plugins.signing.Sign
 // Hop Kotlin SDK. JVM tests exercise the JNA wrapper against a host libhop. The publication is an
 // Android AAR with classes.jar, one libhop.so per supported ABI, and Prefab metadata/header content.
 plugins {
-    kotlin("jvm") version "2.4.10"
+    // 2.2.10, deliberately BELOW the Kotlin of the other Android builds in this repo. This build
+    // PUBLISHES sh.hop:hop, and a published library must carry Kotlin metadata the OLDEST consumer
+    // can read: a newer compiler always reads older metadata, never the reverse. The floor is set by
+    // the React Native 0.87 app (apps/react-native/HopDemo), whose Kotlin the app does not choose
+    // itself: its versionless root classpath resolves kotlin-gradle-plugin by conflict resolution to
+    // 2.2.10 (AGP 9.2.1's transitive pin, which beats React Native's own 2.2.0), so 2.2.x is what
+    // compiles against this AAR and metadata 2.2.0 is the most this SDK may emit. Every other
+    // consumer (apps/android, bearers/android, the export-smoke consumer) is on 2.4.x and reads 2.2.0
+    // metadata fine. The bearers/apps ":hop-sdk" shims compile this module's SOURCES with their own
+    // 2.4.10 pins, so this number changes only the published AAR's metadata, not their builds. Bump
+    // this only in lockstep with the oldest consumer's compiler floor.
+    kotlin("jvm") version "2.2.10"
     application
     jacoco
     `maven-publish`
