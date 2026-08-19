@@ -2,18 +2,21 @@
 // apps/android/HopDemo, Compose) onto @hop-mesh/react-native, so one codebase exercises the bridge on
 // both platforms.
 //
-// HOW THIS DIFFERS FROM THE NATIVE DEMOS, and it matters.
+// THE APP RUNS TWO PATHS AT ONCE, and the difference matters.
 //
-// The native demos get their radios from drivers/apple/HopDriver and drivers/android/hop-driver, which
-// own the BLE, LAN and relay bearers. @hop-mesh/react-native ships NO bearer: its surface is
-// linkUp / bytesReceived / onOutgoing, so the app is responsible for moving packets. There is therefore
-// no way for this app to reach a second physical device today.
+// 1. An in-process loopback pair (src/loopback.ts). Two nodes in this process, wired to each other.
+//    This device is "you"; the second node stands in for a peer. Everything between them is real:
+//    real Rust core, real sealing, real inbox. It proves the core and the bridge work on this device,
+//    and it works with no network at all. What it cannot do, by construction, is reach another device.
 //
-// So instead of pretending, it runs TWO nodes in-process and connects them with src/loopback.ts. This
-// device is "you"; the second node stands in for a peer. Everything between them is real: real Rust
-// core, real sealing, real inbox. A message shown as received here genuinely round-tripped through
-// hop-core. What it does not cover is radio discovery and true multi-device relay, and the UI says so
-// rather than implying a mesh that is not there.
+// 2. A relay link from THIS device's node to a hop-relayd WebSocket front door (src/relayBearer.ts).
+//    That is a real bearer, not a stand-in: relayd's WS door is an opaque byte pipe, one core packet
+//    per binary frame, and the link's Noise handshake happens inside the node. This is what lets a
+//    node on ANOTHER device reach this one, and it is how a two-device message actually travels.
+//
+// What is still missing, stated plainly rather than implied away: there is no radio bearer in the
+// React Native SDK, no BLE and no LAN, so nothing here DISCOVERS a peer. A peer is reached by knowing
+// its address, which is why this screen lets you paste one.
 
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
@@ -28,8 +31,16 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {Hop, HopNode, HopMessage, bytesToUtf8, toBase64} from '@hop-mesh/react-native';
+import {
+  Hop,
+  HopAddress,
+  HopNode,
+  HopMessage,
+  bytesToUtf8,
+  toBase64,
+} from '@hop-mesh/react-native';
 import {connectLoopback, Loopback} from './src/loopback';
+import {connectRelay, RelayLink, RelayState} from './src/relayBearer';
 import {
   messageMeta,
   platformLabel,
@@ -38,6 +49,18 @@ import {
   transportIcon,
 } from './src/demoFormat';
 
+// React Native ships no Node types and this app does not pull in @types/node, so `process` has no
+// type here. Declare exactly the one field that is read.
+declare const process: {env: {HOP_RELAY_URL?: string}};
+
+// Where to dial by default. Read once, at module scope, and NOT reliable on a device: React Native's
+// setUpGlobals defines `process.env` carrying NODE_ENV only, and Metro's inline plugin substitutes
+// exactly `process.env.NODE_ENV` and `__DEV__`, nothing else. So this picks up an override under Jest
+// or any bundler that inlines it, and falls back to the production relay on a plain device build.
+// That is why the URL is editable on screen: pointing two phones at a relay on a LAN address is a
+// normal thing to want, and it must not need a rebuild.
+const RELAY_URL = process.env.HOP_RELAY_URL ?? 'wss://relay.hopme.sh/';
+
 type Received = {
   id: string;
   from: string;
@@ -45,12 +68,15 @@ type Received = {
   meta: string;
 };
 
-// A peer as the UI knows it. The native demos label rows by device model under "People nearby"; the
-// loopback peer is labelled for what it actually is so nobody reads it as a discovered device.
+// A peer as the UI knows it. `kind` is how the peer is reachable AT ALL, which is the distinction a
+// human in front of this screen actually needs: the loopback peer is inside this process and proves
+// nothing about the network, while a relay peer is another node that packets have to leave the device
+// to reach. `transport` stays the native demos' vocabulary so the row glyph matches theirs.
 type Peer = {
   address: string;
   label: string;
   transport: 'ble' | 'lan' | 'relay' | 'unknown';
+  kind: 'loopback' | 'relay';
 };
 
 export default function App(): React.JSX.Element {
@@ -62,10 +88,50 @@ export default function App(): React.JSX.Element {
   const [draft, setDraft] = useState('');
   const [received, setReceived] = useState<Received[]>([]);
   const [sendState, setSendState] = useState<string | null>(null);
+  const [relayState, setRelayState] = useState<RelayState>('connecting');
+  const [relayUrl, setRelayUrl] = useState(RELAY_URL);
+  const [relayDraft, setRelayDraft] = useState(RELAY_URL);
+  const [relayNote, setRelayNote] = useState<string | null>(null);
+  const [peerDraft, setPeerDraft] = useState('');
+  const [peerNote, setPeerNote] = useState<string | null>(null);
 
   const self = useRef<HopNode | null>(null);
   const peer = useRef<HopNode | null>(null);
   const wire = useRef<Loopback | null>(null);
+  const relay = useRef<RelayLink | null>(null);
+
+  const dialRelay = useCallback(async (url: string) => {
+    const node = self.current;
+    if (node == null) {
+      return;
+    }
+    // Drop any previous link first. Two relay links on one node would both be dialer links, and the
+    // old socket would keep draining packets meant for the new one.
+    const previous = relay.current;
+    relay.current = null;
+    if (previous != null) {
+      await previous.close().catch(() => {});
+    }
+    setRelayNote(null);
+    setRelayState('connecting');
+    // The URL shown is the one being used, including while a dial is failing: leaving the previous
+    // URL on screen after tearing its link down would name a link that no longer exists.
+    setRelayUrl(url);
+    try {
+      const link = await connectRelay(node, url, (state, detail) => {
+        setRelayState(state);
+        if (detail != null) {
+          setRelayNote(detail);
+        }
+      });
+      relay.current = link;
+      setRelayState(link.state());
+    } catch (e) {
+      // A relay that is not there is visible here rather than a spinner that never resolves.
+      setRelayState('down');
+      setRelayNote(String(e));
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,12 +193,17 @@ export default function App(): React.JSX.Element {
         setPeers([
           {
             address: peerAddr,
-            label: `${platformLabel('unknown')} loopback peer`,
+            label: `${platformLabel('unknown')} loopback peer, in this process`,
             transport: 'unknown',
+            kind: 'loopback',
           },
         ]);
         setSelected(peerAddr);
         setStatus('running');
+
+        // Dialed after the screen is usable, and deliberately not awaited: an unreachable relay must
+        // not stop the loopback path from working, and the relay's own state is on screen.
+        void dialRelay(RELAY_URL);
       } catch (e) {
         setError(String(e));
         setStatus('failed');
@@ -142,12 +213,49 @@ export default function App(): React.JSX.Element {
     return () => {
       cancelled = true;
       wire.current?.stop();
+      void relay.current?.close();
       void self.current?.stop();
       void peer.current?.stop();
       void self.current?.close();
       void peer.current?.close();
     };
-  }, []);
+  }, [dialRelay]);
+
+  const addPeer = useCallback(async () => {
+    const typed = peerDraft.trim();
+    if (typed.length === 0) {
+      setPeerNote('paste an address first');
+      return;
+    }
+    if (typed === address) {
+      setPeerNote('that is this device, not a peer');
+      return;
+    }
+    if (peers.some(p => p.address === typed)) {
+      setPeerNote('already in the list');
+      return;
+    }
+    try {
+      // Real validation, by the same base58 decoder the native SDKs use: it returns null for anything
+      // that is not exactly a 32-byte address. Adding an unparseable string would produce a peer row
+      // that silently never receives anything.
+      const decoded = await HopAddress.fromBase58(typed);
+      if (decoded == null) {
+        setPeerNote('not a Hop address: base58 of 32 bytes expected');
+        return;
+      }
+    } catch (e) {
+      setPeerNote(`could not read that address: ${String(e)}`);
+      return;
+    }
+    setPeers(prev => [
+      ...prev,
+      {address: typed, label: 'Relay peer, another device', transport: 'relay', kind: 'relay'},
+    ]);
+    setSelected(typed);
+    setPeerDraft('');
+    setPeerNote('added');
+  }, [address, peerDraft, peers]);
 
   const send = useCallback(async () => {
     const node = self.current;
@@ -214,10 +322,48 @@ export default function App(): React.JSX.Element {
           QR display unavailable in this build: no QR renderer bundled
         </Text>
 
+        <Text style={styles.h2}>Relay</Text>
+        {/* What `up` means, exactly: the socket is open and the core is driving the link. It does NOT
+            mean the relay accepted this node, because the bearer carries opaque bytes and cannot read
+            the protocol. A message arriving is the only proof of that. */}
+        <Text style={styles.dim} testID="relay-note">
+          A real bearer to a real relay: one core packet per WebSocket binary frame. This is how a node
+          on another device reaches this one. Status covers the socket and the link, not the handshake.
+        </Text>
+        <Text style={styles.mono} testID="relay-status">
+          {relayState}
+        </Text>
+        <Text style={styles.mono} testID="relay-url" selectable>
+          {relayUrl}
+        </Text>
+        <TextInput
+          testID="relay-url-input"
+          style={styles.input}
+          value={relayDraft}
+          onChangeText={setRelayDraft}
+          placeholder="wss://relay.hopme.sh/"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TouchableOpacity
+          testID="relay-connect-button"
+          style={styles.btn}
+          onPress={() => {
+            void dialRelay(relayDraft.trim());
+          }}>
+          <Text style={styles.btnText}>Connect relay</Text>
+        </TouchableOpacity>
+        {relayNote ? (
+          <Text style={styles.warn} testID="relay-error">
+            {relayNote}
+          </Text>
+        ) : null}
+
         <Text style={styles.h2}>People nearby</Text>
         <Text style={styles.dim} testID="bearer-note">
-          No radio bearer in the React Native SDK. The peer below is an in-process node, so delivery is
-          real but discovery is not.
+          No radio bearer in the React Native SDK, so nothing here is discovered: no BLE, no LAN. The
+          first peer is an in-process node, and a peer on another device is reached by pasting its
+          address below and carrying the bundle over the relay.
         </Text>
         {peers.length === 0 ? (
           <Text style={styles.dim} testID="peers-empty">
@@ -243,11 +389,39 @@ export default function App(): React.JSX.Element {
                   <Text style={styles.dim} testID={`peer-address-${index}`}>
                     {shortAddress(item.address)}
                   </Text>
+                  {/* A word, not the glyph: how this peer is reachable is the one thing a human, and a
+                      test, must not have to infer from an icon. */}
+                  <Text style={styles.dim} testID={`peer-transport-${index}`}>
+                    {item.kind}
+                  </Text>
                 </View>
               </TouchableOpacity>
             )}
           />
         )}
+
+        <Text style={styles.h2}>Reach another device</Text>
+        <Text style={styles.dim} testID="add-peer-note">
+          Paste the full address shown under "This device" on the other phone. Without a radio bearer
+          there is nothing to discover, so an address is how a peer is found.
+        </Text>
+        <TextInput
+          testID="peer-address-input"
+          style={styles.input}
+          value={peerDraft}
+          onChangeText={setPeerDraft}
+          placeholder="base58 address from the other device"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TouchableOpacity testID="add-peer-button" style={styles.btn} onPress={addPeer}>
+          <Text style={styles.btnText}>Add peer</Text>
+        </TouchableOpacity>
+        {peerNote ? (
+          <Text style={styles.warn} testID="add-peer-status">
+            {peerNote}
+          </Text>
+        ) : null}
 
         <Text style={styles.h2}>Send</Text>
         <TextInput
@@ -278,11 +452,16 @@ export default function App(): React.JSX.Element {
             scrollEnabled={false}
             data={received}
             keyExtractor={m => m.id}
-            renderItem={({item}) => (
-              <View style={styles.row} testID={`message-${item.id}`}>
+            renderItem={({item, index}) => (
+              // Index-based ids, newest first, matching the peer list's scheme: setReceived prepends,
+              // so index 0 is the most recent arrival. The message id is a base64 blob a test cannot
+              // know in advance, so it stays the list key and nothing more.
+              <View style={styles.row} testID={`message-row-${index}`}>
                 <View>
-                  <Text style={styles.rowTitle}>{item.body}</Text>
-                  <Text style={styles.dim}>
+                  <Text style={styles.rowTitle} testID={`message-body-${index}`}>
+                    {item.body}
+                  </Text>
+                  <Text style={styles.dim} testID={`message-from-${index}`}>
                     {shortAddress(item.from)} {item.meta}
                   </Text>
                 </View>
@@ -303,6 +482,7 @@ const styles = StyleSheet.create({
   h2: {fontSize: 16, fontWeight: '600', marginTop: 18, marginBottom: 4},
   mono: {fontFamily: 'Courier', fontSize: 12},
   dim: {color: '#666', fontSize: 12},
+  warn: {color: '#b00', fontSize: 12},
   err: {color: '#b00', fontSize: 13, padding: 20},
   row: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10},
   rowOn: {backgroundColor: '#eef4ff'},
