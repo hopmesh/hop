@@ -306,7 +306,12 @@ export default function App(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.root} testID="screen-main">
       <StatusBar barStyle="dark-content" />
-      <ScrollView contentContainerStyle={styles.body}>
+      {/* The scroll container is addressable on purpose. screen-main is the SafeAreaView, its PARENT, and
+          a Detox swipe there does not reach this child: measured on a Pixel 7, eight slow upward swipes on
+          screen-main left the screen pinned at the top. by.type('android.widget.ScrollView') is no use
+          either, because peers-list and messages-list are FlatLists and render as scroll views too, so the
+          matcher is ambiguous. A test that has to scroll a control into view needs this id. */}
+      <ScrollView testID="main-scroll" contentContainerStyle={styles.body}>
         <Text style={styles.h1}>HopDemo</Text>
 
         <Text style={styles.h2}>This device</Text>

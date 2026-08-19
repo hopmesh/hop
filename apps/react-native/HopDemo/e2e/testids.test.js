@@ -75,6 +75,9 @@ describe('App.tsx renders the testIDs the relay contract fixed', () => {
 
   const fixed = [
     'screen-main',
+    // The scroll container. A step that scrolls a control into view addresses this, and losing it fails
+    // as "element not visible" on the control, which reads like a layout bug rather than a rename.
+    'main-scroll',
     'own-address',
     'bearer-note',
     'message-input',
