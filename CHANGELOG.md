@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- align Kotlin with the RN 0.87 consumer floor and drop the metadata suppression (164cf00)
+- satisfy the executable-reference and docs-dash guards for the RN HopDemo (1c20a3f)
 - pin the cargo-ndk install version the guard demanded (36bf65c)
 - probe Maven with HEAD, and name the real dev-path script (085e941)
 - make the Android module resolvable, and enforce the bridge contract (666ab69)
@@ -86,6 +88,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- add React Native quickstart and update README/CLAUDE for local consumption (9a57b16)
+- regenerate from conventional commits (7eb4bed)
 - correct a false claim about rebar3, and name the trap that produced it (720abf7)
 - describe the three-repo topology instead of one private monorepo (2da743f)
 - marketable README template + brand mark + public-repo catalog (#148) (a168262)
@@ -109,6 +113,8 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (21148ab)
 
 ### Features
+- ship the Apple SDK as CocoaPods pods, and make the React Native iOS build work (bcb3796)
+- rebuild HopDemo as a React Native app, and prove Android builds (b0e7009)
 - add an unsigned dev path to publish the AAR to a local Maven repo (bff9573)
 - run this repository's own CI, and repoint every canonical-repo gate at hopmesh/hop (d6f9618)
 - expose the endpoint CP quorum setter in all six SDKs (#161) (3ce3c0c)
@@ -165,6 +171,9 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (37a19b2)
 
 ### Other
+- make the scroll container addressable (f9aed30)
+- make the JS bundle resolvable, or the app cannot run at all (a7013d0)
+- a real relay bearer, so two devices can exchange a message (cc262dd)
 - bootstrap script to create + publish the SDK mirror repos (#163) (0de6d36)
 - make the TLS-served reach record the only name path (drop DNSSEC-over-DoH) (#139) (4a9b3a7)
 - one consistent endpoint surface across node/python/go/elixir (#125) (b6f9884)
@@ -300,6 +309,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- Cucumber and Detox coverage for the React Native HopDemo, split by what one device can prove (da8c10c)
 - close store.rs and hps.rs coverage gaps to 100 percent (#81) (f321ed4)
 - extract DemoFormat + 21 tests, testable surface 0% → 100% + CI gate (#71) (2c4cc42)
 - extract HopDemo pure logic into HopDemoKit + 100% headless coverage gate (#70) (1b66318)
