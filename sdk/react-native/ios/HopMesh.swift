@@ -8,6 +8,12 @@
 
 import Foundation
 import Hop
+// RCTEventEmitter, RCTPromiseResolveBlock and RCTPromiseRejectBlock live in the React module (the
+// React-Core pod). Without this import every one of them is "cannot find type ... in scope" and the @objc
+// class is rejected for not inheriting from NSObject. It was missing because this file had never actually
+// been compiled: every iOS build died earlier, at `import Hop`, so the second defect was hidden behind the
+// first. No CI job builds a React Native iOS app, so nothing caught either.
+import React
 
 @objc(HopMesh)
 final class HopMesh: RCTEventEmitter {

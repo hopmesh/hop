@@ -81,3 +81,14 @@ ios/build/
 ios/*.xcworkspace/xcuserdata/
 android/.gradle/
 android/app/build/
+
+# The repo root ignores *.xcodeproj because apps/apple/HopDemo GENERATES its project with XcodeGen from
+# project.yml, so committing one there would be committing a build output. This app has no generator: the
+# React Native template ships HopDemo.xcodeproj as the source of truth, hand-maintained, and CocoaPods needs
+# it. Without this negation a clean checkout has no iOS project and `pod install` fails with "Could not
+# automatically select an Xcode project", which is exactly what happened to the first version of this app.
+# The negation names the directory first, because git does not descend into an excluded directory.
+!ios/HopDemo.xcodeproj/
+!ios/HopDemo.xcodeproj/**
+ios/HopDemo.xcodeproj/xcuserdata/
+ios/HopDemo.xcodeproj/project.xcworkspace/xcuserdata/

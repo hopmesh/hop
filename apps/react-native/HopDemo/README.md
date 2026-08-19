@@ -13,22 +13,43 @@ This replaces the React Native CLI's template README, which was generic boilerpl
 | platform | status |
 |---|---|
 | Android | builds and runs. `./gradlew :app:assembleDebug` produces a debug APK carrying `libhop.so` and `libjnidispatch.so` for arm64-v8a, armeabi-v7a, x86 and x86_64. |
-| iOS | does not build. `import Hop` cannot resolve, for the reason below. This is a defect in `sdk/react-native/HopMesh.podspec`, not a missing step here. |
+| iOS | builds and runs on the simulator. The app bundle's `HopDemo.debug.dylib` carries 340 `hop_` C ABI symbols, `_hop_abi_version` among them, plus Rust provenance strings naming `core/hop-core/src/node.rs`. |
 
-### Why iOS does not build
+### How iOS is wired, and what used to be broken
 
-`sdk/react-native/ios/HopMesh.swift` does `import Hop`, and the podspec only supplies that module through
-`s.spm_dependency`, guarded by `if s.respond_to?(:spm_dependency)`. Under CocoaPods 1.17.0 that method
-does not exist, so the guard silently skips and the pod is published without the dependency:
+`sdk/react-native/ios/HopMesh.swift` does `import Hop`. The Apple SDK now ships three podspecs, one per
+Swift Package Manager target, and this app's `Podfile` points them at `sdk/apple`:
 
-```
-$ pod ipc spec sdk/react-native/HopMesh.podspec   # no spm keys, React-Core is the only dependency
-$ grep -c XCRemoteSwiftPackageReference ios/Pods/Pods.xcodeproj/project.pbxproj   # 0
-```
+| pod | source in this app | module |
+|---|---|---|
+| `CHop` | `:podspec`, so the pinned, checksum-verified `libhop.xcframework` release asset is downloaded | `CHop` |
+| `HopContract` | `:path` to `sdk/apple`, pure Swift from the working tree | `HopContract` |
+| `HopSDK` | `:path` to `sdk/apple`, the SDK proper | `Hop` |
 
-Fixing it is an SDK decision (vendor the Apple SDK into the pod, or publish a podspec for `sdk/apple`),
-so it is not worked around here. `.detoxrc.js` keeps an accurate `ios.sim.debug` configuration so the
-suite runs as soon as the module is available.
+`CHop` is deliberately not a local path: the xcframework is a build output that is not committed, so there
+would be nothing there to vendor. This way the Swift wrapper is local while the compiled core is the same
+immutable artifact a published consumer resolves.
+
+Three defects had to be fixed to get here, and each was hidden behind the previous one:
+
+1. `HopMesh.podspec` reached the Apple SDK through `s.spm_dependency`, guarded by
+   `if s.respond_to?(:spm_dependency)`. CocoaPods 1.17.0 has no such method, so the guard skipped silently
+   and `pod ipc spec` evaluated to a spec whose only dependency was `React-Core`. `import Hop` could not
+   resolve.
+2. With the module resolving, `HopMesh.swift` turned out never to have compiled at all: it lacked
+   `import React`, so `RCTEventEmitter` and the promise block types were all undefined. No CI job builds a
+   React Native iOS app, so nothing had ever caught it.
+3. With it compiling, the link failed. The Apple SDK pod was originally named `Hop`, which builds
+   `libHop.a`, and macOS volumes are case-insensitive by default, so that is the same file name as the
+   core's `libhop.a`. `-lhop` resolved to the Swift wrapper: first every `hop_` symbol was undefined, then,
+   after also linking the core by explicit path, the wrapper was linked twice and the build failed with 129
+   duplicate Swift symbols. Renaming the pod to `HopSDK` while keeping `module_name = "Hop"` makes the
+   archive names genuinely distinct, and CocoaPods' own flags then resolve correctly with no manual linker
+   settings.
+
+Also worth knowing: `:podspec =>` external pods are cached under `ios/Pods/Local Podspecs`, and a plain
+`pod install` silently kept using the stale copy after `CHop.podspec` changed. `rm -rf Pods Podfile.lock`
+forces a re-read.
 
 ## What this app actually demonstrates
 

@@ -51,7 +51,7 @@ This builds `libhop.xcframework` and places it at `sdk/apple/Frameworks/libhop.x
 
 **Why this is needed:**
 - The XCFramework and Swift bindings are generated, not committed.
-- The React Native podspec expects the Apple SDK to be available as a Swift Package Manager dependency or as a development pod.
+- The Apple SDK is consumed as three CocoaPods pods (`CHop`, `HopContract`, `HopSDK`), declared in the app's Podfile. CocoaPods cannot resolve a Swift Package Manager dependency, so the earlier claim that it could was wrong.
 
 **Additional prerequisites (from `tools/`):**
 - `tools/build-xcframework.sh`: Builds the Hop XCFramework and Swift bindings into the HopDriver package. This is the path for the native demo app; for React Native, use `sdk/apple/build-xcframework.sh` instead.
@@ -92,7 +92,9 @@ pod install
 
 **Note:** The `pod install` command has not been verified in this session. It is the standard CocoaPods workflow.
 
-The podspec pulls in the Hop Apple SDK as a Swift Package Manager dependency when your toolchain supports it (CocoaPods 1.16+, React Native 0.75+). On older toolchains, add the `hop-sdk-apple` Swift package to your app target in Xcode manually.
+The Apple SDK arrives as three pods, declared in the app's Podfile: `CHop` (the checksum-verified `libhop.xcframework` from the pinned release), `HopContract` (pure Swift), and `HopSDK` (the SDK proper, exposing the module `Hop`). Inside this repo they are local paths pointing at `sdk/apple`; outside it they come from `hopmesh/hop-sdk-apple`. See sdk/react-native/README.md for the exact Podfile lines.
+
+The pod is `HopSDK` rather than `Hop` because a pod named `Hop` builds `libHop.a`, which collides with the core's `libhop.a` on a case-insensitive filesystem and makes the linker pick the wrong archive.
 
 **Note on the podspec's `s.source`:** The podspec references git tag `v0.0.2`, but this repository carries no tags. This only affects remote pod consumption (e.g., `pod 'HopMesh', :git => '...'`). A development pod by local path (the default when you use `pod install` in an app inside this repository) is unaffected.
 

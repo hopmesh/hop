@@ -28,17 +28,45 @@ native build: it does **not** run in Expo Go (use a development build or a bare 
 
 ### iOS
 
+The Apple SDK is three pods, one per Swift Package Manager target, so declare them in your `Podfile`
+alongside this package. CocoaPods cannot resolve a Swift Package Manager dependency, which is why they
+exist:
+
+```ruby
+platform :ios, '16.0'   # the Hop Apple SDK's floor, and therefore this module's
+
+target 'YourApp' do
+  # From the standalone Apple SDK repo.
+  pod 'CHop',        :podspec => 'https://raw.githubusercontent.com/hopmesh/hop-sdk-apple/v0.0.2/CHop.podspec'
+  pod 'HopContract', :git => 'https://github.com/hopmesh/hop-sdk-apple.git', :tag => 'v0.0.2'
+  pod 'HopSDK',      :git => 'https://github.com/hopmesh/hop-sdk-apple.git', :tag => 'v0.0.2'
+end
+```
+
 ```sh
 cd ios && pod install
 ```
 
-The podspec pulls in the Hop Apple SDK as a Swift Package Manager dependency when your toolchain
-supports it (CocoaPods 1.16+, React Native 0.75+). On older toolchains, add the
-[`hop-sdk-apple`](https://github.com/hopmesh/hop-sdk-apple) Swift package to your app target in Xcode;
-the bridge's `import Hop` then resolves against it.
+What the three are, and why the names look the way they do:
 
-**Note:** The podspec's `s.source` references git tag `v0.0.2`, but the `hopmesh/hop` repository carries
-no tags. This only affects remote pod consumption; a development pod by local path is unaffected.
+| pod | what it carries | module |
+|---|---|---|
+| `CHop` | the compiled core, `libhop.xcframework`, downloaded from the pinned release and checksum verified | `CHop` |
+| `HopContract` | the pure Swift bearer contract, no native code | `HopContract` |
+| `HopSDK` | `HopNode` and `HopRuntime`, the SDK proper | `Hop` |
+
+`HopSDK` exposes the module `Hop`, so `import Hop` is what you write. The POD is not called `Hop` because a
+pod by that name builds `libHop.a`, which on a case-insensitive filesystem is the same file name as the
+core's `libhop.a`, and the linker then resolves `-lhop` to the wrong archive. That produced two different
+broken builds before the pods were renamed, so the split is deliberate.
+
+This replaces an earlier instruction to add the `hop-sdk-apple` Swift package to your app target by hand.
+That never worked for this module: the podspec's `s.spm_dependency` call was guarded by
+`if s.respond_to?(:spm_dependency)`, the method does not exist in CocoaPods 1.17, and the guard skipped
+silently, so `import Hop` could not resolve no matter what the app target contained.
+
+**Note:** the podspec's `s.source` references git tag `v0.0.2`, and the `hopmesh/hop` repository carries no
+tags. That affects remote pod consumption of `HopMesh` itself; a development pod by local path is unaffected.
 
 ### Android
 
