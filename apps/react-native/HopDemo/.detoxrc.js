@@ -41,6 +41,13 @@ module.exports = {
       type: 'android.emulator',
       device: { avdName: process.env.DETOX_AVD_NAME || 'Pixel_7_API_34' },
     },
+    // A USB-attached physical Android phone. The serial is deliberately NOT defaulted: a hardcoded serial
+    // would be one developer's phone, and a wrong one produces a confusing Detox error rather than a clear
+    // one. e2e/pair/run-pair.mjs validates it against `adb devices` before spawning anything.
+    attachedAndroid: {
+      type: 'android.attached',
+      device: { adbName: process.env.DETOX_ADB_NAME || '' },
+    },
     simulator: {
       type: 'ios.simulator',
       device: { type: process.env.DETOX_SIM_NAME || 'iPhone 16' },
@@ -48,6 +55,7 @@ module.exports = {
   },
   configurations: {
     'android.emu.debug': { device: 'emulator', app: 'android.debug' },
+    'android.attached.debug': { device: 'attachedAndroid', app: 'android.debug' },
     'ios.sim.debug': { device: 'simulator', app: 'ios.debug' },
   },
 };

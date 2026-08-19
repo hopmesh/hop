@@ -15,7 +15,9 @@
     "e2e:guard": "jest e2e/testids.test.js",
     "e2e:dry": "cucumber-js --dry-run  # informational only: cannot fail, see cucumber.js",
     "e2e:android:smoke": "detox test -c android.emu.debug -- --profile smoke",
-    "e2e:multi": "cucumber-js --profile multi --dry-run"
+    "e2e:multi": "cucumber-js --profile multi --dry-run",
+    "e2e:pair": "node e2e/pair/run-pair.mjs",
+    "e2e:pair:android": "node e2e/pair/run-pair.mjs --a android.attached.debug --b android.emu.debug --relay local"
   },
   "dependencies": {
     "react": "19.2.3",

@@ -9,10 +9,12 @@ Feature: Carrying a message over the Hop mesh
   # loopback bearer, so send and receive are real: the bytes go through the Rust core, get sealed, and
   # arrive through the inbox. That is worth automating.
   #
-  # @multi-device cannot be proven on one device, because a simulator has no radio and Detox drives a
-  # single app instance. Those scenarios are specifications, and they SKIP with a stated reason rather
-  # than passing. A scenario that appears to prove a relay while running alone would be worse than
-  # having no test, so none of them asserts anything under Detox.
+  # @multi-device covers the BLE mesh, which still cannot be proven at all: the React Native SDK ships no
+  # radio bearer and no discovery surface, so there is nothing to drive. Those scenarios are specifications
+  # and they SKIP with a stated reason rather than passing.
+  #
+  # @device-pair covers what two real devices CAN prove today, a message crossing them through a relay.
+  # Those do assert, because two devices really are driven. See the block at the bottom.
 
   Background:
     Given the app is running
@@ -76,3 +78,28 @@ Feature: Carrying a message over the Hop mesh
     When the first phone sends "meet at dawn" to the third
     Then the third phone should receive it
     And the middle phone should have carried it
+
+  # ---------------------------------------------------------------------------------------------------
+  # Two REAL devices, through a real relay. These ASSERT.
+  #
+  # Run by `npm run e2e:pair`, which starts one Detox process per device, because Detox drives a single
+  # app instance per process. Both processes execute this scenario and each step branches on its role, so
+  # the story reads as one exchange while each side only asserts what its own device shows.
+  #
+  # Excluded from every default profile, so a developer with no hardware gets a green run that never
+  # claimed to cover this. The Background applies here too and is harmless: it waits for this device's
+  # own address before the cross-process barrier.
+  #
+  # The body is not a bare literal. Each step appends the run id, so an assertion cannot be satisfied by
+  # a message left on screen by an earlier run.
+  # ---------------------------------------------------------------------------------------------------
+
+  @device-pair
+  Scenario: A message crosses two real devices through a relay
+    Given both devices are paired for this run
+    And this device is connected to the relay under test
+    And the two devices have exchanged addresses
+    When the sending device sends "meet at dawn" to the receiving device
+    Then the receiving device shows the same message
+    And the receiving device attributes it to the sending device
+    And both devices agree the message crossed
