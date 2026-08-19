@@ -96,9 +96,13 @@ alone on an emulator would be worse than no test at all.
 
 ## Notes
 
-- Kotlin metadata: `sdk/android` builds with Kotlin 2.4.10 and React Native 0.87 pins the compiler at
-  2.2.0, which cannot read that metadata. `android/build.gradle` carries a clearly labelled DEV-ONLY
-  `-Xskip-metadata-version-check` and names the durable fix, which is to align the versions.
+- Kotlin: this app compiles with Kotlin 2.2.10, a version it does not choose. React Native 0.87's
+  included `@react-native/gradle-plugin` build pulls AGP 9.2.1, which depends on the Kotlin Gradle
+  plugin 2.2.10, and that transitively wins conflict resolution for the app's versionless classpath
+  entry. `sdk/android` is therefore pinned at the same 2.2.10 so the published AAR carries metadata
+  2.2.0 that this compiler reads; the old metadata-check suppression in `android/build.gradle` is
+  gone. The `kotlinVersion` in `android/build.gradle` matches the real compiler because third-party
+  RN libraries read it to pick their `kotlin-stdlib`.
 - The app declares the local Maven repository itself, not only in the SDK module. Gradle resolves
   transitive dependencies against the consumer's repository list, so without this `sh.hop:hop` is not
   found even when the module declares it.
