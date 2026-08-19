@@ -999,6 +999,12 @@ jobs:
         run: bash tools/release-artifact.test.sh
       - name: Self-test exact crates.io publication payloads
         run: bash tools/crates-publish.test.sh
+      # The Apple pods reach CocoaPods trunk from the mirror's release workflow, which nothing in this
+      # repository can execute, so the publisher's behaviour is pinned here instead: an absent token
+      # fails rather than skips, a failed registry read never passes for "not published", and only an
+      # already-published version is tolerated as success.
+      - name: Self-test the Apple pod trunk publisher
+        run: bash sdk/apple/.github/trunk-publish.test.sh
       - name: Self-test verified PlatformIO inputs
         run: bash sdk/embedded/tools/platformio-offline.test.sh
       - name: Test the portable HOP adversarial audit skill

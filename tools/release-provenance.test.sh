@@ -208,12 +208,24 @@ publish_markers = (
     # job's `dart pub publish --dry-run` validation, so the provenance-precedes-
     # publish ordering check anchors on the actual publish.
     "dart pub publish --force",
+    # The Apple mirror pushes its three podspecs to the CocoaPods trunk registry on top of its GitHub
+    # release. Without this marker the ordering assertion below would not SEE that publish at all, so a
+    # future edit could put a registry push ahead of the provenance gate and this test would still pass.
+    "pod trunk push",
 )
 native_components = {"hop-sdk-go", "hop-sdk-apple", "hop-sdk-android", "hop-embedded"}
 for workflow, component in expected_workflows.items():
     text = workflow.read_text()
     verify = re.compile(r"release-provenance\.py(?:\s|\\\n)+--component\s+" + re.escape(component))
-    expected_environments = 2 if component in native_components else 1
+    # Native components gate twice: `prepare`, which runs the provenance check, and `publish`.
+    # hop-sdk-apple gates a THIRD time, in `publish-pods`, because pushing to CocoaPods trunk carries a
+    # registry credential and must sit behind the same reviewed environment as every other publish.
+    if component == "hop-sdk-apple":
+        expected_environments = 3
+    elif component in native_components:
+        expected_environments = 2
+    else:
+        expected_environments = 1
     assert text.count("environment: release") == expected_environments, f"release environment drifted: {workflow}"
     assert text.count(token_action) == 1, f"source token action drifted: {workflow}"
     assert len(verify.findall(text)) == 1, f"provenance invocation drifted: {workflow}"

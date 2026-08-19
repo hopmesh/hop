@@ -117,6 +117,7 @@ expect_bad split-download $'jobs:\n  x:\n    steps:\n      - run: |\n          c
 expect_bad release-combined $'name: release\njobs:\n  publish:\n    environment: release\n    steps:\n      - run: npm ci\n      - run: npm publish'
 expect_bad hex-api-combined $'name: release\njobs:\n  publish:\n    environment: release\n    steps:\n      - run: mix test\n      - run: python3 -c "print(\"https://hex.pm/api/packages/hop_endpoint/releases\")"'
 expect_bad crates-api-combined $'name: release\njobs:\n  publish:\n    environment: release\n    steps:\n      - run: cargo test\n      - run: python3 .github/crates-publish.py publish --crate fixture.crate --metadata metadata.json'
+expect_bad trunk-combined $'name: release\njobs:\n  publish-pods:\n    environment: release\n    steps:\n      - run: swift test\n      - run: python3 .github/trunk-publish.py publish --directory .'
 
 make_case platformio-floating-platform
 mkdir -p "$tmp/platformio-floating-platform/sdk/embedded/examples/blink_send"

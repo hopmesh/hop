@@ -28,6 +28,8 @@ links for iOS devices and macOS with no manual `-L`/`-l` flags.
 
 ## Install
 
+### Swift Package Manager
+
 Add the package in Xcode (File > Add Package Dependencies) or in `Package.swift`:
 
 ```swift
@@ -50,6 +52,43 @@ For local development in the standalone package, run
 `Package.swift` while building. The installer applies the same signature, digest, checksum, and slice
 checks as the release job. In the monorepo, `./build-xcframework.sh` remains the source-build path.
 The published manifest never consults environment variables or silently selects local files.
+
+### CocoaPods
+
+One line. `CHop` and `HopContract` come with it, resolved from trunk:
+
+```ruby
+platform :ios, '16.0'
+
+target 'MyApp' do
+  pod 'HopSDK'
+end
+```
+
+```swift
+import Hop
+```
+
+**The pod is `HopSDK`, the module is `Hop`**, and the mismatch is deliberate rather than an oversight.
+CocoaPods builds each pod into an archive named after the pod, so a pod called `Hop` produces `libHop.a`,
+while the compiled core the `CHop` pod vendors is `libhop.a`. macOS volumes are case-insensitive by
+default, so those are the same file name, and `-l` resolves by name against an ordered search path. Both
+outcomes were measured: with the wrapper's directory first, CocoaPods' own `-l"hop"` picked up the Swift
+wrapper and every core symbol stayed undefined; adding the core by explicit path as well linked the
+wrapper twice and failed with 129 duplicate Swift symbols. `HopSDK` produces `libHopSDK.a`, which cannot
+collide, and `s.module_name = "Hop"` keeps `import Hop` identical to the SwiftPM product. So the Podfile
+says `HopSDK` and your source never mentions it.
+
+Three pods, one per SwiftPM target, because CocoaPods compiles one pod into one module and the SDK's own
+sources do `import CHop` and `import HopContract`. Folding them together would collapse both into the
+`Hop` module and break those imports, so packaging would have dictated a change to shipping source.
+`HopSDK` depends on the other two by exact version, and you never name them.
+
+`HopSDK` is a static framework (`s.static_framework = true`). The Hop symbols live in the static
+`libhop.a` that `CHop` vendors, and a dynamic framework does not absorb a static dependency, so under
+`use_frameworks!` the link ended in undefined symbols. Static is also what the SwiftPM product does.
+You do not have to configure anything for this; it is recorded here because it is the reason
+`use_frameworks!` works.
 
 ## Quick start
 
