@@ -24,8 +24,10 @@ module.exports = {
     'android.debug': {
       type: 'android.apk',
       binaryPath: 'android/app/build/outputs/apk/debug/app-debug.apk',
+      // assembleAndroidTest is not optional: Detox runs inside the app as an instrumentation test, so
+      // without the androidTest APK `detox test` fails before it reaches a scenario.
       build:
-        'cd android && ./gradlew :app:assembleDebug -DtestBuildType=debug --no-daemon',
+        'cd android && ./gradlew :app:assembleDebug :app:assembleAndroidTest -DtestBuildType=debug --no-daemon',
       reversePorts: [8081],
     },
     'ios.debug': {

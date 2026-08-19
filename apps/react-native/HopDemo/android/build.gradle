@@ -61,6 +61,13 @@ allprojects {
             // Scoped, so this local path is never consulted for anything but the Hop SDK.
             content { includeGroup "sh.hop" }
         }
+        // Detox ships its Android artifacts inside the npm package rather than to any remote repository,
+        // so the instrumentation dependency resolves only if this path is declared. Scoped to com.wix so
+        // it is never consulted for anything else.
+        maven {
+            url = uri(new File(rootDir, "../node_modules/detox/Detox-android").canonicalPath)
+            content { includeGroup "com.wix" }
+        }
     }
 }
 
