@@ -53,15 +53,37 @@ forces a re-read.
 
 ## What this app actually demonstrates
 
-The React Native SDK ships no transport. Its surface is `linkUp` / `bytesReceived` / `onOutgoing`, and the
-native demos get their radios from `drivers/apple` and `drivers/android`. So this app opens **two** Hop
-nodes and pairs them over an in-process loopback bearer in `src/loopback.ts`. The UI says so on screen
-rather than implying otherwise.
+It runs two paths at once, and they prove different things.
 
-That loopback is not a mock. Bytes are produced by the real Rust core, sealed with real crypto, and
-delivered through the real inbox, so a message shown as received genuinely round-tripped through
-`hop-core`. What it cannot show is radio discovery or true multi-device relay, which is exactly why the
-test suite splits along that line.
+**In-process loopback** (`src/loopback.ts`). Two Hop nodes in this process, paired with each other. Not a
+mock: bytes are produced by the real Rust core, sealed with real crypto, and delivered through the real
+inbox, so a message shown as received genuinely round-tripped through `hop-core`. It needs no network at
+all, which is what makes a simulator run worth something. What it cannot do, by construction, is reach a
+second device.
+
+**A real relay bearer** (`src/relayBearer.ts`). A link from this device's node to a `hop-relayd` WebSocket
+front door, which is how a node on ANOTHER device reaches this one. That door is an opaque byte pipe:
+`services/hop-relayd/src/main.rs` says in its own module docs that "each link packet is exactly one WS
+binary frame, so WS supplies the framing" and that "the bearer carries opaque bytes and knows nothing
+about the protocol", and its test
+`serve_ws_upgrade_bridges_binary_frames_both_ways_and_reports_down` pins that contract from the other side
+against a real client. So the bearer adds nothing to the wire: no length prefix (that is the raw-TCP
+bearer, path A), no hello, no auth message. One core packet, one binary frame, both directions.
+
+So the earlier claim in this file, that the app cannot demonstrate device-to-device delivery, is no longer
+true. What each thing proves, precisely:
+
+| claim | status |
+|---|---|
+| two devices exchange a real, sealed message through a real relay | the relay bearer is what makes this possible: the sender seals, the relay carries ciphertext it cannot read, the receiver opens it |
+| radio discovery | still NOT demonstrated, and not possible here. The React Native SDK ships no BLE and no LAN bearer, so nothing is discovered. A peer is reached by pasting its address |
+| the relay accepted this node | NOT what `relay-status: up` means. `up` is the socket plus the core link. The bearer cannot read the protocol, so only a message arriving proves the handshake completed |
+
+The relay URL comes from `HOP_RELAY_URL`, falling back to `wss://relay.hopme.sh/`, and it is editable on
+screen. The editable field is not a convenience: React Native's `setUpGlobals` defines `process.env`
+carrying `NODE_ENV` only, and Metro's inline plugin substitutes exactly `process.env.NODE_ENV` and
+`__DEV__`, so an arbitrary environment variable is undefined in a device build. Pointing two phones at a
+relay on a LAN address therefore has to be doable at runtime, and it is.
 
 Two helpers are deliberately absent rather than stubbed: `makeQrBitmap` and `jpegDownscale` are platform
 graphics APIs with no bundled React Native equivalent, and the UI states the QR code is unavailable
@@ -103,6 +125,7 @@ npm run e2e:dry            # informational listing of scenarios and steps
 npm run e2e:build:android  # detox build
 npm run e2e:android        # detox run on an emulator
 npm run e2e:multi          # lists the scenarios that need real hardware
+npx jest                   # unit tests, including the relay bearer's framing. No device, no relay.
 ```
 
 `npm run e2e:guard` is the gate, and the dry run is not. `cucumber-js` does **not** fail on an undefined
@@ -110,6 +133,15 @@ step: it prints `Undefined` and exits 0, and neither `strict` in the config nor 
 line changes that. `e2e/testids.test.js` does fail, and it was proven to fail by sabotage in three
 directions: renaming an app testID, deleting a step definition, and adding an undefined step to the
 feature file.
+
+`__tests__/relayBearer.test.ts` is the framing proof, and it is the reason no hardware is needed to trust
+the bearer. It drives `connectRelay` against a fake WebSocket and a fake node and pins the wire behaviour
+that fails invisibly: one outgoing packet becomes exactly one binary frame carrying the same bytes and no
+header, one inbound frame becomes exactly one `bytesReceived` with the same bytes, frames arriving before
+the link is up are held rather than dropped, a text frame is refused instead of being fed to the core, and
+a close takes the core link down and reports `down`. It was proven able to fail by prefixing one byte to
+the outgoing frame, which is exactly the mistake that would otherwise show up as a relay dropping the link
+during the Noise handshake.
 
 Scenarios tagged `@multi-device` need two or three physical phones. Their steps throw pending naming the
 hardware required and assert nothing, because a scenario that appeared to prove a mesh relay while running

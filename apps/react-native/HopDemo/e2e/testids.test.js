@@ -1,4 +1,5 @@
-// Lockstep guard: every testID the Detox steps address must exist in App.tsx.
+// Lockstep guard: every testID the Detox steps address must exist in App.tsx, and every testID fixed by
+// agreement must be rendered by App.tsx whether or not a step addresses it yet.
 //
 // Why this exists. Detox failures are slow, need an emulator, and report "element not visible", which
 // reads like a product bug when it is really a rename. This runs in milliseconds with no device and names
@@ -57,6 +58,56 @@ describe('Detox steps address real testIDs', () => {
       (p) => ![...app.prefixes].some((ap) => ap.startsWith(p) || p.startsWith(ap)) && !app.plain.has(p),
     );
     expect(missing).toEqual([]);
+  });
+});
+
+describe('App.tsx renders the testIDs the relay contract fixed', () => {
+  // Why this exists alongside the checks above, which are NOT enough on their own. Those run in one
+  // direction, steps -> App, so they cannot see an id the steps have not started addressing yet. The
+  // relay ids were agreed before the device-pair steps were written, which leaves a window where
+  // renaming one in App.tsx breaks nothing and is noticed on a phone instead. These are the ids that
+  // were fixed by agreement; App.tsx has to render every one.
+  //
+  // This is not a list compared against itself: the right-hand side is parsed out of App.tsx, so a
+  // rename there fails this, and the parse is asserted non-empty first so a regex typo cannot make it
+  // vacuous.
+  const app = appTestIds();
+
+  const fixed = [
+    'screen-main',
+    'own-address',
+    'bearer-note',
+    'message-input',
+    'send-button',
+    'relay-status',
+    'relay-url',
+    'relay-url-input',
+    'relay-connect-button',
+    'peer-address-input',
+    'add-peer-button',
+  ];
+
+  // Runtime-suffixed ids, recorded by their prefix for the same reason the parser records them that way.
+  const fixedPrefixes = [
+    'peer-row-',
+    'peer-address-',
+    'peer-transport-',
+    'message-row-',
+    'message-body-',
+    'message-from-',
+  ];
+
+  it('parsed a non-empty set of ids out of App.tsx', () => {
+    expect(app.plain.size).toBeGreaterThan(10);
+    expect(app.prefixes.size).toBeGreaterThan(3);
+  });
+
+  it('renders every fixed testID', () => {
+    expect(fixed.filter((id) => !app.plain.has(id))).toEqual([]);
+  });
+
+  it('renders every fixed templated testID', () => {
+    expect(fixedPrefixes.filter((p) => !app.prefixes.has(p))).toEqual([]);
   });
 });
 
