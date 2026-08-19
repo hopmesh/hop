@@ -1,6 +1,7 @@
 PODS:
   - boost (1.84.0):
     - ReactNativeDependencies
+  - CHop (0.0.2)
   - DoubleConversion (1.1.6):
     - ReactNativeDependencies
   - fast_float (8.0.0):
@@ -14,8 +15,10 @@ PODS:
   - hermes-engine (250829098.0.16):
     - hermes-engine/Pre-built (= 250829098.0.16)
   - hermes-engine/Pre-built (250829098.0.16)
+  - HopContract (0.0.2)
   - HopMesh (0.0.2):
     - hermes-engine
+    - HopSDK
     - RCTRequired
     - RCTTypeSafety
     - React-bridging
@@ -36,6 +39,9 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - HopSDK (0.0.2):
+    - CHop (= 0.0.2)
+    - HopContract (= 0.0.2)
   - RCT-Folly (2024.11.18.00):
     - RCT-Folly/Default (= 2024.11.18.00)
     - ReactNativeDependencies
@@ -1702,13 +1708,16 @@ PODS:
 
 DEPENDENCIES:
   - boost (from `build/rndeps-facades/boost`)
+  - CHop (from `../../../../sdk/apple/CHop.podspec`)
   - DoubleConversion (from `build/rndeps-facades/DoubleConversion`)
   - fast_float (from `build/rndeps-facades/fast_float`)
   - FBLazyVector (from `build/rncore-facades/FBLazyVector`)
   - fmt (from `build/rndeps-facades/fmt`)
   - glog (from `build/rndeps-facades/glog`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
+  - HopContract (from `../../../../sdk/apple`)
   - "HopMesh (from `../node_modules/@hop-mesh/react-native`)"
+  - HopSDK (from `../../../../sdk/apple`)
   - RCT-Folly (from `build/rndeps-facades/RCT-Folly`)
   - RCTDeprecation (from `build/rncore-facades/RCTDeprecation`)
   - RCTRequired (from `build/rncore-facades/RCTRequired`)
@@ -1793,6 +1802,8 @@ DEPENDENCIES:
 EXTERNAL SOURCES:
   boost:
     :path: build/rndeps-facades/boost
+  CHop:
+    :podspec: "../../../../sdk/apple/CHop.podspec"
   DoubleConversion:
     :path: build/rndeps-facades/DoubleConversion
   fast_float:
@@ -1806,8 +1817,12 @@ EXTERNAL SOURCES:
   hermes-engine:
     :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
     :tag: hermes-v250829098.0.16
+  HopContract:
+    :path: "../../../../sdk/apple"
   HopMesh:
     :path: "../node_modules/@hop-mesh/react-native"
+  HopSDK:
+    :path: "../../../../sdk/apple"
   RCT-Folly:
     :path: build/rndeps-facades/RCT-Folly
   RCTDeprecation:
@@ -1969,13 +1984,16 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   boost: 8502bfdc46e2804408af2e163049ece181009af4
+  CHop: 89510ef3271b574220d99715f0bea315258efbe8
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
   fast_float: 7c925d1cebf8328d4018d061f49377e9f887e3b4
   FBLazyVector: 732df79fea96f10cc14477969cea05707026d2fd
   fmt: ba0886e864ebb21d14c98b2e12e164b8002f5b93
   glog: 3cf7cb46f743c4bc758ae3e6d9c15bd1b4cfd6d4
   hermes-engine: 6a26e94b4a974cbadc751eed9caa12624c38f226
-  HopMesh: 7a35746d82960af92153ab2a488b049abc50a93d
+  HopContract: 7fc2b7335b8654e415681f192527270915d3e5af
+  HopMesh: d692a3673c42ffe2a3ce88d4bfc48d7c640bb3f6
+  HopSDK: bb69e91dce1ef97155991e7328f18a7528541281
   RCT-Folly: 82921e585c0400eda46fac1068297aa9dfb035e4
   RCTDeprecation: 6d66040b74f4be203495adda55b49c1a25190291
   RCTRequired: ebf172e0b04196922ba4640458f9926c1bb34012
@@ -2056,6 +2074,6 @@ SPEC CHECKSUMS:
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   Yoga: d1c536142c5ff8ec8cd856ab2a7c227a1d875c8e
 
-PODFILE CHECKSUM: 8be46bb3038d8b1b90fbb6a5dc55d058b97b2cc4
+PODFILE CHECKSUM: b95ae26ac16c0ac5cac551191738129cbe213ad2
 
 COCOAPODS: 1.17.0
