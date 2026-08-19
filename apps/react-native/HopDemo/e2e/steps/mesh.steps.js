@@ -36,45 +36,17 @@ const textOf = async (testID) => {
 // following constraints" even though the view is VISIBLE. The screen is a ScrollView taller than one
 // viewport, so message-input, the buttons and send-status sit under the fold on a phone.
 //
-// Two things here were arrived at by measurement, not preference.
-//
-// The anchor is chosen dynamically. Detox's swipe needs a visible element, and everything inside a
-// ScrollView scrolls off it, so there is no single fixed anchor: swiping `screen-main`, the SafeAreaView
-// AROUND the ScrollView, moved nothing at all (proven by a screenshot still pinned at the top after eight
-// swipes). So this picks whichever known row is currently on screen and swipes that.
-//
-// The velocity is 'slow' because 'fast' flings. With a fling the ScrollView keeps moving after the gesture
-// ends, so toBeVisible passed and then the following tap landed somewhere else: the run typed into nothing,
-// left the composer empty and reported send-status as null, which looks like the app failing to send.
-const SCROLL_ANCHORS = ['own-address', 'bearer-note', 'peers-list', 'message-input', 'messages-empty'];
-
-const swipeSomethingVisible = async () => {
-  for (const id of SCROLL_ANCHORS) {
-    try {
-      await detoxExpect(element(by.id(id))).toBeVisible();
-    } catch (e) {
-      continue;
-    }
-    await element(by.id(id)).swipe('up', 'slow', 0.45);
-    return true;
-  }
-  return false;
-};
-
-const bringIntoView = async (matcher, attempts = 10) => {
-  for (let i = 0; i < attempts; i += 1) {
-    try {
-      await detoxExpect(matcher).toBeVisible();
-      return;
-    } catch (e) {
-      if (!(await swipeSomethingVisible())) {
-        break;
-      }
-    }
-  }
-  // Left to throw Detox's own message, so an element that genuinely is not there still says why.
-  await detoxExpect(matcher).toBeVisible();
-};
+// This is Detox's own scroll-until-visible, driven off the ScrollView's `main-scroll` id. It replaced two
+// earlier attempts, both rejected by measurement rather than taste:
+//   * swiping `screen-main`, the SafeAreaView AROUND the ScrollView, scrolled nothing at all: a screenshot
+//     taken after eight swipes was still pinned at the top of the screen;
+//   * swiping a child with 'fast' velocity did scroll, but flung. The ScrollView kept moving after the
+//     gesture ended, so toBeVisible passed and the following tap landed somewhere else, leaving the
+//     composer empty and send-status null, which reads as the app failing to send rather than as a
+//     harness race.
+// whileElement scrolls in bounded steps and re-checks between them, so there is no fling and no race.
+const bringIntoView = async (matcher) =>
+  waitFor(matcher).toBeVisible().whileElement(by.id('main-scroll')).scroll(320, 'down');
 
 // --- background ---------------------------------------------------------------------------------------
 

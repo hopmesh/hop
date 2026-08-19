@@ -288,6 +288,11 @@ const main = async () => {
   const infoA = validate('a', A);
   const infoB = validate('b', B);
 
+  // Hand Detox a device that can actually take window focus.
+  for (const info of [infoA, infoB]) {
+    if (info.kind === 'android.attached') settleDevice(ADB_SERIAL);
+  }
+
   const roleA = SENDER === 'a' ? 'sender' : 'receiver';
   const roleB = SENDER === 'a' ? 'receiver' : 'sender';
 
