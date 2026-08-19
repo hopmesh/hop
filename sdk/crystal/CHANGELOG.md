@@ -11,6 +11,9 @@ git-cliff. Do not edit by hand.
 ### Chore
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
+### Documentation
+- regenerate from conventional commits (7eb4bed)
+
 ### Features
 - run this repository's own CI, and repoint every canonical-repo gate at hopmesh/hop (d6f9618)
 - expose the endpoint CP quorum setter in all six SDKs (#161) (3ce3c0c)
