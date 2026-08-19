@@ -123,8 +123,16 @@ dependencies {
     }
 
     // Detox's Android instrumentation. Resolved from node_modules/detox/Detox-android, declared as a
-    // scoped repository in the root build.gradle.
-    androidTestImplementation("com.wix:detox:20.28.0")
+    // scoped repository in the root build.gradle. Version tracks the detox npm package deliberately: the
+    // AAR and the JS runner speak a versioned protocol to each other.
+    //
+    // 20.51.4, not the 20.28.0 this app started on. Detox 20.28.0's React Native integration calls
+    // ReactApplication.getReactNativeHost(), and under RN 0.87's New Architecture MainApplication provides
+    // only reactHost, so the interface default throws "You should not use ReactNativeHost directly in the
+    // New Architecture". Measured: the app loaded, ran the bundle, went idle, and Detox even dispatched the
+    // first invoke, then the instrumentation died on that exception and the JS side reported the app had
+    // "unexpectedly disconnected from Detox server", which names the symptom and not the cause.
+    androidTestImplementation("com.wix:detox:20.51.4")
 
     // Espresso 3.7.0 / test 1.7.0, NOT the 3.6.1 that com.wix:detox pulls transitively. Espresso 3.6.1
     // fails to initialise on Android 16 (API 36): InputManagerEventInjectionStrategy reflects for an

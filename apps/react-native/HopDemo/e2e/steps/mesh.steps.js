@@ -29,6 +29,53 @@ const textOf = async (testID) => {
   return String(attrs.text || attrs.label || '').trim();
 };
 
+// Bring an element far enough into view that Espresso will act on it.
+//
+// Espresso refuses a tap or a type unless the target covers at least 75% of its own area on screen, and
+// reports that as "Action will not be performed because the target view does not match one or more of the
+// following constraints" even though the view is VISIBLE. The screen is a ScrollView taller than one
+// viewport, so message-input, the buttons and send-status sit under the fold on a phone.
+//
+// Two things here were arrived at by measurement, not preference.
+//
+// The anchor is chosen dynamically. Detox's swipe needs a visible element, and everything inside a
+// ScrollView scrolls off it, so there is no single fixed anchor: swiping `screen-main`, the SafeAreaView
+// AROUND the ScrollView, moved nothing at all (proven by a screenshot still pinned at the top after eight
+// swipes). So this picks whichever known row is currently on screen and swipes that.
+//
+// The velocity is 'slow' because 'fast' flings. With a fling the ScrollView keeps moving after the gesture
+// ends, so toBeVisible passed and then the following tap landed somewhere else: the run typed into nothing,
+// left the composer empty and reported send-status as null, which looks like the app failing to send.
+const SCROLL_ANCHORS = ['own-address', 'bearer-note', 'peers-list', 'message-input', 'messages-empty'];
+
+const swipeSomethingVisible = async () => {
+  for (const id of SCROLL_ANCHORS) {
+    try {
+      await detoxExpect(element(by.id(id))).toBeVisible();
+    } catch (e) {
+      continue;
+    }
+    await element(by.id(id)).swipe('up', 'slow', 0.45);
+    return true;
+  }
+  return false;
+};
+
+const bringIntoView = async (matcher, attempts = 10) => {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await detoxExpect(matcher).toBeVisible();
+      return;
+    } catch (e) {
+      if (!(await swipeSomethingVisible())) {
+        break;
+      }
+    }
+  }
+  // Left to throw Detox's own message, so an element that genuinely is not there still says why.
+  await detoxExpect(matcher).toBeVisible();
+};
+
 // --- background ---------------------------------------------------------------------------------------
 
 Given('the app is running', async () => {
@@ -77,15 +124,18 @@ Then('I should see {int} person I can reach', async (count) => {
 When('I send {string} to the person I can reach', async (body) => {
   await element(by.id('peer-row-0')).tap();
   if (body.length > 0) {
+    await bringIntoView(element(by.id('message-input')));
     await element(by.id('message-input')).typeText(body);
   }
+  await bringIntoView(element(by.id('send-button')));
   await element(by.id('send-button')).tap();
 });
 
 Then('the message should be reported as on its way', async () => {
-  await waitFor(element(by.id('send-status')))
-    .toBeVisible()
-    .withTimeout(TIMEOUT);
+  // send-status renders BELOW the send button, so on a phone it is off screen the moment it appears. It is
+  // also where the LogBox dev banner sits, which is a second reason to scroll it up rather than assert it
+  // where it lands.
+  await bringIntoView(element(by.id('send-status')));
   const text = await textOf('send-status');
   // The app reports the REAL HopStatus. Progress words must appear; an empty status or a failure must not
   // pass, which is what makes this assertion able to fail.
@@ -191,7 +241,9 @@ Given('both devices are paired for this run', async () => {
 Given('this device is connected to the relay under test', async () => {
   const url = pair.relayUrl();
   // replaceText, not typeText: the field is prefilled with the compiled-in default.
+  await bringIntoView(element(by.id('relay-url-input')));
   await element(by.id('relay-url-input')).replaceText(url);
+  await bringIntoView(element(by.id('relay-connect-button')));
   await element(by.id('relay-connect-button')).tap();
 
   // A socket that opens is NOT proof the relay accepted the link: the bearer carries opaque bytes and
@@ -243,7 +295,9 @@ Given('the two devices have exchanged addresses', async () => {
 
 // Type the body and send. Separate from the step so the sender can repeat it.
 const sendBody = async (body) => {
+  await bringIntoView(element(by.id('message-input')));
   await element(by.id('message-input')).replaceText(body);
+  await bringIntoView(element(by.id('send-button')));
   await element(by.id('send-button')).tap();
   const status = await readText(element(by.id('send-status')));
   if (/fail/i.test(status)) {
@@ -263,7 +317,9 @@ When('the sending device sends {string} to the receiving device', async (text) =
 
   // The relay peer is reached by address, typed in. There is no discovery over a relay: the RN SDK has no
   // discovery surface at all, so the address comes from the other device's screen and nowhere else.
+  await bringIntoView(element(by.id('peer-address-input')));
   await element(by.id('peer-address-input')).replaceText(peerAddr);
+  await bringIntoView(element(by.id('add-peer-button')));
   await element(by.id('add-peer-button')).tap();
 
   const transport = await readText(element(by.id('peer-transport-1')));

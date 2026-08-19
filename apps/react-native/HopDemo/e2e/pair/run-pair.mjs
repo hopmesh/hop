@@ -221,6 +221,26 @@ const adbReverse = (serial, port) => {
   console.log(`run-pair: adb reverse tcp:${port} on ${serial}, so the phone reaches the host on loopback`);
 };
 
+// Espresso waits for the root of the view hierarchy to have window focus, and an open notification shade
+// holds focus instead: every scenario then fails with "Waited for the root of the view hierarchy to have
+// window focus ... has-window-focus=false" while dumpsys reports mCurrentFocus=NotificationShade even
+// though mFocusedApp is the app under test. Measured on a real phone, where an open shade is ordinary.
+// Collapse it before handing the device to Detox, and dismiss the keyguard, which fails the same way for
+// the same reason.
+const settleDevice = (serial) => {
+  for (const args of [
+    ['shell', 'cmd', 'statusbar', 'collapse'],
+    ['shell', 'wm', 'dismiss-keyguard'],
+    // Keep the screen on for the run: a display that sleeps mid-run loses window focus too.
+    ['shell', 'svc', 'power', 'stayon', 'true'],
+  ]) {
+    const r = spawnSync(adbPath(), ['-s', serial, ...args], {encoding: 'utf8'});
+    if (r.status !== 0) {
+      console.log(`run-pair: note, \`adb ${args.join(' ')}\` on ${serial} returned ${r.status}`);
+    }
+  }
+};
+
 // --- metro -------------------------------------------------------------------------------------------
 
 const startMetro = async () => {
