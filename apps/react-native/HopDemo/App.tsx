@@ -22,7 +22,9 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  SafeAreaView,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -31,6 +33,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+// SafeAreaView comes from react-native-safe-area-context, NOT from react-native. The built-in one is
+// iOS-only, a no-op on Android, and deprecated, so with edge-to-edge enabled by default on modern Android
+// it silently does nothing and this screen drew its first line above the status bar clock on a Pixel 7.
+import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {
   Hop,
   HopAddress,
@@ -95,6 +101,45 @@ export default function App(): React.JSX.Element {
   const [peerDraft, setPeerDraft] = useState('');
   const [peerNote, setPeerNote] = useState<string | null>(null);
 
+  // Held so focusing a text input can bring it, and the button under it, above the keyboard. Avoiding the
+  // keyboard is only half the job: a composer near the bottom of a long ScrollView is still unreachable if
+  // focusing it does not scroll.
+  // ComponentRef rather than naming ScrollViewInstance: React Native renamed the instance type, so this
+  // derives it from the component and does not break on the next rename.
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
+
+  // MEASURED keyboard height, applied as bottom padding on the scroll content.
+  //
+  // This is here because the obvious answers do not work on this platform. React Native 0.87 turns on
+  // edge-to-edge by default on Android, and under edge-to-edge the window no longer resizes for the
+  // keyboard, so the manifest's android:windowSoftInputMode="adjustResize" stops lifting anything.
+  // KeyboardAvoidingView with behavior 'height' then double-counts and squashes the layout. Measured on a
+  // physical Pixel 7: with only those two in place the keyboard opened over the composer and the Send
+  // button and the view did not move at all.
+  //
+  // Padding the content by the real keyboard height gives the ScrollView somewhere to scroll TO, which is
+  // what makes both the focused field and the button under it reachable.
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      e => setKeyboardInset(e.endCoordinates.height),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardInset(0),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  // Bring a focused field, and the button beneath it, above the keyboard. The delay lets the keyboard frame
+  // land first: scrolling before the inset is applied computes against the old content height and stops short.
+  const revealComposer = useCallback(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({animated: true}), 180);
+  }, []);
   const self = useRef<HopNode | null>(null);
   const peer = useRef<HopNode | null>(null);
   const wire = useRef<Loopback | null>(null);
@@ -285,33 +330,60 @@ export default function App(): React.JSX.Element {
 
   if (status === 'starting') {
     return (
-      <SafeAreaView style={styles.center} testID="screen-loading">
-        <ActivityIndicator />
-        <Text style={styles.dim}>starting node</Text>
-      </SafeAreaView>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.center} edges={['top', 'bottom']} testID="screen-loading">
+          <ActivityIndicator />
+          <Text style={styles.dim}>starting node</Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   if (status === 'failed') {
     // Visibly unavailable rather than a silent no-op.
     return (
-      <SafeAreaView style={styles.center} testID="screen-error">
-        <Text style={styles.err} testID="error-text">
-          {error}
-        </Text>
-      </SafeAreaView>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.center} edges={['top', 'bottom']} testID="screen-error">
+          <Text style={styles.err} testID="error-text">
+            {error}
+          </Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <SafeAreaView style={styles.root} testID="screen-main">
-      <StatusBar barStyle="dark-content" />
-      {/* The scroll container is addressable on purpose. screen-main is the SafeAreaView, its PARENT, and
-          a Detox swipe there does not reach this child: measured on a Pixel 7, eight slow upward swipes on
-          screen-main left the screen pinned at the top. by.type('android.widget.ScrollView') is no use
-          either, because peers-list and messages-list are FlatLists and render as scroll views too, so the
-          matcher is ambiguous. A test that has to scroll a control into view needs this id. */}
-      <ScrollView testID="main-scroll" contentContainerStyle={styles.body}>
+    // Safe areas on all four edges, from react-native-safe-area-context so it actually applies on Android.
+    // KeyboardAvoidingView so the composer and the Send button stay above the soft keyboard: the keyboard
+    // used to cover both, which made the app unusable for its one job and also made a Detox tap land on
+    // nothing. `padding` is right on iOS; on Android the manifest's adjustResize does the resize and adding
+    // `height` on top of it double-counts and squashes the layout.
+    <SafeAreaProvider>
+      <SafeAreaView
+        style={styles.root}
+        edges={['top', 'bottom', 'left', 'right']}
+        testID="screen-main">
+        <StatusBar barStyle="dark-content" />
+        <KeyboardAvoidingView
+          style={styles.fill}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          {/* The scroll container is addressable on purpose. screen-main is the SafeAreaView, its PARENT,
+              and a Detox swipe there does not reach this child: measured on a Pixel 7, eight slow upward
+              swipes on screen-main left the screen pinned at the top. by.type('android.widget.ScrollView')
+              is no use either, because peers-list and messages-list are FlatLists and render as scroll
+              views too, so the matcher is ambiguous. A test that has to scroll a control into view needs
+              this id.
+
+              keyboardShouldPersistTaps keeps a tap on Send working while the keyboard is up, instead of
+              being swallowed as a dismiss. automaticallyAdjustKeyboardInsets is the iOS half of the same
+              job, and is ignored elsewhere. */}
+          <ScrollView
+            ref={scrollRef}
+            testID="main-scroll"
+            contentContainerStyle={[styles.body, {paddingBottom: 40 + keyboardInset}]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            automaticallyAdjustKeyboardInsets>
         <Text style={styles.h1}>HopDemo</Text>
 
         <Text style={styles.h2}>This device</Text>
@@ -342,6 +414,7 @@ export default function App(): React.JSX.Element {
           {relayUrl}
         </Text>
         <TextInput
+          onFocus={revealComposer}
           testID="relay-url-input"
           style={styles.input}
           value={relayDraft}
@@ -411,6 +484,7 @@ export default function App(): React.JSX.Element {
           there is nothing to discover, so an address is how a peer is found.
         </Text>
         <TextInput
+          onFocus={revealComposer}
           testID="peer-address-input"
           style={styles.input}
           value={peerDraft}
@@ -430,6 +504,7 @@ export default function App(): React.JSX.Element {
 
         <Text style={styles.h2}>Send</Text>
         <TextInput
+          onFocus={revealComposer}
           testID="message-input"
           style={styles.input}
           value={draft}
@@ -474,15 +549,20 @@ export default function App(): React.JSX.Element {
             )}
           />
         )}
-      </ScrollView>
-    </SafeAreaView>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
   root: {flex: 1, backgroundColor: '#fff'},
   center: {flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff'},
-  body: {padding: 16, gap: 6},
+  fill: {flex: 1},
+  // paddingBottom leaves room for the composer and Send to sit clear of the keyboard and the home
+  // indicator once the ScrollView is inset, rather than ending flush against them.
+  body: {padding: 16, paddingBottom: 40, gap: 6},
   h1: {fontSize: 28, fontWeight: '700', marginBottom: 8},
   h2: {fontSize: 16, fontWeight: '600', marginTop: 18, marginBottom: 4},
   mono: {fontFamily: 'Courier', fontSize: 12},

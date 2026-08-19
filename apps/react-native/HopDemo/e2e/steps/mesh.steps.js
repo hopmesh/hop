@@ -15,6 +15,11 @@ const { element, by, waitFor, expect: detoxExpect } = require('detox');
 
 const TIMEOUT = 30000;
 
+// What the composer actually held when Send was pressed, which is not always what the scenario asked for:
+// a real soft keyboard auto-capitalizes the first letter. The receiving device shows these exact bytes, so
+// any cross-device comparison must use this rather than the Gherkin literal.
+let composedBody = null;
+
 const needsHardware = (what) => {
   const e = new Error(
     `SKIPPED, needs real hardware: ${what}. Detox drives one app instance and a simulator has no radio, ` +
@@ -94,11 +99,43 @@ Then('I should see {int} person I can reach', async (count) => {
 });
 
 When('I send {string} to the person I can reach', async (body) => {
+  // Select the peer only once it is actionable. Tapping a row that is under the fold can be accepted by
+  // Espresso and still not land where intended, and App.tsx's send() returns EARLY, setting no state at
+  // all, when there is no selected peer or the draft is empty. That early return is why a lost tap or a
+  // lost keystroke shows up later as `send-status` being null, which reads as the app failing to send
+  // rather than as the harness missing. So this step verifies its own preconditions before pressing Send.
+  await bringIntoView(element(by.id('peer-row-0')));
   await element(by.id('peer-row-0')).tap();
+
   if (body.length > 0) {
     await bringIntoView(element(by.id('message-input')));
     await element(by.id('message-input')).typeText(body);
+
+    // Read the composer back. On a ScrollView taller than the viewport a scroll can still be settling when
+    // the keystrokes arrive, and the text silently goes nowhere. One retry, then a precise failure.
+    //
+    // The comparison is case-insensitive ON PURPOSE. A real soft keyboard auto-capitalizes the first letter
+    // of a sentence, so typing "meet at dawn" genuinely produces "Meet at dawn" on the device. That is the
+    // keyboard behaving correctly for a chat composer, not a lost keystroke, and an exact match rejected it.
+    const landed = (t) => t.trim().toLowerCase() === body.trim().toLowerCase();
+    let typed = await textOf('message-input');
+    if (!landed(typed)) {
+      await element(by.id('message-input')).clearText();
+      await element(by.id('message-input')).typeText(body);
+      typed = await textOf('message-input');
+    }
+    if (!landed(typed)) {
+      throw new Error(
+        `the composer did not accept the text: wanted ${JSON.stringify(body)}, ` +
+          `message-input holds ${JSON.stringify(typed)}. The tap or the keystrokes were lost, so Send would ` +
+          `have been pressed with an empty draft and the app would correctly do nothing.`,
+      );
+    }
+    // Remember what was ACTUALLY composed, not what was requested. The receiving device will show these
+    // exact bytes, so a cross-device assertion has to compare against this rather than the literal.
+    composedBody = typed;
   }
+
   await bringIntoView(element(by.id('send-button')));
   await element(by.id('send-button')).tap();
 });
