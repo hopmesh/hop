@@ -92,3 +92,7 @@ android/app/build/
 !ios/HopDemo.xcodeproj/**
 ios/HopDemo.xcodeproj/xcuserdata/
 ios/HopDemo.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Device and release build outputs from on-device verification runs.
+ios/build-device/
+ios/build-release/

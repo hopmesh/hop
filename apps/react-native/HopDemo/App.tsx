@@ -212,6 +212,9 @@ export default function App(): React.JSX.Element {
               meta: messageMeta(m.hops, secured),
             },
           ]);
+          // Receiver-side evidence for a cross-device run: the body that actually arrived, on the device
+          // that received it. A sender-side "relayed" status proves a hand-off, not a delivery.
+          console.log(`HopDemo received: ${JSON.stringify(body)} from ${shortAddress(m.from)}`);
           // Accept it, or the core repeats it on every poll.
           await mine.acceptInbox(m.id);
         });
@@ -227,6 +230,10 @@ export default function App(): React.JSX.Element {
         await Promise.all([mine.start(250), other.start(250)]);
 
         // The stand-in peer echoes nothing; it exists so this device has somewhere real to send.
+        // Logged so a device with no UI automation can still be used as an endpoint. Detox cannot drive a
+        // physical iPhone (its iOS support is simulator-only), so for a two-device run the iOS side is
+        // launched with `devicectl ... --console` and its address is read from this line.
+        console.log(`HopDemo address: ${myAddr}`);
         setAddress(myAddr);
         setPeers([
           {
