@@ -1,7 +1,7 @@
 # GTM, workforce platforms
 
-> Strategy note. The first vertical where Hop is not a nice offline story but the fix for a
-> defect the buyer already pays for in staff time. Companion to `docs/positioning.md`.
+> Strategy note. The first vertical where Hop fixes a defect the buyer already pays for in
+> staff time. Companion to `docs/positioning.md`.
 
 ## The one line
 
@@ -13,7 +13,7 @@ Their worker taps clock-in with no data plan. Today that event is lost until the
 
 A gig worker signs up at home on wifi. They accept a shift on wifi. Then they leave the house.
 
-For a meaningful slice of this workforce, leaving the house means leaving the internet. Prepaid data is out, the plan lapsed, or there is no cell plan at all because free messaging over home wifi is cheaper than a data plan. The phone is not broken and the worker is not remote. They are simply off the network from the moment they walk out the door until they walk back in.
+For a meaningful slice of this workforce, leaving the house means leaving the internet. Prepaid data is out, the plan lapsed, or there is no cell plan at all because free messaging over home wifi is cheaper than a data plan. The phone works. The worker is in a city. They are simply off the network from the moment they walk out the door until they walk back in.
 
 From the platform's side, that worker vanishes at exactly the moment the platform needs them most:
 
@@ -36,7 +36,7 @@ Here density is a roster.
 - The app is already installed, because that is how they get paid. **Distribution is solved before you arrive.**
 - The platform can require the app, and often already requires it in the foreground.
 
-And the topology is trivial. This is not a research DTN. The worker does not need a path across a country. **They need one hop to somebody standing nearby who has service**, or to a site device. One hop, occasionally two. That is the easiest possible version of the problem, and it is why this vertical is the right first proof of the fabric.
+And the topology is the easy case. The worker does not need a path across a country. **They need one hop to somebody standing nearby who has service**, or to a site device. One hop, occasionally two. That is the easiest possible version of the problem, and it is why this vertical is the right first proof of the fabric.
 
 ## The product: their HTTP client
 
@@ -64,7 +64,7 @@ That is the seam that makes the swap real. It is also the thing worth building, 
 
 **Optimistic is not universal, and the layer must say so.** It is correct for facts the worker owns: clock-in, clock-out, a form, a photo, an incident note. The worker did the thing; the server's job is to record it. It is wrong for contended resources, most obviously accepting the last open slot on a shift, where optimistic acceptance means double booking. The platform declares which endpoints are which, and the default is conservative.
 
-**The bar is not perfection, it is the status quo.** Today the event never arrives and a human retypes it later. A signed device event that arrives late beats a human guess that arrives on time, both on ops cost and on evidence quality. Eventually reaching the worker is strictly better than never reaching them.
+**The bar is the status quo.** Today the event never arrives and a human retypes it later. A signed device event that arrives late beats a human guess that arrives on time, both on ops cost and on evidence quality. Eventually reaching the worker is strictly better than never reaching them.
 
 ## What the platform has to do
 
@@ -90,7 +90,7 @@ An SDK already inside many of these apps, doing background location for exactly 
 
 Two honest caveats. First, as the founder notes, this only covers the location payload; the platform's own business events still need the direct integration, so a partnership is a beachhead rather than the whole product. Second, the ask is bigger than adding a library: it means enabling a new radio behaviour and a user-facing disclosure that the device may carry sealed traffic for others. Expect a build-versus-buy evaluation, and expect privacy review.
 
-## What this must not become
+## Guardrails
 
 | Temptation | Why it dies |
 |---|---|
