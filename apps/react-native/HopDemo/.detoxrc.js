@@ -4,12 +4,13 @@
 // writes android/app/build/outputs/apk/debug/app-debug.apk, a 140 MB APK carrying libhop.so and
 // libjnidispatch.so for all four ABIs. That build is verified.
 //
-// The iOS configuration is written but CANNOT run yet, and the reason is a defect rather than a missing
-// step: sdk/react-native/ios/HopMesh.swift does `import Hop`, and HopMesh.podspec only supplies that
-// module through `s.spm_dependency` guarded by `if s.respond_to?(:spm_dependency)`. Under CocoaPods 1.17.0
-// that method does not exist, so the guard silently skips and `pod ipc spec HopMesh.podspec` evaluates to a
-// spec with no SPM dependency at all. xcodebuild then fails with "unable to resolve module dependency:
-// 'Hop'". Leaving the config here, accurate, so the suite runs the moment the SDK supplies the module.
+// The iOS simulator configuration is kept because Detox can only drive a SIMULATOR on iOS: its device
+// types are android.apk, android.attached, android.emulator, android.genycloud, ios.app and ios.simulator,
+// with no physical-iOS type at all. Physical iPhone coverage therefore lives in e2e/two-device.sh, which
+// reads the app's own console output instead. The older note here claimed the iOS build was blocked by
+// HopMesh.podspec's `spm_dependency` guard silently skipping under CocoaPods 1.17; that is fixed. The
+// Apple SDK now ships as three pods (CHop, HopContract, HopSDK) and device builds of both Debug and
+// Release succeed.
 
 /** @type {Detox.DetoxConfig} */
 module.exports = {
@@ -29,6 +30,16 @@ module.exports = {
       build:
         'cd android && ./gradlew :app:assembleDebug :app:assembleAndroidTest -DtestBuildType=debug --no-daemon',
       reversePorts: [8081],
+    },
+    // The RELEASE app is what a person actually holds: an Android debug build keeps developer support on
+    // and chases Metro at launch even with the bundle embedded, so it dies with the laptop's bundler.
+    // Release has no dev server to reach for. The RN template signs release with the debug keystore,
+    // which is why this needs no extra signing setup.
+    'android.release': {
+      type: 'android.apk',
+      binaryPath: 'android/app/build/outputs/apk/release/app-release.apk',
+      build:
+        'cd android && ./gradlew :app:assembleRelease :app:assembleAndroidTest -DtestBuildType=release --no-daemon',
     },
     'ios.debug': {
       type: 'ios.app',
@@ -59,5 +70,6 @@ module.exports = {
     'android.emu.debug': { device: 'emulator', app: 'android.debug' },
     'android.attached.debug': { device: 'attachedAndroid', app: 'android.debug' },
     'ios.sim.debug': { device: 'simulator', app: 'ios.debug' },
+    'android.attached.release': { device: 'attachedAndroid', app: 'android.release' },
   },
 };

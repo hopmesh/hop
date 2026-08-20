@@ -5,3 +5,7 @@ module hopFFI {
     use "_Builtin_stdbool"
     use "_Builtin_stdint"
 }
+module CHop {
+    header "hop.h"
+    export *
+}

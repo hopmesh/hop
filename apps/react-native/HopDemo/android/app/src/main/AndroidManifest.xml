@@ -22,6 +22,23 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
+        <!-- Automation deep link: hopdemo://send?to=<base58>&text=<marker> reaches the app through
+             React Native Linking, so a headless harness can drive a send (and so prove the reverse
+             direction over each bearer in turn) with no UI automation. The native Android demo declares
+             the same scheme, in a DEBUG manifest overlay
+             (apps/android/HopDemo/app/src/debug/AndroidManifest.xml); this app ships release builds, so
+             a debug-only filter would not exist in the artifact the harness drives.
+
+             NO BROWSABLE category, deliberately, which is where this differs from the native demo's
+             filter. `am start -a android.intent.action.VIEW -d "hopdemo://..."` needs VIEW and DEFAULT
+             only, because startActivity adds CATEGORY_DEFAULT to an implicit intent. BROWSABLE is what
+             would additionally let an arbitrary web page fire a send at this app, which buys the harness
+             nothing. -->
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="hopdemo" />
+        </intent-filter>
       </activity>
     </application>
 </manifest>

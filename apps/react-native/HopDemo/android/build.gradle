@@ -1,7 +1,10 @@
 buildscript {
     ext {
         buildToolsVersion = "37.0.0"
-        minSdkVersion = 24
+        // 29, matching apps/android/HopDemo: the Hop driver's BLE bearer forms pure-L2CAP links, and
+        // createInsecureL2capChannel is API 29+, so :hop-driver declares minSdk 29 and this app cannot
+        // host it below that. The Pixel 7 this demo is tested on is API 34.
+        minSdkVersion = 29
         compileSdkVersion = 37
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
@@ -33,6 +36,15 @@ buildscript {
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
     }
 }
+
+// The React Native Gradle Plugin aligns EVERY project in this build to Java 17
+// (JdkConfiguratorUtils.configureJavaToolChains rewrites compileOptions on each Android module). It has
+// to be told to leave :hop-driver alone: that module pins its Kotlin jvmTarget at 1.8, it is compiled by
+// three builds and cannot hold a different target in one of them, and Kotlin fails the build outright
+// when its target and the Java target disagree. This is RNGP's own documented per-project opt-out, set
+// before the plugin is applied so the check sees it. The bearer modules are already on 17 and are
+// unaffected either way.
+project(':hop-driver').ext.set('react.internal.disableJavaVersionAlignment', true)
 
 apply plugin: "com.facebook.react.rootproject"
 

@@ -27,20 +27,43 @@ target 'HopDemo' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
-  # The Hop Apple client SDK, three pods matching its three SwiftPM targets. Local paths because this app
-  # lives in the monorepo and consumes the SDK from source; an app outside the monorepo points these at the
-  # hopmesh/hop-sdk-apple repo instead.
+  # THE WHOLE HOP GRAPH, one pod per module, every one of them a `:path` development pod.
   #
-  # HopContract and Hop are :path, so their Swift sources come straight from the working tree.
+  # `:path` is not a preference here, it is the only mechanism that works. `git ls-remote --tags origin`
+  # returns NO TAGS, so the `:tag => "v0.0.2"` in every one of these podspecs' `s.source` cannot be
+  # downloaded, which rules out `:podspec` for all of them. Two of the artifacts below are gitignored
+  # build outputs anyway (HopFFI.xcframework and the generated hop.swift), so no tag could ever carry
+  # them. `:path` ignores `s.source` entirely and reads the working tree, which is also what this app
+  # wants: it is developing the driver, not consuming a release of it.
   #
-  # CHop is :podspec, NOT :path, and the difference matters. libhop.xcframework is a build output that is
-  # not committed, so there is nothing at that path to vendor. With :podspec, CocoaPods evaluates the
-  # podspec from disk and then downloads the source it declares, which is the pinned release asset verified
-  # against the checksum in Package.swift. So the Swift wrapper is local while the compiled core is the same
-  # immutable artifact a published consumer resolves.
-  pod 'CHop', :podspec => '../../../../sdk/apple/CHop.podspec'
+  # Each podspec lives beside the Package.swift it mirrors, so each `:path` is that package's root.
+  #
+  # EXACTLY ONE POD VENDORS THE HOP CORE: HopFFIBindings, from
+  # drivers/apple/HopDriver/Frameworks/HopFFI.xcframework, the SQLCipher build produced by
+  # tools/build-xcframework.sh. CHop used to fetch the pinned libhop.xcframework release asset and now
+  # carries only the `CHop` module face, depending on HopFFIBindings for the library. That is not tidying:
+  # both archives are named libhop.a and both export the same 257 hop/uniffi/ffi symbols, while CocoaPods
+  # emits a single -l"hop" for this target. With both present that one flag silently resolves to whichever
+  # search path sorts first, and the release asset is the build with no SQLCipher, so the driver's
+  # encrypted store would quietly become plaintext. The podspecs carry the nm measurements.
+  # CHop carries no files at all now: the `CHop` module map ships inside the xcframework HopFFIBindings
+  # vendors, beside the `hopFFI` one, so both faces resolve against a single libhop.a. Its podspec records
+  # why a header-only pod cannot supply that module.
+  pod 'CHop', :path => '../../../../sdk/apple'
   pod 'HopContract', :path => '../../../../sdk/apple'
   pod 'HopSDK', :path => '../../../../sdk/apple'
+
+  # The driver and the two modules that live inside its package.
+  pod 'HopDriver', :path => '../../../../drivers/apple/HopDriver'
+  pod 'HopObjC', :path => '../../../../drivers/apple/HopDriver'
+  pod 'HopFFIBindings', :path => '../../../../drivers/apple/HopDriver'
+
+  # The five bearers, each its own independent package, so a host links only the transports it wants.
+  pod 'HopBearerBle', :path => '../../../../bearers/apple/HopBearerBle'
+  pod 'HopBearerLan', :path => '../../../../bearers/apple/HopBearerLan'
+  pod 'HopBearerMultipeer', :path => '../../../../bearers/apple/HopBearerMultipeer'
+  pod 'HopBearerRelay', :path => '../../../../bearers/apple/HopBearerRelay'
+  pod 'HopBearerMeshtastic', :path => '../../../../bearers/apple/HopBearerMeshtastic'
 
   post_install do |installer|
     react_native_post_install(

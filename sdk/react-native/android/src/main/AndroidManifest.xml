@@ -1,1 +1,32 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declared here, not left to the app, so any app that installs @hop-mesh/react-native inherits the
+     permissions the driver this SDK bridges actually needs. The values mirror :hop-driver's own manifest
+     exactly (same neverForLocation flag, same maxSdkVersion caps): a duplicate uses-permission with
+     different attributes is what silently widens or narrows what the merged app asks for. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- BLE: the Android 12+ model. HopDriver.ensurePermissions requests these three at runtime. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Pre-Android-12 fallbacks. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- Fine location: only a BLE scan on API 30 and below needs it, which is the level where
+         ensurePermissions asks for it instead of the Bluetooth trio. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!-- LAN bearer (mDNS/NSD + TCP) and the cloud relay bearer. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- HopService keeps the bearer alive in the background; the notification permission is asked for
+         at runtime but never blocks the mesh. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+</manifest>

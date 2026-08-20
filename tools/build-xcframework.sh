@@ -28,7 +28,33 @@ cargo run -p "$CRATE" --features cli --bin uniffi-bindgen -- \
 # artifacts are copied so regenerating the framework keeps `git diff --check` clean.
 perl -pi -e 's/[[:blank:]]+$//' "$OUT/Sources/hop.swift" "$OUT/Sources/hopFFI.h"
 cp "$OUT/Sources/hopFFI.h" "$OUT/Headers/"
-cp "$OUT/Sources/hopFFI.modulemap" "$OUT/Headers/module.modulemap"
+
+# ONE HEADER DIRECTORY, TWO MODULE FACES, because this xcframework is the only Hop core an Apple app
+# links and two module names resolve against it.
+#
+# `hopFFI` is the UniFFI face that Sources/HopFFIBindings/hop.swift imports. `CHop` is the C ABI face
+# that sdk/apple/Sources/Hop/Hop.swift imports, and it used to arrive from a SECOND xcframework, the
+# libhop.xcframework release asset CHop.podspec fetched. Two xcframeworks cannot coexist in one app:
+# both wrap a static library named libhop.a, CocoaPods puts each vendoring pod's slice directory on
+# LIBRARY_SEARCH_PATHS and emits a single -l"hop", so that one flag silently resolves to whichever
+# search path sorts first. Measured with nm on the ios-arm64 slice of each: they export the SAME 257
+# symbols matching ^_(hop|uniffi|ffi), 160 of them uniffi_ scaffolding, so either archive satisfies
+# both faces and the link succeeds either way. The difference is invisible at link time and decisive at
+# runtime: `nm -a` finds 98 sqlcipher references in THIS artifact and 0 in the release asset, so picking
+# the wrong one leaves hop.db in plaintext with no error at all.
+#
+# Carrying both headers here is what lets there be exactly one core. hop.h is the same tracked file
+# sdk/apple/build-xcframework.sh copies (core/hop/include/hop.h), and the two headers share no
+# declarations, so a consumer can import either module or both.
+cp core/hop/include/hop.h "$OUT/Headers/hop.h"
+cat "$OUT/Sources/hopFFI.modulemap" > "$OUT/Headers/module.modulemap"
+cat >> "$OUT/Headers/module.modulemap" <<'EOF'
+
+module CHop {
+    header "hop.h"
+    export *
+}
+EOF
 
 # Place the generated Swift API as the HopFFIBindings target's source.
 mkdir -p "$PKG/Sources/HopFFIBindings"

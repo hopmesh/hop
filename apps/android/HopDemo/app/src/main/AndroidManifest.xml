@@ -15,7 +15,7 @@
          backup transport. -->
     <application
         android:name=".HopApp"
-        android:label="Hop Debug"
+        android:label="Hop Demo Native"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

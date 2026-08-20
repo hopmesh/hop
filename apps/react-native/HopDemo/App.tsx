@@ -1,14 +1,8 @@
-// HopDemo, React Native. The port of the native demos (apps/apple SwiftUI, apps/android Compose), not a
-// sketch beside them: the same four tabs (Chats, Relays, Web, Status), the same chat thread with bubbles
-// and a meta line per message, the same pulsing "awaiting peers" indicator, and the Hop signal green on
-// the buttons, from src/theme.ts. Layout rules that cost a round trip on a real device are baked in here:
-// real safe areas via react-native-safe-area-context on every edge (the react-native built-in
-// SafeAreaView is iOS-only and a no-op on Android), and a keyboard-aware composer (measured keyboard
-// height paid as scroll padding, the focused field scrolled into view, taps persisted while typing).
-//
-// What this app cannot yet do, it says on screen instead of faking: see the Web tab and the QR row.
+// HopDemo, React Native. This port uses the same platform driver as the native demos, so discovery,
+// transports, peer history, and messages all come from the real mesh instead of a JavaScript bearer.
+// Real safe areas and the keyboard-aware composer are part of the screen contract on both platforms.
 
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -16,94 +10,111 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-// SafeAreaView comes from react-native-safe-area-context, NOT from react-native. The built-in one is
-// iOS-only, a no-op on Android, and deprecated, so with edge-to-edge enabled by default on modern Android
-// it silently does nothing and this screen drew its first line above the status bar clock on a Pixel 7.
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
-// Font Awesome glyphs, the same icon set both native demos use for their tab bar and row actions.
 import Icon from 'react-native-vector-icons/FontAwesome6';
 import {
-  Hop,
-  HopAddress,
-  HopMessage,
-  HopNode,
-  bytesToUtf8,
-  toBase64,
+  HopDriver,
+  type DriverMessage,
+  type DriverPeer,
+  type DriverSubscription,
+  type DriverTransports,
 } from '@hop-mesh/react-native';
-import {connectLoopback, Loopback} from './src/loopback';
-import {connectRelay, RelayLink, RelayState} from './src/relayBearer';
+import {shortAddress} from './src/demoFormat';
+import {generateParticipantName} from './src/names';
 import {hop, type as typo} from './src/theme';
-import {
-  messageMeta,
-  platformLabel,
-  shortAddress,
-  statusText,
-} from './src/demoFormat';
 
-declare const process: {env: {HOP_RELAY_URL?: string}};
+type AppPhase = 'checking-permissions' | 'permission-denied' | 'starting' | 'running' | 'failed';
+type MessageThreads = Record<string, DriverMessage[]>;
 
-const RELAY_URL = process.env.HOP_RELAY_URL ?? 'wss://relay.hopme.sh/';
-
-type Peer = {address: string; label: string; transport: string; kind: string};
-// One row in the chat thread. `mine` decides the side and the bubble color, exactly like the native
-// demos' incoming/mine split.
-type Row = {
-  id: string;
-  from: string;
-  body: string;
-  mine: boolean;
-  meta: string;
+type AutomationURL = {
+  command: string;
+  params: Record<string, string>;
 };
 
+function parseAutomationURL(value: string): AutomationURL | null {
+  const match = /^hopdemo:\/\/([^/?#]+)(?:\/[^?#]*)?(?:\?([^#]*))?(?:#.*)?$/i.exec(
+    value.trim(),
+  );
+  if (match == null) {
+    return null;
+  }
+
+  const params: Record<string, string> = {};
+  for (const field of (match[2] ?? '').split('&')) {
+    if (field.length === 0) {
+      continue;
+    }
+    const separator = field.indexOf('=');
+    const rawKey = separator < 0 ? field : field.slice(0, separator);
+    const rawValue = separator < 0 ? '' : field.slice(separator + 1);
+    try {
+      const key = decodeURIComponent(rawKey.replace(/\+/g, ' '));
+      params[key] = decodeURIComponent(rawValue.replace(/\+/g, ' '));
+    } catch {
+      return null;
+    }
+  }
+  return {command: match[1].toLowerCase(), params};
+}
+
+function latestMineStatus(messages: DriverMessage[]): string | null {
+  let latest: DriverMessage | null = null;
+  for (const message of messages) {
+    if (message.mine && (latest == null || message.at >= latest.at)) {
+      latest = message;
+    }
+  }
+  return latest?.status ?? null;
+}
+
 export default function App(): React.JSX.Element {
-  const [status, setStatus] = useState<string>('starting');
+  const [phase, setPhase] = useState<AppPhase>('checking-permissions');
+  const [missingPermissions, setMissingPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [participantName, setParticipantName] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
-  const [peers, setPeers] = useState<Peer[]>([]);
+  const [peers, setPeers] = useState<DriverPeer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [addressTarget, setAddressTarget] = useState<DriverPeer | null>(null);
+  const [threads, setThreads] = useState<MessageThreads>({});
   const [draft, setDraft] = useState('');
-  const [thread, setThread] = useState<Row[]>([]);
   const [sendState, setSendState] = useState<string | null>(null);
   const [sentAt, setSentAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
-  const [relayState, setRelayState] = useState<RelayState>('connecting');
-  const [relayUrl, setRelayUrl] = useState(RELAY_URL);
-  const [relayDraft, setRelayDraft] = useState(RELAY_URL);
-  const [relayNote, setRelayNote] = useState<string | null>(null);
+  const [transports, setTransports] = useState<DriverTransports>({});
+  const [transportError, setTransportError] = useState<string | null>(null);
+  const [togglingTransport, setTogglingTransport] = useState<string | null>(null);
   const [peerDraft, setPeerDraft] = useState('');
   const [peerNote, setPeerNote] = useState<string | null>(null);
   const [tab, setTab] = useState(0);
 
-  // Held so focusing a text input can bring it, and the button under it, above the keyboard. Avoiding the
-  // keyboard is only half the job: a composer near the bottom of a long ScrollView is still unreachable if
-  // focusing it does not scroll.
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
+  const mountedRef = useRef(false);
+  const bootAttemptRef = useRef(0);
+  const startedRef = useRef(false);
+  const selectedRef = useRef<string | null>(null);
+  const loggedIncomingRef = useRef(new Set<string>());
+  const pendingAutomationRef = useRef<string[]>([]);
 
-  // MEASURED keyboard height, applied as bottom padding on the scroll content.
-  //
-  // This is here because the obvious answers do not work on this platform. React Native 0.87 turns on
-  // edge-to-edge by default on Android, and under edge-to-edge the window no longer resizes for the
-  // keyboard, so the manifest's android:windowSoftInputMode="adjustResize" stops lifting anything.
-  // KeyboardAvoidingView with behavior 'height' then double-counts and squashes the layout. Measured on a
-  // physical Pixel 7: with only those two in place the keyboard opened over the composer and the Send
-  // button and the view did not move at all.
-  //
-  // Padding the content by the real keyboard height gives the ScrollView somewhere to scroll TO, which is
-  // what makes both the focused field and the button under it reachable.
+  // React Native 0.87 is edge-to-edge on Android, so adjustResize alone does not lift the composer.
+  // Paying the measured keyboard height as scroll padding gives the focused input and Send button room
+  // to move above the keyboard. iOS also keeps automaticallyAdjustKeyboardInsets below.
   const [keyboardInset, setKeyboardInset] = useState(0);
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      e => setKeyboardInset(e.endCoordinates.height),
+      event => setKeyboardInset(event.endCoordinates.height),
     );
     const hide = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
@@ -115,160 +126,246 @@ export default function App(): React.JSX.Element {
     };
   }, []);
 
-  // Bring a focused field, and the button beneath it, above the keyboard. The delay lets the keyboard frame
-  // land first: scrolling before the inset is applied computes against the old content height and stops short.
   const revealComposer = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({animated: true}), 180);
   }, []);
 
-  const self = useRef<HopNode | null>(null);
-  const peer = useRef<HopNode | null>(null);
-  const wire = useRef<Loopback | null>(null);
-  const relay = useRef<RelayLink | null>(null);
-
-  // The "Awaiting peers · Ns" timer, ticking only while a send is in flight, like the native
-  // SendingIndicator's live counter.
   useEffect(() => {
     if (sentAt == null) {
       return;
     }
     setElapsed(0);
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - sentAt) / 1000)), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(
+      () => setElapsed(Math.floor((Date.now() - sentAt) / 1000)),
+      1000,
+    );
+    return () => clearInterval(timer);
   }, [sentAt]);
 
-  const dialRelay = useCallback(async (url: string) => {
-    const node = self.current;
-    if (node == null) {
+  const applyMessages = useCallback(
+    (peerAddress: string, messages: DriverMessage[], logIncoming: boolean) => {
+      if (logIncoming) {
+        for (const message of messages) {
+          const receiptKey = `${peerAddress}:${message.id}`;
+          if (!message.mine && !loggedIncomingRef.current.has(receiptKey)) {
+            loggedIncomingRef.current.add(receiptKey);
+            console.log('HOPRECV', JSON.stringify({from: peerAddress, body: message.body}));
+          }
+        }
+      }
+
+      setThreads(previous => ({...previous, [peerAddress]: messages}));
+      if (selectedRef.current === peerAddress) {
+        const status = latestMineStatus(messages);
+        if (status != null) {
+          setSendState(status);
+          setSentAt(status === 'sending' ? previous => previous ?? Date.now() : null);
+        }
+      }
+    },
+    [],
+  );
+
+  const runAutomationURL = useCallback(async (url: string) => {
+    console.log('HOPURL', url);
+    const parsed = parseAutomationURL(url);
+    if (parsed == null || (parsed.command !== 'send' && parsed.command !== 'bearer')) {
       return;
     }
-    // Drop any previous link first. Two relay links on one node would both be dialer links, and the
-    // old socket would keep draining packets meant for the new one.
-    const previous = relay.current;
-    relay.current = null;
-    if (previous != null) {
-      await previous.close().catch(() => {});
+    if (!startedRef.current) {
+      pendingAutomationRef.current.push(url);
+      return;
     }
-    setRelayNote(null);
-    setRelayState('connecting');
-    // The URL shown is the one being used, including while a dial is failing: leaving the previous
-    // URL on screen after tearing its link down would name a link that no longer exists.
-    setRelayUrl(url);
-    try {
-      const link = await connectRelay(node, url, (state, detail) => {
-        setRelayState(state);
-        if (detail != null) {
-          setRelayNote(detail);
+
+    if (parsed.command === 'send') {
+      const to = parsed.params.to?.trim() ?? '';
+      const body = parsed.params.text;
+      let result: {ok: boolean; detail?: string};
+      if (to.length === 0 || body == null) {
+        result = {ok: false, detail: 'send automation requires to and text'};
+      } else {
+        try {
+          result = await HopDriver.send(body, to);
+        } catch (cause) {
+          result = {ok: false, detail: String(cause)};
         }
-      });
-      relay.current = link;
-      setRelayState(link.state());
-    } catch (e) {
-      // A relay that is not there is visible here rather than a spinner that never resolves.
-      setRelayState('down');
-      setRelayNote(String(e));
+      }
+      console.log('HOPSEND', JSON.stringify({to, body: body ?? '', result}));
+      return;
+    }
+
+    const transport = parsed.params.name?.trim() ?? '';
+    const enabledValue = parsed.params.enabled;
+    if (transport.length === 0 || (enabledValue !== 'true' && enabledValue !== 'false')) {
+      setTransportError('bearer automation requires name and enabled=true|false');
+      return;
+    }
+    try {
+      await HopDriver.setTransportEnabled(transport, enabledValue === 'true');
+    } catch (cause) {
+      setTransportError(String(cause));
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const initialize = useCallback(async () => {
+    const attempt = bootAttemptRef.current + 1;
+    bootAttemptRef.current = attempt;
+    setError(null);
+    setPhase('checking-permissions');
 
-    (async () => {
-      try {
-        // Ephemeral on purpose: a demo should not leave a keystore behind, and Hop.open's persistent
-        // path needs a writable db path that differs per platform. isPersistent() would report false
-        // here anyway, so this is the honest choice rather than a silently ephemeral "persistent" node.
-        const mine = await Hop.ephemeral();
-        const other = await Hop.ephemeral();
-        if (cancelled) {
-          await mine.close();
-          await other.close();
-          return;
-        }
-        self.current = mine;
-        peer.current = other;
-
-        await mine.setName('This device');
-        await other.setName('Loopback peer');
-
-        const [myAddr, peerAddr] = await Promise.all([mine.address(), other.address()]);
-
-        // Subscribe before the pump starts, or the first inbound message can land before there is a
-        // listener and simply never appear.
-        mine.onMessage(async (m: HopMessage) => {
-          // bytesToUtf8 comes from the SDK. TextDecoder is not in React Native's lib types.
-          const body = bytesToUtf8(m.body);
-          // Resolved BEFORE setThread, because the updater passed to a React setState is not async
-          // and cannot await. `secured` is per-peer state, not a field on the message.
-          const secured = await mine.isSecured(m.from);
-          setThread(prev => [
-            ...prev,
-            {
-              // toBase64 from the SDK: a stable key without pulling in node's Buffer, which RN lacks.
-              id: toBase64(m.id),
-              from: m.from,
-              body,
-              mine: false,
-              meta: messageMeta(m.hops, secured),
-            },
-          ]);
-          // Receiver-side evidence for a cross-device run: the body that actually arrived, on the device
-          // that received it. A sender-side "relayed" status proves a hand-off, not a delivery.
-          console.log(`HopDemo received: ${JSON.stringify(body)} from ${shortAddress(m.from)}`);
-          // Accept it, or the core repeats it on every poll.
-          await mine.acceptInbox(m.id);
-        });
-
-        // Both ends must publish a prekey bundle before an untraceable send can seal to them.
-        await Promise.all([mine.publishPrekey(), other.publishPrekey()]);
-
-        wire.current = await connectLoopback(
-          {node: mine, link: 1},
-          {node: other, link: 2},
-        );
-
-        await Promise.all([mine.start(250), other.start(250)]);
-
-        // The stand-in peer echoes nothing; it exists so this device has somewhere real to send.
-        // Logged so a device with no UI automation can still be used as an endpoint. Detox cannot drive a
-        // physical iPhone (its iOS support is simulator-only), so for a two-device run the iOS side is
-        // launched with `devicectl ... --console` and its address is read from this line.
-        console.log(`HopDemo address: ${myAddr}`);
-        setAddress(myAddr);
-        setPeers([
-          {
-            address: peerAddr,
-            label: `${platformLabel('unknown')} loopback peer, in this process`,
-            transport: 'unknown',
-            kind: 'loopback',
-          },
-        ]);
-        // Land on the Chats LIST, like both native demos, not inside the loopback thread: the old
-        // single-screen app auto-selected its only peer, and keeping that made this port open mid-chat,
-        // which is not how a chat app starts.
-        setStatus('running');
-
-        // Dialed after the screen is usable, and deliberately not awaited: an unreachable relay must
-        // not stop the loopback path from working, and the relay's own state is on screen.
-        void dialRelay(RELAY_URL);
-      } catch (e) {
-        setError(String(e));
-        setStatus('failed');
+    try {
+      const permission = await HopDriver.ensurePermissions();
+      if (!mountedRef.current || attempt !== bootAttemptRef.current) {
+        return;
       }
-    })();
+      if (!permission.granted) {
+        setMissingPermissions(permission.missing);
+        setPhase('permission-denied');
+        return;
+      }
+
+      setMissingPermissions([]);
+      setPhase('starting');
+      const storedName = await HopDriver.persistedName();
+      if (!mountedRef.current || attempt !== bootAttemptRef.current) {
+        return;
+      }
+
+      let name = storedName?.trim() ?? '';
+      if (name.length === 0) {
+        name = generateParticipantName();
+        await HopDriver.savePersistedName(name);
+      }
+      if (!mountedRef.current || attempt !== bootAttemptRef.current) {
+        return;
+      }
+
+      setParticipantName(name);
+      await HopDriver.start(name);
+      startedRef.current = true;
+      if (!mountedRef.current || attempt !== bootAttemptRef.current) {
+        startedRef.current = false;
+        await HopDriver.stop();
+        return;
+      }
+
+      const [ownAddress, initialPeers, initialTransports] = await Promise.all([
+        HopDriver.selfAddress(),
+        HopDriver.peers(),
+        HopDriver.transports(),
+      ]);
+      if (!mountedRef.current || attempt !== bootAttemptRef.current) {
+        return;
+      }
+
+      console.log('HOPSELF', JSON.stringify({address: ownAddress, name}));
+      setAddress(ownAddress);
+      setPeers(initialPeers);
+      setTransports(initialTransports);
+      setPhase('running');
+
+      const queuedURLs = pendingAutomationRef.current.splice(0);
+      for (const queuedURL of queuedURLs) {
+        await runAutomationURL(queuedURL);
+      }
+    } catch (cause) {
+      if (mountedRef.current && attempt === bootAttemptRef.current) {
+        setError(String(cause));
+        setPhase('failed');
+      }
+    }
+  }, [runAutomationURL]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    let subscriptions: DriverSubscription[] = [];
+    try {
+      subscriptions = [
+        HopDriver.onPeers(setPeers),
+        HopDriver.onMessages(event => applyMessages(event.peer, event.messages, true)),
+        HopDriver.onTransports(nextTransports => {
+          console.log('HOPXPORT', JSON.stringify(nextTransports));
+          setTransports(nextTransports);
+        }),
+      ];
+      void initialize();
+    } catch (cause) {
+      setError(String(cause));
+      setPhase('failed');
+    }
 
     return () => {
-      cancelled = true;
-      wire.current?.stop();
-      void relay.current?.close();
-      void self.current?.stop();
-      void peer.current?.stop();
-      void self.current?.close();
-      void peer.current?.close();
+      mountedRef.current = false;
+      bootAttemptRef.current += 1;
+      for (const subscription of subscriptions) {
+        subscription.remove();
+      }
+      if (startedRef.current) {
+        startedRef.current = false;
+        void HopDriver.stop();
+      }
     };
-  }, [dialRelay]);
+  }, [applyMessages, initialize]);
 
-  const addPeer = useCallback(async () => {
+  // Automation URLs arrive through the NATIVE bridge, not React Native's Linking.
+  //
+  // Measured on release builds of React Native 0.87 bridgeless, on both platforms: an app started by
+  // `am start -a VIEW -d hopdemo://send?...` boots and reports its address, while Linking.getInitialURL()
+  // resolves empty and the warm 'url' listener never fires. On iOS the native side even confirms the
+  // AppDelegate forwarded the URL into RCTLinkingManager and it was accepted, and JavaScript still never
+  // saw it. Linking stays subscribed below because it costs nothing and would be the right path if a
+  // future version delivers, but the bridge is what this app depends on.
+  useEffect(() => {
+    const linkingSubscription = Linking.addEventListener('url', event => {
+      void runAutomationURL(event.url);
+    });
+    const bridgeSubscription = HopDriver.onUrl(url => {
+      void runAutomationURL(url);
+    });
+    void HopDriver.launchURL()
+      .then(url => {
+        if (url != null) {
+          void runAutomationURL(url);
+        }
+      })
+      .catch(cause => {
+        console.log('HOPURL', JSON.stringify({error: String(cause)}));
+      });
+    return () => {
+      linkingSubscription.remove();
+      bridgeSubscription.remove();
+    };
+  }, [runAutomationURL]);
+
+  const openPeer = useCallback(
+    (peerAddress: string) => {
+      selectedRef.current = peerAddress;
+      setSelected(peerAddress);
+      setSendState(null);
+      setSentAt(null);
+      void HopDriver.messages(peerAddress)
+        .then(messages => {
+          if (mountedRef.current && selectedRef.current === peerAddress) {
+            applyMessages(peerAddress, messages, false);
+          }
+        })
+        .catch(cause => {
+          if (mountedRef.current && selectedRef.current === peerAddress) {
+            setSendState(`messages failed: ${String(cause)}`);
+          }
+        });
+    },
+    [applyMessages],
+  );
+
+  const closePeer = useCallback(() => {
+    selectedRef.current = null;
+    setSelected(null);
+    setSendState(null);
+    setSentAt(null);
+  }, []);
+
+  const findPeer = useCallback(() => {
     const typed = peerDraft.trim();
     if (typed.length === 0) {
       setPeerNote('paste an address first');
@@ -278,80 +375,120 @@ export default function App(): React.JSX.Element {
       setPeerNote('that is this device, not a peer');
       return;
     }
-    if (peers.some(p => p.address === typed)) {
-      setPeerNote('already in the list');
+    if (!/^[1-9A-HJ-NP-Za-km-z]{16,}$/.test(typed)) {
+      setPeerNote('not a base58 Hop address');
       return;
     }
-    try {
-      // Real validation, by the same base58 decoder the native SDKs use: it returns null for anything
-      // that is not exactly a 32-byte address. Adding an unparseable string would produce a peer row
-      // that silently never receives anything.
-      const decoded = await HopAddress.fromBase58(typed);
-      if (decoded == null) {
-        setPeerNote('not a Hop address: base58 of 32 bytes expected');
-        return;
-      }
-    } catch (e) {
-      setPeerNote(`could not read that address: ${String(e)}`);
-      return;
-    }
-    setPeers(prev => [
-      ...prev,
-      {address: typed, label: 'Relay peer, another device', transport: 'relay', kind: 'relay'},
-    ]);
-    setSelected(typed);
+
+    const discovered = peers.find(peer => peer.address === typed) ?? null;
+    const target =
+      discovered ??
+      ({
+        address: typed,
+        name: shortAddress(typed),
+        hops: 0,
+        platform: '',
+        app: '',
+        active: false,
+      } satisfies DriverPeer);
+    setAddressTarget(discovered == null ? target : null);
     setPeerDraft('');
-    setPeerNote('added');
-  }, [address, peerDraft, peers]);
+    setPeerNote(null);
+    openPeer(target.address);
+  }, [address, openPeer, peerDraft, peers]);
 
   const send = useCallback(async () => {
-    const node = self.current;
-    if (!node || !selected || draft.trim().length === 0) {
+    const target = selectedRef.current;
+    const body = draft.trim();
+    if (target == null || body.length === 0) {
       return;
     }
+
     setSendState('sending');
     setSentAt(Date.now());
     try {
-      const id = await node.send({to: selected, body: draft});
-      if (id == null) {
-        setSendState('send failed');
+      const result = await HopDriver.send(body, target);
+      if (!result.ok) {
+        setSendState(`failed${result.detail ? `: ${result.detail}` : ''}`);
         setSentAt(null);
         return;
       }
-      const body = draft;
-      setDraft('');
-      const s = await node.status(id);
-      const meta = statusText({
-        delivered: s.delivered,
-        relayed: s.relayed,
-        forwardHops: s.forwardHops,
-      });
-      // Own messages join the thread like the native demos' chat: bubble on the right, meta beneath.
-      setThread(prev => [
-        ...prev,
-        {id: toBase64(id), from: address ?? '', body, mine: true, meta},
-      ]);
-      setSentAt(null);
-      setSendState(meta);
-    } catch (e) {
-      setSendState(`send failed: ${String(e)}`);
-      setSentAt(null);
-    }
-  }, [draft, selected, address]);
 
-  if (status === 'starting') {
+      setDraft('');
+      const messages = await HopDriver.messages(target);
+      if (!mountedRef.current || selectedRef.current !== target) {
+        return;
+      }
+      applyMessages(target, messages, false);
+      const status = latestMineStatus(messages) ?? result.detail ?? 'sent';
+      setSendState(status);
+      setSentAt(status === 'sending' ? previous => previous ?? Date.now() : null);
+    } catch (cause) {
+      if (mountedRef.current && selectedRef.current === target) {
+        setSendState(`failed: ${String(cause)}`);
+        setSentAt(null);
+      }
+    }
+  }, [applyMessages, draft]);
+
+  const toggleTransport = useCallback(async (transport: string, enabled: boolean) => {
+    setTransportError(null);
+    setTogglingTransport(transport);
+    try {
+      await HopDriver.setTransportEnabled(transport, enabled);
+    } catch (cause) {
+      if (mountedRef.current) {
+        setTransportError(String(cause));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setTogglingTransport(null);
+      }
+    }
+  }, []);
+
+  if (phase === 'checking-permissions' || phase === 'starting') {
     return (
       <SafeAreaProvider>
         <SafeAreaView style={styles.center} edges={['top', 'bottom']} testID="screen-loading">
           <ActivityIndicator />
-          <Text style={styles.dim}>starting node</Text>
+          <Text style={styles.dim}>
+            {phase === 'checking-permissions' ? 'checking permissions' : 'starting driver'}
+          </Text>
         </SafeAreaView>
       </SafeAreaProvider>
     );
   }
 
-  if (status === 'failed') {
-    // Visibly unavailable rather than a silent no-op.
+  if (phase === 'permission-denied') {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView
+          style={styles.permissionGate}
+          edges={['top', 'bottom', 'left', 'right']}
+          testID="screen-permission">
+          <Text style={styles.permissionTitle}>Nearby-device access needed</Text>
+          <Text style={styles.permissionBody} testID="permission-explanation">
+            Hop forms its mesh over Bluetooth LE to nearby phones. Without the nearby-devices
+            (Bluetooth) permission it can't scan, advertise, or relay, so nothing will send or arrive.
+          </Text>
+          {missingPermissions.length > 0 ? (
+            <Text style={styles.tiny} testID="missing-permissions">
+              Missing: {missingPermissions.join(', ')}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            style={styles.btnSmall}
+            testID="grant-permission-button"
+            onPress={() => void initialize()}>
+            <Text style={styles.btnSmallText}>Grant permission</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
+
+  if (phase === 'failed') {
     return (
       <SafeAreaProvider>
         <SafeAreaView style={styles.center} edges={['top', 'bottom']} testID="screen-error">
@@ -363,141 +500,138 @@ export default function App(): React.JSX.Element {
     );
   }
 
-  const selectedPeer = peers.find(p => p.address === selected) ?? null;
+  const selectedPeer =
+    peers.find(peer => peer.address === selected) ??
+    (addressTarget?.address === selected ? addressTarget : null);
+  const thread = selected == null ? [] : threads[selected] ?? [];
 
-  // The bottom tab bar both native demos use: Chats, Relays, Web, Status, each a Font Awesome glyph in
-  // the Hop green when selected.
   const Tab = ({id, icon, label}: {id: number; icon: string; label: string}) => (
     <TouchableOpacity
       testID={`tab-${label.toLowerCase()}`}
       style={styles.tabItem}
       onPress={() => setTab(id)}>
       <Icon name={icon} size={20} color={tab === id ? hop.accent : hop.secondary} />
-      <Text style={[styles.tabLabel, {color: tab === id ? hop.accent : hop.secondary}]}>{label}</Text>
+      <Text style={[styles.tabLabel, {color: tab === id ? hop.accent : hop.secondary}]}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 
   return (
-    // Safe areas on all four edges, from react-native-safe-area-context so it actually applies on Android.
-    // KeyboardAvoidingView so the composer and the Send button stay above the soft keyboard: the keyboard
-    // used to cover both, which made the app unusable for its one job and also made a Detox tap land on
-    // nothing. `padding` is right on iOS; on Android the manifest's adjustResize does the resize and adding
-    // `height` on top of it double-counts and squashes the layout.
     <SafeAreaProvider>
       <SafeAreaView
         style={styles.root}
-        edges={['top', 'bottom', 'left', 'right']}
+        edges={['top']}
         testID="screen-main">
         <StatusBar barStyle="dark-content" />
+        <SafeAreaView style={styles.fill} edges={['left', 'right']}>
         <KeyboardAvoidingView
           style={styles.fill}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          {/* The scroll container is addressable on purpose. screen-main is the SafeAreaView, its PARENT,
-              and a Detox swipe there does not reach this child: measured on a Pixel 7, eight slow upward
-              swipes on screen-main left the screen pinned at the top. by.type('android.widget.ScrollView')
-              is no use either, because peers-list and messages-list are FlatLists and render as scroll
-              views too, so the matcher is ambiguous. A test that has to scroll a control into view needs
-              this id.
-
-              keyboardShouldPersistTaps keeps a tap on Send working while the keyboard is up, instead of
-              being swallowed as a dismiss. automaticallyAdjustKeyboardInsets is the iOS half of the same
-              job, and is ignored elsewhere. */}
-          <ScrollView
-            ref={scrollRef}
-            testID="main-scroll"
-            contentContainerStyle={[styles.screenBody, {paddingBottom: 24 + keyboardInset}]}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            automaticallyAdjustKeyboardInsets>
-            {tab === 0 && !selectedPeer && (
-              <ChatsTab
-                peers={peers}
-                peerDraft={peerDraft}
-                setPeerDraft={setPeerDraft}
-                peerNote={peerNote}
-                addPeer={addPeer}
-                onPick={setSelected}
-              />
-            )}
-            {tab === 0 && selectedPeer && (
-              <ChatThread
-                peer={selectedPeer}
-                thread={thread}
-                sendState={sendState}
-                elapsed={elapsed}
-                onBack={() => setSelected(null)}
-                draft={draft}
-                setDraft={setDraft}
-                revealComposer={revealComposer}
-                send={send}
-              />
-            )}
-            {tab === 1 && (
-              <RelaysTab
-                relayState={relayState}
-                relayUrl={relayUrl}
-                relayDraft={relayDraft}
-                setRelayDraft={setRelayDraft}
-                relayNote={relayNote}
-                dial={() => dialRelay(relayDraft.trim())}
-                revealComposer={revealComposer}
-              />
-            )}
-            {tab === 2 && <WebTab />}
-            {tab === 3 && <StatusTab address={address} />}
-          </ScrollView>
+          {tab === 0 && selectedPeer != null ? (
+            <ChatThread
+              peer={selectedPeer}
+              thread={thread}
+              sendState={sendState}
+              elapsed={elapsed}
+              onBack={closePeer}
+              draft={draft}
+              setDraft={setDraft}
+              send={send}
+              keyboardInset={Platform.OS === 'android' ? keyboardInset : 0}
+            />
+          ) : (
+            <ScrollView
+              ref={scrollRef}
+              testID="main-scroll"
+              contentContainerStyle={[styles.screenBody, {paddingBottom: 24 + keyboardInset}]}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              automaticallyAdjustKeyboardInsets>
+              {tab === 0 ? (
+                <ChatsTab
+                  peers={peers}
+                  peerDraft={peerDraft}
+                  setPeerDraft={setPeerDraft}
+                  peerNote={peerNote}
+                  findPeer={findPeer}
+                  onPick={openPeer}
+                  revealComposer={revealComposer}
+                />
+              ) : null}
+              {tab === 1 ? <RelaysTab transports={transports} /> : null}
+              {tab === 2 ? <WebTab /> : null}
+              {tab === 3 ? (
+                <StatusTab
+                  address={address}
+                  participantName={participantName}
+                  transports={transports}
+                  transportError={transportError}
+                  togglingTransport={togglingTransport}
+                  onToggleTransport={toggleTransport}
+                />
+              ) : null}
+            </ScrollView>
+          )}
         </KeyboardAvoidingView>
-        <View style={styles.tabBar}>
-          <Tab id={0} icon="comment" label="Chats" />
-          <Tab id={1} icon="tower-broadcast" label="Relays" />
-          <Tab id={2} icon="globe" label="Web" />
-          <Tab id={3} icon="gear" label="Status" />
-        </View>
+        </SafeAreaView>
+        <SafeAreaView style={styles.tabBarSafeArea} edges={['bottom', 'left', 'right']}>
+          <View style={styles.tabBar}>
+            <Tab id={0} icon="comment" label="Chats" />
+            <Tab id={1} icon="tower-broadcast" label="Relays" />
+            <Tab id={2} icon="globe" label="Web" />
+            <Tab id={3} icon="gear" label="Status" />
+          </View>
+        </SafeAreaView>
       </SafeAreaView>
     </SafeAreaProvider>
   );
 }
 
-/// The Chats list: headline, add-by-address, and one row per reachable peer with the transport word and
-/// the green reachability dot the native demos show.
 function ChatsTab({
   peers,
   peerDraft,
   setPeerDraft,
   peerNote,
-  addPeer,
+  findPeer,
   onPick,
+  revealComposer,
 }: {
-  peers: Peer[];
+  peers: DriverPeer[];
   peerDraft: string;
-  setPeerDraft: (s: string) => void;
+  setPeerDraft: (value: string) => void;
   peerNote: string | null;
-  addPeer: () => void;
+  findPeer: () => void;
   onPick: (address: string) => void;
+  revealComposer: () => void;
 }) {
+  const direct = peers.filter(peer => peer.active && peer.hops <= 1);
+  const relayed = peers.filter(peer => peer.active && peer.hops > 1);
+  const offline = peers.filter(peer => !peer.active);
+
   return (
     <View>
       <Text style={styles.headline}>Chats</Text>
       <Text style={styles.dim} testID="bearer-note">
-        No radio bearer in the React Native SDK. The peer below is an in-process node, so delivery is
-        real but discovery is not.
+        Discovery and message transport come from the platform Hop driver, using the same radio and
+        relay bearers as the native demos.
       </Text>
 
-      <Text style={styles.h2}>Add by address</Text>
+      <Text style={styles.h2}>Open by address</Text>
       <View style={styles.rowWrap}>
         <TextInput
           style={styles.inputFlex}
           testID="peer-address-input"
           value={peerDraft}
           onChangeText={setPeerDraft}
-          onFocus={undefined}
+          onFocus={revealComposer}
           placeholder="base58 address"
           autoCorrect={false}
           autoCapitalize="none"
         />
-        <TouchableOpacity style={styles.btnSmall} testID="add-peer-button" onPress={addPeer}>
-          <Icon name="user-plus" size={14} color={hop.accentInk} />
-          <Text style={styles.btnSmallText}>Add</Text>
+        <TouchableOpacity style={styles.btnSmall} testID="add-peer-button" onPress={findPeer}>
+          <Icon name="arrow-right" size={14} color={hop.accentInk} />
+          <Text style={styles.btnSmallText}>Open</Text>
         </TouchableOpacity>
       </View>
       {peerNote ? (
@@ -506,52 +640,100 @@ function ChatsTab({
         </Text>
       ) : null}
       <Text style={styles.tiny} testID="add-peer-note">
-        An empty name falls back to the address, like the native demos' Add Contact.
+        A full address can open a direct chat while driver discovery is still converging.
       </Text>
 
-      <Text style={styles.h2}>People nearby</Text>
-      {peers.length === 0 ? (
-        <Text style={styles.dim} testID="peers-empty">
-          nobody nearby
-        </Text>
-      ) : (
-        <FlatList
-          testID="peers-list"
-          scrollEnabled={false}
-          data={peers}
-          keyExtractor={p => p.address}
-          renderItem={({item, index}) => (
-            // testID is index-based on purpose. A test cannot know a peer's address before it renders,
-            // so an address-keyed id is unaddressable from a test; the address is exposed as its own
-            // element below for any test that needs to read it.
-            <TouchableOpacity
-              testID={`peer-row-${index}`}
-              style={styles.peerRow}
-              onPress={() => onPick(item.address)}>
-              <View style={styles.peerIcon}>
-                <View
-                  style={[styles.dot, {backgroundColor: item.kind === 'loopback' ? hop.active : hop.pulse}]}
-                />
-              </View>
-              <View style={styles.inputFlex}>
-                <Text style={styles.peerTitle}>{item.label}</Text>
-                <Text style={styles.dim} testID={`peer-address-${index}`}>
-                  {shortAddress(item.address)}
-                </Text>
-              </View>
-              <Text style={styles.tiny} testID={`peer-transport-${index}`}>
-                {item.kind}
-              </Text>
-              <Icon name="chevron-right" size={14} color={hop.tertiary} />
-            </TouchableOpacity>
-          )}
-        />
-      )}
+      <View testID="peers-list">
+        {peers.length === 0 ? (
+          <Text style={styles.dim} testID="peers-empty">
+            looking for others…
+          </Text>
+        ) : null}
+
+        <Text style={styles.h2}>Nearby (direct)</Text>
+        {direct.length === 0 ? <Text style={styles.dim}>none</Text> : null}
+        {direct.map((peer, index) => (
+          <PeerRow key={peer.address} peer={peer} index={index} onPick={onPick} />
+        ))}
+
+        <Text style={styles.h2}>In the mesh (relayed)</Text>
+        {relayed.length === 0 ? <Text style={styles.dim}>none</Text> : null}
+        {relayed.map((peer, index) => (
+          <PeerRow
+            key={peer.address}
+            peer={peer}
+            index={direct.length + index}
+            onPick={onPick}
+          />
+        ))}
+
+        {offline.length > 0 ? (
+          <>
+            <Text style={styles.h2}>Conversations and seen (offline)</Text>
+            {offline.map((peer, index) => (
+              <PeerRow
+                key={peer.address}
+                peer={peer}
+                index={direct.length + relayed.length + index}
+                onPick={onPick}
+              />
+            ))}
+          </>
+        ) : null}
+      </View>
     </View>
   );
 }
 
-/// One conversation: bubbles with a meta line each, the pulsing in-flight indicator, and the composer.
+function PeerRow({
+  peer,
+  index,
+  onPick,
+}: {
+  peer: DriverPeer;
+  index: number;
+  onPick: (address: string) => void;
+}) {
+  const route = !peer.active ? 'offline' : peer.hops <= 1 ? 'direct' : `${peer.hops} hops`;
+  const platform = peer.platform.trim().toLowerCase();
+  const platformName =
+    platform === 'apple' || platform === 'ios'
+      ? 'Apple'
+      : platform === 'android'
+        ? 'Android'
+        : platform === 'cloud'
+          ? 'Cloud'
+          : peer.platform;
+  const details = [platformName, peer.app].filter(value => value.length > 0).join(' · ');
+
+  return (
+    <TouchableOpacity
+      testID={`peer-row-${index}`}
+      style={styles.peerRow}
+      onPress={() => onPick(peer.address)}>
+      <View style={styles.peerIcon}>
+        <View
+          style={[
+            styles.dot,
+            {backgroundColor: peer.active ? hop.active : hop.secondary},
+          ]}
+        />
+      </View>
+      <View style={styles.inputFlex}>
+        <Text style={styles.peerTitle}>{peer.name}</Text>
+        <Text style={styles.dim} testID={`peer-address-${index}`}>
+          {shortAddress(peer.address)}
+        </Text>
+        {details.length > 0 ? <Text style={styles.tiny}>{details}</Text> : null}
+      </View>
+      <Text style={styles.tiny} testID={`peer-transport-${index}`}>
+        {route}
+      </Text>
+      <Icon name="chevron-right" size={14} color={hop.tertiary} />
+    </TouchableOpacity>
+  );
+}
+
 function ChatThread({
   peer,
   thread,
@@ -560,42 +742,56 @@ function ChatThread({
   onBack,
   draft,
   setDraft,
-  revealComposer,
   send,
+  keyboardInset,
 }: {
-  peer: Peer;
-  thread: Row[];
+  peer: DriverPeer;
+  thread: DriverMessage[];
   sendState: string | null;
   elapsed: number;
   onBack: () => void;
   draft: string;
-  setDraft: (s: string) => void;
-  revealComposer: () => void;
+  setDraft: (value: string) => void;
   send: () => void;
+  keyboardInset: number;
 }) {
+  const newestFirst = useMemo(
+    () =>
+      [...thread].sort(
+        (left, right) => right.at - left.at || right.id.localeCompare(left.id),
+      ),
+    [thread],
+  );
+
   return (
-    <View>
+    <View style={[styles.chatScreen, {paddingBottom: keyboardInset}]} testID="chat-screen">
       <View style={styles.chatHeader}>
         <TouchableOpacity testID="chat-back" onPress={onBack} style={styles.backBtn}>
           <Icon name="chevron-left" size={16} color={hop.accent} />
           <Text style={styles.backText}>Chats</Text>
         </TouchableOpacity>
         <Text style={styles.chatTitle} testID="chat-title" numberOfLines={1}>
-          {peer.label}
+          {peer.name}
         </Text>
-        <Icon name="lock" size={13} color={hop.active} />
       </View>
 
-      {thread.length === 0 ? (
-        <Text style={styles.dim} testID="messages-empty">
-          no messages yet
-        </Text>
+      {newestFirst.length === 0 ? (
+        <View style={styles.messagesEmpty}>
+          <Text style={styles.dim} testID="messages-empty">
+            no messages yet
+          </Text>
+        </View>
       ) : (
         <FlatList
+          inverted
+          style={styles.messagesList}
+          contentContainerStyle={styles.messagesContent}
           testID="messages-list"
-          scrollEnabled={false}
-          data={thread}
-          keyExtractor={m => m.id}
+          data={newestFirst}
+          keyExtractor={message => message.id}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          maintainVisibleContentPosition={{minIndexForVisible: 0}}
           renderItem={({item, index}) => (
             <View
               style={[styles.bubbleWrap, {alignItems: item.mine ? 'flex-end' : 'flex-start'}]}
@@ -606,63 +802,61 @@ function ChatThread({
                 </Text>
               </View>
               <Text style={styles.meta} testID={`message-from-${index}`}>
-                {item.mine ? item.meta : `${shortAddress(item.from)} · ${item.meta}`}
+                {item.mine
+                  ? `${item.status} · ${new Date(item.at).toLocaleTimeString()}`
+                  : `${shortAddress(peer.address)} · ${item.status} · ${new Date(
+                      item.at,
+                    ).toLocaleTimeString()}`}
               </Text>
             </View>
           )}
         />
       )}
 
-      {sendState === 'sending' ? <SendingIndicator elapsed={elapsed} /> : null}
-      {/* Rendered for EVERY non-null state, including 'sending', not only once resolved: the status
-          element must exist while the query is in flight, or a test asserting on it right after the tap
-          finds nothing and reads that as the app never reporting. The indicator carries the live pulsing
-          view; this line carries the state word. */}
-      {sendState ? (
-        <Text style={styles.dim} testID="send-status">
-          {sendState}
-        </Text>
-      ) : null}
-
-      <View style={styles.rowWrap}>
-        <TextInput
-          style={styles.inputFlex}
-          testID="message-input"
-          value={draft}
-          onChangeText={setDraft}
-          onFocus={revealComposer}
-          placeholder={`Message ${peer.label}`}
-          autoCorrect={false}
-        />
-        <TouchableOpacity
-          style={[styles.btnSend, draft.trim().length === 0 && styles.btnDisabled]}
-          testID="send-button"
-          onPress={send}
-          disabled={draft.trim().length === 0}>
-          <Icon
-            name="paper-plane"
-            size={14}
-            color={draft.trim().length === 0 ? hop.secondary : hop.accentInk}
-          />
-          <Text
-            style={[
-              styles.btnSmallText,
-              {color: draft.trim().length === 0 ? hop.secondary : hop.accentInk},
-            ]}>
-            Send
+      <View style={styles.composerArea}>
+        {sendState === 'sending' ? <SendingIndicator elapsed={elapsed} /> : null}
+        {sendState ? (
+          <Text style={styles.dim} testID="send-status">
+            {sendState}
           </Text>
-        </TouchableOpacity>
+        ) : null}
+        <View style={styles.composerRow}>
+          <TextInput
+            style={styles.inputFlex}
+            testID="message-input"
+            value={draft}
+            onChangeText={setDraft}
+            placeholder={`Message ${peer.name}`}
+            autoCorrect={false}
+          />
+          <TouchableOpacity
+            style={[styles.btnSend, draft.trim().length === 0 && styles.btnDisabled]}
+            testID="send-button"
+            onPress={send}
+            disabled={draft.trim().length === 0}>
+            <Icon
+              name="paper-plane"
+              size={14}
+              color={draft.trim().length === 0 ? hop.secondary : hop.accentInk}
+            />
+            <Text
+              style={[
+                styles.btnSmallText,
+                {color: draft.trim().length === 0 ? hop.secondary : hop.accentInk},
+              ]}>
+              Send
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
 }
 
-/// The native demos' in-flight status: a pulsing dot and a live "Awaiting peers · Ns" counter, conveying
-/// "working on it, holding for a peer" rather than a static, alarming "Sending...".
 function SendingIndicator({elapsed}: {elapsed: number}) {
   const pulse = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    const a = Animated.loop(
+    const animation = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
           toValue: 0.25,
@@ -678,9 +872,10 @@ function SendingIndicator({elapsed}: {elapsed: number}) {
         }),
       ]),
     );
-    a.start();
-    return () => a.stop();
+    animation.start();
+    return () => animation.stop();
   }, [pulse]);
+
   return (
     <View style={styles.pulseRow} testID="sending-indicator">
       <Animated.View style={[styles.pulseDot, {opacity: pulse}]} />
@@ -689,85 +884,80 @@ function SendingIndicator({elapsed}: {elapsed: number}) {
   );
 }
 
-/// The Relays tab: the live relay link state, the URL in use, and dial controls.
-function RelaysTab({
-  relayState,
-  relayUrl,
-  relayDraft,
-  setRelayDraft,
-  relayNote,
-  dial,
-  revealComposer,
-}: {
-  relayState: RelayState;
-  relayUrl: string;
-  relayDraft: string;
-  setRelayDraft: (s: string) => void;
-  relayNote: string | null;
-  dial: () => void;
-  revealComposer: () => void;
-}) {
-  const color = relayState === 'up' ? hop.active : relayState === 'down' ? hop.danger : hop.secondary;
+function RelaysTab({transports}: {transports: DriverTransports}) {
+  const relayEntries = Object.entries(transports).filter(([name]) =>
+    name.toLowerCase().includes('relay'),
+  );
+  const relay = relayEntries[0] ?? null;
+  const relayState = relay?.[1] ?? 'starting';
+  const color =
+    relayState === 'active' ? hop.active : relayState === 'off' ? hop.danger : hop.pulse;
+
   return (
     <View>
       <Text style={styles.headline}>Relays</Text>
       <View style={styles.relayRow}>
         <View style={[styles.dot, {backgroundColor: color}]} />
-        <Text style={styles.body} testID="relay-status">
-          {relayState}
-        </Text>
+        <View style={styles.inputFlex}>
+          <Text style={styles.body}>{relay?.[0] ?? 'Relay'}</Text>
+          <Text style={styles.dim} testID="relay-status">
+            {relayState}
+          </Text>
+        </View>
       </View>
       <Text style={styles.monoSmall} testID="relay-url">
-        {relayUrl}
+        Platform driver configuration
       </Text>
-      {relayNote ? (
-        <Text style={styles.err} testID="relay-error">
-          {relayNote}
-        </Text>
-      ) : null}
+      <Text style={styles.dim} testID="relay-url-input">
+        Relay endpoints are selected by the native driver.
+      </Text>
+      <Text style={styles.tiny} testID="relay-connect-button">
+        Connection is automatic when Relay is enabled.
+      </Text>
       <Text style={styles.tiny} testID="relay-note">
-        The relay is a bearer: it carries opaque bytes and knows nothing about the protocol. A green
-        state means the socket is up, not that a peer answered.
+        Active means the bearer has a live link. Idle means it is enabled and waiting for one. Off
+        means it was disabled in platform configuration.
       </Text>
-      <View style={styles.rowWrap}>
-        <TextInput
-          style={styles.inputFlex}
-          testID="relay-url-input"
-          value={relayDraft}
-          onChangeText={setRelayDraft}
-          onFocus={revealComposer}
-          placeholder="host:port or wss://relay.hopme.sh/"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity style={styles.btnSmall} testID="relay-connect-button" onPress={dial}>
-          <Text style={styles.btnSmallText}>Connect</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
 
-/// The Web tab. The native demos browse hops:// pages through the driver's proxy, which the React Native
-/// SDK does not bridge, so this tab states that rather than rendering a browser that cannot fetch.
 function WebTab() {
   return (
     <View>
       <Text style={styles.headline}>Web</Text>
       <Text style={styles.dim} testID="web-unavailable">
-        hops:// browsing needs the Hop driver's proxy, which the React Native SDK does not bridge yet.
-        The native demos carry this tab; this port says so instead of showing a browser that cannot
-        fetch anything.
+        hops:// browsing needs the Hop driver's proxy, which this bridge does not expose yet. The
+        native demos carry this tab; this port says so instead of showing a browser that cannot fetch.
       </Text>
     </View>
   );
 }
 
-/// The Status tab: this device's address, and the honest unavailability notes.
-function StatusTab({address}: {address: string | null}) {
+function StatusTab({
+  address,
+  participantName,
+  transports,
+  transportError,
+  togglingTransport,
+  onToggleTransport,
+}: {
+  address: string | null;
+  participantName: string | null;
+  transports: DriverTransports;
+  transportError: string | null;
+  togglingTransport: string | null;
+  onToggleTransport: (transport: string, enabled: boolean) => void;
+}) {
+  const entries = Object.entries(transports);
+
   return (
     <View>
       <Text style={styles.headline}>Status</Text>
+      <Text style={styles.h2}>Participant</Text>
+      <Text style={styles.peerTitle} testID="participant-name">
+        {participantName}
+      </Text>
       <Text style={styles.h2}>This device</Text>
       <Text style={styles.mono} testID="own-address" selectable>
         {address}
@@ -775,6 +965,34 @@ function StatusTab({address}: {address: string | null}) {
       <Text style={styles.dim} testID="own-address-short">
         {address ? shortAddress(address) : ''}
       </Text>
+
+      <Text style={styles.h2}>Transports</Text>
+      {entries.length === 0 ? <Text style={styles.dim}>starting…</Text> : null}
+      {entries.map(([name, state], index) => (
+        <View style={styles.transportRow} key={name}>
+          <Switch
+            testID={`transport-toggle-${index}`}
+            value={state !== 'off'}
+            disabled={togglingTransport != null}
+            onValueChange={enabled => onToggleTransport(name, enabled)}
+          />
+          <View style={styles.transportText}>
+            <Text style={styles.body} testID={`transport-name-${index}`}>
+              {name}
+            </Text>
+            <Text style={styles.dim} testID={`transport-status-${index}`}>
+              {state === 'off' ? 'disabled' : state === 'idle' ? 'no links' : 'active'}
+            </Text>
+          </View>
+          {togglingTransport === name ? <ActivityIndicator size="small" /> : null}
+        </View>
+      ))}
+      {transportError ? (
+        <Text style={styles.err} testID="transport-error">
+          {transportError}
+        </Text>
+      ) : null}
+
       <Text style={styles.h2}>My QR</Text>
       <Text style={styles.dim} testID="qr-unavailable">
         QR rendering is a platform graphics API with no bundled React Native equivalent, so it is
@@ -786,10 +1004,14 @@ function StatusTab({address}: {address: string | null}) {
 
 const styles = StyleSheet.create({
   root: {flex: 1, backgroundColor: hop.bg},
-  center: {flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: hop.bg},
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: hop.bg,
+    padding: 24,
+  },
   fill: {flex: 1},
-  // paddingBottom leaves room for the composer and Send to sit clear of the keyboard and the home
-  // indicator once the ScrollView is inset, rather than ending flush against them.
   screenBody: {padding: 16, gap: 6},
   headline: typo.headline,
   h2: {fontSize: 16, fontWeight: '600', marginTop: 18, marginBottom: 4},
@@ -801,6 +1023,18 @@ const styles = StyleSheet.create({
   mono: typo.mono,
   monoSmall: {fontSize: 12, fontFamily: 'Menlo', color: hop.secondary},
 
+  permissionGate: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: hop.bg,
+    padding: 24,
+    gap: 16,
+  },
+  permissionTitle: {fontSize: 24, fontWeight: '600', color: hop.fg},
+  permissionBody: {...typo.body, textAlign: 'center'},
+
+  tabBarSafeArea: {backgroundColor: hop.barBg},
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -810,7 +1044,28 @@ const styles = StyleSheet.create({
   tabItem: {flex: 1, alignItems: 'center', paddingVertical: 8, gap: 2},
   tabLabel: {fontSize: 10},
 
-  chatHeader: {flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10},
+  chatScreen: {flex: 1, backgroundColor: hop.bg},
+  messagesList: {flex: 1},
+  messagesContent: {paddingHorizontal: 16, paddingVertical: 8},
+  messagesEmpty: {flex: 1, alignItems: 'center', justifyContent: 'center'},
+  composerArea: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: hop.hairline,
+    backgroundColor: hop.bg,
+  },
+  composerRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  chatHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: hop.hairline,
+  },
   backBtn: {flexDirection: 'row', alignItems: 'center', gap: 2},
   backText: {color: hop.accent, fontSize: 16},
   chatTitle: {...typo.title, flex: 1},
@@ -835,8 +1090,16 @@ const styles = StyleSheet.create({
 
   pulseRow: {flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 4},
   pulseDot: {width: 8, height: 8, borderRadius: 4, backgroundColor: hop.pulse},
-
-  relayRow: {flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 4},
+  relayRow: {flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8},
+  transportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: hop.hairline,
+  },
+  transportText: {flex: 1},
 
   rowWrap: {flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6},
   inputFlex: {
@@ -847,8 +1110,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-
-  // The Hop signal green on the buttons, matching the native demos' accent-tinted actions.
   btnSmall: {
     flexDirection: 'row',
     alignItems: 'center',

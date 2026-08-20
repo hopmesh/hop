@@ -5,16 +5,15 @@ Feature: Carrying a message over the Hop mesh
 
   # Scenarios are split by whether ONE device can honestly prove them.
   #
-  # @single-device runs under Detox on a simulator or emulator. The app pairs two in-process nodes over a
-  # loopback bearer, so send and receive are real: the bytes go through the Rust core, get sealed, and
-  # arrive through the inbox. That is worth automating.
+  # @single-device proves local identity and UI contracts without inventing a peer. Discovery, radio
+  # transport, and messages now come from the platform Hop driver, so a lone device may correctly show
+  # no peers.
   #
-  # @multi-device covers the BLE mesh, which still cannot be proven at all: the React Native SDK ships no
-  # radio bearer and no discovery surface, so there is nothing to drive. Those scenarios are specifications
-  # and they SKIP with a stated reason rather than passing.
+  # @multi-device covers the BLE mesh on physical hardware. Those scenarios remain specifications under
+  # Detox because its iOS support is simulator-only.
   #
-  # @device-pair covers what two real devices CAN prove today, a message crossing them through a relay.
-  # Those do assert, because two devices really are driven. See the block at the bottom.
+  # @device-pair covers what two real devices can prove through their configured driver transports.
+  # Those scenarios assert because two devices really are driven. See the block at the bottom.
 
   Background:
     Given the app is running
@@ -25,37 +24,13 @@ Feature: Carrying a message over the Hop mesh
     And my address should be a base58 address
 
   @single-device
-  Scenario: The app is honest that it has no radio
-    Then I should be told discovery is unavailable without a bearer
+  Scenario: Discovery is backed by the platform driver
+    Then I should be told discovery uses the platform driver
 
   @single-device
   Scenario: The app is honest that it cannot draw a QR code
     Then I should be told the QR code is unavailable
 
-  @single-device @smoke
-  Scenario: Someone reachable appears in my list
-    Then I should see 1 person I can reach
-
-  @single-device @smoke
-  Scenario: A message I send arrives
-    When I send "meet at dawn" to the person I can reach
-    Then the message should be reported as on its way
-
-  @single-device
-  Scenario: An empty message is not sent
-    When I send "" to the person I can reach
-    Then no delivery should be reported
-
-  @single-device
-  Scenario Outline: Messages of different shapes all send
-    When I send "<body>" to the person I can reach
-    Then the message should be reported as on its way
-
-    Examples: ordinary and awkward bodies
-      | body                       |
-      | meet at dawn               |
-      | 12:30 by the north gate    |
-      | emoji and accents, cafe    |
 
   # ---------------------------------------------------------------------------------------------------
   # Specifications that need real hardware. Tagged so they skip, never pass, under Detox.
@@ -80,15 +55,15 @@ Feature: Carrying a message over the Hop mesh
     And the middle phone should have carried it
 
   # ---------------------------------------------------------------------------------------------------
-  # Two REAL devices, through a real relay. These ASSERT.
+  # Two REAL devices, through the relay configured in the platform driver. These ASSERT.
   #
   # Run by `npm run e2e:pair`, which starts one Detox process per device, because Detox drives a single
   # app instance per process. Both processes execute this scenario and each step branches on its role, so
   # the story reads as one exchange while each side only asserts what its own device shows.
   #
   # Excluded from every default profile, so a developer with no hardware gets a green run that never
-  # claimed to cover this. The Background applies here too and is harmless: it waits for this device's
-  # own address before the cross-process barrier.
+  # claimed to cover this. The pair steps open the Status and Chats tabs they need after the Background
+  # confirms the main mesh UI is running.
   #
   # The body is not a bare literal. Each step appends the run id, so an assertion cannot be satisfied by
   # a message left on screen by an earlier run.
@@ -97,7 +72,7 @@ Feature: Carrying a message over the Hop mesh
   @device-pair
   Scenario: A message crosses two real devices through a relay
     Given both devices are paired for this run
-    And this device is connected to the relay under test
+    And the configured relay transport on this device is available
     And the two devices have exchanged addresses
     When the sending device sends "meet at dawn" to the receiving device
     Then the receiving device shows the same message

@@ -3,4 +3,19 @@ plugins { id("com.facebook.react.settings") }
 extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
 rootProject.name = 'HopDemo'
 include ':app'
+
+// The Hop platform driver and the shared bearer modules it multiplexes. @hop-mesh/react-native depends
+// on :hop-driver for the runtime that owns the radios, and sh.hopme:hop-driver is published to no Maven
+// repository, so a consuming build has to include it by path. This is the same wiring
+// apps/android/HopDemo/settings.gradle.kts and bearers/android/settings.gradle.kts use, pointed at the
+// same directories, so all three builds compile the SAME modules with no copies.
+//
+// rootDir here is apps/react-native/HopDemo/android, so four levels up is the repository root.
+include ':hop-driver', ':hop-sdk', ':bearer-ble', ':bearer-lan', ':bearer-relay', ':bearer-meshtastic'
+project(':hop-driver').projectDir        = new File(rootDir, '../../../../drivers/android/hop-driver')
+project(':hop-sdk').projectDir           = new File(rootDir, '../../../../bearers/android/hop-sdk')
+project(':bearer-ble').projectDir        = new File(rootDir, '../../../../bearers/android/bearer-ble')
+project(':bearer-lan').projectDir        = new File(rootDir, '../../../../bearers/android/bearer-lan')
+project(':bearer-relay').projectDir      = new File(rootDir, '../../../../bearers/android/bearer-relay')
+project(':bearer-meshtastic').projectDir = new File(rootDir, '../../../../bearers/android/bearer-meshtastic')
 includeBuild('../node_modules/@react-native/gradle-plugin')

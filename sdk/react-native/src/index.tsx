@@ -75,3 +75,14 @@ export type {
   HopSendOptions,
 } from "./types";
 export type { HopNativeModule } from "./native";
+export { HopDriver, HopDriverEvent } from "./driver";
+export type {
+  DriverMessage,
+  DriverMessagesEvent,
+  DriverPeer,
+  DriverPermissionResult,
+  DriverSendResult,
+  DriverSubscription,
+  DriverTransports,
+  HopDriverNativeModule,
+} from "./driver";

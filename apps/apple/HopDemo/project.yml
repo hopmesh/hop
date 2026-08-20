@@ -40,7 +40,7 @@ targets:
     info:
       path: HopDemo-Info.plist
       properties:
-        CFBundleDisplayName: Hop Debug
+        CFBundleDisplayName: Hop Demo Native
         NSCameraUsageDescription: "Scan a Hop QR code to add someone as a contact."
         # Keep BLE alive in the background and wake on BLE events (DESIGN.md §22). `location`
         # lets us range the Hop iBeacon to extend the ~10s region-wake window so a relaunched

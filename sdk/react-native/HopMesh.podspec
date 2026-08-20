@@ -40,6 +40,25 @@ Pod::Spec.new do |s|
   # wrong archive. The MODULE is still Hop, so `import Hop` in ios/HopMesh.swift is unchanged.
   s.dependency "HopSDK"
 
+  # The Apple platform driver, which ios/HopDriverBridge.swift bridges to JavaScript as a second native
+  # module named `HopDriver`. Not a replacement for HopMesh: HopMesh exposes the node and link primitives
+  # and a host that only wants those still gets them. The driver is here because primitives alone left
+  # JavaScript responsible for a transport it does not have, so the React Native demo could only ever see
+  # an in-process loopback peer, never prompted for Bluetooth, and could not send a message.
+  #
+  # TWO THINGS THE APP'S Podfile MUST KNOW, because a podspec cannot decide either one.
+  #
+  # First, HopDriver's own graph is incomplete on purpose: its HopObjC, HopFFIBindings and five
+  # HopBearer* modules have no podspecs yet, so resolving this dependency fails at the author and names
+  # them. sdk/apple/HopDriver.podspec lists what each one needs.
+  #
+  # Second, the driver reaches the node through UniFFI, whose core is HopFFI.xcframework, while HopSDK
+  # above pulls in CHop, the C-ABI build. Measured with `nm`: both archives are named libhop.a and both
+  # export the full C ABI plus all 241 UniFFI symbols, so CocoaPods' -l"hop" resolves to whichever search
+  # path comes first and only ONE of them can be on the link line. The driver's build is the one carrying
+  # SQLCipher at-rest encryption, so choosing CHop silently disables it.
+  s.dependency "HopDriver"
+
   # New Architecture (Fabric/TurboModules) interop: the classic bridge module here runs under the
   # interop layer when the New Architecture is enabled, so no extra codegen is required.
   if respond_to?(:install_modules_dependencies, true)

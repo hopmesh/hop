@@ -99,7 +99,7 @@ Then('my address should be a base58 address', async () => {
   }
 });
 
-Then('I should be told discovery is unavailable without a bearer', async () => {
+Then('I should be told discovery uses the platform driver', async () => {
   await detoxExpect(element(by.id('bearer-note'))).toBeVisible();
 });
 
@@ -134,11 +134,13 @@ When('I send {string} to the person I can reach', async (body) => {
   await element(by.id('peer-row-0')).tap();
 
   if (body.length > 0) {
-    await bringIntoView(element(by.id('message-input')));
+    await waitFor(element(by.id('message-input')))
+      .toBeVisible()
+      .withTimeout(TIMEOUT);
     await element(by.id('message-input')).typeText(body);
 
-    // Read the composer back. On a ScrollView taller than the viewport a scroll can still be settling when
-    // the keystrokes arrive, and the text silently goes nowhere. One retry, then a precise failure.
+    // Read the pinned composer back. A real keyboard can still drop keystrokes during its opening
+    // animation, so retry once and then fail with the value that actually landed.
     //
     // The comparison is case-insensitive ON PURPOSE. A real soft keyboard auto-capitalizes the first letter
     // of a sentence, so typing "meet at dawn" genuinely produces "Meet at dawn" on the device. That is the
@@ -162,15 +164,17 @@ When('I send {string} to the person I can reach', async (body) => {
     composedBody = typed;
   }
 
-  await bringIntoView(element(by.id('send-button')));
+  await waitFor(element(by.id('send-button')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
   await element(by.id('send-button')).tap();
 });
 
 Then('the message should be reported as on its way', async () => {
-  // send-status renders BELOW the send button, so on a phone it is off screen the moment it appears. It is
-  // also where the LogBox dev banner sits, which is a second reason to scroll it up rather than assert it
-  // where it lands.
-  await bringIntoView(element(by.id('send-status')));
+  // The status shares the pinned composer area, so it must become visible without scrolling the thread.
+  await waitFor(element(by.id('send-status')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
   const text = await textOf('send-status');
   // The app reports the REAL HopStatus. Progress words must appear; an empty status or a failure must not
   // pass, which is what makes this assertion able to fail.
@@ -268,45 +272,31 @@ const readTextOrNull = async (matcher) => {
 
 Given('both devices are paired for this run', async () => {
   await pair.meet(PAIR_TIMEOUT);
+  await element(by.id('tab-status')).tap();
   await waitFor(element(by.id('own-address')))
     .toBeVisible()
     .withTimeout(TIMEOUT);
 });
 
-Given('this device is connected to the relay under test', async () => {
-  const url = pair.relayUrl();
-  // replaceText, not typeText: the field is prefilled with the compiled-in default.
-  await bringIntoView(element(by.id('relay-url-input')));
-  await element(by.id('relay-url-input')).replaceText(url);
-  await bringIntoView(element(by.id('relay-connect-button')));
-  await element(by.id('relay-connect-button')).tap();
-
-  // A socket that opens is NOT proof the relay accepted the link: the bearer carries opaque bytes and
-  // cannot see the Noise XX handshake. So `up` is only a precondition here, never the assertion.
+Given('the configured relay transport on this device is available', async () => {
+  await element(by.id('tab-relays')).tap();
   const state = await pair.waitFor(
-    `${pair.label()} to report the relay link up at ${url}`,
+    `${pair.label()} to report an active Relay transport`,
     async () => {
-      const s = await readTextOrNull(element(by.id('relay-status')));
-      if (s === 'up') return s;
-      if (s === 'down') {
-        const why =
-          (await readTextOrNull(element(by.id('relay-error')))) || 'no relay-error text rendered';
-        throw new Error(`${pair.label()} could not reach the relay at ${url}: ${why}`);
+      const value = await readTextOrNull(element(by.id('relay-status')));
+      if (value === 'active') return value;
+      if (value === 'off') {
+        throw new Error(`${pair.label()} reports that its Relay transport is off`);
       }
       return null;
     },
     PAIR_TIMEOUT,
-    () => `relay-status never left connecting. The relay at ${url} is unreachable from this device.`,
+    () => 'relay-status never became active, so this device has no live relay link',
   );
-  if (state !== 'up') {
-    throw new Error(`relay-status is ${JSON.stringify(state)}, expected up`);
+  if (state !== 'active') {
+    throw new Error(`relay-status is ${JSON.stringify(state)}, expected active`);
   }
-
-  // The redial actually took, rather than the field being edited and ignored.
-  const shown = await readText(element(by.id('relay-url')));
-  if (shown !== url) {
-    throw new Error(`relay-url shows ${JSON.stringify(shown)} but this device was pointed at ${url}`);
-  }
+  await element(by.id('tab-status')).tap();
 });
 
 Given('the two devices have exchanged addresses', async () => {
@@ -317,9 +307,8 @@ Given('the two devices have exchanged addresses', async () => {
   pair.publishAddress(mine);
   peerAddr = await pair.peerAddress(PAIR_TIMEOUT);
 
-  // The check that stops this suite from lying. If both processes drove the same device, or the same app
-  // instance twice, the two addresses would be identical and a "delivery" would just be the loopback pair
-  // inside one app. Two devices means two identities.
+  // The check that stops this suite from lying. If both processes drove the same device or app instance,
+  // the addresses would be identical. Two devices means two independently persisted identities.
   if (peerAddr === mine) {
     throw new Error(
       `both halves of the pair report the same Hop address (${mine}), so this is ONE device, not two. ` +
@@ -328,12 +317,32 @@ Given('the two devices have exchanged addresses', async () => {
   }
 });
 
+// The driver can send to a full address before presence discovery converges. Both halves open the other
+// address so the receiver is already looking at the correct thread when the event arrives.
+const openPeerAddress = async () => {
+  await element(by.id('tab-chats')).tap();
+  await bringIntoView(element(by.id('peer-address-input')));
+  await element(by.id('peer-address-input')).replaceText(peerAddr);
+  await bringIntoView(element(by.id('add-peer-button')));
+  await element(by.id('add-peer-button')).tap();
+  await waitFor(element(by.id('message-input')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
+};
+
 // Type the body and send. Separate from the step so the sender can repeat it.
 const sendBody = async (body) => {
-  await bringIntoView(element(by.id('message-input')));
+  await waitFor(element(by.id('message-input')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
   await element(by.id('message-input')).replaceText(body);
-  await bringIntoView(element(by.id('send-button')));
+  await waitFor(element(by.id('send-button')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
   await element(by.id('send-button')).tap();
+  await waitFor(element(by.id('send-status')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT);
   const status = await readText(element(by.id('send-status')));
   if (/fail/i.test(status)) {
     throw new Error(`${pair.label()} could not send: ${status}`);
@@ -342,29 +351,14 @@ const sendBody = async (body) => {
 
 When('the sending device sends {string} to the receiving device', async (text) => {
   lastBody = bodyFor(text);
+  await openPeerAddress();
 
   if (pair.role() !== 'sender') {
-    // The receiving device does nothing but wait: it must not touch its own send controls, or a message it
-    // displays might be one it sent to itself.
+    // The receiver opens only the sender's address. It never touches Send, so a matching incoming body
+    // cannot be one this process produced for itself.
     await pair.waitForFirstSend(PAIR_TIMEOUT);
     return;
   }
-
-  // The relay peer is reached by address, typed in. There is no discovery over a relay: the RN SDK has no
-  // discovery surface at all, so the address comes from the other device's screen and nowhere else.
-  await bringIntoView(element(by.id('peer-address-input')));
-  await element(by.id('peer-address-input')).replaceText(peerAddr);
-  await bringIntoView(element(by.id('add-peer-button')));
-  await element(by.id('add-peer-button')).tap();
-
-  const transport = await readText(element(by.id('peer-transport-1')));
-  if (!/relay/i.test(transport)) {
-    throw new Error(
-      `peer-row-1 reports transport ${JSON.stringify(transport)}, not relay. The typed address did not ` +
-        'become a relay peer, so a send would not cross the relay.',
-    );
-  }
-  await element(by.id('peer-row-1')).tap();
 
   await sendBody(lastBody);
   pair.recordSend(1, lastBody);
@@ -473,21 +467,19 @@ Then('the receiving device attributes it to the sending device', async () => {
     throw new Error('no row was matched, so there is nothing to attribute');
   }
 
-  // This is the assertion that rules out the receiving app having produced the message itself. The app
-  // also runs an in-process loopback peer, so "a message appeared" alone does not prove it came from the
-  // other device. The row must be attributed to the SENDER's identity, which this process only knows
-  // because the sender published the address it read off its own screen.
+  // This is the assertion that rules out the receiving app having produced the message itself. The row
+  // must be attributed to the SENDER's identity, which this process knows only because the sender
+  // published the address it read from its own driver.
   const from = await readText(element(by.id(`message-from-${matchedRow}`)));
-  // shortAddress() joins a leading and trailing run of 6 characters, so both ends appear verbatim. Match
-  // on those rather than the whole rendering, which also carries hop count and secured state.
+  // shortAddress() joins leading and trailing runs of 6 characters. Match both rather than the whole
+  // rendering, which also carries status and time.
   const head = peerAddr.slice(0, 6);
   const tail = peerAddr.slice(-6);
   if (!from.includes(head) || !from.includes(tail)) {
     throw new Error(
       `the message is not attributed to the sending device. Row ${matchedRow} reports from ` +
         `${JSON.stringify(from)}, which does not carry ${head}...${tail} from the sender's address ` +
-        `${peerAddr}. A body that appears without the sender's identity could have come from this app's ` +
-        'own loopback peer, so this run proves nothing about two devices.',
+        `${peerAddr}. Without the sender identity this run proves nothing about two devices.`,
     );
   }
 });

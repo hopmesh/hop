@@ -1,7 +1,8 @@
 PODS:
   - boost (1.84.0):
     - ReactNativeDependencies
-  - CHop (0.0.2)
+  - CHop (0.0.2):
+    - HopFFIBindings (= 0.0.2)
   - DoubleConversion (1.1.6):
     - ReactNativeDependencies
   - fast_float (8.0.0):
@@ -15,9 +16,30 @@ PODS:
   - hermes-engine (250829098.0.16):
     - hermes-engine/Pre-built (= 250829098.0.16)
   - hermes-engine/Pre-built (250829098.0.16)
+  - HopBearerBle (0.0.2):
+    - HopContract (= 0.0.2)
+  - HopBearerLan (0.0.2):
+    - HopContract (= 0.0.2)
+  - HopBearerMeshtastic (0.0.2):
+    - HopContract (= 0.0.2)
+  - HopBearerMultipeer (0.0.2):
+    - HopContract (= 0.0.2)
+  - HopBearerRelay (0.0.2):
+    - HopContract (= 0.0.2)
   - HopContract (0.0.2)
+  - HopDriver (0.0.2):
+    - HopBearerBle (= 0.0.2)
+    - HopBearerLan (= 0.0.2)
+    - HopBearerMeshtastic (= 0.0.2)
+    - HopBearerMultipeer (= 0.0.2)
+    - HopBearerRelay (= 0.0.2)
+    - HopContract (= 0.0.2)
+    - HopFFIBindings (= 0.0.2)
+    - HopObjC (= 0.0.2)
+  - HopFFIBindings (0.0.2)
   - HopMesh (0.0.2):
     - hermes-engine
+    - HopDriver
     - HopSDK
     - RCTRequired
     - RCTTypeSafety
@@ -39,6 +61,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - HopObjC (0.0.2)
   - HopSDK (0.0.2):
     - CHop (= 0.0.2)
     - HopContract (= 0.0.2)
@@ -1730,15 +1753,23 @@ PODS:
 
 DEPENDENCIES:
   - boost (from `build/rndeps-facades/boost`)
-  - CHop (from `../../../../sdk/apple/CHop.podspec`)
+  - CHop (from `../../../../sdk/apple`)
   - DoubleConversion (from `build/rndeps-facades/DoubleConversion`)
   - fast_float (from `build/rndeps-facades/fast_float`)
   - FBLazyVector (from `build/rncore-facades/FBLazyVector`)
   - fmt (from `build/rndeps-facades/fmt`)
   - glog (from `build/rndeps-facades/glog`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
+  - HopBearerBle (from `../../../../bearers/apple/HopBearerBle`)
+  - HopBearerLan (from `../../../../bearers/apple/HopBearerLan`)
+  - HopBearerMeshtastic (from `../../../../bearers/apple/HopBearerMeshtastic`)
+  - HopBearerMultipeer (from `../../../../bearers/apple/HopBearerMultipeer`)
+  - HopBearerRelay (from `../../../../bearers/apple/HopBearerRelay`)
   - HopContract (from `../../../../sdk/apple`)
+  - HopDriver (from `../../../../drivers/apple/HopDriver`)
+  - HopFFIBindings (from `../../../../drivers/apple/HopDriver`)
   - "HopMesh (from `../node_modules/@hop-mesh/react-native`)"
+  - HopObjC (from `../../../../drivers/apple/HopDriver`)
   - HopSDK (from `../../../../sdk/apple`)
   - RCT-Folly (from `build/rndeps-facades/RCT-Folly`)
   - RCTDeprecation (from `build/rncore-facades/RCTDeprecation`)
@@ -1826,7 +1857,7 @@ EXTERNAL SOURCES:
   boost:
     :path: build/rndeps-facades/boost
   CHop:
-    :podspec: "../../../../sdk/apple/CHop.podspec"
+    :path: "../../../../sdk/apple"
   DoubleConversion:
     :path: build/rndeps-facades/DoubleConversion
   fast_float:
@@ -1840,10 +1871,26 @@ EXTERNAL SOURCES:
   hermes-engine:
     :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
     :tag: hermes-v250829098.0.16
+  HopBearerBle:
+    :path: "../../../../bearers/apple/HopBearerBle"
+  HopBearerLan:
+    :path: "../../../../bearers/apple/HopBearerLan"
+  HopBearerMeshtastic:
+    :path: "../../../../bearers/apple/HopBearerMeshtastic"
+  HopBearerMultipeer:
+    :path: "../../../../bearers/apple/HopBearerMultipeer"
+  HopBearerRelay:
+    :path: "../../../../bearers/apple/HopBearerRelay"
   HopContract:
     :path: "../../../../sdk/apple"
+  HopDriver:
+    :path: "../../../../drivers/apple/HopDriver"
+  HopFFIBindings:
+    :path: "../../../../drivers/apple/HopDriver"
   HopMesh:
     :path: "../node_modules/@hop-mesh/react-native"
+  HopObjC:
+    :path: "../../../../drivers/apple/HopDriver"
   HopSDK:
     :path: "../../../../sdk/apple"
   RCT-Folly:
@@ -2009,15 +2056,23 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   boost: 8502bfdc46e2804408af2e163049ece181009af4
-  CHop: 89510ef3271b574220d99715f0bea315258efbe8
+  CHop: 7af51874eb0c0db43d53560762555fc913e27117
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
   fast_float: 7c925d1cebf8328d4018d061f49377e9f887e3b4
   FBLazyVector: 732df79fea96f10cc14477969cea05707026d2fd
   fmt: ba0886e864ebb21d14c98b2e12e164b8002f5b93
   glog: 3cf7cb46f743c4bc758ae3e6d9c15bd1b4cfd6d4
   hermes-engine: 6a26e94b4a974cbadc751eed9caa12624c38f226
+  HopBearerBle: e27faa8eb4f3ad7e3589dd6633083bb4ec660f9d
+  HopBearerLan: 64ee9986cbfe227f2236fb112fada2eae0058053
+  HopBearerMeshtastic: ad24a6c6db9485f7045025725eb3351eccd249d5
+  HopBearerMultipeer: 793f253abdc7b955726b880513724e16eb85230a
+  HopBearerRelay: 0ebe087de858e944c82b4aa158ff781c14083221
   HopContract: 7fc2b7335b8654e415681f192527270915d3e5af
-  HopMesh: d692a3673c42ffe2a3ce88d4bfc48d7c640bb3f6
+  HopDriver: ade058183b7550b1d8e8cf8bc823998678ab9dd8
+  HopFFIBindings: 3fdc5360854f0079fe09e3a2a4bf6b8d11299f4d
+  HopMesh: 755f3b278d003719323ce0e74736a799f7b41d5c
+  HopObjC: d6c9b6481f1f4e75f47d5156c5f04983b4141294
   HopSDK: bb69e91dce1ef97155991e7328f18a7528541281
   RCT-Folly: 82921e585c0400eda46fac1068297aa9dfb035e4
   RCTDeprecation: 6d66040b74f4be203495adda55b49c1a25190291
@@ -2100,6 +2155,6 @@ SPEC CHECKSUMS:
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   Yoga: d1c536142c5ff8ec8cd856ab2a7c227a1d875c8e
 
-PODFILE CHECKSUM: b95ae26ac16c0ac5cac551191738129cbe213ad2
+PODFILE CHECKSUM: 5043de88f953d5a3ade8c3ec28baf0b206310e0b
 
 COCOAPODS: 1.17.0
