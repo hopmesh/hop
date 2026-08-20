@@ -60,6 +60,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     let scheme = url.scheme ?? ""
     let host = url.host ?? ""
     NSLog("HOPBRIDGE url scheme=\(scheme) host=\(host)")
+    // Hand the URL to the Hop bridge as well, and do it BEFORE the React Native forward. Linking does
+    // not deliver on this stack (measured: this log line prints, the forward is accepted, and JavaScript
+    // still never sees the URL), so the bridge's own copy is what the app actually reads.
+    NotificationCenter.default.post(
+      name: Notification.Name("HopDriverAutomationURL"),
+      object: nil,
+      userInfo: ["url": url.absoluteString],
+    )
     let forwarded = RCTLinkingManager.application(app, open: url, options: options)
     if !forwarded {
       NSLog("HOPBRIDGE url forward failed scheme=\(scheme) host=\(host)")

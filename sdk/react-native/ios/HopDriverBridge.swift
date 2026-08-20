@@ -29,6 +29,42 @@ final class HopDriverBridge: RCTEventEmitter {
   private static let peersEvent = "HopDriver:peers"
   private static let messagesEvent = "HopDriver:messages"
   private static let transportsEvent = "HopDriver:transports"
+  private static let urlEvent = "HopDriver:url"
+
+  /// An automation URL that arrived before JavaScript asked for it.
+  ///
+  /// Static, and deliberately so: the AppDelegate receives `application(_:open:options:)` before any
+  /// React module instance is guaranteed to exist, and a URL dropped in that window is exactly the
+  /// automation command a harness just sent. `launchURL` collects it, mirroring the Android bridge.
+  private static let pendingURLLock = NSLock()
+  private static var pendingURL: String?
+
+  /// Called from the host app's AppDelegate. React Native's own Linking does not deliver on this stack:
+  /// measured on release builds of RN 0.87 bridgeless, an app launched or resumed through a URL boots and
+  /// reports its address while `getInitialURL()` resolves empty and the warm 'url' listener never fires,
+  /// even though the AppDelegate forward into RCTLinkingManager is accepted. So the bridge keeps its own
+  /// copy, which is the only source that cannot lie.
+  /// The notification the host app's AppDelegate posts when a URL arrives. A notification rather than a
+  /// public entry point keeps this class internal to its pod: widening the pod's surface for one call
+  /// would be the only reason to make it public.
+  static let automationURLNotification = Notification.Name("HopDriverAutomationURL")
+
+  @objc(deliverURL:)
+  static func deliverURL(_ url: String) {
+    let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    pendingURLLock.lock()
+    pendingURL = trimmed
+    pendingURLLock.unlock()
+  }
+
+  private static func takePendingURL() -> String? {
+    pendingURLLock.lock()
+    defer { pendingURLLock.unlock() }
+    let url = pendingURL
+    pendingURL = nil
+    return url
+  }
 
   /// The UserDefaults key the batch contract fixes for the demo participant name. Deliberately NOT
   /// the driver's own `hop.displayName`: this one is written by JavaScript (which owns generating the
@@ -66,10 +102,27 @@ final class HopDriverBridge: RCTEventEmitter {
 
   // MARK: React Native plumbing
 
+  override init() {
+    super.init()
+    NotificationCenter.default.addObserver(
+      forName: HopDriverBridge.automationURLNotification,
+      object: nil,
+      queue: nil,
+    ) { note in
+      guard let url = note.userInfo?["url"] as? String else { return }
+      HopDriverBridge.deliverURL(url)
+    }
+  }
+
   override static func requiresMainQueueSetup() -> Bool { false }
 
   override func supportedEvents() -> [String]! {
-    [HopDriverBridge.peersEvent, HopDriverBridge.messagesEvent, HopDriverBridge.transportsEvent]
+    [
+      HopDriverBridge.peersEvent,
+      HopDriverBridge.messagesEvent,
+      HopDriverBridge.transportsEvent,
+      HopDriverBridge.urlEvent,
+    ]
   }
 
   override func startObserving() { hasListeners = true }
@@ -474,6 +527,13 @@ final class HopDriverBridge: RCTEventEmitter {
       guard let bearer else { return [[String: Any]]() }
       return (threads(from: bearer.messages, bearer: bearer)[key] ?? []).map(HopDriverBridge.messageBody)
     })
+  }
+
+  /// The automation URL this app was launched or resumed with, consumed once so a later resume cannot
+  /// replay a stale command. Matches the Android bridge's `launchURL`.
+  @objc(launchURL:rejecter:)
+  func launchURL(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    resolve(HopDriverBridge.takePendingURL())
   }
 
   @objc(selfAddress:rejecter:)
