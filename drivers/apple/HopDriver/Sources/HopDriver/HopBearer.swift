@@ -566,7 +566,7 @@ public final class HopBearer: NSObject, ObservableObject {
     public func backgroundTick() {
         let now = HopBearer.nowMs()
         tickCount += 1
-        let doPrekey = tickCount % 120 == 0
+        let doPrekey = tickCount % 20 == 0
         // Tick the node clock (+ periodic prekey re-publish) on core.
         core.async { [weak self] in
             guard let self else { return }

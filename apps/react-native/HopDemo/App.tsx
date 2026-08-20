@@ -106,6 +106,7 @@ export default function App(): React.JSX.Element {
   const selectedRef = useRef<string | null>(null);
   const loggedIncomingRef = useRef(new Set<string>());
   const pendingAutomationRef = useRef<string[]>([]);
+  const lastTransportsJsonRef = useRef('');
 
   // React Native 0.87 is edge-to-edge on Android, so adjustResize alone does not lift the composer.
   // Paying the measured keyboard height as scroll padding gives the focused input and Send button room
@@ -202,8 +203,13 @@ export default function App(): React.JSX.Element {
     }
     try {
       await HopDriver.setTransportEnabled(transport, enabledValue === 'true');
+      const nextTransports = await HopDriver.transports();
+      lastTransportsJsonRef.current = JSON.stringify(nextTransports);
+      console.log('HOPXPORT', lastTransportsJsonRef.current);
+      setTransports(nextTransports);
     } catch (cause) {
       setTransportError(String(cause));
+      console.log('HOPXPORT', JSON.stringify({error: String(cause), transport, enabled: enabledValue}));
     }
   }, []);
 
@@ -375,9 +381,11 @@ export default function App(): React.JSX.Element {
         }
         setPeers(nextPeers);
         setTransports(nextTransports);
-        // A low-rate heartbeat, counts only. It is the app-side counterpart of the bridge's own state
-        // line, and it is what makes the list verifiable on a phone whose screen cannot be read (a
-        // secure keyguard blocks a UI dump while logcat keeps working).
+        const transportsJson = JSON.stringify(nextTransports);
+        if (transportsJson !== lastTransportsJsonRef.current) {
+          lastTransportsJsonRef.current = transportsJson;
+          console.log('HOPXPORT', transportsJson);
+        }
         if (ticks++ % 10 === 0) {
           console.log(
             'HOPPOLL',
@@ -389,11 +397,16 @@ export default function App(): React.JSX.Element {
           );
         }
         const open = selectedRef.current;
-        if (open != null) {
-          const messages = await HopDriver.messages(open);
-          if (!cancelled && mountedRef.current) {
-            applyMessages(open, messages, true);
+        const peersToScan = nextPeers.map(peer => peer.address);
+        if (open != null && !peersToScan.includes(open)) {
+          peersToScan.push(open);
+        }
+        for (const peerAddress of peersToScan) {
+          const messages = await HopDriver.messages(peerAddress);
+          if (cancelled || !mountedRef.current) {
+            return;
           }
+          applyMessages(peerAddress, messages, true);
         }
       } catch (cause) {
         console.log('HOPPOLL', JSON.stringify({error: String(cause)}));

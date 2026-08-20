@@ -152,11 +152,27 @@ final class HopDriverBridge: RCTEventEmitter {
     timer.schedule(deadline: .now(), repeating: .seconds(5), leeway: .milliseconds(250))
     timer.setEventHandler { [weak self, weak bearer] in
       guard let self, let bearer else { return }
+      var xport: [String: String] = [:]
+      let states = bearer.transportStates()
+      let links = bearer.activeTransportCounts()
+      for row in bearer.transports {
+        let on = row.tag.flatMap { states[$0] } ?? row.enabled
+        let n = row.tag.flatMap { links[$0] } ?? row.links
+        xport[row.id] = on ? (n > 0 ? "active" : "idle") : "off"
+      }
+      let xportJson: String
+      if let data = try? JSONSerialization.data(withJSONObject: xport),
+         let text = String(data: data, encoding: .utf8) {
+        xportJson = text
+      } else {
+        xportJson = "{}"
+      }
       NSLog(
         "HOPBRIDGE state peers=\(bearer.reachable.count) seen=\(bearer.seen.count) "
           + "links=\(bearer.linkTransports.count) transports=\(bearer.transports.count) "
           + "messages=\(bearer.messages.count) mirroring=\(self.heartbeat != nil)"
       )
+      NSLog("HOPXPORT \(xportJson)")
     }
     heartbeat = timer
     timer.resume()
@@ -377,9 +393,10 @@ final class HopDriverBridge: RCTEventEmitter {
       emittedThreads[peer] = signature
       emittedThreadCounts[peer] = thread.count
       if thread.count > previousCount {
-        // The one address-bearing diagnostic the device proof needs: an opaque base58 PREFIX and a
-        // count, never a display name or message body. It proves a thread grew on this device.
         NSLog("HOPBRIDGE thread grew peer=\(peer.prefix(8)) n=\(thread.count)")
+        if let newest = thread.last, newest.incoming {
+          NSLog("HOPRECV from=\(peer.prefix(8)) body=\(newest.text)")
+        }
       }
     }
     // A thread that disappeared (retention trimmed it) must be reported as empty, or the JavaScript

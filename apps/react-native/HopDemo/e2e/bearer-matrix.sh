@@ -42,9 +42,10 @@ die()  { echo "FAIL: $*" >&2; exit 1; }
 adb_app() { adb -s "$ANDROID_SERIAL" "$@"; }
 
 android_url() {
-  # `am start -a VIEW -d <url>` is how the intent filter is reached. Quoting matters: the ampersand in a
-  # query string is a shell operator and would otherwise background the command.
-  adb_app shell am start -a android.intent.action.VIEW -d "$1" >/dev/null 2>&1
+  # adb shell concatenates argv into a remote shell line. The ampersand in a query string is a
+  # shell operator there, so an unquoted -d URL drops everything after the first &. Wrap the whole
+  # am command so name= and enabled= (and send's text=) actually reach the app.
+  adb_app shell "am start -a android.intent.action.VIEW -d '$1'" >/dev/null 2>&1
 }
 
 ios_url() {
@@ -114,17 +115,27 @@ note "android: $AND_NAME  $AND_ADDR"
 # The bearers to exercise come from what the devices actually report, not from a hardcoded list, so a
 # transport added to the driver later is covered without editing this file.
 BEARERS="$(ios_lines HOPXPORT | tail -1 | sed 's/.*HOPXPORT //' \
-  | python3 -c 'import json,sys; print(" ".join(sorted(json.load(sys.stdin))))' 2>/dev/null)"
+  | python3 -c 'import json,sys; print("\n".join(sorted(k for k in json.load(sys.stdin) if k not in ("LoRa","Meshtastic","LoRaWAN","Peer-to-Peer"))))' 2>/dev/null)"
 [ -n "$BEARERS" ] || die "the iphone never reported its transports (HOPXPORT); cannot enumerate bearers"
-note "bearers reported: $BEARERS"
+note "bearers reported: $(echo "$BEARERS" | tr '\n' ' ') (LoRa and Peer-to-Peer skipped: no bonded radio / Android has no Multipeer)"
 
 set_only_bearer() {
   # Enable exactly one bearer on both devices, then CONFIRM from HOPXPORT rather than trusting the toggle.
   local keep="$1" b
-  for b in $BEARERS; do
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
     local want=false; [ "$b" = "$keep" ] && want=true
-    android_url "hopdemo://bearer?name=$b&enabled=$want"
-    ios_url     "hopdemo://bearer?name=$b&enabled=$want"
+    local encoded
+    encoded="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$b")"
+    android_url "hopdemo://bearer?name=$encoded&enabled=$want"
+    ios_url     "hopdemo://bearer?name=$encoded&enabled=$want"
+  done <<< "$BEARERS"
+  # Also switch off the skipped radios so they cannot carry the message.
+  for b in LoRa "Peer-to-Peer"; do
+    local encoded
+    encoded="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$b")"
+    android_url "hopdemo://bearer?name=$encoded&enabled=false"
+    ios_url     "hopdemo://bearer?name=$encoded&enabled=false"
   done
   sleep 3
   local ios_state and_state
@@ -161,7 +172,8 @@ send_and_expect() {
   fi
 }
 
-for bearer in $BEARERS; do
+while IFS= read -r bearer; do
+  [ -n "$bearer" ] || continue
   echo
   echo "=== bearer: $bearer ==="
   if ! set_only_bearer "$bearer"; then
@@ -177,7 +189,7 @@ for bearer in $BEARERS; do
       FAILURES+=("$bearer: $direction")
     fi
   done
-done
+done <<< "$BEARERS"
 
 echo
 if [ ${#FAILURES[@]} -eq 0 ]; then

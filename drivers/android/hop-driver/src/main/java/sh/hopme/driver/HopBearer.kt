@@ -335,6 +335,13 @@ class HopBearer internal constructor(
                 bearerLinks.add(link)
                 linkFlow.linkUp(link, t)   // quality-net-07: start per-link tx/rx counters
                 node.connected(link.toULong(), role == sh.hop.HopRole.DIALER)
+                // A prekey published before any link was up is queued with nowhere to go. Re-publish
+                // on the first live link so the advert is offered on this path immediately, instead of
+                // waiting for the periodic tick. Measured on device: a BT hop-link to the peer can sit
+                // up for a minute with sec=false because the peer never ingested our prekey.
+                if (bearerLinks.size == 1) {
+                    runCatching { node.publishPrekey() }
+                }
                 pump()   // ship the dialer's queued Noise m1 immediately (mirrors legacy addLink / Apple linkUp)
             }
         }
@@ -466,7 +473,7 @@ class HopBearer internal constructor(
                 if (++ticks % 20 == 0) publishPresence()
                 // Re-publish our prekey periodically so a neighbour whose cached copy lapsed
                 // (or who arrived later) can always open a forward-secret session to us (§25).
-                if (ticks % 120 == 0) runCatching { node.publishPrekey() }
+                if (ticks % 20 == 0) runCatching { node.publishPrekey() }
                 if (ticks % 15 == 0 && DriverFlags.verboseContentLogs) android.util.Log.i("HOPLOG", "HOPAUTO self=$myAddressVal name=${config.deviceName}")  // periodic, so the harness always finds it (android-r2-05: debug only)
                 hns.expireHopsWeb()   // android-13: fail out WebView fetches whose resolve/response never arrived
                 pump()
