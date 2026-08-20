@@ -496,18 +496,29 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  /** Counts only, never a name, an address or message text, so it is safe in a release build.
+  /** Counts, plus one opaque row per peer, so a bridge that holds peers the UI does not render can be
+   *  told apart from a bridge that holds none. A row is an address PREFIX with hops and reachability,
+   *  never a display name or message text, which keeps it safe in a release build (a peer's address is
+   *  already visible to everyone on the mesh, and eight characters of it is not).
    *
    *  This is the line that separates "the driver's collections are empty" from "the event path is
-   *  dead". The driver writes peers, seen and linkTransports in ONE onUi block at the end of its
-   *  refresh, so linkTransports greater than zero with peers at zero means links exist but no presence
-   *  advert has arrived, while everything at zero WHILE the driver is logging peerLinks lines means the
-   *  driver's writes are not reaching this reader at all. */
+   *  dead", and now also from "the app filtered every row it was given". The driver writes peers, seen
+   *  and linkTransports in ONE onUi block at the end of its refresh, so linkTransports greater than
+   *  zero with peers at zero means links exist but no presence advert has arrived, while everything at
+   *  zero WHILE the driver is logging peerLinks lines means the driver's writes are not reaching this
+   *  reader at all. */
   private fun logState(b: HopBearer) {
+    val self = runCatching { addressBase58(b.node.address()) }.getOrNull() ?: ""
+    val rows = peerRows(b).joinToString(" ") { (p, reachable) ->
+      val addr = addressBase58(p.address)
+      val tag = if (addr == self) "SELF" else if (reachable) "up" else "seen"
+      "${addr.take(8)}/$tag/h${p.hops.toInt()}"
+    }
     Log.i(
       TAG,
       "HOPBRIDGE state peers=${b.peers.size} seen=${b.seen.size} links=${b.linkTransports.size} " +
-        "transports=${b.transports.size} messages=${b.messages.size} mirroring=$mirroring",
+        "transports=${b.transports.size} messages=${b.messages.size} mirroring=$mirroring " +
+        "self=${self.take(8)} rows=[$rows]",
     )
   }
 
@@ -699,6 +710,14 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
   /** Returns whether the event actually went out, so a caller only records the payload as sent when it
    *  was. Recording it regardless would poison the diff cache: the state would look "already sent" and
    *  never be emitted again, which is indistinguishable from an empty mesh. */
+  /** Publish an event to JavaScript.
+   *
+   *  `getJSModule(RCTDeviceEventEmitter).emit` does NOT deliver on this stack. Measured on a release
+   *  build, React Native 0.87 bridgeless: seven events logged as emitted with an active React instance
+   *  and zero drops, while BOTH a NativeEventEmitter subscription and a DeviceEventEmitter subscription
+   *  in JavaScript received nothing at all. `ReactContext.emitDeviceEvent` is the path that works in
+   *  bridgeless and legacy alike, so it is the one used here.
+   */
   private fun emit(event: String, body: Any, count: Int): Boolean {
     if (!reactContext.hasActiveReactInstance()) {
       // Worth a warning rather than a silent return: an event dropped here looks exactly like a mesh
@@ -706,9 +725,7 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
       Log.w(TAG, "HOPBRIDGE dropped $event n=$count: no active react instance")
       return false
     }
-    reactContext
-      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-      .emit(event, body)
+    reactContext.emitDeviceEvent(event, body)
     Log.i(TAG, "HOPBRIDGE emit $event n=$count")
     return true
   }

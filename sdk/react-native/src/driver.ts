@@ -83,16 +83,40 @@ function nativeDriver(): HopDriverNativeModule {
   return module;
 }
 
+/**
+ * Events are taken from the device event emitter directly, not through NativeEventEmitter.
+ *
+ * Measured on a release build, React Native 0.87 bridgeless on Android: the native module logged
+ * `emit HopDriver:peers n=3` with an active React instance and no drop, while a NativeEventEmitter
+ * subscription built from the module never fired once in 45 seconds. The device emitter is the channel
+ * the native side actually publishes on (`getJSModule(RCTDeviceEventEmitter).emit`), so this subscribes
+ * to exactly that.
+ *
+ * The module's own addListener/removeListeners are still called, because iOS RCTEventEmitter uses them
+ * as its start and stop observing signal: skipping them would leave an iOS bridge that never publishes.
+ */
 function driverEmitter(): {
   addListener(event: string, listener: (payload: unknown) => void): DriverSubscription;
 } {
   if (cachedEmitter) return cachedEmitter;
-  const { NativeEventEmitter } = require("react-native");
-  const emitter = new NativeEventEmitter(nativeDriver()) as {
-    addListener(event: string, listener: (payload: unknown) => void): DriverSubscription;
+  const { DeviceEventEmitter } = require("react-native");
+  cachedEmitter = {
+    addListener(event: string, listener: (payload: unknown) => void): DriverSubscription {
+      const module = nativeDriver();
+      module.addListener(event);
+      const subscription = DeviceEventEmitter.addListener(event, listener);
+      // Proves the subscription exists at all: a listener that was never registered and an event that
+      // never arrives are indistinguishable from the JavaScript side otherwise.
+      console.log('HOPSUB', event);
+      return {
+        remove() {
+          subscription.remove();
+          module.removeListeners(1);
+        },
+      };
+    },
   };
-  cachedEmitter = emitter;
-  return emitter;
+  return cachedEmitter;
 }
 
 export const HopDriver = {

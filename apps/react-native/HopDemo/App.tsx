@@ -259,6 +259,7 @@ export default function App(): React.JSX.Element {
       }
 
       console.log('HOPSELF', JSON.stringify({address: ownAddress, name}));
+      console.log('HOPPULL', JSON.stringify({peers: initialPeers.length}));
       setAddress(ownAddress);
       setPeers(initialPeers);
       setTransports(initialTransports);
@@ -281,7 +282,16 @@ export default function App(): React.JSX.Element {
     let subscriptions: DriverSubscription[] = [];
     try {
       subscriptions = [
-        HopDriver.onPeers(setPeers),
+        HopDriver.onPeers(nextPeers => {
+          // Counts only, and it earns its place: the native bridge was measured emitting three peers on
+          // device while this list rendered "looking for others", so the question of WHERE the rows are
+          // lost has to be answerable from the app side too, not just the bridge side.
+          console.log(
+            'HOPPEERS',
+            JSON.stringify({n: nextPeers.length, up: nextPeers.filter(p => p.active).length}),
+          );
+          setPeers(nextPeers);
+        }),
         HopDriver.onMessages(event => applyMessages(event.peer, event.messages, true)),
         HopDriver.onTransports(nextTransports => {
           console.log('HOPXPORT', JSON.stringify(nextTransports));
@@ -336,6 +346,66 @@ export default function App(): React.JSX.Element {
       bridgeSubscription.remove();
     };
   }, [runAutomationURL]);
+
+  // Mesh state is POLLED, not awaited from events.
+  //
+  // Measured on a release build, React Native 0.87 bridgeless on Android, in one process: JavaScript
+  // registered its subscriptions (HOPSUB for all four events) at 02:29:22.540, the native module emitted
+  // HopDriver:peers with three rows at 02:29:23.417 with an active React instance and no drop, and the
+  // listener never fired. Three publish paths were tried from the native side, getJSModule with
+  // RCTDeviceEventEmitter, ReactContext.emitDeviceEvent, and a DeviceEventEmitter subscription in place
+  // of NativeEventEmitter, and none delivered. Promise-returning calls work, so the bridged reads are the
+  // channel this app can actually rely on. A one-second poll is cheap next to a mesh that changes on the
+  // order of seconds, and it also fixes the startup race the single pull had: peers() answered zero
+  // before discovery converged and nothing ever replaced that answer.
+  useEffect(() => {
+    if (phase !== 'running') {
+      return;
+    }
+    let cancelled = false;
+    let ticks = 0;
+    const tick = async () => {
+      try {
+        const [nextPeers, nextTransports] = await Promise.all([
+          HopDriver.peers(),
+          HopDriver.transports(),
+        ]);
+        if (cancelled || !mountedRef.current) {
+          return;
+        }
+        setPeers(nextPeers);
+        setTransports(nextTransports);
+        // A low-rate heartbeat, counts only. It is the app-side counterpart of the bridge's own state
+        // line, and it is what makes the list verifiable on a phone whose screen cannot be read (a
+        // secure keyguard blocks a UI dump while logcat keeps working).
+        if (ticks++ % 10 === 0) {
+          console.log(
+            'HOPPOLL',
+            JSON.stringify({
+              peers: nextPeers.length,
+              up: nextPeers.filter(peer => peer.active).length,
+              transports: Object.keys(nextTransports).length,
+            }),
+          );
+        }
+        const open = selectedRef.current;
+        if (open != null) {
+          const messages = await HopDriver.messages(open);
+          if (!cancelled && mountedRef.current) {
+            applyMessages(open, messages, true);
+          }
+        }
+      } catch (cause) {
+        console.log('HOPPOLL', JSON.stringify({error: String(cause)}));
+      }
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [phase, applyMessages]);
 
   const openPeer = useCallback(
     (peerAddress: string) => {
