@@ -340,7 +340,7 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
   fun peers(promise: Promise) = onMain(promise, E_STATE) {
     val b = requireBearer(promise) ?: return@onMain
     val arr = Arguments.createArray()
-    for (p in peerRows(b)) arr.pushMap(peerMap(p))
+    for ((p, reachable) in peerRows(b)) arr.pushMap(peerMap(p, reachable))
     logState(b)
     promise.resolve(arr)
   }
@@ -523,25 +523,33 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
   }
 
   /** Reachable peers first, then the ones only seen before, which is the order the native demo's chat
-   *  list shows them in. The driver keeps the two lists disjoint. */
-  private fun peerRows(b: HopBearer): List<HopBearer.Peer> = b.peers.toList() + b.seen.toList()
+   *  list shows them in. The driver keeps the two lists disjoint.
+   *
+   *  The Boolean is the CONTRACT's `active`, meaning routable right now, and it comes from WHICH list the
+   *  row was in. It is deliberately not the driver's own `Peer.active`, which means the far end's app is
+   *  foregrounded: measured on device, every row in `b.peers` carried active=false while the mesh had
+   *  four links up, so mapping that field put every reachable peer in the app's offline bucket and the
+   *  chat list rendered "none" while the bridge was emitting three peers. The Apple bridge maps
+   *  reachability the same way, so the two platforms agree. */
+  private fun peerRows(b: HopBearer): List<Pair<HopBearer.Peer, Boolean>> =
+    b.peers.toList().map { it to true } + b.seen.toList().map { it to false }
 
   private fun publishPeers(b: HopBearer) {
     val rows = peerRows(b)
     val sig = StringBuilder()
-    for (p in rows) {
+    for ((p, reachable) in rows) {
       sig.append(addressBase58(p.address)).append('\u0001').append(p.name)
         .append('\u0001').append(p.hops.toInt()).append('\u0001').append(p.platform)
-        .append('\u0001').append(p.app).append('\u0001').append(p.active).append('\n')
+        .append('\u0001').append(p.app).append('\u0001').append(reachable).append('\n')
     }
     val key = sig.toString()
     if (key == lastPeers) return
     val arr = Arguments.createArray()
-    for (p in rows) arr.pushMap(peerMap(p))
+    for ((p, reachable) in rows) arr.pushMap(peerMap(p, reachable))
     if (emit(EVENT_PEERS, arr, rows.size)) lastPeers = key
   }
 
-  private fun peerMap(p: HopBearer.Peer): WritableMap = Arguments.createMap().apply {
+  private fun peerMap(p: HopBearer.Peer, reachable: Boolean): WritableMap = Arguments.createMap().apply {
     putString("address", addressBase58(p.address))
     // Never empty. An advert with no name renders as a short base58 prefix, the same fallback the
     // driver's own displayName uses, so a peer is always addressable by something a human can read.
@@ -549,7 +557,7 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
     putInt("hops", p.hops.toInt())
     putString("platform", p.platform)
     putString("app", p.app)
-    putBoolean("active", p.active)
+    putBoolean("active", reachable)
   }
 
   private fun publishTransports(b: HopBearer) {
