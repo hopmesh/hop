@@ -9385,13 +9385,14 @@ impl<S: Store> Node<S> {
 
     fn on_advert(&mut self, from_link: LinkId, peer: PubKeyBytes, advert: Advert) {
         let _ = peer; // reserved for finer-grained relay scoring (DESIGN.md §18)
-        if !self.allow_advert_ingest(from_link) {
-            return;
-        }
-        // Service adverts flood the directory (subscribed → full retention, else the
-        // bounded relay cache). Re-gossip only when newly accepted.
         let is_prekey = matches!(advert.body.kind, AdvertKind::PreKey { .. });
         let prekey_publisher = advert.body.publisher;
+        // Prekeys must not compete with the service/HPS flood for the ingest window. Measured on
+        // two phones with a live BT hop-link: NODESTATE showed the peer (sec=false) for a minute
+        // while send_message deferred, because this gate dropped the SPK advert.
+        if !is_prekey && !self.allow_advert_ingest(from_link) {
+            return;
+        }
         // (The §39 receiver-beacon used to be decoded out of the advert here. It is no longer an
         // advert at all: see `Node::on_recv_beacon`.)
         let accepted = self.directory.ingest(advert, self.now_ms).unwrap_or(false);
@@ -18773,6 +18774,54 @@ mod tests {
         node.set_time(ADVERT_VERIFY_WINDOW_MS);
         node.on_advert(9, publisher.address(), valid.clone());
         assert!(node.directory.contains(&valid.id));
+    }
+
+    #[test]
+    fn prekey_advert_bypasses_the_ingest_rate_limit() {
+        let mut src = Node::new(Identity::generate());
+        src.set_time(1_000);
+        src.publish_prekey().unwrap();
+        let advert = src
+            .directory
+            .gossip_offer(&HashSet::new())
+            .into_iter()
+            .find(|a| matches!(a.body.kind, AdvertKind::PreKey { .. }))
+            .expect("published prekey is in the directory");
+        let publisher = src.address();
+
+        let flooder = Identity::generate();
+        let valid = Advert::publish(
+            &flooder,
+            AdvertKind::HpsTopic {
+                nonce: [0u8; 12],
+                ct: vec![],
+            },
+            0,
+            60_000,
+            1,
+        )
+        .unwrap();
+        let mut invalid = valid.clone();
+        invalid.sig[0] ^= 1;
+
+        let mut node = Node::new(Identity::generate());
+        node.set_time(1_000);
+        for link in 1..=8 {
+            for _ in 0..MAX_ADVERTS_PER_LINK_WINDOW {
+                node.on_advert(link, flooder.address(), invalid.clone());
+            }
+        }
+        assert_eq!(node.advert_ingest_global.1, MAX_ADVERTS_GLOBAL_WINDOW);
+        node.on_advert(9, flooder.address(), valid.clone());
+        assert!(
+            !node.directory.contains(&valid.id),
+            "service adverts still hit the window"
+        );
+        node.on_advert(9, publisher, advert);
+        assert!(
+            node.directory.prekey(&publisher).is_some(),
+            "a prekey must ingest even when the advert window is exhausted"
+        );
     }
 
     #[test]

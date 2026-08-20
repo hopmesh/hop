@@ -738,7 +738,14 @@ impl Directory {
     /// Adverts a peer hasn't seen yet, the gossip offer set for this contact
     /// (service broadcasts: subscribed + relayed).
     pub fn gossip_offer(&self, peer_seen: &HashSet<AdvertId>) -> Vec<Advert> {
-        self.all().filter(|a| !peer_seen.contains(&a.id)).collect()
+        let mut offer: Vec<Advert> = self.all().filter(|a| !peer_seen.contains(&a.id)).collect();
+        // Prekeys first. A rate-limited BLE or relay link that spends its ingest window on
+        // service/HPS flood never learns a peer's SPK, and every send to that peer defers forever.
+        offer.sort_by_key(|advert| match advert.body.kind {
+            AdvertKind::PreKey { .. } => 0u8,
+            _ => 1u8,
+        });
+        offer
     }
 
     /// Advert ids we currently hold that were published by `pubk`, our OWN prekey/presence when
