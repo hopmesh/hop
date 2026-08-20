@@ -11,20 +11,24 @@
     "e2e:build:ios": "detox build --configuration ios.sim.debug",
     "e2e:build:android": "detox build -c android.emu.debug",
     "e2e:ios": "detox test --configuration ios.sim.debug",
-    "e2e:android": "detox test -c android.emu.debug",
+    "e2e:android": "npm run e2e:preflight && detox test -c android.attached.debug",
     "e2e:guard": "jest e2e/testids.test.js",
     "e2e:dry": "cucumber-js --dry-run  # informational only: cannot fail, see cucumber.js",
-    "e2e:android:smoke": "detox test -c android.emu.debug -- --profile smoke",
+    "e2e:android:smoke": "npm run e2e:preflight && detox test -c android.attached.debug -- --profile smoke",
     "e2e:multi": "cucumber-js --profile multi --dry-run",
     "e2e:pair": "node e2e/pair/run-pair.mjs",
-    "e2e:pair:android": "node e2e/pair/run-pair.mjs --a android.attached.debug --b android.emu.debug --relay local"
+    "e2e:pair:android": "node e2e/pair/run-pair.mjs --a android.attached.debug --b android.emu.debug --relay local",
+    "e2e:preflight": "node e2e/preflight.mjs"
   },
   "dependencies": {
     "@hop-mesh/react-native": "file:../../../sdk/react-native",
     "@react-native/new-app-screen": "0.87.0",
+    "@react-navigation/bottom-tabs": "^7.18.16",
     "react": "19.2.3",
     "react-native": "0.87.0",
-    "react-native-safe-area-context": "^5.5.2"
+    "react-native-safe-area-context": "^5.5.2",
+    "react-native-vector-icons": "^10.3.0",
+    "react-navigation": "^5.0.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

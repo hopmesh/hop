@@ -7,6 +7,16 @@ apply plugin: "com.facebook.react"
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
+    // EMBED the JS bundle in the debug APK by declaring NO debuggable variants.
+    //
+    // `debuggableVariants` lists the variants that are allowed to fetch their bundle from Metro at launch.
+    // The template lists debug, which means the app on a real phone dies the moment the workstation's
+    // bundler does, showing the red "Unable to load script" screen. That is not a deployable app, and it
+    // also burned a 25-minute device suite that failed all nine scenarios while the phone sat on that red
+    // screen. Empty means every variant, debug included, gets the bundle compiled in, so the APK stands
+    // alone. (`bundleInDebug` is NOT a property of this extension in React Native 0.87: setting it fails
+    // the configuration phase with "Could not set unknown property".)
+    debuggableVariants = []
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
     // root = file("../../")
@@ -146,3 +156,9 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("junit:junit:4.13.2")
 }
+
+
+// react-native-vector-icons ships its Font Awesome TTFs as an assets copy step, not as autolinked native
+// code, so without this apply the APK contains ZERO font files and every <Icon> renders as nothing. Found
+// by unzipping the built APK and counting .ttf entries: 0.
+apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")

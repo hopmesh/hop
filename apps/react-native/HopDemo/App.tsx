@@ -1,26 +1,18 @@
-// HopDemo, React Native. A port of the two native HopDemo apps (apps/apple/HopDemo, SwiftUI, and
-// apps/android/HopDemo, Compose) onto @hop-mesh/react-native, so one codebase exercises the bridge on
-// both platforms.
+// HopDemo, React Native. The port of the native demos (apps/apple SwiftUI, apps/android Compose), not a
+// sketch beside them: the same four tabs (Chats, Relays, Web, Status), the same chat thread with bubbles
+// and a meta line per message, the same pulsing "awaiting peers" indicator, and the Hop signal green on
+// the buttons, from src/theme.ts. Layout rules that cost a round trip on a real device are baked in here:
+// real safe areas via react-native-safe-area-context on every edge (the react-native built-in
+// SafeAreaView is iOS-only and a no-op on Android), and a keyboard-aware composer (measured keyboard
+// height paid as scroll padding, the focused field scrolled into view, taps persisted while typing).
 //
-// THE APP RUNS TWO PATHS AT ONCE, and the difference matters.
-//
-// 1. An in-process loopback pair (src/loopback.ts). Two nodes in this process, wired to each other.
-//    This device is "you"; the second node stands in for a peer. Everything between them is real:
-//    real Rust core, real sealing, real inbox. It proves the core and the bridge work on this device,
-//    and it works with no network at all. What it cannot do, by construction, is reach another device.
-//
-// 2. A relay link from THIS device's node to a hop-relayd WebSocket front door (src/relayBearer.ts).
-//    That is a real bearer, not a stand-in: relayd's WS door is an opaque byte pipe, one core packet
-//    per binary frame, and the link's Noise handshake happens inside the node. This is what lets a
-//    node on ANOTHER device reach this one, and it is how a two-device message actually travels.
-//
-// What is still missing, stated plainly rather than implied away: there is no radio bearer in the
-// React Native SDK, no BLE and no LAN, so nothing here DISCOVERS a peer. A peer is reached by knowing
-// its address, which is why this screen lets you paste one.
+// What this app cannot yet do, it says on screen instead of faking: see the Web tab and the QR row.
 
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -37,52 +29,39 @@ import {
 // iOS-only, a no-op on Android, and deprecated, so with edge-to-edge enabled by default on modern Android
 // it silently does nothing and this screen drew its first line above the status bar clock on a Pixel 7.
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
+// Font Awesome glyphs, the same icon set both native demos use for their tab bar and row actions.
+import Icon from 'react-native-vector-icons/FontAwesome6';
 import {
   Hop,
   HopAddress,
-  HopNode,
   HopMessage,
+  HopNode,
   bytesToUtf8,
   toBase64,
 } from '@hop-mesh/react-native';
 import {connectLoopback, Loopback} from './src/loopback';
 import {connectRelay, RelayLink, RelayState} from './src/relayBearer';
+import {hop, type as typo} from './src/theme';
 import {
   messageMeta,
   platformLabel,
   shortAddress,
   statusText,
-  transportIcon,
 } from './src/demoFormat';
 
-// React Native ships no Node types and this app does not pull in @types/node, so `process` has no
-// type here. Declare exactly the one field that is read.
 declare const process: {env: {HOP_RELAY_URL?: string}};
 
-// Where to dial by default. Read once, at module scope, and NOT reliable on a device: React Native's
-// setUpGlobals defines `process.env` carrying NODE_ENV only, and Metro's inline plugin substitutes
-// exactly `process.env.NODE_ENV` and `__DEV__`, nothing else. So this picks up an override under Jest
-// or any bundler that inlines it, and falls back to the production relay on a plain device build.
-// That is why the URL is editable on screen: pointing two phones at a relay on a LAN address is a
-// normal thing to want, and it must not need a rebuild.
 const RELAY_URL = process.env.HOP_RELAY_URL ?? 'wss://relay.hopme.sh/';
 
-type Received = {
+type Peer = {address: string; label: string; transport: string; kind: string};
+// One row in the chat thread. `mine` decides the side and the bubble color, exactly like the native
+// demos' incoming/mine split.
+type Row = {
   id: string;
   from: string;
   body: string;
+  mine: boolean;
   meta: string;
-};
-
-// A peer as the UI knows it. `kind` is how the peer is reachable AT ALL, which is the distinction a
-// human in front of this screen actually needs: the loopback peer is inside this process and proves
-// nothing about the network, while a relay peer is another node that packets have to leave the device
-// to reach. `transport` stays the native demos' vocabulary so the row glyph matches theirs.
-type Peer = {
-  address: string;
-  label: string;
-  transport: 'ble' | 'lan' | 'relay' | 'unknown';
-  kind: 'loopback' | 'relay';
 };
 
 export default function App(): React.JSX.Element {
@@ -92,20 +71,21 @@ export default function App(): React.JSX.Element {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
-  const [received, setReceived] = useState<Received[]>([]);
+  const [thread, setThread] = useState<Row[]>([]);
   const [sendState, setSendState] = useState<string | null>(null);
+  const [sentAt, setSentAt] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [relayState, setRelayState] = useState<RelayState>('connecting');
   const [relayUrl, setRelayUrl] = useState(RELAY_URL);
   const [relayDraft, setRelayDraft] = useState(RELAY_URL);
   const [relayNote, setRelayNote] = useState<string | null>(null);
   const [peerDraft, setPeerDraft] = useState('');
   const [peerNote, setPeerNote] = useState<string | null>(null);
+  const [tab, setTab] = useState(0);
 
   // Held so focusing a text input can bring it, and the button under it, above the keyboard. Avoiding the
   // keyboard is only half the job: a composer near the bottom of a long ScrollView is still unreachable if
   // focusing it does not scroll.
-  // ComponentRef rather than naming ScrollViewInstance: React Native renamed the instance type, so this
-  // derives it from the component and does not break on the next rename.
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
 
   // MEASURED keyboard height, applied as bottom padding on the scroll content.
@@ -140,10 +120,22 @@ export default function App(): React.JSX.Element {
   const revealComposer = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({animated: true}), 180);
   }, []);
+
   const self = useRef<HopNode | null>(null);
   const peer = useRef<HopNode | null>(null);
   const wire = useRef<Loopback | null>(null);
   const relay = useRef<RelayLink | null>(null);
+
+  // The "Awaiting peers · Ns" timer, ticking only while a send is in flight, like the native
+  // SendingIndicator's live counter.
+  useEffect(() => {
+    if (sentAt == null) {
+      return;
+    }
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - sentAt) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [sentAt]);
 
   const dialRelay = useCallback(async (url: string) => {
     const node = self.current;
@@ -206,18 +198,19 @@ export default function App(): React.JSX.Element {
         mine.onMessage(async (m: HopMessage) => {
           // bytesToUtf8 comes from the SDK. TextDecoder is not in React Native's lib types.
           const body = bytesToUtf8(m.body);
-          // Resolved BEFORE setReceived, because the updater passed to a React setState is not async
+          // Resolved BEFORE setThread, because the updater passed to a React setState is not async
           // and cannot await. `secured` is per-peer state, not a field on the message.
           const secured = await mine.isSecured(m.from);
-          setReceived(prev => [
+          setThread(prev => [
+            ...prev,
             {
               // toBase64 from the SDK: a stable key without pulling in node's Buffer, which RN lacks.
               id: toBase64(m.id),
               from: m.from,
               body,
+              mine: false,
               meta: messageMeta(m.hops, secured),
             },
-            ...prev,
           ]);
           // Accept it, or the core repeats it on every poll.
           await mine.acceptInbox(m.id);
@@ -243,7 +236,9 @@ export default function App(): React.JSX.Element {
             kind: 'loopback',
           },
         ]);
-        setSelected(peerAddr);
+        // Land on the Chats LIST, like both native demos, not inside the loopback thread: the old
+        // single-screen app auto-selected its only peer, and keeping that made this port open mid-chat,
+        // which is not how a chat app starts.
         setStatus('running');
 
         // Dialed after the screen is usable, and deliberately not awaited: an unreachable relay must
@@ -308,25 +303,34 @@ export default function App(): React.JSX.Element {
       return;
     }
     setSendState('sending');
+    setSentAt(Date.now());
     try {
       const id = await node.send({to: selected, body: draft});
       if (id == null) {
         setSendState('send failed');
+        setSentAt(null);
         return;
       }
+      const body = draft;
       setDraft('');
       const s = await node.status(id);
-      setSendState(
-        statusText({
-          delivered: s.delivered,
-          relayed: s.relayed,
-          forwardHops: s.forwardHops,
-        }),
-      );
+      const meta = statusText({
+        delivered: s.delivered,
+        relayed: s.relayed,
+        forwardHops: s.forwardHops,
+      });
+      // Own messages join the thread like the native demos' chat: bubble on the right, meta beneath.
+      setThread(prev => [
+        ...prev,
+        {id: toBase64(id), from: address ?? '', body, mine: true, meta},
+      ]);
+      setSentAt(null);
+      setSendState(meta);
     } catch (e) {
       setSendState(`send failed: ${String(e)}`);
+      setSentAt(null);
     }
-  }, [draft, selected]);
+  }, [draft, selected, address]);
 
   if (status === 'starting') {
     return (
@@ -351,6 +355,20 @@ export default function App(): React.JSX.Element {
       </SafeAreaProvider>
     );
   }
+
+  const selectedPeer = peers.find(p => p.address === selected) ?? null;
+
+  // The bottom tab bar both native demos use: Chats, Relays, Web, Status, each a Font Awesome glyph in
+  // the Hop green when selected.
+  const Tab = ({id, icon, label}: {id: number; icon: string; label: string}) => (
+    <TouchableOpacity
+      testID={`tab-${label.toLowerCase()}`}
+      style={styles.tabItem}
+      onPress={() => setTab(id)}>
+      <Icon name={icon} size={20} color={tab === id ? hop.accent : hop.secondary} />
+      <Text style={[styles.tabLabel, {color: tab === id ? hop.accent : hop.secondary}]}>{label}</Text>
+    </TouchableOpacity>
+  );
 
   return (
     // Safe areas on all four edges, from react-native-safe-area-context so it actually applies on Android.
@@ -380,200 +398,468 @@ export default function App(): React.JSX.Element {
           <ScrollView
             ref={scrollRef}
             testID="main-scroll"
-            contentContainerStyle={[styles.body, {paddingBottom: 40 + keyboardInset}]}
+            contentContainerStyle={[styles.screenBody, {paddingBottom: 24 + keyboardInset}]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             automaticallyAdjustKeyboardInsets>
-        <Text style={styles.h1}>HopDemo</Text>
-
-        <Text style={styles.h2}>This device</Text>
-        <Text style={styles.mono} testID="own-address" selectable>
-          {address}
-        </Text>
-        <Text style={styles.dim} testID="own-address-short">
-          {address ? shortAddress(address) : ''}
-        </Text>
-        {/* The native demos render this address as a scannable QR. RN has no QR renderer here, so the
-            address is selectable text and this line says why, rather than showing a blank box. */}
-        <Text style={styles.dim} testID="qr-unavailable">
-          QR display unavailable in this build: no QR renderer bundled
-        </Text>
-
-        <Text style={styles.h2}>Relay</Text>
-        {/* What `up` means, exactly: the socket is open and the core is driving the link. It does NOT
-            mean the relay accepted this node, because the bearer carries opaque bytes and cannot read
-            the protocol. A message arriving is the only proof of that. */}
-        <Text style={styles.dim} testID="relay-note">
-          A real bearer to a real relay: one core packet per WebSocket binary frame. This is how a node
-          on another device reaches this one. Status covers the socket and the link, not the handshake.
-        </Text>
-        <Text style={styles.mono} testID="relay-status">
-          {relayState}
-        </Text>
-        <Text style={styles.mono} testID="relay-url" selectable>
-          {relayUrl}
-        </Text>
-        <TextInput
-          onFocus={revealComposer}
-          testID="relay-url-input"
-          style={styles.input}
-          value={relayDraft}
-          onChangeText={setRelayDraft}
-          placeholder="wss://relay.hopme.sh/"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity
-          testID="relay-connect-button"
-          style={styles.btn}
-          onPress={() => {
-            void dialRelay(relayDraft.trim());
-          }}>
-          <Text style={styles.btnText}>Connect relay</Text>
-        </TouchableOpacity>
-        {relayNote ? (
-          <Text style={styles.warn} testID="relay-error">
-            {relayNote}
-          </Text>
-        ) : null}
-
-        <Text style={styles.h2}>People nearby</Text>
-        <Text style={styles.dim} testID="bearer-note">
-          No radio bearer in the React Native SDK, so nothing here is discovered: no BLE, no LAN. The
-          first peer is an in-process node, and a peer on another device is reached by pasting its
-          address below and carrying the bundle over the relay.
-        </Text>
-        {peers.length === 0 ? (
-          <Text style={styles.dim} testID="peers-empty">
-            nobody nearby
-          </Text>
-        ) : (
-          <FlatList
-            testID="peers-list"
-            scrollEnabled={false}
-            data={peers}
-            keyExtractor={p => p.address}
-            renderItem={({item, index}) => (
-              // testID is index-based on purpose. A test cannot know a peer's address before it renders,
-              // so an address-keyed id is unaddressable from a test; the address is exposed as its own
-              // element below for any test that needs to read it.
-              <TouchableOpacity
-                testID={`peer-row-${index}`}
-                style={[styles.row, selected === item.address && styles.rowOn]}
-                onPress={() => setSelected(item.address)}>
-                <Text style={styles.rowIcon}>{transportIcon(item.transport)}</Text>
-                <View>
-                  <Text style={styles.rowTitle}>{item.label}</Text>
-                  <Text style={styles.dim} testID={`peer-address-${index}`}>
-                    {shortAddress(item.address)}
-                  </Text>
-                  {/* A word, not the glyph: how this peer is reachable is the one thing a human, and a
-                      test, must not have to infer from an icon. */}
-                  <Text style={styles.dim} testID={`peer-transport-${index}`}>
-                    {item.kind}
-                  </Text>
-                </View>
-              </TouchableOpacity>
+            {tab === 0 && !selectedPeer && (
+              <ChatsTab
+                peers={peers}
+                peerDraft={peerDraft}
+                setPeerDraft={setPeerDraft}
+                peerNote={peerNote}
+                addPeer={addPeer}
+                onPick={setSelected}
+              />
             )}
-          />
-        )}
-
-        <Text style={styles.h2}>Reach another device</Text>
-        <Text style={styles.dim} testID="add-peer-note">
-          Paste the full address shown under "This device" on the other phone. Without a radio bearer
-          there is nothing to discover, so an address is how a peer is found.
-        </Text>
-        <TextInput
-          onFocus={revealComposer}
-          testID="peer-address-input"
-          style={styles.input}
-          value={peerDraft}
-          onChangeText={setPeerDraft}
-          placeholder="base58 address from the other device"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity testID="add-peer-button" style={styles.btn} onPress={addPeer}>
-          <Text style={styles.btnText}>Add peer</Text>
-        </TouchableOpacity>
-        {peerNote ? (
-          <Text style={styles.warn} testID="add-peer-status">
-            {peerNote}
-          </Text>
-        ) : null}
-
-        <Text style={styles.h2}>Send</Text>
-        <TextInput
-          onFocus={revealComposer}
-          testID="message-input"
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="meet at dawn"
-          autoCorrect={false}
-        />
-        <TouchableOpacity testID="send-button" style={styles.btn} onPress={send}>
-          <Text style={styles.btnText}>Send</Text>
-        </TouchableOpacity>
-        {sendState ? (
-          <Text style={styles.dim} testID="send-status">
-            {sendState}
-          </Text>
-        ) : null}
-
-        <Text style={styles.h2}>Received</Text>
-        {received.length === 0 ? (
-          <Text style={styles.dim} testID="messages-empty">
-            nothing yet
-          </Text>
-        ) : (
-          <FlatList
-            testID="messages-list"
-            scrollEnabled={false}
-            data={received}
-            keyExtractor={m => m.id}
-            renderItem={({item, index}) => (
-              // Index-based ids, newest first, matching the peer list's scheme: setReceived prepends,
-              // so index 0 is the most recent arrival. The message id is a base64 blob a test cannot
-              // know in advance, so it stays the list key and nothing more.
-              <View style={styles.row} testID={`message-row-${index}`}>
-                <View>
-                  <Text style={styles.rowTitle} testID={`message-body-${index}`}>
-                    {item.body}
-                  </Text>
-                  <Text style={styles.dim} testID={`message-from-${index}`}>
-                    {shortAddress(item.from)} {item.meta}
-                  </Text>
-                </View>
-              </View>
+            {tab === 0 && selectedPeer && (
+              <ChatThread
+                peer={selectedPeer}
+                thread={thread}
+                sendState={sendState}
+                elapsed={elapsed}
+                onBack={() => setSelected(null)}
+                draft={draft}
+                setDraft={setDraft}
+                revealComposer={revealComposer}
+                send={send}
+              />
             )}
-          />
-        )}
+            {tab === 1 && (
+              <RelaysTab
+                relayState={relayState}
+                relayUrl={relayUrl}
+                relayDraft={relayDraft}
+                setRelayDraft={setRelayDraft}
+                relayNote={relayNote}
+                dial={() => dialRelay(relayDraft.trim())}
+                revealComposer={revealComposer}
+              />
+            )}
+            {tab === 2 && <WebTab />}
+            {tab === 3 && <StatusTab address={address} />}
           </ScrollView>
         </KeyboardAvoidingView>
+        <View style={styles.tabBar}>
+          <Tab id={0} icon="comment" label="Chats" />
+          <Tab id={1} icon="tower-broadcast" label="Relays" />
+          <Tab id={2} icon="globe" label="Web" />
+          <Tab id={3} icon="gear" label="Status" />
+        </View>
       </SafeAreaView>
     </SafeAreaProvider>
   );
 }
 
+/// The Chats list: headline, add-by-address, and one row per reachable peer with the transport word and
+/// the green reachability dot the native demos show.
+function ChatsTab({
+  peers,
+  peerDraft,
+  setPeerDraft,
+  peerNote,
+  addPeer,
+  onPick,
+}: {
+  peers: Peer[];
+  peerDraft: string;
+  setPeerDraft: (s: string) => void;
+  peerNote: string | null;
+  addPeer: () => void;
+  onPick: (address: string) => void;
+}) {
+  return (
+    <View>
+      <Text style={styles.headline}>Chats</Text>
+      <Text style={styles.dim} testID="bearer-note">
+        No radio bearer in the React Native SDK. The peer below is an in-process node, so delivery is
+        real but discovery is not.
+      </Text>
+
+      <Text style={styles.h2}>Add by address</Text>
+      <View style={styles.rowWrap}>
+        <TextInput
+          style={styles.inputFlex}
+          testID="peer-address-input"
+          value={peerDraft}
+          onChangeText={setPeerDraft}
+          onFocus={undefined}
+          placeholder="base58 address"
+          autoCorrect={false}
+          autoCapitalize="none"
+        />
+        <TouchableOpacity style={styles.btnSmall} testID="add-peer-button" onPress={addPeer}>
+          <Icon name="user-plus" size={14} color={hop.accentInk} />
+          <Text style={styles.btnSmallText}>Add</Text>
+        </TouchableOpacity>
+      </View>
+      {peerNote ? (
+        <Text style={styles.err} testID="add-peer-status">
+          {peerNote}
+        </Text>
+      ) : null}
+      <Text style={styles.tiny} testID="add-peer-note">
+        An empty name falls back to the address, like the native demos' Add Contact.
+      </Text>
+
+      <Text style={styles.h2}>People nearby</Text>
+      {peers.length === 0 ? (
+        <Text style={styles.dim} testID="peers-empty">
+          nobody nearby
+        </Text>
+      ) : (
+        <FlatList
+          testID="peers-list"
+          scrollEnabled={false}
+          data={peers}
+          keyExtractor={p => p.address}
+          renderItem={({item, index}) => (
+            // testID is index-based on purpose. A test cannot know a peer's address before it renders,
+            // so an address-keyed id is unaddressable from a test; the address is exposed as its own
+            // element below for any test that needs to read it.
+            <TouchableOpacity
+              testID={`peer-row-${index}`}
+              style={styles.peerRow}
+              onPress={() => onPick(item.address)}>
+              <View style={styles.peerIcon}>
+                <View
+                  style={[styles.dot, {backgroundColor: item.kind === 'loopback' ? hop.active : hop.pulse}]}
+                />
+              </View>
+              <View style={styles.inputFlex}>
+                <Text style={styles.peerTitle}>{item.label}</Text>
+                <Text style={styles.dim} testID={`peer-address-${index}`}>
+                  {shortAddress(item.address)}
+                </Text>
+              </View>
+              <Text style={styles.tiny} testID={`peer-transport-${index}`}>
+                {item.kind}
+              </Text>
+              <Icon name="chevron-right" size={14} color={hop.tertiary} />
+            </TouchableOpacity>
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+/// One conversation: bubbles with a meta line each, the pulsing in-flight indicator, and the composer.
+function ChatThread({
+  peer,
+  thread,
+  sendState,
+  elapsed,
+  onBack,
+  draft,
+  setDraft,
+  revealComposer,
+  send,
+}: {
+  peer: Peer;
+  thread: Row[];
+  sendState: string | null;
+  elapsed: number;
+  onBack: () => void;
+  draft: string;
+  setDraft: (s: string) => void;
+  revealComposer: () => void;
+  send: () => void;
+}) {
+  return (
+    <View>
+      <View style={styles.chatHeader}>
+        <TouchableOpacity testID="chat-back" onPress={onBack} style={styles.backBtn}>
+          <Icon name="chevron-left" size={16} color={hop.accent} />
+          <Text style={styles.backText}>Chats</Text>
+        </TouchableOpacity>
+        <Text style={styles.chatTitle} testID="chat-title" numberOfLines={1}>
+          {peer.label}
+        </Text>
+        <Icon name="lock" size={13} color={hop.active} />
+      </View>
+
+      {thread.length === 0 ? (
+        <Text style={styles.dim} testID="messages-empty">
+          no messages yet
+        </Text>
+      ) : (
+        <FlatList
+          testID="messages-list"
+          scrollEnabled={false}
+          data={thread}
+          keyExtractor={m => m.id}
+          renderItem={({item, index}) => (
+            <View
+              style={[styles.bubbleWrap, {alignItems: item.mine ? 'flex-end' : 'flex-start'}]}
+              testID={`message-row-${index}`}>
+              <View style={[styles.bubble, item.mine ? styles.bubbleMine : styles.bubbleIn]}>
+                <Text style={styles.bubbleText} testID={`message-body-${index}`}>
+                  {item.body}
+                </Text>
+              </View>
+              <Text style={styles.meta} testID={`message-from-${index}`}>
+                {item.mine ? item.meta : `${shortAddress(item.from)} · ${item.meta}`}
+              </Text>
+            </View>
+          )}
+        />
+      )}
+
+      {sendState === 'sending' ? <SendingIndicator elapsed={elapsed} /> : null}
+      {/* Rendered for EVERY non-null state, including 'sending', not only once resolved: the status
+          element must exist while the query is in flight, or a test asserting on it right after the tap
+          finds nothing and reads that as the app never reporting. The indicator carries the live pulsing
+          view; this line carries the state word. */}
+      {sendState ? (
+        <Text style={styles.dim} testID="send-status">
+          {sendState}
+        </Text>
+      ) : null}
+
+      <View style={styles.rowWrap}>
+        <TextInput
+          style={styles.inputFlex}
+          testID="message-input"
+          value={draft}
+          onChangeText={setDraft}
+          onFocus={revealComposer}
+          placeholder={`Message ${peer.label}`}
+          autoCorrect={false}
+        />
+        <TouchableOpacity
+          style={[styles.btnSend, draft.trim().length === 0 && styles.btnDisabled]}
+          testID="send-button"
+          onPress={send}
+          disabled={draft.trim().length === 0}>
+          <Icon
+            name="paper-plane"
+            size={14}
+            color={draft.trim().length === 0 ? hop.secondary : hop.accentInk}
+          />
+          <Text
+            style={[
+              styles.btnSmallText,
+              {color: draft.trim().length === 0 ? hop.secondary : hop.accentInk},
+            ]}>
+            Send
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+/// The native demos' in-flight status: a pulsing dot and a live "Awaiting peers · Ns" counter, conveying
+/// "working on it, holding for a peer" rather than a static, alarming "Sending...".
+function SendingIndicator({elapsed}: {elapsed: number}) {
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const a = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 0.25,
+          duration: 600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    a.start();
+    return () => a.stop();
+  }, [pulse]);
+  return (
+    <View style={styles.pulseRow} testID="sending-indicator">
+      <Animated.View style={[styles.pulseDot, {opacity: pulse}]} />
+      <Text style={styles.meta}>Awaiting peers · {elapsed}s</Text>
+    </View>
+  );
+}
+
+/// The Relays tab: the live relay link state, the URL in use, and dial controls.
+function RelaysTab({
+  relayState,
+  relayUrl,
+  relayDraft,
+  setRelayDraft,
+  relayNote,
+  dial,
+  revealComposer,
+}: {
+  relayState: RelayState;
+  relayUrl: string;
+  relayDraft: string;
+  setRelayDraft: (s: string) => void;
+  relayNote: string | null;
+  dial: () => void;
+  revealComposer: () => void;
+}) {
+  const color = relayState === 'up' ? hop.active : relayState === 'down' ? hop.danger : hop.secondary;
+  return (
+    <View>
+      <Text style={styles.headline}>Relays</Text>
+      <View style={styles.relayRow}>
+        <View style={[styles.dot, {backgroundColor: color}]} />
+        <Text style={styles.body} testID="relay-status">
+          {relayState}
+        </Text>
+      </View>
+      <Text style={styles.monoSmall} testID="relay-url">
+        {relayUrl}
+      </Text>
+      {relayNote ? (
+        <Text style={styles.err} testID="relay-error">
+          {relayNote}
+        </Text>
+      ) : null}
+      <Text style={styles.tiny} testID="relay-note">
+        The relay is a bearer: it carries opaque bytes and knows nothing about the protocol. A green
+        state means the socket is up, not that a peer answered.
+      </Text>
+      <View style={styles.rowWrap}>
+        <TextInput
+          style={styles.inputFlex}
+          testID="relay-url-input"
+          value={relayDraft}
+          onChangeText={setRelayDraft}
+          onFocus={revealComposer}
+          placeholder="host:port or wss://relay.hopme.sh/"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TouchableOpacity style={styles.btnSmall} testID="relay-connect-button" onPress={dial}>
+          <Text style={styles.btnSmallText}>Connect</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+/// The Web tab. The native demos browse hops:// pages through the driver's proxy, which the React Native
+/// SDK does not bridge, so this tab states that rather than rendering a browser that cannot fetch.
+function WebTab() {
+  return (
+    <View>
+      <Text style={styles.headline}>Web</Text>
+      <Text style={styles.dim} testID="web-unavailable">
+        hops:// browsing needs the Hop driver's proxy, which the React Native SDK does not bridge yet.
+        The native demos carry this tab; this port says so instead of showing a browser that cannot
+        fetch anything.
+      </Text>
+    </View>
+  );
+}
+
+/// The Status tab: this device's address, and the honest unavailability notes.
+function StatusTab({address}: {address: string | null}) {
+  return (
+    <View>
+      <Text style={styles.headline}>Status</Text>
+      <Text style={styles.h2}>This device</Text>
+      <Text style={styles.mono} testID="own-address" selectable>
+        {address}
+      </Text>
+      <Text style={styles.dim} testID="own-address-short">
+        {address ? shortAddress(address) : ''}
+      </Text>
+      <Text style={styles.h2}>My QR</Text>
+      <Text style={styles.dim} testID="qr-unavailable">
+        QR rendering is a platform graphics API with no bundled React Native equivalent, so it is
+        unavailable here rather than shown as a blank box. The native demos draw it.
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  root: {flex: 1, backgroundColor: '#fff'},
-  center: {flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff'},
+  root: {flex: 1, backgroundColor: hop.bg},
+  center: {flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: hop.bg},
   fill: {flex: 1},
   // paddingBottom leaves room for the composer and Send to sit clear of the keyboard and the home
   // indicator once the ScrollView is inset, rather than ending flush against them.
-  body: {padding: 16, paddingBottom: 40, gap: 6},
-  h1: {fontSize: 28, fontWeight: '700', marginBottom: 8},
+  screenBody: {padding: 16, gap: 6},
+  headline: typo.headline,
   h2: {fontSize: 16, fontWeight: '600', marginTop: 18, marginBottom: 4},
-  mono: {fontFamily: 'Courier', fontSize: 12},
-  dim: {color: '#666', fontSize: 12},
-  warn: {color: '#b00', fontSize: 12},
-  err: {color: '#b00', fontSize: 13, padding: 20},
-  row: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10},
-  rowOn: {backgroundColor: '#eef4ff'},
-  rowIcon: {fontFamily: 'Courier', fontWeight: '700', width: 18, textAlign: 'center'},
-  rowTitle: {fontSize: 15},
-  input: {borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 10, fontSize: 15},
-  btn: {backgroundColor: '#1b64f2', borderRadius: 6, padding: 12, alignItems: 'center', marginTop: 8},
-  btnText: {color: '#fff', fontWeight: '600'},
+  body: typo.body,
+  dim: {color: hop.secondary},
+  tiny: {fontSize: 11, color: hop.tertiary},
+  meta: {fontSize: 12, color: hop.secondary},
+  err: {color: hop.danger},
+  mono: typo.mono,
+  monoSmall: {fontSize: 12, fontFamily: 'Menlo', color: hop.secondary},
+
+  tabBar: {
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: hop.hairline,
+    backgroundColor: hop.barBg,
+  },
+  tabItem: {flex: 1, alignItems: 'center', paddingVertical: 8, gap: 2},
+  tabLabel: {fontSize: 10},
+
+  chatHeader: {flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10},
+  backBtn: {flexDirection: 'row', alignItems: 'center', gap: 2},
+  backText: {color: hop.accent, fontSize: 16},
+  chatTitle: {...typo.title, flex: 1},
+
+  peerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: hop.hairline,
+  },
+  peerIcon: {width: 20, alignItems: 'center'},
+  peerTitle: {fontWeight: '600'},
+  dot: {width: 8, height: 8, borderRadius: 4},
+
+  bubbleWrap: {alignSelf: 'stretch', gap: 2, marginVertical: 4},
+  bubble: {borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, maxWidth: '80%'},
+  bubbleMine: {backgroundColor: hop.accentDim},
+  bubbleIn: {backgroundColor: hop.bubbleIncoming},
+  bubbleText: {fontSize: 16},
+
+  pulseRow: {flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 4},
+  pulseDot: {width: 8, height: 8, borderRadius: 4, backgroundColor: hop.pulse},
+
+  relayRow: {flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 4},
+
+  rowWrap: {flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6},
+  inputFlex: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: hop.hairline,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+
+  // The Hop signal green on the buttons, matching the native demos' accent-tinted actions.
+  btnSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: hop.accent,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  btnSmallText: {color: hop.accentInk, fontWeight: '600'},
+  btnSend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: hop.accent,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  btnDisabled: {backgroundColor: hop.bubbleIncoming},
 });

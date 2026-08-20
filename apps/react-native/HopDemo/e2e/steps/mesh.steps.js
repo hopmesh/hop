@@ -56,18 +56,41 @@ const bringIntoView = async (matcher) =>
 // --- background ---------------------------------------------------------------------------------------
 
 Given('the app is running', async () => {
-  await waitFor(element(by.id('own-address')))
-    .toBeVisible()
-    .withTimeout(TIMEOUT);
+  // The app lands on the Chats tab, like both native demos, so "running" means the peer list is up. The
+  // address itself lives on the Status tab and has its own step that goes there.
+  //
+  // Retried, because the Before hook relaunches with delete:true and a cold start after a data wipe can
+  // still be creating its activity when Espresso first looks. Measured on a Pixel 7: one scenario in nine
+  // failed with "No activities found", which is the app not up YET rather than the app being broken. A
+  // step whose whole job is to wait for the app should wait rather than report that as a product failure.
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await waitFor(element(by.id('peers-list')))
+        .toBeVisible()
+        .withTimeout(TIMEOUT);
+      return;
+    } catch (e) {
+      last = e;
+      // Only a missing-activity race is worth retrying. Anything else is a real failure and rethrown.
+      if (!/No activities (found|in stage RESUMED)/.test(String(e))) {
+        throw e;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  throw last;
 });
 
 // --- single device, real assertions -------------------------------------------------------------------
 
 Then('I should see my own address', async () => {
+  await element(by.id('tab-status')).tap();
   await detoxExpect(element(by.id('own-address'))).toBeVisible();
 });
 
 Then('my address should be a base58 address', async () => {
+  await element(by.id('tab-status')).tap();
   // Bitcoin-alphabet base58 excludes 0, O, I and l. Asserting the shape catches a placeholder or a hex
   // leak, which a bare visibility check would happily pass.
   const text = await textOf('own-address');
@@ -81,6 +104,9 @@ Then('I should be told discovery is unavailable without a bearer', async () => {
 });
 
 Then('I should be told the QR code is unavailable', async () => {
+  // The QR row lives on the Status tab now, matching the native demos' four-tab layout, so the step has
+  // to go there first. The tab bar ids are covered by the lockstep guard like every other id.
+  await element(by.id('tab-status')).tap();
   await detoxExpect(element(by.id('qr-unavailable'))).toBeVisible();
 });
 
