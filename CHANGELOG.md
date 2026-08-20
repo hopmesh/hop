@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- teach the release-provenance test about the CocoaPods publish (1606bc0)
 - align Kotlin with the RN 0.87 consumer floor and drop the metadata suppression (164cf00)
 - satisfy the executable-reference and docs-dash guards for the RN HopDemo (1c20a3f)
 - pin the cargo-ndk install version the guard demanded (36bf65c)
@@ -88,6 +89,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (0b7100d)
 - add React Native quickstart and update README/CLAUDE for local consumption (9a57b16)
 - regenerate from conventional commits (7eb4bed)
 - correct a false claim about rebar3, and name the trap that produced it (720abf7)
@@ -171,6 +173,7 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (37a19b2)
 
 ### Other
+- publish the three pods to CocoaPods trunk (9dd5b93)
 - make the scroll container addressable (f9aed30)
 - make the JS bundle resolvable, or the app cannot run at all (a7013d0)
 - a real relay bearer, so two devices can exchange a message (cc262dd)
