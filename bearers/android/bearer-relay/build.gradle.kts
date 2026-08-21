@@ -24,7 +24,7 @@ android {
 kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
 dependencies {
     implementation(project(":hop-sdk"))   // Bearer/LinkSink/HopRole contract + transport helpers
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
 
     // quality-net-03 / cov/android-bearers: pure-JVM unit tests for the reconnect/backoff schedule
     // (RelayBackoff.kt is Android-free), PLUS a Robolectric + MockWebServer drive of the REAL
@@ -37,7 +37,7 @@ dependencies {
     // OLD `okhttp3.mockwebserver` package (MockResponse/MockWebServer/WebSocket upgrade helpers unchanged),
     // specifically so callers don't have to migrate immediately. RelayBearerSocketTest still imports
     // okhttp3.mockwebserver.* unmodified.
-    testImplementation("com.squareup.okhttp3:mockwebserver:5.4.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.5.0")
 }
 
 // quality-cov / cov/android-bearers: line-coverage report + 80% floor over the relay bearer's OWN Kotlin.
