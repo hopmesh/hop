@@ -63,6 +63,13 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- bump jvm from 2.2.10 to 2.4.10 in /sdk/android (4da7bfa)
+- bump com.squareup.okhttp3:okhttp in /apps/android/HopDemo (42b7bf9)
+- bump org.json:json in /apps/android/HopDemo (fe0a53c)
+- bump com.squareup.okhttp3:mockwebserver (df6998f)
+- bump com.squareup.okhttp3:okhttp in /bearers/android (3151df0)
+- bump org.json:json in /bearers/android (95ea9b2)
+- bump com.squareup.okhttp3:mockwebserver in /bearers/android (199154b)
 - retire the guards and secrets whose subjects moved to private repos (29315ea)
 - ignore the hop-install build output (1b89726)
 - bump the node-sdk-dependencies group across 1 directory with 2 updates (#158) (09ba324)
@@ -89,6 +96,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (b49b07c)
 - regenerate from conventional commits (0b7100d)
 - add React Native quickstart and update README/CLAUDE for local consumption (9a57b16)
 - regenerate from conventional commits (7eb4bed)
