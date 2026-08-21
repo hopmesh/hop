@@ -18,7 +18,7 @@ plugins {
     // metadata fine. The bearers/apps ":hop-sdk" shims compile this module's SOURCES with their own
     // 2.4.10 pins, so this number changes only the published AAR's metadata, not their builds. Bump
     // this only in lockstep with the oldest consumer's compiler floor.
-    kotlin("jvm") version "2.2.10"
+    kotlin("jvm") version "2.4.10"
     application
     jacoco
     `maven-publish`
