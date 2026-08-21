@@ -105,7 +105,7 @@ dependencies {
     api("androidx.compose.runtime:runtime")
 
     // Cloud relay bearer: WebSocket (path B, wss:// → Cloud Run) + the okio ByteString it speaks.
-    api("com.squareup.okhttp3:okhttp:5.4.0")
+    api("com.squareup.okhttp3:okhttp:5.5.0")
 
     // core-ktx 1.19.0's AAR metadata hard-requires AGP >= 9.1.0 and compileSdk >= 37 from every
     // consumer; both Gradle builds that compile :hop-driver (bearers/android and apps/android/HopDemo)
@@ -143,7 +143,7 @@ dependencies {
     // MockWebServer backs the well-known reach-record fetch test with a fake origin, no real network.
     // OkHttp 5 still publishes this legacy `mockwebserver` coordinate as a deprecated bridge over the OLD
     // okhttp3.mockwebserver package, so HopBearerReachFetchTest's imports are unchanged.
-    testImplementation("com.squareup.okhttp3:mockwebserver:5.4.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.5.0")
 }
 
 // quality-cov: line-coverage report over the DRIVER'S OWN Kotlin (sh.hopme.driver.**). The generated
