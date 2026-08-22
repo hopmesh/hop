@@ -19,6 +19,7 @@ on:
           - hop-sdk-go
           - hop-sdk-crystal
           - hop-sdk-apple
+          - hop-bearers-apple
       direction:
         description: "Sync direction"
         type: choice

@@ -5,13 +5,15 @@ component subtree to its own standalone repo (so it has its own package page, is
 brings external contributions back, without forking. It is the Meta react-native / relay pattern,
 done with [Copybara](https://github.com/google/copybara) instead of fbshipit.
 
-Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`.
-`tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky` holds the
-matching `COMPONENTS` list used to generate an export and import workflow for each. Their CI self-test
-rejects any drift between the two. Twenty other components were mirrored until the 2026-08 retirement;
-those repos are deleted and the components now live only here. See `docs/repo-catalog.md`.
+Four components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`, and
+`hop-bearers-apple`. `tools/copybara/components.json` is the dispatch allowlist and
+`tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an export and
+import workflow for each. Their CI self-test rejects any drift between the two. Twenty other
+components were mirrored until the 2026-08 retirement and their repos deleted; `hop-bearers-apple` is
+one of those twenty, restored so a standalone app can take the Apple bearers over SwiftPM, and the
+other nineteen live only here. See `docs/repo-catalog.md`.
 
-These three mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
+These mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
 `Package.swift` at the repository root, shards needs `shard.yml` there, and the Go module proxy
 resolves a module from its repo root. Every other component publishes an artifact to a registry that
 hosts the artifact itself, so it does not need a standalone repo.
@@ -79,7 +81,7 @@ state tracking so it can run continuously.
 
    The libhop-only Release App that used to supply `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
    retired along with its repo, and so did every registry credential the old fleet needed (`MAVEN_*`,
-   `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All three surviving mirrors
+   `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All four live mirrors
    publish by pushing a git tag, so none of them needs a registry secret at all.
 
 5. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
@@ -180,7 +182,9 @@ Every endpoint SDK binds `libhop`, the C ABI built from `core/`. The monorepo bu
 standalone mirror has no `core/`, so its own CI and its consumers must supply `libhop`: either a
 prebuilt binary the package downloads, or `HOP_LIBDIR` pointing at one. `sdk/go` binds it through cgo
 and `sdk/crystal` binds the C ABI directly, so both need this. `sdk/apple` is the exception: it ships a
-prebuilt xcframework inside the package, so the binary travels with the source. That is a packaging
+prebuilt xcframework inside the package, so the binary travels with the source. `bearers/apple` needs
+neither treatment: it does not bind libhop at all, it depends only on the published `hop-sdk-apple`
+package's `HopContract` product, so the framework travels with the SDK one hop away. That is a packaging
 decision per mirror, independent of the sync.
 
 ## Adding another component
@@ -190,11 +194,13 @@ choice to `sync-components.yml`, and its literal component name to the subtree's
 The dispatch self-test enforces the first three mappings. Then add the mirror to
 `bootstrap-mirrors.sh`, create the repo, and run the seed command above.
 
-The components wired today are the three that survived the 2026-08 retirement: `hop-sdk-go`,
-`hop-sdk-crystal`, and `hop-sdk-apple`. Every component subtree still carries its own `LICENSE.md`
-(FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so any of them is
-ready to stand alone if it is mirrored again. Bringing back one of the twenty retired names means
-recreating its repository first, because the old one was deleted; `docs/repo-catalog.md` lists them.
+The components wired today are the three that survived the 2026-08 retirement (`hop-sdk-go`,
+`hop-sdk-crystal`, `hop-sdk-apple`) plus `hop-bearers-apple`, the first retired name brought back. Its
+repo had to be recreated by hand before anything could export to it, exactly as described above. Every
+component subtree still carries its own `LICENSE.md` (FSL-1.1-ALv2 for `services/*`, Apache-2.0 for
+everything else including the core), so any of them is ready to stand alone if it is mirrored again.
+Bringing back one of the nineteen remaining retired names still means recreating its repository first,
+because the old one was deleted; `docs/repo-catalog.md` lists them.
 
 ## Historical note: the 2026-08 handover (already done)
 

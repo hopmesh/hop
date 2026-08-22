@@ -36,9 +36,37 @@ sees a socket, and you pull in only the pipes you need.
 
 ## Install
 
-The bearers aren't published as a standalone package. They're consumed as siblings inside the Hop
-monorepo, where each bearer is its OWN package, so a consumer takes one path dependency per transport
-(the `../` depth below is from `drivers/apple/HopDriver`, adjust for wherever yours sits):
+### Outside the Hop monorepo
+
+The bearers publish as one SwiftPM package, [hop-bearers-apple](https://github.com/hopmesh/hop-bearers-apple);
+the version tag is the release, and the products are the transports:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/hopmesh/hop-bearers-apple.git", from: "0.0.2"),
+]
+```
+
+Then depend on the transports a target needs (each is its own product, so you link only the radios you
+want; the package name is the mirror's repository name):
+
+```swift
+.target(name: "MyApp", dependencies: [
+    .product(name: "HopBearerBle",        package: "hop-bearers-apple"),
+    .product(name: "HopBearerLan",        package: "hop-bearers-apple"),
+    .product(name: "HopBearerRelay",      package: "hop-bearers-apple"),
+    .product(name: "HopBearerMeshtastic", package: "hop-bearers-apple"),
+])
+```
+
+Multipeer (`HopBearerMultipeer`) is the fifth product of the same package, same shape.
+
+### Inside the Hop monorepo
+
+Each bearer is its OWN package, and in-tree consumers (the demo apps, `drivers/apple/HopDriver`) take
+one path dependency per transport against the per-bearer `Package.swift` files, which depend on
+`sdk/apple` by path (the `../` depth below is from `drivers/apple/HopDriver`, adjust for wherever yours
+sits):
 
 ```swift
 dependencies: [
@@ -47,18 +75,6 @@ dependencies: [
     .package(path: "../../../bearers/apple/HopBearerRelay"),
     .package(path: "../../../bearers/apple/HopBearerMeshtastic"),
 ]
-```
-
-Then depend on the transports a target needs (each is its own product, and a path dependency's identity
-is its directory name, so the package name is the bearer name):
-
-```swift
-.target(name: "MyApp", dependencies: [
-    .product(name: "HopBearerBle",        package: "HopBearerBle"),
-    .product(name: "HopBearerLan",        package: "HopBearerLan"),
-    .product(name: "HopBearerRelay",      package: "HopBearerRelay"),
-    .product(name: "HopBearerMeshtastic", package: "HopBearerMeshtastic"),
-])
 ```
 
 Each bearer depends only on the Hop SDK's `HopContract` (pure Swift, no `libhop`), so adding a bearer

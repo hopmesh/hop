@@ -112,8 +112,9 @@ for component in sorted(smoke.RUST_MIRRORS):
     assert got is not None, f"{component}: the real exported Cargo.toml reads as unverifiable"
     assert got == planned, f"{component}: exported manifest declares {got!r}, plan wants {planned!r}"
     rust_export_versions[component] = got
-# No Rust crate mirror survives the 2026-08 retirement (COMPONENTS is sdk/go, sdk/crystal, sdk/apple
-# only), so the loop above is empty BY CONSTRUCTION and this used to hard-assert on hop-core. The
+# No Rust crate mirror survives the 2026-08 retirement (COMPONENTS carries no Cargo-managed prefix:
+# sdk/go, sdk/crystal, sdk/apple, bearers/apple), so the loop above is empty BY CONSTRUCTION and this
+# used to hard-assert on hop-core. The
 # check is kept as a conditional rather than deleted: its point is that the injected
 # [workspace.package] preamble still resolves an inherited version in a REAL export, and if a Rust
 # crate is ever mirrored again that guard comes back on its own instead of staying silently off.
@@ -236,7 +237,8 @@ assert tag_mod.GIT_ORIGIN_REV.findall("no trailer here") == []
 # that does not resolve fails the request with 422 "at least one repository that does not exist or is
 # not accessible" and NOTHING gets tagged. That is exactly what happened when sdk/flutter gained a
 # release.yml before its mirror was created: seventeen components, all unreleasable, because one
-# mirror was missing. (That fleet was retired in 2026-08; the names below are the three that survive.)
+# mirror was missing. (That fleet was retired in 2026-08; the names below are three of the live
+# mirrors, a fixed sample against a stubbed mirror_exists, not the registry itself.)
 # So the plan asks first and drops what cannot be tagged.
 _probe = {"hop-sdk-go": True, "hop-sdk-crystal": False, "hop-sdk-apple": None}
 _original_exists = plan_mod.mirror_exists

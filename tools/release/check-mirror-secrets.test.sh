@@ -42,10 +42,11 @@ for entry in reqs:
 # those repos are unreferenced leftovers, not something this checker should expect.
 by_name = {e["component"]: e for e in reqs}
 # The positive cases (Hex, PlatformIO, Maven) named hop-sdk-elixir, hop-embedded and hop-sdk-android,
-# all retired in 2026-08. They have no replacement: EVERY surviving mirror distributes by git tag
-# (SwiftPM, shards, the Go proxy), so not one of them references a registry credential. Asserting a
-# positive detection now would need a fabricated fixture, which would test the fixture rather than the
-# parser. Restore these alongside any future mirror that carries a registry secret.
+# all retired in 2026-08. They have no replacement: EVERY live mirror distributes by git tag
+# (SwiftPM for the SDK and the bearers, shards, the Go proxy), so not one of them references a
+# registry credential. Asserting a positive detection now would need a fabricated fixture, which would
+# test the fixture rather than the parser. Restore these alongside any future mirror that carries a
+# registry secret.
 #
 # The negative case survives and is retargeted, because it still has a real subject: a mirror that
 # needs no registry token must not be reported as needing one. That is the direction that matters

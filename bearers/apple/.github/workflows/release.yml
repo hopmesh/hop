@@ -1,0 +1,133 @@
+# Publish the bearer package on a version tag. This package is PURE SWIFT: every bearer target depends
+# only on the HopContract product of the PUBLISHED hop-sdk-apple package, so there is no binary target,
+# no xcframework, no checksum pin, and no release asset to build, sign, or attach. For SwiftPM the
+# repository IS the package and the git tag is the version a consumer resolves, so publishing means
+# cutting a GitHub Release on the tag with generated notes and attaching nothing.
+#
+# Two gates still apply to a tag-only publish, and both are load-bearing. First, CANONICAL-SOURCE
+# PROVENANCE: the tagged mirror commit must trace back to a green canonical main commit through its
+# GitOrigin-RevId trailer, which is what the export-shipped verifier at .github/release-provenance.py
+# proves (tag push shape, source reachability, export-tree equality file by file, and the canonical
+# CI's required checks). That gate is not about artifacts at all: the crystal shard mirror runs it too
+# and also ships nothing binary, and without it a tag could publish code that never passed monorepo
+# CI. Second, the BUILD: a tag on a manifest that does not resolve strands every consumer pinned to it
+# until the next tag, so the build job proves the published shape resolves and compiles before the
+# tag gets its release.
+#
+# WHICH MANIFEST THE BUILD EXERCISES, and why only that one. The per-bearer Package.swift files under
+# HopBearer*/ depend on the in-tree sdk/apple BY PATH, so they resolve only inside the monorepo, where
+# the monorepo builds and coverage-gates each bearer package independently (tools/apple-cov-gate.sh).
+# The aggregate ROOT manifest at this repository's root is what the mirror publishes and what a
+# consumer resolves, and it deliberately names the PUBLISHED hop-sdk-apple by URL: `sdk/apple` and
+# `bearers/apple` share the final path component "apple", which is a path dependency's identity, so a
+# path dependency made SwiftPM read the package as depending on itself (cyclic dependency,
+# HopBearersApple -> HopBearersApple) and raising swift-tools-version to 6.0 to appease it would push a
+# Swift 6 toolchain requirement onto every consumer. Building the root manifest here therefore proves
+# the exact consumer path: the URL dependency resolves from GitHub and the bearers compile against the
+# published contract. The per-bearer manifests ride along in the export, but SwiftPM ignores a manifest
+# in a subdirectory that nothing references, so their in-tree path dependencies never enter this build.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # macOS because the bearers compile against CoreBluetooth, MultipeerConnectivity, and Network, and
+    # the manifest declares macOS 13 / iOS 16. There is no native bundle to download and verify first,
+    # so this job is nothing but the check a consumer performs on a clean machine.
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # One `swift build` at the checkout root builds the ROOT manifest and with it every bearer
+      # target: each of the five products maps to exactly one target, so this compiles HopBearerBle,
+      # HopBearerLan, HopBearerMultipeer, HopBearerRelay, and HopBearerMeshtastic. Resolving
+      # hop-sdk-apple from its published URL is part of the proof, not incidental to it.
+      - name: Build the aggregate root package
+        run: swift build
+      # The stronger half of the proof: a throwaway package OUTSIDE the repository resolves this
+      # checkout by path and links all five products, which is the resolution shape an app uses
+      # against the tag. The product reference names "hop-bearers-apple" because a path dependency's
+      # identity is the final component of its path, here the checkout directory, which is the
+      # mirror's repository name. This consumer compile is also why the job does not run `swift test`:
+      # the root manifest declares no test targets (the suites live in the per-bearer packages, which
+      # are monorepo-only), so a clean consumer build is the honest "it resolves and it builds" check
+      # available on the mirror.
+      - name: Resolve and build a clean consumer of all five bearer products
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/bearers-consumer"
+          mkdir -p "$consumer/Sources/CleanConsumer"
+          cat > "$consumer/Package.swift" <<EOF
+          // swift-tools-version:5.9
+          import PackageDescription
+          let package = Package(
+            name: "CleanConsumer",
+            platforms: [.macOS(.v13)],
+            dependencies: [.package(path: "$GITHUB_WORKSPACE")],
+            targets: [.executableTarget(name: "CleanConsumer", dependencies: [
+              .product(name: "HopBearerBle", package: "hop-bearers-apple"),
+              .product(name: "HopBearerLan", package: "hop-bearers-apple"),
+              .product(name: "HopBearerMultipeer", package: "hop-bearers-apple"),
+              .product(name: "HopBearerRelay", package: "hop-bearers-apple"),
+              .product(name: "HopBearerMeshtastic", package: "hop-bearers-apple"),
+            ])]
+          )
+          EOF
+          printf 'import HopBearerBle\nimport HopBearerLan\nimport HopBearerMultipeer\nimport HopBearerRelay\nimport HopBearerMeshtastic\nprint("Hop bearers consumer compiled")\n' > "$consumer/Sources/CleanConsumer/main.swift"
+          swift package --package-path "$consumer" resolve
+          swift build --package-path "$consumer"
+
+  publish:
+    needs: build
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # Read-only token scoped to the canonical monorepo. The provenance verifier below reads the
+      # canonical repo (source SHA, CI runs, the export tarball) from the mirror, so it needs exactly
+      # these three read permissions and nothing wider.
+      - name: Mint canonical-source read token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
+          private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+      # Prove the tagged commit is a faithful export of a green canonical main commit before anything
+      # published against the tag. The verifier runs here WITHOUT the native-artifacts requirement:
+      # this component ships no native bundle, so there is no native build to bind; everything else
+      # it checks (tag shape, GitOrigin-RevId lineage, export-tree equality, required CI checks)
+      # applies unchanged.
+      - name: Verify canonical source provenance
+        id: provenance
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: python3 .github/release-provenance.py --component hop-bearers-apple --github-output "$GITHUB_OUTPUT"
+      # No artifact download or re-verification step: the build job already proved everything this
+      # release claims and there is no asset to re-verify or attach. The release is the tag plus
+      # generated notes, so a bare creation with contents: write is the whole publish.
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          generate_release_notes: true
