@@ -158,7 +158,8 @@ def main():
             f"unseeded {', '.join(names)}.\n"
             "An unset secret resolves to the empty string, so the release fails inside "
             "create-github-app-token instead of naming the cause. Seed it once as an organization "
-            "secret scoped to these repositories (see docs/releasing.md).",
+            "secret scoped to these repositories (see docs/release-engineering.md, which carries the "
+            "exact gh secret set commands).",
             file=sys.stderr,
         )
         raise SystemExit(1)
