@@ -3,13 +3,16 @@ import PackageDescription
 
 // HopBearersApple: the aggregate ROOT manifest, exposing all five bearers as products of one package.
 //
-// The bearers are MONOREPO-ONLY packages. They are not published as a standalone SwiftPM package, so
-// nothing outside this tree resolves them: in-tree consumers (drivers/apple/HopDriver) take one path
-// dependency per bearer against the per-bearer Package.swift files. Those files are also what the
-// monorepo builds and coverage-gates independently (tools/apple-cov-gate.sh runs `swift test` inside
-// each one). SwiftPM ignores a manifest in a subdirectory that nothing references, so the two coexist,
-// and each bearer stays its own PRODUCT here so a consumer links only the transports it wants ("1
-// isolated lib per bearer").
+// This manifest IS the published package: `tools/copybara/components.json` mirrors `bearers/apple` to
+// hopmesh/hop-bearers-apple, and a consumer outside this tree resolves the five products below from
+// that repo over SwiftPM (the mirror's release job builds exactly this manifest, so the consumer path
+// is what gets proven before a tag). The per-bearer Package.swift files beside it stay
+// MONOREPO-ONLY: each takes a path dependency on the in-tree `sdk/apple`, they are what in-tree
+// consumers (drivers/apple/HopDriver) depend on, and they are what the monorepo builds and
+// coverage-gates independently (tools/apple-cov-gate.sh runs `swift test` inside each one). SwiftPM
+// ignores a manifest in a subdirectory that nothing references, so the two coexist, and each bearer
+// stays its own PRODUCT here so a consumer links only the transports it wants ("1 isolated lib per
+// bearer").
 //
 // WHY THE SDK DEPENDENCY IS A URL RATHER THAN A PATH. `sdk/apple` and this directory `bearers/apple`
 // share the final component "apple", which is a path dependency's identity, so SwiftPM read the package

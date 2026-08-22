@@ -3,27 +3,34 @@
 This monorepo is the source of truth. Copybara mirrors a component subtree to its own standalone repo
 and brings external contributions back without forking (see `tools/copybara/`).
 
-As of the 2026-08 mirror retirement, **three** components mirror. Twenty were retired and their repos
-deleted from the `hopmesh` org. This file records both sets, because the difference is load bearing:
-a name in the retired table is a repo that no longer exists, and any link to it 404s.
+As of the 2026-08 mirror retirement, three components mirrored; twenty were retired and their repos
+deleted from the `hopmesh` org. One of the twenty, `hop-bearers-apple`, has since been restored (the repo is recreated by hand per
+`tools/copybara/bootstrap-mirrors.sh`, then seeded with a full-history export) so a standalone app can
+take the Apple bearers over SwiftPM, so **four** components mirror today and nineteen names remain
+retired. This file records both sets,
+because the difference is load bearing: a name in the retired table is a repo that no longer exists,
+and any link to it 404s.
 
 Licensing has two tiers and `tools/repo-integrity-guard.sh` fails CI on a cross-tier license, so this
 file is not a second source of truth. The services (`services/*`) are FSL-1.1-ALv2, which is
 source-available; everything else, including the protocol core, is Apache-2.0. See the License section
 of `README.md`.
 
-## The three live mirrors
+## The four live mirrors
 
 | Repo | From | Ships as | Audience |
 | --- | --- | --- | --- |
 | `hop-sdk-go` | `sdk/go` | Go module | Go services hosting an endpoint |
 | `hop-sdk-crystal` | `sdk/crystal` | shards | Crystal services hosting an endpoint |
 | `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps |
+| `hop-bearers-apple` | `bearers/apple` | SwiftPM | iOS/macOS apps that need the radios (BLE, LAN, Multipeer, Relay, Meshtastic) without the monorepo |
 
-All three publish by pushing a git tag: the repo is the package. None of them needs a registry account,
-a registry token, or a trusted-publisher configuration, which is why these three are the set that
-survived. `tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky`
-holds the matching list; their CI self-test rejects any drift between the two.
+All four publish by pushing a git tag: the repo is the package. None of them needs a registry account,
+a registry token, or a trusted-publisher configuration, which is why the three SDKs survived the
+retirement and why `hop-bearers-apple` was the mirror worth restoring: its package manager resolves
+from a repo root too. `tools/copybara/components.json` is the dispatch allowlist and
+`tools/copybara/copy.bara.sky` holds the matching list; their CI self-test rejects any drift between
+the two.
 
 ## Retired mirrors (the repos are deleted)
 
@@ -45,7 +52,6 @@ it is not separately published. Only the standalone mirror repo went away.
 | `hop-sdk-compose` | `sdk/compose` |
 | `hop-sdk-flutter` | `sdk/flutter` |
 | `hop-embedded` | `sdk/embedded` |
-| `hop-bearers-apple` | `bearers/apple/*` |
 | `hop-bearers-android` | `bearers/android` |
 | `hop-driver-apple` | `drivers/apple/HopDriver` |
 | `hop-driver-android` | `drivers/android/hop-driver` |
@@ -54,7 +60,9 @@ it is not separately published. Only the standalone mirror repo went away.
 | `hop-gateway` | `services/hop-gateway` |
 
 Do not re-add one of these names to `components.json` expecting the repo to be there. Restoring a
-mirror means creating the repo again and seeding it with a fresh `init_history` export.
+mirror means creating the repo again and seeding it with a fresh `init_history` export; that is
+exactly how `hop-bearers-apple` came back, which is why it now sits in the live table above rather
+than here.
 
 ## Not extracted (stay in this repo)
 

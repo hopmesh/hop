@@ -179,7 +179,8 @@ def partition_by_mirror(entries, token):
     exist or is not accessible to the parent installation" (422). That took down tagging for all
     seventeen components when sdk/flutter gained a release.yml before its mirror was created: nothing
     could be released because one mirror was missing. (That fleet was retired in 2026-08 and those
-    repos are deleted; three components mirror now.) Ask first, so a component that
+    repos are deleted; the components that mirror now are in components.json.) Ask first, so a
+    component that
     cannot possibly be tagged is reported instead of blocking every component that can.
 
     A component we could not ask about stays IN the request. Failing the token step is the correct
