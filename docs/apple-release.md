@@ -67,11 +67,15 @@ Everything here was checked against the live repositories and is a real blocker,
 app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
 private-key: ${{ secrets.HOP_SOURCE_PRIVATE_KEY }}
 owner: hopmesh
-repositories: monorepo
+repositories: hop
 permission-actions: read
 permission-checks: read
 permission-contents: read
 ```
+
+The scope matters as much as the secret: the committed `release.yml` still says `repositories: monorepo`,
+the old private monorepo that is being archived. The canonical source is `hopmesh/hop`, so the token
+scope has to be `hop` or the token will read from a dead repo even once the secrets exist.
 
 `hopmesh/hop-sdk-apple` has no repository secrets, no `release` environment secrets, and the only
 organization secret exposed to it is `HOP_SYNC_TOKEN`. Neither `HOP_SOURCE_APP_ID` nor
@@ -154,7 +158,7 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
 
 1. **Clear the preflight blockers above.** Steps 2 onward assume `HOP_SOURCE_APP_ID` and
    `HOP_SOURCE_PRIVATE_KEY` exist on the mirror's `release` environment and that the app holds
-   `actions: read`, `checks: read`, `contents: read` on `hopmesh/platform`.
+   `actions: read`, `checks: read`, `contents: read` on `hopmesh/hop`.
 
 2. **Pick the release SHA and let main settle.** Merge everything the release should carry, then stop
    merging. Let `S` be the resulting `main` tip.
@@ -182,8 +186,6 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
      --directory /tmp/hop-native \
      --provenance-bundle /tmp/hop-native/native-artifacts.provenance.sigstore.json \
      --source-sha <S> --tag v0.0.1 --run-id <run-id> --run-attempt <attempt>
-   ```
-
    shasum -a 256 /tmp/hop-native/libhop.xcframework.zip
    ```
 
@@ -203,7 +205,7 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
    gh api repos/hopmesh/hop-sdk-apple/commits/main --jq '.sha, .commit.message'
    ```
 
-7. **Create the tag on the MIRROR, at mirror main.** Not in the monorepo. If reusing `v0.0.1`, delete
+7. **Create the tag on the MIRROR, at mirror main.** Not in `hopmesh/hop`. If reusing `v0.0.1`, delete
    it first.
 
    ```bash
