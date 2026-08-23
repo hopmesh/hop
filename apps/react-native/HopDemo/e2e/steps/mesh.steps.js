@@ -76,8 +76,21 @@ Then('I should see {int} person I can reach', async (count) => {
 
 When('I send {string} to the person I can reach', async (body) => {
   await element(by.id('peer-row-0')).tap();
+  // The composer (message-input, send-button) is the last block inside main-scroll, below the fold on
+  // current devices. App.tsx gives the outer ScrollView its testID for exactly this purpose: its own
+  // comment says a test that needs a control in view must scroll it. Tapping without scrolling fails
+  // with "View is not hittable", which is the harness's job to fix, not the app's layout. Detox's
+  // scroll() and scrollTo() actions both reject RN Fabric scroll views ("not an instance of
+  // UIScrollView"), so the swipe is a real gesture, which the scroll view follows on both platforms.
+  await element(by.id('main-scroll')).swipe('up', 'slow', 0.75);
+  // Fail loudly here if the swipe did not reveal the composer, instead of with an opaque
+  // not-hittable error on the tap below.
+  await waitFor(element(by.id('send-button'))).toBeVisible().withTimeout(5000);
   if (body.length > 0) {
     await element(by.id('message-input')).typeText(body);
+    // Dismiss the keyboard: it covers the bottom of the screen where send-button sits, and iOS Detox
+    // does not auto-scroll. The input is single-line, so the return key blurs it.
+    await element(by.id('message-input')).tapReturnKey();
   }
   await element(by.id('send-button')).tap();
 });

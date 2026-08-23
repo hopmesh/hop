@@ -41,11 +41,22 @@ updates:
           - "*"
 
   # Kotlin SDK wrapper (Gradle).
+  #
+  # The Kotlin version here is a published-AAR metadata floor, not a latest-is-better
+  # dependency: the AAR this module publishes must carry Kotlin metadata the oldest
+  # consumer can read (the RN 0.87 app compiles with 2.2.x and cannot read newer).
+  # Dependabot bumped it 2.2.10 -> 2.4.10 and broke every React Native Android
+  # consumer with "incompatible version of Kotlin" metadata errors. Bump it only in
+  # lockstep with the consumer floor, by hand, per the comment in
+  # sdk/android/build.gradle.kts.
   - package-ecosystem: gradle
     directory: "/sdk/android"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "jvm"
+      - dependency-name: "org.jetbrains.kotlin*"
 
   # Android bearer modules (Gradle).
   - package-ecosystem: gradle
