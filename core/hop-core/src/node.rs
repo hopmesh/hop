@@ -17344,6 +17344,70 @@ mod tests {
     }
 
     #[test]
+    fn a_prior_wire_version_bundle_from_a_published_sdk_relays_and_delivers() {
+        // The measured field failure this pins: two nodes built against published hop-sdk-apple
+        // v0.0.2 (wire v14) completed the Noise handshake with a current relay, the sender sealed
+        // and handed over a bundle, the relay counted its copy, and the recipient's inbox never
+        // fired, because verify() rejected the bundle's version byte at the exact-match gate and
+        // process_bundle dropped it silently. v13..v15 are byte-identical layouts to the current
+        // version (see the ladder in bundle.rs), so the whole family must flow: a relay holds it
+        // for onward flood, and the recipient delivers it. The pre-family control (v12) still
+        // must not enter the store.
+        let bob = Identity::generate();
+        let (_alice, _mid, genuine) = genuine_private_to(&bob);
+        assert_eq!(genuine.inner.version, crate::bundle::BUNDLE_VERSION);
+
+        // Exactly what a v0.0.2 node would have put on the wire for this same send.
+        let published = genuine
+            .clone()
+            .as_wire_version(14)
+            .expect("private bundle re-versions losslessly");
+        assert_eq!(published.inner.version, 14);
+        assert_ne!(
+            published.inner.id, genuine.inner.id,
+            "the id binds the version byte"
+        );
+        published.verify().expect("a v14 bundle is self-consistent");
+
+        // Relay side: held for onward flood, not dropped at the gate.
+        let mut relay = Node::new(Identity::generate());
+        relay.on_bundle(1, published.clone());
+        assert!(
+            relay.store.contains(&published.inner.id),
+            "a current relay holds a published-SDK (v14) bundle"
+        );
+
+        // Recipient side: recognized and delivered exactly once, same as a current-version copy.
+        let mut bob_node = Node::new(bob);
+        bob_node.on_bundle(2, published.clone());
+        let inbox = bob_node.take_inbox();
+        assert_eq!(
+            inbox.len(),
+            1,
+            "the v14 private copy delivers to its recipient"
+        );
+        assert!(inbox[0].is_private());
+        bob_node.on_bundle(3, published.clone());
+        assert!(
+            bob_node.take_inbox().is_empty(),
+            "a re-flooded v14 duplicate is deduped, delivered exactly once"
+        );
+
+        // Control: v12 is a genuinely different layout and must stay outside the window.
+        let too_old = genuine.clone().as_wire_version(12).unwrap();
+        let too_old_id = too_old.inner.id;
+        too_old
+            .verify()
+            .expect_err("v12 is past the identical-family floor");
+        let mut relay2 = Node::new(Identity::generate());
+        relay2.on_bundle(1, too_old);
+        assert!(
+            !relay2.store.contains(&too_old_id),
+            "a pre-family bundle never enters the store"
+        );
+    }
+
+    #[test]
     fn a_forged_traced_ack_cannot_mark_a_send_delivered_or_drop_the_bundle() {
         // core-protocol-r7-01: a traced (Device-dst, cleartext-id) ACK is identity-signed, which
         // authenticates WHO signed it but not that they are the bundle's destination. An observer of
