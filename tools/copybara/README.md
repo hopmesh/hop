@@ -176,6 +176,32 @@ then compare the exported file count against the source before trusting the run.
 CI uses the digest-pinned `olivr/copybara:20230129` image with a read-only filesystem, isolated
 credentials, and a fixed dispatch map. Local runs should use that same digest.
 
+## Troubleshooting a dead export
+
+Two failure modes have both been reproduced against the real pinned container, and both look like
+something else when you only read CI's red X:
+
+**The App token mint dies with `The 'client-id' ... must be set to a non-empty string`.** That is
+GitHub resolving an unset secret to the empty string: `HOP_SYNC_APP_ID` /
+`HOP_SYNC_APP_PRIVATE_KEY` are not seeded where the job runs (the protected `component-sync`
+environment). Every run that actually needed to export fails there, while runs whose merge touched
+no mirrored subtree report success with nothing to do, so a green Sync run proves nothing about
+export health. Check what exists with `gh api repos/hopmesh/hop/actions/secrets` and the
+`component-sync` environment's secrets, and re-seed from the App's credentials (repository
+administrators hold them; the workflow cannot create them).
+
+**Copybara dies with `Cannot find reference(s): [<sha>, refs/tags/*]`.** The `<sha>` is the
+`GitOrigin-RevId` trailer on the MIRROR's `main` head: ITERATIVE mode reads it as "the last
+migrated monorepo commit" and fetches it from the origin. If anything lands on the mirror without
+Copybara and carries a trailer naming a monorepo SHA that is not reachable from canonical `main`
+(a rebased-away PR head, for instance), every later export dies at that fetch, even with secrets
+in place. The repair is to rewrite the mirror head's trailer to a SHA that resolves (or otherwise
+reset the mirror's migrated state), which is a mirror-repository action, not a monorepo PR. You
+can diagnose and rehearse both the failure and the repair without any push rights, by pointing the
+pinned container at local clones with `url.<base>.insteadOf` rewrites and a `file://` destination;
+that is exactly how both modes above were isolated, and an export run that way is what proves a
+repair correct before anyone touches the real mirror.
+
 ## A standalone mirror needs libhop
 
 Every endpoint SDK binds `libhop`, the C ABI built from `core/`. The monorepo builds it in tree; a
