@@ -45,12 +45,32 @@ runs:
       working-directory: ${{ inputs.pkg-dir }}
       run: npm run coverage
 
+    # Both guards below are self-tested FIRST. A guard that has rotted into a rubber stamp reports
+    # success on a broken tree, which is worse than having no guard at all, so each self-test plants
+    # the real defect and requires a rejection. rn-bridge-lockstep-guard.test.sh already existed and
+    # nothing invoked it, which made it decoration; it runs here now.
+    - name: Guard self-tests (must prove they can fail)
+      shell: bash
+      run: |
+        bash tools/rn-bridge-lockstep-guard.test.sh
+        bash tools/rn-hermes-globals-guard.test.sh
+
     # The bridge is written three times (TypeScript contract, Swift + ObjC, Kotlin) and kept in sync by
     # hand. CLAUDE.md states the rule in prose; this enforces it, selectors included, because
     # @objc(foo:bar:) against RCT_EXTERN_METHOD(foo:baz:) compiles and only throws when JS calls it.
     - name: Bridge lockstep (contract, Swift, ObjC, Kotlin)
       shell: bash
       run: python3 tools/rn-bridge-lockstep-guard.py
+
+    # Neither the typecheck nor the test suite can see this class of defect. tsconfig declares
+    # "lib": ["ES2020", "DOM"] and "types": ["node"], so a browser or Node global typechecks; the
+    # tests run under node --test, where those globals actually exist. So code referencing a global
+    # Hermes lacks is green twice over and throws only in a consuming app. `new TextDecoder()` in
+    # bytesToUtf8 shipped that way, inside the inbound accept path, where the throw turned every
+    # received message into a silent redelivery loop.
+    - name: No Hermes-absent runtime globals
+      shell: bash
+      run: python3 tools/rn-hermes-globals-guard.py
 
     # RESOLUTION, not compilation. These four assertions are exactly the ones that would have caught
     # the two rotted coordinates, and they are cheap and deterministic: no Android SDK, no NDK, no
