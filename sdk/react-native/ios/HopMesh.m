@@ -134,6 +134,120 @@ RCT_EXTERN_METHOD(bytesReceived:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// Section 19 relay pool. `configured` marks an operator or user choice a gossiped endpoint cannot
+// demote, so it crosses as its own BOOL rather than being inferred from the URL.
+RCT_EXTERN_METHOD(relayAdd:(NSInteger)handle
+                  url:(NSString *)url
+                  configured:(BOOL)configured
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(relayNext:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(relayReport:(NSInteger)handle
+                  url:(NSString *)url
+                  ok:(BOOL)ok
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(relayPool:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+// hps:// pub/sub (section 32). The three enums cross as lowercase NSStrings, the way `role` does; the
+// Swift side rejects a string it does not recognize instead of defaulting it to a permissive value.
+RCT_EXTERN_METHOD(hpsRegister:(NSInteger)handle
+                  path:(NSString *)path
+                  kind:(NSString *)kindText
+                  access:(NSString *)accessText
+                  visibility:(NSString *)visibilityText
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsSubscribe:(NSInteger)handle
+                  host:(NSString *)hostB58
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsPublish:(NSInteger)handle
+                  path:(NSString *)path
+                  body:(NSString *)bodyB64
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(acceptHpsMessage:(NSInteger)handle
+                  id:(NSString *)idB64
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsInvite:(NSInteger)handle
+                  path:(NSString *)path
+                  dest:(NSString *)destB58
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsAcceptInvite:(NSInteger)handle
+                  host:(NSString *)hostB58
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsDeclineInvite:(NSInteger)handle
+                  host:(NSString *)hostB58
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsLeave:(NSInteger)handle
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsPending:(NSInteger)handle
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsApprove:(NSInteger)handle
+                  path:(NSString *)path
+                  requester:(NSString *)requesterB58
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsDeny:(NSInteger)handle
+                  path:(NSString *)path
+                  requester:(NSString *)requesterB58
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsRekey:(NSInteger)handle
+                  path:(NSString *)path
+                  newPath:(NSString *)newPath
+                  remove:(NSArray *)removeB58
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsReach:(NSInteger)handle
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsMembers:(NSInteger)handle
+                  path:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsMyTopics:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(hpsBrowse:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(startPump:(NSInteger)handle
                   intervalMs:(double)intervalMs
                   resolver:(RCTPromiseResolveBlock)resolve

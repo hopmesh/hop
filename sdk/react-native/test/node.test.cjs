@@ -65,6 +65,42 @@ function makeNative(overrides = {}) {
     bytesReceived: (...a) => record("bytesReceived", a, undefined),
     addressToBase58: (...a) => record("addressToBase58", a, "z6MkAddr"),
     addressFromBase58: (...a) => record("addressFromBase58", a, toBase64(new Uint8Array(32).fill(2))),
+    relayAdd: (...a) => record("relayAdd", a, true),
+    relayNext: (...a) => record("relayNext", a, "wss://relay.example/hop"),
+    relayReport: (...a) => record("relayReport", a, undefined),
+    relayPool: (...a) => record("relayPool", a, { total: 3, available: 1 }),
+    // A channel's register resolves an EMPTY string, which is a success (no service signing key), so
+    // the canned value here must be "" and not null; the two are asserted separately below.
+    hpsRegister: (...a) => record("hpsRegister", a, ""),
+    hpsSubscribe: (...a) => record("hpsSubscribe", a, toBase64(new Uint8Array(32).fill(11))),
+    hpsPublish: (...a) => record("hpsPublish", a, toBase64(new Uint8Array(32).fill(12))),
+    acceptHpsMessage: (...a) => record("acceptHpsMessage", a, true),
+    hpsInvite: (...a) => record("hpsInvite", a, toBase64(new Uint8Array(32).fill(13))),
+    hpsAcceptInvite: (...a) => record("hpsAcceptInvite", a, toBase64(new Uint8Array(32).fill(14))),
+    hpsDeclineInvite: (...a) => record("hpsDeclineInvite", a, true),
+    hpsLeave: (...a) => record("hpsLeave", a, true),
+    hpsPending: (...a) => record("hpsPending", a, ["z6MkPend1", "z6MkPend2"]),
+    hpsApprove: (...a) => record("hpsApprove", a, toBase64(new Uint8Array(32).fill(15))),
+    hpsDeny: (...a) => record("hpsDeny", a, true),
+    hpsRekey: (...a) =>
+      record("hpsRekey", a, [toBase64(new Uint8Array(32).fill(16)), toBase64(new Uint8Array(32).fill(17))]),
+    hpsReach: (...a) => record("hpsReach", a, 4),
+    hpsMembers: (...a) => record("hpsMembers", a, ["z6MkMemberA"]),
+    hpsMyTopics: (...a) =>
+      record("hpsMyTopics", a, [
+        { host: "z6MkHost", path: "town/square", kind: "channel", hosting: true, access: "requestToJoin" },
+      ]),
+    hpsBrowse: (...a) =>
+      record("hpsBrowse", a, [
+        {
+          host: "z6MkHost",
+          path: "news",
+          kind: "service",
+          title: "Town news",
+          summary: "what happened",
+          access: "open",
+        },
+      ]),
     addListener() {},
     removeListeners() {},
   };
@@ -191,4 +227,262 @@ test("HopAddress helpers marshal through the native module", async () => {
   } finally {
     __setHopNativeForTesting(null);
   }
+});
+
+// ---- section 19 relay pool ----
+
+test("relayAdd marks a caller-supplied endpoint configured unless told otherwise", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+  await node.relayAdd("wss://relay.example/hop");
+  assert.deepEqual(native.calls.at(-1), {
+    name: "relayAdd",
+    args: [7, "wss://relay.example/hop", true],
+  });
+  await node.relayAdd("wss://gossiped.example/hop", false);
+  assert.deepEqual(native.calls.at(-1).args, [7, "wss://gossiped.example/hop", false]);
+});
+
+test("relayNext returns the URL to dial, and null when nothing is dialable", async () => {
+  const node = new HopNode(makeNative(), makeEmitter(), 7);
+  assert.equal(await node.relayNext(), "wss://relay.example/hop");
+
+  // Nothing dialable. A UI must read this together with relayPool: a non-zero total here is
+  // "everything is backed off", not "offline".
+  const backedOff = makeNative({ relayNext: () => Promise.resolve(null) });
+  const degraded = new HopNode(backedOff, makeEmitter(), 7);
+  assert.equal(await degraded.relayNext(), null);
+  assert.deepEqual(await degraded.relayPool(), { total: 3, available: 1 });
+});
+
+test("relayReport and relayPool marshal the handle and the dial outcome", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+  await node.relayReport("wss://relay.example/hop", false);
+  assert.deepEqual(native.calls.at(-1), {
+    name: "relayReport",
+    args: [7, "wss://relay.example/hop", false],
+  });
+  assert.deepEqual(await node.relayPool(), { total: 3, available: 1 });
+});
+
+// ---- hps:// pub/sub (section 32) ----
+
+test("hpsRegister passes the enum strings through verbatim", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+  await node.hpsRegister("town/square", "service", "requestToJoin", "discoverable");
+  assert.deepEqual(native.calls.at(-1), {
+    name: "hpsRegister",
+    args: [7, "town/square", "service", "requestToJoin", "discoverable"],
+  });
+
+  // The defaults are the closed ones: an unspecified topic is Open-access but Private, never
+  // advertised to the mesh by accident.
+  await node.hpsRegister("town/square", "channel");
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "channel", "open", "private"]);
+});
+
+test("hpsRegister distinguishes a channel's empty service key from a failed register", async () => {
+  // A channel has no service signing key, so an EMPTY key is the correct successful answer.
+  const channel = await new HopNode(makeNative(), makeEmitter(), 7).hpsRegister("town/square", "channel");
+  assert.ok(channel instanceof Uint8Array, "a channel register must resolve bytes, not null");
+  assert.equal(channel.length, 0);
+
+  // Failure is null, and the two must not be confusable: a caller checking truthiness alone would
+  // read a successful channel as a failure, which is why this asserts both shapes.
+  const failed = await new HopNode(
+    makeNative({ hpsRegister: () => Promise.resolve(null) }),
+    makeEmitter(),
+    7,
+  ).hpsRegister("town/square", "channel");
+  assert.equal(failed, null);
+
+  // A service's real key still decodes to its bytes.
+  const service = await new HopNode(
+    makeNative({ hpsRegister: () => Promise.resolve(toBase64(new Uint8Array(32).fill(6))) }),
+    makeEmitter(),
+    7,
+  ).hpsRegister("news", "service");
+  assert.deepEqual(Array.from(service), Array.from(new Uint8Array(32).fill(6)));
+});
+
+test("hpsPublish encodes a string body to base64 and decodes the returned bundle id", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+  const id = await node.hpsPublish("town/square", "hello channel");
+  assert.deepEqual(native.calls.at(-1), {
+    name: "hpsPublish",
+    args: [7, "town/square", toBase64(utf8ToBytes("hello channel"))],
+  });
+  assert.deepEqual(Array.from(id), Array.from(new Uint8Array(32).fill(12)));
+
+  // Raw bytes go through untouched.
+  await node.hpsPublish("town/square", new Uint8Array([1, 2, 3]));
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", toBase64(new Uint8Array([1, 2, 3]))]);
+});
+
+test("hpsSubscribe, invite, accept and approve decode their bundle ids", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  const subscribed = await node.hpsSubscribe("z6MkHost", "town/square");
+  assert.deepEqual(native.calls.at(-1).args, [7, "z6MkHost", "town/square"]);
+  assert.deepEqual(Array.from(subscribed), Array.from(new Uint8Array(32).fill(11)));
+
+  const invited = await node.hpsInvite("town/square", "z6MkGuest");
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "z6MkGuest"]);
+  assert.deepEqual(Array.from(invited), Array.from(new Uint8Array(32).fill(13)));
+
+  const accepted = await node.hpsAcceptInvite("z6MkHost", "town/square");
+  assert.deepEqual(native.calls.at(-1).args, [7, "z6MkHost", "town/square"]);
+  assert.deepEqual(Array.from(accepted), Array.from(new Uint8Array(32).fill(14)));
+
+  const approved = await node.hpsApprove("town/square", "z6MkPend1");
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "z6MkPend1"]);
+  assert.deepEqual(Array.from(approved), Array.from(new Uint8Array(32).fill(15)));
+});
+
+test("the boolean hps calls marshal their arguments and pass the result through", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  const id = new Uint8Array(32).fill(3);
+  assert.equal(await node.acceptHpsMessage(id), true);
+  assert.deepEqual(native.calls.at(-1), { name: "acceptHpsMessage", args: [7, toBase64(id)] });
+
+  assert.equal(await node.hpsDeclineInvite("z6MkHost", "town/square"), true);
+  assert.deepEqual(native.calls.at(-1).args, [7, "z6MkHost", "town/square"]);
+
+  assert.equal(await node.hpsDeny("town/square", "z6MkPend2"), true);
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "z6MkPend2"]);
+
+  // hpsLeave narrows the native (ok, id) pair to just ok on purpose.
+  assert.equal(await node.hpsLeave("town/square"), true);
+  assert.deepEqual(native.calls.at(-1), { name: "hpsLeave", args: [7, "town/square"] });
+});
+
+test("every hps call that resolves a bundle id resolves null when the native side fails", async () => {
+  // Each of these decodes base64 on success. A wrapper that forgot the null check would throw inside
+  // fromBase64 instead of resolving null, so the failure path needs asserting per call, not once.
+  const failing = makeNative({
+    hpsSubscribe: () => Promise.resolve(null),
+    hpsPublish: () => Promise.resolve(null),
+    hpsInvite: () => Promise.resolve(null),
+    hpsAcceptInvite: () => Promise.resolve(null),
+    hpsApprove: () => Promise.resolve(null),
+  });
+  const node = new HopNode(failing, makeEmitter(), 7);
+
+  assert.equal(await node.hpsSubscribe("z6MkHost", "town/square"), null);
+  assert.equal(await node.hpsPublish("town/square", "dropped"), null);
+  assert.equal(await node.hpsInvite("town/square", "z6MkGuest"), null);
+  assert.equal(await node.hpsAcceptInvite("z6MkHost", "town/square"), null);
+  assert.equal(await node.hpsApprove("town/square", "z6MkPend1"), null);
+});
+
+test("hpsRekey marshals the base58 remove list and decodes the returned ids", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  const ids = await node.hpsRekey("town/square", "", ["z6MkGone1", "z6MkGone2"]);
+  assert.deepEqual(native.calls.at(-1), {
+    name: "hpsRekey",
+    args: [7, "town/square", "", ["z6MkGone1", "z6MkGone2"]],
+  });
+  assert.equal(ids.length, 2);
+  assert.deepEqual(Array.from(ids[0]), Array.from(new Uint8Array(32).fill(16)));
+  assert.deepEqual(Array.from(ids[1]), Array.from(new Uint8Array(32).fill(17)));
+
+  // A plain rotation removes nobody and keeps the path.
+  await node.hpsRekey("town/square");
+  assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "", []]);
+});
+
+test("the hps read calls surface addresses as base58 and counts as numbers", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  assert.deepEqual(await node.hpsPending("town/square"), ["z6MkPend1", "z6MkPend2"]);
+  assert.deepEqual(native.calls.at(-1), { name: "hpsPending", args: [7, "town/square"] });
+
+  assert.deepEqual(await node.hpsMembers("town/square"), ["z6MkMemberA"]);
+  assert.equal(await node.hpsReach("town/square"), 4);
+  assert.deepEqual(native.calls.at(-1), { name: "hpsReach", args: [7, "town/square"] });
+});
+
+test("hpsMyTopics and hpsBrowse carry the enum strings through to the public unions", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  assert.deepEqual(await node.hpsMyTopics(), [
+    { host: "z6MkHost", path: "town/square", kind: "channel", hosting: true, access: "requestToJoin" },
+  ]);
+  assert.deepEqual(native.calls.at(-1), { name: "hpsMyTopics", args: [7] });
+
+  assert.deepEqual(await node.hpsBrowse(), [
+    {
+      host: "z6MkHost",
+      path: "news",
+      kind: "service",
+      title: "Town news",
+      summary: "what happened",
+      access: "open",
+    },
+  ]);
+
+  // An access mode the union does not contain is NOT rewritten to "open". It stays unrecognized, so a
+  // UI gating on "open" cannot be tricked into showing a gated topic as an open one.
+  const garbage = makeNative({
+    hpsMyTopics: () =>
+      Promise.resolve([
+        { host: "z6MkHost", path: "town/square", kind: "channel", hosting: false, access: "wide-open" },
+      ]),
+  });
+  const topics = await new HopNode(garbage, makeEmitter(), 7).hpsMyTopics();
+  assert.equal(topics[0].access, "wide-open");
+  assert.notEqual(topics[0].access, "open");
+});
+
+test("onHpsMessage only fires for this node's handle and decodes id and body to bytes", async () => {
+  const emitter = makeEmitter();
+  const node = new HopNode(makeNative(), emitter, 7);
+  const seen = [];
+  node.onHpsMessage((m) => seen.push(m));
+
+  // Another node's publication on the same emitter: ignored.
+  emitter.emit("HopMesh:hpsMessage", {
+    node: 99,
+    id: toBase64(new Uint8Array(32).fill(1)),
+    path: "other/topic",
+    sender: "z6MkStranger",
+    body: toBase64(utf8ToBytes("not ours")),
+  });
+  emitter.emit("HopMesh:hpsMessage", {
+    node: 7,
+    id: toBase64(new Uint8Array(32).fill(3)),
+    path: "town/square",
+    sender: "z6MkWriter",
+    body: toBase64(utf8ToBytes("hello channel")),
+  });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].path, "town/square");
+  // The writer stays a base58 string; only id and body are binary.
+  assert.equal(seen[0].sender, "z6MkWriter");
+  assert.deepEqual(Array.from(seen[0].id), Array.from(new Uint8Array(32).fill(3)));
+  assert.equal(Buffer.from(seen[0].body).toString("utf8"), "hello channel");
+});
+
+test("onHpsInvite decodes its payload and is node-scoped", async () => {
+  const emitter = makeEmitter();
+  const node = new HopNode(makeNative(), emitter, 7);
+  const invites = [];
+  node.onHpsInvite((i) => invites.push(i));
+
+  emitter.emit("HopMesh:hpsInvite", { node: 99, host: "z6MkOther", path: "other/topic", kind: "service" });
+  emitter.emit("HopMesh:hpsInvite", { node: 7, host: "z6MkHost", path: "town/square", kind: "channel" });
+
+  assert.equal(invites.length, 1);
+  assert.deepEqual(invites[0], { host: "z6MkHost", path: "town/square", kind: "channel" });
 });

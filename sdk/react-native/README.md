@@ -132,13 +132,74 @@ node.onServiceResponse(async (res) => {
 });
 ```
 
+### hps:// group chat and broadcast channels
+
+A group message here is not one-to-one fan-out and not a multicast bundle. It is a single
+content-key-encrypted, per-writer-signed publication, flooded once, so posting to three hundred members
+costs what posting to three does. Membership, invites and revocation are properties of the topic's key
+handoff, never of the delivery.
+
+A **channel** is group chat: every member holds the shared content key and writes, and each post is
+signed by the writer's own identity so readers see a verified sender. A **service** is broadcast: only
+the host can produce a post subscribers will verify, even if the read key leaks.
+
+```ts
+// Host a channel. Access is "open" | "requestToJoin" | "invite"; visibility is "private" | "discoverable".
+// A channel resolves an EMPTY Uint8Array (it has no service signing key); a service resolves its public
+// verify key. null means the register failed, which is not the same thing.
+await node.hpsRegister("town/square", "channel", "requestToJoin", "discoverable");
+
+// Join someone else's topic, then post to it.
+await node.hpsSubscribe(hostAddress, "town/square");
+await node.hpsPublish("town/square", "hello channel");
+
+// Receive. Publications repeat on every poll until you accept them, exactly like the inbox.
+node.onHpsMessage(async (msg) => {
+  console.log(`${msg.path} <- ${msg.sender}: ${new TextDecoder().decode(msg.body)}`);
+  await node.acceptHpsMessage(msg.id);
+});
+
+// Invites are take-and-clear, not accept-to-remove: persist what this hands you or it is gone.
+node.onHpsInvite((inv) => saveInvite(inv));
+await node.hpsAcceptInvite(inv.host, inv.path);
+
+// Hosting a requestToJoin topic: approve or deny, and revoke by rotating the key without them.
+for (const requester of await node.hpsPending("town/square")) await node.hpsApprove("town/square", requester);
+await node.hpsRekey("town/square", "", [addressToRevoke]);
+```
+
+`hpsMyTopics()` rebuilds your topic list from the node's own store at startup, and `hpsBrowse()` finds
+discoverable topics on the mesh. Only topics hosted by apps holding the same app secret are ever
+surfaced, so one app's channels are invisible to another's.
+
+### Relays: a pool, not one URL
+
+A single hardcoded relay URL is a single point of failure. Offer the node every endpoint you know and
+let it score them:
+
+```ts
+await node.relayAdd("wss://relay.example/hop");   // `configured` defaults to true: an operator choice
+const url = await node.relayNext();               // the one to dial now, or null
+await node.relayReport(url, ok);                  // scores it: success clears backoff, failure extends it
+```
+
+`relayNext()` resolving null is two different states, and a UI must tell them apart. With a non-zero
+`(await node.relayPool()).total` it means every candidate is currently backed off: show that, and retry,
+because the backoff always eventually recovers. With a zero total the pool is simply empty, which is what
+`relayAdd` fixes.
+
 ## API
 
 - `Hop.ephemeral()`, `Hop.withSecret(secret)`, `Hop.open({ dbPath, secret?, appSecret?, key? })` create a `HopNode`.
 - `HopNode`: `address()`, `secret()`, `setName()`, `subscribe()`, `publishPrekey()`, `isSecured()`,
   `send()`, `sendTo()`, `status()`, `acceptInbox()`, the `sendServiceRequest`/`sendServiceResponse`
-  surface, the bearer seam (`linkUp`/`linkDown`/`bytesReceived`), `start()`/`stop()`, the
-  `onMessage`/`onServiceRequest`/`onServiceResponse`/`onOutgoing` subscriptions, and `close()`.
+  surface, the hps:// surface (`hpsRegister`/`hpsSubscribe`/`hpsPublish`/`acceptHpsMessage`,
+  `hpsInvite`/`hpsAcceptInvite`/`hpsDeclineInvite`/`hpsLeave`, the host controls
+  `hpsPending`/`hpsApprove`/`hpsDeny`/`hpsRekey`/`hpsReach`/`hpsMembers`, and
+  `hpsMyTopics`/`hpsBrowse`), the relay pool (`relayAdd`/`relayNext`/`relayReport`/`relayPool`), the
+  bearer seam (`linkUp`/`linkDown`/`bytesReceived`), `start()`/`stop()`, the
+  `onMessage`/`onServiceRequest`/`onServiceResponse`/`onOutgoing`/`onHpsMessage`/`onHpsInvite`
+  subscriptions, and `close()`.
 - `HopAddress.toBase58(bytes)` / `HopAddress.fromBase58(text)` convert between raw 32-byte addresses and
   their base58 form.
 
