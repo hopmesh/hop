@@ -42,8 +42,8 @@ typedef _HpsMsgSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
 typedef _HpsInviteSinkC = Void Function(
     Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32);
 typedef _Addr32SinkC = Void Function(Pointer<Void>, Pointer<Uint8>);
-typedef _HpsTopicSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
-    Pointer<Utf8>, Uint32, Bool, Uint32);
+typedef _HpsTopicSinkC = Void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32, Bool, Uint32);
 typedef _HpsBrowseSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Utf8>, Uint32, Pointer<Utf8>, Pointer<Utf8>, Uint32);
 
@@ -132,8 +132,8 @@ typedef _ClusterSetQuorumDart = void Function(Pointer<Void>, int);
 // real, not because the package exposes a channel surface today.
 typedef _HpsRegisterC = Bool Function(Pointer<Void>, Pointer<Utf8>, Uint32,
     Uint32, Uint32, Pointer<Uint8>, Size, Pointer<Size>);
-typedef _HpsRegisterDart = bool Function(Pointer<Void>, Pointer<Utf8>, int,
-    int, int, Pointer<Uint8>, int, Pointer<Size>);
+typedef _HpsRegisterDart = bool Function(Pointer<Void>, Pointer<Utf8>, int, int,
+    int, Pointer<Uint8>, int, Pointer<Size>);
 typedef _HpsSubscribeC = Bool Function(
     Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
 typedef _HpsSubscribeDart = bool Function(
@@ -168,28 +168,33 @@ typedef _HpsLeaveC = Bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Bool>);
 typedef _HpsLeaveDart = bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Bool>);
-typedef _HpsPendingC = Size Function(
-    Pointer<Void>, Pointer<Utf8>, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
-typedef _HpsPendingDart = int Function(
-    Pointer<Void>, Pointer<Utf8>, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsPendingC = Size Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsPendingDart = int Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
 typedef _HpsApproveC = Bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
 typedef _HpsApproveDart = bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
-typedef _HpsDenyC = Bool Function(
-    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsDenyC = Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
 typedef _HpsDenyDart = bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
 typedef _HpsRekeyC = Size Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>,
     Pointer<Uint8>, Size, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
-typedef _HpsRekeyDart = int Function(Pointer<Void>, Pointer<Utf8>,
-    Pointer<Utf8>, Pointer<Uint8>, int, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsRekeyDart = int Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Uint8>,
+    int,
+    Pointer<NativeFunction<_Addr32SinkC>>,
+    Pointer<Void>);
 typedef _HpsReachC = Uint32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef _HpsReachDart = int Function(Pointer<Void>, Pointer<Utf8>);
-typedef _HpsMembersC = Size Function(
-    Pointer<Void>, Pointer<Utf8>, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
-typedef _HpsMembersDart = int Function(
-    Pointer<Void>, Pointer<Utf8>, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsMembersC = Size Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsMembersDart = int Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
 typedef _HpsMyTopicsC = Size Function(
     Pointer<Void>, Pointer<NativeFunction<_HpsTopicSinkC>>, Pointer<Void>);
 typedef _HpsMyTopicsDart = int Function(
@@ -240,6 +245,7 @@ typedef ReachInfo = ({
   int issuedAt,
   int ttlSecs,
 });
+
 /// One polled `hps://` publication, after decryption and sender verification.
 typedef HpsMessageRow = (
   Uint8List id,
@@ -358,21 +364,20 @@ class HopFfi {
       _lib.lookupFunction<_ClusterSetQuorumC, _ClusterSetQuorumDart>(
           'hop_cluster_set_quorum');
   // ---- hps:// pub/sub (DESIGN.md section 32) ----
-  late final _hpsRegister = _lib.lookupFunction<_HpsRegisterC, _HpsRegisterDart>(
-      'hop_hps_register');
-  late final _hpsSubscribe =
-      _lib.lookupFunction<_HpsSubscribeC, _HpsSubscribeDart>(
-          'hop_hps_subscribe');
-  late final _hpsPublish = _lib.lookupFunction<_HpsPublishC, _HpsPublishDart>(
-      'hop_hps_publish');
+  late final _hpsRegister =
+      _lib.lookupFunction<_HpsRegisterC, _HpsRegisterDart>('hop_hps_register');
+  late final _hpsSubscribe = _lib
+      .lookupFunction<_HpsSubscribeC, _HpsSubscribeDart>('hop_hps_subscribe');
+  late final _hpsPublish =
+      _lib.lookupFunction<_HpsPublishC, _HpsPublishDart>('hop_hps_publish');
   late final _pollHpsMessages =
       _lib.lookupFunction<_PollHpsMessagesC, _PollHpsMessagesDart>(
           'hop_poll_hps_messages');
   late final _acceptHpsMessage =
       _lib.lookupFunction<_AcceptHpsMessageC, _AcceptHpsMessageDart>(
           'hop_accept_hps_message');
-  late final _hpsInvite = _lib.lookupFunction<_HpsInviteC, _HpsInviteDart>(
-      'hop_hps_invite');
+  late final _hpsInvite =
+      _lib.lookupFunction<_HpsInviteC, _HpsInviteDart>('hop_hps_invite');
   late final _hpsAcceptInvite =
       _lib.lookupFunction<_HpsAcceptInviteC, _HpsAcceptInviteDart>(
           'hop_hps_accept_invite');
@@ -382,25 +387,24 @@ class HopFfi {
   late final _pollHpsInvites =
       _lib.lookupFunction<_PollHpsInvitesC, _PollHpsInvitesDart>(
           'hop_poll_hps_invites');
-  late final _hpsLeave = _lib.lookupFunction<_HpsLeaveC, _HpsLeaveDart>(
-      'hop_hps_leave');
-  late final _hpsPending = _lib.lookupFunction<_HpsPendingC, _HpsPendingDart>(
-      'hop_hps_pending');
-  late final _hpsApprove = _lib.lookupFunction<_HpsApproveC, _HpsApproveDart>(
-      'hop_hps_approve');
-  late final _hpsDeny = _lib.lookupFunction<_HpsDenyC, _HpsDenyDart>(
-      'hop_hps_deny');
-  late final _hpsRekey = _lib.lookupFunction<_HpsRekeyC, _HpsRekeyDart>(
-      'hop_hps_rekey');
-  late final _hpsReach = _lib.lookupFunction<_HpsReachC, _HpsReachDart>(
-      'hop_hps_reach');
-  late final _hpsMembers = _lib.lookupFunction<_HpsMembersC, _HpsMembersDart>(
-      'hop_hps_members');
+  late final _hpsLeave =
+      _lib.lookupFunction<_HpsLeaveC, _HpsLeaveDart>('hop_hps_leave');
+  late final _hpsPending =
+      _lib.lookupFunction<_HpsPendingC, _HpsPendingDart>('hop_hps_pending');
+  late final _hpsApprove =
+      _lib.lookupFunction<_HpsApproveC, _HpsApproveDart>('hop_hps_approve');
+  late final _hpsDeny =
+      _lib.lookupFunction<_HpsDenyC, _HpsDenyDart>('hop_hps_deny');
+  late final _hpsRekey =
+      _lib.lookupFunction<_HpsRekeyC, _HpsRekeyDart>('hop_hps_rekey');
+  late final _hpsReach =
+      _lib.lookupFunction<_HpsReachC, _HpsReachDart>('hop_hps_reach');
+  late final _hpsMembers =
+      _lib.lookupFunction<_HpsMembersC, _HpsMembersDart>('hop_hps_members');
   late final _hpsMyTopics =
-      _lib.lookupFunction<_HpsMyTopicsC, _HpsMyTopicsDart>(
-          'hop_hps_my_topics');
-  late final _hpsBrowse = _lib.lookupFunction<_HpsBrowseC, _HpsBrowseDart>(
-      'hop_hps_browse');
+      _lib.lookupFunction<_HpsMyTopicsC, _HpsMyTopicsDart>('hop_hps_my_topics');
+  late final _hpsBrowse =
+      _lib.lookupFunction<_HpsBrowseC, _HpsBrowseDart>('hop_hps_browse');
 
   // ---- hps:// pub/sub methods (section 32) ----
 
@@ -413,7 +417,8 @@ class HopFfi {
     final out = calloc<Uint8>(32);
     final outLen = calloc<Size>(1);
     try {
-      final ok = _hpsRegister(node, p, kind, access, visibility, out, 32, outLen);
+      final ok =
+          _hpsRegister(node, p, kind, access, visibility, out, 32, outLen);
       if (!ok) return null;
       final n = outLen.value;
       return n == 0 ? Uint8List(0) : Uint8List.fromList(out.asTypedList(n));
@@ -461,8 +466,12 @@ class HopFfi {
     final cb = NativeCallable<_HpsMsgSinkC>.isolateLocal(
       (Pointer<Void> _, Pointer<Uint8> id, Pointer<Utf8> path,
           Pointer<Uint8> sender, Pointer<Uint8> body, int bodyLen) {
-        out.add((_copy(id, 32), path.toDartString(), _copy(sender, 32),
-            _copy(body, bodyLen)));
+        out.add((
+          _copy(id, 32),
+          path.toDartString(),
+          _copy(sender, 32),
+          _copy(body, bodyLen)
+        ));
         return false;
       },
       exceptionalReturn: false,
@@ -477,7 +486,8 @@ class HopFfi {
 
   /// Durably accept one publication returned by [takeHpsMessages].
   bool acceptHpsMessage(Pointer<Void> node, Uint8List id) => _withBytes(
-      _require32(id, 'publication id'), (ptr, _) => _acceptHpsMessage(node, ptr));
+      _require32(id, 'publication id'),
+      (ptr, _) => _acceptHpsMessage(node, ptr));
 
   /// Host to destination: invite [dest] to a topic we host. Returns the
   /// invite bundle id, or null on error.
@@ -618,8 +628,10 @@ class HopFfi {
       },
     );
     try {
-      _withBytes(remove, (rPtr, rLen) => _hpsRekey(
-          node, p, np, rPtr, rLen ~/ 32, cb.nativeFunction, nullptr));
+      _withBytes(
+          remove,
+          (rPtr, rLen) => _hpsRekey(
+              node, p, np, rPtr, rLen ~/ 32, cb.nativeFunction, nullptr));
     } finally {
       cb.close();
       calloc.free(p);
@@ -681,8 +693,14 @@ class HopFfi {
     final cb = NativeCallable<_HpsBrowseSinkC>.isolateLocal(
       (Pointer<Void> _, Pointer<Uint8> host, Pointer<Utf8> path, int kind,
           Pointer<Utf8> title, Pointer<Utf8> summary, int access) {
-        out.add((_copy(host, 32), path.toDartString(), kind,
-            title.toDartString(), summary.toDartString(), access));
+        out.add((
+          _copy(host, 32),
+          path.toDartString(),
+          kind,
+          title.toDartString(),
+          summary.toDartString(),
+          access
+        ));
       },
     );
     try {
