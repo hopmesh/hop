@@ -33,7 +33,18 @@
 // in a bump note are now MACHINE-CHECKED against every wrapper pinned to that version by
 // tools/codegen/check-abi-version.sh, so this paragraph can no longer describe a surface the
 // wrappers do not expose.
-#define HOP_ABI_VERSION 5
+//
+// v5 -> v6: added the §32 `hps://` pub/sub surface, which the C ABI had no exports for at all, so
+// every wrapper that sits on it (Swift, Kotlin, and the React Native bridge above them) could not
+// reach group chat or channels even though the protocol has shipped in the two native UniFFI
+// drivers for as long as it has existed. The calls are `hop_hps_register`, `hop_hps_subscribe`,
+// `hop_hps_publish`, `hop_poll_hps_messages`, `hop_accept_hps_message`, `hop_hps_invite`,
+// `hop_hps_accept_invite`, `hop_hps_decline_invite`, `hop_poll_hps_invites`, `hop_hps_leave`,
+// `hop_hps_pending`, `hop_hps_approve`, `hop_hps_deny`, `hop_hps_rekey`, `hop_hps_reach`,
+// `hop_hps_members`, `hop_hps_my_topics` and `hop_hps_browse`. Additive, so a v5 caller still
+// links; the bump is what stops a wrapper that binds them being paired with a v5 library that does
+// not export them, and what holds every wrapper to binding the whole surface (PLAT-003).
+#define HOP_ABI_VERSION 6
 
 // Which side opened a bearer link (the Noise role). Mirrors hop-core's internal `Role`.
 typedef enum HopLinkRole {
@@ -42,6 +53,32 @@ typedef enum HopLinkRole {
     // A peer connected in (peripheral / listener / invitee) → Noise responder.
     HopLinkRole_Acceptor = 1,
 } HopLinkRole;
+
+// The kind of `hps://` topic hosted at a path (DESIGN.md §32). Mirrors hop-core's `ServiceKind`.
+typedef enum HopHpsKind {
+    // Anyone with the content key reads AND writes; each publication signed by its writer.
+    HopHpsKind_Channel = 0,
+    // Only the owner broadcasts (signed by the service key); subscribers read.
+    HopHpsKind_Service = 1,
+} HopHpsKind;
+
+// Who may obtain a topic's keys (DESIGN.md §32). Mirrors hop-core's `AccessMode`.
+typedef enum HopHpsAccess {
+    // Keys handed to anyone who asks (anonymous membership).
+    HopHpsAccess_Open = 0,
+    // Requester asks; the host approves before keys are handed off.
+    HopHpsAccess_RequestToJoin = 1,
+    // Host invites a destination; the destination accepts, then receives keys.
+    HopHpsAccess_Invite = 2,
+} HopHpsAccess;
+
+// Whether a topic announces itself for discovery (DESIGN.md §32). Mirrors hop-core's `Visibility`.
+typedef enum HopHpsVisibility {
+    // Reachable only by a known address+path or an invite.
+    HopHpsVisibility_Private = 0,
+    // Host broadcasts an (app-encrypted) discovery advert so same-app peers can browse it.
+    HopHpsVisibility_Discoverable = 1,
+} HopHpsVisibility;
 
 // A running Hop node the host drives. Thread-safe (interior `Mutex`), handed to
 // the foreign side as a reference-counted object.
@@ -322,6 +359,164 @@ void hop_poll_service_responses(const struct HopNode *node,
 // `request_id` is the 32-byte `for_request_id` supplied to the callback. Returns false for NULL, an
 // unknown/already-accepted request id, or a persistence failure.
 bool hop_accept_service_response(const struct HopNode *node, const uint8_t *request_id);
+
+// Register (host) an `hps://` topic at `path`, minting and persisting its keys. `kind` is a
+// [`HopHpsKind`] discriminant, `access` a [`HopHpsAccess`], `visibility` a [`HopHpsVisibility`],
+// each as a plain `uint32_t`.
+//
+// A `Service` topic has a public key (only the owner broadcasts, signed by it); a `Channel` has
+// none (writers sign with their own identity). So the key is written to `out_pubkey` (`out_pubkey_cap`
+// bytes, may be NULL to ignore) and its length to `out_pubkey_len` (may be NULL); a channel writes
+// zero bytes. The bool return, not the length, is what says whether registration happened: returns
+// false on a NULL node/path, an out-of-range `kind`/`access`/`visibility`, or a key that does not
+// fit in `out_pubkey_cap`.
+bool hop_hps_register(const struct HopNode *node,
+                      const char *path,
+                      uint32_t kind,
+                      uint32_t access,
+                      uint32_t visibility,
+                      uint8_t *out_pubkey,
+                      uintptr_t out_pubkey_cap,
+                      uintptr_t *out_pubkey_len);
+
+// Subscribe to `hps://{host}/{path}`: seal a keys request to `host` (32 bytes), which for an `Open`
+// topic replies with the topic keys, for `RequestToJoin` queues us for approval, and for `Invite`
+// ignores us. Publications then arrive via [`hop_poll_hps_messages`]. Writes the 32-byte subscribe
+// bundle id to `out_id` (may be NULL) and returns true.
+bool hop_hps_subscribe(const struct HopNode *node,
+                       const uint8_t *host,
+                       const char *path,
+                       uint8_t *out_id);
+
+// Publish `body` to a topic we host or (for a channel) belong to: encrypted once to the topic's
+// content key, signed by the service key for a service or by our own identity for a channel, and
+// flooded once to every subscriber. Writes the 32-byte bundle id to `out_id` (may be NULL).
+// Returns false for an unknown path, a body over [`MAX_C_ABI_INPUT_BYTES`], or no write access.
+bool hop_hps_publish(const struct HopNode *node,
+                     const char *path,
+                     const uint8_t *body,
+                     uintptr_t body_len,
+                     uint8_t *out_id);
+
+// Drain received `hps://` publications (poll model, the same shape as [`hop_poll_inbox`]). Invokes
+// `sink(ctx, id32, path_cstr, sender32, body_ptr, body_len)` once per publication during this call.
+// `id` and `sender` each point at 32 bytes; `path` is a NUL-terminated UTF-8 string; every pointer
+// is valid only for the callback, so copy what you keep. `sender` is the VERIFIED writer for a
+// channel and the host for a service. Returning true is synchronous host acceptance: core then
+// durably removes that publication. Returning false leaves it queued for redelivery until
+// [`hop_accept_hps_message`] succeeds.
+void hop_poll_hps_messages(const struct HopNode *node, bool (*sink)(void *ctx,
+                                                                    const uint8_t *id,
+                                                                    const char *path,
+                                                                    const uint8_t *sender,
+                                                                    const uint8_t *body,
+                                                                    uintptr_t body_len), void *ctx);
+
+// Durably accept one publication previously returned by [`hop_poll_hps_messages`]. `id` points to
+// exactly 32 bytes. Returns false for NULL, an unknown/already-accepted id, or a persistence failure.
+bool hop_accept_hps_message(const struct HopNode *node,
+                            const uint8_t *id);
+
+// Host to destination: invite `dest` (32 bytes) to a topic we host, the `Invite`-mode key handoff.
+// The invite arrives at `dest` via [`hop_poll_hps_invites`]; keys are only sealed once it accepts.
+// Writes the 32-byte invite bundle id to `out_id` (may be NULL).
+bool hop_hps_invite(const struct HopNode *node,
+                    const char *path,
+                    const uint8_t *dest,
+                    uint8_t *out_id);
+
+// Member to host: accept an invite we received, after which the host seals us the topic keys.
+// `host` is 32 bytes. Writes the 32-byte accept bundle id to `out_id` (may be NULL).
+bool hop_hps_accept_invite(const struct HopNode *node,
+                           const uint8_t *host,
+                           const char *path,
+                           uint8_t *out_id);
+
+// Decline a received invite. This is DURABLE: the invite is dropped from storage so it does not
+// reappear after a restart. `host` is 32 bytes. Returns false on NULL args.
+bool hop_hps_decline_invite(const struct HopNode *node, const uint8_t *host, const char *path);
+
+// Drain invites we have received, clearing them. Invokes `sink(ctx, host32, path_cstr, kind)` once
+// per invite, where `kind` is a [`HopHpsKind`] discriminant. Pointers are valid only for the
+// callback. Unlike the publication queue this is a take-and-clear drain, not an accept-to-remove
+// one: an invite the host does not act on is gone, so persist what you surface.
+void hop_poll_hps_invites(const struct HopNode *node, void (*sink)(void *ctx,
+                                                                   const uint8_t *host,
+                                                                   const char *path,
+                                                                   uint32_t kind), void *ctx);
+
+// Member to host: leave a topic, so the host stops re-keying us on rotation. Writes the 32-byte
+// leave bundle id to `out_id` (may be NULL) and sets `*out_has_id` (may be NULL) to whether there
+// was one: leaving a topic we HOST sends no bundle, which is a success with no id rather than a
+// failure. Returns false only on NULL args or a core error.
+bool hop_hps_leave(const struct HopNode *node, const char *path, uint8_t *out_id, bool *out_has_id);
+
+// Host: the join requests queued on a `RequestToJoin` topic, each a requester address. Invokes
+// `sink(ctx, addr32)` once per requester (may be NULL to just count) and returns the count.
+uintptr_t hop_hps_pending(const struct HopNode *node,
+                          const char *path,
+                          void (*sink)(void *ctx, const uint8_t *addr),
+                          void *ctx);
+
+// Host: approve a pending requester (32 bytes), sealing them the topic keys. Writes the 32-byte
+// keys bundle id to `out_id` (may be NULL).
+bool hop_hps_approve(const struct HopNode *node,
+                     const char *path,
+                     const uint8_t *requester,
+                     uint8_t *out_id);
+
+// Host: deny a pending requester (32 bytes) and drop the request. No keys are sealed.
+bool hop_hps_deny(const struct HopNode *node, const char *path, const uint8_t *requester);
+
+// Host: selective forward rotation, which is how a member is REVOKED. Mints a new content key and
+// seals it to every retained member except the `remove_count` addresses packed back to back in
+// `remove` (32 bytes each, so `remove_count * 32` bytes read); a removed member keeps only the dead
+// key, so it can still read history it already has and nothing published afterwards. `new_path`
+// empty (or NULL) keeps the same path; a non-empty one moves the topic. Invokes `sink(ctx, id32)`
+// once per rekey bundle (may be NULL) and returns the count, or 0 on NULL args, an over-long
+// `remove` array, or a core error.
+uintptr_t hop_hps_rekey(const struct HopNode *node,
+                        const char *path,
+                        const char *new_path,
+                        const uint8_t *remove,
+                        uintptr_t remove_count,
+                        void (*sink)(void *ctx, const uint8_t *id),
+                        void *ctx);
+
+// Host: a topic's reach, the number of distinct addresses that have acked a publication on it. This
+// is the delivery sense for a flood: there is no per-recipient receipt, so reach is what a UI can
+// honestly show. 0 on NULL args or an unknown path.
+uint32_t hop_hps_reach(const struct HopNode *node, const char *path);
+
+// Host: the retained-member set for a topic. Invokes `sink(ctx, addr32)` once per member (may be
+// NULL to just count) and returns the count.
+uintptr_t hop_hps_members(const struct HopNode *node,
+                          const char *path,
+                          void (*sink)(void *ctx, const uint8_t *addr),
+                          void *ctx);
+
+// Every topic this node hosts or follows, so an app can rebuild its channel list after a restart:
+// the node persists topics, the app's in-memory list does not. Invokes
+// `sink(ctx, host32, path_cstr, kind, hosting, access)` once per topic (may be NULL to just count),
+// where `kind` is a [`HopHpsKind`] and `access` a [`HopHpsAccess`] discriminant. Returns the count.
+uintptr_t hop_hps_my_topics(const struct HopNode *node, void (*sink)(void *ctx,
+                                                                     const uint8_t *host,
+                                                                     const char *path,
+                                                                     uint32_t kind,
+                                                                     bool hosting,
+                                                                     uint32_t access), void *ctx);
+
+// Same-app discoverable topics seen on the mesh: the descriptors a `Discoverable` host broadcasts,
+// decrypted with the app secret, so this only ever surfaces topics from the same app fabric.
+// Invokes `sink(ctx, host32, path_cstr, kind, title_cstr, summary_cstr, access)` once per topic
+// (may be NULL to just count) and returns the count.
+uintptr_t hop_hps_browse(const struct HopNode *node, void (*sink)(void *ctx,
+                                                                  const uint8_t *host,
+                                                                  const char *path,
+                                                                  uint32_t kind,
+                                                                  const char *title,
+                                                                  const char *summary,
+                                                                  uint32_t access), void *ctx);
 
 // Encode a 32-byte `addr` as base58 into the C buffer `out` (`out_cap` bytes incl. NUL). Returns
 // the string length (excluding NUL), or 0 on NULL / insufficient capacity.
