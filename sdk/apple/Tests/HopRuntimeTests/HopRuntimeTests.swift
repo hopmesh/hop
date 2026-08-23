@@ -23,6 +23,61 @@ private final class LoopbackBearer: Bearer {
     fileprivate func deliver(_ bytes: Data) { sink?.linkBytes(linkId, bytes) }
 }
 
+/// Two nodes on ONE app fabric, wired straight to each other at the node seam, which is all the
+/// hps:// paths need to run for real.
+///
+/// Two choices here are load-bearing. Both nodes get the SAME app secret, because an hps join proof
+/// is bound to the app fabric: a pair built on different (or absent) secrets links, handshakes, and
+/// then never keys each other, which reads exactly like a broken binding. And the store is
+/// `:memory:` because the app-secret constructor is the only one that takes a fabric at all, and no
+/// test here wants to survive a restart. This mirrors the core's own two-node hps harness so a Swift
+/// failure means the wrapper, not the protocol.
+private final class HpsPair {
+    let host: HopNode
+    let member: HopNode
+    let hostAddress: Data
+    let memberAddress: Data
+    private let hostLink: UInt64 = 11
+    private let memberLink: UInt64 = 22
+
+    init?(app: UInt8) {
+        let appSecret = Data(repeating: app, count: 32)
+        guard let host = HopNode.open(dbPath: ":memory:", appSecret: appSecret),
+              let member = HopNode.open(dbPath: ":memory:", appSecret: appSecret) else { return nil }
+        self.host = host
+        self.member = member
+        self.hostAddress = host.address
+        self.memberAddress = member.address
+        // A real clock BEFORE the link comes up: a prekey advert with no clock is judged expired, and
+        // then nothing gossips and no keys request can ever be sealed.
+        host.tick(nowMs: 1_700_000_000_000)
+        member.tick(nowMs: 1_700_000_000_000)
+        host.linkUp(hostLink, role: .dialer)
+        member.linkUp(memberLink, role: .acceptor)
+        pumpUntilQuiet()
+        host.publishPrekey()
+        member.publishPrekey()
+        pumpUntilQuiet()
+    }
+
+    /// Move bytes both directions across the drainOutgoing/bytesReceived seam until neither side has
+    /// anything left to send. Bounded, so a regression stalls one test instead of hanging the suite.
+    func pumpUntilQuiet(rounds: Int = 1000) {
+        for _ in 0..<rounds {
+            var moved = false
+            host.drainOutgoing { _, bytes in
+                moved = true
+                self.member.bytesReceived(self.memberLink, bytes)
+            }
+            member.drainOutgoing { _, bytes in
+                moved = true
+                self.host.bytesReceived(self.hostLink, bytes)
+            }
+            if !moved { return }
+        }
+    }
+}
+
 final class HopRuntimeTests: XCTestCase {
 
     /// F-26: a healthy ephemeral() never returns nil, and the wrapper honors the optional contract.
@@ -171,9 +226,11 @@ final class HopRuntimeTests: XCTestCase {
     // MARK: §19 relay pool (PLAT-003)
 
     /// sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this wrapper
-    /// asserted ABI 5 on first use while binding none of them, so an SDK-only integrator could not
-    /// fail over: with no relay call on HopNode, the only usable RelayBearer constructor is the
-    /// fixed-URL one, and one dead endpoint ended internet reach until the app restarted.
+    /// asserted that level on first use while binding none of them, so an SDK-only integrator could
+    /// not fail over: with no relay call on HopNode, the only usable RelayBearer constructor is the
+    /// fixed-URL one, and one dead endpoint ended internet reach until the app restarted. The
+    /// wrapper now pins ABI 6 and binds the relay pool, and this test is what makes the binding
+    /// load-bearing rather than merely present.
     ///
     /// This drives the failover through the SAME closure shape RelayBearer's pooled constructor takes
     /// (`resolveURL` / `reportOutcome`), built ONLY from the published SDK, on one node that is never
@@ -217,5 +274,207 @@ final class HopRuntimeTests: XCTestCase {
         XCTAssertNil(resolveURL(), "every candidate is backed off, so there is nothing to dial")
         XCTAssertEqual(node.relayPool().total, 2)
         XCTAssertEqual(node.relayPool().available, 0)
+    }
+
+    // MARK: hps:// pub/sub (DESIGN.md section 32)
+
+    /// The whole reason the hps surface was added to the C ABI, driven end to end through the SDK
+    /// only: host a channel, join it from a second node, publish once, and the subscriber gets that
+    /// ONE publication with the writer verified. One content-key-encrypted, per-writer-signed
+    /// publication flooded once, not fan-out and not a bundle per member, so the subscriber count is
+    /// exactly one no matter how the topic grows.
+    func testAChannelPublicationReachesASubscriberAndIsGoneOnceAccepted() {
+        guard let pair = HpsPair(app: 6) else { return XCTFail("HpsPair returned nil") }
+        let path = "room"
+
+        guard let key = pair.host.hpsRegister(path: path, kind: .channel,
+                                              access: .open, visibility: .topicPrivate) else {
+            return XCTFail("hpsRegister returned nil for a channel")
+        }
+        XCTAssertTrue(key.isEmpty, "a channel has no service key: its writers sign as themselves")
+        pair.pumpUntilQuiet()
+
+        guard let subscribeId = pair.member.hpsSubscribe(host: pair.hostAddress, path: path) else {
+            return XCTFail("hpsSubscribe returned nil")
+        }
+        XCTAssertEqual(subscribeId.count, 32)
+        XCTAssertNotEqual(subscribeId, Data(count: 32), "a real bundle id, not an untouched buffer")
+        pair.pumpUntilQuiet()   // open access, so the host hands the keys back unprompted
+
+        let body = Data("hello room".utf8)
+        guard let publishId = pair.host.hpsPublish(path: path, body: body) else {
+            return XCTFail("hpsPublish returned nil")
+        }
+        XCTAssertNotEqual(publishId, Data(count: 32))
+        pair.pumpUntilQuiet()
+
+        var received: [HopHpsMessage] = []
+        pair.member.pollHpsMessagesAccepting { message in
+            received.append(message)
+            return true   // returning true IS the durable acceptance, no separate accept needed
+        }
+        XCTAssertEqual(received.count, 1, "one flooded publication reaches the subscriber")
+        XCTAssertEqual(received.first?.path, path)
+        XCTAssertEqual(received.first?.sender, pair.hostAddress, "sender is the VERIFIED writer")
+        XCTAssertEqual(received.first?.body, body)
+
+        var redelivered: [HopHpsMessage] = []
+        pair.member.pollHpsMessagesAccepting { message in
+            redelivered.append(message)
+            return true
+        }
+        XCTAssertTrue(redelivered.isEmpty, "an accepted publication is durably removed, not requeued")
+    }
+
+    /// The invite-mode key handoff, and the revocation that ends it. An invite-only topic hands out
+    /// nothing when it is browsed or invited: keys are sealed only after the destination accepts,
+    /// which is why membership is a property of the key handoff rather than of a recipient list.
+    ///
+    /// This also pins the browse row's field order. `hop_hps_browse` hands a Swift callback SEVEN
+    /// arguments, so a kind or access read out of the wrong slot would still compile and would show a
+    /// closed topic as open: asserting both discriminants is what catches that.
+    func testAnInviteKeysAMemberAndARekeyRevokesThem() {
+        guard let pair = HpsPair(app: 8) else { return XCTFail("HpsPair returned nil") }
+        let path = "vip"
+        XCTAssertNotNil(pair.host.hpsRegister(path: path, kind: .channel,
+                                              access: .invite, visibility: .discoverable))
+        pair.pumpUntilQuiet()
+        pair.pumpUntilQuiet()   // the discovery advert is a second round trip, as in the core harness
+
+        guard let seen = pair.member.hpsBrowse().first(where: { $0.path == path }) else {
+            return XCTFail("the discoverable topic never reached browse")
+        }
+        XCTAssertEqual(seen.host, pair.hostAddress)
+        XCTAssertEqual(seen.kind, .channel, "browse decoded the kind slot")
+        XCTAssertEqual(seen.access, .invite, "browse decoded the access slot, not the kind again")
+
+        XCTAssertNotNil(pair.host.hpsInvite(path: path, dest: pair.memberAddress))
+        pair.pumpUntilQuiet()
+        var invites: [HopHpsInvite] = []
+        pair.member.pollHpsInvites { invites.append($0) }
+        XCTAssertEqual(invites.count, 1, "the member drains the invite")
+        XCTAssertEqual(invites.first?.path, path)
+        XCTAssertEqual(invites.first?.host, pair.hostAddress)
+        XCTAssertEqual(invites.first?.kind, .channel)
+
+        // Take-and-clear, unlike the publication queue: a second drain has nothing, so a host that
+        // does not persist what it surfaced has silently lost the invite.
+        var again: [HopHpsInvite] = []
+        pair.member.pollHpsInvites { again.append($0) }
+        XCTAssertTrue(again.isEmpty, "a drained invite is gone")
+
+        XCTAssertNotNil(pair.member.hpsAcceptInvite(host: pair.hostAddress, path: path))
+        pair.pumpUntilQuiet()
+        XCTAssertTrue(pair.host.hpsMembers(path: path).contains(pair.memberAddress),
+                      "accepting is what earns the keys, so the host now retains the member")
+
+        // A mis-sized removal is DROPPED, so this is an ordinary rotation and the member is retained.
+        // If the wrapper packed the short entry instead, the buffer would slide and this member would
+        // be the one revoked by a call that named nobody.
+        XCTAssertFalse(pair.host.hpsRekey(path: path, remove: [Data(count: 31)]).isEmpty,
+                       "a rotation seals the new key to the retained member")
+        pair.pumpUntilQuiet()
+        XCTAssertTrue(pair.host.hpsMembers(path: path).contains(pair.memberAddress),
+                      "a 31-byte entry revoked a member it had no right to name")
+
+        // Naming them properly is the revocation: they keep the dead key and nothing published after.
+        _ = pair.host.hpsRekey(path: path, remove: [pair.memberAddress])
+        pair.pumpUntilQuiet()
+        XCTAssertFalse(pair.host.hpsMembers(path: path).contains(pair.memberAddress),
+                       "a rekey naming the member drops them from the retained set")
+    }
+
+    /// A publication the host REFUSES stays queued, and the standalone accept clears it later. A host
+    /// that dies between the poll and its own persistence has to see the post again, or a channel
+    /// silently drops it: that is why the sink's return value, not the poll, is the removal.
+    func testARefusedPublicationIsRedeliveredUntilAcceptHpsMessageSucceeds() {
+        guard let pair = HpsPair(app: 7) else { return XCTFail("HpsPair returned nil") }
+        let path = "feed"
+        XCTAssertNotNil(pair.host.hpsRegister(path: path, kind: .channel,
+                                              access: .open, visibility: .topicPrivate))
+        pair.pumpUntilQuiet()
+        XCTAssertNotNil(pair.member.hpsSubscribe(host: pair.hostAddress, path: path))
+        pair.pumpUntilQuiet()
+        XCTAssertNotNil(pair.host.hpsPublish(path: path, body: Data("keep me".utf8)))
+        pair.pumpUntilQuiet()
+
+        var first: HopHpsMessage?
+        pair.member.pollHpsMessages { first = $0 }   // the non-accepting poll refuses every row
+        guard let queued = first else { return XCTFail("the subscriber never saw the publication") }
+
+        var second: HopHpsMessage?
+        pair.member.pollHpsMessages { second = $0 }
+        XCTAssertEqual(second?.id, queued.id, "a refused publication keeps its stable id and returns")
+
+        XCTAssertTrue(pair.member.acceptHpsMessage(queued.id))
+        var afterAcceptance: HopHpsMessage?
+        pair.member.pollHpsMessages { afterAcceptance = $0 }
+        XCTAssertNil(afterAcceptance, "acceptHpsMessage removes the row the sink left queued")
+    }
+
+    /// `hpsRegister` reports success through its RESULT and the key length separately, so a channel
+    /// is EMPTY data rather than nil. A wrapper that folded the two together would report every
+    /// channel a host just created as a failed registration, and channels are the common case.
+    func testRegisterSeparatesAServiceKeyFromAChannelsAbsentKey() {
+        guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
+        let service = node.hpsRegister(path: "feed", kind: .service,
+                                       access: .requestToJoin, visibility: .discoverable)
+        XCTAssertEqual(service?.count, 32, "a service exposes the key its broadcasts are signed with")
+
+        let channel = node.hpsRegister(path: "room", kind: .channel,
+                                       access: .open, visibility: .topicPrivate)
+        XCTAssertNotNil(channel, "a channel registration SUCCEEDS")
+        XCTAssertEqual(channel, Data(), "and carries no key, which is not a failure")
+    }
+
+    /// Every 32-byte hps argument is checked in the wrapper before it can reach native code as a
+    /// short pointer, the same guard the §39 send path has. A mis-sized address is refused, never
+    /// padded or truncated into a different valid address.
+    func testHpsAddressArgumentsRejectNon32ByteBoundaries() {
+        guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
+        XCTAssertNotNil(node.hpsRegister(path: "room", kind: .channel,
+                                         access: .requestToJoin, visibility: .topicPrivate))
+        for count in [0, 1, 31, 33] {
+            let invalid = Data(count: count)
+            XCTAssertNil(node.hpsSubscribe(host: invalid, path: "room"), "subscribe took \(count) bytes")
+            XCTAssertNil(node.hpsInvite(path: "room", dest: invalid), "invite took \(count) bytes")
+            XCTAssertNil(node.hpsApprove(path: "room", requester: invalid), "approve took \(count) bytes")
+            XCTAssertNil(node.hpsAcceptInvite(host: invalid, path: "room"), "accept took \(count) bytes")
+            XCTAssertFalse(node.hpsDeclineInvite(host: invalid, path: "room"), "decline took \(count)")
+            XCTAssertFalse(node.hpsDeny(path: "room", requester: invalid), "deny took \(count) bytes")
+            XCTAssertFalse(node.acceptHpsMessage(invalid), "accept took \(count) bytes")
+        }
+
+        // A rekey drops a mis-sized removal rather than packing it: the C call reads count * 32 bytes
+        // from one buffer, so a short entry would slide every later address and revoke a member nobody
+        // named. Dropping it leaves an ordinary rotation, which on a memberless topic seals nothing.
+        XCTAssertTrue(node.hpsRekey(path: "room", remove: [Data(count: 31)]).isEmpty)
+    }
+
+    /// `hpsMyTopics` is how an app rebuilds its channel list after a restart, since the node persists
+    /// topics and an in-memory list does not. `hosting` and `access` are what a UI reads to decide
+    /// whether to offer moderation at all, so a topic that came back with either one wrong would put
+    /// approve/deny controls on a topic this node cannot moderate.
+    func testMyTopicsReportsAHostedTopicWithItsAccessMode() {
+        guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
+        XCTAssertNotNil(node.hpsRegister(path: "lobby", kind: .channel,
+                                         access: .requestToJoin, visibility: .topicPrivate))
+
+        let mine = node.hpsMyTopics()
+        guard let topic = mine.first(where: { $0.path == "lobby" }) else {
+            return XCTFail("hpsMyTopics lost the hosted topic; saw \(mine.map(\.path))")
+        }
+        XCTAssertTrue(topic.hosting, "we registered it, so we host it")
+        XCTAssertEqual(topic.kind, .channel)
+        XCTAssertEqual(topic.access, .requestToJoin, "the access mode it was registered with")
+        XCTAssertEqual(topic.host, node.address, "a hosted topic's host is this node")
+        XCTAssertEqual(node.hpsReach(path: "lobby"), 0, "nothing has acked, so reach is honestly 0")
+        XCTAssertTrue(node.hpsPending(path: "lobby").isEmpty, "nobody has asked to join yet")
+        XCTAssertTrue(node.hpsMembers(path: "lobby").isEmpty)
+
+        // Leaving a topic we HOST sends no bundle, so no id is a SUCCESS, not a failure.
+        let left = node.hpsLeave(path: "lobby")
+        XCTAssertTrue(left.ok, "leaving a hosted topic succeeds")
+        XCTAssertNil(left.id, "and emits no bundle to report")
     }
 }
