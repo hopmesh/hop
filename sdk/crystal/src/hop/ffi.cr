@@ -42,13 +42,57 @@ lib LibHop
   fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
   fun cluster_members = hop_cluster_members(node : Void*) : UInt32
   fun cluster_set_quorum = hop_cluster_set_quorum(node : Void*, min_live_members : UInt32) : Void
+  # §32 hps:// pub/sub: services and channels (group chat), the surface the v5 -> v6 ABI bump added.
+  # PLAT-005: the C ABI exported NOTHING from hps:// before ABI 6, so every wrapper that sits on it,
+  # this one included, could not host, join, or post to a channel even though the protocol has shipped
+  # in core and over UniFFI for as long as it has existed.
+  #
+  # A Hop group message is NOT one-to-one fan-out and NOT a multicast bundle: it is a single
+  # content-key-encrypted, per-writer-signed publication, flooded once. Membership, invites and
+  # revocation are properties of the topic's key handoff, which is why invite / approve / rekey belong
+  # to this messaging surface rather than to a separate access-control API.
+  #
+  # Three distinctions the signatures carry that a caller must not flatten:
+  #   * hps_register returns a bool AND writes the key length through a separate out-param, so a
+  #     channel (zero-length key, because its writers sign with their own identity) stays
+  #     distinguishable from a failure. The bool, never the length, is what says the topic was hosted.
+  #   * hps_leave writes out_has_id: leaving a topic we HOST sends no bundle, which is a success with
+  #     no id rather than a failure.
+  #   * hps_rekey takes a COUNT of 32-byte addresses packed back to back, not a byte length.
+  #
+  # kind / access / visibility cross as plain uint32 discriminants (HopHpsKind, HopHpsAccess,
+  # HopHpsVisibility in sdk/hop.h). An out-of-range value makes the call FAIL, and is never coerced or
+  # defaulted, on purpose: reading a garbage int as Open would hand a topic's keys to anyone who asks.
+  #
+  # poll_hps_messages is accept-to-remove, the same shape as hop_poll_inbox: returning true from the
+  # sink accepts the publication and core durably drops it, returning false leaves it queued for
+  # redelivery until accept_hps_message succeeds. poll_hps_invites is take-and-clear instead, so a
+  # drained invite is gone whether or not anyone acted on it and a host must persist what it surfaces.
+  fun hps_register = hop_hps_register(node : Void*, path : LibC::Char*, kind : UInt32, access : UInt32, visibility : UInt32, out_pubkey : UInt8*, out_pubkey_cap : LibC::SizeT, out_pubkey_len : LibC::SizeT*) : Bool
+  fun hps_subscribe = hop_hps_subscribe(node : Void*, host : UInt8*, path : LibC::Char*, out_id : UInt8*) : Bool
+  fun hps_publish = hop_hps_publish(node : Void*, path : LibC::Char*, body : UInt8*, body_len : LibC::SizeT, out_id : UInt8*) : Bool
+  fun poll_hps_messages = hop_poll_hps_messages(node : Void*, sink : (Void*, UInt8*, LibC::Char*, UInt8*, UInt8*, LibC::SizeT -> Bool), ctx : Void*) : Void
+  fun accept_hps_message = hop_accept_hps_message(node : Void*, id : UInt8*) : Bool
+  fun hps_invite = hop_hps_invite(node : Void*, path : LibC::Char*, dest : UInt8*, out_id : UInt8*) : Bool
+  fun hps_accept_invite = hop_hps_accept_invite(node : Void*, host : UInt8*, path : LibC::Char*, out_id : UInt8*) : Bool
+  fun hps_decline_invite = hop_hps_decline_invite(node : Void*, host : UInt8*, path : LibC::Char*) : Bool
+  fun poll_hps_invites = hop_poll_hps_invites(node : Void*, sink : (Void*, UInt8*, LibC::Char*, UInt32 ->), ctx : Void*) : Void
+  fun hps_leave = hop_hps_leave(node : Void*, path : LibC::Char*, out_id : UInt8*, out_has_id : Bool*) : Bool
+  fun hps_pending = hop_hps_pending(node : Void*, path : LibC::Char*, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
+  fun hps_approve = hop_hps_approve(node : Void*, path : LibC::Char*, requester : UInt8*, out_id : UInt8*) : Bool
+  fun hps_deny = hop_hps_deny(node : Void*, path : LibC::Char*, requester : UInt8*) : Bool
+  fun hps_rekey = hop_hps_rekey(node : Void*, path : LibC::Char*, new_path : LibC::Char*, remove : UInt8*, remove_count : LibC::SizeT, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
+  fun hps_reach = hop_hps_reach(node : Void*, path : LibC::Char*) : UInt32
+  fun hps_members = hop_hps_members(node : Void*, path : LibC::Char*, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
+  fun hps_my_topics = hop_hps_my_topics(node : Void*, sink : (Void*, UInt8*, LibC::Char*, UInt32, Bool, UInt32 ->), ctx : Void*) : LibC::SizeT
+  fun hps_browse = hop_hps_browse(node : Void*, sink : (Void*, UInt8*, LibC::Char*, UInt32, LibC::Char*, LibC::Char*, UInt32 ->), ctx : Void*) : LibC::SizeT
 end
 
 module Hop
   # Thin, one-to-one helpers over LibHop: turn raw pointers + synchronous sink callbacks into Crystal
   # Bytes/String/arrays. Everything ergonomic lives in Hop::Endpoint.
   module FFI
-    ABI_EXPECTED = 5_u32
+    ABI_EXPECTED = 6_u32
 
     # Verified reach record fields (mirrors ReachInfo on the Rust side).
     record Reach, address : Bytes, endpoint : String, issued_at : UInt64, ttl_secs : UInt32
