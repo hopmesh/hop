@@ -73,16 +73,52 @@ This replaces an earlier instruction to add the `hop-sdk-apple` Swift package to
 That never worked for this module: the podspec's `s.spm_dependency` call was guarded by
 `if s.respond_to?(:spm_dependency)`, the method does not exist in CocoaPods 1.17, and the guard skipped
 silently, so `import Hop` could not resolve no matter what the app target contained.
-**Note:** the podspecs' `s.source` references git tags in the `hop-sdk-apple` repository, which carries
-`v0.0.1` and `v0.0.2` but no podspecs at either tag or on `main`. That affects remote consumption of
-`HopMesh` itself; a development pod by local path is unaffected.
+**The mirror, and which remote forms actually work.** The three podspecs live in the monorepo at
+`sdk/apple/` and the Copybara export for `hopmesh/hop-sdk-apple` carries them (`sdk/apple/**` is
+the export glob, with no exclude for podspecs), so a pinned clone of any mirror ref at or after
+the sync that landed them serves all five side-by-side files. The complete remote form is
+`:podspec` pointed INSIDE such a clone:
 
-**Why not a URL.** An earlier version of this section pointed at
-`raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/*.podspec`. Those URLs resolve, and that is all
-they do: `pod install` still fails, because each podspec `File.read`s `Package.swift` from its own
-directory during evaluation, `CHop` reads `LICENSE.md` as well, and a `:podspec` URL fetches one file
-to a temp directory with neither beside it. Evaluating `CHop.podspec` in isolation fails on line 19,
-the first read. Do not put those URLs back without also changing the podspecs to stop reading siblings.
+```ruby
+pod 'CHop',        :podspec => '../hop-sdk-apple/CHop.podspec'
+pod 'HopContract', :podspec => '../hop-sdk-apple/HopContract.podspec'
+pod 'HopSDK',      :podspec => '../hop-sdk-apple/HopSDK.podspec'
+```
+
+where `../hop-sdk-apple` is `git clone https://github.com/hopmesh/hop-sdk-apple.git` pinned to
+the commit you want. This is the vendoring flow above with the copy step replaced by a clone, and
+it was verified end to end against a mirror produced by the repo's own pinned Copybara export:
+`pod install` resolved all three pods at 0.0.2 and fetched the checksum-verified
+`libhop.xcframework` (CHop's `s.source` is the `:http` release archive, so it downloads rather
+than riding the checkout), the `CHop` spec checksum came out byte-identical to the one the
+vendored copy pins, and a consumer app target using exactly these three pods built clean for the
+iOS simulator with the core's static library linked.
+
+**A `:git` source does NOT work for these pods, and the failure is silent at install time.** The
+graph resolves, all three specs evaluate (the clone gives every sibling read a file to hit), and
+the lock pins the commit, but CocoaPods then treats the checkout as the pod source and never
+fetches CHop's `:http` archive, so `Pods/CHop` contains no xcframework and the consumer's build
+dies in HopSDK with `unable to resolve module dependency: 'CHop'`. Measured both ways: `pod
+install` succeeds and `xcodebuild` fails on the `:git` form, while the `:podspec`-into-clone form
+above builds. The two pure-Swift pods are fine either way; CHop is the one that loses its binary.
+
+As of this writing the public mirror does not carry the podspecs yet: its auto-export has not run
+since the monorepo lost the `HOP_SYNC_APP_*` secrets, and the mirror's recorded last-migrated
+commit no longer resolves in the monorepo, which blocks the export even with secrets back (both
+diagnosed and reproduced against the real pinned Copybara container; see the PR that added this
+section). Until that repair lands, vendoring the five files (above) is the only complete path that
+does not need the mirror. The ordinary future path is the CocoaPods trunk: `pod 'CHop'` with no
+source line, which needs the mirror's release job to run, which in turn needs `COCOAPODS_TRUNK_TOKEN`
+seeded (it is not today).
+
+**Why not a `:podspec` URL.** An earlier version of this section pointed at
+`raw.githubusercontent.com/hopmesh/hop-sdk-apple/v0.0.2/CHop.podspec`. Those URLs resolve, and
+that is all they do: `pod install` still fails, because each podspec `File.read`s `Package.swift`
+from its own directory during evaluation, `CHop` reads `LICENSE.md` as well, and a `:podspec`
+URL fetches one file to a temp directory with neither beside it. Evaluating `CHop.podspec` in
+isolation fails on line 19, the first read (reproduced: `pod ipc spec` on a lone copy dies at
+`Errno::ENOENT` for `Package.swift`). Do not put those URLs back without also changing the
+podspecs to stop reading siblings.
 
 ### Android
 
