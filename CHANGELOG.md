@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- restore the AAR metadata floor and run Detox on its real API (e4aa1dd)
+- name the real source-app secret and drop a dangling pointer (fd170ae)
+- give the release the fleet chain of custody (7f1d882)
 - teach the release-provenance test about the CocoaPods publish (1606bc0)
 - align Kotlin with the RN 0.87 consumer floor and drop the metadata suppression (164cf00)
 - satisfy the executable-reference and docs-dash guards for the RN HopDemo (1c20a3f)
@@ -63,6 +66,9 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- bump gradle-wrapper in /apps/android/HopDemo (3b6a650)
+- bump gradle-wrapper from 9.6.1 to 9.7.1 in /bearers/android (ab30a62)
+- bump the web-dependencies group across 1 directory with 2 updates (3bf14c3)
 - bump jvm from 2.2.10 to 2.4.10 in /sdk/android (4da7bfa)
 - bump com.squareup.okhttp3:okhttp in /apps/android/HopDemo (42b7bf9)
 - bump org.json:json in /apps/android/HopDemo (fe0a53c)
@@ -96,6 +102,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- correct token scope to hopmesh/hop (529ae98)
+- regenerate from conventional commits (85aa20d)
 - regenerate from conventional commits (f174097)
 - regenerate from conventional commits (b49b07c)
 - regenerate from conventional commits (0b7100d)
@@ -124,6 +132,7 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (21148ab)
 
 ### Features
+- publish bearers/apple as the hop-bearers-apple mirror (7f3f0d4)
 - ship the Apple SDK as CocoaPods pods, and make the React Native iOS build work (bcb3796)
 - rebuild HopDemo as a React Native app, and prove Android builds (b0e7009)
 - add an unsigned dev path to publish the AAR to a local Maven repo (bff9573)
