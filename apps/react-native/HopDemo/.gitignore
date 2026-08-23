@@ -82,6 +82,10 @@ ios/*.xcworkspace/xcuserdata/
 android/.gradle/
 android/app/build/
 
+# Detox writes per-run logs and failure screenshots here on every `detox test`, which is now a thing
+# that happens rather than a thing that errors in a hook.
+artifacts/
+
 # The repo root ignores *.xcodeproj because apps/apple/HopDemo GENERATES its project with XcodeGen from
 # project.yml, so committing one there would be committing a build output. This app has no generator: the
 # React Native template ships HopDemo.xcodeproj as the source of truth, hand-maintained, and CocoaPods needs
