@@ -1143,6 +1143,66 @@ fn maybe_flush_usage<S: Store>(node: &mut Node<S>, now: u64) {
     flush_usage_now(node, now);
 }
 
+/// Running per-version totals of wire-version-gated drops, for first-seen log dedup. Process
+/// global like [`LAST_USAGE_FLUSH_MS`]: the driver loop is single threaded, and a static keeps
+/// `driver_step`'s signature stable for its existing callers and tests.
+static VERSION_GATE_TOTALS: std::sync::Mutex<std::collections::BTreeMap<u8, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Drain the node's version-gate counter and emit one `netlog_private` line the FIRST time a
+/// given rejected version is seen. Called once per driver iteration. Deliberately deduped by
+/// version, not per bundle: a peer flooding a rejected version must not become a log flood
+/// (services-03), and the count remains visible through the counter itself. PRIVACY: the line
+/// carries the rejected version byte, the accepted range, and a count, and NOTHING else. A
+/// bundle that fails this gate is unauthenticated, so no address, id, mailbox prefix, or content
+/// may be logged (the same rule `flush_usage_now` applies to access refusals).
+fn surface_version_gate_drops<S: Store>(node: &mut Node<S>) {
+    let drained = node.take_version_gated();
+    if drained.is_empty() {
+        return;
+    }
+    let lines = {
+        let mut totals = VERSION_GATE_TOTALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        version_gate_lines(
+            &mut totals,
+            drained,
+            hop_core::bundle::MIN_SUPPORTED_BUNDLE_VERSION,
+            hop_core::bundle::BUNDLE_VERSION,
+        )
+    };
+    for line in lines {
+        netlog_private(line);
+    }
+}
+
+/// Pure decision used by [`surface_version_gate_drops`]: fold a fresh per-version delta into the
+/// running totals and return the lines for versions seen for the first time. Extracted so the
+/// first-seen-only rule is unit testable without touching process-global state.
+fn version_gate_lines(
+    totals: &mut std::collections::BTreeMap<u8, u64>,
+    delta: std::collections::BTreeMap<u8, u64>,
+    accepted_floor: u8,
+    accepted_current: u8,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (version, dropped) in delta {
+        let running = totals.entry(version).or_insert(0);
+        let first_sighting = *running == 0;
+        *running = running.saturating_add(dropped);
+        if first_sighting {
+            lines.push(format!(
+                "version gate: dropped bundle(s) speaking wire v{version}; this build accepts \
+                 v{accepted_floor}..v{accepted_current}; {running} dropped at v{version} so far. \
+                 A connected peer is on an incompatible wire version: from its own side sends \
+                 succeed and never arrive."
+            ));
+        }
+    }
+    lines
+}
+
 /// Readiness combines the driver heartbeat with durable custody. `/healthz` must not report success
 /// while Firestore has rejected or failed an accepted mutation. Cloud Run liveness uses `/livez`
 /// separately so a durable-backend outage stops traffic without inducing a restart loop.
@@ -1763,6 +1823,8 @@ fn driver_step<S: Store>(
     schedule.last_stats_ms = maybe_emit_stats(node, schedule.last_stats_ms, now_ms());
     // §35: periodically drain the meter into the durable usage ledger.
     maybe_flush_usage(node, now_ms());
+    // Observability: surface wire-version-gated drops (one deduped line per newly seen version).
+    surface_version_gate_drops(node);
     true
 }
 
@@ -5490,6 +5552,90 @@ mod driver_tests {
             maybe_emit_stats(&node, 1_000, 1_000 + 10_000),
             11_000,
             "at 10s: emit and advance the timestamp"
+        );
+    }
+
+    #[test]
+    fn version_gate_lines_fire_once_per_version_and_accumulate_totals() {
+        // The log contract: ONE line the first time a rejected version is seen, none for later
+        // drops at the same version (a flood of a rejected version must not become a log flood),
+        // and the running total keeps counting. The line names the rejected version, the
+        // accepted range, and a count, and by construction nothing else.
+        let mut totals = std::collections::BTreeMap::new();
+
+        let first = version_gate_lines(
+            &mut totals,
+            std::collections::BTreeMap::from([(12u8, 2u64)]),
+            13,
+            16,
+        );
+        assert_eq!(
+            first.len(),
+            1,
+            "first sighting of v12 logs exactly one line"
+        );
+        assert!(
+            first[0].contains("v12"),
+            "the line names the rejected version: {}",
+            first[0]
+        );
+        assert!(
+            first[0].contains("v13..v16"),
+            "the line names the accepted range: {}",
+            first[0]
+        );
+        assert!(
+            first[0].contains("2 dropped at v12"),
+            "the line carries the count: {}",
+            first[0]
+        );
+
+        // A second, larger flood at the same version: no new line, totals accumulate.
+        let none = version_gate_lines(
+            &mut totals,
+            std::collections::BTreeMap::from([(12u8, 99u64)]),
+            13,
+            16,
+        );
+        assert!(
+            none.is_empty(),
+            "a repeat version is silent, not a log flood"
+        );
+        assert_eq!(totals[&12], 101, "the running total still accumulates");
+
+        // A different rejected version logs once, independently.
+        let again = version_gate_lines(
+            &mut totals,
+            std::collections::BTreeMap::from([(9u8, 1u64)]),
+            13,
+            16,
+        );
+        assert_eq!(again.len(), 1, "a new version is a new first sighting");
+        assert!(again[0].contains("v9"));
+        assert_eq!(totals[&9], 1);
+    }
+
+    #[test]
+    fn version_gate_lines_carry_no_unauthenticated_bundle_detail() {
+        // PRIVACY: a bundle that fails the version gate is unauthenticated, so the line may
+        // carry the version byte and counts only. This pins the shape: no field exists in the
+        // formatter other than version, accepted range, and totals, so any future widening has
+        // to edit this test to get past it.
+        let mut totals = std::collections::BTreeMap::new();
+        let lines = version_gate_lines(
+            &mut totals,
+            std::collections::BTreeMap::from([(12u8, 3u64)]),
+            13,
+            16,
+        );
+        let line = &lines[0];
+        // The permitted tokens: v12 (twice), v13..v16, the count, and fixed prose. If someone
+        // adds an id, address, or mailbox prefix, the line grows interpolations this digit
+        // assertion cannot see, so widening means editing this test, which is the tripwire.
+        let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
+        assert!(
+            digits == "121316312",
+            "only the version (12, twice), range (13, 16) and count (3) may appear as digits: {line}"
         );
     }
 

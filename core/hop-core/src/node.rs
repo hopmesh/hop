@@ -1400,6 +1400,15 @@ pub struct Node<S: Store = MemoryStore> {
     /// [`MAX_METERED_TENANTS`]. Carried but unattributed = lost revenue; surfaced via
     /// [`Node::take_usage_dropped`] so overflow is never silent.
     usage_dropped: u64,
+    /// Bundles discarded at the wire-version gate, by the version byte they carried, since the
+    /// host last drained [`Node::take_version_gated`]. An incompatible peer is silently
+    /// undeliverable from its own point of view (its sends are counted as relayed and never
+    /// arrive), so this count is the only aggregate that makes the situation visible; it is how
+    /// the v13..v15 exact-match gate cut off every published-SDK consumer without anyone
+    /// noticing. Observability only, and deliberately this shape: the version byte and a count
+    /// are ALL that is recorded, because a bundle that fails this gate is unauthenticated and
+    /// nothing else about it may be kept.
+    version_gated: std::collections::BTreeMap<u8, u64>,
     /// Per-tenant CARRIAGE we performed that produced no delivery event, and is therefore
     /// currently UNBILLED (see [`Node::take_carriage`]). Accumulated when a held bundle's
     /// attribution is pruned without ever having been billed by `meter_delivered`.
@@ -1681,11 +1690,12 @@ impl<S: Store> Node<S> {
             advert_ingest: HashMap::new(),
             advert_ingest_global: (0, 0),
             rehydrate_report: RehydrateReport::default(),
+            version_gated: std::collections::BTreeMap::new(),
+            access_refused: 0,
             stamper: None,
             access_policy: AccessPolicy::Open,
             usage: HashMap::new(),
             metered_attribution: HashMap::new(),
-            access_refused: 0,
             usage_dropped: 0,
             carriage: HashMap::new(),
             emit_have: false,
@@ -2309,6 +2319,16 @@ impl<S: Store> Node<S> {
     /// Aggregate observability for the host's private log, never a per-bundle event.
     pub fn take_access_refused(&mut self) -> u64 {
         std::mem::take(&mut self.access_refused)
+    }
+
+    /// Drain the per-version count of bundles discarded at the wire-version gate since the last
+    /// call, keyed by the rejected version byte. Covers the network flood path
+    /// (`process_bundle`, where a relay or peer first sees a foreign bundle); a count, never any
+    /// per-bundle detail, mirroring [`Node::take_access_refused`]. A nonzero entry means a peer
+    /// on an incompatible wire version is connected and its traffic is being discarded: from
+    /// that peer's own point of view its messages were accepted and simply never arrive.
+    pub fn take_version_gated(&mut self) -> std::collections::BTreeMap<u8, u64> {
+        std::mem::take(&mut self.version_gated)
     }
 
     /// Drain the count of accepted-but-unmetered bundles (tenant-map overflow) since the last
@@ -8397,7 +8417,18 @@ impl<S: Store> Node<S> {
     }
 
     fn process_bundle(&mut self, from_link: LinkId, mut bundle: Bundle) -> bool {
-        if bundle.verify().is_err() {
+        if let Err(err) = bundle.verify() {
+            // A bundle rejected SOLELY by the wire-version gate is an incompatible peer, not a
+            // tamperer, and from that peer's own point of view nothing is wrong: its sends were
+            // accepted by the link and counted as relayed, and they will never arrive. Count it
+            // (version byte and a count ONLY: the bundle is unauthenticated here, so no address,
+            // id, or content may be recorded) so a host draining take_version_gated can see a
+            // silently-undeliverable fleet. This is the observability the v13..v15 exact-match
+            // gate lacked when it cut off every published-SDK consumer unnoticed.
+            if let Error::UnsupportedVersion { got, .. } = err {
+                let entry = self.version_gated.entry(got).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
             return false; // never store/relay unverifiable bundles
         }
         if bundle.is_private() {
@@ -17404,6 +17435,50 @@ mod tests {
         assert!(
             !relay2.store.contains(&too_old_id),
             "a pre-family bundle never enters the store"
+        );
+    }
+
+    #[test]
+    fn version_gate_drops_are_counted_per_version_and_only_at_the_gate() {
+        // The observability half of the published-SDK fix: a below-floor bundle must be COUNTED
+        // (per rejected version byte), because the drop is otherwise invisible from every angle
+        // an operator has. The counter must stay narrow: an in-window bundle does not count, a
+        // current-version bundle failing verify() for a DIFFERENT reason (a tampered id) does not
+        // count, and repeated drops at one version accumulate rather than overwrite.
+        let bob = Identity::generate();
+        let (_alice, _mid, genuine) = genuine_private_to(&bob);
+
+        // Two below-floor drops at v12 and one at v9 accumulate independently.
+        let mut relay = Node::new(Identity::generate());
+        for _ in 0..2 {
+            relay.on_bundle(1, genuine.clone().as_wire_version(12).unwrap());
+        }
+        relay.on_bundle(1, genuine.clone().as_wire_version(9).unwrap());
+        let gated = relay.take_version_gated();
+        assert_eq!(gated.get(&12), Some(&2), "two v12 drops counted at v12");
+        assert_eq!(gated.get(&9), Some(&1), "the v9 drop counted at v9");
+        assert_eq!(gated.len(), 2, "nothing else counted");
+        assert!(
+            relay.take_version_gated().is_empty(),
+            "take drains, so a host polling it sees deltas"
+        );
+
+        // An in-window bundle (exactly what the published SDK sends today) does not count.
+        let mut relay_ok = Node::new(Identity::generate());
+        relay_ok.on_bundle(1, genuine.clone().as_wire_version(14).unwrap());
+        assert!(
+            relay_ok.take_version_gated().is_empty(),
+            "an in-window bundle is never a version-gate drop"
+        );
+
+        // A current-version bundle that fails verify() for another reason is not a version drop.
+        let mut tampered = genuine.clone();
+        tampered.inner.id[0] ^= 0xFF;
+        let mut relay_tamper = Node::new(Identity::generate());
+        relay_tamper.on_bundle(1, tampered);
+        assert!(
+            relay_tamper.take_version_gated().is_empty(),
+            "a BadSignature reject is not counted as a version-gate drop"
         );
     }
 
