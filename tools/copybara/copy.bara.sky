@@ -413,6 +413,7 @@ REGISTERED = [
 # Both ran, the private trees were deleted from the source, the old monorepo was archived, and this
 # repo became the canonical monorepo. There is no public/private split left for Copybara to maintain
 # here: the only standing syncs are the per-component mirror workflows above. At the handover the
-# three SDK mirror repos (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) were the only destinations;
-# hop-bearers-apple was later restored as a fourth mirror, and any addition follows the COMPONENTS
-# list above rather than this note.
+# three SDK mirror repos (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) were the only destinations, and
+# they still are: hop-bearers-apple was later registered as a fourth, but its repository has not been
+# created, so it has no destination yet. Any addition follows the COMPONENTS list above rather than
+# this note.

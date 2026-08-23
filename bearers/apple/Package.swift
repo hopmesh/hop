@@ -3,10 +3,11 @@ import PackageDescription
 
 // HopBearersApple: the aggregate ROOT manifest, exposing all five bearers as products of one package.
 //
-// This manifest IS the published package: `tools/copybara/components.json` mirrors `bearers/apple` to
-// hopmesh/hop-bearers-apple, and a consumer outside this tree resolves the five products below from
-// that repo over SwiftPM (the mirror's release job builds exactly this manifest, so the consumer path
-// is what gets proven before a tag). The per-bearer Package.swift files beside it stay
+// This manifest is the package a mirror WOULD publish: `tools/copybara/components.json` registers
+// `bearers/apple` for export to hopmesh/hop-bearers-apple, and the mirror's release job builds
+// exactly this manifest so the consumer path is what gets proven before a tag. That repository does
+// not exist yet (see bearers/apple/README.md), so no consumer outside this tree resolves these
+// products today. The per-bearer Package.swift files beside it stay
 // MONOREPO-ONLY: each takes a path dependency on the in-tree `sdk/apple`, they are what in-tree
 // consumers (drivers/apple/HopDriver) depend on, and they are what the monorepo builds and
 // coverage-gates independently (tools/apple-cov-gate.sh runs `swift test` inside each one). SwiftPM

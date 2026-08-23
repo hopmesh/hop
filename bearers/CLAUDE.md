@@ -37,12 +37,16 @@ bearer shipped for two releases while the Android bearers existed only as source
 published to. If you add a component and expect it to ship, check `python3 tools/release/plan.py` lists
 it; that command is the whole truth about what releases.
 
-The Apple bearers publish again: `bearers/apple` carries `.github/workflows/release.yml`, is registered
-in `tools/copybara/components.json` as `hop-bearers-apple`, and `python3 tools/release/plan.py` lists it
-alongside the three SDKs. Its consumers outside the tree resolve the five products from the mirror over
-SwiftPM, per that README's Install section. `bearers/android` still has no `release.yml`, so the Android
-bearers exist only as source and in-tree siblings; the Android machinery below is dormant rather than
-deleted, because it is the shape a future release would take.
+The Apple bearers are wired to publish, and have not published: `bearers/apple` carries
+`.github/workflows/release.yml`, is registered in `tools/copybara/components.json` as
+`hop-bearers-apple`, and `python3 tools/release/plan.py` lists it alongside the three SDKs. What does
+not exist is the destination. `hopmesh/hop-bearers-apple` returns 404 and never has existed, so no
+export has run, no tag has been pushed, and NO consumer outside this tree can resolve the products
+over SwiftPM today. Creating that repository is a human step (`tools/copybara/bootstrap-mirrors.sh`)
+followed by one seeded `init_history` export; the release plan listing the component says the wiring
+is right, not that the package is reachable. `bearers/android` still has no `release.yml`, so the
+Android bearers exist only as source and in-tree siblings; the Android machinery below is dormant
+rather than deleted, because it is the shape a future release would take.
 
 - **Apple** ships through SwiftPM, whose channel is the version tag. The mirror's release job builds the
   aggregate ROOT `Package.swift` (which resolves the PUBLISHED `hop-sdk-apple` by URL, the exact consumer

@@ -141,10 +141,12 @@ say which piece is missing. Read the error rather than re-seeding:
 | a 401, or `integration not found` | the id and the private key are not from the same App. |
 | a permissions error naming actions/checks/contents | installed, but that permission was added after installation and the pending request was never approved. |
 
-All four live mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`, `hop-bearers-apple`) are
-tag-only, so any of them is safe to test the credential on: each exercises mint, provenance, and
-artifact verification without pushing to a registry, so a misconfiguration costs nothing irreversible.
-The registry-pushing mirrors that once made this a choice were retired in 2026-08.
+The three live mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`) are tag-only, so any of them
+is safe to test the credential on: each exercises mint, provenance, and artifact verification without
+pushing to a registry, so a misconfiguration costs nothing irreversible. The registry-pushing mirrors
+that once made this a choice were retired in 2026-08. `hop-bearers-apple` is configured as a fourth
+and cannot be used for this: its repository does not exist yet, so a token minted for it fails at the
+installation lookup rather than telling you anything about the credential.
 
 The `release` environment on each mirror is an approval gate, so a release still waits for a human
 even once the credential exists.

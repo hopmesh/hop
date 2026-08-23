@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # bootstrap-mirrors.sh: create or update the standalone component repositories.
-# Covers the FOUR components that mirror: hop-sdk-go, hop-sdk-crystal, and hop-sdk-apple (the three
-# that survived the 2026-08 mirror retirement) plus hop-bearers-apple, restored so an external app can
-# take the Apple bearers over SwiftPM. All four are Apache-2.0 and all four publish by pushing a git
-# tag (SwiftPM, shards, and the Go proxy all resolve from a repo root, so the repo IS the package), so
-# none of them needs a registry account or token. RUN THIS YOURSELF: creating public
-# repositories is a human action, not something CI or an agent does for you. Idempotent and safe to
-# re-run.
+# Covers the FOUR components registered to mirror: hop-sdk-go, hop-sdk-crystal, and hop-sdk-apple (the
+# three that survived the 2026-08 mirror retirement and are live) plus hop-bearers-apple, which is
+# WIRED but whose repository has never been created. Running section 1 below is what creates it; until
+# someone does, the Apple bearers have no standalone package and nothing exports to that name. All
+# four are Apache-2.0 and all four publish by pushing a git tag (SwiftPM, shards, and the Go proxy all
+# resolve from a repo root, so the repo IS the package), so none of them needs a registry account or
+# token. RUN THIS YOURSELF: creating public repositories is a human action, not something CI or an
+# agent does for you. Idempotent and safe to re-run.
 #
 # Requires: `gh` authenticated with repo + admin rights on the hopmesh org.
 #
@@ -21,7 +22,8 @@ set -euo pipefail
 
 ORG="hopmesh"
 
-# "repo|description" per public repo, for the four live mirrors. All four are Apache-2.0.
+# "repo|description" per public repo: three live mirrors plus hop-bearers-apple, which this script
+# creates and which does not exist until it is run. All four are Apache-2.0.
 # hop-bearers-apple rides the same tag-only SwiftPM channel as the SDKs: the repo IS the package.
 # Descriptions say what each thing IS with no reference to any private source of truth. Kept bash-3.2
 # safe (no associative arrays) so it runs on stock macOS.

@@ -151,4 +151,157 @@ if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_
   exit 1
 fi
 
+# --- last_rev: the watermark override -------------------------------------------------------------
+# The resolver is injected in these cases so the validation is tested without a network round trip,
+# and so BOTH answers are covered: a SHA the canonical repository has, and one it does not.
+python3 - "$root" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "tools/copybara"))
+import dispatch
+
+real = "a" * 40
+
+
+def accepting(sha):
+    return True
+
+
+def rejecting(sha):
+    return False
+
+
+def expect_error(message, **kwargs):
+    try:
+        dispatch.select(**kwargs)
+    except ValueError:
+        return
+    raise SystemExit(f"dispatch accepted {message}")
+
+
+# Accepted: folded into the options string, in the position copybara expects, and nowhere else.
+values = dispatch.select("hop-sdk-go", "export", "false", last_rev=real, resolver=accepting)
+if values["copybara_options"] != f"--ignore-noop --force --last-rev {real}":
+    raise SystemExit(f"last_rev not folded into options: {values['copybara_options']!r}")
+if values["source_ref"]:
+    raise SystemExit("last_rev must not leak into source_ref")
+
+# Absent: the options string is exactly what it was before this option existed.
+plain = dispatch.select("hop-sdk-go", "export", "false", resolver=accepting)
+if plain["copybara_options"] != "--ignore-noop --force":
+    raise SystemExit(f"options drifted without last_rev: {plain['copybara_options']!r}")
+
+# A SHA the canonical repository does not have is the whole failure this option exists to clear, so
+# forwarding one would just move the error into the privileged job.
+expect_error(
+    "a SHA absent from canonical",
+    component="hop-sdk-go",
+    direction="export",
+    init_history="false",
+    last_rev=real,
+    resolver=rejecting,
+)
+
+# Shape: short SHAs, uppercase, refs, ranges and injection payloads are all rejected before resolution
+# is even attempted (a permissive resolver here proves the format check is what rejects them).
+for bad in (
+    "a" * 39,
+    "a" * 41,
+    "A" * 40,
+    "main",
+    "HEAD",
+    "origin/main",
+    f"{'a' * 40}..{'b' * 40}",
+    f"{'a' * 40} --force-message",
+    f"{'a' * 40};id",
+    f"$({'a' * 40})",
+    "../" + "a" * 37,
+    "",  # empty is not an error, but must not produce a --last-rev flag; asserted below
+):
+    if bad == "":
+        continue
+    expect_error(
+        f"malformed last_rev {bad!r}",
+        component="hop-sdk-go",
+        direction="export",
+        init_history="false",
+        last_rev=bad,
+        resolver=accepting,
+    )
+
+# Direction and mode: import has no watermark to override, and seeding a full history while resuming
+# from a point are contradictory instructions.
+expect_error(
+    "last_rev on import",
+    component="hop-sdk-go",
+    direction="import",
+    init_history="false",
+    pr_number="7",
+    last_rev=real,
+    resolver=accepting,
+)
+expect_error(
+    "last_rev together with init_history",
+    component="hop-sdk-go",
+    direction="export",
+    init_history="true",
+    last_rev=real,
+    resolver=accepting,
+)
+
+# The real resolver must consult git rather than believing the caller. Both branches are driven here
+# with a fake runner, so neither answer depends on the machine running the test.
+class Result:
+    def __init__(self, code):
+        self.returncode = code
+
+
+calls = []
+
+
+def local_hit(argv, **kwargs):
+    calls.append(argv)
+    return Result(0)
+
+
+def local_miss_remote_hit(argv, **kwargs):
+    calls.append(argv)
+    return Result(0) if argv[0:2] == ["git", "fetch"] else Result(1)
+
+
+def both_miss(argv, **kwargs):
+    calls.append(argv)
+    return Result(1)
+
+
+if not dispatch.resolves_in_canonical(real, run=local_hit):
+    raise SystemExit("resolver rejected a commit present locally")
+if calls[0][:3] != ["git", "cat-file", "-e"]:
+    raise SystemExit(f"resolver did not ask git locally first: {calls[0]!r}")
+calls.clear()
+if not dispatch.resolves_in_canonical(real, run=local_miss_remote_hit):
+    raise SystemExit("resolver rejected a commit the remote has (shallow checkout)")
+if len(calls) != 2 or calls[1][:2] != ["git", "fetch"]:
+    raise SystemExit(f"resolver did not fall back to the canonical remote: {calls!r}")
+if dispatch.resolves_in_canonical(real, run=both_miss):
+    raise SystemExit("resolver accepted a commit neither local nor remote")
+PY
+
+# End to end through the environment, with a resolver that cannot be injected: a SHA that does not
+# exist anywhere must be refused by the real code path too.
+if SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=export SYNC_INIT_HISTORY=false \
+    SYNC_LAST_REV=0000000000000000000000000000000000000000 \
+    python3 "$dispatch" --json >/dev/null 2>&1; then
+  echo "dispatch accepted a nonexistent last_rev through the environment" >&2
+  exit 1
+fi
+# And the option is absent from the emitted options when the input is empty.
+opts_plain="$(SYNC_COMPONENT=hop-sdk-go SYNC_DIRECTION=export SYNC_INIT_HISTORY=false SYNC_LAST_REV="" \
+  python3 "$dispatch" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["copybara_options"])')"
+if [ "$opts_plain" != "--ignore-noop --force" ]; then
+  echo "empty last_rev changed the options: $opts_plain" >&2
+  exit 1
+fi
+
 echo "copybara dispatch tests passed"
