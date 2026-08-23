@@ -36,13 +36,21 @@ exist:
 platform :ios, '16.0'   # the Hop Apple SDK's floor, and therefore this module's
 
 target 'YourApp' do
-  # The podspecs live in the hopmesh/hop monorepo at sdk/apple/. The hop-sdk-apple mirror has never
-  # carried them at any ref, so do not point a podspec URL at it: it 404s.
-  pod 'CHop',        :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/CHop.podspec'
-  pod 'HopContract', :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/HopContract.podspec'
-  pod 'HopSDK',      :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/HopSDK.podspec'
+  # Point at a checkout of the monorepo, or at vendored copies. NOT at a raw URL: every one of these
+  # podspecs reads Package.swift from its own directory while CocoaPods evaluates it, and CHop reads
+  # LICENSE.md too, and a :podspec URL fetches one file to a temp directory, so it dies on the first
+  # read. Verified: evaluating CHop.podspec in isolation fails at line 19 on the missing Package.swift.
+  pod 'CHop',        :podspec => '../vendor/hop-sdk-apple/CHop.podspec'
+  pod 'HopContract', :podspec => '../vendor/hop-sdk-apple/HopContract.podspec'
+  pod 'HopSDK',      :podspec => '../vendor/hop-sdk-apple/HopSDK.podspec'
 end
 ```
+
+The `../vendor/hop-sdk-apple/` directory needs five files kept side by side, copied from `sdk/apple/`
+in the `hopmesh/hop` monorepo at the revision you want: the three `.podspec` files, `Package.swift`,
+and `LICENSE.md`. The last two are not optional; the podspecs read them at evaluation time. Vendoring
+also gives you the immutable pin a URL cannot, since the `hopmesh/hop` repository carries no tags.
+That is what the first consumer app did.
 
 ```sh
 cd ios && pod install
@@ -65,15 +73,16 @@ This replaces an earlier instruction to add the `hop-sdk-apple` Swift package to
 That never worked for this module: the podspec's `s.spm_dependency` call was guarded by
 `if s.respond_to?(:spm_dependency)`, the method does not exist in CocoaPods 1.17, and the guard skipped
 silently, so `import Hop` could not resolve no matter what the app target contained.
-**Note:** the podspec's `s.source` references git tag `v0.0.2`, and the `hopmesh/hop` repository carries no
-tags. That affects remote pod consumption of `HopMesh` itself; a development pod by local path is unaffected.
+**Note:** the podspecs' `s.source` references git tags in the `hop-sdk-apple` repository, which carries
+`v0.0.1` and `v0.0.2` but no podspecs at either tag or on `main`. That affects remote consumption of
+`HopMesh` itself; a development pod by local path is unaffected.
 
-**Pinning.** The podspec URLs above track `main`, because the `hopmesh/hop` repository carries no tags, so
-a `:podspec` URL cannot pin a release. The pods are still version-checked where it matters: `CHop` reads
-its version and checksum out of `Package.swift`, so whatever `main` says is what you get, verified. For an
-immutable pin, vendor the three podspec files into your repo at the revision you want and point the
-`:podspec` keys at them by path. That is what the first consumer app did after finding the previous
-instructions, which pointed at `hop-sdk-apple` tags that contain no podspecs.
+**Why not a URL.** An earlier version of this section pointed at
+`raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/*.podspec`. Those URLs resolve, and that is all
+they do: `pod install` still fails, because each podspec `File.read`s `Package.swift` from its own
+directory during evaluation, `CHop` reads `LICENSE.md` as well, and a `:podspec` URL fetches one file
+to a temp directory with neither beside it. Evaluating `CHop.podspec` in isolation fails on line 19,
+the first read. Do not put those URLs back without also changing the podspecs to stop reading siblings.
 
 ### Android
 
