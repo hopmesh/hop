@@ -36,10 +36,11 @@ exist:
 platform :ios, '16.0'   # the Hop Apple SDK's floor, and therefore this module's
 
 target 'YourApp' do
-  # From the standalone Apple SDK repo.
-  pod 'CHop',        :podspec => 'https://raw.githubusercontent.com/hopmesh/hop-sdk-apple/v0.0.2/CHop.podspec'
-  pod 'HopContract', :git => 'https://github.com/hopmesh/hop-sdk-apple.git', :tag => 'v0.0.2'
-  pod 'HopSDK',      :git => 'https://github.com/hopmesh/hop-sdk-apple.git', :tag => 'v0.0.2'
+  # The podspecs live in the hopmesh/hop monorepo at sdk/apple/. The hop-sdk-apple mirror has never
+  # carried them at any ref, so do not point a podspec URL at it: it 404s.
+  pod 'CHop',        :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/CHop.podspec'
+  pod 'HopContract', :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/HopContract.podspec'
+  pod 'HopSDK',      :podspec => 'https://raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/HopSDK.podspec'
 end
 ```
 
@@ -64,9 +65,15 @@ This replaces an earlier instruction to add the `hop-sdk-apple` Swift package to
 That never worked for this module: the podspec's `s.spm_dependency` call was guarded by
 `if s.respond_to?(:spm_dependency)`, the method does not exist in CocoaPods 1.17, and the guard skipped
 silently, so `import Hop` could not resolve no matter what the app target contained.
-
 **Note:** the podspec's `s.source` references git tag `v0.0.2`, and the `hopmesh/hop` repository carries no
 tags. That affects remote pod consumption of `HopMesh` itself; a development pod by local path is unaffected.
+
+**Pinning.** The podspec URLs above track `main`, because the `hopmesh/hop` repository carries no tags, so
+a `:podspec` URL cannot pin a release. The pods are still version-checked where it matters: `CHop` reads
+its version and checksum out of `Package.swift`, so whatever `main` says is what you get, verified. For an
+immutable pin, vendor the three podspec files into your repo at the revision you want and point the
+`:podspec` keys at them by path. That is what the first consumer app did after finding the previous
+instructions, which pointed at `hop-sdk-apple` tags that contain no podspecs.
 
 ### Android
 
