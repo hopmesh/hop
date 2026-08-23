@@ -5,74 +5,26 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
-- make the published bearer and driver packages actually resolvable (b3eaec2)
-- per-mirror repository, and retryable release artifacts (bf04449)
-- make the PLAT-001 tests actually run, and correct what the last commit claimed (15065c8)
-- disabling a transport now actually stops it (PLAT-001) (7b84c71)
-- kill the LAN reap-test flake by pinning the ordering (a16a715)
-
-### CI
-- bump create-github-app-token to v3.2.0 across all mirrored components (efc9f6c)
-- per-repo release workflows (publish on a vX.Y.Z tag) (277cf32)
+- give the release the fleet chain of custody (7f1d882)
 
 ### Chore
-- purge em-dashes and en-dashes from source (d222435)
-- drop the root license, license per-component (FSL-1.1-ALv2) (#146) (be2a5a7)
-- finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (b56bb49)
-
-### Documentation
-- regenerate from conventional commits (d195880)
-- regenerate from conventional commits (9fece1e)
-- regenerate from conventional commits (fc4e725)
-- regenerate from conventional commits (910695c)
-- regenerate from conventional commits (7160289)
-- regenerate from conventional commits (3b47a5f)
-- regenerate from conventional commits (ffb2acb)
-- regenerate from conventional commits (e19ed95)
-- regenerate from conventional commits (7a81fb6)
-- regenerate from conventional commits (e6b97f2)
-- regenerate from conventional commits (2741000)
-- regenerate from conventional commits (b96e019)
-- regenerate from conventional commits (330c8c6)
-- regenerate from conventional commits (096180b)
-- regenerate from conventional commits (102ae67)
-- regenerate from conventional commits (1572ae2)
-- regenerate from conventional commits (a355901)
-- branded, marketable READMEs for every sub-repo (9c2a477)
+- drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
+- finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (a0550d7)
 
 ### Features
-- add Meshtastic/LoRa bearer for iOS and Android (9335a6e)
-- finish inbound (import), drop export_pr (41c095e)
-- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
+- publish bearers/apple as the hop-bearers-apple mirror (7f3f0d4)
 
 ### Other
-- add the release workflow that makes the bearers publish (99d4317)
-- stop the L2CAP open-error spin against an already-connected peer (79b9f22)
-- let a host set the relay SOCKS proxy from driver config (51be0c1)
-- prove .onion relays flow through the pool, and add an Apple SOCKS hook (8a0d9f3)
-- drive relay failover through the real §19 node pool (PLAT-003) (bed478d)
-- extract Multipeer so EVERY bearer registers with the manager (f3949f7)
-- cut the frame cap to the protocol's, and pin it (2a16945)
-- Apple was resetting the dial backoff at the wrong moment (f94599f)
-- wire the relay pool end to end, and stop the wire guard false-firing (35946e0)
-- fix Apple's dial backoff and pin the schedule across platforms (54f6f02)
-- de-flake the LAN pending-cap test (hold the no-HELLO reaper) (8497488)
-- CLA gate on contributions (preserve commercial relicensing of core) (5a9aa7d)
-- SECURITY.md per component + enable-security in the bootstrap script (a1492e9)
-- copyright holder is Hop Mesh, LLC (7d8c514)
-- fill the Apache-2.0 copyright placeholder (2026 Jason Waldrip) (2fb7d1c)
-- Apache-2.0 for everything except core/ (only the protocol stays FSL) (0fe9439)
-- CHANGE_REQUEST sync-back + document merge/conversation + confidentiality (9e1dec2)
-- route dedup through the pure keep-rule cores; fix inverted Android dedup-ordering docs (#72) (8a083a1)
-- strip em-dashes from this session's Apple coverage test files (#67) (f11147f)
-- split into HopContract (no libhop) + Hop (libhop node) — unblocks the app cutover (7f0eeb3)
-- rename sdk/wrappers/swift -> sdk/wrappers/Hop (clean SwiftPM package id) (ee6245c)
-- re-home all four bearers as independent packages on the Hop SDK (05124fe)
+- route dedup through the pure keep-rule cores; fix inverted Android dedup-ordering docs (#72) (37d1323)
+- strip em-dashes from this session's Apple coverage test files (#67) (0e16bf0)
+- split into HopContract (no libhop) + Hop (libhop node) — unblocks the app cutover (5853f35)
+- rename sdk/wrappers/swift -> sdk/wrappers/Hop (clean SwiftPM package id) (4ccdaf7)
+- re-home all four bearers as independent packages on the Hop SDK (48ade1f)
 
 ### Refactor
-- enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (afd52df)
+- enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
-- seam refactor takes BleBearer 7% → 97% (CB-free cores), replace shadow tests (#69) (36f184b)
-- real loopback integration tests for LAN + Relay bearers to >=80% coverage, CI gating, compile-bug root cause (#63) (c53d864)
+- seam refactor takes BleBearer 7% → 97% (CB-free cores), replace shadow tests (#69) (a20143b)
+- real loopback integration tests for LAN + Relay bearers to >=80% coverage, CI gating, compile-bug root cause (#63) (dadfe5a)
 
