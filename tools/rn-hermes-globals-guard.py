@@ -61,11 +61,13 @@ def violations(text):
     return found
 
 
-def main():
-    root = Path(__file__).resolve().parent.parent
+def main(argv):
+    # An optional root makes the guard testable against a sandbox tree, which is how its own
+    # self-test proves it can fail. Defaults to the repo this file lives in.
+    root = Path(argv[1]).resolve() if len(argv) > 1 else Path(__file__).resolve().parent.parent
     src = root / SRC
     if not src.is_dir():
-        print(f"::error:: {SRC} not found (run from the repo root)")
+        print(f"::error:: {SRC} not found under {root}")
         return 1
     files = sorted(src.rglob("*.ts")) + sorted(src.rglob("*.tsx"))
     if not files:
@@ -94,4 +96,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

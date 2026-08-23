@@ -45,6 +45,16 @@ runs:
       working-directory: ${{ inputs.pkg-dir }}
       run: npm run coverage
 
+    # Both guards below are self-tested FIRST. A guard that has rotted into a rubber stamp reports
+    # success on a broken tree, which is worse than having no guard at all, so each self-test plants
+    # the real defect and requires a rejection. rn-bridge-lockstep-guard.test.sh already existed and
+    # nothing invoked it, which made it decoration; it runs here now.
+    - name: Guard self-tests (must prove they can fail)
+      shell: bash
+      run: |
+        bash tools/rn-bridge-lockstep-guard.test.sh
+        bash tools/rn-hermes-globals-guard.test.sh
+
     # The bridge is written three times (TypeScript contract, Swift + ObjC, Kotlin) and kept in sync by
     # hand. CLAUDE.md states the rule in prose; this enforces it, selectors included, because
     # @objc(foo:bar:) against RCT_EXTERN_METHOD(foo:baz:) compiles and only throws when JS calls it.
