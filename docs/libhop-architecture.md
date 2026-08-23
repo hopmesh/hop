@@ -18,12 +18,18 @@ and beacon wake on the fleet). Per-finding remediation status lives in `docs/aud
   sugar over the same `HopNode`.
 - **libhop is the universal floor.** It is the contract every non-Rust client binds: the bearer seam
   plus the core client surface, so an ESP32 can be a real client (make a node, secure sessions, send
-  and receive §39 messages, POST to a `hops://` service), not just a bearer host. The *current*
-  `sdk/hop.h` is deliberately a subset of the richer UniFFI surface: it does not yet export hps://
-  pub/sub, HNS resolution, direct HTTP egress, peer enumeration, or the §27 trace on `poll_inbox`.
+  and receive §39 messages, POST to a `hops://` service, host and join a §32 channel), not just a
+  bearer host. The *current* `sdk/hop.h` is still a subset of the richer UniFFI surface: it does not
+  yet export HNS resolution, direct HTTP egress, peer enumeration, or the §27 trace on `poll_inbox`.
   Those are additive header extensions (bump `HOP_ABI_VERSION` when they land), tracked under
-  "Deferred by design" below. So "universal floor" means the seam and messaging every target needs,
-  not yet every UniFFI method.
+  "Deferred by design" below. So "universal floor" means the seam, messaging, and pub/sub every
+  target needs, not yet every UniFFI method.
+- **`hps://` pub/sub is on the floor as of ABI 6.** It was the largest hole and it was load-bearing:
+  group chat and channels are §32, so a client that binds the C ABI rather than UniFFI could not host
+  a channel, join one, or post to one, while the two native UniFFI drivers had shipped the feature for
+  as long as it had existed. The header now carries the whole surface the UniFFI layer has: register,
+  subscribe, publish, poll and accept publications, invite, accept and decline an invite, poll
+  invites, leave, pending, approve, deny, rekey, reach, members, my_topics, browse.
 - **1 completely isolated lib per bearer.** Each transport is its own package/module depending only on
   the SDK; the BLE lib owns its beacon/CoreLocation wake + GATT-data fallback. No route is ever
   deleted ("the network that finds a way", more bearers the better).
@@ -100,11 +106,15 @@ remains is the on-device Stage-D fleet run.
 ## Deferred by design
 
 - **Full client API**, expand the C ABI as consumers need. The header today omits, relative to the
-  UniFFI surface: `hps://` register/subscribe/publish/invites/rekey, HNS resolve + DNS-proof, direct
-  `hops://` HTTP egress (`send_hops_request`/`take_http_requests`), peer enumeration
-  (`peers`/`peer_links`/`knows_route`), queue introspection (`queue`/`clear_queue`/`pending_count`),
-  `name`, `send_message_traced`, and the §27 trace fields on `poll_inbox`. Each is an additive
-  `sdk/hop.h` extension; bump `HOP_ABI_VERSION` when it lands. Pattern is set; add along the way.
+  UniFFI surface: HNS resolve + DNS-proof, direct `hops://` HTTP egress
+  (`send_hops_request`/`take_http_requests`), peer enumeration (`peers`/`peer_links`/`knows_route`),
+  queue introspection (`queue`/`clear_queue`/`pending_count`), `name`, `send_message_traced`, and the
+  §27 trace fields on `poll_inbox`. Each is an additive `sdk/hop.h` extension; bump
+  `HOP_ABI_VERSION` when it lands. Pattern is set; add along the way.
+- ~~`hps://` register/subscribe/publish/invites/rekey~~ → **done at ABI 6**: the whole §32 surface is
+  on the C ABI. It was the one deferred item that was not optional, because it is what group chat and
+  channels are, so leaving it off the floor meant every SDK-based client was locked out of a shipped
+  protocol feature. Deferring a capability is only honest while nothing needs it.
 
 ## Deferred questions
 
