@@ -4,33 +4,36 @@ This monorepo is the source of truth. Copybara mirrors a component subtree to it
 and brings external contributions back without forking (see `tools/copybara/`).
 
 As of the 2026-08 mirror retirement, three components mirrored; twenty were retired and their repos
-deleted from the `hopmesh` org. One of the twenty, `hop-bearers-apple`, has since been restored (the repo is recreated by hand per
-`tools/copybara/bootstrap-mirrors.sh`, then seeded with a full-history export) so a standalone app can
-take the Apple bearers over SwiftPM, so **four** components mirror today and nineteen names remain
-retired. This file records both sets,
-because the difference is load bearing: a name in the retired table is a repo that no longer exists,
-and any link to it 404s.
+deleted from the `hopmesh` org. One of the twenty, `hop-bearers-apple`, has been WIRED for return
+(`components.json`, `copy.bara.sky`, and the subtree's `release.yml` and `sync-back.yml` all name it)
+but its repository has NOT been created: `hopmesh/hop-bearers-apple` returns 404 and has never
+existed, so nothing has ever been exported to it and no consumer can resolve it. Recreating it is a
+human action per `tools/copybara/bootstrap-mirrors.sh`, followed by one seeded `init_history` export.
+So **three** components mirror today, a fourth is configured and waiting on that repository, and
+nineteen names remain retired. This file records both sets, because the difference is load bearing: a
+name in the retired table is a repo that no longer exists, and any link to it 404s. The same is true
+today of the wired-but-absent fourth.
 
 Licensing has two tiers and `tools/repo-integrity-guard.sh` fails CI on a cross-tier license, so this
 file is not a second source of truth. The services (`services/*`) are FSL-1.1-ALv2, which is
 source-available; everything else, including the protocol core, is Apache-2.0. See the License section
 of `README.md`.
 
-## The four live mirrors
+## The three live mirrors, and one wired but absent
 
-| Repo | From | Ships as | Audience |
-| --- | --- | --- | --- |
-| `hop-sdk-go` | `sdk/go` | Go module | Go services hosting an endpoint |
-| `hop-sdk-crystal` | `sdk/crystal` | shards | Crystal services hosting an endpoint |
-| `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps |
-| `hop-bearers-apple` | `bearers/apple` | SwiftPM | iOS/macOS apps that need the radios (BLE, LAN, Multipeer, Relay, Meshtastic) without the monorepo |
+| Repo | From | Ships as | Audience | State |
+| --- | --- | --- | --- | --- |
+| `hop-sdk-go` | `sdk/go` | Go module | Go services hosting an endpoint | live |
+| `hop-sdk-crystal` | `sdk/crystal` | shards | Crystal services hosting an endpoint | live |
+| `hop-sdk-apple` | `sdk/apple` | SwiftPM + xcframework | iOS/macOS apps | live |
+| `hop-bearers-apple` | `bearers/apple` | SwiftPM | iOS/macOS apps that need the radios (BLE, LAN, Multipeer, Relay, Meshtastic) without the monorepo | WIRED, repo does not exist |
 
-All four publish by pushing a git tag: the repo is the package. None of them needs a registry account,
-a registry token, or a trusted-publisher configuration, which is why the three SDKs survived the
-retirement and why `hop-bearers-apple` was the mirror worth restoring: its package manager resolves
-from a repo root too. `tools/copybara/components.json` is the dispatch allowlist and
-`tools/copybara/copy.bara.sky` holds the matching list; their CI self-test rejects any drift between
-the two.
+All of them publish by pushing a git tag: the repo is the package. None needs a registry account, a
+registry token, or a trusted-publisher configuration, which is why the three SDKs survived the
+retirement and why `hop-bearers-apple` is the mirror worth restoring: its package manager resolves
+from a repo root too. That restoration is not done. `tools/copybara/components.json` is the dispatch
+allowlist and `tools/copybara/copy.bara.sky` holds the matching list; their CI self-test rejects any
+drift between the two, which is why the config can be complete while the destination is missing.
 
 ## Retired mirrors (the repos are deleted)
 
@@ -60,9 +63,10 @@ it is not separately published. Only the standalone mirror repo went away.
 | `hop-gateway` | `services/hop-gateway` |
 
 Do not re-add one of these names to `components.json` expecting the repo to be there. Restoring a
-mirror means creating the repo again and seeding it with a fresh `init_history` export; that is
-exactly how `hop-bearers-apple` came back, which is why it now sits in the live table above rather
-than here.
+mirror means creating the repo again and seeding it with a fresh `init_history` export.
+`hop-bearers-apple` is the live demonstration of why those are two separate steps: it was re-added to
+the config, which is why it sits in the table above, and the repository was never created, so nothing
+has been exported to it.
 
 ## Not extracted (stay in this repo)
 

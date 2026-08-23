@@ -78,6 +78,9 @@ drivers/apple/**/.build/
 # libhop xcframework (gitignored artifact; build-xcframework.sh)
 sdk/apple/Frameworks/
 
+# Downloaded xcframework kept by tools/apple-pin-guard.py, keyed by the checksum it verifies
+.apple-pin-cache/
+
 # Android bearer build artifacts
 bearers/android/.gradle/
 bearers/android/build/

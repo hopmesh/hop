@@ -38,26 +38,18 @@ sees a socket, and you pull in only the pipes you need.
 
 ### Outside the Hop monorepo
 
-The bearers publish as one SwiftPM package, [hop-bearers-apple](https://github.com/hopmesh/hop-bearers-apple);
-the version tag is the release, and the products are the transports:
+**Not available yet.** The bearers are configured to publish as one SwiftPM package,
+`hop-bearers-apple`, and the manifest in this directory is that package, but the repository
+`https://github.com/hopmesh/hop-bearers-apple` DOES NOT EXIST: it was retired in 2026-08 and the
+config that brings it back landed without the repository being recreated (creating one is a human
+action, `tools/copybara/bootstrap-mirrors.sh`, followed by a seeded export). A `dependencies:` entry
+naming that URL fails to resolve today, so it is deliberately not written here as if it worked.
 
-```swift
-dependencies: [
-    .package(url: "https://github.com/hopmesh/hop-bearers-apple.git", from: "0.0.2"),
-]
-```
-
-Then depend on the transports a target needs (each is its own product, so you link only the radios you
-want; the package name is the mirror's repository name):
-
-```swift
-.target(name: "MyApp", dependencies: [
-    .product(name: "HopBearerBle",        package: "hop-bearers-apple"),
-    .product(name: "HopBearerLan",        package: "hop-bearers-apple"),
-    .product(name: "HopBearerRelay",      package: "hop-bearers-apple"),
-    .product(name: "HopBearerMeshtastic", package: "hop-bearers-apple"),
-])
-```
+Until the mirror exists, an app outside this tree takes the radios by vendoring `bearers/apple` (this
+directory, whose root `Package.swift` declares all five products) or by depending on this repository
+directly. The shape the mirror will take, once it is real, is one package with five products, one per
+transport, resolved by version tag. `docs/repo-catalog.md` records the current state, and
+`tools/copybara/README.md` describes what has to happen for it to change.
 
 Multipeer (`HopBearerMultipeer`) is the fifth product of the same package, same shape.
 

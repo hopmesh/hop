@@ -1005,6 +1005,16 @@ jobs:
       # already-published version is tolerated as success.
       - name: Self-test the Apple pod trunk publisher
         run: bash sdk/apple/.github/trunk-publish.test.sh
+      # The published Apple manifest pins an xcframework by url and checksum, and nothing in this
+      # workflow ever resolves it: the `apple` job replaces the manifest with Package.local.swift and
+      # builds a local artifact instead. So sources can call C functions the pinned asset does not
+      # carry and every job here stays green, which is how ABI 6 sources came to sit on an ABI 5 pin.
+      # Only the SELF-TEST runs here. The live check downloads the pinned asset and CANNOT pass until
+      # a release with the current ABI exists, so it runs in apple-pin-guard.yml (loud, not a gate)
+      # rather than freezing every merge on a defect no PR can clear. What this step pins is that the
+      # guard can still FAIL, in every shape of the drift, which is the property worth gating.
+      - name: Self-test the Apple published pin guard
+        run: bash tools/apple-pin-guard.test.sh
       - name: Self-test verified PlatformIO inputs
         run: bash sdk/embedded/tools/platformio-offline.test.sh
       - name: Test the portable HOP adversarial audit skill
