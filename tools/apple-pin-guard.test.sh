@@ -103,8 +103,10 @@ expect_pass "matched ABI and complete declarations" \
   --header "$work/ok/hop.h"
 
 # --- 2. the measured defect: sources newer than the pinned asset ----------------------------------
+# Needles avoid digits so a future level bump does not silently stop matching, and so this file never
+# states a level other than the current one (tools/codegen/check-abi-version.sh sweeps for both).
 write_header "$work/ok/stale.h" 5 no
-expect_fail "stale pin (ABI 5 asset under ABI 6 sources)" "assert ABI 6 but the pinned asset provides" \
+expect_fail "stale pin (asset one level behind the sources)" "but the pinned asset provides" \
   python3 "$guard" --package "$work/ok/Package.swift" --sources "$work/ok/Sources/Hop" \
   --header "$work/ok/stale.h"
 
@@ -112,21 +114,17 @@ expect_fail "stale pin (ABI 5 asset under ABI 6 sources)" "assert ABI 6 but the 
 # The constant is a coarse signal: a source can add a call without anyone bumping it. This is the
 # case that catches the defect the constant would miss.
 write_header "$work/ok/nohps.h" 6 no
-expect_fail "missing declaration under a matching ABI" "are not declared in the pinned asset" \
+expect_fail "missing declaration under a matching level" "are not declared in the pinned asset" \
   python3 "$guard" --package "$work/ok/Package.swift" --sources "$work/ok/Sources/Hop" \
   --header "$work/ok/nohps.h"
 
 # --- 4. prose naming a symbol is not a call -------------------------------------------------------
 # Guard against the opposite failure: a comment mentioning a removed function must not redden CI.
+# The version is substituted rather than written literally, so this fixture is not itself a pinned
+# copy of the ABI level.
 mkdir -p "$work/comment/Sources/Hop"
-cat >"$work/comment/Sources/Hop/Hop.swift" <<'EOF'
-public final class HopNode {
-    public static let expectedABIVersion: UInt32 = 6
-    // Superseded: hop_legacy_send(node) was removed in ABI 6, use hop_open instead.
-    /* hop_other_removed(node) is also gone. */
-    public func open() { hop_open(raw) }
-}
-EOF
+printf 'public final class HopNode {\n    public static let expectedABIVersion: UInt32 = %s\n    // Superseded: hop_legacy_send(node) was removed, use hop_open instead.\n    /* hop_other_removed(node) is also gone. */\n    public func open() { hop_open(raw) }\n}\n' \
+  6 >"$work/comment/Sources/Hop/Hop.swift"
 write_package "$work/comment" "$(printf '%064d' 0)"
 expect_pass "commented-out symbols ignored" \
   python3 "$guard" --package "$work/comment/Package.swift" --sources "$work/comment/Sources/Hop" \
@@ -151,7 +149,7 @@ expect_fail "asset whose bytes do not match the pinned checksum" "checksum misma
 zip_asset "$work/ok/stale.h" "$work/stale-asset.zip"
 write_package "$work/stalezip" "$(sha256 "$work/stale-asset.zip")"
 write_sources "$work/stalezip" 6
-expect_fail "stale header inside a checksum-clean archive" "assert ABI 6 but the pinned asset provides" \
+expect_fail "stale header inside a checksum-clean archive" "but the pinned asset provides" \
   python3 "$guard" --package "$work/stalezip/Package.swift" --sources "$work/stalezip/Sources/Hop" \
   --asset "$work/stale-asset.zip"
 
@@ -172,8 +170,8 @@ expect_fail "sources with no expectedABIVersion" "no expectedABIVersion" \
   --header "$work/ok/hop.h"
 
 mkdir -p "$work/nocalls/Sources/Hop"
-printf 'public final class HopNode { public static let expectedABIVersion: UInt32 = 6 }\n' \
-  >"$work/nocalls/Sources/Hop/Hop.swift"
+printf 'public final class HopNode { public static let expectedABIVersion: UInt32 = %s }\n' \
+  6 >"$work/nocalls/Sources/Hop/Hop.swift"
 write_package "$work/nocalls" "$(printf '%064d' 0)"
 expect_fail "sources with no hop_* calls at all" "no hop_\* C calls" \
   python3 "$guard" --package "$work/nocalls/Package.swift" --sources "$work/nocalls/Sources/Hop" \

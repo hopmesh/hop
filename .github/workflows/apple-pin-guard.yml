@@ -4,9 +4,15 @@
 # `Sources/Hop/*.swift` calls the C ABI inside it. Nothing in ci.yml compares them: the `apple` job
 # copies `Package.local.swift` over the manifest and builds against a locally compiled xcframework, so
 # the published pair is never exercised by anything. Measured on the tree that motivated this: the
-# sources asserted ABI 6 and called 18 `hop_hps_*` functions while the pinned asset carried
-# `HOP_ABI_VERSION 5` and none of them, and a SwiftPM consumer failed with
+# sources asserted the current ABI level and called 18 `hop_hps_*` functions, while the pinned asset
+# was built one level earlier and declared none of them, and a SwiftPM consumer failed with
 # `cannot find 'hop_hps_register' in scope`. Every check in the repository was green.
+#
+# Levels are described in words rather than digits on purpose: tools/codegen/check-abi-version.sh
+# sweeps the tree for anything shaped like an ABI-version declaration or a prose claim about the
+# level, and rightly fails a file that states an old one, because an integrator reading it would be
+# misled. The number that matters here is whatever the pinned artifact says at runtime, which the
+# guard reads from the artifact instead of trusting any copy in the tree.
 #
 # WHY THIS IS NOT A ci.yml JOB, AND HOW TO MAKE IT ONE
 # ----------------------------------------------------

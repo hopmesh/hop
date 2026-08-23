@@ -13,10 +13,14 @@ C ABI that asset provides. Nothing in this repository ever compiled those two ag
 
 So the pair can drift arbitrarily far and every check stays green, while the only people who ever
 resolve `Package.swift` are external consumers and the mirror. Measured on the tree that motivated
-this guard: `Sources/Hop/Hop.swift` called 18 `hop_hps_*` entry points and declared
-`expectedABIVersion = 6`, while the pinned v0.0.2 asset carried `HOP_ABI_VERSION 5` and zero
-`hop_hps_` symbols. A SwiftPM consumer resolving that tree failed to COMPILE:
+this guard: `Sources/Hop/Hop.swift` called 18 `hop_hps_*` entry points and asserted the current ABI
+level, while the pinned v0.0.2 asset was built one level earlier and carried zero `hop_hps_` symbols.
+A SwiftPM consumer resolving that tree failed to COMPILE:
 `error: cannot find 'hop_hps_register' in scope`. That is publishable today and invisible in CI.
+
+Levels appear here as words, never as an identifier next to a digit: tools/codegen/check-abi-version.sh
+sweeps the tree for both shapes and fails anything that pins or claims a level other than the current
+one, which is correct, and which a comment describing a stale artifact would otherwise trip.
 
 WHAT IT CHECKS
 --------------
