@@ -52,6 +52,16 @@ runs:
       shell: bash
       run: python3 tools/rn-bridge-lockstep-guard.py
 
+    # Neither the typecheck nor the test suite can see this class of defect. tsconfig declares
+    # "lib": ["ES2020", "DOM"] and "types": ["node"], so a browser or Node global typechecks; the
+    # tests run under node --test, where those globals actually exist. So code referencing a global
+    # Hermes lacks is green twice over and throws only in a consuming app. `new TextDecoder()` in
+    # bytesToUtf8 shipped that way, inside the inbound accept path, where the throw turned every
+    # received message into a silent redelivery loop.
+    - name: No Hermes-absent runtime globals
+      shell: bash
+      run: python3 tools/rn-hermes-globals-guard.py
+
     # RESOLUTION, not compilation. These four assertions are exactly the ones that would have caught
     # the two rotted coordinates, and they are cheap and deterministic: no Android SDK, no NDK, no
     # gradle daemon. Native COMPILATION still is not covered here, and saying so plainly is better than
