@@ -48,8 +48,11 @@ any method is missing from any side.
 - **Node handles are opaque integers** minted natively, one per `HopNode`. A persistent open that fails
   resolves `-1` (JS maps that to `null`), matching the native `open` returning nil on a bad path.
 - **The core is poll-model.** Nothing is delivered until `start()` runs the native pump, which ticks,
-  drains outbound (emitted as `HopMesh:outgoing` for a JS bearer), and polls inbox + hops:// queues,
-  emitting one event per item. Events carry `node: <handle>` so `HopNode` filters to its own handle.
+  drains outbound (emitted as `HopMesh:outgoing` for a JS bearer), and polls the inbox, the hops://
+  queues and the hps:// queues, emitting one event per item. Events carry `node: <handle>` so `HopNode`
+  filters to its own handle. The hps:// message poll is the NON-accepting one, like the inbox poll, so a
+  publication survives a JS-side crash and is redelivered until `acceptHpsMessage`; the hps:// invite
+  poll is take-and-clear, so a host must persist what the event hands it.
 
 ## Testability
 

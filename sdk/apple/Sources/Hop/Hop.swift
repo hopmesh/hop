@@ -43,11 +43,87 @@ public struct HopServiceResponse {
     public let body: Data
 }
 
+// MARK: - hps:// pub/sub types (DESIGN.md section 32)
+//
+// A publication on a topic is ONE bundle: encrypted once to the topic's content key, signed by its
+// writer, flooded once. It is not one-to-one fan-out and not a multicast bundle, so there is no
+// per-recipient copy and no per-recipient receipt. Membership, invites and revocation are all
+// properties of that content key's handoff, which is why the calls below are about keys and topics
+// rather than about recipient lists.
+
+/// Whether a topic's writers are its members (a channel) or only its owner (a service).
+///
+/// The raw values mirror the `HopHpsKind` discriminants in hop.h and cross the ABI as a plain
+/// `uint32_t`. Swift requires enum raw values to be literals, so the tie to the C enum is by
+/// contract; hop.h is the source of truth, and libhop REJECTS a discriminant it does not know
+/// rather than defaulting one, which is what keeps a garbage int from reading as a permissive mode.
+public enum HpsKind: UInt32 {
+    /// Anyone holding the content key reads AND writes; each publication is signed by its writer.
+    case channel = 0
+    /// Only the owner broadcasts (signed by the service key); subscribers read.
+    case service = 1
+}
+
+/// Who may obtain a topic's content key.
+public enum HpsAccess: UInt32 {
+    /// Keys handed to anyone who asks (anonymous membership).
+    case open = 0
+    /// The requester asks and the host approves before keys are handed off.
+    case requestToJoin = 1
+    /// The host invites a destination, which accepts, and only then receives keys.
+    case invite = 2
+}
+
+/// Whether a topic announces itself for discovery.
+public enum HpsVisibility: UInt32 {
+    /// Reachable only by a known address plus path, or by an invite.
+    ///
+    /// Spelled `topicPrivate` because `private` is a Swift keyword: a `.private` case would have to
+    /// be written with backticks at every single call site.
+    case topicPrivate = 0
+    /// The host broadcasts an app-encrypted discovery advert, so same-app peers can browse it.
+    case discoverable = 1
+}
+
+/// An hps:// publication delivered to this node.
+public struct HopHpsMessage {
+    public let id: Data       // stable 32-byte publication id; the handle `acceptHpsMessage` takes
+    public let path: String
+    public let sender: Data   // the VERIFIED writer for a channel, the host for a service
+    public let body: Data
+}
+
+/// An invite to a topic, received from its host.
+public struct HopHpsInvite {
+    public let host: Data
+    public let path: String
+    public let kind: HpsKind
+}
+
+/// A topic this node hosts or follows, as the node persisted it.
+public struct HopHpsTopic {
+    public let host: Data
+    public let path: String
+    public let kind: HpsKind
+    public let hosting: Bool
+    public let access: HpsAccess
+}
+
+/// A discoverable topic seen on the mesh: the descriptor a `discoverable` host broadcasts.
+public struct HopHpsTopicInfo {
+    public let host: Data
+    public let path: String
+    public let kind: HpsKind
+    public let title: String
+    public let summary: String
+    public let access: HpsAccess
+}
+
 /// A running Hop node. Owns the underlying `libhop` handle; thread-safe inside (interior mutex).
 public final class HopNode {
     /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted once on first use so a
     /// wrapper built against a newer header fails loudly instead of drifting (F-28).
-    public static let expectedABIVersion: UInt32 = 5
+    public static let expectedABIVersion: UInt32 = 6
     private static let abiChecked: Bool = {
         precondition(hop_abi_version() == HopNode.expectedABIVersion,
                      "libhop ABI mismatch: wrapper expects \(HopNode.expectedABIVersion), library is \(hop_abi_version())")
@@ -381,6 +457,341 @@ public final class HopNode {
         return forRequestId.withUnsafeBytes {
             hop_accept_service_response(raw, $0.bindMemory(to: UInt8.self).baseAddress)
         }
+    }
+
+    // MARK: hps:// pub/sub (DESIGN.md section 32)
+
+    // The C ABI had NO hps exports before v6, so every wrapper sitting on it (this one, Kotlin, and
+    // the React Native bridge above them) could not reach channels or group chat at all, while the
+    // two native UniFFI drivers have had the surface for as long as the protocol has existed. These
+    // calls close that gap, and tools/codegen/check-abi-version.sh fails if this wrapper pins the
+    // level while leaving any of them unbound: a version integer confers no capability, binding does.
+    //
+    // Two queue shapes live here and they are NOT interchangeable. Publications are
+    // accept-to-remove, the same contract as the inbox: an item repeats until `acceptHpsMessage`
+    // (or a `true` from the accepting poll) succeeds, so a host that cannot persist one gets it
+    // again. Invites are take-and-clear: draining one destroys it, so a host MUST persist what it
+    // surfaces or the user never sees that invite again.
+
+    /// Host a topic at `path`, minting and persisting its keys. Returns the topic's public key, or
+    /// nil if registration failed.
+    ///
+    /// A service has a public key (only the owner broadcasts, signed by it); a channel has none,
+    /// because its writers sign with their own identities. So EMPTY data is the correct, successful
+    /// answer for a channel and is deliberately not collapsed into nil: the C call reports success
+    /// through its bool and the length separately for exactly that reason, and a wrapper that folded
+    /// the two together would report every channel it just created as a failure.
+    @discardableResult
+    public func hpsRegister(path: String, kind: HpsKind, access: HpsAccess, visibility: HpsVisibility) -> Data? {
+        var key = Data(count: 32)
+        var keyLen: UInt = 0
+        let ok: Bool = path.withCString { p in
+            key.withUnsafeMutableBytes { k in
+                hop_hps_register(raw, p, kind.rawValue, access.rawValue, visibility.rawValue,
+                                 k.bindMemory(to: UInt8.self).baseAddress, UInt(k.count), &keyLen)
+            }
+        }
+        return ok ? key.prefix(Int(keyLen)) : nil
+    }
+
+    /// Subscribe to `hps://{host}/{path}`: seal a keys request to `host`, which an open topic
+    /// answers with the keys, a request-to-join topic queues for approval, and an invite-only topic
+    /// ignores. Returns the subscribe bundle id, or nil.
+    @discardableResult
+    public func hpsSubscribe(host: Data, path: String) -> Data? {
+        guard host.count == 32 else { return nil }
+        var id = Data(count: 32)
+        let ok: Bool = host.withUnsafeBytes { h in
+            id.withUnsafeMutableBytes { o in
+                path.withCString { p in
+                    hop_hps_subscribe(raw, h.bindMemory(to: UInt8.self).baseAddress, p,
+                                      o.bindMemory(to: UInt8.self).baseAddress)
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Publish to a topic we host or (for a channel) belong to: encrypted once to the content key,
+    /// signed by the service key for a service or by our own identity for a channel, flooded once.
+    /// Returns the bundle id, or nil for an unknown path or no write access.
+    @discardableResult
+    public func hpsPublish(path: String, body: Data) -> Data? {
+        var id = Data(count: 32)
+        let ok: Bool = body.withUnsafeBytes { b in
+            id.withUnsafeMutableBytes { o in
+                path.withCString { p in
+                    hop_hps_publish(raw, p, b.bindMemory(to: UInt8.self).baseAddress, UInt(b.count),
+                                    o.bindMemory(to: UInt8.self).baseAddress)
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Poll received publications without accepting them. Items repeat until acceptance succeeds.
+    public func pollHpsMessages(_ sink: (HopHpsMessage) -> Void) {
+        pollHpsMessagesAccepting { message in
+            sink(message)
+            return false
+        }
+    }
+
+    /// Poll received publications, accepting each only when `sink(message)` returns true. Returning
+    /// true IS the durable acceptance, so a host that persists inside the sink never loses a row to
+    /// a crash between the poll and a separate accept.
+    public func pollHpsMessagesAccepting(_ sink: (HopHpsMessage) -> Bool) {
+        withoutActuallyEscaping(sink) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                hop_poll_hps_messages(raw, { rawCtx, id, path, sender, body, blen in
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopHpsMessage) -> Bool).self).pointee
+                    return cb(HopHpsMessage(id: Data(bytes: id!, count: 32),
+                                            path: path != nil ? String(cString: path!) : "",
+                                            sender: Data(bytes: sender!, count: 32),
+                                            body: blen == 0 ? Data() : Data(bytes: body!, count: Int(blen))))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
+    }
+
+    /// Durably accept one publication returned by `pollHpsMessages`, by its 32-byte id.
+    @discardableResult
+    public func acceptHpsMessage(_ id: Data) -> Bool {
+        guard id.count == 32 else { return false }
+        return id.withUnsafeBytes {
+            hop_accept_hps_message(raw, $0.bindMemory(to: UInt8.self).baseAddress)
+        }
+    }
+
+    /// Host to destination: invite `dest` to a topic we host. Keys are sealed only once the
+    /// destination accepts, so an invite hands out nothing by itself. Returns the invite bundle id.
+    @discardableResult
+    public func hpsInvite(path: String, dest: Data) -> Data? {
+        guard dest.count == 32 else { return nil }
+        var id = Data(count: 32)
+        let ok: Bool = dest.withUnsafeBytes { d in
+            id.withUnsafeMutableBytes { o in
+                path.withCString { p in
+                    hop_hps_invite(raw, p, d.bindMemory(to: UInt8.self).baseAddress,
+                                   o.bindMemory(to: UInt8.self).baseAddress)
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Member to host: accept an invite we received, after which the host seals us the keys.
+    @discardableResult
+    public func hpsAcceptInvite(host: Data, path: String) -> Data? {
+        guard host.count == 32 else { return nil }
+        var id = Data(count: 32)
+        let ok: Bool = host.withUnsafeBytes { h in
+            id.withUnsafeMutableBytes { o in
+                path.withCString { p in
+                    hop_hps_accept_invite(raw, h.bindMemory(to: UInt8.self).baseAddress, p,
+                                          o.bindMemory(to: UInt8.self).baseAddress)
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Decline a received invite. DURABLE: the invite is dropped from storage, so it does not
+    /// reappear after a restart.
+    @discardableResult
+    public func hpsDeclineInvite(host: Data, path: String) -> Bool {
+        guard host.count == 32 else { return false }
+        return host.withUnsafeBytes { h in
+            path.withCString { p in
+                hop_hps_decline_invite(raw, h.bindMemory(to: UInt8.self).baseAddress, p)
+            }
+        }
+    }
+
+    /// Drain received invites, CLEARING them. This is take-and-clear, not accept-to-remove: an
+    /// invite the host does not persist here is gone, so write it down inside the sink.
+    public func pollHpsInvites(_ sink: (HopHpsInvite) -> Void) {
+        withoutActuallyEscaping(sink) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                hop_poll_hps_invites(raw, { rawCtx, host, path, kind in
+                    let cb = rawCtx!.assumingMemoryBound(to: ((HopHpsInvite) -> Void).self).pointee
+                    // Decoding a discriminant the LIBRARY produced, for display of a topic we already
+                    // hold: an unknown value can only mean a newer core, so falling back keeps the row
+                    // visible. On the way IN an unknown value must FAIL instead, because reading a
+                    // garbage int as an open access mode would hand a topic's keys to anyone asking.
+                    cb(HopHpsInvite(host: Data(bytes: host!, count: 32),
+                                    path: path != nil ? String(cString: path!) : "",
+                                    kind: HpsKind(rawValue: kind) ?? .channel))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
+    }
+
+    /// Leave a topic, so its host stops re-keying us on rotation.
+    ///
+    /// `(ok: true, id: nil)` is a SUCCESS: leaving a topic we host sends no bundle, so there is no
+    /// id to report. Only `ok == false` is a failure, which is why the id is not the return value.
+    @discardableResult
+    public func hpsLeave(path: String) -> (ok: Bool, id: Data?) {
+        var id = Data(count: 32)
+        var hasId = false
+        let ok: Bool = id.withUnsafeMutableBytes { o in
+            path.withCString { p in
+                hop_hps_leave(raw, p, o.bindMemory(to: UInt8.self).baseAddress, &hasId)
+            }
+        }
+        return (ok, (ok && hasId) ? id : nil)
+    }
+
+    /// Host: the join requests queued on a request-to-join topic, each a requester address.
+    public func hpsPending(path: String) -> [Data] {
+        addressList(path: path) { node, p, sink, ctx in hop_hps_pending(node, p, sink, ctx) }
+    }
+
+    /// Host: approve a pending requester, sealing them the topic keys. Returns the keys bundle id.
+    @discardableResult
+    public func hpsApprove(path: String, requester: Data) -> Data? {
+        guard requester.count == 32 else { return nil }
+        var id = Data(count: 32)
+        let ok: Bool = requester.withUnsafeBytes { r in
+            id.withUnsafeMutableBytes { o in
+                path.withCString { p in
+                    hop_hps_approve(raw, p, r.bindMemory(to: UInt8.self).baseAddress,
+                                    o.bindMemory(to: UInt8.self).baseAddress)
+                }
+            }
+        }
+        return ok ? id : nil
+    }
+
+    /// Host: deny a pending requester and drop the request. No keys are sealed.
+    @discardableResult
+    public func hpsDeny(path: String, requester: Data) -> Bool {
+        guard requester.count == 32 else { return false }
+        return requester.withUnsafeBytes { r in
+            path.withCString { p in
+                hop_hps_deny(raw, p, r.bindMemory(to: UInt8.self).baseAddress)
+            }
+        }
+    }
+
+    /// Host: forward rotation, which is how a member is REVOKED. Mints a new content key and seals
+    /// it to every retained member except `remove`; a removed member keeps only the dead key, so it
+    /// can still read the history it already holds and nothing published afterwards. An empty
+    /// `newPath` keeps the path; a non-empty one moves the topic. Returns the rekey bundle ids.
+    @discardableResult
+    public func hpsRekey(path: String, newPath: String = "", remove: [Data] = []) -> [Data] {
+        // The C call takes a COUNT and reads count * 32 bytes from one contiguous buffer, so pack the
+        // removals back to back. A mis-sized entry is DROPPED rather than padded or sent as-is:
+        // a short address would slide every later one and revoke a member nobody named.
+        var packed = Data()
+        for addr in remove where addr.count == 32 { packed.append(addr) }
+        var ids: [Data] = []
+        withoutActuallyEscaping({ (id: Data) in ids.append(id) }) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                _ = path.withCString { p in
+                    newPath.withCString { np in
+                        packed.withUnsafeBytes { r in
+                            hop_hps_rekey(raw, p, np, r.bindMemory(to: UInt8.self).baseAddress,
+                                          UInt(r.count / 32), { rawCtx, id in
+                                guard let id else { return }
+                                rawCtx!.assumingMemoryBound(to: ((Data) -> Void).self)
+                                    .pointee(Data(bytes: id, count: 32))
+                            }, UnsafeMutableRawPointer(ctx))
+                        }
+                    }
+                }
+            }
+        }
+        return ids
+    }
+
+    /// Host: a topic's reach, the count of distinct addresses that have acked a publication on it.
+    /// A flood has no per-recipient receipt, so this is the only delivery sense a UI can honestly
+    /// show for a topic.
+    public func hpsReach(path: String) -> UInt32 { path.withCString { hop_hps_reach(raw, $0) } }
+
+    /// Host: the retained-member set for a topic, which is who the next rotation re-keys.
+    public func hpsMembers(path: String) -> [Data] {
+        addressList(path: path) { node, p, sink, ctx in hop_hps_members(node, p, sink, ctx) }
+    }
+
+    /// Every topic this node hosts or follows, so an app can rebuild its channel list after a
+    /// restart: the node persists topics, an in-memory list does not.
+    public func hpsMyTopics() -> [HopHpsTopic] {
+        var topics: [HopHpsTopic] = []
+        withoutActuallyEscaping({ (topic: HopHpsTopic) in topics.append(topic) }) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                _ = hop_hps_my_topics(raw, { rawCtx, host, path, kind, hosting, access in
+                    // Discriminants the LIBRARY produced, for topics this node already holds keys to,
+                    // so an unrecognized value means a newer core and the fallback only affects how the
+                    // row reads. An inbound access mode gets no such default: defaulting there would
+                    // turn a garbage int into "hand the keys to anyone who asks".
+                    rawCtx!.assumingMemoryBound(to: ((HopHpsTopic) -> Void).self).pointee(
+                        HopHpsTopic(host: Data(bytes: host!, count: 32),
+                                    path: path != nil ? String(cString: path!) : "",
+                                    kind: HpsKind(rawValue: kind) ?? .channel,
+                                    hosting: hosting,
+                                    access: HpsAccess(rawValue: access) ?? .open))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
+        return topics
+    }
+
+    /// Discoverable topics seen on the mesh: descriptors a discoverable host broadcasts, decrypted
+    /// with the app secret, so this only ever surfaces topics from the same app fabric.
+    public func hpsBrowse() -> [HopHpsTopicInfo] {
+        var found: [HopHpsTopicInfo] = []
+        withoutActuallyEscaping({ (info: HopHpsTopicInfo) in found.append(info) }) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                _ = hop_hps_browse(raw, { rawCtx, host, path, kind, title, summary, access in
+                    // Same reasoning as hpsMyTopics: these discriminants came OUT of the library, and
+                    // the access mode shown here is a label on a browse row, never a decision to admit
+                    // anyone. The host's own access check is what actually gates the key handoff.
+                    rawCtx!.assumingMemoryBound(to: ((HopHpsTopicInfo) -> Void).self).pointee(
+                        HopHpsTopicInfo(host: Data(bytes: host!, count: 32),
+                                        path: path != nil ? String(cString: path!) : "",
+                                        kind: HpsKind(rawValue: kind) ?? .channel,
+                                        title: title != nil ? String(cString: title!) : "",
+                                        summary: summary != nil ? String(cString: summary!) : "",
+                                        access: HpsAccess(rawValue: access) ?? .open))
+                }, UnsafeMutableRawPointer(ctx))
+            }
+        }
+        return found
+    }
+
+    /// Shared plumbing for the two address-set reads (`hpsPending` and `hpsMembers`): both are
+    /// `count = call(node, path, sink(ctx, addr32), ctx)`, so the trampoline is written once instead
+    /// of twice. The returned count is redundant with the array built here and is discarded; the C
+    /// side also accepts a NULL sink to count without collecting, which neither caller wants.
+    private func addressList(
+        path: String,
+        _ call: (OpaquePointer,
+                 UnsafePointer<CChar>,
+                 @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?) -> Void,
+                 UnsafeMutableRawPointer) -> UInt
+    ) -> [Data] {
+        var addresses: [Data] = []
+        withoutActuallyEscaping({ (addr: Data) in addresses.append(addr) }) { escaping in
+            var local = escaping
+            withUnsafeMutablePointer(to: &local) { ctx in
+                _ = path.withCString { p in
+                    call(raw, p, { rawCtx, addr in
+                        guard let addr else { return }
+                        rawCtx!.assumingMemoryBound(to: ((Data) -> Void).self)
+                            .pointee(Data(bytes: addr, count: 32))
+                    }, UnsafeMutableRawPointer(ctx))
+                }
+            }
+        }
+        return addresses
     }
 }
 

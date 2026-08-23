@@ -18,6 +18,15 @@
 # it finds that it cannot account for. The list below now exists to classify what the sweep finds and
 # to prove nothing vanished, never to bound what gets checked.
 #
+# AND WHY THE SWEEP ALONE WAS STILL NOT ENOUGH. The discovery is only as wide as DECL_RE's identifier
+# list, which is itself a hand list. The v5 -> v6 bump proved it: the Flutter SDK pinned the ABI as
+# `const int hopAbiVersion = 5`, an identifier the pattern did not match, so this guard reported full
+# consistency across twelve sites while a thirteenth declaration sat at 5 and its load-time assertion
+# broke the whole Flutter CI job. Same defect class, different outfit: paths drifted, then identifiers
+# did. DECL_RE now names `hopAbiVersion` and Flutter is a registered wrapper. The standing limitation
+# belongs here rather than in a meeting: a wrapper that names its pin something new is invisible until
+# its identifier is added, so DECL_RE is the real boundary of the coverage claim.
+#
 # Four checks, all of which must pass:
 #   1. VALUE AGREEMENT. Every ABI-version literal anywhere in the tree equals the Rust const.
 #   2. CLASSIFICATION. Every declaration the sweep finds is a known site. A new pinned copy (a new
@@ -62,7 +71,7 @@ fi
 # supplies them: `HOP_ABI_VERSION: u32 = %s` matched the old pattern and reported the version as "32".
 # BARE covers `#define HOP_ABI_VERSION 5`, `const val HOP_ABI_VERSION = 5`, `ABI_EXPECTED = 5_u32`,
 # `const abiExpected = 5`, and a literal `"#define HOP_ABI_VERSION 5"` in a packaging assertion.
-DECL_RE='(HOP_ABI_VERSION|HOP_EMBEDDED_ABI_VERSION|expectedABIVersion|_?ABI_EXPECTED|abiExpected)([ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*[0-9]+|[ \t]*=?[ \t]*[0-9]+)'
+DECL_RE='(HOP_ABI_VERSION|HOP_EMBEDDED_ABI_VERSION|expectedABIVersion|_?ABI_EXPECTED|abiExpected|hopAbiVersion)([ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*[0-9]+|[ \t]*=?[ \t]*[0-9]+)'
 # Prose that states an ABI level to a reader: "ABI 5", "ABI-5", "ABI v5", "ABI version 5".
 PROSE_RE='ABI[ _-](version[ _-])?v?[0-9]+'
 
@@ -96,8 +105,8 @@ SWEEP_EXCLUDES=(
 #   validator : a packaging/release assertion about a built artifact's header. Not a wrapper, so it
 #               binds nothing, but it must still agree on the number.
 #
-# Twelve entries, one per declaration in the tree. The sweep is what makes the coverage real; this
-# table is what makes an unaccounted-for thirteenth a hard failure.
+# Thirteen entries, one per declaration in the tree. The sweep is what makes the coverage real;
+# this table is what makes an unaccounted-for fourteenth a hard failure.
 #
 # tools/package-export-smoke.py is deliberately NOT here. Its Apple gate used to hard-code the level
 # (asserting 4 against a header that said 5, the drift PLAT-004 was filed for), and the fix was to
@@ -117,6 +126,7 @@ SITES=(
   "ruby|sdk/ruby/lib/hop/ffi.rb|wrapper|sdk/ruby/lib"
   "crystal|sdk/crystal/src/hop/ffi.cr|wrapper|sdk/crystal/src"
   "go-install|sdk/go/cmd/hop-install/main.go|validator"
+  "flutter|sdk/flutter/lib/src/ffi.dart|wrapper|sdk/flutter/lib"
 )
 
 known_path() {

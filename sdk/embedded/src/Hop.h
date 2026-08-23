@@ -20,7 +20,7 @@
 // same value via hop_abi_version(), so a wrapper paired with a mismatched prebuilt archive fails
 // loudly at startup instead of drifting silently. Keep it in step with HOP_ABI_VERSION in hop.h.
 #ifndef HOP_EMBEDDED_ABI_VERSION
-#define HOP_EMBEDDED_ABI_VERSION 5
+#define HOP_EMBEDDED_ABI_VERSION 6
 #endif
 
 // Opaque handle to the running node, owned by libhop. Declared here so the class can hold a pointer
@@ -253,9 +253,9 @@ public:
   // Human-readable name reported via presence.
   void setName(const char *name);
 
-  // §19 relay pool. PLAT-003: these four calls are the whole stated reason for the v4 -> v5 ABI bump
-  // HOP_EMBEDDED_ABI_VERSION pins, and no C-ABI wrapper bound them, so a firmware built on this
-  // wrapper could not fail over off a dead relay.
+  // §19 relay pool. PLAT-003: these four calls are the whole stated reason for the v4 -> v5 ABI
+  // bump, and no C-ABI wrapper bound them, so a firmware built on this wrapper could not fail over
+  // off a dead relay.
 
   // Offer a relay endpoint to the pool. `configured` marks an operator/user choice, which a gossiped
   // endpoint can never demote. True if the endpoint is now pooled; false before begin().

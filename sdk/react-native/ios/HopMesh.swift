@@ -33,7 +33,8 @@ final class HopMesh: RCTEventEmitter {
   override static func requiresMainQueueSetup() -> Bool { false }
 
   override func supportedEvents() -> [String]! {
-    ["HopMesh:message", "HopMesh:serviceRequest", "HopMesh:serviceResponse", "HopMesh:outgoing"]
+    ["HopMesh:message", "HopMesh:serviceRequest", "HopMesh:serviceResponse", "HopMesh:outgoing",
+     "HopMesh:hpsMessage", "HopMesh:hpsInvite"]
   }
 
   override func startObserving() { hasListeners = true }
@@ -56,6 +57,58 @@ final class HopMesh: RCTEventEmitter {
 
   private func data(_ b64: String) -> Data { Data(base64Encoded: b64) ?? Data() }
   private func b64(_ data: Data) -> String { data.base64EncodedString() }
+
+  // MARK: hps:// enum mapping
+  //
+  // Enums cross the bridge as lowercase strings, the same way `role` does. An UNRECOGNIZED string
+  // returns nil here and the calling method fails the promise; it is NEVER coerced to `.open` or
+  // `.channel`, because reading a garbage access mode as Open would hand a topic's keys to anyone who
+  // asks. The reverse direction (topics and invites going out) is total, so it needs no fallback.
+  private func hpsKind(_ text: String) -> HpsKind? {
+    switch text {
+    case "channel": return .channel
+    case "service": return .service
+    default: return nil
+    }
+  }
+
+  private func hpsAccess(_ text: String) -> HpsAccess? {
+    switch text {
+    case "open": return .open
+    case "requestToJoin": return .requestToJoin
+    case "invite": return .invite
+    default: return nil
+    }
+  }
+
+  private func hpsVisibility(_ text: String) -> HpsVisibility? {
+    switch text {
+    case "private": return .topicPrivate
+    case "discoverable": return .discoverable
+    default: return nil
+    }
+  }
+
+  // Exhaustive switches, not a ternary with a fallthrough: a kind or access mode added to the SDK
+  // must break this build rather than quietly render as the last case.
+  private func name(_ kind: HpsKind) -> String {
+    switch kind {
+    case .channel: return "channel"
+    case .service: return "service"
+    }
+  }
+
+  private func name(_ access: HpsAccess) -> String {
+    switch access {
+    case .open: return "open"
+    case .requestToJoin: return "requestToJoin"
+    case .invite: return "invite"
+    }
+  }
+
+  private func badEnum(_ reject: RCTPromiseRejectBlock, _ field: String, _ value: String) {
+    reject("hop_error", "unrecognized hps \(field): \(value)", nil)
+  }
 
   // MARK: lifecycle
 
@@ -237,6 +290,181 @@ final class HopMesh: RCTEventEmitter {
     node.bytesReceived(UInt64(link), data(bytesB64)); resolve(nil)
   }
 
+  // MARK: section 19 relay pool
+
+  @objc(relayAdd:url:configured:resolver:rejecter:)
+  func relayAdd(_ handle: Int, url: String, configured: Bool, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.relayAdd(url, configured: configured))
+  }
+
+  // nil means nothing is dialable RIGHT NOW, which is not the same as offline: a non-zero relayPool
+  // total with nothing dialable is the degraded "every candidate is backed off" state, and the JS
+  // wrapper documents that distinction for the UI that has to render it.
+  @objc(relayNext:resolver:rejecter:)
+  func relayNext(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.relayNext())
+  }
+
+  @objc(relayReport:url:ok:resolver:rejecter:)
+  func relayReport(_ handle: Int, url: String, ok: Bool, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    node.relayReport(url, ok: ok); resolve(nil)
+  }
+
+  @objc(relayPool:resolver:rejecter:)
+  func relayPool(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    let pool = node.relayPool()
+    resolve(["total": pool.total, "available": pool.available])
+  }
+
+  // MARK: hps:// pub/sub (section 32)
+  //
+  // A publication is a single content-key-encrypted, per-writer-signed message flooded once, not a
+  // fan-out and not a multicast bundle. Membership, invites and revocation are properties of the
+  // topic's key handoff, which is why `hpsApprove` and `hpsRekey` resolve bundle ids: each one is a
+  // key handoff sealed to a member.
+
+  @objc(hpsRegister:path:kind:access:visibility:resolver:rejecter:)
+  func hpsRegister(_ handle: Int, path: String, kind kindText: String, access accessText: String, visibility visibilityText: String,
+                   resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let kind = hpsKind(kindText) else { return badEnum(reject, "kind", kindText) }
+    guard let access = hpsAccess(accessText) else { return badEnum(reject, "access", accessText) }
+    guard let visibility = hpsVisibility(visibilityText) else { return badEnum(reject, "visibility", visibilityText) }
+    // Empty is a channel's correct answer (no service signing key), so it resolves an empty string
+    // rather than nil; nil is reserved for the register having failed.
+    resolve(node.hpsRegister(path: path, kind: kind, access: access, visibility: visibility).map(b64))
+  }
+
+  @objc(hpsSubscribe:host:path:resolver:rejecter:)
+  func hpsSubscribe(_ handle: Int, host hostB58: String, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let host = HopAddress.fromBase58(hostB58) else { return resolve(nil) }
+    resolve(node.hpsSubscribe(host: host, path: path).map(b64))
+  }
+
+  @objc(hpsPublish:path:body:resolver:rejecter:)
+  func hpsPublish(_ handle: Int, path: String, body bodyB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsPublish(path: path, body: data(bodyB64)).map(b64))
+  }
+
+  @objc(acceptHpsMessage:id:resolver:rejecter:)
+  func acceptHpsMessage(_ handle: Int, id idB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.acceptHpsMessage(data(idB64)))
+  }
+
+  @objc(hpsInvite:path:dest:resolver:rejecter:)
+  func hpsInvite(_ handle: Int, path: String, dest destB58: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let dest = HopAddress.fromBase58(destB58) else { return resolve(nil) }
+    resolve(node.hpsInvite(path: path, dest: dest).map(b64))
+  }
+
+  @objc(hpsAcceptInvite:host:path:resolver:rejecter:)
+  func hpsAcceptInvite(_ handle: Int, host hostB58: String, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let host = HopAddress.fromBase58(hostB58) else { return resolve(nil) }
+    resolve(node.hpsAcceptInvite(host: host, path: path).map(b64))
+  }
+
+  @objc(hpsDeclineInvite:host:path:resolver:rejecter:)
+  func hpsDeclineInvite(_ handle: Int, host hostB58: String, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let host = HopAddress.fromBase58(hostB58) else { return resolve(false) }
+    resolve(node.hpsDeclineInvite(host: host, path: path))
+  }
+
+  // The native call also yields the leave bundle's id; JS gets only the ok flag, because an RN client
+  // has nothing to correlate that id against.
+  @objc(hpsLeave:path:resolver:rejecter:)
+  func hpsLeave(_ handle: Int, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsLeave(path: path).ok)
+  }
+
+  @objc(hpsPending:path:resolver:rejecter:)
+  func hpsPending(_ handle: Int, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsPending(path: path).map(HopAddress.base58))
+  }
+
+  @objc(hpsApprove:path:requester:resolver:rejecter:)
+  func hpsApprove(_ handle: Int, path: String, requester requesterB58: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let requester = HopAddress.fromBase58(requesterB58) else { return resolve(nil) }
+    resolve(node.hpsApprove(path: path, requester: requester).map(b64))
+  }
+
+  @objc(hpsDeny:path:requester:resolver:rejecter:)
+  func hpsDeny(_ handle: Int, path: String, requester requesterB58: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard let requester = HopAddress.fromBase58(requesterB58) else { return resolve(false) }
+    resolve(node.hpsDeny(path: path, requester: requester))
+  }
+
+  // An unparsable address in the remove list FAILS the whole call rather than being skipped. Skipping
+  // it would rotate the key and report success while the member the caller asked to revoke still holds
+  // a usable one, which is the worst possible outcome to report as an ok.
+  @objc(hpsRekey:path:newPath:remove:resolver:rejecter:)
+  func hpsRekey(_ handle: Int, path: String, newPath: String, remove removeB58: [String],
+                resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    var remove: [Data] = []
+    for text in removeB58 {
+      guard let addr = HopAddress.fromBase58(text) else {
+        return reject("hop_error", "unparsable address in the hps remove list: \(text)", nil)
+      }
+      remove.append(addr)
+    }
+    resolve(node.hpsRekey(path: path, newPath: newPath, remove: remove).map(b64))
+  }
+
+  @objc(hpsReach:path:resolver:rejecter:)
+  func hpsReach(_ handle: Int, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(Int(node.hpsReach(path: path)))
+  }
+
+  @objc(hpsMembers:path:resolver:rejecter:)
+  func hpsMembers(_ handle: Int, path: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsMembers(path: path).map(HopAddress.base58))
+  }
+
+  @objc(hpsMyTopics:resolver:rejecter:)
+  func hpsMyTopics(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsMyTopics().map { topic -> [String: Any] in
+      [
+        "host": HopAddress.base58(topic.host),
+        "path": topic.path,
+        "kind": name(topic.kind),
+        "hosting": topic.hosting,
+        "access": name(topic.access),
+      ]
+    })
+  }
+
+  @objc(hpsBrowse:resolver:rejecter:)
+  func hpsBrowse(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.hpsBrowse().map { topic -> [String: Any] in
+      [
+        "host": HopAddress.base58(topic.host),
+        "path": topic.path,
+        "kind": name(topic.kind),
+        "title": topic.title,
+        "summary": topic.summary,
+        "access": name(topic.access),
+      ]
+    })
+  }
+
   // MARK: pump
 
   @objc(startPump:intervalMs:resolver:rejecter:)
@@ -301,6 +529,27 @@ final class HopMesh: RCTEventEmitter {
         "forRequestId": self.b64(r.forRequestId),
         "status": Int(r.status),
         "body": self.b64(r.body),
+      ])
+    }
+    // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
+    // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
+    node.pollHpsMessages { m in
+      self.send("HopMesh:hpsMessage", [
+        "node": handle,
+        "id": self.b64(m.id),
+        "path": m.path,
+        "sender": HopAddress.base58(m.sender),
+        "body": self.b64(m.body),
+      ])
+    }
+    // Take-and-clear, not accept-to-remove: a drained invite is gone, so the JS side must persist what
+    // this hands it.
+    node.pollHpsInvites { inv in
+      self.send("HopMesh:hpsInvite", [
+        "node": handle,
+        "host": HopAddress.base58(inv.host),
+        "path": inv.path,
+        "kind": self.name(inv.kind),
       ])
     }
   }

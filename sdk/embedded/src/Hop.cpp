@@ -72,6 +72,77 @@ uintptr_t hop_relay_next(const HopNode *node, char *out, uintptr_t out_cap);
 void hop_relay_report(const HopNode *node, const char *url, bool ok);
 uintptr_t hop_relay_pool_size(const HopNode *node, uintptr_t *out_available);
 
+// §32 hps:// pub/sub: services and channels, the surface the v5 -> v6 ABI bump added because the C
+// ABI exported none of it, so nothing sitting on this ABI could reach a channel at all. These are
+// declared, not yet wrapped: this extern "C" block is the wrapper's whole FFI layer, so declaring
+// them here is what makes a firmware build link against a libhop that actually exports them. There
+// is deliberately no C++ surface over them yet, and this comment is the honest record of that: read
+// nothing below as a capability a sketch can already call.
+//
+// A publication is NOT one-to-one fan-out and NOT a multicast bundle. It is a single body encrypted
+// once to the topic's content key, signed per writer, and flooded once. Membership, invites and
+// revocation are all properties of that key handoff rather than of any per-recipient send, which is
+// why hop_hps_reach is the only delivery number a UI can honestly show: a flood has no per-recipient
+// receipt to count.
+//
+// kind/access/visibility cross as plain uint32_t (HopHpsKind, HopHpsAccess and HopHpsVisibility in
+// hop.h). An out-of-range discriminant makes the call FAIL, and is never defaulted on either side of
+// the boundary, because reading a garbage int as Open would hand a topic's keys to anyone who asks.
+
+// The bool, not out_pubkey_len, is what says registration happened: a channel's writers sign with
+// their own identity, so it has no service key and succeeds having written zero bytes. Collapsing
+// the two would report every successful channel as a failure.
+bool hop_hps_register(const HopNode *node, const char *path, uint32_t kind, uint32_t access,
+                      uint32_t visibility, uint8_t *out_pubkey, uintptr_t out_pubkey_cap,
+                      uintptr_t *out_pubkey_len);
+bool hop_hps_subscribe(const HopNode *node, const uint8_t *host, const char *path, uint8_t *out_id);
+bool hop_hps_publish(const HopNode *node, const char *path, const uint8_t *body, uintptr_t body_len,
+                     uint8_t *out_id);
+// Accept-to-remove, exactly like hop_poll_inbox: returning true from the sink accepts the
+// publication and core drops it, false leaves the row queued for redelivery.
+void hop_poll_hps_messages(const HopNode *node,
+                           bool (*sink)(void *ctx, const uint8_t *id, const char *path,
+                                        const uint8_t *sender, const uint8_t *body,
+                                        uintptr_t body_len),
+                           void *ctx);
+bool hop_accept_hps_message(const HopNode *node, const uint8_t *id);
+bool hop_hps_invite(const HopNode *node, const char *path, const uint8_t *dest, uint8_t *out_id);
+bool hop_hps_accept_invite(const HopNode *node, const uint8_t *host, const char *path,
+                           uint8_t *out_id);
+bool hop_hps_decline_invite(const HopNode *node, const uint8_t *host, const char *path);
+// Take-and-clear, NOT accept-to-remove: a drained invite is gone from storage, so a host must
+// persist what it surfaces or the invite is lost.
+void hop_poll_hps_invites(const HopNode *node,
+                          void (*sink)(void *ctx, const uint8_t *host, const char *path,
+                                       uint32_t kind),
+                          void *ctx);
+// out_has_id is why the bool alone is not enough: leaving a topic this node HOSTS sends no bundle,
+// which is a success with no id rather than a failure.
+bool hop_hps_leave(const HopNode *node, const char *path, uint8_t *out_id, bool *out_has_id);
+uintptr_t hop_hps_pending(const HopNode *node, const char *path,
+                          void (*sink)(void *ctx, const uint8_t *addr), void *ctx);
+bool hop_hps_approve(const HopNode *node, const char *path, const uint8_t *requester,
+                     uint8_t *out_id);
+bool hop_hps_deny(const HopNode *node, const char *path, const uint8_t *requester);
+// Selective forward rotation, which is how a member is REVOKED. remove_count is a COUNT of 32-byte
+// addresses packed back to back, so the call reads remove_count * 32 bytes: passing a byte length
+// here would read 32 times past the array.
+uintptr_t hop_hps_rekey(const HopNode *node, const char *path, const char *new_path,
+                        const uint8_t *remove, uintptr_t remove_count,
+                        void (*sink)(void *ctx, const uint8_t *id), void *ctx);
+uint32_t hop_hps_reach(const HopNode *node, const char *path);
+uintptr_t hop_hps_members(const HopNode *node, const char *path,
+                          void (*sink)(void *ctx, const uint8_t *addr), void *ctx);
+uintptr_t hop_hps_my_topics(const HopNode *node,
+                            void (*sink)(void *ctx, const uint8_t *host, const char *path,
+                                         uint32_t kind, bool hosting, uint32_t access),
+                            void *ctx);
+uintptr_t hop_hps_browse(const HopNode *node,
+                         void (*sink)(void *ctx, const uint8_t *host, const char *path,
+                                      uint32_t kind, const char *title, const char *summary,
+                                      uint32_t access),
+                         void *ctx);
+
 } // extern "C"
 
 namespace hop {

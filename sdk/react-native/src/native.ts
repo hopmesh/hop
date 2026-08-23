@@ -7,11 +7,37 @@
 // depends only on the pure logic in node.ts, can be unit-tested under plain Node without the RN
 // runtime. The classic-bridge surface here also runs on the New Architecture via the interop layer.
 
+import { HopRelayPool } from "./types";
+
 export interface NativeStatus {
   relayed: number;
   delivered: boolean;
   forwardHops: number;
   forwardMs: number;
+}
+
+/** A topic row as `hpsMyTopics` puts it on the wire: addresses base58, enums lowercase strings.
+ *
+ *  `kind` and `access` are typed as plain strings here, like `linkUp`'s `role`, because that is
+ *  honestly what crosses an RN bridge: an arbitrary string the native side chose. node.ts narrows
+ *  them to the public unions without rewriting an unrecognized value, so a garbage access mode fails
+ *  every comparison instead of reading as `open`. */
+export interface NativeHpsTopic {
+  host: string;
+  path: string;
+  kind: string;
+  hosting: boolean;
+  access: string;
+}
+
+/** A discoverable topic descriptor as `hpsBrowse` puts it on the wire. */
+export interface NativeHpsTopicInfo {
+  host: string;
+  path: string;
+  kind: string;
+  title: string;
+  summary: string;
+  access: string;
 }
 
 export interface HopNativeModule {
@@ -44,7 +70,7 @@ export interface HopNativeModule {
   sendServiceResponse(handle: number, toB58: string, forRequestIdB64: string, status: number, bodyB64: string): Promise<boolean>;
   acceptServiceResponse(handle: number, forRequestIdB64: string): Promise<boolean>;
 
-  // ---- pump: ticks, drains outbound, and polls inbox/requests/responses, emitting events ----
+  // ---- pump: ticks, drains outbound, and polls inbox/requests/responses/hps queues, emitting events ----
   startPump(handle: number, intervalMs: number): Promise<void>;
   stopPump(handle: number): Promise<void>;
 
@@ -52,6 +78,36 @@ export interface HopNativeModule {
   linkUp(handle: number, link: number, role: string): Promise<void>;
   linkDown(handle: number, link: number): Promise<void>;
   bytesReceived(handle: number, link: number, bytesB64: string): Promise<void>;
+
+  // ---- section 19 relay pool ----
+  relayAdd(handle: number, url: string, configured: boolean): Promise<boolean>;
+  relayNext(handle: number): Promise<string | null>; // null = nothing dialable right now
+  relayReport(handle: number, url: string, ok: boolean): Promise<void>;
+  relayPool(handle: number): Promise<HopRelayPool>;
+
+  // ---- hps:// pub/sub (section 32): services and channels ----
+  //
+  // Enums cross as lowercase strings, the same way `linkUp` carries `role`: kind is
+  // "channel"|"service", access is "open"|"requestToJoin"|"invite", visibility is
+  // "private"|"discoverable". A string the native side does not recognize FAILS the call. It is never
+  // mapped to `open` or `channel`, because reading a garbage access mode as Open would hand a topic's
+  // keys to anyone who asks.
+  hpsRegister(handle: number, path: string, kind: string, access: string, visibility: string): Promise<string | null>;
+  hpsSubscribe(handle: number, hostB58: string, path: string): Promise<string | null>;
+  hpsPublish(handle: number, path: string, bodyB64: string): Promise<string | null>;
+  acceptHpsMessage(handle: number, idB64: string): Promise<boolean>;
+  hpsInvite(handle: number, path: string, destB58: string): Promise<string | null>;
+  hpsAcceptInvite(handle: number, hostB58: string, path: string): Promise<string | null>;
+  hpsDeclineInvite(handle: number, hostB58: string, path: string): Promise<boolean>;
+  hpsLeave(handle: number, path: string): Promise<boolean>;
+  hpsPending(handle: number, path: string): Promise<string[]>; // base58 requesters
+  hpsApprove(handle: number, path: string, requesterB58: string): Promise<string | null>;
+  hpsDeny(handle: number, path: string, requesterB58: string): Promise<boolean>;
+  hpsRekey(handle: number, path: string, newPath: string, removeB58: string[]): Promise<string[]>; // base64 bundle ids
+  hpsReach(handle: number, path: string): Promise<number>;
+  hpsMembers(handle: number, path: string): Promise<string[]>; // base58 members
+  hpsMyTopics(handle: number): Promise<NativeHpsTopic[]>;
+  hpsBrowse(handle: number): Promise<NativeHpsTopicInfo[]>;
 
   // ---- address helpers (node-independent) ----
   addressToBase58(bytesB64: string): Promise<string>;
@@ -68,6 +124,8 @@ export const HopEvent = {
   ServiceRequest: "HopMesh:serviceRequest",
   ServiceResponse: "HopMesh:serviceResponse",
   Outgoing: "HopMesh:outgoing",
+  HpsMessage: "HopMesh:hpsMessage",
+  HpsInvite: "HopMesh:hpsInvite",
 } as const;
 
 const LINK_ERROR =

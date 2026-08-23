@@ -12,7 +12,7 @@ from ctypes import CFUNCTYPE, POINTER, c_char_p, c_size_t, c_uint8, c_uint16, c_
 from pathlib import Path
 
 _EXT = {"darwin": "dylib", "win32": "dll"}.get(sys.platform, "so")
-_ABI_EXPECTED = 5
+_ABI_EXPECTED = 6
 
 
 def _resolve_lib() -> str:
@@ -38,6 +38,13 @@ SVCREQ_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_ch
 SVCRESP_SINK = CFUNCTYPE(c_bool, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_uint16, POINTER(c_uint8), c_size_t)
 REACH_SIGN_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_size_t)
 REACH_VERIFY_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint64, c_uint32)
+# §32 hps:// sinks. ADDR32_SINK is the one-32-byte-pointer shape three calls share: a requester
+# (hop_hps_pending), a member (hop_hps_members) and a rekey bundle id (hop_hps_rekey).
+HPSMSG_SINK = CFUNCTYPE(c_bool, c_void_p, POINTER(c_uint8), c_char_p, POINTER(c_uint8), POINTER(c_uint8), c_size_t)
+HPSINVITE_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint32)
+ADDR32_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8))
+HPSTOPIC_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint32, c_bool, c_uint32)
+HPSINFO_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint32, c_char_p, c_char_p, c_uint32)
 
 # ---- signatures (restype MUST be set, else ctypes truncates 64-bit pointers) ----
 _lib.hop_abi_version.restype = c_uint32
@@ -87,6 +94,62 @@ _lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
 _lib.hop_cluster_members.argtypes = [c_void_p]
 _lib.hop_cluster_members.restype = c_uint32
 _lib.hop_cluster_set_quorum.argtypes = [c_void_p, c_uint32]
+# §32 hps:// pub/sub (services and channels, i.e. group chat). PLAT-005: the eighteen calls the
+# v5 -> v6 bump was taken for. The C ABI had no hps exports at all, so no wrapper sitting on it could
+# reach a channel even though the protocol has shipped in the two native UniFFI drivers for as long
+# as it has existed. Declaring them here is load-bearing rather than decorative: each attribute
+# lookup resolves the symbol out of libhop at import, so pairing this wrapper with a library that
+# does not export the v6 surface fails at load instead of at the first channel a host tries to open.
+#
+# A publication is NOT one-to-one fan-out and NOT a multicast bundle. It is a single
+# content-key-encrypted, per-writer-signed publication, flooded once, which is why most of this
+# surface is about a topic's key handoff (subscribe, invite, approve, rekey) rather than about bytes.
+#
+# Signature details worth keeping straight, each of which exists to stop a caller conflating two
+# outcomes:
+#   register  writes the service key's length through its own out-param, so a channel (zero-length
+#             key, since its writers sign with their own identity) is distinguishable from a
+#             failure; the bool return is what says whether registration happened.
+#   leave     writes out_has_id, because leaving a topic we HOST sends no bundle: a success with no
+#             id, not a failure.
+#   rekey     takes a COUNT of 32-byte addresses packed back to back, not a byte length.
+#   kind/access/visibility cross as plain uint32 discriminants and are passed through untouched. An
+#             out-of-range value makes the call FAIL; it is never coerced or defaulted here, because
+#             reading a garbage int as Open would hand a topic's keys to anyone who asks.
+_lib.hop_hps_register.argtypes = [c_void_p, c_char_p, c_uint32, c_uint32, c_uint32, c_char_p, c_size_t, POINTER(c_size_t)]
+_lib.hop_hps_register.restype = c_bool
+_lib.hop_hps_subscribe.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+_lib.hop_hps_subscribe.restype = c_bool
+_lib.hop_hps_publish.argtypes = [c_void_p, c_char_p, c_char_p, c_size_t, c_char_p]
+_lib.hop_hps_publish.restype = c_bool
+_lib.hop_poll_hps_messages.argtypes = [c_void_p, HPSMSG_SINK, c_void_p]
+_lib.hop_accept_hps_message.argtypes = [c_void_p, c_char_p]
+_lib.hop_accept_hps_message.restype = c_bool
+_lib.hop_hps_invite.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+_lib.hop_hps_invite.restype = c_bool
+_lib.hop_hps_accept_invite.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+_lib.hop_hps_accept_invite.restype = c_bool
+_lib.hop_hps_decline_invite.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_hps_decline_invite.restype = c_bool
+_lib.hop_poll_hps_invites.argtypes = [c_void_p, HPSINVITE_SINK, c_void_p]
+_lib.hop_hps_leave.argtypes = [c_void_p, c_char_p, c_char_p, POINTER(c_bool)]
+_lib.hop_hps_leave.restype = c_bool
+_lib.hop_hps_pending.argtypes = [c_void_p, c_char_p, ADDR32_SINK, c_void_p]
+_lib.hop_hps_pending.restype = c_size_t
+_lib.hop_hps_approve.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+_lib.hop_hps_approve.restype = c_bool
+_lib.hop_hps_deny.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_hps_deny.restype = c_bool
+_lib.hop_hps_rekey.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p, c_size_t, ADDR32_SINK, c_void_p]
+_lib.hop_hps_rekey.restype = c_size_t
+_lib.hop_hps_reach.argtypes = [c_void_p, c_char_p]
+_lib.hop_hps_reach.restype = c_uint32
+_lib.hop_hps_members.argtypes = [c_void_p, c_char_p, ADDR32_SINK, c_void_p]
+_lib.hop_hps_members.restype = c_size_t
+_lib.hop_hps_my_topics.argtypes = [c_void_p, HPSTOPIC_SINK, c_void_p]
+_lib.hop_hps_my_topics.restype = c_size_t
+_lib.hop_hps_browse.argtypes = [c_void_p, HPSINFO_SINK, c_void_p]
+_lib.hop_hps_browse.restype = c_size_t
 
 
 def assert_abi() -> None:

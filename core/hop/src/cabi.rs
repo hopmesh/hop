@@ -45,6 +45,35 @@ pub enum HopLinkRole {
     Acceptor = 1,
 }
 
+/// The kind of `hps://` topic hosted at a path (DESIGN.md §32). Mirrors hop-core's `ServiceKind`.
+#[repr(C)]
+pub enum HopHpsKind {
+    /// Anyone with the content key reads AND writes; each publication signed by its writer.
+    Channel = 0,
+    /// Only the owner broadcasts (signed by the service key); subscribers read.
+    Service = 1,
+}
+
+/// Who may obtain a topic's keys (DESIGN.md §32). Mirrors hop-core's `AccessMode`.
+#[repr(C)]
+pub enum HopHpsAccess {
+    /// Keys handed to anyone who asks (anonymous membership).
+    Open = 0,
+    /// Requester asks; the host approves before keys are handed off.
+    RequestToJoin = 1,
+    /// Host invites a destination; the destination accepts, then receives keys.
+    Invite = 2,
+}
+
+/// Whether a topic announces itself for discovery (DESIGN.md §32). Mirrors hop-core's `Visibility`.
+#[repr(C)]
+pub enum HopHpsVisibility {
+    /// Reachable only by a known address+path or an invite.
+    Private = 0,
+    /// Host broadcasts an (app-encrypted) discovery advert so same-app peers can browse it.
+    Discoverable = 1,
+}
+
 // ---- internal helpers (not exported) ----------------------------------------------------------
 
 unsafe fn node_ref<'a>(node: *const HopNode) -> Option<&'a HopNode> {
@@ -91,6 +120,55 @@ unsafe fn bounded_slice<'a>(p: *const u8, len: usize, max: usize) -> Option<&'a 
     }
 }
 
+// The hps:// enum params (kind / access / visibility) cross as plain `u32`, never as the `#[repr(C)]`
+// enums by value, for the same reason `hop_link_up` takes `role: u32` (core-ffi-05): materializing a
+// Rust enum from an out-of-range C int is instant UB. `hop_link_up` can map anything-but-0 onto
+// Acceptor because both roles are equally safe; an ACCESS MODE cannot be defaulted that way, because
+// silently reading a garbage int as `Open` would hand a topic's keys to anyone who asks. So these
+// decoders REJECT an out-of-range discriminant and the call fails, rather than guessing.
+fn hps_kind(v: u32) -> Option<crate::HpsKind> {
+    match v {
+        0 => Some(crate::HpsKind::Channel),
+        1 => Some(crate::HpsKind::Service),
+        _ => None,
+    }
+}
+fn hps_kind_code(k: &crate::HpsKind) -> u32 {
+    match k {
+        crate::HpsKind::Channel => HopHpsKind::Channel as u32,
+        crate::HpsKind::Service => HopHpsKind::Service as u32,
+    }
+}
+fn hps_access(v: u32) -> Option<crate::HpsAccess> {
+    match v {
+        0 => Some(crate::HpsAccess::Open),
+        1 => Some(crate::HpsAccess::RequestToJoin),
+        2 => Some(crate::HpsAccess::Invite),
+        _ => None,
+    }
+}
+fn hps_access_code(a: &crate::HpsAccess) -> u32 {
+    match a {
+        crate::HpsAccess::Open => HopHpsAccess::Open as u32,
+        crate::HpsAccess::RequestToJoin => HopHpsAccess::RequestToJoin as u32,
+        crate::HpsAccess::Invite => HopHpsAccess::Invite as u32,
+    }
+}
+fn hps_visibility(v: u32) -> Option<crate::HpsVisibility> {
+    match v {
+        0 => Some(crate::HpsVisibility::Private),
+        1 => Some(crate::HpsVisibility::Discoverable),
+        _ => None,
+    }
+}
+
+/// Write a 32-byte bundle id to a nullable out-param, the shape every id-returning `hop_*` call uses.
+unsafe fn write_id(out: *mut u8, id: &[u8]) {
+    if !out.is_null() {
+        std::ptr::copy_nonoverlapping(id.as_ptr(), out, id.len().min(32));
+    }
+}
+
 // ---- lifecycle --------------------------------------------------------------------------------
 
 /// The libhop C-ABI version. Bump on any signature or semantic change to an exported `hop_*`
@@ -109,7 +187,18 @@ unsafe fn bounded_slice<'a>(p: *const u8, len: usize, max: usize) -> Option<&'a 
 /// in a bump note are now MACHINE-CHECKED against every wrapper pinned to that version by
 /// tools/codegen/check-abi-version.sh, so this paragraph can no longer describe a surface the
 /// wrappers do not expose.
-pub const HOP_ABI_VERSION: u32 = 5;
+///
+/// v5 -> v6: added the §32 `hps://` pub/sub surface, which the C ABI had no exports for at all, so
+/// every wrapper that sits on it (Swift, Kotlin, and the React Native bridge above them) could not
+/// reach group chat or channels even though the protocol has shipped in the two native UniFFI
+/// drivers for as long as it has existed. The calls are `hop_hps_register`, `hop_hps_subscribe`,
+/// `hop_hps_publish`, `hop_poll_hps_messages`, `hop_accept_hps_message`, `hop_hps_invite`,
+/// `hop_hps_accept_invite`, `hop_hps_decline_invite`, `hop_poll_hps_invites`, `hop_hps_leave`,
+/// `hop_hps_pending`, `hop_hps_approve`, `hop_hps_deny`, `hop_hps_rekey`, `hop_hps_reach`,
+/// `hop_hps_members`, `hop_hps_my_topics` and `hop_hps_browse`. Additive, so a v5 caller still
+/// links; the bump is what stops a wrapper that binds them being paired with a v5 library that does
+/// not export them, and what holds every wrapper to binding the whole surface (PLAT-003).
+pub const HOP_ABI_VERSION: u32 = 6;
 
 /// Returns the ABI version this shared library implements (see [`HOP_ABI_VERSION`]).
 #[no_mangle]
@@ -1008,6 +1097,547 @@ pub unsafe extern "C" fn hop_accept_service_response(
             return false;
         };
         node.accept_service_response(response_id).unwrap_or(false)
+    })
+}
+
+// ---- hps:// pub/sub: services & channels (DESIGN.md §32) --------------------------------------
+//
+// PLAT-005: the C ABI exported NOTHING from this surface. hps:// is implemented end to end in the
+// core and exposed over UniFFI, and both native drivers consume it, but every wrapper that sits on
+// the C ABI instead (Swift, Kotlin, and the React Native bridge above them) had no way to reach it,
+// so a client built on the SDK could not host, join, or post to a channel at all.
+//
+// A Hop group message is NOT one-to-one fan-out and NOT a multicast bundle: it is a single
+// content-key-encrypted, per-writer-signed publication, flooded once. Membership, invites and
+// revocation are properties of the topic's key handoff, which is why the invite / approve / rekey
+// calls below are part of the messaging surface rather than a separate access-control API.
+//
+// Conventions match the rest of this file: addresses and bundle ids are exactly 32 bytes, list
+// results arrive through a `sink(ctx, ...)` callback during the call (so the ABI allocates nothing
+// the caller must free, and every pointer is valid only for that callback), and every body is
+// wrapped in `catch` so a panic degrades to a dropped op instead of unwinding across `extern "C"`.
+
+/// Register (host) an `hps://` topic at `path`, minting and persisting its keys. `kind` is a
+/// [`HopHpsKind`] discriminant, `access` a [`HopHpsAccess`], `visibility` a [`HopHpsVisibility`],
+/// each as a plain `uint32_t`.
+///
+/// A `Service` topic has a public key (only the owner broadcasts, signed by it); a `Channel` has
+/// none (writers sign with their own identity). So the key is written to `out_pubkey` (`out_pubkey_cap`
+/// bytes, may be NULL to ignore) and its length to `out_pubkey_len` (may be NULL); a channel writes
+/// zero bytes. The bool return, not the length, is what says whether registration happened: returns
+/// false on a NULL node/path, an out-of-range `kind`/`access`/`visibility`, or a key that does not
+/// fit in `out_pubkey_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_register(
+    node: *const HopNode,
+    path: *const c_char,
+    kind: u32,
+    access: u32,
+    visibility: u32,
+    out_pubkey: *mut u8,
+    out_pubkey_cap: usize,
+    out_pubkey_len: *mut usize,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        let (Some(kind), Some(access), Some(visibility)) = (
+            hps_kind(kind),
+            hps_access(access),
+            hps_visibility(visibility),
+        ) else {
+            return false;
+        };
+        let pk = node.register_service(path.to_string(), kind, access, visibility);
+        if !out_pubkey.is_null() {
+            if pk.len() > out_pubkey_cap {
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(pk.as_ptr(), out_pubkey, pk.len());
+        }
+        if !out_pubkey_len.is_null() {
+            *out_pubkey_len = pk.len();
+        }
+        true
+    })
+}
+
+/// Subscribe to `hps://{host}/{path}`: seal a keys request to `host` (32 bytes), which for an `Open`
+/// topic replies with the topic keys, for `RequestToJoin` queues us for approval, and for `Invite`
+/// ignores us. Publications then arrive via [`hop_poll_hps_messages`]. Writes the 32-byte subscribe
+/// bundle id to `out_id` (may be NULL) and returns true.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_subscribe(
+    node: *const HopNode,
+    host: *const u8,
+    path: *const c_char,
+    out_id: *mut u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if host.is_null() {
+            return false;
+        }
+        match node.hps_subscribe(slice(host, 32).to_vec(), path.to_string()) {
+            Ok(id) => {
+                write_id(out_id, &id);
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Publish `body` to a topic we host or (for a channel) belong to: encrypted once to the topic's
+/// content key, signed by the service key for a service or by our own identity for a channel, and
+/// flooded once to every subscriber. Writes the 32-byte bundle id to `out_id` (may be NULL).
+/// Returns false for an unknown path, a body over [`MAX_C_ABI_INPUT_BYTES`], or no write access.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_publish(
+    node: *const HopNode,
+    path: *const c_char,
+    body: *const u8,
+    body_len: usize,
+    out_id: *mut u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        let Some(body) = bounded_slice(body, body_len, MAX_C_ABI_INPUT_BYTES) else {
+            return false;
+        };
+        match node.hps_publish(path.to_string(), body.to_vec()) {
+            Ok(id) => {
+                write_id(out_id, &id);
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Drain received `hps://` publications (poll model, the same shape as [`hop_poll_inbox`]). Invokes
+/// `sink(ctx, id32, path_cstr, sender32, body_ptr, body_len)` once per publication during this call.
+/// `id` and `sender` each point at 32 bytes; `path` is a NUL-terminated UTF-8 string; every pointer
+/// is valid only for the callback, so copy what you keep. `sender` is the VERIFIED writer for a
+/// channel and the host for a service. Returning true is synchronous host acceptance: core then
+/// durably removes that publication. Returning false leaves it queued for redelivery until
+/// [`hop_accept_hps_message`] succeeds.
+#[no_mangle]
+pub unsafe extern "C" fn hop_poll_hps_messages(
+    node: *const HopNode,
+    sink: Option<
+        extern "C" fn(
+            ctx: *mut c_void,
+            id: *const u8,
+            path: *const c_char,
+            sender: *const u8,
+            body: *const u8,
+            body_len: usize,
+        ) -> bool,
+    >,
+    ctx: *mut c_void,
+) {
+    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+        return;
+    };
+    let msgs = catch(Vec::new(), || node.take_hps_messages());
+    for m in msgs {
+        let path = c_string_lossy(m.path);
+        let accepted = sink(
+            ctx,
+            m.id.as_ptr(),
+            path.as_ptr(),
+            m.sender.as_ptr(),
+            m.body.as_ptr(),
+            m.body.len(),
+        );
+        if accepted {
+            let _ = node.accept_hps_message(m.id);
+        }
+    }
+}
+
+/// Durably accept one publication previously returned by [`hop_poll_hps_messages`]. `id` points to
+/// exactly 32 bytes. Returns false for NULL, an unknown/already-accepted id, or a persistence failure.
+#[no_mangle]
+pub unsafe extern "C" fn hop_accept_hps_message(node: *const HopNode, id: *const u8) -> bool {
+    catch(false, || {
+        let Some(node) = node_ref(node) else {
+            return false;
+        };
+        if id.is_null() {
+            return false;
+        }
+        node.accept_hps_message(slice(id, 32).to_vec())
+            .unwrap_or(false)
+    })
+}
+
+/// Host to destination: invite `dest` (32 bytes) to a topic we host, the `Invite`-mode key handoff.
+/// The invite arrives at `dest` via [`hop_poll_hps_invites`]; keys are only sealed once it accepts.
+/// Writes the 32-byte invite bundle id to `out_id` (may be NULL).
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_invite(
+    node: *const HopNode,
+    path: *const c_char,
+    dest: *const u8,
+    out_id: *mut u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if dest.is_null() {
+            return false;
+        }
+        match node.hps_invite(path.to_string(), slice(dest, 32).to_vec()) {
+            Ok(id) => {
+                write_id(out_id, &id);
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Member to host: accept an invite we received, after which the host seals us the topic keys.
+/// `host` is 32 bytes. Writes the 32-byte accept bundle id to `out_id` (may be NULL).
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_accept_invite(
+    node: *const HopNode,
+    host: *const u8,
+    path: *const c_char,
+    out_id: *mut u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if host.is_null() {
+            return false;
+        }
+        match node.hps_accept_invite(slice(host, 32).to_vec(), path.to_string()) {
+            Ok(id) => {
+                write_id(out_id, &id);
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Decline a received invite. This is DURABLE: the invite is dropped from storage so it does not
+/// reappear after a restart. `host` is 32 bytes. Returns false on NULL args.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_decline_invite(
+    node: *const HopNode,
+    host: *const u8,
+    path: *const c_char,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if host.is_null() {
+            return false;
+        }
+        node.hps_decline_invite(slice(host, 32).to_vec(), path.to_string())
+            .is_ok()
+    })
+}
+
+/// Drain invites we have received, clearing them. Invokes `sink(ctx, host32, path_cstr, kind)` once
+/// per invite, where `kind` is a [`HopHpsKind`] discriminant. Pointers are valid only for the
+/// callback. Unlike the publication queue this is a take-and-clear drain, not an accept-to-remove
+/// one: an invite the host does not act on is gone, so persist what you surface.
+#[no_mangle]
+pub unsafe extern "C" fn hop_poll_hps_invites(
+    node: *const HopNode,
+    sink: Option<extern "C" fn(ctx: *mut c_void, host: *const u8, path: *const c_char, kind: u32)>,
+    ctx: *mut c_void,
+) {
+    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+        return;
+    };
+    let invites = catch(Vec::new(), || node.take_hps_invites());
+    for i in invites {
+        let path = c_string_lossy(i.path);
+        sink(ctx, i.host.as_ptr(), path.as_ptr(), hps_kind_code(&i.kind));
+    }
+}
+
+/// Member to host: leave a topic, so the host stops re-keying us on rotation. Writes the 32-byte
+/// leave bundle id to `out_id` (may be NULL) and sets `*out_has_id` (may be NULL) to whether there
+/// was one: leaving a topic we HOST sends no bundle, which is a success with no id rather than a
+/// failure. Returns false only on NULL args or a core error.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_leave(
+    node: *const HopNode,
+    path: *const c_char,
+    out_id: *mut u8,
+    out_has_id: *mut bool,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        match node.hps_leave(path.to_string()) {
+            Ok(id) => {
+                if !out_has_id.is_null() {
+                    *out_has_id = !id.is_empty();
+                }
+                if !id.is_empty() {
+                    write_id(out_id, &id);
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Host: the join requests queued on a `RequestToJoin` topic, each a requester address. Invokes
+/// `sink(ctx, addr32)` once per requester (may be NULL to just count) and returns the count.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_pending(
+    node: *const HopNode,
+    path: *const c_char,
+    sink: Option<extern "C" fn(ctx: *mut c_void, addr: *const u8)>,
+    ctx: *mut c_void,
+) -> usize {
+    catch(0, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return 0;
+        };
+        let pending = node.hps_pending(path.to_string());
+        if let Some(sink) = sink {
+            for a in &pending {
+                sink(ctx, a.as_ptr());
+            }
+        }
+        pending.len()
+    })
+}
+
+/// Host: approve a pending requester (32 bytes), sealing them the topic keys. Writes the 32-byte
+/// keys bundle id to `out_id` (may be NULL).
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_approve(
+    node: *const HopNode,
+    path: *const c_char,
+    requester: *const u8,
+    out_id: *mut u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if requester.is_null() {
+            return false;
+        }
+        match node.hps_approve(path.to_string(), slice(requester, 32).to_vec()) {
+            Ok(id) => {
+                write_id(out_id, &id);
+                true
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Host: deny a pending requester (32 bytes) and drop the request. No keys are sealed.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_deny(
+    node: *const HopNode,
+    path: *const c_char,
+    requester: *const u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return false;
+        };
+        if requester.is_null() {
+            return false;
+        }
+        node.hps_deny(path.to_string(), slice(requester, 32).to_vec())
+            .is_ok()
+    })
+}
+
+/// Host: selective forward rotation, which is how a member is REVOKED. Mints a new content key and
+/// seals it to every retained member except the `remove_count` addresses packed back to back in
+/// `remove` (32 bytes each, so `remove_count * 32` bytes read); a removed member keeps only the dead
+/// key, so it can still read history it already has and nothing published afterwards. `new_path`
+/// empty (or NULL) keeps the same path; a non-empty one moves the topic. Invokes `sink(ctx, id32)`
+/// once per rekey bundle (may be NULL) and returns the count, or 0 on NULL args, an over-long
+/// `remove` array, or a core error.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_rekey(
+    node: *const HopNode,
+    path: *const c_char,
+    new_path: *const c_char,
+    remove: *const u8,
+    remove_count: usize,
+    sink: Option<extern "C" fn(ctx: *mut c_void, id: *const u8)>,
+    ctx: *mut c_void,
+) -> usize {
+    catch(0, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return 0;
+        };
+        // A NULL new_path means "keep the path", the same as the empty string the core expects.
+        let new_path = if new_path.is_null() {
+            ""
+        } else {
+            match cstr(new_path) {
+                Some(s) => s,
+                None => return 0,
+            }
+        };
+        // remove_count is a COUNT of addresses, so the byte length it implies has to be checked
+        // against the input cap before the pointer is read; a count near usize::MAX would otherwise
+        // overflow the multiply and produce a slice over unmapped memory.
+        let Some(bytes) = remove_count
+            .checked_mul(32)
+            .and_then(|n| bounded_slice(remove, n, MAX_C_ABI_INPUT_BYTES))
+        else {
+            return 0;
+        };
+        let removed: Vec<Vec<u8>> = bytes.chunks_exact(32).map(|c| c.to_vec()).collect();
+        let Ok(ids) = node.hps_rekey(path.to_string(), new_path.to_string(), removed) else {
+            return 0;
+        };
+        if let Some(sink) = sink {
+            for id in &ids {
+                sink(ctx, id.as_ptr());
+            }
+        }
+        ids.len()
+    })
+}
+
+/// Host: a topic's reach, the number of distinct addresses that have acked a publication on it. This
+/// is the delivery sense for a flood: there is no per-recipient receipt, so reach is what a UI can
+/// honestly show. 0 on NULL args or an unknown path.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_reach(node: *const HopNode, path: *const c_char) -> u32 {
+    catch(0, || match (node_ref(node), cstr(path)) {
+        (Some(node), Some(path)) => node.hps_reach(path.to_string()),
+        _ => 0,
+    })
+}
+
+/// Host: the retained-member set for a topic. Invokes `sink(ctx, addr32)` once per member (may be
+/// NULL to just count) and returns the count.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_members(
+    node: *const HopNode,
+    path: *const c_char,
+    sink: Option<extern "C" fn(ctx: *mut c_void, addr: *const u8)>,
+    ctx: *mut c_void,
+) -> usize {
+    catch(0, || {
+        let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
+            return 0;
+        };
+        let members = node.hps_members(path.to_string());
+        if let Some(sink) = sink {
+            for a in &members {
+                sink(ctx, a.as_ptr());
+            }
+        }
+        members.len()
+    })
+}
+
+/// Every topic this node hosts or follows, so an app can rebuild its channel list after a restart:
+/// the node persists topics, the app's in-memory list does not. Invokes
+/// `sink(ctx, host32, path_cstr, kind, hosting, access)` once per topic (may be NULL to just count),
+/// where `kind` is a [`HopHpsKind`] and `access` a [`HopHpsAccess`] discriminant. Returns the count.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_my_topics(
+    node: *const HopNode,
+    sink: Option<
+        extern "C" fn(
+            ctx: *mut c_void,
+            host: *const u8,
+            path: *const c_char,
+            kind: u32,
+            hosting: bool,
+            access: u32,
+        ),
+    >,
+    ctx: *mut c_void,
+) -> usize {
+    catch(0, || {
+        let Some(node) = node_ref(node) else {
+            return 0;
+        };
+        let topics = node.hps_my_topics();
+        if let Some(sink) = sink {
+            for t in &topics {
+                let path = c_string_lossy(t.path.clone());
+                sink(
+                    ctx,
+                    t.host.as_ptr(),
+                    path.as_ptr(),
+                    hps_kind_code(&t.kind),
+                    t.hosting,
+                    hps_access_code(&t.access),
+                );
+            }
+        }
+        topics.len()
+    })
+}
+
+/// Same-app discoverable topics seen on the mesh: the descriptors a `Discoverable` host broadcasts,
+/// decrypted with the app secret, so this only ever surfaces topics from the same app fabric.
+/// Invokes `sink(ctx, host32, path_cstr, kind, title_cstr, summary_cstr, access)` once per topic
+/// (may be NULL to just count) and returns the count.
+#[no_mangle]
+pub unsafe extern "C" fn hop_hps_browse(
+    node: *const HopNode,
+    sink: Option<
+        extern "C" fn(
+            ctx: *mut c_void,
+            host: *const u8,
+            path: *const c_char,
+            kind: u32,
+            title: *const c_char,
+            summary: *const c_char,
+            access: u32,
+        ),
+    >,
+    ctx: *mut c_void,
+) -> usize {
+    catch(0, || {
+        let Some(node) = node_ref(node) else {
+            return 0;
+        };
+        let found = node.browse_discoverable();
+        if let Some(sink) = sink {
+            for t in &found {
+                let path = c_string_lossy(t.path.clone());
+                let title = c_string_lossy(t.title.clone());
+                let summary = c_string_lossy(t.summary.clone());
+                sink(
+                    ctx,
+                    t.host.as_ptr(),
+                    path.as_ptr(),
+                    hps_kind_code(&t.kind),
+                    title.as_ptr(),
+                    summary.as_ptr(),
+                    hps_access_code(&t.access),
+                );
+            }
+        }
+        found.len()
     })
 }
 
@@ -2523,6 +3153,689 @@ mod tests {
                 "an undersized buffer yields nothing, never a partial URL"
             );
 
+            hop_node_free(node);
+        }
+    }
+
+    // ---- hps:// pub/sub through the C ABI (PLAT-005) ------------------------------------------
+    //
+    // These are the only exercise of the §32 surface from a C caller's position. The UniFFI tests in
+    // lib.rs cover the same protocol through Rust types; what is proven HERE is the seam the wrappers
+    // actually bind: u32 enum discriminants, 32-byte address pointers, sink callbacks, and the
+    // accept-to-remove queue semantics.
+
+    /// One publication captured from `hop_poll_hps_messages`, as (id, path, sender, body).
+    type PolledHpsMessage = (Vec<u8>, String, Vec<u8>, Vec<u8>);
+
+    struct HpsCollector {
+        msgs: Vec<PolledHpsMessage>,
+        accept: bool,
+    }
+
+    extern "C" fn hps_sink(
+        ctx: *mut c_void,
+        id: *const u8,
+        path: *const c_char,
+        sender: *const u8,
+        body: *const u8,
+        body_len: usize,
+    ) -> bool {
+        unsafe {
+            let c = &mut *(ctx as *mut HpsCollector);
+            c.msgs.push((
+                slice(id, 32).to_vec(),
+                cstr(path).unwrap_or_default().to_string(),
+                slice(sender, 32).to_vec(),
+                slice(body, body_len).to_vec(),
+            ));
+            c.accept
+        }
+    }
+
+    unsafe fn poll_hps(node: *const HopNode, accept: bool) -> Vec<PolledHpsMessage> {
+        let mut c = HpsCollector {
+            msgs: Vec::new(),
+            accept,
+        };
+        hop_poll_hps_messages(node, Some(hps_sink), &mut c as *mut _ as *mut c_void);
+        c.msgs
+    }
+
+    struct InviteCollector {
+        invites: Vec<(Vec<u8>, String, u32)>,
+    }
+
+    extern "C" fn invite_sink(ctx: *mut c_void, host: *const u8, path: *const c_char, kind: u32) {
+        unsafe {
+            let c = &mut *(ctx as *mut InviteCollector);
+            c.invites.push((
+                slice(host, 32).to_vec(),
+                cstr(path).unwrap_or_default().to_string(),
+                kind,
+            ));
+        }
+    }
+
+    unsafe fn poll_invites(node: *const HopNode) -> Vec<(Vec<u8>, String, u32)> {
+        let mut c = InviteCollector {
+            invites: Vec::new(),
+        };
+        hop_poll_hps_invites(node, Some(invite_sink), &mut c as *mut _ as *mut c_void);
+        c.invites
+    }
+
+    struct AddrCollector {
+        addrs: Vec<Vec<u8>>,
+    }
+    extern "C" fn addr_sink(ctx: *mut c_void, addr: *const u8) {
+        unsafe {
+            let c = &mut *(ctx as *mut AddrCollector);
+            c.addrs.push(slice(addr, 32).to_vec());
+        }
+    }
+
+    struct TopicCollector {
+        topics: Vec<(Vec<u8>, String, u32, bool, u32)>,
+    }
+    extern "C" fn topic_sink(
+        ctx: *mut c_void,
+        host: *const u8,
+        path: *const c_char,
+        kind: u32,
+        hosting: bool,
+        access: u32,
+    ) {
+        unsafe {
+            let c = &mut *(ctx as *mut TopicCollector);
+            c.topics.push((
+                slice(host, 32).to_vec(),
+                cstr(path).unwrap_or_default().to_string(),
+                kind,
+                hosting,
+                access,
+            ));
+        }
+    }
+
+    struct BrowseCollector {
+        found: Vec<(String, String, String, u32)>,
+    }
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn browse_sink(
+        ctx: *mut c_void,
+        _host: *const u8,
+        path: *const c_char,
+        _kind: u32,
+        title: *const c_char,
+        summary: *const c_char,
+        access: u32,
+    ) {
+        unsafe {
+            let c = &mut *(ctx as *mut BrowseCollector);
+            c.found.push((
+                cstr(path).unwrap_or_default().to_string(),
+                cstr(title).unwrap_or_default().to_string(),
+                cstr(summary).unwrap_or_default().to_string(),
+                access,
+            ));
+        }
+    }
+
+    /// Two ephemeral nodes on the SAME app secret. hps join proofs are keyed to the app fabric, so
+    /// two nodes on different (or absent) app secrets can link and still never key each other.
+    unsafe fn hps_pair(app: u8) -> (*const HopNode, *const HopNode) {
+        let db = std::ffi::CString::new(":memory:").unwrap();
+        let secret = [app; 32];
+        let a = hop_node_open(db.as_ptr(), std::ptr::null(), 0, secret.as_ptr(), 32);
+        let b = hop_node_open(db.as_ptr(), std::ptr::null(), 0, secret.as_ptr(), 32);
+        assert!(!a.is_null() && !b.is_null(), "both nodes open");
+        (a, b)
+    }
+
+    fn cs(s: &str) -> std::ffi::CString {
+        std::ffi::CString::new(s).unwrap()
+    }
+
+    #[test]
+    fn a_channel_hosted_on_one_node_reaches_a_subscriber_on_another() {
+        // The whole point of PLAT-005, end to end through the C ABI only: host a channel, join it
+        // from a second node, publish once, and have the subscriber receive AND accept it. Before
+        // this surface existed no C-ABI caller could do any of the four.
+        unsafe {
+            let (a, b) = hps_pair(6);
+            let (a_addr, _b_addr) = connect(a, b);
+            let path = cs("room");
+
+            // Host. A channel has no service pubkey, but registration still succeeded, which is
+            // exactly the distinction the bool return exists to make.
+            let mut pk = [0xFFu8; 32];
+            let mut pk_len = usize::MAX;
+            assert!(hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Channel as u32,
+                HopHpsAccess::Open as u32,
+                HopHpsVisibility::Private as u32,
+                pk.as_mut_ptr(),
+                pk.len(),
+                &mut pk_len,
+            ));
+            assert_eq!(pk_len, 0, "a channel exposes no service key");
+            pump(a, 11, b, 22);
+
+            // Join: B asks A for the keys. Open access means A hands them over unprompted.
+            let mut sub_id = [0u8; 32];
+            assert!(hop_hps_subscribe(
+                b,
+                a_addr.as_ptr(),
+                path.as_ptr(),
+                sub_id.as_mut_ptr()
+            ));
+            assert_ne!(sub_id, [0u8; 32], "a real subscribe bundle id");
+            pump(a, 11, b, 22);
+
+            // Publish once. This is ONE flooded publication, not per-member fan-out.
+            let body = b"hello room";
+            let mut pub_id = [0u8; 32];
+            assert!(hop_hps_publish(
+                a,
+                path.as_ptr(),
+                body.as_ptr(),
+                body.len(),
+                pub_id.as_mut_ptr()
+            ));
+            pump(a, 11, b, 22);
+
+            // The subscriber receives it, with the writer's address verified, and accepts it.
+            let got = poll_hps(b, true);
+            assert_eq!(got.len(), 1, "the subscriber received the publication");
+            assert_eq!(got[0].1, "room");
+            assert_eq!(got[0].2, a_addr.to_vec(), "sender is the verified writer");
+            assert_eq!(got[0].3, body.to_vec());
+
+            // Accepted, so it does not come back. That is the queue contract the poll model rests on.
+            assert!(
+                poll_hps(b, true).is_empty(),
+                "an accepted publication is durably removed"
+            );
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
+    }
+
+    #[test]
+    fn an_unaccepted_publication_is_redelivered_until_accepted() {
+        // Returning false from the sink must leave the row queued, and the standalone
+        // hop_accept_hps_message must be able to clear it later. A host that crashes between poll
+        // and persist has to see the message again, or a channel silently drops posts.
+        unsafe {
+            let (a, b) = hps_pair(7);
+            let (a_addr, _) = connect(a, b);
+            let path = cs("feed");
+            assert!(hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Channel as u32,
+                HopHpsAccess::Open as u32,
+                HopHpsVisibility::Private as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            ));
+            pump(a, 11, b, 22);
+            assert!(hop_hps_subscribe(
+                b,
+                a_addr.as_ptr(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+            let body = b"keep me";
+            assert!(hop_hps_publish(
+                a,
+                path.as_ptr(),
+                body.as_ptr(),
+                body.len(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+
+            // Refuse acceptance twice: the same publication comes back both times.
+            let first = poll_hps(b, false);
+            assert_eq!(first.len(), 1);
+            let second = poll_hps(b, false);
+            assert_eq!(second.len(), 1, "a refused publication is redelivered");
+            assert_eq!(first[0].0, second[0].0, "same publication id");
+
+            // Now accept it out of band, by id, the way a host that persisted asynchronously would.
+            assert!(hop_accept_hps_message(b, first[0].0.as_ptr()));
+            assert!(poll_hps(b, false).is_empty());
+            // Accepting twice is a clean false, not a panic.
+            assert!(!hop_accept_hps_message(b, first[0].0.as_ptr()));
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
+    }
+
+    #[test]
+    fn request_to_join_needs_host_approval_before_a_publication_lands() {
+        // The moderation path: pending lists the requester, approve seals the keys, and only THEN
+        // does a publication decrypt. Proves hop_hps_pending's sink+count and hop_hps_approve.
+        unsafe {
+            let (a, b) = hps_pair(8);
+            let (a_addr, b_addr) = connect(a, b);
+            let path = cs("lobby");
+            assert!(hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Channel as u32,
+                HopHpsAccess::RequestToJoin as u32,
+                HopHpsVisibility::Private as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            ));
+            pump(a, 11, b, 22);
+            assert!(hop_hps_subscribe(
+                b,
+                a_addr.as_ptr(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+
+            // Queued, not keyed. The count and the sink must agree.
+            let mut pending = AddrCollector { addrs: Vec::new() };
+            let n = hop_hps_pending(
+                a,
+                path.as_ptr(),
+                Some(addr_sink),
+                &mut pending as *mut _ as *mut c_void,
+            );
+            assert_eq!(n, 1);
+            assert_eq!(pending.addrs, vec![b_addr.to_vec()]);
+            // A NULL sink still counts, which is what a caller that only wants a badge number does.
+            assert_eq!(
+                hop_hps_pending(a, path.as_ptr(), None, std::ptr::null_mut()),
+                1
+            );
+
+            // Approve, then publish: now it lands.
+            let mut keys_id = [0u8; 32];
+            assert!(hop_hps_approve(
+                a,
+                path.as_ptr(),
+                b_addr.as_ptr(),
+                keys_id.as_mut_ptr()
+            ));
+            pump(a, 11, b, 22);
+            let body = b"welcome";
+            assert!(hop_hps_publish(
+                a,
+                path.as_ptr(),
+                body.as_ptr(),
+                body.len(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+            let got = poll_hps(b, true);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].3, body.to_vec());
+
+            // The host now sees the member, and reach is readable through the ABI.
+            let mut members = AddrCollector { addrs: Vec::new() };
+            let m = hop_hps_members(
+                a,
+                path.as_ptr(),
+                Some(addr_sink),
+                &mut members as *mut _ as *mut c_void,
+            );
+            assert_eq!(m, 1);
+            assert_eq!(members.addrs, vec![b_addr.to_vec()]);
+            let _ = hop_hps_reach(a, path.as_ptr());
+
+            // Rekey with the member removed: revocation is a key rotation, not a delete.
+            let mut ids = AddrCollector { addrs: Vec::new() };
+            hop_hps_rekey(
+                a,
+                path.as_ptr(),
+                std::ptr::null(),
+                b_addr.as_ptr(),
+                1,
+                Some(addr_sink),
+                &mut ids as *mut _ as *mut c_void,
+            );
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
+    }
+
+    #[test]
+    fn an_invite_reaches_the_destination_and_accepting_it_keys_them() {
+        // Invite mode: the host invites, the member drains the invite through the sink, accepts, and
+        // is then a keyed member. Proves hop_hps_invite / hop_poll_hps_invites / hop_hps_accept_invite.
+        unsafe {
+            let (a, b) = hps_pair(9);
+            let (a_addr, b_addr) = connect(a, b);
+            let path = cs("vip");
+            assert!(hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Channel as u32,
+                HopHpsAccess::Invite as u32,
+                HopHpsVisibility::Discoverable as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            ));
+            pump(a, 11, b, 22);
+            pump(a, 11, b, 22);
+
+            let mut invite_id = [0u8; 32];
+            assert!(hop_hps_invite(
+                a,
+                path.as_ptr(),
+                b_addr.as_ptr(),
+                invite_id.as_mut_ptr()
+            ));
+            pump(a, 11, b, 22);
+
+            let invites = poll_invites(b);
+            assert_eq!(invites.len(), 1, "the destination received the invite");
+            assert_eq!(invites[0].0, a_addr.to_vec());
+            assert_eq!(invites[0].1, "vip");
+            assert_eq!(invites[0].2, HopHpsKind::Channel as u32);
+            // Drained: an invite is take-and-clear, not accept-to-remove.
+            assert!(poll_invites(b).is_empty());
+
+            assert!(hop_hps_accept_invite(
+                b,
+                a_addr.as_ptr(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+            let mut members = AddrCollector { addrs: Vec::new() };
+            hop_hps_members(
+                a,
+                path.as_ptr(),
+                Some(addr_sink),
+                &mut members as *mut _ as *mut c_void,
+            );
+            assert!(
+                members.addrs.contains(&b_addr.to_vec()),
+                "accepting an invite makes the destination a member"
+            );
+
+            // The member's own topic list now carries the followed topic, which is what an app
+            // rebuilds its channel list from after a restart.
+            let mut mine = TopicCollector { topics: Vec::new() };
+            let count = hop_hps_my_topics(b, Some(topic_sink), &mut mine as *mut _ as *mut c_void);
+            assert_eq!(count, mine.topics.len());
+            assert!(mine.topics.iter().any(|t| t.1 == "vip" && !t.3));
+            let hosted = TopicCollector { topics: Vec::new() };
+            let mut hosted = hosted;
+            hop_hps_my_topics(a, Some(topic_sink), &mut hosted as *mut _ as *mut c_void);
+            assert!(
+                hosted
+                    .topics
+                    .iter()
+                    .any(|t| t.1 == "vip" && t.3 && t.4 == HopHpsAccess::Invite as u32),
+                "the host's own list reports it hosting, with the access mode it registered"
+            );
+
+            // Declining a second invite is durable and leaves nothing to drain.
+            assert!(hop_hps_invite(
+                a,
+                path.as_ptr(),
+                b_addr.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            pump(a, 11, b, 22);
+            assert!(hop_hps_decline_invite(b, a_addr.as_ptr(), path.as_ptr()));
+            assert!(poll_invites(b).is_empty());
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
+    }
+
+    #[test]
+    fn a_discoverable_topic_is_browsable_by_a_same_app_peer() {
+        // Browse only ever surfaces same-app topics: the descriptor is encrypted to the app secret.
+        // Prove the sink carries the descriptor fields, and that leave/reach do not fail on a hosted
+        // topic (leaving one we host sends no bundle, which is a success with no id).
+        unsafe {
+            let (a, b) = hps_pair(10);
+            let _ = connect(a, b);
+            let path = cs("town-square");
+            let mut pk_len = usize::MAX;
+            let mut pk = [0u8; 32];
+            assert!(hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Service as u32,
+                HopHpsAccess::Open as u32,
+                HopHpsVisibility::Discoverable as u32,
+                pk.as_mut_ptr(),
+                pk.len(),
+                &mut pk_len,
+            ));
+            assert_eq!(pk_len, 32, "a service exposes its signing key");
+            assert_ne!(pk, [0u8; 32]);
+            pump(a, 11, b, 22);
+            pump(a, 11, b, 22);
+
+            let mut seen = BrowseCollector { found: Vec::new() };
+            let n = hop_hps_browse(b, Some(browse_sink), &mut seen as *mut _ as *mut c_void);
+            assert_eq!(n, seen.found.len());
+            assert!(
+                seen.found.iter().any(|t| t.0 == "town-square"),
+                "a discoverable topic is browsable by a same-app peer, saw {:?}",
+                seen.found
+            );
+
+            // Leaving a topic we host is a success with no bundle id.
+            let mut has_id = true;
+            assert!(hop_hps_leave(
+                a,
+                path.as_ptr(),
+                std::ptr::null_mut(),
+                &mut has_id
+            ));
+            assert!(!has_id, "leaving a hosted topic sends no leave bundle");
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_enum_discriminant_is_refused_not_defaulted() {
+        // core-ffi-05's sibling. hop_link_up can map a garbage role int onto Acceptor because both
+        // roles are equally safe. An ACCESS MODE cannot: reading a garbage int as `Open` would hand a
+        // topic's keys to anyone who asks. So a bad discriminant must FAIL the call.
+        unsafe {
+            let (a, _b) = hps_pair(11);
+            let path = cs("nope");
+            for (kind, access, vis) in [
+                (
+                    99,
+                    HopHpsAccess::Open as u32,
+                    HopHpsVisibility::Private as u32,
+                ),
+                (
+                    HopHpsKind::Channel as u32,
+                    99,
+                    HopHpsVisibility::Private as u32,
+                ),
+                (HopHpsKind::Channel as u32, HopHpsAccess::Open as u32, 99),
+            ] {
+                assert!(
+                    !hop_hps_register(
+                        a,
+                        path.as_ptr(),
+                        kind,
+                        access,
+                        vis,
+                        std::ptr::null_mut(),
+                        0,
+                        std::ptr::null_mut(),
+                    ),
+                    "an out-of-range discriminant refuses registration"
+                );
+            }
+            // And nothing was registered, so a publish to that path fails.
+            let body = b"x";
+            assert!(!hop_hps_publish(
+                a,
+                path.as_ptr(),
+                body.as_ptr(),
+                body.len(),
+                std::ptr::null_mut()
+            ));
+
+            // A pubkey buffer too small refuses rather than truncating the key.
+            let service = cs("svc");
+            let mut tiny = [0u8; 4];
+            assert!(
+                !hop_hps_register(
+                    a,
+                    service.as_ptr(),
+                    HopHpsKind::Service as u32,
+                    HopHpsAccess::Open as u32,
+                    HopHpsVisibility::Private as u32,
+                    tiny.as_mut_ptr(),
+                    tiny.len(),
+                    std::ptr::null_mut(),
+                ),
+                "an undersized pubkey buffer refuses, never truncates"
+            );
+
+            hop_node_free(a);
+            hop_node_free(_b);
+        }
+    }
+
+    #[test]
+    fn every_hps_entry_point_is_null_safe() {
+        // A host that failed a constructor, or passes a NULL address, must get a clean falsey answer
+        // rather than UB. Mirrors `null_handles_are_safe_and_falsey` for the §32 surface.
+        unsafe {
+            let path = cs("x");
+            let null = std::ptr::null();
+            assert!(!hop_hps_register(
+                null,
+                path.as_ptr(),
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_subscribe(
+                null,
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_publish(
+                null,
+                path.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_accept_hps_message(null, std::ptr::null()));
+            assert!(!hop_hps_invite(
+                null,
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_accept_invite(
+                null,
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_decline_invite(
+                null,
+                std::ptr::null(),
+                path.as_ptr()
+            ));
+            assert!(!hop_hps_leave(
+                null,
+                path.as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ));
+            assert_eq!(
+                hop_hps_pending(null, path.as_ptr(), None, std::ptr::null_mut()),
+                0
+            );
+            assert!(!hop_hps_approve(
+                null,
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_deny(null, path.as_ptr(), std::ptr::null()));
+            assert_eq!(
+                hop_hps_rekey(
+                    null,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    None,
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(hop_hps_reach(null, path.as_ptr()), 0);
+            assert_eq!(
+                hop_hps_members(null, path.as_ptr(), None, std::ptr::null_mut()),
+                0
+            );
+            assert_eq!(hop_hps_my_topics(null, None, std::ptr::null_mut()), 0);
+            assert_eq!(hop_hps_browse(null, None, std::ptr::null_mut()), 0);
+            // NULL sinks on a real node are a no-op, not a crash.
+            let node = hop_node_new();
+            hop_poll_hps_messages(node, None, std::ptr::null_mut());
+            hop_poll_hps_invites(node, None, std::ptr::null_mut());
+            // A NULL address argument on a real node is refused before any dereference.
+            assert!(!hop_hps_subscribe(
+                node,
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_invite(
+                node,
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut()
+            ));
+            assert!(!hop_hps_deny(node, path.as_ptr(), std::ptr::null()));
+            // A remove count whose byte length would overflow is rejected before the pointer is read.
+            assert_eq!(
+                hop_hps_rekey(
+                    node,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    usize::MAX,
+                    None,
+                    std::ptr::null_mut()
+                ),
+                0,
+                "an overflowing remove_count is refused, never dereferenced"
+            );
             hop_node_free(node);
         }
     }

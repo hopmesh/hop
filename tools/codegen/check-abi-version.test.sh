@@ -27,7 +27,8 @@ lay_down() {
   mkdir -p "$d/tools/codegen" "$d/core/hop/src" "$d/core/hop/include" "$d/sdk" \
            "$d/sdk/apple/Sources/Hop" "$d/sdk/android/src/main/kotlin/sh/hop" \
            "$d/sdk/embedded/src" "$d/sdk/go/cmd/hop-install" "$d/sdk/node/lib" \
-           "$d/sdk/python/hop_endpoint" "$d/sdk/ruby/lib/hop" "$d/sdk/crystal/src/hop"
+           "$d/sdk/python/hop_endpoint" "$d/sdk/ruby/lib/hop" "$d/sdk/crystal/src/hop" \
+           "$d/sdk/flutter/lib/src"
   cp "$GUARD" "$d/tools/codegen/check-abi-version.sh"
 
   printf 'pub const HOP_ABI_VERSION: u32 = %s;\n' "$ABI" > "$d/core/hop/src/cabi.rs"
@@ -53,6 +54,8 @@ lay_down() {
   printf '#define HOP_EMBEDDED_ABI_VERSION %s\n// calls hop_relay_next\n' "$ABI" \
     > "$d/sdk/embedded/src/Hop.h"
   printf 'const abiExpected = %s\nC.hop_relay_next(n.p)\n' "$ABI" > "$d/sdk/go/hop.go"
+  printf 'const int hopAbiVersion = %s;\nlate final _relayNext = lookup(_hop_relay_next);\n' "$ABI" \
+    > "$d/sdk/flutter/lib/src/ffi.dart"
   printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node)")\n' "$ABI" \
     > "$d/sdk/node/lib/ffi.mjs"
   printf '_ABI_EXPECTED = %s\n_lib.hop_relay_next.restype = c_size_t\n' "$ABI" \

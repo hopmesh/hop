@@ -38,8 +38,8 @@ runs:
         npm test
 
     # A ratchet on the numbers this package happened to have, not a target. Function coverage sits at
-    # 45%, meaning about half the HopNode surface is never called by a test; the floor exists so that
-    # known gap cannot widen unnoticed. See scripts/coverage-floor.cjs.
+    # 63%, so about a third of the HopNode surface is still never called by a test; the floor exists so
+    # that known gap cannot widen unnoticed. See scripts/coverage-floor.cjs.
     - name: Coverage floor
       shell: bash
       working-directory: ${{ inputs.pkg-dir }}

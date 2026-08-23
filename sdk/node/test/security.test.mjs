@@ -344,6 +344,26 @@ test('every fixed-width raw FFI argument rejects 0, 1, 31, and 33 bytes', () => 
     (value) => raw.cluster_mark_done(null, exact, value),
     (value) => raw.cluster_would_drop(null, value, exact),
     (value) => raw.cluster_would_drop(null, exact, value),
+    // §32 hps://. This list is what makes the test's "every" true, so the eighteen new v6 bindings
+    // belong in it: ten of them take or write a 32-byte pointer the ABI carries no length for, and a
+    // short Buffer at any of those positions is an out-of-bounds native read or write.
+    (value) => raw.hps_subscribe(null, value, 'room', null),
+    (value) => raw.hps_subscribe(null, exact, 'room', value),
+    (value) => raw.hps_publish(null, 'room', null, 0, value),
+    (value) => raw.accept_hps_message(null, value),
+    (value) => raw.hps_invite(null, 'room', value, null),
+    (value) => raw.hps_invite(null, 'room', exact, value),
+    (value) => raw.hps_accept_invite(null, value, 'room', null),
+    (value) => raw.hps_accept_invite(null, exact, 'room', value),
+    (value) => raw.hps_decline_invite(null, value, 'room'),
+    (value) => raw.hps_leave(null, 'room', value, null),
+    (value) => raw.hps_approve(null, 'room', value, null),
+    (value) => raw.hps_approve(null, 'room', exact, value),
+    (value) => raw.hps_deny(null, 'room', value),
+    // remove_count is a COUNT of packed 32-byte addresses, not a byte length, so the guard checks the
+    // buffer against count * 32: a count that overruns reads past the end, one that undershoots
+    // revokes the wrong member.
+    (value) => raw.hps_rekey(null, 'room', '', value, 1, null, null),
   ]
 
   for (const size of [0, 1, 31, 33]) {
@@ -366,6 +386,18 @@ test('every fixed-width raw FFI argument rejects 0, 1, 31, and 33 bytes', () => 
     raw.cluster_join(node, exact)
     raw.cluster_mark_done(node, exact, exact)
     raw.cluster_would_drop(node, exact, exact)
+    // An exact 32 bytes is ACCEPTED at every hps position (the calls themselves fail: this node
+    // hosts nothing, which is the point, the guard must not be what rejects them).
+    raw.hps_subscribe(node, exact, 'room', exact)
+    raw.hps_publish(node, 'room', null, 0, exact)
+    raw.accept_hps_message(node, exact)
+    raw.hps_invite(node, 'room', exact, exact)
+    raw.hps_accept_invite(node, exact, 'room', exact)
+    raw.hps_decline_invite(node, exact, 'room')
+    raw.hps_leave(node, 'room', exact, [false])
+    raw.hps_approve(node, 'room', exact, exact)
+    raw.hps_deny(node, 'room', exact)
+    raw.hps_rekey(node, 'room', '', exact, 1, null, null)
   } finally {
     raw.node_free(node)
   }

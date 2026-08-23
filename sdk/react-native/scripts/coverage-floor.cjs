@@ -3,11 +3,15 @@
 // Run the test suite under coverage and fail if it drops below the floor.
 //
 // THE NUMBERS BELOW ARE A RATCHET, NOT A TARGET, and specifically not an endorsement. They are the
-// coverage this package HAPPENED to have when the floor was introduced, measured rather than chosen:
-// 80.33% line, 90.91% branch, 45.28% function. Function coverage at 45% means roughly half the HopNode
-// surface, mostly the thin one-line pass-throughs, is never called by any test. That is a known gap,
-// written down here so it cannot quietly get worse while nobody is looking. Raise these when you add
-// tests. Do not lower them to make a red build green.
+// coverage this package HAPPENED to have when it was last measured, measured rather than chosen. Raise
+// them when you add tests. Do not lower them to make a red build green.
+//
+// They started at 80.33% line, 90.91% branch, 45.28% function, where function coverage at 45% meant
+// roughly half the HopNode surface was never called by any test. Binding the section 19 relay pool and
+// the hps:// pub/sub surface came with a test per bridged call, which took the measurement to 87.23%
+// line, 93.97% branch, 63.75% function. About a third of the surface is still uncalled, mostly the
+// thin one-line pass-throughs on the older identity and bearer-seam methods. That is a known gap,
+// written down here so it cannot quietly get worse while nobody is looking.
 //
 // Why a script instead of node's own thresholds: --test-coverage-lines and friends landed after Node
 // 20, and the CI action pins node 20.20.2. Parsing the summary keeps the floor working on the version
@@ -16,7 +20,7 @@
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
-const FLOORS = { line: 80.0, branch: 90.0, function: 45.0 };
+const FLOORS = { line: 87.0, branch: 93.0, function: 63.0 };
 
 const pkg = path.resolve(__dirname, "..");
 const result = spawnSync(

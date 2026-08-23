@@ -15,15 +15,14 @@ Two versions travel independently and MUST NOT be conflated:
    - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
      format. A change here is a protocol break and needs the wire-stability test
      updated deliberately.
-   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 5): the C-ABI contract every
+   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 6): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
 
 Rule: a product-version bump does NOT imply a wire/ABI bump, and vice versa. State
 both in the release notes.
 
-### Keep the ABI version in sync (twelve copies, all guarded)
-
+### Keep the ABI version in sync (thirteen copies, all guarded)
 `HOP_ABI_VERSION` is hand-duplicated across the contract and every language wrapper,
 and they must all agree:
 
@@ -33,15 +32,15 @@ and they must all agree:
   (`expectedABIVersion`), `sdk/android/.../Hop.kt`, `sdk/embedded/src/Hop.h`
   (`HOP_EMBEDDED_ABI_VERSION`), `sdk/go/hop.go` (`abiExpected`), `sdk/node/lib/ffi.mjs`,
   `sdk/python/hop_endpoint/_ffi.py`, `sdk/ruby/lib/hop/ffi.rb`,
-  `sdk/crystal/src/hop/ffi.cr` (`ABI_EXPECTED`).
-- `sdk/go/cmd/hop-install/main.go`, which validates an installed header.
+  `sdk/crystal/src/hop/ffi.cr` (`ABI_EXPECTED`), `sdk/flutter/lib/src/ffi.dart`
+  (`hopAbiVersion`).
 
 `tools/codegen/check-abi-version.sh` does not work from that list. It SWEEPS the tree for
 ABI-version literals, fails on any that disagrees with `cabi.rs`, fails on any it cannot
-classify (so a thirteenth copy is caught the day it lands), fails when a listed site stops
+classify (so a fourteenth copy is caught the day it lands), fails when a listed site stops
 declaring the constant, and fails when a wrapper pinned to the current level does not bind
 the `hop_*` calls that level's bump note in `sdk/hop.h` names. It also holds prose that
-states an ABI level ("asserts ABI 5") to the constant. It used to check six of twelve, and
+states an ABI level ("asserts ABI 6") to the constant. It used to check six of twelve, and
 that gap is how the v4 -> v5 bump shipped with a release validator still asserting the
 retired level (PLAT-004).
 
@@ -219,6 +218,29 @@ Any `HOP_ABI_VERSION` bump is a breaking release for all consumers.
   Wi-Fi P2P is an in-driver transport, not an extracted package)
   and the SDK wrapper are pitched as independently publishable. Each already carries its own
   `LICENSE.md` so the Apache-2.0 terms travel with the package (see the license note below).
+
+### CocoaPods podspecs: the mirrors do not publish them (open gap)
+
+`sdk/apple` ships three podspecs (`CHop`, `HopContract`, `HopSDK`) so the React Native SDK can depend on
+the Apple SDK the ordinary CocoaPods way. Two facts make them unusable from outside the monorepo today,
+and both are verified rather than assumed:
+
+1. **No mirror carries them.** `hopmesh/hop-sdk-apple` has tags `v0.0.1` and `v0.0.2` and a `main`
+   branch, and its tree contains ZERO `.podspec` files at any of those refs. An earlier
+   `sdk/react-native/README.md` pointed consumers at those tags; every URL 404s.
+2. **A raw-URL `:podspec` fetch cannot evaluate them even where the file exists.** Each podspec
+   `File.read`s `Package.swift` from its own directory while CocoaPods evaluates it, and `CHop` reads
+   `LICENSE.md` as well. A `:podspec =>` URL fetches one file into a temp directory with neither beside
+   it, so evaluation dies on the first read (`CHop.podspec` line 19, `Errno::ENOENT`). Pointing at
+   `raw.githubusercontent.com/hopmesh/hop/main/sdk/apple/*.podspec` therefore fails at `pod install`
+   despite returning 200.
+
+Consumers today must vendor five files side by side from a monorepo checkout (the three podspecs,
+`Package.swift`, `LICENSE.md`), which is what `sdk/react-native/README.md` now documents. The real fix
+is release engineering, not documentation: the `hop-sdk-apple` mirror's release workflow must publish
+the three podspecs **alongside `Package.swift` and `LICENSE.md`** so an external `Podfile` can resolve
+them without vendoring. Publishing the podspecs alone would recreate failure 2. Until that lands, do
+not "fix" the README back to URLs on the strength of a 200 response.
 
 ### Android: AAR + Maven
 

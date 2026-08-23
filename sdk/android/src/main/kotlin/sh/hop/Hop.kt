@@ -18,6 +18,40 @@ import kotlin.concurrent.withLock
 /** Which side opened a bearer link (the Noise role). */
 enum class HopRole(val c: Int) { DIALER(0), ACCEPTOR(1) }
 
+// ---- §32 hps:// pub/sub enums (HopHpsKind / HopHpsAccess / HopHpsVisibility in hop.h) ----------
+//
+// All three cross the C ABI as a plain uint32_t discriminant, so `c` is the exact int the native
+// call expects. An OUT-OF-RANGE value FAILS the native call rather than being defaulted, and this
+// wrapper must never paper over that: reading a garbage int as `OPEN` would hand a topic's content
+// key to anyone who asks. An exhaustive Kotlin enum is what keeps a bad discriminant unreachable
+// from this side in the first place.
+
+/** What a topic at a path IS: a channel every member writes to, or a service only its owner broadcasts. */
+enum class HpsKind(val c: Int) { CHANNEL(0), SERVICE(1) }
+
+/** Who may obtain a topic's keys. This is the whole membership boundary: a Hop group message is ONE
+ *  content-key-encrypted, per-writer-signed publication flooded once, not one-to-one fan-out and not
+ *  a multicast bundle, so membership, invites and revocation are properties of the key handoff and of
+ *  nothing else. */
+enum class HpsAccess(val c: Int) { OPEN(0), REQUEST_TO_JOIN(1), INVITE(2) }
+
+/** Whether the host broadcasts an (app-encrypted) discovery advert so same-app peers can browse it. */
+enum class HpsVisibility(val c: Int) { PRIVATE(0), DISCOVERABLE(1) }
+
+/** Decode a `kind` discriminant the LIBRARY produced (a poll or list callback), defaulting an unknown
+ *  one to [HpsKind.CHANNEL] for display.
+ *
+ *  Safe on the way OUT, and only there: these ints come from libhop's own enum, so an unknown value
+ *  means the library is newer than this wrapper and the honest fallback is to render the topic as an
+ *  ordinary channel rather than drop it off the list. The same defaulting on the way IN would be a
+ *  security bug, which is why [HpsKind.c] is the only thing ever handed to a native call. */
+private fun hpsKindOf(c: Int): HpsKind = HpsKind.entries.firstOrNull { it.c == c } ?: HpsKind.CHANNEL
+
+/** Decode an `access` discriminant the LIBRARY produced, defaulting an unknown one to
+ *  [HpsAccess.OPEN] for display only. See [hpsKindOf]: this direction only ever describes a topic the
+ *  node already holds, so the fallback grants nothing. Never do this to a value on its way IN. */
+private fun hpsAccessOf(c: Int): HpsAccess = HpsAccess.entries.firstOrNull { it.c == c } ?: HpsAccess.OPEN
+
 /** §19 relay-pool counts: [total] endpoints known, [available] dialable right now.
  *
  *  `total > 0` with `available == 0` is the degraded "everything backed off" state a UI should show
@@ -126,6 +160,33 @@ internal interface CHop : Library {
     fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
     fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
     fun hop_accept_service_response(node: Pointer?, requestId: ByteArray): Byte
+    // ---- section 32 hps:// pub/sub ------------------------------------------------------------
+    //
+    // The eighteen calls the v5 to v6 ABI bump was taken for. `uintptr_t` (a count, or a written
+    // length) is NativeLong; `uint32_t` (an enum discriminant, a reach count) is Int; a `bool *`
+    // out-param is ByteByReference for the same low-byte reason the bool RETURNS are Byte. A sink is
+    // nullable wherever the C contract accepts NULL to just count, so a caller that only wants the
+    // count never allocates a callback.
+    fun hop_hps_register(node: Pointer?, path: String, kind: Int, access: Int, visibility: Int,
+                         outPubkey: ByteArray?, outPubkeyCap: NativeLong, outPubkeyLen: NativeLongByReference?): Byte
+    fun hop_hps_subscribe(node: Pointer?, host: ByteArray, path: String, outId: ByteArray?): Byte
+    fun hop_hps_publish(node: Pointer?, path: String, body: ByteArray?, bodyLen: NativeLong, outId: ByteArray?): Byte
+    fun hop_poll_hps_messages(node: Pointer?, sink: HpsMessageSink, ctx: Pointer?)
+    fun hop_accept_hps_message(node: Pointer?, id: ByteArray): Byte
+    fun hop_hps_invite(node: Pointer?, path: String, dest: ByteArray, outId: ByteArray?): Byte
+    fun hop_hps_accept_invite(node: Pointer?, host: ByteArray, path: String, outId: ByteArray?): Byte
+    fun hop_hps_decline_invite(node: Pointer?, host: ByteArray, path: String): Byte
+    fun hop_poll_hps_invites(node: Pointer?, sink: HpsInviteSink, ctx: Pointer?)
+    fun hop_hps_leave(node: Pointer?, path: String, outId: ByteArray?, outHasId: ByteByReference?): Byte
+    fun hop_hps_pending(node: Pointer?, path: String, sink: HpsAddrSink?, ctx: Pointer?): NativeLong
+    fun hop_hps_approve(node: Pointer?, path: String, requester: ByteArray, outId: ByteArray?): Byte
+    fun hop_hps_deny(node: Pointer?, path: String, requester: ByteArray): Byte
+    fun hop_hps_rekey(node: Pointer?, path: String, newPath: String, remove: ByteArray?, removeCount: NativeLong,
+                      sink: HpsIdSink?, ctx: Pointer?): NativeLong
+    fun hop_hps_reach(node: Pointer?, path: String): Int
+    fun hop_hps_members(node: Pointer?, path: String, sink: HpsAddrSink?, ctx: Pointer?): NativeLong
+    fun hop_hps_my_topics(node: Pointer?, sink: HpsTopicSink?, ctx: Pointer?): NativeLong
+    fun hop_hps_browse(node: Pointer?, sink: HpsTopicInfoSink?, ctx: Pointer?): NativeLong
 }
 
 /** Read a JNA byte-width C `bool` return: libhop returns 0/1 in the low byte; any non-zero is true.
@@ -149,7 +210,7 @@ private fun require32(bytes: ByteArray, name: String): ByteArray {
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
-const val HOP_ABI_VERSION = 5
+const val HOP_ABI_VERSION = 6
 
 /** hops:// request callback (D-wrappers), one per queued inbound request during pollServiceRequests. */
 internal fun interface ServiceReqSink : Callback {
@@ -214,6 +275,125 @@ data class HopServiceResponse(val from: ByteArray, val forRequestId: ByteArray, 
     }
 }
 
+// ---- §32 hps:// value types ---------------------------------------------------------------------
+//
+// Ownership, identically to [HopMessage]: every ByteArray here is a freshly-allocated snapshot taken
+// inside the callback (the native pointers are valid only for that call), owned by this value and
+// never aliased to a libhop buffer. They are still mutable arrays a downstream caller could scribble
+// on, so treat them as read-only and use the `*Copy()` accessors when handing bytes to code that
+// might mutate them; a `data class` cannot copy from its generated accessors. equals/hashCode are
+// content-based, so do not mutate a field and then rely on the value as a HashMap/HashSet key.
+
+/** One received `hps://` publication: a single content-key-encrypted, per-writer-signed publication
+ *  that was flooded once, NOT a per-member fan-out and not a multicast bundle.
+ *
+ *  [sender] is the VERIFIED writer for a channel and the host for a service. [id] is the queue id to
+ *  hand back to [HopNode.acceptHpsMessage]: until it is accepted this publication is redelivered. */
+data class HopHpsMessage(val id: ByteArray, val path: String, val sender: ByteArray, val body: ByteArray) {
+    /** Defensive copies (mutate freely without affecting the publication). */
+    fun idCopy(): ByteArray = id.copyOf()
+    fun senderCopy(): ByteArray = sender.copyOf()
+    fun bodyCopy(): ByteArray = body.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopHpsMessage) return false
+        return id.contentEquals(other.id) && path == other.path &&
+            sender.contentEquals(other.sender) && body.contentEquals(other.body)
+    }
+    override fun hashCode(): Int {
+        var r = id.contentHashCode()
+        r = 31 * r + path.hashCode()
+        r = 31 * r + sender.contentHashCode()
+        r = 31 * r + body.contentHashCode()
+        return r
+    }
+}
+
+/** An invite to a topic hosted by [host]. Draining invites is take-and-clear, not accept-to-remove:
+ *  an invite the host surfaces and does not persist is GONE, so persist what you show. */
+data class HopHpsInvite(val host: ByteArray, val path: String, val kind: HpsKind) {
+    /** A defensive copy of the inviting host's address. */
+    fun hostCopy(): ByteArray = host.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopHpsInvite) return false
+        return host.contentEquals(other.host) && path == other.path && kind == other.kind
+    }
+    override fun hashCode(): Int {
+        var r = host.contentHashCode()
+        r = 31 * r + path.hashCode()
+        r = 31 * r + kind.hashCode()
+        return r
+    }
+}
+
+/** A topic this node hosts ([hosting] true) or follows, as the node persisted it. This is what an app
+ *  rebuilds its channel list from after a restart: the node keeps the topics, the app's in-memory list
+ *  does not. */
+data class HopHpsTopic(val host: ByteArray, val path: String, val kind: HpsKind, val hosting: Boolean,
+                       val access: HpsAccess) {
+    /** A defensive copy of the hosting node's address. */
+    fun hostCopy(): ByteArray = host.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopHpsTopic) return false
+        return host.contentEquals(other.host) && path == other.path && kind == other.kind &&
+            hosting == other.hosting && access == other.access
+    }
+    override fun hashCode(): Int {
+        var r = host.contentHashCode()
+        r = 31 * r + path.hashCode()
+        r = 31 * r + kind.hashCode()
+        r = 31 * r + hosting.hashCode()
+        r = 31 * r + access.hashCode()
+        return r
+    }
+}
+
+/** A discoverable topic seen on the mesh. The descriptor is encrypted to the app secret, so this only
+ *  ever surfaces topics from the same app fabric; [access] is what joining it would cost. */
+data class HopHpsTopicInfo(val host: ByteArray, val path: String, val kind: HpsKind, val title: String,
+                           val summary: String, val access: HpsAccess) {
+    /** A defensive copy of the hosting node's address. */
+    fun hostCopy(): ByteArray = host.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopHpsTopicInfo) return false
+        return host.contentEquals(other.host) && path == other.path && kind == other.kind &&
+            title == other.title && summary == other.summary && access == other.access
+    }
+    override fun hashCode(): Int {
+        var r = host.contentHashCode()
+        r = 31 * r + path.hashCode()
+        r = 31 * r + kind.hashCode()
+        r = 31 * r + title.hashCode()
+        r = 31 * r + summary.hashCode()
+        r = 31 * r + access.hashCode()
+        return r
+    }
+}
+
+/** The outcome of leaving a topic. [id] is null when there was no leave bundle to send, which is what
+ *  leaving a topic we HOST does: a success with no id, not a failure. Only [ok] false is a failure. */
+data class HopHpsLeave(val ok: Boolean, val id: ByteArray?) {
+    /** A defensive copy of the leave bundle id, or null when there was none. */
+    fun idCopy(): ByteArray? = id?.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HopHpsLeave) return false
+        if (ok != other.ok) return false
+        val mine = id
+        val theirs = other.id
+        return if (mine == null || theirs == null) mine == null && theirs == null else mine.contentEquals(theirs)
+    }
+    override fun hashCode(): Int = 31 * ok.hashCode() + (id?.contentHashCode() ?: 0)
+}
+
 /** Outbound-drain callback: invoked once per queued packet during `drainOutgoing`. */
 internal fun interface DrainSink : Callback {
     fun invoke(ctx: Pointer?, link: Long, bytes: Pointer?, len: NativeLong)
@@ -222,6 +402,45 @@ internal fun interface DrainSink : Callback {
 /** Inbox callback: invoked once per received message during `pollInbox`. */
 internal fun interface InboxSink : Callback {
     fun invoke(ctx: Pointer?, inboxId: Pointer?, from: Pointer?, contentType: String?, body: Pointer?, bodyLen: NativeLong, hops: Byte, createdAt: Long): Byte
+}
+
+// ---- §32 hps:// callbacks -----------------------------------------------------------------------
+//
+// A callback's `bool` RETURN is Byte for the reason spelled out on [CHop], and a `bool` ARGUMENT
+// (my_topics' `hosting`) is Byte for the same reason read in the other direction: libffi then reads
+// exactly the low byte instead of a full-width int whose upper bits the C ABI never promised to zero.
+// `uint32_t` discriminants arrive as Int and are decoded with [hpsKindOf] / [hpsAccessOf].
+
+/** Publication callback: one call per queued publication during `pollHpsMessages`. Returning 1 is
+ *  synchronous acceptance (core durably removes it); 0 leaves it queued for redelivery. */
+internal fun interface HpsMessageSink : Callback {
+    fun invoke(ctx: Pointer?, id: Pointer?, path: String?, sender: Pointer?, body: Pointer?, bodyLen: NativeLong): Byte
+}
+
+/** Invite callback: one call per invite during `pollHpsInvites`, which CLEARS the queue as it drains. */
+internal fun interface HpsInviteSink : Callback {
+    fun invoke(ctx: Pointer?, host: Pointer?, path: String?, kind: Int)
+}
+
+/** Address callback: one call per pending requester (`hpsPending`) or retained member (`hpsMembers`). */
+internal fun interface HpsAddrSink : Callback {
+    fun invoke(ctx: Pointer?, addr: Pointer?)
+}
+
+/** Bundle-id callback: one call per rekey bundle sealed by `hpsRekey`. Same C shape as [HpsAddrSink],
+ *  kept separate because what it carries is a bundle id and not a member address. */
+internal fun interface HpsIdSink : Callback {
+    fun invoke(ctx: Pointer?, id: Pointer?)
+}
+
+/** Topic callback: one call per hosted-or-followed topic during `hpsMyTopics`. */
+internal fun interface HpsTopicSink : Callback {
+    fun invoke(ctx: Pointer?, host: Pointer?, path: String?, kind: Int, hosting: Byte, access: Int)
+}
+
+/** Discovery callback: one call per discoverable topic during `hpsBrowse`. */
+internal fun interface HpsTopicInfoSink : Callback {
+    fun invoke(ctx: Pointer?, host: Pointer?, path: String?, kind: Int, title: String?, summary: String?, access: Int)
 }
 
 /** One owner for native handle acquisition, calls, reentrant callbacks, and destruction. */
@@ -506,6 +725,246 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Durably accept a previously-polled response by its 32-byte correlation request id. */
     fun acceptServiceResponse(forRequestId: ByteArray): Boolean = native { handle ->
         C.hop_accept_service_response(handle, require32(forRequestId, "request id")).toBool()
+    }
+
+    // ---- §32 hps:// pub/sub (services and channels) -------------------------------------------
+    //
+    // PLAT-005: the surface the v5 to v6 ABI bump was taken for. The protocol had shipped in both
+    // UniFFI drivers for as long as it existed, but the C ABI exported none of it, so every wrapper
+    // sitting on the C ABI (this one, Swift, and the React Native bridge above them) could not reach
+    // group chat or channels AT ALL. tools/codegen/check-abi-version.sh now fails if a wrapper pinned
+    // to an ABI level stops binding the calls that level's note names, because a version integer
+    // confers no capability and binding the symbols does.
+    //
+    // The model, which is not the one a fan-out mental picture predicts: a publication is encrypted
+    // ONCE to the topic's content key, signed by its writer, and flooded once. There is no
+    // per-recipient copy and no per-recipient receipt, so [hpsReach] is the only honest delivery
+    // number a UI can show, and membership, invites and revocation are all properties of the topic's
+    // key handoff rather than of any addressed send.
+
+    /** Host a topic at [path], minting and persisting its keys.
+     *
+     *  Returns the service public key, or null on failure. A SERVICE has one (only the owner
+     *  broadcasts, signed by it); a CHANNEL has none (writers sign with their own identity), so a
+     *  successfully hosted channel returns an EMPTY array. Those two cases are the reason the C call
+     *  reports success in its return value and the key length separately, and the reason this must
+     *  not be collapsed to null: an empty key is a hosted channel, null is nothing hosted at all.
+     *
+     *  Fails on an unknown/NULL path or an out-of-range discriminant, which the C ABI refuses rather
+     *  than defaulting: reading a garbage access mode as OPEN would hand out the content key. */
+    fun hpsRegister(path: String, kind: HpsKind, access: HpsAccess, visibility: HpsVisibility): ByteArray? {
+        val key = ByteArray(32)
+        val len = NativeLongByReference()
+        return native { handle ->
+            if (!C.hop_hps_register(handle, path, kind.c, access.c, visibility.c,
+                                    key, NativeLong(key.size.toLong()), len).toBool()) {
+                null
+            } else {
+                // Only the bytes native actually wrote. The C contract already refuses a key that
+                // would not fit the capacity we passed, so a length past the buffer is a library bug
+                // rather than a channel; surface that as a failure instead of a zero-padded key a
+                // caller would otherwise trust as a service identity.
+                val n = len.value.toInt()
+                if (n < 0 || n > key.size) null else key.copyOf(n)
+            }
+        }
+    }
+
+    /** Subscribe to `hps://{host}/{path}`: seal a keys request to [host].
+     *
+     *  What happens next is the topic's access mode, not ours: an OPEN topic replies with the keys, a
+     *  REQUEST_TO_JOIN topic queues us for the host's approval, and an INVITE topic ignores us
+     *  entirely. Returns the 32-byte subscribe bundle id, or null on error. */
+    fun hpsSubscribe(host: ByteArray, path: String): ByteArray? {
+        require32(host, "host")
+        val id = ByteArray(32)
+        return native { handle -> if (C.hop_hps_subscribe(handle, host, path, id).toBool()) id else null }
+    }
+
+    /** Publish [body] to a topic we host or (for a channel) belong to: encrypted once to the content
+     *  key, signed, and flooded once. Returns the 32-byte bundle id, or null for an unknown path, an
+     *  over-long body, or no write access (a service only its owner may broadcast on). */
+    fun hpsPublish(path: String, body: ByteArray): ByteArray? {
+        val id = ByteArray(32)
+        return native { handle ->
+            if (C.hop_hps_publish(handle, path, body, NativeLong(body.size.toLong()), id).toBool()) id else null
+        }
+    }
+
+    /** Poll received publications without accepting them. Items repeat until [acceptHpsMessage]
+     *  succeeds, exactly like [pollInbox]: a host that dies between surfacing a post and persisting
+     *  it must see the post again, or a channel silently loses it. */
+    fun pollHpsMessages(sink: (HopHpsMessage) -> Unit) {
+        pollHpsMessagesAccepting { message ->
+            sink(message)
+            false
+        }
+    }
+
+    /** Poll publications, accepting each only when [sink] returns true synchronously. */
+    fun pollHpsMessagesAccepting(sink: (HopHpsMessage) -> Boolean) {
+        native { handle ->
+            C.hop_poll_hps_messages(handle, HpsMessageSink { _, id, path, sender, body, blen ->
+                val accepted = sink(HopHpsMessage(
+                    id = id?.getByteArray(0, 32) ?: ByteArray(32),
+                    path = path ?: "",
+                    sender = sender?.getByteArray(0, 32) ?: ByteArray(32),
+                    body = body?.getByteArray(0, blen.toInt()) ?: ByteArray(0)))
+                if (accepted) 1 else 0
+            }, null)
+        }
+    }
+
+    /** Durably accept one publication returned by [pollHpsMessages]. The id must be exactly 32 bytes. */
+    fun acceptHpsMessage(id: ByteArray): Boolean =
+        native { handle -> C.hop_accept_hps_message(handle, require32(id, "hps message id")).toBool() }
+
+    /** Host to destination: invite [dest] to a topic we host, the INVITE-mode key handoff. The invite
+     *  arrives at [dest] via [pollHpsInvites]; keys are sealed only once it accepts. Returns the
+     *  32-byte invite bundle id, or null on error. */
+    fun hpsInvite(path: String, dest: ByteArray): ByteArray? {
+        require32(dest, "dest")
+        val id = ByteArray(32)
+        return native { handle -> if (C.hop_hps_invite(handle, path, dest, id).toBool()) id else null }
+    }
+
+    /** Member to host: accept an invite we received, after which the host seals us the topic keys.
+     *  Returns the 32-byte accept bundle id, or null on error. */
+    fun hpsAcceptInvite(host: ByteArray, path: String): ByteArray? {
+        require32(host, "host")
+        val id = ByteArray(32)
+        return native { handle -> if (C.hop_hps_accept_invite(handle, host, path, id).toBool()) id else null }
+    }
+
+    /** Decline a received invite. DURABLE: the invite is dropped from storage, so it does not
+     *  reappear after a restart. */
+    fun hpsDeclineInvite(host: ByteArray, path: String): Boolean = native { handle ->
+        C.hop_hps_decline_invite(handle, require32(host, "host"), path).toBool()
+    }
+
+    /** Drain received invites, CLEARING them.
+     *
+     *  Unlike the publication queue this is take-and-clear, not accept-to-remove: an invite this
+     *  callback surfaces is gone whether or not the host did anything with it, so persist what you
+     *  surface before returning. */
+    fun pollHpsInvites(sink: (HopHpsInvite) -> Unit) {
+        native { handle ->
+            C.hop_poll_hps_invites(handle, HpsInviteSink { _, host, path, kind ->
+                sink(HopHpsInvite(
+                    host = host?.getByteArray(0, 32) ?: ByteArray(32),
+                    path = path ?: "",
+                    kind = hpsKindOf(kind)))
+            }, null)
+        }
+    }
+
+    /** Leave a topic, so its host stops re-keying us on rotation.
+     *
+     *  [HopHpsLeave.id] is null when there was no bundle to send, which is what leaving a topic we
+     *  HOST does: a success with no id. Only `ok == false` is a failure. */
+    fun hpsLeave(path: String): HopHpsLeave {
+        val id = ByteArray(32)
+        val hasId = ByteByReference()
+        val ok = native { handle -> C.hop_hps_leave(handle, path, id, hasId).toBool() }
+        return HopHpsLeave(ok = ok, id = if (ok && hasId.value.toBool()) id else null)
+    }
+
+    /** Host: the addresses queued for approval on a REQUEST_TO_JOIN topic. */
+    fun hpsPending(path: String): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        native { handle ->
+            C.hop_hps_pending(handle, path, HpsAddrSink { _, addr ->
+                out.add(addr?.getByteArray(0, 32) ?: ByteArray(32))
+            }, null)
+        }
+        return out
+    }
+
+    /** Host: approve a pending requester, sealing them the topic keys. Returns the 32-byte keys
+     *  bundle id, or null on error. */
+    fun hpsApprove(path: String, requester: ByteArray): ByteArray? {
+        require32(requester, "requester")
+        val id = ByteArray(32)
+        return native { handle -> if (C.hop_hps_approve(handle, path, requester, id).toBool()) id else null }
+    }
+
+    /** Host: deny a pending requester and drop the request. No keys are sealed. */
+    fun hpsDeny(path: String, requester: ByteArray): Boolean = native { handle ->
+        C.hop_hps_deny(handle, path, require32(requester, "requester")).toBool()
+    }
+
+    /** Host: selective forward rotation, which is how a member is REVOKED.
+     *
+     *  Mints a new content key and seals it to every retained member except the addresses in [remove];
+     *  a removed member keeps only the dead key, so it can still read the history it already has and
+     *  nothing published afterwards. There is no "delete the member" operation because there is no
+     *  per-member copy to delete: revocation IS the key rotation. A non-empty [newPath] moves the
+     *  topic. Returns one bundle id per rekey bundle sealed, empty on error. */
+    fun hpsRekey(path: String, newPath: String = "", remove: List<ByteArray> = emptyList()): List<ByteArray> {
+        // The C call reads remove_count * 32 bytes from one buffer, so the addresses are packed back
+        // to back and the COUNT is passed, never the byte length. A mis-sized entry is rejected here
+        // rather than shifting every later address by a few bytes and revoking the wrong members.
+        val packed = ByteArray(remove.size * HopAddress.ADDRESS_LEN)
+        remove.forEachIndexed { i, addr ->
+            require32(addr, "remove[$i]").copyInto(packed, i * HopAddress.ADDRESS_LEN)
+        }
+        val ids = ArrayList<ByteArray>()
+        native { handle ->
+            C.hop_hps_rekey(handle, path, newPath, packed, NativeLong(remove.size.toLong()),
+                HpsIdSink { _, id -> ids.add(id?.getByteArray(0, 32) ?: ByteArray(32)) }, null)
+        }
+        return ids
+    }
+
+    /** Host: a topic's reach, the number of distinct addresses that have acked a publication on it.
+     *  A flood has no per-recipient receipt, so this is the only delivery number a UI can honestly
+     *  show for a topic. 0 for an unknown path. */
+    fun hpsReach(path: String): Int = native { handle -> C.hop_hps_reach(handle, path) }
+
+    /** Host: the retained-member set for a topic (who a rotation would re-key). */
+    fun hpsMembers(path: String): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        native { handle ->
+            C.hop_hps_members(handle, path, HpsAddrSink { _, addr ->
+                out.add(addr?.getByteArray(0, 32) ?: ByteArray(32))
+            }, null)
+        }
+        return out
+    }
+
+    /** Every topic this node hosts or follows, so an app can rebuild its channel list after a
+     *  restart: the node persists the topics, the app's in-memory list does not. */
+    fun hpsMyTopics(): List<HopHpsTopic> {
+        val out = ArrayList<HopHpsTopic>()
+        native { handle ->
+            C.hop_hps_my_topics(handle, HpsTopicSink { _, host, path, kind, hosting, access ->
+                out.add(HopHpsTopic(
+                    host = host?.getByteArray(0, 32) ?: ByteArray(32),
+                    path = path ?: "",
+                    kind = hpsKindOf(kind),
+                    hosting = hosting.toBool(),
+                    access = hpsAccessOf(access)))
+            }, null)
+        }
+        return out
+    }
+
+    /** Discoverable topics seen on the mesh. The descriptors are decrypted with the app secret, so
+     *  this only ever surfaces topics from the same app fabric. */
+    fun hpsBrowse(): List<HopHpsTopicInfo> {
+        val out = ArrayList<HopHpsTopicInfo>()
+        native { handle ->
+            C.hop_hps_browse(handle, HpsTopicInfoSink { _, host, path, kind, title, summary, access ->
+                out.add(HopHpsTopicInfo(
+                    host = host?.getByteArray(0, 32) ?: ByteArray(32),
+                    path = path ?: "",
+                    kind = hpsKindOf(kind),
+                    title = title ?: "",
+                    summary = summary ?: "",
+                    access = hpsAccessOf(access)))
+            }, null)
+        }
+        return out
     }
 
     /** Deprecated: prefer `close()` / `.use { }`. Kept for source compatibility; now idempotent. */
