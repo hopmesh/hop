@@ -11,6 +11,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (9b0e086)
 - regenerate from conventional commits (85aa20d)
 - regenerate from conventional commits (f174097)
 - regenerate from conventional commits (b49b07c)
@@ -18,6 +19,7 @@ git-cliff. Do not edit by hand.
 - regenerate from conventional commits (7eb4bed)
 
 ### Features
+- give the Swift SDK the hps:// channel surface (894d361)
 - ship the Apple SDK as CocoaPods pods, and make the React Native iOS build work (bcb3796)
 - run this repository's own CI, and repoint every canonical-repo gate at hopmesh/hop (d6f9618)
 - self-certifying reachability records (core + ABI) for DNS-free endpoint discovery (#126) (ef8accd)

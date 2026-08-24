@@ -9,9 +9,11 @@ git-cliff. Do not edit by hand.
 - pass-5 audit remediation - DNSSEC name-hijack (CRITICAL) + Node reply UAF (HIGH) (#138) (ace223b)
 
 ### Chore
+- bind the v6 hps surface in the Node and Crystal wrappers (ea6f186)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (9b0e086)
 - regenerate from conventional commits (85aa20d)
 - regenerate from conventional commits (f174097)
 - regenerate from conventional commits (b49b07c)

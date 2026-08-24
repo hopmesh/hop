@@ -11,7 +11,11 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (a0550d7)
 
+### Documentation
+- regenerate from conventional commits (9b0e086)
+
 ### Features
+- guard the published Apple pin, allow a validated last_rev, and stop claiming the bearers mirror exists (122350d)
 - publish bearers/apple as the hop-bearers-apple mirror (7f3f0d4)
 
 ### Other

@@ -10,10 +10,12 @@ git-cliff. Do not edit by hand.
 - use-after-free-safe teardown across go/python/node (+ elixir safety test) (#134) (42020e3)
 
 ### Chore
+- bind the v6 hps surface in the C ABI wrappers the guard enumerates (d33eb3e)
 - ignore the hop-install build output (1b89726)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (9b0e086)
 - regenerate from conventional commits (85aa20d)
 - regenerate from conventional commits (f174097)
 - regenerate from conventional commits (b49b07c)
