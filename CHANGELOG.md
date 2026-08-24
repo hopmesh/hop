@@ -5,6 +5,11 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- ship our own UTF-8 codec, since Hermes has no TextDecoder (e0a545a)
+- describe ABI levels in words so the version sweep stays honest (bbcae1c)
+- pin ABI 6, and close the guard hole that hid the drift (5e530fd)
+- make wire-version-gated drops visible to operators (e87be44)
+- keep published-SDK wire versions deliverable through a current relay (7019ff2)
 - restore the AAR metadata floor and run Detox on its real API (e4aa1dd)
 - name the real source-app secret and drop a dangling pointer (fd170ae)
 - give the release the fleet chain of custody (7f1d882)
@@ -66,6 +71,8 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- bind the v6 hps surface in the Node and Crystal wrappers (ea6f186)
+- bind the v6 hps surface in the C ABI wrappers the guard enumerates (d33eb3e)
 - bump gradle-wrapper in /apps/android/HopDemo (3b6a650)
 - bump gradle-wrapper from 9.6.1 to 9.7.1 in /bearers/android (ab30a62)
 - bump the web-dependencies group across 1 directory with 2 updates (3bf14c3)
@@ -102,6 +109,12 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- document the real Apple pod consumption paths and the mirror's export blockers (bd0853d)
+- record the podspec mirror gap, and count thirteen ABI copies (590bc47)
+- the corrected podspec URLs still cannot install; say so (17d401e)
+- stop pointing integrators at podspec URLs that 404 (1f7663d)
+- stop saying the C ABI does not export hps:// (58d24fa)
+- regenerate from conventional commits (9b0e086)
 - correct token scope to hopmesh/hop (529ae98)
 - regenerate from conventional commits (85aa20d)
 - regenerate from conventional commits (f174097)
@@ -132,6 +145,11 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (21148ab)
 
 ### Features
+- guard the published Apple pin, allow a validated last_rev, and stop claiming the bearers mirror exists (122350d)
+- bind the relay pool and the hps:// channel surface (633e1b0)
+- give the Kotlin SDK the hps:// channel surface (3c9a1ed)
+- give the Swift SDK the hps:// channel surface (894d361)
+- expose the hps:// pub/sub surface over the C ABI (79b8d52)
 - publish bearers/apple as the hop-bearers-apple mirror (7f3f0d4)
 - ship the Apple SDK as CocoaPods pods, and make the React Native iOS build work (bcb3796)
 - rebuild HopDemo as a React Native app, and prove Android builds (b0e7009)
@@ -191,6 +209,7 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (37a19b2)
 
 ### Other
+- apply dart format to the new hps bindings (be0dd51)
 - publish the three pods to CocoaPods trunk (9dd5b93)
 - make the scroll container addressable (f9aed30)
 - make the JS bundle resolvable, or the app cannot run at all (a7013d0)
@@ -330,6 +349,8 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- self-test the Hermes globals guard, and run both guards' self-tests (9365f1b)
+- prove a bare C consumer can reach a channel, and name ABI 6 in the docs (fe5079e)
 - Cucumber and Detox coverage for the React Native HopDemo, split by what one device can prove (da8c10c)
 - close store.rs and hps.rs coverage gaps to 100 percent (#81) (f321ed4)
 - extract DemoFormat + 21 tests, testable surface 0% → 100% + CI gate (#71) (2c4cc42)
