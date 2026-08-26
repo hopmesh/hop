@@ -53,6 +53,18 @@ transport, resolved by version tag. `docs/repo-catalog.md` records the current s
 
 Multipeer (`HopBearerMultipeer`) is the fifth product of the same package, same shape.
 
+### CocoaPods
+
+`HopBearerBle.podspec`, `HopBearerLan.podspec`, and `HopBearerRelay.podspec` describe the native
+modules for local integration and are checked with `pod ipc spec`. They are not published through
+CocoaPods: the bearer mirror does not exist and no bearer version has been released through CocoaPods,
+so a standard `pod 'HopBearerBle'`, `pod 'HopBearerLan'`, or `pod 'HopBearerRelay'` declaration cannot
+resolve today.
+
+Each spec exposes only its matching bearer source tree and depends only on `HopContract`, never
+`HopSDK` or `CHop`. The HopContract compatibility range comes from this directory's aggregate
+`Package.swift`, which is the exported SwiftPM manifest.
+
 ### Inside the Hop monorepo
 
 Each bearer is its OWN package, and in-tree consumers (the demo apps, `drivers/apple/HopDriver`) take
