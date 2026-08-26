@@ -71,6 +71,7 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- remove a research document that does not belong in a public repo (d6cb284)
 - bump koffi (#21) (7776b5f)
 - bind the v6 hps surface in the Node and Crystal wrappers (ea6f186)
 - bind the v6 hps surface in the C ABI wrappers the guard enumerates (d33eb3e)
@@ -110,6 +111,9 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- record that a maintainer's PR here merges itself, and how to opt out (f962247)
+- whether Grit Chat LLC needs its own Cloud Billing account (2e05cfa)
+- regenerate from conventional commits (7c9cd96)
 - regenerate from conventional commits (c563741)
 - document the real Apple pod consumption paths and the mirror's export blockers (bd0853d)
 - record the podspec mirror gap, and count thirteen ABI copies (590bc47)
