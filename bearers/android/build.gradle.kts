@@ -29,13 +29,13 @@ val hopSdkVersion: String = providers.gradleProperty("hopSdkVersion").get()
 
 // ---- Publishing convention for every bearer module -------------------------------------------------
 //
-// Each bearer publishes its OWN AAR to Maven Central as `sh.hop:hop-bearer-<transport>`, so a consumer
-// pulls in only the transports it wants (the same "1 isolated lib per bearer" promise the READMEs make,
-// finally backed by real artifacts).
+// Each bearer publishes its OWN AAR to Maven Central as `sh.hop.bearers:bearer-<transport>`, so a
+// consumer pulls in only the transports it wants (the same "1 isolated lib per bearer" promise the
+// READMEs make, finally backed by real artifacts).
 //
-// WHY `sh.hop` AND NOT `sh.hopme.bearers`: Maven Central verifies namespaces per groupId. `sh.hop` is
-// already verified and already publishing (sdk/android ships `sh.hop:hop` there), so reusing it means
-// these artifacts can ship without a second namespace verification. Kotlin package names
+// WHY `sh.hop.bearers` AND NOT `sh.hopme.bearers`: Maven Central verifies namespaces per root groupId.
+// `sh.hop` is already verified and its `sh.hop.bearers` subgroup is covered by that verification, so
+// these artifacts can ship without a second ownership proof. Kotlin package names
 // (`sh.hopme.bearers.ble`) are a separate namespace and are unchanged. The READMEs previously advertised
 // `sh.hopme.bearers:bearer-ble`, a coordinate nothing has ever published to; they are corrected here.
 //
@@ -152,19 +152,30 @@ subprojects {
                                 node.appendNode("scope", "runtime")
                             }
                             // Derived from what the module actually compiles against, so the POM cannot
-                            // drift from the build. The in-tree `:hop-sdk` shim is the local stand-in for
-                            // the PUBLISHED Android SDK, so it is declared as that artifact; every other
-                            // dependency (okhttp on the relay bearer, say) passes through untouched.
+                            // drift from the build. A bearer must derive exactly one consumable core edge
+                            // from the in-tree shim. Any other project dependency has no public Maven
+                            // coordinate here and must fail rather than silently source-linking a consumer.
+                            var hopSdkDependencies = 0
                             configurations.getByName("implementation").allDependencies.forEach { dep ->
                                 if (dep is ProjectDependency) {
-                                    if (dep.name == "hop-sdk") {
-                                        declare("sh.hop", "hop", hopSdkVersion, "aar")
+                                    check(dep.name == "hop-sdk") {
+                                        "$path has an unsupported project dependency ${dep.name}; " +
+                                            "published bearers may derive only sh.hop:hop from :hop-sdk"
                                     }
+                                    hopSdkDependencies += 1
+                                    declare("sh.hop", "hop", hopSdkVersion, "aar")
                                     return@forEach
                                 }
-                                val depGroup = dep.group ?: return@forEach
-                                val depVersion = dep.version ?: return@forEach
+                                val depGroup = dep.group
+                                val depVersion = dep.version
+                                check(!depGroup.isNullOrBlank() && !depVersion.isNullOrBlank()) {
+                                    "$path cannot derive a Maven coordinate for implementation dependency ${dep.name}"
+                                }
                                 declare(depGroup, dep.name, depVersion, null)
+                            }
+                            check(hopSdkDependencies == 1) {
+                                "$path must declare exactly one implementation(project(\":hop-sdk\")) " +
+                                    "so its published POM can derive sh.hop:hop"
                             }
                         }
                     }
