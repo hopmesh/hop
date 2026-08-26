@@ -1,11 +1,15 @@
 plugins {
-    // AGP 9.3 + Gradle 9.6.1 + Kotlin 2.4.10, aligned with apps/android/HopDemo (the same module dirs
-    // compile under BOTH builds, so their toolchains move together; this bump is what unblocked
-    // core-ktx 1.19.0, whose AAR metadata hard-requires AGP >= 9.1 and compileSdk >= 37).
-    // below. Both builds are now on AGP 9.x and must be bumped together (they share module dirs).
+    // AGP 9.3.2 aligned with apps/android/HopDemo (the same module dirs compile under BOTH builds,
+    // so their toolchains move together; the AGP bump is what unblocked core-ktx 1.19.0, whose AAR
+    // metadata hard-requires AGP >= 9.1 and compileSdk >= 37). Kotlin stays at 2.2.10, deliberately
+    // BELOW the Kotlin of the other Android builds: The public Hop Android SDK is compiled with
+    // Kotlin 2.2.10. Bearer AARs are consumed by the SDK's React Native bridge, so their metadata
+    // cannot outrun that floor: Kotlin 2.2 reads metadata through 2.3 but rejects 2.4. A bearer
+    // built with a newer compiler compiles in this tree and then makes an app fail before it can
+    // reach the radios.
     id("com.android.library") version "9.3.2" apply false
-    id("org.jetbrains.kotlin.android") version "2.4.10" apply false
-    id("org.jetbrains.kotlin.jvm") version "2.4.10" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.10" apply false
+    id("org.jetbrains.kotlin.jvm") version "2.2.10" apply false
 }
 
 // The version every bearer POM carries. tools/release/plan.py parses this line as one of its manifests
