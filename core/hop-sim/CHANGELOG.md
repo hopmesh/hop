@@ -8,6 +8,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (7c9cd96)
 - regenerate from conventional commits (c563741)
 - regenerate from conventional commits (9b0e086)
 - regenerate from conventional commits (85aa20d)
