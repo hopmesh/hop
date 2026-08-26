@@ -10,18 +10,20 @@ import { asBytes, fromBase64, toBase64 } from "./base64";
 import {
   HopEvent,
   HopNativeModule,
+  NativeBearerSnapshot,
   NativeHpsTopic,
   NativeHpsTopicInfo,
 } from "./native";
 import {
+  HopBearer,
+  HopBearerSnapshot,
+  HopBearerState,
   HopHpsInvite,
   HopHpsMessage,
   HopHpsTopic,
   HopHpsTopicInfo,
   HopMessage,
-  HopOutgoing,
   HopRelayPool,
-  HopRole,
   HopSendOptions,
   HopServiceRequest,
   HopServiceResponse,
@@ -129,15 +131,38 @@ function decodeHpsTopicInfo(t: NativeHpsTopicInfo): HopHpsTopicInfo {
   };
 }
 
+function decodeBearerSnapshot(snapshot: NativeBearerSnapshot): HopBearerSnapshot {
+  const states = snapshot?.states;
+  if (!Number.isSafeInteger(snapshot?.revision) || snapshot.revision < 0) {
+    throw new TypeError("HopMesh returned a bearer snapshot without a non-negative integer revision");
+  }
+
+  const decodeState = (bearer: HopBearer): HopBearerState => {
+    const state = states?.[bearer];
+    if (state === "disabled" || state === "enabled" || state === "active") return state;
+    throw new TypeError(`HopMesh returned an invalid ${bearer} bearer state`);
+  };
+
+  return {
+    revision: snapshot.revision,
+    states: {
+      ble: decodeState("ble"),
+      lan: decodeState("lan"),
+      relay: decodeState("relay"),
+    },
+  };
+}
+
 /**
- * A running Hop node. Owns a native `HopNode` handle; call `close()` when done.
+ * A running Hop node. Owns the native HopNode, HopRuntime, and bearer manager for this process. Call
+ * `close()` when done before opening another node.
  *
- * The core is poll-model: nothing is pushed asynchronously until you `start()` the pump. The pump ticks
- * the clock, drains outbound packets (delivered as `onOutgoing` events for your bearer to transmit),
- * and polls the inbox, the hops:// queues and the hps:// queues, surfacing each as an event. Inbox
- * items, responses and hps:// publications repeat on every poll until you `acceptInbox` /
- * `acceptServiceResponse` / `acceptHpsMessage` them. hps:// INVITES are the exception: the pump takes
- * and clears them, so a drained invite is gone and a host must persist what it surfaces.
+ * The core is poll-model: nothing is pushed asynchronously until you `start()` the pump. The native
+ * runtime ticks the clock, drains outgoing packets, and routes them through its native bearers before
+ * polling the inbox, hops:// queues and hps:// queues. Inbox items, responses and hps:// publications
+ * repeat on every poll until you `acceptInbox` / `acceptServiceResponse` / `acceptHpsMessage` them.
+ * hps:// INVITES are the exception: the pump takes and clears them, so a drained invite is gone and a
+ * host must persist what it surfaces.
  */
 export class HopNode {
   constructor(
@@ -270,21 +295,26 @@ export class HopNode {
     return this.native.acceptServiceResponse(this.handle, toBase64(forRequestId));
   }
 
-  // ---- bearer seam (drive a transport from JS) ----
+  // ---- native bearer manager ----
 
-  /** Bring a bearer link up. `link` is any app-chosen id; `role` is who dialed. */
-  linkUp(link: number, role: HopRole): Promise<void> {
-    return this.native.linkUp(this.handle, link, role);
+  /**
+   * Read every bearer's authoritative state in one revisioned snapshot.
+   *
+   * BLE and LAN are native bearer AAR/pod dependencies. Relay is deliberately outside this
+   * cross-platform bridge and remains disabled in this state shape.
+   */
+  async bearerSnapshot(): Promise<HopBearerSnapshot> {
+    return decodeBearerSnapshot(await this.native.bearerSnapshot(this.handle));
   }
 
-  /** Bring a bearer link down. */
-  linkDown(link: number): Promise<void> {
-    return this.native.linkDown(this.handle, link);
-  }
-
-  /** Feed inbound bytes received on `link` from the transport into the core. */
-  bytesReceived(link: number, bytes: Uint8Array): Promise<void> {
-    return this.native.bytesReceived(this.handle, link, toBase64(bytes));
+  /**
+   * Enable or disable one native bearer without affecting the others.
+   *
+   * Disabling closes its live native links before this resolves. Enabling relay rejects because this
+   * bridge does not own a relay bearer.
+   */
+  async setBearerEnabled(bearer: HopBearer, enabled: boolean): Promise<HopBearerSnapshot> {
+    return decodeBearerSnapshot(await this.native.setBearerEnabled(this.handle, bearer, enabled));
   }
 
   // ---- section 19 relay pool ----
@@ -340,12 +370,15 @@ export class HopNode {
    * Resolves the service public key subscribers verify broadcasts with. That key is EMPTY for a
    * channel, which has no service signing key because every member writes under their own identity, so
    * an empty result is a success. Failure is null, and the two are deliberately distinguishable.
+   *
+   * Access and visibility are mandatory: they decide who receives the topic key, so this public API
+   * never invents a policy when a caller omitted one.
    */
   async hpsRegister(
     path: string,
     kind: HpsKind,
-    access: HpsAccess = "open",
-    visibility: HpsVisibility = "private",
+    access: HpsAccess,
+    visibility: HpsVisibility,
   ): Promise<Uint8Array | null> {
     const pubkey = await this.native.hpsRegister(this.handle, path, kind, access, visibility);
     return pubkey == null ? null : fromBase64(pubkey);
@@ -458,8 +491,8 @@ export class HopNode {
 
   // ---- pump + events ----
 
-  /** Start the native pump: tick, drain outbound, and poll the inbox / hops:// / hps:// queues on an
-   *  interval. */
+  /** Start the native runtime pump: it ticks the node, routes packets through native bearers, and polls
+   *  the inbox / hops:// / hps:// queues on an interval. */
   start(intervalMs: number = 250): Promise<void> {
     return this.native.startPump(this.handle, intervalMs);
   }
@@ -490,13 +523,12 @@ export class HopNode {
     return this.subscribe$(HopEvent.ServiceResponse, decodeServiceResponse, cb);
   }
 
-  /** Subscribe to outbound packets the core wants transmitted (hand them to your bearer). */
-  onOutgoing(cb: (out: HopOutgoing) => void): Subscription {
-    return this.subscribe$(
-      HopEvent.Outgoing,
-      (p) => ({ link: p.link, bytes: fromBase64(p.bytes) }),
-      cb,
-    );
+  /**
+   * Subscribe to complete bearer snapshots. A callback always receives BLE, LAN, and relay together,
+   * ordered by a revision the native runtime increases whenever any state changes.
+   */
+  onBearerState(cb: (snapshot: HopBearerSnapshot) => void): Subscription {
+    return this.subscribe$(HopEvent.BearerState, decodeBearerSnapshot, cb);
   }
 
   /** Subscribe to inbound hps:// publications on topics this node hosts or follows. Each repeats on

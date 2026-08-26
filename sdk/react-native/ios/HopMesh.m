@@ -117,20 +117,13 @@ RCT_EXTERN_METHOD(acceptServiceResponse:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(linkUp:(NSInteger)handle
-                  link:(double)link
-                  role:(NSString *)role
+RCT_EXTERN_METHOD(bearerSnapshot:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(linkDown:(NSInteger)handle
-                  link:(double)link
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject)
-
-RCT_EXTERN_METHOD(bytesReceived:(NSInteger)handle
-                  link:(double)link
-                  bytes:(NSString *)bytesB64
+RCT_EXTERN_METHOD(setBearerEnabled:(NSInteger)handle
+                  bearer:(NSString *)bearer
+                  enabled:(BOOL)enabled
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

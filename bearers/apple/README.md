@@ -53,6 +53,13 @@ transport, resolved by version tag. `docs/repo-catalog.md` records the current s
 
 Multipeer (`HopBearerMultipeer`) is the fifth product of the same package, same shape.
 
+### CocoaPods
+
+`HopBearerBle.podspec`, `HopBearerLan.podspec`, and `HopBearerRelay.podspec` are local integration
+metadata for the bearer mirror. They are checked with `pod ipc spec`, but no bearer pod is published
+through CocoaPods and a normal `pod 'HopBearerBle'` declaration cannot resolve today. Do not describe
+these files as an install path until the mirror exists, has a tagged release, and its pods are published.
+
 ### Inside the Hop monorepo
 
 Each bearer is its OWN package, and in-tree consumers (the demo apps, `drivers/apple/HopDriver`) take

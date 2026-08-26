@@ -58,11 +58,16 @@ function makeNative(overrides = {}) {
     sendServiceRequest: (...a) => record("sendServiceRequest", a, toBase64(new Uint8Array(32).fill(5))),
     sendServiceResponse: (...a) => record("sendServiceResponse", a, true),
     acceptServiceResponse: (...a) => record("acceptServiceResponse", a, true),
-    startPump: (...a) => record("startPump", a, undefined),
-    stopPump: (...a) => record("stopPump", a, undefined),
-    linkUp: (...a) => record("linkUp", a, undefined),
-    linkDown: (...a) => record("linkDown", a, undefined),
-    bytesReceived: (...a) => record("bytesReceived", a, undefined),
+    bearerSnapshot: (...a) =>
+      record("bearerSnapshot", a, {
+        revision: 4,
+        states: { ble: "enabled", lan: "active", relay: "disabled" },
+      }),
+    setBearerEnabled: (...a) =>
+      record("setBearerEnabled", a, {
+        revision: 5,
+        states: { ble: "active", lan: "disabled", relay: "disabled" },
+      }),
     addressToBase58: (...a) => record("addressToBase58", a, "z6MkAddr"),
     addressFromBase58: (...a) => record("addressFromBase58", a, toBase64(new Uint8Array(32).fill(2))),
     relayAdd: (...a) => record("relayAdd", a, true),
@@ -178,17 +183,50 @@ test("onMessage only fires for this node's handle and decodes the payload", asyn
   assert.equal(Buffer.from(seen[0].body).toString("utf8"), "hello");
 });
 
-test("onOutgoing decodes packets for a JS bearer", async () => {
+test("bearer state is a complete native snapshot, not JavaScript packet plumbing", async () => {
+  const native = makeNative();
   const emitter = makeEmitter();
-  const node = new HopNode(makeNative(), emitter, 7);
-  const packets = [];
-  node.onOutgoing((p) => packets.push(p));
-  emitter.emit("HopMesh:outgoing", { node: 7, link: 42, bytes: toBase64(new Uint8Array([9, 8, 7])) });
-  assert.equal(packets.length, 1);
-  assert.equal(packets[0].link, 42);
-  assert.deepEqual(Array.from(packets[0].bytes), [9, 8, 7]);
+  const node = new HopNode(native, emitter, 7);
+
+  assert.deepEqual(await node.bearerSnapshot(), {
+    revision: 4,
+    states: { ble: "enabled", lan: "active", relay: "disabled" },
+  });
+  assert.deepEqual(native.calls.at(-1), { name: "bearerSnapshot", args: [7] });
+
+  assert.deepEqual(await node.setBearerEnabled("lan", false), {
+    revision: 5,
+    states: { ble: "active", lan: "disabled", relay: "disabled" },
+  });
+  assert.deepEqual(native.calls.at(-1), { name: "setBearerEnabled", args: [7, "lan", false] });
+
+  const snapshots = [];
+  node.onBearerState((snapshot) => snapshots.push(snapshot));
+  emitter.emit("HopMesh:bearerState", {
+    node: 99,
+    revision: 6,
+    states: { ble: "active", lan: "active", relay: "disabled" },
+  });
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 6,
+    states: { ble: "active", lan: "active", relay: "disabled" },
+  });
+  assert.deepEqual(snapshots, [
+    { revision: 6, states: { ble: "active", lan: "active", relay: "disabled" } },
+  ]);
 });
 
+test("bearer snapshot rejects an incomplete or invented native state", async () => {
+  const malformed = makeNative({
+    bearerSnapshot: () =>
+      Promise.resolve({ revision: 1, states: { ble: "on", lan: "enabled", relay: "disabled" } }),
+  });
+  await assert.rejects(
+    new HopNode(malformed, makeEmitter(), 7).bearerSnapshot(),
+    /invalid ble bearer state/,
+  );
+});
 test("Hop.ephemeral and Hop.open build nodes over the injected native module", async () => {
   const native = makeNative();
   __setHopNativeForTesting(native, makeEmitter());
@@ -277,15 +315,19 @@ test("hpsRegister passes the enum strings through verbatim", async () => {
     args: [7, "town/square", "service", "requestToJoin", "discoverable"],
   });
 
-  // The defaults are the closed ones: an unspecified topic is Open-access but Private, never
-  // advertised to the mesh by accident.
-  await node.hpsRegister("town/square", "channel");
+  // Access and visibility decide who receives the topic key, so callers supply both explicitly.
+  await node.hpsRegister("town/square", "channel", "open", "private");
   assert.deepEqual(native.calls.at(-1).args, [7, "town/square", "channel", "open", "private"]);
 });
 
 test("hpsRegister distinguishes a channel's empty service key from a failed register", async () => {
   // A channel has no service signing key, so an EMPTY key is the correct successful answer.
-  const channel = await new HopNode(makeNative(), makeEmitter(), 7).hpsRegister("town/square", "channel");
+  const channel = await new HopNode(makeNative(), makeEmitter(), 7).hpsRegister(
+    "town/square",
+    "channel",
+    "open",
+    "private",
+  );
   assert.ok(channel instanceof Uint8Array, "a channel register must resolve bytes, not null");
   assert.equal(channel.length, 0);
 
@@ -295,7 +337,7 @@ test("hpsRegister distinguishes a channel's empty service key from a failed regi
     makeNative({ hpsRegister: () => Promise.resolve(null) }),
     makeEmitter(),
     7,
-  ).hpsRegister("town/square", "channel");
+  ).hpsRegister("town/square", "channel", "open", "private");
   assert.equal(failed, null);
 
   // A service's real key still decodes to its bytes.
@@ -303,7 +345,7 @@ test("hpsRegister distinguishes a channel's empty service key from a failed regi
     makeNative({ hpsRegister: () => Promise.resolve(toBase64(new Uint8Array(32).fill(6))) }),
     makeEmitter(),
     7,
-  ).hpsRegister("news", "service");
+  ).hpsRegister("news", "service", "open", "private");
   assert.deepEqual(Array.from(service), Array.from(new Uint8Array(32).fill(6)));
 });
 

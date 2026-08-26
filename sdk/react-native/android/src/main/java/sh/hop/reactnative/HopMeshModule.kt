@@ -1,11 +1,6 @@
-// The Android half of @hop-mesh/react-native: a React Native module that wraps the Kotlin Hop client
-// SDK (sdk/android, the `sh.hop` package) and exposes it to JavaScript. Binary values cross the bridge
-// as base64 strings and addresses as base58 strings, matching ios/ and src/native.ts.
-//
-// Node handles are integers minted here; the module keeps a handle -> (HopNode, pump future) registry.
-// The pump ticks the clock, drains outbound packets, and polls the inbox and hops:// queues on an
-// interval, emitting one event per item over the device event emitter.
-
+// The Android half of @hop-mesh/react-native. One Entry owns one HopNode and HopRuntime: native
+// BLE/LAN bearers form links, receive bytes, and route the node's outbound queue without exposing
+// raw packet transport to JavaScript.
 package sh.hop.reactnative
 
 import android.util.Base64
@@ -18,27 +13,76 @@ import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import sh.hop.HopAddress
 import sh.hop.HopNode
-import sh.hop.HopRole
+import sh.hop.HopRuntime
 import sh.hop.HpsAccess
 import sh.hop.HpsKind
 import sh.hop.HpsVisibility
+import sh.hop.randomNodeId
+import sh.hopme.bearers.ble.BleBearer
+import sh.hopme.bearers.lan.LanBearer
 
 class HopMeshModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
-  private class Entry(val node: HopNode) {
+  private data class BearerSnapshot(val revision: Int, val states: Map<String, String>)
+
+  private class Entry(hopNode: HopNode, context: ReactApplicationContext) {
+    val handle = 1
+    val node = hopNode
+    val runtime = HopRuntime(hopNode)
     @Volatile var pump: ScheduledFuture<*>? = null
+
+    private val stateLock = Any()
+    private var revision = 0
+    private var lastStates = mapOf("ble" to "enabled", "lan" to "enabled", "relay" to "disabled")
+
+    init {
+      // This is a process-local 16-byte transport identity, deliberately distinct from Hop's stable
+      // node address. Sharing it makes BLE and LAN use one tiebreaker and one dedup identity.
+      val transportId = randomNodeId()
+      runtime.register(BleBearer(context, transportId))
+      runtime.register(LanBearer(context, transportId))
+    }
+
+    fun snapshot(): Pair<BearerSnapshot, Boolean> {
+      val enabled = runtime.bearers.bearerStates()
+      val active = runtime.bearers.activeTransports()
+      val states = mapOf(
+        "ble" to nativeState("BT", enabled, active),
+        "lan" to nativeState("LAN", enabled, active),
+        // Relay has its own native-bearer probe. This cross-platform bridge intentionally owns BLE
+        // and LAN only, so it never advertises a relay capability it does not register.
+        "relay" to "disabled",
+      )
+      return synchronized(stateLock) {
+        val changed = states != lastStates
+        if (changed) {
+          revision += 1
+          lastStates = states
+        }
+        BearerSnapshot(revision, states) to changed
+      }
+    }
+
+    private fun nativeState(
+      tag: String,
+      enabled: Map<String, Boolean>,
+      active: Map<String, Int>,
+    ): String = when {
+      enabled[tag] != true -> "disabled"
+      (active[tag] ?: 0) > 0 -> "active"
+      else -> "enabled"
+    }
   }
 
-  private val nodes = ConcurrentHashMap<Int, Entry>()
-  private val nextHandle = AtomicInteger(1)
+  private val lifecycleLock = Any()
+  private var runtimeEntry: Entry? = null
+  private var opening = false
   private val pumps = Executors.newScheduledThreadPool(1) { r ->
     Thread(r, "hop-reactnative-pump").apply { isDaemon = true }
   }
@@ -48,16 +92,32 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   private fun dec(b64: String): ByteArray = Base64.decode(b64, Base64.NO_WRAP)
   private fun enc(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
-  private fun register(node: HopNode): Int {
-    val handle = nextHandle.getAndIncrement()
-    nodes[handle] = Entry(node)
-    return handle
+  private fun reserveOpen(): Boolean = synchronized(lifecycleLock) {
+    if (runtimeEntry != null || opening) false else {
+      opening = true
+      true
+    }
+  }
+
+  private fun registerReserved(node: HopNode): Int? = synchronized(lifecycleLock) {
+    if (!opening || runtimeEntry != null) null else {
+      val entry = Entry(node, reactContext)
+      runtimeEntry = entry
+      opening = false
+      entry.handle
+    }
+  }
+
+  private fun abandonReservedOpen() {
+    synchronized(lifecycleLock) { opening = false }
   }
 
   private fun entry(handle: Int, promise: Promise): Entry? {
-    val e = nodes[handle]
-    if (e == null) promise.reject("hop_error", "unknown node handle")
-    return e
+    val current = synchronized(lifecycleLock) {
+      runtimeEntry?.takeIf { it.handle == handle }
+    }
+    if (current == null) promise.reject("hop_error", "unknown node handle")
+    return current
   }
 
   private fun emit(event: String, body: WritableMap) {
@@ -67,12 +127,34 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       .emit(event, body)
   }
 
+  private fun snapshotMap(snapshot: BearerSnapshot): WritableMap {
+    val states = Arguments.createMap()
+    states.putString("ble", snapshot.states.getValue("ble"))
+    states.putString("lan", snapshot.states.getValue("lan"))
+    states.putString("relay", snapshot.states.getValue("relay"))
+    return Arguments.createMap().apply {
+      putInt("revision", snapshot.revision)
+      putMap("states", states)
+    }
+  }
+
+  private fun emitBearerSnapshot(entry: Entry, force: Boolean = false): WritableMap {
+    val (snapshot, changed) = entry.snapshot()
+    val body = snapshotMap(snapshot)
+    if (force || changed) {
+      val event = snapshotMap(snapshot)
+      event.putInt("node", entry.handle)
+      emit("HopMesh:bearerState", event)
+    }
+    return body
+  }
+
   // MARK: hps:// enum mapping
   //
-  // Enums cross the bridge as lowercase strings, the same way `role` does. An UNRECOGNIZED string
-  // returns null here and the calling method rejects the promise; it is NEVER coerced to OPEN or
-  // CHANNEL, because reading a garbage access mode as Open would hand a topic's keys to anyone who
-  // asks. The outbound direction (topics and invites going to JS) is total, so it needs no fallback.
+  // Enums cross the bridge as lowercase strings. An UNRECOGNIZED string returns null here and the
+  // calling method rejects the promise; it is NEVER coerced to OPEN or CHANNEL, because reading a
+  // garbage access mode as Open would hand a topic's keys to anyone who asks. The outbound direction
+  // (topics and invites going to JS) is total, so it needs no fallback.
   private fun hpsKind(text: String): HpsKind? = when (text) {
     "channel" -> HpsKind.CHANNEL
     "service" -> HpsKind.SERVICE
@@ -123,40 +205,105 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun createEphemeral(promise: Promise) {
+    if (!reserveOpen()) {
+      promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      return
+    }
     try {
-      promise.resolve(register(HopNode.ephemeral()))
+      val handle = registerReserved(HopNode.ephemeral())
+      if (handle == null) {
+        abandonReservedOpen()
+        promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      } else {
+        promise.resolve(handle)
+      }
     } catch (t: Throwable) {
+      abandonReservedOpen()
       promise.reject("hop_error", t.message, t)
     }
   }
 
   @ReactMethod
   fun createWithSecret(secretB64: String, promise: Promise) {
+    if (!reserveOpen()) {
+      promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      return
+    }
     try {
-      promise.resolve(register(HopNode.withSecret(dec(secretB64))))
+      val handle = registerReserved(HopNode.withSecret(dec(secretB64)))
+      if (handle == null) {
+        abandonReservedOpen()
+        promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      } else {
+        promise.resolve(handle)
+      }
     } catch (t: Throwable) {
+      abandonReservedOpen()
       promise.reject("hop_error", t.message, t)
     }
   }
 
   @ReactMethod
   fun openPersistent(dbPath: String, secretB64: String, appSecretB64: String, promise: Promise) {
-    val node = HopNode.open(dbPath, dec(secretB64), dec(appSecretB64))
-    if (node == null) promise.resolve(-1) else promise.resolve(register(node))
+    if (!reserveOpen()) {
+      promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      return
+    }
+    try {
+      val node = HopNode.open(dbPath, dec(secretB64), dec(appSecretB64))
+      if (node == null) {
+        abandonReservedOpen()
+        promise.resolve(-1)
+        return
+      }
+      val handle = registerReserved(node)
+      if (handle == null) {
+        abandonReservedOpen()
+        promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      } else {
+        promise.resolve(handle)
+      }
+    } catch (t: Throwable) {
+      abandonReservedOpen()
+      promise.reject("hop_error", t.message, t)
+    }
   }
 
   @ReactMethod
   fun openKeyed(dbPath: String, keyB64: String, secretB64: String, appSecretB64: String, promise: Promise) {
-    val node = HopNode.openKeyed(dbPath, dec(keyB64), dec(secretB64), dec(appSecretB64))
-    if (node == null) promise.resolve(-1) else promise.resolve(register(node))
+    if (!reserveOpen()) {
+      promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      return
+    }
+    try {
+      val node = HopNode.openKeyed(dbPath, dec(keyB64), dec(secretB64), dec(appSecretB64))
+      if (node == null) {
+        abandonReservedOpen()
+        promise.resolve(-1)
+        return
+      }
+      val handle = registerReserved(node)
+      if (handle == null) {
+        abandonReservedOpen()
+        promise.reject("hop_node_exists", "a Hop node is already open in this native process; close it before opening another")
+      } else {
+        promise.resolve(handle)
+      }
+    } catch (t: Throwable) {
+      abandonReservedOpen()
+      promise.reject("hop_error", t.message, t)
+    }
   }
 
   @ReactMethod
   fun closeNode(handle: Int, promise: Promise) {
-    nodes.remove(handle)?.let { e ->
-      e.pump?.cancel(false)
-      e.node.close()
+    val current = synchronized(lifecycleLock) {
+      runtimeEntry?.takeIf { it.handle == handle }?.also { runtimeEntry = null }
     }
+    current?.pump?.cancel(false)
+    current?.pump = null
+    current?.runtime?.stop()
+    current?.node?.close()
     promise.resolve(null)
   }
 
@@ -197,7 +344,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun tick(handle: Int, nowMs: Double, promise: Promise) {
     val e = entry(handle, promise) ?: return
-    e.node.tick(nowMs.toLong())
+    e.runtime.tick(nowMs.toLong())
     promise.resolve(null)
   }
 
@@ -279,27 +426,36 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     promise.resolve(e.node.acceptServiceResponse(dec(reqB64)))
   }
 
-  // MARK: bearer seam
+
+  // MARK: native bearer runtime
 
   @ReactMethod
-  fun linkUp(handle: Int, link: Double, role: String, promise: Promise) {
+  fun bearerSnapshot(handle: Int, promise: Promise) {
     val e = entry(handle, promise) ?: return
-    e.node.linkUp(link.toLong(), if (role == "dialer") HopRole.DIALER else HopRole.ACCEPTOR)
-    promise.resolve(null)
+    promise.resolve(emitBearerSnapshot(e))
   }
 
   @ReactMethod
-  fun linkDown(handle: Int, link: Double, promise: Promise) {
+  fun setBearerEnabled(handle: Int, bearer: String, enabled: Boolean, promise: Promise) {
     val e = entry(handle, promise) ?: return
-    e.node.linkDown(link.toLong())
-    promise.resolve(null)
-  }
-
-  @ReactMethod
-  fun bytesReceived(handle: Int, link: Double, bytesB64: String, promise: Promise) {
-    val e = entry(handle, promise) ?: return
-    e.node.bytesReceived(link.toLong(), dec(bytesB64))
-    promise.resolve(null)
+    when (bearer) {
+      "ble" -> e.runtime.bearers.setEnabled("BT", enabled)
+      "lan" -> e.runtime.bearers.setEnabled("LAN", enabled)
+      "relay" -> {
+        if (enabled) {
+          promise.reject(
+            "hop_bearer_unavailable",
+            "relay is intentionally outside the cross-platform native bridge; probe it through its native bearer package",
+          )
+          return
+        }
+      }
+      else -> {
+        promise.reject("hop_error", "unrecognized bearer: $bearer")
+        return
+      }
+    }
+    promise.resolve(emitBearerSnapshot(e))
   }
 
   // MARK: section 19 relay pool
@@ -494,28 +650,28 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun startPump(handle: Int, intervalMs: Double, promise: Promise) {
     val e = entry(handle, promise) ?: return
     e.pump?.cancel(false)
+    e.runtime.start()
     val period = maxOf(intervalMs.toLong(), 10L)
     e.pump = pumps.scheduleWithFixedDelay({ pump(handle) }, 0, period, TimeUnit.MILLISECONDS)
+    emitBearerSnapshot(e, force = true)
     promise.resolve(null)
   }
 
   @ReactMethod
   fun stopPump(handle: Int, promise: Promise) {
-    nodes[handle]?.let { it.pump?.cancel(false); it.pump = null }
+    val e = entry(handle, promise) ?: return
+    e.pump?.cancel(false)
+    e.pump = null
+    e.runtime.stop()
+    emitBearerSnapshot(e)
     promise.resolve(null)
   }
 
   private fun pump(handle: Int) {
-    val e = nodes[handle] ?: return
+    val e = synchronized(lifecycleLock) { runtimeEntry?.takeIf { it.handle == handle } } ?: return
     val node = e.node
-    node.tick(System.currentTimeMillis())
-    node.drainOutgoing { link, bytes ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putDouble("link", link.toDouble())
-      m.putString("bytes", enc(bytes))
-      emit("HopMesh:outgoing", m)
-    }
+    e.runtime.tick(System.currentTimeMillis())
+    e.runtime.pump()
     node.pollInbox { msg ->
       val m = Arguments.createMap()
       m.putInt("node", handle)
@@ -567,6 +723,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putString("kind", name(inv.kind))
       emit("HopMesh:hpsInvite", m)
     }
+    emitBearerSnapshot(e)
   }
 
   // MARK: address helpers
@@ -589,9 +746,17 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun removeListeners(count: Int) { /* no-op */ }
 
   override fun invalidate() {
-    super.invalidate()
-    nodes.values.forEach { it.pump?.cancel(false); it.node.close() }
-    nodes.clear()
+    val current = synchronized(lifecycleLock) {
+      runtimeEntry.also {
+        runtimeEntry = null
+        opening = false
+      }
+    }
+    current?.pump?.cancel(false)
+    current?.pump = null
+    current?.runtime?.stop()
+    current?.node?.close()
     pumps.shutdownNow()
+    super.invalidate()
   }
 }

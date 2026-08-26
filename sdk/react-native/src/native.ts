@@ -18,10 +18,9 @@ export interface NativeStatus {
 
 /** A topic row as `hpsMyTopics` puts it on the wire: addresses base58, enums lowercase strings.
  *
- *  `kind` and `access` are typed as plain strings here, like `linkUp`'s `role`, because that is
- *  honestly what crosses an RN bridge: an arbitrary string the native side chose. node.ts narrows
- *  them to the public unions without rewriting an unrecognized value, so a garbage access mode fails
- *  every comparison instead of reading as `open`. */
+ *  `kind` and `access` are plain strings here because that is honestly what crosses an RN bridge.
+ *  node.ts narrows them to the public unions without rewriting an unrecognized value, so a garbage
+ *  access mode fails every comparison instead of reading as `open`. */
 export interface NativeHpsTopic {
   host: string;
   path: string;
@@ -38,6 +37,16 @@ export interface NativeHpsTopicInfo {
   title: string;
   summary: string;
   access: string;
+}
+
+/** The scalar-only form a complete native bearer snapshot takes across the RN bridge. */
+export interface NativeBearerSnapshot {
+  revision: number;
+  states: {
+    ble: string;
+    lan: string;
+    relay: string;
+  };
 }
 
 export interface HopNativeModule {
@@ -70,14 +79,16 @@ export interface HopNativeModule {
   sendServiceResponse(handle: number, toB58: string, forRequestIdB64: string, status: number, bodyB64: string): Promise<boolean>;
   acceptServiceResponse(handle: number, forRequestIdB64: string): Promise<boolean>;
 
-  // ---- pump: ticks, drains outbound, and polls inbox/requests/responses/hps queues, emitting events ----
+  // ---- native bearer runtime ----
+  //
+  // Packets never cross this bridge. The native HopRuntime owns BLE/LAN links, drains outbound packets,
+  // and routes them back to their bearer. Every state response and event is a complete snapshot.
+  bearerSnapshot(handle: number): Promise<NativeBearerSnapshot>;
+  setBearerEnabled(handle: number, bearer: string, enabled: boolean): Promise<NativeBearerSnapshot>;
+
+  // ---- pump: ticks the native runtime and polls inbox/requests/responses/hps queues, emitting events ----
   startPump(handle: number, intervalMs: number): Promise<void>;
   stopPump(handle: number): Promise<void>;
-
-  // ---- bearer seam (drive a transport from JS) ----
-  linkUp(handle: number, link: number, role: string): Promise<void>;
-  linkDown(handle: number, link: number): Promise<void>;
-  bytesReceived(handle: number, link: number, bytesB64: string): Promise<void>;
 
   // ---- section 19 relay pool ----
   relayAdd(handle: number, url: string, configured: boolean): Promise<boolean>;
@@ -87,11 +98,10 @@ export interface HopNativeModule {
 
   // ---- hps:// pub/sub (section 32): services and channels ----
   //
-  // Enums cross as lowercase strings, the same way `linkUp` carries `role`: kind is
-  // "channel"|"service", access is "open"|"requestToJoin"|"invite", visibility is
-  // "private"|"discoverable". A string the native side does not recognize FAILS the call. It is never
-  // mapped to `open` or `channel`, because reading a garbage access mode as Open would hand a topic's
-  // keys to anyone who asks.
+  // Enums cross as lowercase strings: kind is "channel"|"service", access is
+  // "open"|"requestToJoin"|"invite", visibility is "private"|"discoverable". A string the native side
+  // does not recognize FAILS the call. It is never mapped to `open` or `channel`, because reading a
+  // garbage access mode as Open would hand a topic's keys to anyone who asks.
   hpsRegister(handle: number, path: string, kind: string, access: string, visibility: string): Promise<string | null>;
   hpsSubscribe(handle: number, hostB58: string, path: string): Promise<string | null>;
   hpsPublish(handle: number, path: string, bodyB64: string): Promise<string | null>;
@@ -123,11 +133,10 @@ export const HopEvent = {
   Message: "HopMesh:message",
   ServiceRequest: "HopMesh:serviceRequest",
   ServiceResponse: "HopMesh:serviceResponse",
-  Outgoing: "HopMesh:outgoing",
+  BearerState: "HopMesh:bearerState",
   HpsMessage: "HopMesh:hpsMessage",
   HpsInvite: "HopMesh:hpsInvite",
 } as const;
-
 const LINK_ERROR =
   "@hop-mesh/react-native: the native HopMesh module is not linked. Rebuild the app after installing " +
   "(pod install for iOS, a Gradle sync for Android). This package requires a custom native build; it " +
