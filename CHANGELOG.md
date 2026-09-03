@@ -71,11 +71,13 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- bump the rust-dependencies group across 1 directory with 4 updates (#26) (ebaece7)
 - bump com.android.application in /apps/android/HopDemo (5afada6)
 - bump com.android.library in /apps/android/HopDemo (ba08def)
 - bump com.android.library in /bearers/android (5430669)
 - bump the web-dependencies group (6529c93)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (8975299)
+- bump actions/setup-java in the github-actions group (956d877)
 - remove a research document that does not belong in a public repo (d6cb284)
 - bump koffi (#21) (7776b5f)
 - bind the v6 hps surface in the Node and Crystal wrappers (ea6f186)
@@ -116,6 +118,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (0ba8f06)
 - regenerate from conventional commits (288fb51)
 - regenerate from conventional commits (f880b09)
 - regenerate from conventional commits (adfd838)
