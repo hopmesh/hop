@@ -18,8 +18,7 @@ grounded in a workflow or helper in this repo; the file that decides each behavi
 
 | Part | Where | What it produces |
 | --- | --- | --- |
-| Canonical source | `hopmesh/monorepo`, branch `main` | the commit SHA everything else is pinned to |
-| Native artifact | `.github/workflows/native-artifacts.yml` | `libhop.xcframework.zip` plus a signed manifest, per main push |
+| Canonical source | `hopmesh/hop`, branch `main` | the commit SHA everything else is pinned to |
 | Mirror | `hopmesh/hop-sdk-apple` | the published SwiftPM package, exported from `sdk/apple` by Copybara |
 
 `sdk/apple/.github/workflows/release.yml` is the mirror's release workflow. It never rebuilds the
@@ -68,11 +67,18 @@ Everything here was checked against the live repositories and is a real blocker,
 app-id: ${{ secrets.HOP_SOURCE_APP_ID }}
 private-key: ${{ secrets.HOP_SOURCE_APP_PRIVATE_KEY }}
 owner: hopmesh
-repositories: monorepo
+repositories: hop
 permission-actions: read
 permission-checks: read
 permission-contents: read
 ```
+
+The scope matters as much as the secret. Every committed mirror `release.yml` and `sync-back.yml` now
+scopes the token to `repositories: hop`, which is correct: the canonical source is `hopmesh/hop`, and
+a token scoped at the archived private monorepo would read a dead repo even once the secrets exist.
+Keep it that way when adding a mirror. (An earlier revision of this document asserted the committed
+workflows still said `repositories: monorepo`. That was wrong when it shipped and is recorded here so
+nobody goes looking for a defect that is not in the tree.)
 
 `hopmesh/hop-sdk-apple` has no repository secrets, no `release` environment secrets, and the only
 organization secret exposed to it is `HOP_SYNC_TOKEN`. Neither `HOP_SOURCE_APP_ID` nor
@@ -93,8 +99,8 @@ workflow verifies canonical provenance).
 a deployment tag policy of `v*`. The one release attempt so far, run `30128992818` on 2026-07-24,
 recorded a `prepare` job that ran for 19 minutes and 41 seconds with zero steps in its step list and
 a `cancelled` conclusion, which is what a job blocked on the environment gate looks like. Approve the
-deployment when the run appears, or it will sit there. Two jobs request the environment, so expect
-two approvals.
+deployment when the run appears, or it will sit there. Three jobs request the environment (`prepare`,
+`publish`, `publish-pods`), so expect three approvals.
 
 ### 3. The existing `v0.0.1` tag cannot be reused where it stands
 
@@ -124,13 +130,38 @@ Two ways out:
   sync. This costs more: the four `v0.0.1` hardcodes above all have to move in the same change, and
   `tools/package-export-smoke.py` is a CI guard, so missing one reddens the build.
 
+### 4. CocoaPods trunk has no credential, and no one but Jason can create it
+
+`publish-pods` pushes `CHop`, `HopContract` and `HopSDK` to the CocoaPods trunk registry, which
+authenticates with a session token. `cocoapods-trunk` reads it from `ENV['COCOAPODS_TRUNK_TOKEN']`
+first and `~/.netrc` second (`lib/pod/command/trunk.rb`), and a fresh runner has no `.netrc`, so the
+environment variable is the only route. The token is minted by an interactive, email-verified
+registration against a person, so CI cannot obtain one and neither can an agent:
+
+```
+pod trunk register jason@waldrip.net "Jason Waldrip" --description="hop release"
+```
+
+That mails a verification link. Clicking it activates the session and writes the token into
+`~/.netrc` under the `trunk.cocoapods.org` machine entry. Copy that password value into a secret named
+`COCOAPODS_TRUNK_TOKEN` on the **`release` environment of `hopmesh/hop-sdk-apple`**, the mirror, not
+this repository, because the release workflow only ever runs there.
+
+Checked against the live registry: `CHop`, `HopContract` and `HopSDK` all return
+`{"error":"No pod found with the specified name."}` from `https://trunk.cocoapods.org/api/v1/pods/<name>`,
+so no name is taken and the first push makes the registering account the owner of all three.
+
+Until the secret exists the job FAILS rather than skipping. That is deliberate: a publish step that
+reports success while publishing nothing is the defect this repository keeps finding, so the absence
+of a credential is a red build that names the missing secret.
+
 ## The runbook
 
 Do these in order. Nothing here is optional, and step 5 is the one people will want to skip.
 
 1. **Clear the preflight blockers above.** Steps 2 onward assume `HOP_SOURCE_APP_ID` and
    `HOP_SOURCE_APP_PRIVATE_KEY` exist on the mirror's `release` environment and that the app holds
-   `actions: read`, `checks: read`, `contents: read` on `hopmesh/monorepo`.
+   `actions: read`, `checks: read`, `contents: read` on `hopmesh/hop`.
 
 2. **Pick the release SHA and let main settle.** Merge everything the release should carry, then stop
    merging. Let `S` be the resulting `main` tip.
@@ -146,10 +177,9 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
 4. **Read the real checksum for `S` and commit it.**
 
    ```bash
-   # the run id and the attempt: the attempt is part of the artifact name
-   gh run list --workflow=native-artifacts.yml -R hopmesh/monorepo --branch main --limit 20 \
+   gh run list --workflow=native-artifacts.yml -R hopmesh/hop --branch main --limit 20 \
      --json databaseId,headSha,conclusion,attempt --jq '.[] | select(.headSha=="<S>")'
-   gh run download <run-id> -R hopmesh/monorepo -n native-release-bundle-<attempt> -D /tmp/hop-native
+   gh run download <run-id> -R hopmesh/hop -n native-release-bundle-<attempt> -D /tmp/hop-native
 
    # the same check the release workflow's prepare job runs, so a pass here means that job passes
    python3 tools/native-artifacts.py verify-provenance \
@@ -159,17 +189,11 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
      --directory /tmp/hop-native \
      --provenance-bundle /tmp/hop-native/native-artifacts.provenance.sigstore.json \
      --source-sha <S> --tag v0.0.1 --run-id <run-id> --run-attempt <attempt>
-
    shasum -a 256 /tmp/hop-native/libhop.xcframework.zip
    ```
 
    Use `verify-provenance`, not `verify --strict`. The strict inventory check predates the Sigstore
    bundle and rejects it as an extra file, which reads like a tampering failure and is not one.
-
-   The `shasum` output is exactly what `swift package compute-checksum` returns for that archive, and
-   it must equal the `apple-xcframework` entry in the signed `native-artifacts.json`. Put it in
-   `sdk/apple/Package.swift` and update the provenance comment to `S`. Change nothing else in the
-   commit; see the reproducibility note below for why that restriction matters.
 
 5. **Merge that commit and re-check.** The merge makes a new main tip `S2`. Repeat step 3 for `S2`,
    then repeat the download in step 4 for `S2` and confirm the checksum still matches what you
@@ -184,7 +208,7 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
    gh api repos/hopmesh/hop-sdk-apple/commits/main --jq '.sha, .commit.message'
    ```
 
-7. **Create the tag on the MIRROR, at mirror main.** Not in the monorepo. If reusing `v0.0.1`, delete
+7. **Create the tag on the MIRROR, at mirror main.** Not in `hopmesh/hop`. If reusing `v0.0.1`, delete
    it first.
 
    ```bash
@@ -193,8 +217,8 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
      -f ref=refs/tags/v0.0.1 -f sha=<mirror main sha>
    ```
 
-8. **Approve the `release` environment** when the run shows up under Actions on `hop-sdk-apple`. Two
-   jobs request it, `prepare` and `publish`, so expect to approve twice.
+8. **Approve the `release` environment** when the run shows up under Actions on `hop-sdk-apple`.
+   Three jobs request it, `prepare`, `publish` and `publish-pods`, so expect three approvals.
 
 ## What the workflow then does
 
@@ -203,8 +227,8 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
 - `release-provenance.py --component hop-sdk-apple --require-native-artifacts`: validates the tag
   push shape, reads the single `GitOrigin-RevId` trailer off the tagged commit to get the source SHA,
   confirms that SHA is reachable from canonical main, downloads the source tarball and compares the
-  expected Copybara export tree against the mirror's tagged tree file by file, checks CI and the
-  required-check set, and resolves the native run id and attempt.
+  expected Copybara export tree against the mirror's tagged tree file by file, checks CI and the required
+  check set, and resolves the native run id and attempt.
 - `native-artifacts.py download-github`: pulls the bundle by immutable run and artifact id.
 - `native-artifacts.py verify-provenance`: OpenSSL signature over the manifest using the checked-in
   `native/native-artifacts-public.pem`, every archive digest, and the Sigstore provenance bundle,
@@ -225,143 +249,26 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
 - `release-artifact.py verify` re-checks the manifest against the canonical source SHA and run
   attempt, then `softprops/action-gh-release` creates the release with generated notes.
 
+`publish-pods` (macos-14, environment `release`)
+
+- macOS, not ubuntu, and that is forced rather than chosen: `pod trunk push` lints by BUILDING the pod
+  for every platform it declares (cocoapods-trunk's `validate_podspec` constructs the same `Validator`
+  as `pod spec lint`), and these pods declare iOS, so the step needs Xcode.
+- It runs after `publish`, also forced: `CHop.podspec`'s source is
+  `releases/download/v<version>/libhop.xcframework.zip`, so the lint downloads the release asset that
+  the `publish` job has just created. Reversing the order gives a 404.
+- `release-artifact.py verify` first, on the same downloaded artifact the GitHub release used, so the
+  pods are published on the same evidence rather than on the tag alone.
+- A guard step fails the job if `COCOAPODS_TRUNK_TOKEN` is unset, naming the secret.
+- `trunk-publish.py publish` then pushes in dependency order, `CHop`, `HopContract`, `HopSDK`, because
+  the validator resolves dependencies from the trunk CDN rather than from the sibling files on disk.
+  It waits for each pushed spec to become readable from the CDN before starting the dependent push,
+  reads every version back from the registry instead of trusting the CLI's exit code, and asserts the
+  version the podspecs derive from `Package.swift` equals the tag being released. The only tolerated
+  error is a version that is already published; a lint failure stays fatal.
+
+Published pods: `CHop`, `HopContract`, `HopSDK`, all at the release version. A consumer then needs
+only `pod 'HopSDK'`.
+
 Published assets: `libhop.xcframework.zip`, `native-artifacts.json`, `native-artifacts.json.sig`,
 `native-artifacts.provenance.sigstore.json`, `release-manifest.json`.
-
-## Confirming it worked
-
-```bash
-gh api repos/hopmesh/hop-sdk-apple/releases --jq '.[].tag_name'
-curl -sI -L https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.1/libhop.xcframework.zip \
-  | head -1
-```
-
-Then resolve it the way a consumer would, from a scratch directory outside this repo, with a
-`Package.swift` that depends on `https://github.com/hopmesh/hop-sdk-apple.git` at `v0.0.1` and
-`swift package resolve`. SwiftPM verifies the checksum itself on download, so a successful resolve is
-the end-to-end proof.
-
-A release does not retire the `Package.local.swift` swap. Every in-tree Apple package depends on
-`sdk/apple` by path, and the published manifest would hand them the archive from the last release,
-not the core they are being tested against, so `tools/local-ci-mirror.sh` and the CI `apple` job keep
-swapping. What a release buys is that outside consumers can resolve the package at all. When you need
-the swap by hand, use the wrapper rather than a manual `cp`:
-
-```bash
-sdk/apple/with-local-framework.sh swift test
-```
-
-`with-local-framework.sh` restores `Package.swift` from a trap on exit, which a hand-run `cp` does
-not. `tools/package-export-smoke.test.sh` (run by `tools/local-ci-mirror.sh` and by the CI
-`docs-tokens` job) fails if the local variant is ever committed.
-
-## Reproducibility note: why step 5 exists
-
-The archive is very nearly reproducible, but not quite, and the gap is worth knowing before you plan
-a release.
-
-Source SHAs `500625ba01afe569f80c354d1640ffaaaba1fc76` and `0649a8de5a29092300f4614490ba04060740ef37`
-are adjacent main commits differing only in 27 generated `CHANGELOG.md` files, nothing that is
-compiled. Their `libhop.xcframework.zip` archives still differ:
-
-```
-0e9b6ea078a2d20b74495dd3d64695fc57f402b067799247f2b0f38133b6d06a   500625b
-c54aef7f8926b092fd13748d50dcb9a0f1bd4b7c1fc6d3fa0c1963381a80e190   0649a8d
-```
-
-Unpacking both and comparing file by file, every `libhop.a` slice and every header is byte identical.
-The only difference is `libhop.xcframework/Info.plist`, where `xcodebuild -create-xcframework` emits
-the `AvailableLibraries` entries in a different order between runs. `tools/native-artifacts.py
-pack_archive` is fully deterministic (fixed 1980 timestamps, zeroed uid and gid, sorted paths), so
-the nondeterminism is entirely upstream of it, in `xcodebuild`.
-
-That is why the checksum you commit in step 4 is not guaranteed to survive step 5 even though your
-commit touches nothing that is compiled: the next run may order the plist differently. The recheck in
-step 5 is cheap and catches it.
-
-The fix, if this becomes annoying rather than merely careful: normalize `Info.plist` in
-`sdk/apple/build-xcframework.sh` after `xcodebuild -create-xcframework`, sorting `AvailableLibraries`
-by `LibraryIdentifier` before `tools/native-artifacts.py apple-manifest` runs.
-`native-artifacts.py:apple_architecture_value` already sorts its slices and compares platform tuples
-as a set, so it is indifferent to plist order; only the archive bytes care. That change makes the
-archive fully reproducible and turns the committed checksum into a genuine fixed point, at the cost
-of one release cycle where the checksum has to be re-read because the archive bytes moved.
-
-## Appendix: the 178 MB xcframework in drivers/apple/HopDriver
-
-Separate problem, same shape. `drivers/apple/HopDriver/Frameworks/HopFFI.xcframework` is 178 MB of
-build output across ten files, and it is tracked in git even though `.gitignore:1` lists the
-directory (an ignore rule does not untrack an already-tracked path).
-
-The package consumes it as a local path binary target:
-
-```swift
-.binaryTarget(name: "hopFFI", path: "Frameworks/HopFFI.xcframework")
-```
-
-**The mirror retirement changed what this appendix is for.** It used to argue against converting that
-to a remote `url` + `checksum` target on the grounds that `hop-driver-apple` would stop resolving for
-everyone until a release existed at that URL. `hop-driver-apple` is gone: `components.json` retains
-only `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`, and the driver is consumed solely as a
-monorepo sibling. With no published driver package there is no external resolver to break, and so no
-reason to convert at all. The local path target is the correct permanent design, not a stopgap.
-
-That removes the work. It does not remove the bytes, and the part that survives is worth stating
-plainly: 178 MB of build output sits in monorepo history, and the monorepo is headed for public.
-Untracking shrinks a fresh checkout and reclaims nothing from `.git`, because the blobs stay in every
-commit that carried them. Only a history rewrite reclaims that, and that decision was already made
-the other way for `docs/audits` and `business`, which were split out with Copybara specifically to
-avoid rewriting 717 commits. The same reasoning applies here, so the bytes stay unless something
-else forces a rewrite.
-
-The list below is retained as research, not as a plan. It applies only if a published driver package
-ever returns, in which case these are its prerequisites, in dependency order:
-
-1. **A canonical build for this artifact.** `HopFFI.xcframework` is not the C-ABI framework. It is
-   the UniFFI framework built by `tools/build-xcframework.sh` (UniFFI bindgen plus
-   `Sources/HopFFIBindings/hop.swift`), and it defaults to `HOP_SQLCIPHER=1`, which
-   `native-artifacts.yml` does not build. `native-artifacts.yml`'s `apple` job builds only
-   `sdk/apple/build-xcframework.sh` (the C ABI, `HOP_SQLCIPHER: '0'`). So the workflow needs a second
-   packed artifact, something like a `driver-apple-xcframework` target, packed through
-   `tools/native-artifacts.py pack` so it lands in the signed manifest with the rest.
-
-2. **Two closed inventories in `tools/native-artifacts.py` have to grow.** `NATIVE_TARGET_FILENAMES`
-   is an exact 14-entry map of target to filename, and the manifest verifier requires equality, not
-   containment:
-
-   ```python
-   require(actual_inventory == NATIVE_TARGET_FILENAMES,
-           "manifest does not contain the canonical native target inventory")
-   ```
-
-   `PARTIAL_ARTIFACT_TARGETS` similarly declares which targets each uploaded partial carries
-   (`native-apple` currently carries exactly `apple-xcframework`, `aarch64-apple-darwin`,
-   `x86_64-apple-darwin`). A driver framework needs an entry in both, plus a branch in the `attest`
-   job's filename-to-target mapping, which today special-cases only `libhop.xcframework.zip`. The
-   Sigstore subject set is derived from the manifest, so it follows automatically.
-
-3. **A driver validator in the export smoke.** `tools/package-export-smoke.py` has
-   `PACKAGE_COMPONENTS = ("hop-sdk-go", "hop-sdk-elixir", "hop-sdk-apple", "hop-sdk-android",
-   "hop-embedded")` and a `validate_apple` that pins the release URL, the checksum, the archive
-   inventory, the slice set, and the ABI version. There is no driver component and no driver
-   validator; both have to be written, or the driver's published manifest gets no guard at all and
-   repeats exactly the failure this document exists to prevent.
-
-4. **A release workflow that attaches assets.** `drivers/apple/HopDriver/.github/workflows/release.yml`
-   today runs `swift package describe`, creates a `release-manifest.json`, verifies provenance, and
-   calls `softprops/action-gh-release` with **no `files:` key at all**. It publishes an empty release.
-   It would need the download, provenance verify, checksum equality test, and `files:` list that
-   `sdk/apple/.github/workflows/release.yml` already has, plus `--require-native-artifacts` on its
-   `release-provenance.py` call, which it currently does not pass.
-
-5. **The same source-read credentials.** It mints the same `HOP_SOURCE_APP_ID` and
-   `HOP_SOURCE_APP_PRIVATE_KEY` that do not exist yet. Blocker 1 above covers both mirrors.
-
-6. **A local development path.** `sdk/apple` has `Package.local.swift`, `with-local-framework.sh`,
-   and `install-local-xcframework.py`. `HopDriver` has none of those, so every in-tree driver build
-   would break the moment the manifest goes remote. Port all three before flipping the target, not
-   after.
-
-7. **Only then, untracking.** `git rm --cached -r drivers/apple/HopDriver/Frameworks/` plus a
-   `repo-integrity-guard.sh` check that keeps it out. This shrinks the checkout, not `.git`, so it is
-   cosmetic with respect to the 178 MB; see the note above the list.

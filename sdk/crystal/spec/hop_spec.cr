@@ -257,9 +257,10 @@ describe Hop do
   end
 
   # PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
-  # asserts ABI 5 at load while binding none of them, so an SDK-only host could not fail over: the only
-  # reachable behavior was retrying one configured URL forever. This drives the failover the header
-  # describes through the published Endpoint surface, on ONE endpoint that is never restarted.
+  # asserted that level at load while binding none of them, so an SDK-only host could not fail over:
+  # the only reachable behavior was retrying one configured URL forever. It now pins ABI 6 and binds
+  # the pool, so this drives the failover the header describes through the published Endpoint
+  # surface, on ONE endpoint that is never restarted.
   it "fails the relay pool over to another endpoint without restarting the endpoint" do
     e = Hop::Endpoint.new(tick_ms: 1000)
     begin

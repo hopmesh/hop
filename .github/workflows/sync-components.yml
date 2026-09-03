@@ -19,6 +19,7 @@ on:
           - hop-sdk-go
           - hop-sdk-crystal
           - hop-sdk-apple
+          - hop-bearers-apple
       direction:
         description: "Sync direction"
         type: choice
@@ -32,6 +33,10 @@ on:
         default: false
       pr_number:
         description: "Source mirror PR number (required for import; ignored otherwise)"
+        type: string
+        default: ""
+      last_rev:
+        description: "Export only: full canonical SHA to resume from, overriding the mirror's recorded watermark"
         type: string
         default: ""
 
@@ -138,6 +143,9 @@ jobs:
           SYNC_DIRECTION: ${{ inputs.direction }}
           SYNC_INIT_HISTORY: ${{ inputs.init_history }}
           SYNC_PR_NUMBER: ${{ inputs.pr_number }}
+          # Validated in the mapper, never read by a privileged job: the mapper folds an accepted SHA
+          # into copybara_options, which is the only route a dispatch value takes to the container.
+          SYNC_LAST_REV: ${{ inputs.last_rev }}
         run: python3 tools/copybara/dispatch.py
 
   export:

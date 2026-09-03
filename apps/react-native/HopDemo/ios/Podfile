@@ -1,0 +1,53 @@
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+# iOS 16.0, not React Native's min_ios_version_supported (15.1). The Hop Apple SDK declares iOS 16 in
+# Package.swift and its podspecs say the same, so CocoaPods refuses to resolve the graph at 15.1 with
+# "Specs satisfying the `Hop` dependency were found, but they required a higher minimum deployment target".
+# Raising it here is the honest floor for an app that links Hop.
+platform :ios, '16.0'
+prepare_react_native_project!
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'HopDemo' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  # The Hop Apple client SDK, three pods matching its three SwiftPM targets. Local paths because this app
+  # lives in the monorepo and consumes the SDK from source; an app outside the monorepo points these at the
+  # hopmesh/hop-sdk-apple repo instead.
+  #
+  # HopContract and Hop are :path, so their Swift sources come straight from the working tree.
+  #
+  # CHop is :podspec, NOT :path, and the difference matters. libhop.xcframework is a build output that is
+  # not committed, so there is nothing at that path to vendor. With :podspec, CocoaPods evaluates the
+  # podspec from disk and then downloads the source it declares, which is the pinned release asset verified
+  # against the checksum in Package.swift. So the Swift wrapper is local while the compiled core is the same
+  # immutable artifact a published consumer resolves.
+  pod 'CHop', :podspec => '../../../../sdk/apple/CHop.podspec'
+  pod 'HopContract', :path => '../../../../sdk/apple'
+  pod 'HopSDK', :path => '../../../../sdk/apple'
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+      # :ccache_enabled => true
+    )
+  end
+end

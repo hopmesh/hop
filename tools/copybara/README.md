@@ -5,13 +5,21 @@ component subtree to its own standalone repo (so it has its own package page, is
 brings external contributions back, without forking. It is the Meta react-native / relay pattern,
 done with [Copybara](https://github.com/google/copybara) instead of fbshipit.
 
-Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`.
-`tools/copybara/components.json` is the dispatch allowlist and `tools/copybara/copy.bara.sky` holds the
-matching `COMPONENTS` list used to generate an export and import workflow for each. Their CI self-test
-rejects any drift between the two. Twenty other components were mirrored until the 2026-08 retirement;
-those repos are deleted and the components now live only here. See `docs/repo-catalog.md`.
+Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`. A fourth,
+`hop-bearers-apple`, is WIRED but NOT MIRRORED: it has a `components.json` entry, a `copy.bara.sky`
+registration, and its own `release.yml` and `sync-back.yml`, but the repository
+`hopmesh/hop-bearers-apple` does not exist and never has, so nothing has ever been exported to it.
+Creating it is a human action (`tools/copybara/bootstrap-mirrors.sh`, which this repository's
+automation deliberately cannot perform), followed by one seeded export with `init_history=true`.
+Until both happen, the Apple bearers are available only inside this repository, and any consumer
+instruction naming that mirror URL is aspirational. `tools/copybara/components.json` is the dispatch
+allowlist and `tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an
+export and import workflow for each. Their CI self-test rejects any drift between the two. Twenty
+other components were mirrored until the 2026-08 retirement and their repos deleted;
+`hop-bearers-apple` is one of those twenty, wired for restoration, and the other nineteen live only
+here. See `docs/repo-catalog.md`.
 
-These three mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
+These mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
 `Package.swift` at the repository root, shards needs `shard.yml` there, and the Go module proxy
 resolves a module from its repo root. Every other component publishes an artifact to a registry that
 hosts the artifact itself, so it does not need a standalone repo.
@@ -79,8 +87,8 @@ state tracking so it can run continuously.
 
    The libhop-only Release App that used to supply `HOP_RELEASE_APP_ID` and `HOP_RELEASE_APP_PRIVATE_KEY`
    retired along with its repo, and so did every registry credential the old fleet needed (`MAVEN_*`,
-   `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). All three surviving mirrors
-   publish by pushing a git tag, so none of them needs a registry secret at all.
+   `PLATFORMIO_AUTH_TOKEN`, `HEX_API_KEY`). Every registered mirror
+   publishes by pushing a git tag, so none of them needs a registry secret at all.
 
 5. **Seed each mirror** with its full history (one-off, per component). ITERATIVE mode needs a baseline,
    so the FIRST export passes `init_history=true`:
@@ -174,13 +182,65 @@ then compare the exported file count against the source before trusting the run.
 CI uses the digest-pinned `olivr/copybara:20230129` image with a read-only filesystem, isolated
 credentials, and a fixed dispatch map. Local runs should use that same digest.
 
+## Troubleshooting a dead export
+
+Two failure modes have both been reproduced against the real pinned container, and both look like
+something else when you only read CI's red X:
+
+**The App token mint dies with `The 'client-id' ... must be set to a non-empty string`.** That is
+GitHub resolving an unset secret to the empty string: `HOP_SYNC_APP_ID` /
+`HOP_SYNC_APP_PRIVATE_KEY` are not seeded where the job runs (the protected `component-sync`
+environment). Every run that actually needed to export fails there, while runs whose merge touched
+no mirrored subtree report success with nothing to do, so a green Sync run proves nothing about
+export health. Check what exists with `gh api repos/hopmesh/hop/actions/secrets` and the
+`component-sync` environment's secrets, and re-seed from the App's credentials (repository
+administrators hold them; the workflow cannot create them).
+
+**Copybara dies with `Cannot find reference(s): [<sha>, refs/tags/*]`.** The `<sha>` is the
+`GitOrigin-RevId` trailer on the MIRROR's `main` head: ITERATIVE mode reads it as "the last migrated
+origin commit" and resolves it against the ORIGIN before it looks at a single file. If the mirror's
+newest such trailer names a commit canonical `main` does not have, which happens whenever something
+other than this repository has exported to that mirror, every later export dies at that fetch, even
+with secrets in place.
+
+The repair does NOT require touching the mirror. Dispatch the export with `last_rev` set to a full
+canonical SHA to resume from:
+
+```sh
+gh workflow run "Sync component" -f component=hop-sdk-apple -f direction=export \
+  -f last_rev=<40-char canonical sha>
+```
+
+`tools/copybara/dispatch.py` validates it (export only, never with `init_history`, exactly 40 lowercase
+hex, and it must resolve in this repository) and folds it into the Copybara options; no privileged job
+ever reads the raw input. The export's own commits carry resolvable trailers afterwards, so the next
+run needs no override: the watermark self-heals.
+
+Two things worth knowing before using it. The value is a claim about what the mirror already has, so
+choosing a commit far behind the mirror's real content re-exports everything after it, and choosing
+one ahead of it silently skips the difference. And the watermark is a SINGLE slot: if another
+repository also exports to that mirror, repairing it for this one makes the next export from the other
+one fail the same way, which makes the choice a cutover rather than a fix.
+
+An EMPTY commit carrying a corrected trailer does not work, which is worth stating because it is the
+obvious first idea: the destination-status lookup is path filtered, so git history simplification skips
+a commit that touches no exported path and the poisoned trailer is read again. A commit that touches a
+file does work, but `last_rev` is better: it mutates nothing.
+
+You can diagnose and rehearse all of this without any push rights, by pointing the pinned container at
+local clones with `url.<base>.insteadOf` rewrites and a `file://` destination; that is exactly how
+these modes were isolated, and an export run that way is what proves a repair correct before anyone
+touches the real mirror.
+
 ## A standalone mirror needs libhop
 
 Every endpoint SDK binds `libhop`, the C ABI built from `core/`. The monorepo builds it in tree; a
 standalone mirror has no `core/`, so its own CI and its consumers must supply `libhop`: either a
 prebuilt binary the package downloads, or `HOP_LIBDIR` pointing at one. `sdk/go` binds it through cgo
 and `sdk/crystal` binds the C ABI directly, so both need this. `sdk/apple` is the exception: it ships a
-prebuilt xcframework inside the package, so the binary travels with the source. That is a packaging
+prebuilt xcframework inside the package, so the binary travels with the source. `bearers/apple` needs
+neither treatment: it does not bind libhop at all, it depends only on the published `hop-sdk-apple`
+package's `HopContract` product, so the framework travels with the SDK one hop away. That is a packaging
 decision per mirror, independent of the sync.
 
 ## Adding another component
@@ -190,11 +250,14 @@ choice to `sync-components.yml`, and its literal component name to the subtree's
 The dispatch self-test enforces the first three mappings. Then add the mirror to
 `bootstrap-mirrors.sh`, create the repo, and run the seed command above.
 
-The components wired today are the three that survived the 2026-08 retirement: `hop-sdk-go`,
-`hop-sdk-crystal`, and `hop-sdk-apple`. Every component subtree still carries its own `LICENSE.md`
-(FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core), so any of them is
-ready to stand alone if it is mirrored again. Bringing back one of the twenty retired names means
-recreating its repository first, because the old one was deleted; `docs/repo-catalog.md` lists them.
+The components wired today are the three that survived the 2026-08 retirement (`hop-sdk-go`,
+`hop-sdk-crystal`, `hop-sdk-apple`) plus `hop-bearers-apple`, the first retired name wired for return.
+Its repo has NOT been recreated, so the config is complete and the destination is absent: the export
+would fail on a missing repository, not on a Copybara error. Every component subtree still carries its
+own `LICENSE.md` (FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core),
+so any of them is ready to stand alone if it is mirrored again.
+Bringing back one of the nineteen remaining retired names still means recreating its repository first,
+because the old one was deleted; `docs/repo-catalog.md` lists them.
 
 ## Historical note: the 2026-08 handover (already done)
 

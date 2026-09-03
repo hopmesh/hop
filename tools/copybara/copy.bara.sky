@@ -34,11 +34,18 @@ ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"
 # drivers are Apache-2.0. All public. (This comment previously claimed core/services/bearers/drivers
 # were all FSL, which was never true of bearers or drivers and stopped being true of core with the
 # 2026-07-31 tier inversion. tools/repo-integrity-guard.sh is the enforced source of truth.)
+# The three SDKs and the Apple bearers mirror because their package managers resolve FROM a git repo
+# root: the Go module proxy resolves a module from its repo root, shards needs shard.yml there, and
+# SwiftPM needs Package.swift there. The bearers were monorepo-only after the 2026-08 retirement until
+# an external consumer app needed the radios over SwiftPM without this tree, so hop-bearers-apple was
+# re-wired; it depends on the published hop-sdk-apple package (not libhop), so unlike the go/apple SDKs
+# it carries no native artifact and does not belong in NATIVE_COMPONENTS.
 # Keep this list in sync with tools/copybara/bootstrap-mirrors.sh and docs/repo-catalog.md.
 COMPONENTS = [
     ("sdk/go", "hop-sdk-go"),
     ("sdk/crystal", "hop-sdk-crystal"),
     ("sdk/apple", "hop-sdk-apple"),
+    ("bearers/apple", "hop-bearers-apple"),
 ]
 
 def mirror_url(name):
@@ -385,6 +392,7 @@ REGISTERED = [
     _register("sdk/go", "hop-sdk-go"),
     _register("sdk/crystal", "hop-sdk-crystal"),
     _register("sdk/apple", "hop-sdk-apple"),
+    _register("bearers/apple", "hop-bearers-apple"),
 ]
 
 # ---------------------------------------------------------------------------------------------------
@@ -404,5 +412,8 @@ REGISTERED = [
 #
 # Both ran, the private trees were deleted from the source, the old monorepo was archived, and this
 # repo became the canonical monorepo. There is no public/private split left for Copybara to maintain
-# here: the only standing syncs are the per-component mirror workflows above, and the three mirror
-# repos (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) are the only destinations.
+# here: the only standing syncs are the per-component mirror workflows above. At the handover the
+# three SDK mirror repos (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) were the only destinations, and
+# they still are: hop-bearers-apple was later registered as a fourth, but its repository has not been
+# created, so it has no destination yet. Any addition follows the COMPONENTS list above rather than
+# this note.

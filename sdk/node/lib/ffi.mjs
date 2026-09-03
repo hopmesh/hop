@@ -49,6 +49,37 @@ export const ReachVerifySink = koffi.proto(
   'void ReachVerifySink(void *ctx, uint8_t *address, const char *endpoint, uint64_t issued_at, uint32_t ttl_secs)',
 )
 
+// §32 hps:// sinks. Same synchronous-during-the-call contract as the drains above. The publication
+// sink returns bool because it IS the acceptance decision (true = core durably removes the row,
+// false = leave it queued for redelivery); the invite sink cannot, because that drain is
+// take-and-clear.
+export const HpsMsgSink = koffi.proto(
+  'bool HpsMsgSink(void *ctx, uint8_t *id, const char *path, uint8_t *sender, uint8_t *body, size_t body_len)',
+)
+export const HpsInviteSink = koffi.proto(
+  'void HpsInviteSink(void *ctx, uint8_t *host, const char *path, uint32_t kind)',
+)
+// Two protos of the same shape, kept apart because the 32 bytes mean different things: a member or
+// requester ADDRESS for pending/members, a rekey BUNDLE ID for the rotation drain.
+export const HpsAddrSink = koffi.proto('void HpsAddrSink(void *ctx, uint8_t *addr)')
+export const HpsIdSink = koffi.proto('void HpsIdSink(void *ctx, uint8_t *id)')
+export const HpsTopicSink = koffi.proto(
+  'void HpsTopicSink(void *ctx, uint8_t *host, const char *path, uint32_t kind, bool hosting, uint32_t access)',
+)
+export const HpsBrowseSink = koffi.proto(
+  'void HpsBrowseSink(void *ctx, uint8_t *host, const char *path, uint32_t kind, const char *title, const char *summary, uint32_t access)',
+)
+
+// The three §32 topic discriminants, one-to-one with the `HopHpsKind` / `HopHpsAccess` /
+// `HopHpsVisibility` #[repr(C)] enums in sdk/hop.h. They cross the ABI as plain uint32_t.
+//
+// An out-of-range discriminant makes the C call FAIL. Nothing here coerces, clamps, or falls back to
+// a member, and neither should a caller: reading a garbage int as `open` would hand a topic's content
+// key to anyone who asks for it. A rejected register is a loud failure; a defaulted one is a leak.
+export const HpsKind = Object.freeze({ channel: 0, service: 1 })
+export const HpsAccess = Object.freeze({ open: 0, requestToJoin: 1, invite: 2 })
+export const HpsVisibility = Object.freeze({ private: 0, discoverable: 1 })
+
 const rawHop = {
   abi_version: lib.func('uint32_t hop_abi_version()'),
   node_new: lib.func('void *hop_node_new()'),
@@ -102,6 +133,50 @@ const rawHop = {
   cluster_would_drop: lib.func('bool hop_cluster_would_drop(void *node, uint8_t *from, uint8_t *request_id)'),
   cluster_members: lib.func('uint32_t hop_cluster_members(void *node)'),
   cluster_set_quorum: lib.func('void hop_cluster_set_quorum(void *node, uint32_t min_live_members)'),
+  // §32 hps:// pub/sub, the surface the v5 -> v6 ABI bump was taken for. Before it the C ABI had no
+  // hps exports at all, so a wrapper sitting on the C ABI could not reach services or channels.
+  //
+  // A group message here is NOT one-to-one fan-out and NOT a multicast bundle: it is a single
+  // content-key-encrypted, per-writer-signed publication, flooded once. Membership, invites and
+  // revocation are all properties of the topic's key handoff, not of the send.
+  //
+  // `out_pubkey_len` is separate from the bool return ON PURPOSE: a channel has no service key, so
+  // it writes zero bytes, and a zero length is a SUCCESS. Only the bool says whether registration
+  // happened.
+  hps_register: lib.func(
+    'bool hop_hps_register(void *node, const char *path, uint32_t kind, uint32_t access, uint32_t visibility, uint8_t *out_pubkey, size_t out_pubkey_cap, _Out_ size_t *out_pubkey_len)',
+  ),
+  hps_subscribe: lib.func('bool hop_hps_subscribe(void *node, uint8_t *host, const char *path, uint8_t *out_id)'),
+  hps_publish: lib.func(
+    'bool hop_hps_publish(void *node, const char *path, uint8_t *body, size_t body_len, uint8_t *out_id)',
+  ),
+  // Accept-to-remove, exactly like poll_inbox: returning true from the sink accepts the publication,
+  // returning false leaves the row queued for redelivery until accept_hps_message clears it.
+  poll_hps_messages: lib.func('void hop_poll_hps_messages(void *node, HpsMsgSink *sink, void *ctx)'),
+  accept_hps_message: lib.func('bool hop_accept_hps_message(void *node, uint8_t *id)'),
+  hps_invite: lib.func('bool hop_hps_invite(void *node, const char *path, uint8_t *dest, uint8_t *out_id)'),
+  hps_accept_invite: lib.func(
+    'bool hop_hps_accept_invite(void *node, uint8_t *host, const char *path, uint8_t *out_id)',
+  ),
+  hps_decline_invite: lib.func('bool hop_hps_decline_invite(void *node, uint8_t *host, const char *path)'),
+  // Take-and-clear, NOT accept-to-remove: a drained invite is gone, so a host must persist what it
+  // surfaces before this call returns.
+  poll_hps_invites: lib.func('void hop_poll_hps_invites(void *node, HpsInviteSink *sink, void *ctx)'),
+  // `out_has_id` is the distinction that matters: leaving a topic we HOST sends no bundle, which is a
+  // success with no id rather than a failure.
+  hps_leave: lib.func('bool hop_hps_leave(void *node, const char *path, uint8_t *out_id, _Out_ bool *out_has_id)'),
+  hps_pending: lib.func('size_t hop_hps_pending(void *node, const char *path, HpsAddrSink *sink, void *ctx)'),
+  hps_approve: lib.func('bool hop_hps_approve(void *node, const char *path, uint8_t *requester, uint8_t *out_id)'),
+  hps_deny: lib.func('bool hop_hps_deny(void *node, const char *path, uint8_t *requester)'),
+  // Selective forward rotation, which is how a member is REVOKED. `remove_count` is a COUNT of
+  // 32-byte addresses packed back to back, not a byte length, so the C call reads remove_count * 32.
+  hps_rekey: lib.func(
+    'size_t hop_hps_rekey(void *node, const char *path, const char *new_path, uint8_t *remove, size_t remove_count, HpsIdSink *sink, void *ctx)',
+  ),
+  hps_reach: lib.func('uint32_t hop_hps_reach(void *node, const char *path)'),
+  hps_members: lib.func('size_t hop_hps_members(void *node, const char *path, HpsAddrSink *sink, void *ctx)'),
+  hps_my_topics: lib.func('size_t hop_hps_my_topics(void *node, HpsTopicSink *sink, void *ctx)'),
+  hps_browse: lib.func('size_t hop_hps_browse(void *node, HpsBrowseSink *sink, void *ctx)'),
 }
 
 export function require32(value, name) {
@@ -160,9 +235,57 @@ export const hop = {
       require32(from, 'request sender'),
       require32(requestId, 'request id'),
     ),
+  // §32. Ten of the eighteen hps calls take or write a 32-byte pointer the ABI carries no length for
+  // (hps_register is exempt: it takes an explicit out_pubkey_cap). Same treatment as the rest of the
+  // file: guard here, keep the raw symbol private.
+  hps_subscribe: (node, host, path, outId) => {
+    require32(host, 'topic host')
+    if (outId != null) require32(outId, 'subscribe bundle id output')
+    return rawHop.hps_subscribe(node, host, path, outId)
+  },
+  hps_publish: (node, path, body, bodyLen, outId) => {
+    if (outId != null) require32(outId, 'publication bundle id output')
+    return rawHop.hps_publish(node, path, body, bodyLen, outId)
+  },
+  accept_hps_message: (node, id) => rawHop.accept_hps_message(node, require32(id, 'publication id')),
+  hps_invite: (node, path, dest, outId) => {
+    require32(dest, 'invite destination')
+    if (outId != null) require32(outId, 'invite bundle id output')
+    return rawHop.hps_invite(node, path, dest, outId)
+  },
+  hps_accept_invite: (node, host, path, outId) => {
+    require32(host, 'invite host')
+    if (outId != null) require32(outId, 'accept bundle id output')
+    return rawHop.hps_accept_invite(node, host, path, outId)
+  },
+  hps_decline_invite: (node, host, path) =>
+    rawHop.hps_decline_invite(node, require32(host, 'invite host'), path),
+  hps_leave: (node, path, outId, outHasId) => {
+    if (outId != null) require32(outId, 'leave bundle id output')
+    return rawHop.hps_leave(node, path, outId, outHasId)
+  },
+  hps_approve: (node, path, requester, outId) => {
+    require32(requester, 'requester')
+    if (outId != null) require32(outId, 'keys bundle id output')
+    return rawHop.hps_approve(node, path, requester, outId)
+  },
+  hps_deny: (node, path, requester) => rawHop.hps_deny(node, path, require32(requester, 'requester')),
+  // The odd one out: `remove` is remove_count 32-byte addresses packed back to back, so the C call
+  // reads remove_count * 32 bytes. A count that overruns the buffer is the out-of-bounds read this
+  // guard exists to stop, and a count that undershoots would silently revoke the wrong member.
+  hps_rekey: (node, path, newPath, remove, removeCount, sink, ctx) => {
+    const want = removeCount * 32
+    if (removeCount > 0 && (remove == null || remove.byteLength !== want)) {
+      throw new RangeError(
+        `removal list must be exactly ${want} bytes for ${removeCount} address${removeCount === 1 ? '' : 'es'}, ` +
+          `got ${remove == null ? 0 : remove.byteLength}`,
+      )
+    }
+    return rawHop.hps_rekey(node, path, newPath, remove, removeCount, sink, ctx)
+  },
 }
 
-const ABI_EXPECTED = 5
+const ABI_EXPECTED = 6
 export function assertAbi() {
   const got = hop.abi_version()
   if (got !== ABI_EXPECTED) {

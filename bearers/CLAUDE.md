@@ -37,14 +37,21 @@ bearer shipped for two releases while the Android bearers existed only as source
 published to. If you add a component and expect it to ship, check `python3 tools/release/plan.py` lists
 it; that command is the whole truth about what releases.
 
-Both bearer trees lost their `release.yml` when the public mirrors were retired, so neither publishes
-today: `python3 tools/release/plan.py` now lists only the three SDKs package managers still require
-(apple, crystal, go). Consumers take the bearers as in-tree siblings instead, per each README's Install
-section. The machinery below is dormant rather than deleted, because it is the shape a future release
-would take.
+The Apple bearers are wired to publish, and have not published: `bearers/apple` carries
+`.github/workflows/release.yml`, is registered in `tools/copybara/components.json` as
+`hop-bearers-apple`, and `python3 tools/release/plan.py` lists it alongside the three SDKs. What does
+not exist is the destination. `hopmesh/hop-bearers-apple` returns 404 and never has existed, so no
+export has run, no tag has been pushed, and NO consumer outside this tree can resolve the products
+over SwiftPM today. Creating that repository is a human step (`tools/copybara/bootstrap-mirrors.sh`)
+followed by one seeded `init_history` export; the release plan listing the component says the wiring
+is right, not that the package is reachable. `bearers/android` still has no `release.yml`, so the
+Android bearers exist only as source and in-tree siblings; the Android machinery below is dormant
+rather than deleted, because it is the shape a future release would take.
 
-- **Apple** would ship through SwiftPM, whose channel is the version tag, and its `release.yml` globbed
-  `*/Package.swift`, so a NEW bearer package needed no config change to be validated and released.
+- **Apple** ships through SwiftPM, whose channel is the version tag. The mirror's release job builds the
+  aggregate ROOT `Package.swift` (which resolves the PUBLISHED `hop-sdk-apple` by URL, the exact consumer
+  path) and then compiles a throwaway consumer package against all five products, so a NEW bearer needs a
+  product/target line in the root manifest but no workflow change to be validated and released.
 - **Android** would ship to Maven Central as `sh.hop.bearers:bearer-<transport>`, one AAR per bearer.
   The publishing convention lives in `bearers/android/build.gradle.kts` and applies to every `bearer-*`
   module, so a new bearer is covered the moment it is in `settings.gradle.kts`. `sh.hop.bearers` is a

@@ -8,7 +8,7 @@ This package is the **cross-platform client SDK**. One TypeScript API sits over 
 client SDKs, so your JavaScript talks to the same protocol core on both platforms:
 
 - **iOS / macOS**: the Swift SDK (`Hop`, from `hop-sdk-apple`).
-- **Android**: the Kotlin SDK (`sh.hop:hop`, from `sdk/android`), which bundles the native `libhop`.
+- **Android**: the Kotlin SDK (`sh.hop:hop`, from `hop-sdk-android`), which bundles the native `libhop`.
 
 The protocol, the crypto, and the wire format all live in that native core; this package only marshals
 values across the React Native bridge and gives you an idiomatic, promise-based surface.
@@ -28,19 +28,101 @@ native build: it does **not** run in Expo Go (use a development build or a bare 
 
 ### iOS
 
+The Apple SDK is three pods, one per Swift Package Manager target, so declare them in your `Podfile`
+alongside this package. CocoaPods cannot resolve a Swift Package Manager dependency, which is why they
+exist:
+
+```ruby
+platform :ios, '16.0'   # the Hop Apple SDK's floor, and therefore this module's
+
+target 'YourApp' do
+  # Point at a checkout of the monorepo, or at vendored copies. NOT at a raw URL: every one of these
+  # podspecs reads Package.swift from its own directory while CocoaPods evaluates it, and CHop reads
+  # LICENSE.md too, and a :podspec URL fetches one file to a temp directory, so it dies on the first
+  # read. Verified: evaluating CHop.podspec in isolation fails at line 19 on the missing Package.swift.
+  pod 'CHop',        :podspec => '../vendor/hop-sdk-apple/CHop.podspec'
+  pod 'HopContract', :podspec => '../vendor/hop-sdk-apple/HopContract.podspec'
+  pod 'HopSDK',      :podspec => '../vendor/hop-sdk-apple/HopSDK.podspec'
+end
+```
+
+The `../vendor/hop-sdk-apple/` directory needs five files kept side by side, copied from `sdk/apple/`
+in the `hopmesh/hop` monorepo at the revision you want: the three `.podspec` files, `Package.swift`,
+and `LICENSE.md`. The last two are not optional; the podspecs read them at evaluation time. Vendoring
+also gives you the immutable pin a URL cannot, since the `hopmesh/hop` repository carries no tags.
+That is what the first consumer app did.
+
 ```sh
 cd ios && pod install
 ```
 
-The podspec pulls in the Hop Apple SDK as a Swift Package Manager dependency when your toolchain
-supports it (CocoaPods 1.16+, React Native 0.75+). On older toolchains, add the
-[`hop-sdk-apple`](https://github.com/hopmesh/hop-sdk-apple) Swift package to your app target in Xcode;
-the bridge's `import Hop` then resolves against it.
+What the three are, and why the names look the way they do:
+
+| pod | what it carries | module |
+|---|---|---|
+| `CHop` | the compiled core, `libhop.xcframework`, downloaded from the pinned release and checksum verified | `CHop` |
+| `HopContract` | the pure Swift bearer contract, no native code | `HopContract` |
+| `HopSDK` | `HopNode` and `HopRuntime`, the SDK proper | `Hop` |
+
+`HopSDK` exposes the module `Hop`, so `import Hop` is what you write. The POD is not called `Hop` because a
+pod by that name builds `libHop.a`, which on a case-insensitive filesystem is the same file name as the
+core's `libhop.a`, and the linker then resolves `-lhop` to the wrong archive. That produced two different
+broken builds before the pods were renamed, so the split is deliberate.
+
+This replaces an earlier instruction to add the `hop-sdk-apple` Swift package to your app target by hand.
+That never worked for this module: the podspec's `s.spm_dependency` call was guarded by
+`if s.respond_to?(:spm_dependency)`, the method does not exist in CocoaPods 1.17, and the guard skipped
+silently, so `import Hop` could not resolve no matter what the app target contained.
+**The mirror, and which remote forms actually work.** The three podspecs live in the monorepo at
+`sdk/apple/` and the Copybara export for `hopmesh/hop-sdk-apple` carries them (`sdk/apple/**` is
+the export glob, with no exclude for podspecs), so a pinned clone of any mirror ref at or after
+the sync that landed them serves all five side-by-side files. The complete remote form is
+`:podspec` pointed INSIDE such a clone:
+
+```ruby
+pod 'CHop',        :podspec => '../hop-sdk-apple/CHop.podspec'
+pod 'HopContract', :podspec => '../hop-sdk-apple/HopContract.podspec'
+pod 'HopSDK',      :podspec => '../hop-sdk-apple/HopSDK.podspec'
+```
+
+where `../hop-sdk-apple` is `git clone https://github.com/hopmesh/hop-sdk-apple.git` pinned to
+the commit you want. This is the vendoring flow above with the copy step replaced by a clone, and
+it was verified end to end against a mirror produced by the repo's own pinned Copybara export:
+`pod install` resolved all three pods at 0.0.2 and fetched the checksum-verified
+`libhop.xcframework` (CHop's `s.source` is the `:http` release archive, so it downloads rather
+than riding the checkout), the `CHop` spec checksum came out byte-identical to the one the
+vendored copy pins, and a consumer app target using exactly these three pods built clean for the
+iOS simulator with the core's static library linked.
+
+**A `:git` source does NOT work for these pods, and the failure is silent at install time.** The
+graph resolves, all three specs evaluate (the clone gives every sibling read a file to hit), and
+the lock pins the commit, but CocoaPods then treats the checkout as the pod source and never
+fetches CHop's `:http` archive, so `Pods/CHop` contains no xcframework and the consumer's build
+dies in HopSDK with `unable to resolve module dependency: 'CHop'`. Measured both ways: `pod
+install` succeeds and `xcodebuild` fails on the `:git` form, while the `:podspec`-into-clone form
+above builds. The two pure-Swift pods are fine either way; CHop is the one that loses its binary.
+
+As of this writing the public mirror does not carry the podspecs yet: its auto-export has not run
+since the monorepo lost the `HOP_SYNC_APP_*` secrets, and the mirror's recorded last-migrated
+commit no longer resolves in the monorepo, which blocks the export even with secrets back (both
+diagnosed and reproduced against the real pinned Copybara container; see the PR that added this
+section). Until that repair lands, vendoring the five files (above) is the only complete path that
+does not need the mirror. The ordinary future path is the CocoaPods trunk: `pod 'CHop'` with no
+source line, which needs the mirror's release job to run, which in turn needs `COCOAPODS_TRUNK_TOKEN`
+seeded (it is not today).
+
+**Why not a `:podspec` URL.** An earlier version of this section pointed at
+`raw.githubusercontent.com/hopmesh/hop-sdk-apple/v0.0.2/CHop.podspec`. Those URLs resolve, and
+that is all they do: `pod install` still fails, because each podspec `File.read`s `Package.swift`
+from its own directory during evaluation, `CHop` reads `LICENSE.md` as well, and a `:podspec`
+URL fetches one file to a temp directory with neither beside it. Evaluating `CHop.podspec` in
+isolation fails on line 19, the first read (reproduced: `pod ipc spec` on a lone copy dies at
+`Errno::ENOENT` for `Package.swift`). Do not put those URLs back without also changing the
+podspecs to stop reading siblings.
 
 ### Android
 
-Autolinking wires the module in. The Hop Android SDK (`sh.hop:hop`) is pulled from Maven Central and
-ships the `libhop` native slices for every ABI, so there is nothing else to configure.
+Autolinking wires the module in. The Hop Android SDK (`sh.hop:hop`) is pulled from a local Maven repository (see [React Native Quickstart](../../docs/react-native-quickstart.md)), not from Maven Central, and ships the `libhop` native slices for every ABI, so there is nothing else to configure.
 
 ## Quick start
 
@@ -102,13 +184,74 @@ node.onServiceResponse(async (res) => {
 });
 ```
 
+### hps:// group chat and broadcast channels
+
+A group message here is not one-to-one fan-out and not a multicast bundle. It is a single
+content-key-encrypted, per-writer-signed publication, flooded once, so posting to three hundred members
+costs what posting to three does. Membership, invites and revocation are properties of the topic's key
+handoff, never of the delivery.
+
+A **channel** is group chat: every member holds the shared content key and writes, and each post is
+signed by the writer's own identity so readers see a verified sender. A **service** is broadcast: only
+the host can produce a post subscribers will verify, even if the read key leaks.
+
+```ts
+// Host a channel. Access is "open" | "requestToJoin" | "invite"; visibility is "private" | "discoverable".
+// A channel resolves an EMPTY Uint8Array (it has no service signing key); a service resolves its public
+// verify key. null means the register failed, which is not the same thing.
+await node.hpsRegister("town/square", "channel", "requestToJoin", "discoverable");
+
+// Join someone else's topic, then post to it.
+await node.hpsSubscribe(hostAddress, "town/square");
+await node.hpsPublish("town/square", "hello channel");
+
+// Receive. Publications repeat on every poll until you accept them, exactly like the inbox.
+node.onHpsMessage(async (msg) => {
+  console.log(`${msg.path} <- ${msg.sender}: ${new TextDecoder().decode(msg.body)}`);
+  await node.acceptHpsMessage(msg.id);
+});
+
+// Invites are take-and-clear, not accept-to-remove: persist what this hands you or it is gone.
+node.onHpsInvite((inv) => saveInvite(inv));
+await node.hpsAcceptInvite(inv.host, inv.path);
+
+// Hosting a requestToJoin topic: approve or deny, and revoke by rotating the key without them.
+for (const requester of await node.hpsPending("town/square")) await node.hpsApprove("town/square", requester);
+await node.hpsRekey("town/square", "", [addressToRevoke]);
+```
+
+`hpsMyTopics()` rebuilds your topic list from the node's own store at startup, and `hpsBrowse()` finds
+discoverable topics on the mesh. Only topics hosted by apps holding the same app secret are ever
+surfaced, so one app's channels are invisible to another's.
+
+### Relays: a pool, not one URL
+
+A single hardcoded relay URL is a single point of failure. Offer the node every endpoint you know and
+let it score them:
+
+```ts
+await node.relayAdd("wss://relay.example/hop");   // `configured` defaults to true: an operator choice
+const url = await node.relayNext();               // the one to dial now, or null
+await node.relayReport(url, ok);                  // scores it: success clears backoff, failure extends it
+```
+
+`relayNext()` resolving null is two different states, and a UI must tell them apart. With a non-zero
+`(await node.relayPool()).total` it means every candidate is currently backed off: show that, and retry,
+because the backoff always eventually recovers. With a zero total the pool is simply empty, which is what
+`relayAdd` fixes.
+
 ## API
 
 - `Hop.ephemeral()`, `Hop.withSecret(secret)`, `Hop.open({ dbPath, secret?, appSecret?, key? })` create a `HopNode`.
 - `HopNode`: `address()`, `secret()`, `setName()`, `subscribe()`, `publishPrekey()`, `isSecured()`,
   `send()`, `sendTo()`, `status()`, `acceptInbox()`, the `sendServiceRequest`/`sendServiceResponse`
-  surface, the bearer seam (`linkUp`/`linkDown`/`bytesReceived`), `start()`/`stop()`, the
-  `onMessage`/`onServiceRequest`/`onServiceResponse`/`onOutgoing` subscriptions, and `close()`.
+  surface, the hps:// surface (`hpsRegister`/`hpsSubscribe`/`hpsPublish`/`acceptHpsMessage`,
+  `hpsInvite`/`hpsAcceptInvite`/`hpsDeclineInvite`/`hpsLeave`, the host controls
+  `hpsPending`/`hpsApprove`/`hpsDeny`/`hpsRekey`/`hpsReach`/`hpsMembers`, and
+  `hpsMyTopics`/`hpsBrowse`), the relay pool (`relayAdd`/`relayNext`/`relayReport`/`relayPool`), the
+  bearer seam (`linkUp`/`linkDown`/`bytesReceived`), `start()`/`stop()`, the
+  `onMessage`/`onServiceRequest`/`onServiceResponse`/`onOutgoing`/`onHpsMessage`/`onHpsInvite`
+  subscriptions, and `close()`.
 - `HopAddress.toBase58(bytes)` / `HopAddress.fromBase58(text)` convert between raw 32-byte addresses and
   their base58 form.
 

@@ -1,7 +1,7 @@
 // PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
-// asserts ABI 5 at load while binding none of them, so an SDK-only host could not fail over: the only
-// reachable behavior was retrying one configured URL forever. This drives the failover the header
-// describes through the published HopEndpoint surface, on ONE endpoint that is never restarted.
+// asserted that level at load while binding none of them, so an SDK-only host could not fail over:
+// the only reachable behavior was retrying one configured URL forever. This drives the failover the
+// header describes through the published HopEndpoint surface, on ONE endpoint that is never restarted.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HopEndpoint } from '../lib/endpoint.mjs'

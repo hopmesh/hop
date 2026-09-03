@@ -32,7 +32,7 @@
       "file": "sync-components.yml",
       "job": "Auto-export changed components",
       "max_age_days": 3,
-      "why": "Publishes the three surviving mirrors on every merge to main. It failed on four consecutive daily merges in 2026-08 because two retired components could not export, and it was fixed incidentally by deleting them rather than by anyone noticing the red. hop owns the mirrors now, so this gate belongs here."
+      "why": "Publishes the live mirrors on every merge to main. It failed on four consecutive daily merges in 2026-08 because two retired components could not export, and it was fixed incidentally by deleting them rather than by anyone noticing the red. hop owns the mirrors now, so this gate belongs here."
     },
     {
       "file": "native-artifacts.yml",

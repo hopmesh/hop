@@ -1,0 +1,66 @@
+buildscript {
+    ext {
+        buildToolsVersion = "37.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 37
+        targetSdkVersion = 36
+        ndkVersion = "27.1.12297006"
+        // The Kotlin this app ACTUALLY compiles with, measured, not chosen here. The versionless
+        // classpath entry below resolves by ordinary conflict resolution: React Native 0.87's included
+        // @react-native/gradle-plugin build pulls AGP 9.2.1 (which depends on kotlin-gradle-plugin
+        // 2.2.10) plus its own KGP 2.2.0 request, and 2.2.10 wins. No kotlinVersion set here can
+        // change that: even @hop-mesh/react-native's own buildscript request for
+        // ${kotlinVersion} is shadowed, because parent-first classloader delegation serves the Kotlin
+        // plugin classes from this root classpath (its kotlinCompilerClasspath still resolves
+        // kotlin-compiler-embeddable:2.2.10 when it asks for 2.4.10). What this ext DOES select is the
+        // kotlin-stdlib that third-party RN libraries (react-native-safe-area-context and friends)
+        // compile against, so it must match the real compiler: with 2.4.10 here those libraries pulled
+        // a metadata-2.4.0 stdlib that the 2.2.10 compiler could not read. sdk/android is therefore
+        // pinned at Kotlin 2.2.10 so the published AAR carries metadata 2.2.0, the most this compiler
+        // family can be assumed to emit. The previous comment's claim that RN "pins the compiler at
+        // 2.2.0 through its included build" was wrong in the detail: RN requests 2.2.0, but AGP's
+        // transitive 2.2.10 is what wins, and the old Kotlin metadata-check suppression this file
+        // used to carry was covering BOTH the hop AAR metadata and this stdlib mismatch.
+        kotlinVersion = "2.2.10"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
+    }
+}
+
+apply plugin: "com.facebook.react.rootproject"
+
+// The Hop Android SDK (sh.hop:hop) is not on Maven Central, so a consumer has to point at the local
+// repository the AAR was published into. See docs/react-native-quickstart.md.
+//
+// WHY THIS IS HERE AND NOT ONLY IN THE SDK MODULE. @hop-mesh/react-native's own build.gradle already
+// declares this repository, and that is necessary but NOT sufficient: `sh.hop:hop` is a TRANSITIVE
+// dependency from the app's point of view, and Gradle resolves transitives against the CONSUMER's
+// repositories. Without this block the app's :app:debugRuntimeClasspath searched only Central, Google
+// and JitPack and failed with "Could not find sh.hop:hop:0.0.5", even though the module had the
+// repository and the AAR was on disk. Only a real consumer build surfaces that.
+//
+// Resolution order matches the SDK module's, so both agree: an explicit -PhopMavenRepository wins, then
+// HOP_MAVEN_REPOSITORY, then the SDK's module-relative default, which works because npm links the
+// package by symlink.
+allprojects {
+    repositories {
+        maven {
+            url = uri(
+                project.hasProperty("hopMavenRepository")
+                    ? project.property("hopMavenRepository").toString()
+                    : (System.getenv("HOP_MAVEN_REPOSITORY")
+                        ?: new File(rootDir, "../node_modules/@hop-mesh/react-native/android/.hop-maven").canonicalPath)
+            )
+            // Scoped, so this local path is never consulted for anything but the Hop SDK.
+            content { includeGroup "sh.hop" }
+        }
+    }
+}
+

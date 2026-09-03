@@ -13,8 +13,9 @@
 # hopmesh/monorepo in their repository field. Nothing of ours is on PyPI, RubyGems, Hex, pub.dev, or
 # PlatformIO, and the bare hop-core and hop crates on crates.io belong to unrelated third parties.
 #
-# The three components that still mirror (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) publish by
-# pushing a git tag: the repo IS the package. They need no registry account, no registry token, and no
+# The components registered to mirror (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple live, plus
+# hop-bearers-apple, which is wired and whose repository has not been created) publish by pushing a
+# git tag: the repo IS the package. They need no registry account, no registry token, and no
 # trusted-publisher configuration, which is exactly why nothing replaced this script.
 #
 # The full record is docs/repo-catalog.md, under "Registry fallout of the mirror retirement".
@@ -23,9 +24,10 @@ set -euo pipefail
 cat >&2 <<'EOF'
 bootstrap-packages.sh is retired and does nothing.
 
-The mirror fleet it published from was retired in 2026-08 and those repos are deleted. The three
-surviving mirrors (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) publish by git tag and need no
-registry account, token, or trusted publisher.
+The mirror fleet it published from was retired in 2026-08 and those repos are deleted. The live
+mirrors (hop-sdk-go, hop-sdk-crystal, hop-sdk-apple) publish by git tag and need no registry account,
+token, or trusted publisher. hop-bearers-apple is configured as a fourth but its repository does not
+exist yet, so it publishes nothing at all today.
 
 For what is published and what is not, see docs/repo-catalog.md, section
 "Registry fallout of the mirror retirement".

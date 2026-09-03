@@ -184,3 +184,55 @@ jobs:
         with:
           generate_release_notes: true
           files: ${{ runner.temp }}/release/*
+
+  # The pods reach CocoaPods trunk only AFTER the GitHub release exists, and that ordering is a fact
+  # about CHop.podspec rather than a preference: its source is
+  # https://github.com/hopmesh/hop-sdk-apple/releases/download/v<version>/libhop.xcframework.zip, and
+  # `pod trunk push` lints by DOWNLOADING that source and building it. Push before the release job and
+  # the download 404s.
+  #
+  # macOS, not ubuntu, for the same reason: cocoapods-trunk's push builds the pod for every declared
+  # platform (its validate_podspec constructs the same Validator `pod spec lint` uses), and these pods
+  # declare iOS, so it needs Xcode. That is why this is a fourth job instead of a step in `publish`.
+  publish-pods:
+    needs: [prepare, build, publish]
+    environment: release
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.release_artifact_name }}
+          path: ${{ runner.temp }}/release
+      # Same immutable-artifact check the GitHub release did. The pods describe that release, so they
+      # are published on the same evidence rather than on the tag alone.
+      - name: Verify immutable Swift release assets
+        run: >-
+          python3 .github/release-artifact.py verify --directory "$RUNNER_TEMP/release"
+          --canonical-source-sha '${{ needs.prepare.outputs.source_sha }}'
+          --run-attempt '${{ needs.build.outputs.release_artifact_attempt }}'
+      # An unset secret resolves to the empty string, and cocoapods-trunk then falls back to ~/.netrc,
+      # which does not exist on a fresh runner, so the CLI would die in its own usage banner. Name it
+      # here instead, at the top of the job, before anything slow runs.
+      - name: Require the trunk credential
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          if [ -z "${COCOAPODS_TRUNK_TOKEN}" ]; then
+            echo "::error title=Missing secret::COCOAPODS_TRUNK_TOKEN is not set in the release environment of this repository. Create it from the token pod trunk register writes to ~/.netrc. Refusing to skip: a publish that reports success while publishing nothing is the failure this check exists for."
+            exit 1
+          fi
+          echo "COCOAPODS_TRUNK_TOKEN is present"
+      - name: Publish CHop, HopContract, and HopSDK to CocoaPods trunk
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: >-
+          python3 .github/trunk-publish.py publish
+          --directory .
+          --expect-version "${GITHUB_REF_NAME#v}"

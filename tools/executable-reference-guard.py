@@ -21,7 +21,7 @@ PUBLISH_RE = re.compile(
     r"cargo\s+publish|crates-publish\.py\s+publish|npm\s+publish|pio\s+pkg\s+publish|mix\s+hex\.publish|"
     r"\bgem\s+push\b|bundle\s+exec\s+rake\s+release|gh\s+release\s+create|"
     r"gh-action-pypi-publish@|softprops/action-gh-release@|hex\.pm/api/packages/|"
-    r"publishHopPublicationToHopRepository"
+    r"publishHopPublicationToHopRepository|pod\s+trunk\s+push|trunk-publish\.py\s+publish"
 )
 BUILD_RE = re.compile(
     r"cargo\s+(?:build|test|package)|wasm-pack\s+build|npm\s+(?:ci|test|pack)|"

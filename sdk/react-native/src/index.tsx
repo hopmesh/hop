@@ -73,5 +73,13 @@ export type {
   HopRole,
   HopOpenOptions,
   HopSendOptions,
+  HopRelayPool,
+  HpsKind,
+  HpsAccess,
+  HpsVisibility,
+  HopHpsMessage,
+  HopHpsInvite,
+  HopHpsTopic,
+  HopHpsTopicInfo,
 } from "./types";
 export type { HopNativeModule } from "./native";

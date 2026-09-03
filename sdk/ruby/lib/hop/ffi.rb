@@ -13,7 +13,7 @@ module Hop
     CH = Fiddle::TYPE_CHAR
     V  = Fiddle::TYPE_VOID
 
-    ABI_EXPECTED = 5
+    ABI_EXPECTED = 6
 
     def self.lib_path
       ext = case RbConfig::CONFIG["host_os"]
@@ -69,6 +69,53 @@ module Hop
     CLUSTER_JOIN_PASSPHRASE = fn("hop_cluster_join_passphrase", [P, P, SZ], V)
     CLUSTER_MEMBERS         = fn("hop_cluster_members", [P], I)
     CLUSTER_SET_QUORUM      = fn("hop_cluster_set_quorum", [P, I], V)
+    # §32 hps:// pub/sub: services and channels, i.e. group chat. The eighteen exports the v5 -> v6 ABI
+    # bump added, which the C ABI had none of before, so no wrapper sitting on it could reach channels
+    # however completely the Rust core implemented them. Declared here because a Fiddle::Function
+    # resolves its symbol at load, so a libhop missing any of them fails loudly at require time rather
+    # than at the first publish.
+    #
+    # A publication is NOT one-to-one fan-out and NOT a multicast bundle: it is a single
+    # content-key-encrypted, per-writer-signed publication, flooded once. Membership, invites and
+    # revocation are properties of the topic's key handoff, not of a recipient list.
+    #
+    # POLL_HPS_MESSAGES is accept-to-remove like POLL_INBOX: its sink returns bool, true accepting the
+    # publication so core durably removes it, false leaving it queued for redelivery until
+    # ACCEPT_HPS_MESSAGE succeeds. POLL_HPS_INVITES is take-and-clear: a drained invite is GONE, so a
+    # host must persist what it surfaces.
+    #
+    # HPS_REGISTER returns a bool AND writes the key length separately, so a channel (zero-length key,
+    # its writers signing with their own identity) is distinguishable from a failure; the bool, never
+    # the length, says whether registration happened. HPS_LEAVE writes out_has_id for the same reason:
+    # leaving a topic we HOST sends no bundle, a success with no id. HPS_REKEY takes a COUNT of 32-byte
+    # addresses packed back to back, not a byte length.
+    HPS_REGISTER            = fn("hop_hps_register", [P, P, I, I, I, P, SZ, P], CH)
+    HPS_SUBSCRIBE           = fn("hop_hps_subscribe", [P, P, P, P], CH)
+    HPS_PUBLISH             = fn("hop_hps_publish", [P, P, P, SZ, P], CH)
+    POLL_HPS_MESSAGES       = fn("hop_poll_hps_messages", [P, P, P], V)
+    ACCEPT_HPS_MESSAGE      = fn("hop_accept_hps_message", [P, P], CH)
+    HPS_INVITE              = fn("hop_hps_invite", [P, P, P, P], CH)
+    HPS_ACCEPT_INVITE       = fn("hop_hps_accept_invite", [P, P, P, P], CH)
+    HPS_DECLINE_INVITE      = fn("hop_hps_decline_invite", [P, P, P], CH)
+    POLL_HPS_INVITES        = fn("hop_poll_hps_invites", [P, P, P], V)
+    HPS_LEAVE               = fn("hop_hps_leave", [P, P, P, P], CH)
+    HPS_PENDING             = fn("hop_hps_pending", [P, P, P, P], SZ)
+    HPS_APPROVE             = fn("hop_hps_approve", [P, P, P, P], CH)
+    HPS_DENY                = fn("hop_hps_deny", [P, P, P], CH)
+    HPS_REKEY               = fn("hop_hps_rekey", [P, P, P, P, SZ, P, P], SZ)
+    HPS_REACH               = fn("hop_hps_reach", [P, P], I)
+    HPS_MEMBERS             = fn("hop_hps_members", [P, P, P, P], SZ)
+    HPS_MY_TOPICS           = fn("hop_hps_my_topics", [P, P, P], SZ)
+    HPS_BROWSE              = fn("hop_hps_browse", [P, P, P], SZ)
+
+    # The three §32 discriminants, which cross as plain uint32. An out-of-range value makes the call
+    # FAIL rather than being defaulted, and a caller must never coerce one towards a member the library
+    # would have rejected: reading a garbage int as Open would hand a topic's content key to anyone who
+    # asks for it. So these are the only values to pass, and an unrecognized name is an error, not an
+    # Open topic.
+    HPS_KIND       = { channel: 0, service: 1 }.freeze
+    HPS_ACCESS     = { open: 0, request_to_join: 1, invite: 2 }.freeze
+    HPS_VISIBILITY = { private: 0, discoverable: 1 }.freeze
 
     Closure = Fiddle::Closure::BlockCaller
 

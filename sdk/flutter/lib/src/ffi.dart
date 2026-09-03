@@ -25,7 +25,7 @@ import 'library.dart';
 /// The ABI version this wrapper was written against (`HOP_ABI_VERSION` in
 /// `sdk/hop.h`). Asserted at construction so a wrapper built against a newer
 /// header fails loudly instead of drifting silently (F-28).
-const int hopAbiVersion = 5;
+const int hopAbiVersion = 6;
 
 // ---- native callback signatures (invoked synchronously during poll/drain) ----
 typedef _DrainSinkC = Void Function(
@@ -37,6 +37,15 @@ typedef _SvcRespSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
 typedef _ReachSignSinkC = Void Function(Pointer<Void>, Pointer<Uint8>, Size);
 typedef _ReachVerifySinkC = Void Function(
     Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint64, Uint32);
+typedef _HpsMsgSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
+    Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>, Size);
+typedef _HpsInviteSinkC = Void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32);
+typedef _Addr32SinkC = Void Function(Pointer<Void>, Pointer<Uint8>);
+typedef _HpsTopicSinkC = Void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32, Bool, Uint32);
+typedef _HpsBrowseSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
+    Pointer<Utf8>, Uint32, Pointer<Utf8>, Pointer<Utf8>, Uint32);
 
 // ---- native function signatures ----
 typedef _AbiVersionC = Uint32 Function();
@@ -108,6 +117,105 @@ typedef _ClusterMembersC = Uint32 Function(Pointer<Void>);
 typedef _ClusterMembersDart = int Function(Pointer<Void>);
 typedef _ClusterSetQuorumC = Void Function(Pointer<Void>, Uint32);
 typedef _ClusterSetQuorumDart = void Function(Pointer<Void>, int);
+// ---- hps:// pub/sub (DESIGN.md section 32) ----
+//
+// A Hop group message is NOT one-to-one fan-out and NOT a multicast bundle:
+// it is a single content-key-encrypted, per-writer-signed publication, flooded
+// once. Membership, invites and revocation are properties of the topic's key
+// handoff, which is why invite / approve / rekey sit in the messaging surface.
+// kind / access / visibility cross as plain uint32_t; an out-of-range
+// discriminant makes the call FAIL and is never coerced or defaulted, because
+// reading a garbage int as open would hand a topic's keys to anyone who asks.
+//
+// These are DECLARED and deliberately NOT yet wrapped in a public Dart API:
+// the thin methods below exist so every lookup resolves against libhop for
+// real, not because the package exposes a channel surface today.
+typedef _HpsRegisterC = Bool Function(Pointer<Void>, Pointer<Utf8>, Uint32,
+    Uint32, Uint32, Pointer<Uint8>, Size, Pointer<Size>);
+typedef _HpsRegisterDart = bool Function(Pointer<Void>, Pointer<Utf8>, int, int,
+    int, Pointer<Uint8>, int, Pointer<Size>);
+typedef _HpsSubscribeC = Bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsSubscribeDart = bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsPublishC = Bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Size, Pointer<Uint8>);
+typedef _HpsPublishDart = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, int, Pointer<Uint8>);
+typedef _PollHpsMessagesC = Void Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsMsgSinkC>>, Pointer<Void>);
+typedef _PollHpsMessagesDart = void Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsMsgSinkC>>, Pointer<Void>);
+typedef _AcceptHpsMessageC = Bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _AcceptHpsMessageDart = bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _HpsInviteC = Bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _HpsInviteDart = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _HpsAcceptInviteC = Bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsAcceptInviteDart = bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsDeclineInviteC = Bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>);
+typedef _HpsDeclineInviteDart = bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>);
+typedef _PollHpsInvitesC = Void Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsInviteSinkC>>, Pointer<Void>);
+typedef _PollHpsInvitesDart = void Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsInviteSinkC>>, Pointer<Void>);
+typedef _HpsLeaveC = Bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Bool>);
+typedef _HpsLeaveDart = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Bool>);
+typedef _HpsPendingC = Size Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsPendingDart = int Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsApproveC = Bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _HpsApproveDart = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _HpsDenyC = Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsDenyDart = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
+typedef _HpsRekeyC = Size Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>,
+    Pointer<Uint8>, Size, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsRekeyDart = int Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Uint8>,
+    int,
+    Pointer<NativeFunction<_Addr32SinkC>>,
+    Pointer<Void>);
+typedef _HpsReachC = Uint32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef _HpsReachDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef _HpsMembersC = Size Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsMembersDart = int Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsMyTopicsC = Size Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsTopicSinkC>>, Pointer<Void>);
+typedef _HpsMyTopicsDart = int Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsTopicSinkC>>, Pointer<Void>);
+typedef _HpsBrowseC = Size Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsBrowseSinkC>>, Pointer<Void>);
+typedef _HpsBrowseDart = int Function(
+    Pointer<Void>, Pointer<NativeFunction<_HpsBrowseSinkC>>, Pointer<Void>);
+
+/// The kind of `hps://` topic hosted at a path (DESIGN.md section 32).
+const int hpsKindChannel = 0;
+const int hpsKindService = 1;
+
+/// Who may obtain a topic's keys.
+const int hpsAccessOpen = 0;
+const int hpsAccessRequestToJoin = 1;
+const int hpsAccessInvite = 2;
+
+/// Whether a topic announces itself for discovery.
+const int hpsVisibilityPrivate = 0;
+const int hpsVisibilityDiscoverable = 1;
 
 /// A drained outbound packet: `(link, bytes)`.
 typedef OutgoingPacket = (int link, Uint8List bytes);
@@ -137,6 +245,40 @@ typedef ReachInfo = ({
   int issuedAt,
   int ttlSecs,
 });
+
+/// One polled `hps://` publication, after decryption and sender verification.
+typedef HpsMessageRow = (
+  Uint8List id,
+  String path,
+  Uint8List sender,
+  Uint8List body,
+);
+
+/// One drained `hps://` invite we received.
+typedef HpsInviteRow = (
+  Uint8List host,
+  String path,
+  int kind,
+);
+
+/// One topic this node hosts or follows, for rebuilding a channel list.
+typedef HpsTopicRow = (
+  Uint8List host,
+  String path,
+  int kind,
+  bool hosting,
+  int access,
+);
+
+/// One same-app discoverable topic visible on the mesh.
+typedef HpsTopicInfoRow = (
+  Uint8List host,
+  String path,
+  int kind,
+  String title,
+  String summary,
+  int access,
+);
 
 Uint8List _copy(Pointer<Uint8> ptr, int len) =>
     len == 0 ? Uint8List(0) : Uint8List.fromList(ptr.asTypedList(len));
@@ -221,6 +363,353 @@ class HopFfi {
   late final _clusterSetQuorum =
       _lib.lookupFunction<_ClusterSetQuorumC, _ClusterSetQuorumDart>(
           'hop_cluster_set_quorum');
+  // ---- hps:// pub/sub (DESIGN.md section 32) ----
+  late final _hpsRegister =
+      _lib.lookupFunction<_HpsRegisterC, _HpsRegisterDart>('hop_hps_register');
+  late final _hpsSubscribe = _lib
+      .lookupFunction<_HpsSubscribeC, _HpsSubscribeDart>('hop_hps_subscribe');
+  late final _hpsPublish =
+      _lib.lookupFunction<_HpsPublishC, _HpsPublishDart>('hop_hps_publish');
+  late final _pollHpsMessages =
+      _lib.lookupFunction<_PollHpsMessagesC, _PollHpsMessagesDart>(
+          'hop_poll_hps_messages');
+  late final _acceptHpsMessage =
+      _lib.lookupFunction<_AcceptHpsMessageC, _AcceptHpsMessageDart>(
+          'hop_accept_hps_message');
+  late final _hpsInvite =
+      _lib.lookupFunction<_HpsInviteC, _HpsInviteDart>('hop_hps_invite');
+  late final _hpsAcceptInvite =
+      _lib.lookupFunction<_HpsAcceptInviteC, _HpsAcceptInviteDart>(
+          'hop_hps_accept_invite');
+  late final _hpsDeclineInvite =
+      _lib.lookupFunction<_HpsDeclineInviteC, _HpsDeclineInviteDart>(
+          'hop_hps_decline_invite');
+  late final _pollHpsInvites =
+      _lib.lookupFunction<_PollHpsInvitesC, _PollHpsInvitesDart>(
+          'hop_poll_hps_invites');
+  late final _hpsLeave =
+      _lib.lookupFunction<_HpsLeaveC, _HpsLeaveDart>('hop_hps_leave');
+  late final _hpsPending =
+      _lib.lookupFunction<_HpsPendingC, _HpsPendingDart>('hop_hps_pending');
+  late final _hpsApprove =
+      _lib.lookupFunction<_HpsApproveC, _HpsApproveDart>('hop_hps_approve');
+  late final _hpsDeny =
+      _lib.lookupFunction<_HpsDenyC, _HpsDenyDart>('hop_hps_deny');
+  late final _hpsRekey =
+      _lib.lookupFunction<_HpsRekeyC, _HpsRekeyDart>('hop_hps_rekey');
+  late final _hpsReach =
+      _lib.lookupFunction<_HpsReachC, _HpsReachDart>('hop_hps_reach');
+  late final _hpsMembers =
+      _lib.lookupFunction<_HpsMembersC, _HpsMembersDart>('hop_hps_members');
+  late final _hpsMyTopics =
+      _lib.lookupFunction<_HpsMyTopicsC, _HpsMyTopicsDart>('hop_hps_my_topics');
+  late final _hpsBrowse =
+      _lib.lookupFunction<_HpsBrowseC, _HpsBrowseDart>('hop_hps_browse');
+
+  // ---- hps:// pub/sub methods (section 32) ----
+
+  /// Register (host) a topic at [path]. Returns the service public key for a
+  /// `hpsKindService` topic, an EMPTY list for a channel, or null when the
+  /// call failed: the empty key is a success, never conflate it with one.
+  Uint8List? hpsRegister(
+      Pointer<Void> node, String path, int kind, int access, int visibility) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    final outLen = calloc<Size>(1);
+    try {
+      final ok =
+          _hpsRegister(node, p, kind, access, visibility, out, 32, outLen);
+      if (!ok) return null;
+      final n = outLen.value;
+      return n == 0 ? Uint8List(0) : Uint8List.fromList(out.asTypedList(n));
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Subscribe to `hps://{host}/{path}`. Returns the subscribe bundle id, or
+  /// null on error.
+  Uint8List? hpsSubscribe(Pointer<Void> node, Uint8List host, String path) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    try {
+      final ok = _withBytes(_require32(host, 'host'),
+          (hostPtr, _) => _hpsSubscribe(node, hostPtr, p, out));
+      return ok ? Uint8List.fromList(out.asTypedList(32)) : null;
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+    }
+  }
+
+  /// Publish [body] to a topic we host or (for a channel) belong to. Returns
+  /// the bundle id, or null on error.
+  Uint8List? hpsPublish(Pointer<Void> node, String path, Uint8List body) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    try {
+      final ok = _withBytes(body,
+          (bodyPtr, bodyLen) => _hpsPublish(node, p, bodyPtr, bodyLen, out));
+      return ok ? Uint8List.fromList(out.asTypedList(32)) : null;
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+    }
+  }
+
+  /// Poll received publications WITHOUT accepting them; rows repeat until
+  /// [acceptHpsMessage] succeeds, mirroring [takeServiceResponses].
+  List<HpsMessageRow> takeHpsMessages(Pointer<Void> node) {
+    final out = <HpsMessageRow>[];
+    final cb = NativeCallable<_HpsMsgSinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> id, Pointer<Utf8> path,
+          Pointer<Uint8> sender, Pointer<Uint8> body, int bodyLen) {
+        out.add((
+          _copy(id, 32),
+          path.toDartString(),
+          _copy(sender, 32),
+          _copy(body, bodyLen)
+        ));
+        return false;
+      },
+      exceptionalReturn: false,
+    );
+    try {
+      _pollHpsMessages(node, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return out;
+  }
+
+  /// Durably accept one publication returned by [takeHpsMessages].
+  bool acceptHpsMessage(Pointer<Void> node, Uint8List id) => _withBytes(
+      _require32(id, 'publication id'),
+      (ptr, _) => _acceptHpsMessage(node, ptr));
+
+  /// Host to destination: invite [dest] to a topic we host. Returns the
+  /// invite bundle id, or null on error.
+  Uint8List? hpsInvite(Pointer<Void> node, String path, Uint8List dest) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    try {
+      final ok = _withBytes(_require32(dest, 'invite destination'),
+          (destPtr, _) => _hpsInvite(node, p, destPtr, out));
+      return ok ? Uint8List.fromList(out.asTypedList(32)) : null;
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+    }
+  }
+
+  /// Member to host: accept an invite we received. Returns the accept bundle
+  /// id, or null on error.
+  Uint8List? hpsAcceptInvite(Pointer<Void> node, Uint8List host, String path) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    try {
+      final ok = _withBytes(_require32(host, 'invite host'),
+          (hostPtr, _) => _hpsAcceptInvite(node, hostPtr, p, out));
+      return ok ? Uint8List.fromList(out.asTypedList(32)) : null;
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+    }
+  }
+
+  /// Decline a received invite, durably, so it does not reappear on restart.
+  bool hpsDeclineInvite(Pointer<Void> node, Uint8List host, String path) {
+    final p = path.toNativeUtf8();
+    try {
+      return _withBytes(_require32(host, 'invite host'),
+          (hostPtr, _) => _hpsDeclineInvite(node, hostPtr, p));
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Drain invites we have received, CLEARING them. Take-and-clear, unlike
+  /// [takeHpsMessages]: a drained invite is gone, so persist what you surface.
+  List<HpsInviteRow> takeHpsInvites(Pointer<Void> node) {
+    final out = <HpsInviteRow>[];
+    final cb = NativeCallable<_HpsInviteSinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> host, Pointer<Utf8> path, int kind) {
+        out.add((_copy(host, 32), path.toDartString(), kind));
+      },
+    );
+    try {
+      _pollHpsInvites(node, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return out;
+  }
+
+  /// Leave a topic. `ok` is the C call's result; `id` is null when leaving a
+  /// topic we HOST, because that sends no bundle and is a success, not a
+  /// failure.
+  ({bool ok, Uint8List? id}) hpsLeave(Pointer<Void> node, String path) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    final hasId = calloc<Bool>(1);
+    try {
+      final ok = _hpsLeave(node, p, out, hasId);
+      return (
+        ok: ok,
+        id: hasId.value ? Uint8List.fromList(out.asTypedList(32)) : null,
+      );
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+      calloc.free(hasId);
+    }
+  }
+
+  /// Host: pending join requests on a request-to-join topic.
+  List<Uint8List> hpsPending(Pointer<Void> node, String path) {
+    final out = <Uint8List>[];
+    final p = path.toNativeUtf8();
+    final cb = NativeCallable<_Addr32SinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> addr) {
+        out.add(_copy(addr, 32));
+      },
+    );
+    try {
+      _hpsPending(node, p, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+      calloc.free(p);
+    }
+    return out;
+  }
+
+  /// Host: approve a pending requester. Returns the keys bundle id, or null.
+  Uint8List? hpsApprove(Pointer<Void> node, String path, Uint8List requester) {
+    final p = path.toNativeUtf8();
+    final out = calloc<Uint8>(32);
+    try {
+      final ok = _withBytes(_require32(requester, 'requester'),
+          (rPtr, _) => _hpsApprove(node, p, rPtr, out));
+      return ok ? Uint8List.fromList(out.asTypedList(32)) : null;
+    } finally {
+      calloc.free(p);
+      calloc.free(out);
+    }
+  }
+
+  /// Host: deny a pending requester. No keys are sealed.
+  bool hpsDeny(Pointer<Void> node, String path, Uint8List requester) {
+    final p = path.toNativeUtf8();
+    try {
+      return _withBytes(_require32(requester, 'requester'),
+          (rPtr, _) => _hpsDeny(node, p, rPtr));
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Host: selective forward rotation, which is how a member is REVOKED.
+  /// [remove] is packed 32-byte addresses back to back; the count is computed
+  /// from the byte length and must divide evenly. Returns the rekey bundle ids.
+  List<Uint8List> hpsRekey(
+      Pointer<Void> node, String path, String newPath, Uint8List remove) {
+    if (remove.length % 32 != 0) {
+      throw ArgumentError(
+          'remove must be 32-byte addresses packed back to back, got ${remove.length} bytes');
+    }
+    final p = path.toNativeUtf8();
+    final np = newPath.toNativeUtf8();
+    final out = <Uint8List>[];
+    final cb = NativeCallable<_Addr32SinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> id) {
+        out.add(_copy(id, 32));
+      },
+    );
+    try {
+      _withBytes(
+          remove,
+          (rPtr, rLen) => _hpsRekey(
+              node, p, np, rPtr, rLen ~/ 32, cb.nativeFunction, nullptr));
+    } finally {
+      cb.close();
+      calloc.free(p);
+      calloc.free(np);
+    }
+    return out;
+  }
+
+  /// Host: a topic's reach, the distinct addresses that have acked a
+  /// publication on it. The only honest delivery number for a flood.
+  int hpsReach(Pointer<Void> node, String path) {
+    final p = path.toNativeUtf8();
+    try {
+      return _hpsReach(node, p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Host: the retained-member set for a topic.
+  List<Uint8List> hpsMembers(Pointer<Void> node, String path) {
+    final out = <Uint8List>[];
+    final p = path.toNativeUtf8();
+    final cb = NativeCallable<_Addr32SinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> addr) {
+        out.add(_copy(addr, 32));
+      },
+    );
+    try {
+      _hpsMembers(node, p, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+      calloc.free(p);
+    }
+    return out;
+  }
+
+  /// Every topic this node hosts or follows, for rebuilding a channel list
+  /// after a restart.
+  List<HpsTopicRow> hpsMyTopics(Pointer<Void> node) {
+    final out = <HpsTopicRow>[];
+    final cb = NativeCallable<_HpsTopicSinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> host, Pointer<Utf8> path, int kind,
+          bool hosting, int access) {
+        out.add((_copy(host, 32), path.toDartString(), kind, hosting, access));
+      },
+    );
+    try {
+      _hpsMyTopics(node, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return out;
+  }
+
+  /// Same-app discoverable topics visible on the mesh.
+  List<HpsTopicInfoRow> hpsBrowse(Pointer<Void> node) {
+    final out = <HpsTopicInfoRow>[];
+    final cb = NativeCallable<_HpsBrowseSinkC>.isolateLocal(
+      (Pointer<Void> _, Pointer<Uint8> host, Pointer<Utf8> path, int kind,
+          Pointer<Utf8> title, Pointer<Utf8> summary, int access) {
+        out.add((
+          _copy(host, 32),
+          path.toDartString(),
+          kind,
+          title.toDartString(),
+          summary.toDartString(),
+          access
+        ));
+      },
+    );
+    try {
+      _hpsBrowse(node, cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return out;
+  }
 
   static Uint8List _require32(Uint8List value, String name) {
     if (value.length != 32) {

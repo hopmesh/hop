@@ -55,6 +55,75 @@ export interface HopOutgoing {
 /** Which side opened a bearer link (the Noise role). */
 export type HopRole = "dialer" | "acceptor";
 
+/** Section 19 relay-pool counts: `total` endpoints known, `available` dialable right now.
+ *
+ *  A non-zero `total` with `available` at zero is the degraded "every candidate is backed off" state a
+ *  UI should show as such rather than as offline; the pool still knows where to retry. */
+export interface HopRelayPool {
+  readonly total: number;
+  readonly available: number;
+}
+
+/** Which mode an hps:// topic runs in (DESIGN.md section 32).
+ *
+ *  `channel` is group chat: every member holds the shared content key and writes, and each post is
+ *  signed by the writer's own device identity. `service` is broadcast: subscribers hold the content key
+ *  to read, and only the host can produce a post a subscriber will verify. */
+export type HpsKind = "channel" | "service";
+
+/** Who gets a topic's content key. `open` hands it out on a join request; `requestToJoin` queues the
+ *  requester for the host's approval; `invite` is host to destination, and the destination accepts. */
+export type HpsAccess = "open" | "requestToJoin" | "invite";
+
+/** Whether a topic is advertised on the mesh. `discoverable` topics appear in `hpsBrowse` results for
+ *  apps holding the same app secret; `private` ones are reachable only by host address and path. */
+export type HpsVisibility = "private" | "discoverable";
+
+/** One hps:// publication delivered to this node.
+ *
+ *  A Hop group message is not one-to-one fan-out and not a multicast bundle: it is a single
+ *  content-key-encrypted, per-writer-signed publication, flooded once. Membership, invites and
+ *  revocation are properties of the topic's key handoff, not of the delivery. */
+export interface HopHpsMessage {
+  /** Stable 32-byte id (use it with `acceptHpsMessage`). */
+  readonly id: Uint8Array;
+  /** The topic path this was published to. */
+  readonly path: string;
+  /** The writer's address, base58-encoded, taken from the message's own signature. */
+  readonly sender: string;
+  readonly body: Uint8Array;
+}
+
+/** An invite a host sent us for a topic it hosts (the `invite` access mode). */
+export interface HopHpsInvite {
+  /** The host's address, base58-encoded. */
+  readonly host: string;
+  readonly path: string;
+  readonly kind: HpsKind;
+}
+
+/** A topic this node hosts or follows, as the node's own store records it. */
+export interface HopHpsTopic {
+  /** The host's address, base58-encoded (our own address for a topic we host). */
+  readonly host: string;
+  readonly path: string;
+  readonly kind: HpsKind;
+  /** True when this node is the host and holds the topic's keys. */
+  readonly hosting: boolean;
+  readonly access: HpsAccess;
+}
+
+/** A discoverable topic found on the mesh: the decrypted descriptor, not a subscription. */
+export interface HopHpsTopicInfo {
+  /** The host's address, base58-encoded. */
+  readonly host: string;
+  readonly path: string;
+  readonly kind: HpsKind;
+  readonly title: string;
+  readonly summary: string;
+  readonly access: HpsAccess;
+}
+
 /** Options for opening a persistent, on-device node. */
 export interface HopOpenOptions {
   /** Absolute path to the SQLite store (SQLCipher when `key` is set). */

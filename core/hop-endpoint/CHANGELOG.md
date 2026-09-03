@@ -4,41 +4,25 @@ Notable changes, generated from [conventional commits](https://www.conventionalc
 git-cliff. Do not edit by hand.
 ## Unreleased
 
-### Bug Fixes
-- close adversarial protocol gaps (cad3deb)
-
-### Chore
-- invert the license tiers, FSL moves from core to services (14d7fec)
-
 ### Documentation
-- regenerate from conventional commits (aa9cd27)
-- regenerate from conventional commits (d962196)
-- regenerate from conventional commits (dab3ffb)
-- regenerate from conventional commits (b0b159a)
-- regenerate from conventional commits (d195880)
-- regenerate from conventional commits (9fece1e)
-- regenerate from conventional commits (fc4e725)
-- regenerate from conventional commits (910695c)
-- regenerate from conventional commits (7160289)
-- regenerate from conventional commits (3b47a5f)
-- regenerate from conventional commits (ffb2acb)
-- regenerate from conventional commits (e19ed95)
-- regenerate from conventional commits (7a81fb6)
-- regenerate from conventional commits (e6b97f2)
-- regenerate from conventional commits (2741000)
-- regenerate from conventional commits (b96e019)
-- regenerate from conventional commits (330c8c6)
-- regenerate from conventional commits (096180b)
-- regenerate from conventional commits (102ae67)
-- regenerate from conventional commits (1572ae2)
-- regenerate from conventional commits (a355901)
+- regenerate from conventional commits (288fb51)
+- regenerate from conventional commits (f880b09)
+- regenerate from conventional commits (adfd838)
+- regenerate from conventional commits (9719166)
+- regenerate from conventional commits (b185836)
+- regenerate from conventional commits (0c6daf4)
+- regenerate from conventional commits (8bd2185)
+- regenerate from conventional commits (7c9cd96)
+- regenerate from conventional commits (c563741)
+- regenerate from conventional commits (9b0e086)
+- regenerate from conventional commits (85aa20d)
+- regenerate from conventional commits (f174097)
+- regenerate from conventional commits (b49b07c)
+- regenerate from conventional commits (0b7100d)
+- regenerate from conventional commits (7eb4bed)
 
 ### Features
-- auto-generate monorepo + per-library changelogs (git-cliff) (8c64c37)
-- phase 3 hold-until-coordinated quorum (CP; never double-process) (#159) (ab0f376)
-- phase 2 rendezvous ownership (exactly-once when the owner is up) (#155) (6547ca8)
-- self-clustering endpoints (phase 1 dedup) as a hop-endpoint-core layer over the mesh (#153) (487e4d2)
-
-### Other
-- copyright holder is Hop Mesh, LLC (7d8c514)
+- phase 3 hold-until-coordinated quorum (CP; never double-process) (#159) (9900a0d)
+- phase 2 rendezvous ownership (exactly-once when the owner is up) (#155) (50bd74f)
+- self-clustering endpoints (phase 1 dedup) as a hop-endpoint-core layer over the mesh (#153) (76c420c)
 

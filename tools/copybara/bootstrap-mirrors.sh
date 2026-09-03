@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # bootstrap-mirrors.sh: create or update the standalone component repositories.
-# Covers the THREE components that still mirror after the 2026-08 mirror retirement: hop-sdk-go,
-# hop-sdk-crystal, and hop-sdk-apple. All three are Apache-2.0 and all three publish by pushing a git
-# tag, so none of them needs a registry account or token. RUN THIS YOURSELF: creating public
-# repositories is a human action, not something CI or an agent does for you. Idempotent and safe to
-# re-run.
+# Covers the FOUR components registered to mirror: hop-sdk-go, hop-sdk-crystal, and hop-sdk-apple (the
+# three that survived the 2026-08 mirror retirement and are live) plus hop-bearers-apple, which is
+# WIRED but whose repository has never been created. Running section 1 below is what creates it; until
+# someone does, the Apple bearers have no standalone package and nothing exports to that name. All
+# four are Apache-2.0 and all four publish by pushing a git tag (SwiftPM, shards, and the Go proxy all
+# resolve from a repo root, so the repo IS the package), so none of them needs a registry account or
+# token. RUN THIS YOURSELF: creating public repositories is a human action, not something CI or an
+# agent does for you. Idempotent and safe to re-run.
 #
 # Requires: `gh` authenticated with repo + admin rights on the hopmesh org.
 #
@@ -19,13 +22,16 @@ set -euo pipefail
 
 ORG="hopmesh"
 
-# "repo|description" per public repo, for the three surviving mirrors. All three are Apache-2.0.
+# "repo|description" per public repo: three live mirrors plus hop-bearers-apple, which this script
+# creates and which does not exist until it is run. All four are Apache-2.0.
+# hop-bearers-apple rides the same tag-only SwiftPM channel as the SDKs: the repo IS the package.
 # Descriptions say what each thing IS with no reference to any private source of truth. Kept bash-3.2
 # safe (no associative arrays) so it runs on stock macOS.
 MIRRORS="
 hop-sdk-go|Receive Hop mesh messages in Go with a net/http-shaped surface over the libhop C ABI (cgo). A Go module.
 hop-sdk-crystal|Receive Hop mesh messages in Crystal with a Sinatra/Rails-shaped surface over the libhop C ABI. On shards.
 hop-sdk-apple|The Hop client SDK for Apple platforms: run a node on iOS/macOS. SwiftPM + xcframework.
+hop-bearers-apple|The Hop Apple bearers: BLE, LAN, Multipeer, Relay and Meshtastic transports for a Hop node on iOS/macOS. SwiftPM.
 "
 
 echo "== 1. create / publish the mirror repos =="
@@ -55,13 +61,13 @@ echo
 echo "== 3. protect authority environments =="
 echo "  Create component-sync on $ORG/hop and every mirror; restrict it to main, require a different reviewer, and prevent self-review."
 echo "  For every mirror with release.yml, create environment 'release' with a required reviewer."
-echo "  The three surviving mirrors are tag-only, so no registry trusted publisher is needed."
+echo "  The live mirrors are tag-only, so no registry trusted publisher is needed."
 
 echo
 echo "== 4. seed each mirror (one-time, per component) =="
 echo "  The FIRST export of a component passes init_history=true:"
 echo "      gh workflow run sync-components.yml -f component=hop-sdk-go -f direction=export -f init_history=true"
-echo "  Repeat for hop-sdk-crystal and hop-sdk-apple; later exports omit init_history."
+echo "  Repeat for hop-sdk-crystal, hop-sdk-apple, and hop-bearers-apple; later exports omit init_history."
 
 echo
 echo "== 5. enable security features on every repo =="

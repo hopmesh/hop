@@ -3,9 +3,9 @@ package hop
 import "testing"
 
 // PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
-// asserts ABI 5 at New() while binding none of them, so an SDK-only host could not fail over: the
-// only reachable behavior was retrying one configured URL forever. This drives the failover the
-// header describes entirely through the published Endpoint surface, on ONE endpoint that is never
+// asserted that ABI level at New() while binding none of them, so an SDK-only host could not fail
+// over: the only reachable behavior was retrying one configured URL forever. This drives the failover
+// the header describes entirely through the published Endpoint surface, on ONE endpoint that is never
 // restarted. Revert the RelayAdd/RelayNext/RelayReport/RelayPool methods and this stops compiling,
 // which is the point: the capability, not the version integer, is what closes the finding.
 func TestRelayPoolFailsOverWithoutRestartingTheEndpoint(t *testing.T) {

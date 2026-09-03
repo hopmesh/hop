@@ -1,0 +1,73 @@
+# Does the PUBLISHED Apple manifest still work for someone outside this repository?
+#
+# `sdk/apple/Package.swift` pins one immutable `libhop.xcframework.zip` by URL and checksum, and
+# `Sources/Hop/*.swift` calls the C ABI inside it. Nothing in ci.yml compares them: the `apple` job
+# copies `Package.local.swift` over the manifest and builds against a locally compiled xcframework, so
+# the published pair is never exercised by anything. Measured on the tree that motivated this: the
+# sources asserted the current ABI level and called 18 `hop_hps_*` functions, while the pinned asset
+# was built one level earlier and declared none of them, and a SwiftPM consumer failed with
+# `cannot find 'hop_hps_register' in scope`. Every check in the repository was green.
+#
+# Levels are described in words rather than digits on purpose: tools/codegen/check-abi-version.sh
+# sweeps the tree for anything shaped like an ABI-version declaration or a prose claim about the
+# level, and rightly fails a file that states an old one, because an integrator reading it would be
+# misled. The number that matters here is whatever the pinned artifact says at runtime, which the
+# guard reads from the artifact instead of trusting any copy in the tree.
+#
+# WHY THIS IS NOT A ci.yml JOB, AND HOW TO MAKE IT ONE
+# ----------------------------------------------------
+# tools/check-required-checks.sh requires the aggregate `CI gate` to `needs:` every job in ci.yml, so
+# a job there is a merge blocker by construction. This check cannot pass until a native Apple release
+# is cut from the current core, which needs release credentials this repository does not hold, so
+# putting it in ci.yml would freeze every merge (including the one that added it) on a defect nobody
+# can currently clear. It runs here instead: red and visible on any PR that touches the SDK, and red
+# daily on the schedule, but not a gate. Branch protection requires only the `CI gate` context and
+# auto-merge waits on the same, so this reports without blocking.
+#
+# The moment a release with the current ABI is published, move the enforcement step into ci.yml's
+# `automation` job (its self-test already lives there), add nothing else, and this becomes blocking.
+# Do not weaken the guard to make it green.
+name: Apple pin guard
+
+on:
+  pull_request:
+    paths:
+      - "sdk/apple/Package.swift"
+      - "sdk/apple/Sources/Hop/**"
+      - "tools/apple-pin-guard.py"
+      - ".github/workflows/apple-pin-guard.yml"
+  schedule:
+    # Daily, after the changelog merge that moves main, matching workflow-freshness.yml's cadence.
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-pin-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pin:
+    name: Published binary pin satisfies the Swift sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Keyed on the manifest: the pinned URL and checksum live there, so the cache is reused until
+      # the pin itself changes, and a new pin always downloads. A guard nobody can afford to run gets
+      # switched off, so the download happens once per pin rather than once per run.
+      - name: Cache the pinned xcframework
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .apple-pin-cache
+          key: apple-pin-${{ hashFiles('sdk/apple/Package.swift') }}
+
+      - name: Self-test the guard
+        run: bash tools/apple-pin-guard.test.sh
+
+      - name: Published pin satisfies the Swift sources
+        run: python3 tools/apple-pin-guard.py

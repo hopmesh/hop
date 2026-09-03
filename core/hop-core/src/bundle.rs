@@ -109,7 +109,28 @@ pub struct TraceHop {
 // disagrees, so this class of drift is caught pre-merge instead of banked. The same bump carries the
 // security-privacy-r19-06 beacon stagger, which is behavioural (node.rs, not a hashed file) and changes
 // no bytes: a v14 node and a v15 node encode byte-identical bundles apart from this constant.
-pub const BUNDLE_VERSION: u8 = 15;
+// v15 -> v16: NO wire-layout and NO semantic change, and this time the hard break it would cause is
+// unacceptable, because v15 already cut off every published SDK consumer. What moved is the version
+// gate itself: it accepted exactly one version, so each mechanical bump in the v13..v15 ladder
+// retroactively undeliverable'd every client built against the previous constant, silently. Measured:
+// two nodes built against published hop-sdk-apple v0.0.2 (wire v14) seal and hand a bundle to a
+// current relay, the relay counts the copy (relayed=1) and drops it at the verify() gate, and the
+// recipient's inbox stays empty forever; against a relay built from the SDK's own core commit the
+// same two binaries deliver with forwardHops=2. This bump widens the gate to the byte-identical
+// family instead (see MIN_SUPPORTED_BUNDLE_VERSION below): a v13 through v16 node encode
+// byte-identical bundles apart from this constant, so accepting the whole family is free and the
+// published v14 fleet is deliverable again. Emitted bytes are unchanged apart from the constant.
+pub const BUNDLE_VERSION: u8 = 16;
+
+/// Oldest bundle wire version this build accepts. v13, v14 and v15 encode byte-identical bundles to
+/// v16 (each of those bumps changed no layout and no semantics; see the ladder above), so the whole
+/// family is one wire format and the gate accepts all of it. hop-sdk-apple v0.0.2, the version
+/// published to real consumers, speaks v14; a relay or peer built from current main must keep
+/// delivering to it. RULES: raise this floor to the new [`BUNDLE_VERSION`] on any bump that changes
+/// layout or semantics (v12 and older are genuinely different formats and stay rejected); a purely
+/// mechanical bump may extend the family downward only with byte-identity stated in the ladder, as
+/// v13..v15 each do.
+pub const MIN_SUPPORTED_BUNDLE_VERSION: u8 = 13;
 
 /// Maximum encoded size accepted by [`Bundle::from_bytes`]. Oversized application content is carried
 /// in bounded [`Payload::Carrier`] chunks, so a single decoded bundle never needs to allocate beyond
@@ -855,16 +876,38 @@ impl Bundle {
         }
         Ok(postcard::from_bytes(data)?)
     }
+    /// Test/vectors seam: re-mint this bundle as wire version `v`, recomputing everything the
+    /// version byte binds so the result is exactly what a node built at `v` would have emitted.
+    /// Private bundles re-derive the wire id (it binds the whole inner, version included);
+    /// vaccines are re-stamped trivially (their id binds only the token). Identity-SIGNED bundles
+    /// are refused: their signature covers the version byte and cannot be recomputed without the
+    /// signing identity, and the published-SDK compat path this seam exists to test is the
+    /// private one.
+    #[cfg(any(test, feature = "wire-vectors"))]
+    pub fn as_wire_version(mut self, v: u8) -> Result<Self> {
+        if !self.sig.is_empty() {
+            return Err(Error::Other(
+                "as_wire_version: identity-signed bundles cannot be re-versioned".into(),
+            ));
+        }
+        self.inner.version = v;
+        if self.is_private() {
+            self.inner.id = compute_private_wire_id(&self.inner);
+        }
+        Ok(self)
+    }
 }
 
 #[cfg(any(test, feature = "wire-vectors"))]
 #[path = "wire_vectors.rs"]
 pub mod wire_vectors;
 
-/// Which bundle wire versions this build can decode. Add older versions here when a
-/// migration path is needed; today only the current version is accepted.
+/// The accepted-version window: every wire version in
+/// `MIN_SUPPORTED_BUNDLE_VERSION..=BUNDLE_VERSION` is one byte-identical format (see the ladder
+/// above `BUNDLE_VERSION`). Anything older is a genuinely different layout and is rejected loudly
+/// rather than misdecoded; anything newer is a future build's layout and is rejected the same way.
 fn is_supported_bundle_version(v: u8) -> bool {
-    v == BUNDLE_VERSION
+    (MIN_SUPPORTED_BUNDLE_VERSION..=BUNDLE_VERSION).contains(&v)
 }
 
 fn compute_id(src: &PubKeyBytes, sealed: &Sealed) -> BundleId {
@@ -1082,6 +1125,63 @@ mod tests {
         }
         // Empty input is a clean codec error, not a panic.
         assert!(Bundle::from_bytes(&[]).is_err());
+    }
+
+    #[test]
+    fn byte_identical_prior_wire_versions_decode_verify_and_recognize() {
+        // The published-SDK compatibility contract. hop-sdk-apple v0.0.2 speaks wire v14, and the
+        // v13..v15 bumps each changed no layout and no semantics, so a v13/v14/v15 bundle is
+        // byte-identical to a current one apart from the leading version byte. This build must
+        // decode, verify, and RECOGNIZE those bundles or every published SDK client is silently
+        // undeliverable through a current relay (the exact regression this test pins: the sender
+        // sealed, the relay counted its copy, and the recipient's inbox never fired).
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        for v in MIN_SUPPORTED_BUNDLE_VERSION..BUNDLE_VERSION {
+            let old = sample_private(&bob, &spk.public)
+                .as_wire_version(v)
+                .unwrap();
+            assert_eq!(old.inner.version, v, "seam rewrote the version");
+            let bytes = old.to_bytes().unwrap();
+            assert_eq!(bytes[0], v, "version byte leads the wire");
+            let decoded = Bundle::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("v{v} bundle must decode: {e}"));
+            assert_eq!(decoded, old, "decode is lossless across the family");
+            decoded
+                .verify()
+                .unwrap_or_else(|e| panic!("v{v} bundle must verify: {e}"));
+            assert!(
+                decoded.recognized_by(&spk.secret_bytes()),
+                "v{v} bundle is still recognized by its recipient"
+            );
+            match decoded.open(&bob).unwrap() {
+                Payload::PeerMessage { body, .. } => assert_eq!(body, b"psst"),
+                _ => panic!("wrong payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn versions_before_the_identical_family_are_rejected() {
+        // v12 is a genuinely different layout (the AdvertKind removal ladder), so it must stay
+        // outside the window: rejected at the gate, never misdecoded. This pins the floor; a
+        // future bump that changes layout must raise MIN_SUPPORTED_BUNDLE_VERSION, and this test
+        // fails if the floor drifts down or the family widens without byte-identity.
+        let bob = Identity::generate();
+        let spk = bob.derive_prekey();
+        let too_old = sample_private(&bob, &spk.public)
+            .as_wire_version(MIN_SUPPORTED_BUNDLE_VERSION - 1)
+            .unwrap();
+        let bytes = too_old.to_bytes().unwrap();
+        match Bundle::from_bytes(&bytes) {
+            Err(Error::UnsupportedVersion { got, .. }) => {
+                assert_eq!(got, MIN_SUPPORTED_BUNDLE_VERSION - 1);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+        too_old
+            .verify()
+            .expect_err("verify() gates the same window for struct-decoded bundles");
     }
 
     proptest! {

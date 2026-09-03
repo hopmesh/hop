@@ -1,0 +1,6 @@
+
+# Staged by build-aar-dev.sh as a copy of the canonical sdk/hop.h, because the AAR's Prefab
+# metadata ships the C ABI header and the gradle task requires it here. Generated, not authored:
+# committing it would create a second copy of the ABI contract that could silently disagree.
+include/hop.h
+build/

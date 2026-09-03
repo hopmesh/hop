@@ -14,6 +14,8 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.concurrent.ConcurrentHashMap
@@ -24,6 +26,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import sh.hop.HopAddress
 import sh.hop.HopNode
 import sh.hop.HopRole
+import sh.hop.HpsAccess
+import sh.hop.HpsKind
+import sh.hop.HpsVisibility
 
 class HopMeshModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -60,6 +65,58 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     reactContext
       .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
       .emit(event, body)
+  }
+
+  // MARK: hps:// enum mapping
+  //
+  // Enums cross the bridge as lowercase strings, the same way `role` does. An UNRECOGNIZED string
+  // returns null here and the calling method rejects the promise; it is NEVER coerced to OPEN or
+  // CHANNEL, because reading a garbage access mode as Open would hand a topic's keys to anyone who
+  // asks. The outbound direction (topics and invites going to JS) is total, so it needs no fallback.
+  private fun hpsKind(text: String): HpsKind? = when (text) {
+    "channel" -> HpsKind.CHANNEL
+    "service" -> HpsKind.SERVICE
+    else -> null
+  }
+
+  private fun hpsAccess(text: String): HpsAccess? = when (text) {
+    "open" -> HpsAccess.OPEN
+    "requestToJoin" -> HpsAccess.REQUEST_TO_JOIN
+    "invite" -> HpsAccess.INVITE
+    else -> null
+  }
+
+  private fun hpsVisibility(text: String): HpsVisibility? = when (text) {
+    "private" -> HpsVisibility.PRIVATE
+    "discoverable" -> HpsVisibility.DISCOVERABLE
+    else -> null
+  }
+
+  private fun name(kind: HpsKind): String = when (kind) {
+    HpsKind.CHANNEL -> "channel"
+    HpsKind.SERVICE -> "service"
+  }
+
+  private fun name(access: HpsAccess): String = when (access) {
+    HpsAccess.OPEN -> "open"
+    HpsAccess.REQUEST_TO_JOIN -> "requestToJoin"
+    HpsAccess.INVITE -> "invite"
+  }
+
+  private fun badEnum(promise: Promise, field: String, value: String) {
+    promise.reject("hop_error", "unrecognized hps $field: $value")
+  }
+
+  private fun addresses(items: List<ByteArray>): WritableArray {
+    val out = Arguments.createArray()
+    for (addr in items) out.pushString(HopAddress.base58(addr))
+    return out
+  }
+
+  private fun bundleIds(items: List<ByteArray>): WritableArray {
+    val out = Arguments.createArray()
+    for (id in items) out.pushString(enc(id))
+    return out
   }
 
   // MARK: lifecycle
@@ -245,6 +302,192 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     promise.resolve(null)
   }
 
+  // MARK: section 19 relay pool
+
+  @ReactMethod
+  fun relayAdd(handle: Int, url: String, configured: Boolean, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.relayAdd(url, configured))
+  }
+
+  // null means nothing is dialable RIGHT NOW, which is not the same as offline: a non-zero relayPool
+  // total with nothing dialable is the degraded "every candidate is backed off" state, and the JS
+  // wrapper documents that distinction for the UI that has to render it.
+  @ReactMethod
+  fun relayNext(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.relayNext())
+  }
+
+  @ReactMethod
+  fun relayReport(handle: Int, url: String, ok: Boolean, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    e.node.relayReport(url, ok)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun relayPool(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val pool = e.node.relayPool()
+    val m = Arguments.createMap()
+    m.putInt("total", pool.total)
+    m.putInt("available", pool.available)
+    promise.resolve(m)
+  }
+
+  // MARK: hps:// pub/sub (section 32)
+  //
+  // A publication is a single content-key-encrypted, per-writer-signed message flooded once, not a
+  // fan-out and not a multicast bundle. Membership, invites and revocation are properties of the
+  // topic's key handoff, which is why hpsApprove and hpsRekey resolve bundle ids: each one is a key
+  // handoff sealed to a member.
+
+  @ReactMethod
+  fun hpsRegister(handle: Int, path: String, kindText: String, accessText: String, visibilityText: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val kind = hpsKind(kindText) ?: return badEnum(promise, "kind", kindText)
+    val access = hpsAccess(accessText) ?: return badEnum(promise, "access", accessText)
+    val visibility = hpsVisibility(visibilityText) ?: return badEnum(promise, "visibility", visibilityText)
+    // An EMPTY string is a channel's correct answer (a channel has no service signing key), so it is a
+    // success; null is reserved for the register having failed.
+    promise.resolve(e.node.hpsRegister(path, kind, access, visibility)?.let(::enc))
+  }
+
+  @ReactMethod
+  fun hpsSubscribe(handle: Int, hostB58: String, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val host = HopAddress.fromBase58(hostB58) ?: return promise.resolve(null)
+    promise.resolve(e.node.hpsSubscribe(host, path)?.let(::enc))
+  }
+
+  @ReactMethod
+  fun hpsPublish(handle: Int, path: String, bodyB64: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.hpsPublish(path, dec(bodyB64))?.let(::enc))
+  }
+
+  @ReactMethod
+  fun acceptHpsMessage(handle: Int, idB64: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.acceptHpsMessage(dec(idB64)))
+  }
+
+  @ReactMethod
+  fun hpsInvite(handle: Int, path: String, destB58: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val dest = HopAddress.fromBase58(destB58) ?: return promise.resolve(null)
+    promise.resolve(e.node.hpsInvite(path, dest)?.let(::enc))
+  }
+
+  @ReactMethod
+  fun hpsAcceptInvite(handle: Int, hostB58: String, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val host = HopAddress.fromBase58(hostB58) ?: return promise.resolve(null)
+    promise.resolve(e.node.hpsAcceptInvite(host, path)?.let(::enc))
+  }
+
+  @ReactMethod
+  fun hpsDeclineInvite(handle: Int, hostB58: String, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val host = HopAddress.fromBase58(hostB58) ?: return promise.resolve(false)
+    promise.resolve(e.node.hpsDeclineInvite(host, path))
+  }
+
+  // The native call also yields the leave bundle's id; JS gets only the ok flag, because an RN client
+  // has nothing to correlate that id against.
+  @ReactMethod
+  fun hpsLeave(handle: Int, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.hpsLeave(path).ok)
+  }
+
+  @ReactMethod
+  fun hpsPending(handle: Int, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(addresses(e.node.hpsPending(path)))
+  }
+
+  @ReactMethod
+  fun hpsApprove(handle: Int, path: String, requesterB58: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val requester = HopAddress.fromBase58(requesterB58) ?: return promise.resolve(null)
+    promise.resolve(e.node.hpsApprove(path, requester)?.let(::enc))
+  }
+
+  @ReactMethod
+  fun hpsDeny(handle: Int, path: String, requesterB58: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val requester = HopAddress.fromBase58(requesterB58) ?: return promise.resolve(false)
+    promise.resolve(e.node.hpsDeny(path, requester))
+  }
+
+  // An unparsable address in the remove list FAILS the whole call rather than being skipped. Skipping
+  // it would rotate the key and report success while the member the caller asked to revoke still holds
+  // a usable one, which is the worst possible outcome to report as an ok.
+  @ReactMethod
+  fun hpsRekey(handle: Int, path: String, newPath: String, removeB58: ReadableArray, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val remove = ArrayList<ByteArray>(removeB58.size())
+    for (i in 0 until removeB58.size()) {
+      // orEmpty() rather than a null check: ReadableArray.getString is @Nullable on some React Native
+      // versions and non-null on others, and an empty string fails fromBase58 the same way a null
+      // entry must, so this reads identically under either signature.
+      val text = removeB58.getString(i).orEmpty()
+      val addr = HopAddress.fromBase58(text)
+      if (addr == null) {
+        return promise.reject("hop_error", "unparsable address in the hps remove list: $text")
+      }
+      remove.add(addr)
+    }
+    promise.resolve(bundleIds(e.node.hpsRekey(path, newPath, remove)))
+  }
+
+  @ReactMethod
+  fun hpsReach(handle: Int, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.hpsReach(path))
+  }
+
+  @ReactMethod
+  fun hpsMembers(handle: Int, path: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(addresses(e.node.hpsMembers(path)))
+  }
+
+  @ReactMethod
+  fun hpsMyTopics(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val out = Arguments.createArray()
+    for (topic in e.node.hpsMyTopics()) {
+      val m = Arguments.createMap()
+      m.putString("host", HopAddress.base58(topic.host))
+      m.putString("path", topic.path)
+      m.putString("kind", name(topic.kind))
+      m.putBoolean("hosting", topic.hosting)
+      m.putString("access", name(topic.access))
+      out.pushMap(m)
+    }
+    promise.resolve(out)
+  }
+
+  @ReactMethod
+  fun hpsBrowse(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    val out = Arguments.createArray()
+    for (topic in e.node.hpsBrowse()) {
+      val m = Arguments.createMap()
+      m.putString("host", HopAddress.base58(topic.host))
+      m.putString("path", topic.path)
+      m.putString("kind", name(topic.kind))
+      m.putString("title", topic.title)
+      m.putString("summary", topic.summary)
+      m.putString("access", name(topic.access))
+      out.pushMap(m)
+    }
+    promise.resolve(out)
+  }
+
   // MARK: pump
 
   @ReactMethod
@@ -302,6 +545,27 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putInt("status", resp.status)
       m.putString("body", enc(resp.body))
       emit("HopMesh:serviceResponse", m)
+    }
+    // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
+    // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
+    node.pollHpsMessages { msg ->
+      val m = Arguments.createMap()
+      m.putInt("node", handle)
+      m.putString("id", enc(msg.id))
+      m.putString("path", msg.path)
+      m.putString("sender", HopAddress.base58(msg.sender))
+      m.putString("body", enc(msg.body))
+      emit("HopMesh:hpsMessage", m)
+    }
+    // Take-and-clear, not accept-to-remove: a drained invite is gone, so the JS side must persist what
+    // this hands it.
+    node.pollHpsInvites { inv ->
+      val m = Arguments.createMap()
+      m.putInt("node", handle)
+      m.putString("host", HopAddress.base58(inv.host))
+      m.putString("path", inv.path)
+      m.putString("kind", name(inv.kind))
+      emit("HopMesh:hpsInvite", m)
     }
   }
 

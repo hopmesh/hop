@@ -1400,6 +1400,15 @@ pub struct Node<S: Store = MemoryStore> {
     /// [`MAX_METERED_TENANTS`]. Carried but unattributed = lost revenue; surfaced via
     /// [`Node::take_usage_dropped`] so overflow is never silent.
     usage_dropped: u64,
+    /// Bundles discarded at the wire-version gate, by the version byte they carried, since the
+    /// host last drained [`Node::take_version_gated`]. An incompatible peer is silently
+    /// undeliverable from its own point of view (its sends are counted as relayed and never
+    /// arrive), so this count is the only aggregate that makes the situation visible; it is how
+    /// the v13..v15 exact-match gate cut off every published-SDK consumer without anyone
+    /// noticing. Observability only, and deliberately this shape: the version byte and a count
+    /// are ALL that is recorded, because a bundle that fails this gate is unauthenticated and
+    /// nothing else about it may be kept.
+    version_gated: std::collections::BTreeMap<u8, u64>,
     /// Per-tenant CARRIAGE we performed that produced no delivery event, and is therefore
     /// currently UNBILLED (see [`Node::take_carriage`]). Accumulated when a held bundle's
     /// attribution is pruned without ever having been billed by `meter_delivered`.
@@ -1681,11 +1690,12 @@ impl<S: Store> Node<S> {
             advert_ingest: HashMap::new(),
             advert_ingest_global: (0, 0),
             rehydrate_report: RehydrateReport::default(),
+            version_gated: std::collections::BTreeMap::new(),
+            access_refused: 0,
             stamper: None,
             access_policy: AccessPolicy::Open,
             usage: HashMap::new(),
             metered_attribution: HashMap::new(),
-            access_refused: 0,
             usage_dropped: 0,
             carriage: HashMap::new(),
             emit_have: false,
@@ -2309,6 +2319,16 @@ impl<S: Store> Node<S> {
     /// Aggregate observability for the host's private log, never a per-bundle event.
     pub fn take_access_refused(&mut self) -> u64 {
         std::mem::take(&mut self.access_refused)
+    }
+
+    /// Drain the per-version count of bundles discarded at the wire-version gate since the last
+    /// call, keyed by the rejected version byte. Covers the network flood path
+    /// (`process_bundle`, where a relay or peer first sees a foreign bundle); a count, never any
+    /// per-bundle detail, mirroring [`Node::take_access_refused`]. A nonzero entry means a peer
+    /// on an incompatible wire version is connected and its traffic is being discarded: from
+    /// that peer's own point of view its messages were accepted and simply never arrive.
+    pub fn take_version_gated(&mut self) -> std::collections::BTreeMap<u8, u64> {
+        std::mem::take(&mut self.version_gated)
     }
 
     /// Drain the count of accepted-but-unmetered bundles (tenant-map overflow) since the last
@@ -8397,7 +8417,18 @@ impl<S: Store> Node<S> {
     }
 
     fn process_bundle(&mut self, from_link: LinkId, mut bundle: Bundle) -> bool {
-        if bundle.verify().is_err() {
+        if let Err(err) = bundle.verify() {
+            // A bundle rejected SOLELY by the wire-version gate is an incompatible peer, not a
+            // tamperer, and from that peer's own point of view nothing is wrong: its sends were
+            // accepted by the link and counted as relayed, and they will never arrive. Count it
+            // (version byte and a count ONLY: the bundle is unauthenticated here, so no address,
+            // id, or content may be recorded) so a host draining take_version_gated can see a
+            // silently-undeliverable fleet. This is the observability the v13..v15 exact-match
+            // gate lacked when it cut off every published-SDK consumer unnoticed.
+            if let Error::UnsupportedVersion { got, .. } = err {
+                let entry = self.version_gated.entry(got).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
             return false; // never store/relay unverifiable bundles
         }
         if bundle.is_private() {
@@ -14207,64 +14238,89 @@ mod tests {
         //     the emitter's short address into `trace[0]` and every downstream relay inherited it;
         //   * an unblinded hop count, which arrived at the first relay reading exactly 1.
         // Both are checked here against the copy the relay actually receives.
+        // The blind is keyed on Bob's secret AND the vaccine token, and the token is fresh per exchange
+        // (seeding all three identities does NOT pin it; ephemeral key material feeds it). So the blind
+        // is effectively uniform over 0..=MAX_HOP_BLIND, and it lands on ZERO about one run in 101.
+        //
+        // Zero is the degenerate case: it makes `hops` read exactly 1, which is the unblinded value this
+        // test exists to reject, so that run cannot tell a fixed implementation from a broken one. The
+        // fixture check below used to abort on it, which turned a ~1% coin toss into a red build; it
+        // failed twice in forty local runs.
+        //
+        // So the scenario is re-run until the token yields a non-degenerate blind, rather than asserting
+        // that one lucky draw was non-zero. The equation `hops == blind + 1` is checked on whichever
+        // attempt lands, and the bound makes a false pass impossible: forty consecutive zeros has
+        // probability (1/101)^40. That the blind is secret-derived and per-vaccine is proven separately
+        // by `vaccine_hop_blind_is_secret_bounded_and_per_vaccine`.
         let bob_seed = [0x5bu8; 32];
         let bob_identity = Identity::from_secret_bytes(&bob_seed);
         let bob_short = short_addr(&bob_identity.address());
-        let mut nodes = [
-            Node::new(Identity::generate()),                   // 0 Alice (sender)
-            Node::new(Identity::generate()),                   // 1 Carol (the relay in between)
-            Node::new(Identity::from_secret_bytes(&bob_seed)), // 2 Bob (recipient, emits the vaccine)
-        ];
-        let mut net = Wire2::new();
-        net.connect(&mut nodes, 0, 1, 1, 1); // Alice <-> Carol
-        net.connect(&mut nodes, 1, 2, 2, 2); // Carol <-> Bob
-        exchange_prekeys(&mut net, &mut nodes);
 
-        let bob = nodes[2].address();
-        nodes[0]
-            .send_message(bob, "text/plain".into(), b"meet at dawn".to_vec(), true)
-            .unwrap();
-        net.pump(&mut nodes);
-        assert_eq!(nodes[2].inbox_items().len(), 1, "Bob received the message");
-        // Accepting the inbox item is what emits the delivery ACK and its vaccine (sec-priv-07).
-        accept_all(&mut nodes[2]);
-        net.pump(&mut nodes);
+        let mut checked = false;
+        for _ in 0..40 {
+            let mut nodes = [
+                Node::new(Identity::generate()),                   // 0 Alice (sender)
+                Node::new(Identity::generate()),                   // 1 Carol (the relay in between)
+                Node::new(Identity::from_secret_bytes(&bob_seed)), // 2 Bob (recipient, emits the vaccine)
+            ];
+            let mut net = Wire2::new();
+            net.connect(&mut nodes, 0, 1, 1, 1); // Alice <-> Carol
+            net.connect(&mut nodes, 1, 2, 2, 2); // Carol <-> Bob
+            exchange_prekeys(&mut net, &mut nodes);
 
-        // The vaccine Carol holds is the copy Bob handed her: one forward from its emitter.
-        let (token, vaccine) = nodes[1]
-            .store
-            .have()
-            .ids
-            .into_iter()
-            .filter_map(|id| nodes[1].store.get(&id))
-            .find_map(|b| match b.inner.dst {
-                Destination::Vaccine(token) => Some((token, b)),
-                _ => None,
-            })
-            .expect("the relay carries the delivery vaccine Bob emitted");
+            let bob = nodes[2].address();
+            nodes[0]
+                .send_message(bob, "text/plain".into(), b"meet at dawn".to_vec(), true)
+                .unwrap();
+            net.pump(&mut nodes);
+            assert_eq!(nodes[2].inbox_items().len(), 1, "Bob received the message");
+            // Accepting the inbox item is what emits the delivery ACK and its vaccine (sec-priv-07).
+            accept_all(&mut nodes[2]);
+            net.pump(&mut nodes);
 
+            // The vaccine Carol holds is the copy Bob handed her: one forward from its emitter.
+            let (token, vaccine) = nodes[1]
+                .store
+                .have()
+                .ids
+                .into_iter()
+                .filter_map(|id| nodes[1].store.get(&id))
+                .find_map(|b| match b.inner.dst {
+                    Destination::Vaccine(token) => Some((token, b)),
+                    _ => None,
+                })
+                .expect("the relay carries the delivery vaccine Bob emitted");
+
+            // These two hold on EVERY attempt, degenerate blind or not, so they are checked every time
+            // rather than only on the attempt that happens to carry a non-zero blind.
+            assert!(
+                vaccine.env.trace.is_empty(),
+                "a vaccine must carry no provenance; trace[0] would be its emitter, the recipient"
+            );
+            assert!(
+                !vaccine.trace().iter().any(|h| h.node == bob_short),
+                "the recipient's short address must not ride the vaccine"
+            );
+
+            let blind = vaccine_hop_blind(&bob_identity, &token);
+            assert_eq!(
+                vaccine.env.hops,
+                blind.saturating_add(1),
+                "the vaccine arrives at the relay carrying the emitter's blind plus its one real hop"
+            );
+            if blind == 0 {
+                continue; // degenerate draw: hops == 1 here is correct, and proves nothing either way.
+            }
+            assert_ne!(
+                vaccine.env.hops, 1,
+                "hops == 1 over an authenticated link would pin the delivery on the relay's link peer"
+            );
+            checked = true;
+            break;
+        }
         assert!(
-            vaccine.env.trace.is_empty(),
-            "a vaccine must carry no provenance; trace[0] would be its emitter, the recipient"
-        );
-        assert!(
-            !vaccine.trace().iter().any(|h| h.node == bob_short),
-            "the recipient's short address must not ride the vaccine"
-        );
-
-        let blind = vaccine_hop_blind(&bob_identity, &token);
-        assert_ne!(
-            blind, 0,
-            "fixture check: this seed must give a non-zero blind for the assertion below to mean anything"
-        );
-        assert_eq!(
-            vaccine.env.hops,
-            blind.saturating_add(1),
-            "the vaccine arrives at the relay carrying the emitter's blind plus its one real hop"
-        );
-        assert_ne!(
-            vaccine.env.hops, 1,
-            "hops == 1 over an authenticated link would pin the delivery on the relay's link peer"
+            checked,
+            "forty consecutive zero blinds is not chance ((1/101)^40); the blind is no longer secret-derived"
         );
     }
 
@@ -17315,6 +17371,114 @@ mod tests {
         assert!(
             bob_node.take_inbox().is_empty(),
             "a genuine duplicate is deduped, delivered exactly once"
+        );
+    }
+
+    #[test]
+    fn a_prior_wire_version_bundle_from_a_published_sdk_relays_and_delivers() {
+        // The measured field failure this pins: two nodes built against published hop-sdk-apple
+        // v0.0.2 (wire v14) completed the Noise handshake with a current relay, the sender sealed
+        // and handed over a bundle, the relay counted its copy, and the recipient's inbox never
+        // fired, because verify() rejected the bundle's version byte at the exact-match gate and
+        // process_bundle dropped it silently. v13..v15 are byte-identical layouts to the current
+        // version (see the ladder in bundle.rs), so the whole family must flow: a relay holds it
+        // for onward flood, and the recipient delivers it. The pre-family control (v12) still
+        // must not enter the store.
+        let bob = Identity::generate();
+        let (_alice, _mid, genuine) = genuine_private_to(&bob);
+        assert_eq!(genuine.inner.version, crate::bundle::BUNDLE_VERSION);
+
+        // Exactly what a v0.0.2 node would have put on the wire for this same send.
+        let published = genuine
+            .clone()
+            .as_wire_version(14)
+            .expect("private bundle re-versions losslessly");
+        assert_eq!(published.inner.version, 14);
+        assert_ne!(
+            published.inner.id, genuine.inner.id,
+            "the id binds the version byte"
+        );
+        published.verify().expect("a v14 bundle is self-consistent");
+
+        // Relay side: held for onward flood, not dropped at the gate.
+        let mut relay = Node::new(Identity::generate());
+        relay.on_bundle(1, published.clone());
+        assert!(
+            relay.store.contains(&published.inner.id),
+            "a current relay holds a published-SDK (v14) bundle"
+        );
+
+        // Recipient side: recognized and delivered exactly once, same as a current-version copy.
+        let mut bob_node = Node::new(bob);
+        bob_node.on_bundle(2, published.clone());
+        let inbox = bob_node.take_inbox();
+        assert_eq!(
+            inbox.len(),
+            1,
+            "the v14 private copy delivers to its recipient"
+        );
+        assert!(inbox[0].is_private());
+        bob_node.on_bundle(3, published.clone());
+        assert!(
+            bob_node.take_inbox().is_empty(),
+            "a re-flooded v14 duplicate is deduped, delivered exactly once"
+        );
+
+        // Control: v12 is a genuinely different layout and must stay outside the window.
+        let too_old = genuine.clone().as_wire_version(12).unwrap();
+        let too_old_id = too_old.inner.id;
+        too_old
+            .verify()
+            .expect_err("v12 is past the identical-family floor");
+        let mut relay2 = Node::new(Identity::generate());
+        relay2.on_bundle(1, too_old);
+        assert!(
+            !relay2.store.contains(&too_old_id),
+            "a pre-family bundle never enters the store"
+        );
+    }
+
+    #[test]
+    fn version_gate_drops_are_counted_per_version_and_only_at_the_gate() {
+        // The observability half of the published-SDK fix: a below-floor bundle must be COUNTED
+        // (per rejected version byte), because the drop is otherwise invisible from every angle
+        // an operator has. The counter must stay narrow: an in-window bundle does not count, a
+        // current-version bundle failing verify() for a DIFFERENT reason (a tampered id) does not
+        // count, and repeated drops at one version accumulate rather than overwrite.
+        let bob = Identity::generate();
+        let (_alice, _mid, genuine) = genuine_private_to(&bob);
+
+        // Two below-floor drops at v12 and one at v9 accumulate independently.
+        let mut relay = Node::new(Identity::generate());
+        for _ in 0..2 {
+            relay.on_bundle(1, genuine.clone().as_wire_version(12).unwrap());
+        }
+        relay.on_bundle(1, genuine.clone().as_wire_version(9).unwrap());
+        let gated = relay.take_version_gated();
+        assert_eq!(gated.get(&12), Some(&2), "two v12 drops counted at v12");
+        assert_eq!(gated.get(&9), Some(&1), "the v9 drop counted at v9");
+        assert_eq!(gated.len(), 2, "nothing else counted");
+        assert!(
+            relay.take_version_gated().is_empty(),
+            "take drains, so a host polling it sees deltas"
+        );
+
+        // An in-window bundle (exactly what the published SDK sends today) does not count.
+        let mut relay_ok = Node::new(Identity::generate());
+        relay_ok.on_bundle(1, genuine.clone().as_wire_version(14).unwrap());
+        assert!(
+            relay_ok.take_version_gated().is_empty(),
+            "an in-window bundle is never a version-gate drop"
+        );
+
+        // A current-version bundle that fails verify() for another reason is not a version drop.
+        let mut tampered = genuine.clone();
+        tampered.inner.id[0] ^= 0xFF;
+        let mut relay_tamper = Node::new(Identity::generate());
+        relay_tamper.on_bundle(1, tampered);
+        assert!(
+            relay_tamper.take_version_gated().is_empty(),
+            "a BadSignature reject is not counted as a version-gate drop"
         );
     }
 
