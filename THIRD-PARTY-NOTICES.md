@@ -6,7 +6,7 @@ GENERATED FILE. Regenerate with:
 python3 tools/gen-third-party-notices.py --root hop --out THIRD-PARTY-NOTICES.md
 ```
 
-This binary statically links 169 third-party crates. Their licences, chiefly
+This binary statically links 168 third-party crates. Their licences, chiefly
 MIT and Apache-2.0, require that the copyright notice and licence text accompany a
 distribution, so this file ships alongside every built artifact.
 
@@ -28,7 +28,6 @@ selection: picking one is a legal decision and not one this generator makes for 
 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | 2 |
 | `(MIT OR Apache-2.0) AND Unicode-3.0` | 1 |
 | `0BSD OR MIT OR Apache-2.0` | 1 |
-| `BSD-2-Clause` | 1 |
 | `CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception` | 1 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
 | `MIT OR Apache-2.0 OR Zlib` | 1 |
@@ -41,7 +40,7 @@ selection: picking one is a legal decision and not one this generator makes for 
 Their declared licence requires attribution but no licence file was found in the
 published crate. Obtain the text from the crate's repository before distributing.
 
-- `blake3 1.8.5` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) https://github.com/BLAKE3-team/BLAKE3
+- `blake3 1.8.7` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) https://github.com/BLAKE3-team/BLAKE3
 - `r-efi 5.3.0` (MIT OR Apache-2.0 OR LGPL-2.1-or-later) https://github.com/r-efi/r-efi
 - `r-efi 6.0.0` (MIT OR Apache-2.0 OR LGPL-2.1-or-later) https://github.com/r-efi/r-efi
 - `tinyvec 1.11.0` (Zlib OR Apache-2.0 OR MIT) https://github.com/Lokathor/tinyvec
@@ -279,45 +278,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-```
-
-</details>
-
-### arrayref 0.3.9
-
-- Licence: `BSD-2-Clause`
-- Source: https://github.com/droundy/arrayref
-- Authors: David Roundy <roundyd@physics.oregonstate.edu>
-
-<details><summary>LICENSE</summary>
-
-```
-Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-1. Redistributions of source code must retain the above copyright
-   notice, this list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright
-   notice, this list of conditions and the following disclaimer in the
-   documentation and/or other materials provided with the
-   distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 </details>
@@ -659,7 +619,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### blake3 1.8.5
+### blake3 1.8.7
 
 - Licence: `CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception`
 - Source: https://github.com/BLAKE3-team/BLAKE3
@@ -3276,7 +3236,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### libsqlite3-sys 0.38.1
+### libsqlite3-sys 0.38.2
 
 - Licence: `MIT`
 - Source: https://github.com/rusqlite/rusqlite
@@ -4057,7 +4017,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### rusqlite 0.40.1
+### rusqlite 0.40.2
 
 - Licence: `MIT`
 - Source: https://github.com/rusqlite/rusqlite
@@ -5050,7 +5010,7 @@ SOFTWARE.
 
 </details>
 
-### thiserror 2.0.19
+### thiserror 2.0.20
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/dtolnay/thiserror
@@ -5086,7 +5046,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### thiserror-impl 2.0.19
+### thiserror-impl 2.0.20
 
 - Licence: `MIT OR Apache-2.0`
 - Source: https://github.com/dtolnay/thiserror
