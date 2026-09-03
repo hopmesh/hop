@@ -69,8 +69,6 @@ export type {
   HopStatus,
   HopServiceRequest,
   HopServiceResponse,
-  HopOutgoing,
-  HopRole,
   HopOpenOptions,
   HopSendOptions,
   HopRelayPool,

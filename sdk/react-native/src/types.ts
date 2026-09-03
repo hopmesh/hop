@@ -46,14 +46,22 @@ export interface HopServiceResponse {
   readonly body: Uint8Array;
 }
 
-/** An opaque outbound packet the core wants a bearer to transmit on `link`. */
-export interface HopOutgoing {
-  readonly link: number;
-  readonly bytes: Uint8Array;
-}
+/** A native bearer the React Native bridge can manage. */
+export type HopBearer = "ble" | "lan" | "relay";
 
-/** Which side opened a bearer link (the Noise role). */
-export type HopRole = "dialer" | "acceptor";
+/** The complete lifecycle state of one bearer in a native runtime. */
+export type HopBearerState = "disabled" | "enabled" | "active";
+
+/**
+ * An authoritative, complete native bearer snapshot.
+ *
+ * `revision` increases whenever any bearer state changes. Every snapshot carries all three bearer
+ * keys, never a delta, so a missed event cannot leave a UI with an invented state for another radio.
+ */
+export interface HopBearerSnapshot {
+  readonly revision: number;
+  readonly states: Readonly<Record<HopBearer, HopBearerState>>;
+}
 
 /** Section 19 relay-pool counts: `total` endpoints known, `available` dialable right now.
  *

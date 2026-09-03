@@ -40,6 +40,13 @@ Pod::Spec.new do |s|
   # wrong archive. The MODULE is still Hop, so `import Hop` in ios/HopMesh.swift is unchanged.
   s.dependency "HopSDK"
 
+  # The native bridge owns BLE and LAN packet routing. These are local integration
+  # pods today, so a consuming Podfile must provide their `:path` specs beside
+  # HopContract. Declaring them here makes a missing bearer a resolution failure
+  # instead of an `import HopBearerBle` compiler error in a later build phase.
+  s.dependency "HopBearerBle"
+  s.dependency "HopBearerLan"
+
   # New Architecture (Fabric/TurboModules) interop: the classic bridge module here runs under the
   # interop layer when the New Architecture is enabled, so no extra codegen is required.
   if respond_to?(:install_modules_dependencies, true)
