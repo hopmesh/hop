@@ -67,9 +67,13 @@ android {
     // ships as the org.jetbrains.kotlin.plugin.compose Gradle plugin (applied above, pinned to the Kotlin
     // version), so there is nothing left to configure here.
 
+    // androidx.compose BOM 2026.08.00 ships inline functions compiled for JVM 11, so compiling this
+    // module at JVM 1.8 fails with "Cannot inline bytecode built with JVM target 11 into bytecode that
+    // is being built with JVM target 1.8". Raised to 11; the rest of the tree (bearers at 17) is
+    // already above it, and :hop-driver at 1.8 stays inlineable into a higher target.
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
 
     // cov/android-demo: JVM unit tests for the pure helpers (DemoFormat.kt) + the crash handler
@@ -84,8 +88,10 @@ android {
     }
 }
 // Kotlin 2.x makes `android.kotlinOptions { jvmTarget = ... }` a hard compile error (moved to
-// compilerOptions); this is the direct replacement, one level up from the `android {}` block.
-kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_1_8) } }
+// compilerOptions); this is the direct replacement, one level up from the `android {}` block. JVM 11
+// matches compileOptions above (Kotlin and Java bytecode must agree) and clears the compose BOM
+// 2026.08.00 inline-bytecode floor.
+kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_11) } }
 
 dependencies {
     // The Hop runtime (bearer, transports, UniFFI bindings, native libs) lives in the driver.
