@@ -406,13 +406,19 @@ def check_copybara_contract(root, components):
         'core.move(CRATES_PUBLISH_HELPER, ".github/crates-publish.py")',
         'core.move(EXPORT_SMOKE, ".github/package-export-smoke.py")',
         'core.move(NATIVE_HELPER, "native/native-artifacts.py")',
-        'core.move(THIRD_PARTY_NOTICES, "THIRD-PARTY-NOTICES.md")',
         'core.move(HOP_HEADER, "include/hop.h")',
         "_go_export_paths()",
         "_elixir_vendor_export()",
     )
     for marker in required:
         require(marker in config, f"Copybara transformation marker is missing: {marker}")
+    # The root notices file keeps its path in every mirror, so it must be SELECTED (origin_paths) and
+    # must NOT be moved: Copybara refuses a same-path core.move as a no-op and the whole config fails
+    # to load (REL-003). This string check is a tripwire; the real proof is `copybara validate` in CI.
+    origin_block = re.search(r"origin_paths = \[(.*?)\]", config, re.DOTALL)
+    require(origin_block is not None, "copy.bara.sky origin_paths block not found")
+    require("THIRD_PARTY_NOTICES" in origin_block.group(1), "copy.bara.sky origin_paths omits THIRD_PARTY_NOTICES")
+    require('core.move(THIRD_PARTY_NOTICES' not in config, "copy.bara.sky moves THIRD_PARTY_NOTICES onto itself (no-op move)")
 
 
 def static_check(root, output_root, selected):
