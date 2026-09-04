@@ -713,6 +713,36 @@ pub enum HnsLookup {
     NeedsResolver,
 }
 
+/// Outcome of ingesting a bundle into durable node storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// The bundle was admitted and remains held in durable storage.
+    Held,
+    /// The bundle was admitted, but immediately evicted by storage pressure.
+    EvictedImmediately,
+    /// The bundle was rejected by admission, deduplication, or verification policy.
+    Rejected,
+}
+
+/// Maximum aggregate count of receiver-seen deduplication rows.
+pub const MAX_RECEIVER_SEEN_COUNT: usize = 65_536;
+/// Maximum aggregate byte budget for receiver-seen deduplication state.
+pub const MAX_RECEIVER_SEEN_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum receiver-seen deduplication rows admitted per authenticated sender.
+pub const MAX_RECEIVER_SEEN_PER_SENDER: usize = 4_096;
+/// Maximum receiver-seen deduplication bytes admitted per authenticated sender.
+pub const MAX_RECEIVER_SEEN_BYTES_PER_SENDER: usize = 2 * 1024 * 1024;
+
+/// Maximum active forward-secret sessions admitted into memory and durable storage.
+pub const MAX_SESSIONS_COUNT: usize = 4_096;
+
+/// Persisted representation of a forward-secret session with its last activity timestamp.
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedSession {
+    session: PeerSession,
+    last_touched_ms: u64,
+}
+
 /// An HTTP response a gateway sealed back to the requester.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HttpRespItem {
@@ -1094,6 +1124,11 @@ pub struct Node<S: Store = MemoryStore> {
     /// Receiver-only dedup, separate from relay `Store::seen` so an unrecognized private-header
     /// chimera cannot suppress the genuine copy. The retained acknowledgement enables safe re-ACK.
     receiver_seen: HashMap<BundleId, ReceiverSeen>,
+    receiver_seen_sender: HashMap<BundleId, PubKeyBytes>,
+    receiver_seen_sender_count: HashMap<PubKeyBytes, usize>,
+    receiver_seen_sender_bytes: HashMap<PubKeyBytes, usize>,
+    receiver_seen_entry_bytes: HashMap<BundleId, usize>,
+    receiver_seen_total_bytes: usize,
     /// Locally-originated bundles awaiting an ACK, retransmitted until acked/expired.
     pending: HashMap<BundleId, PendingTx>,
     retx_interval_ms: u64,
@@ -1585,6 +1620,11 @@ impl<S: Store> Node<S> {
             durable_inbox: HashMap::new(),
             inbox_order: Vec::new(),
             receiver_seen: HashMap::new(),
+            receiver_seen_sender: HashMap::new(),
+            receiver_seen_sender_count: HashMap::new(),
+            receiver_seen_sender_bytes: HashMap::new(),
+            receiver_seen_entry_bytes: HashMap::new(),
+            receiver_seen_total_bytes: 0,
             pending: HashMap::new(),
             retx_interval_ms: DEFAULT_RETX_INTERVAL_MS,
             advert_seq: 0,
@@ -2099,12 +2139,25 @@ impl<S: Store> Node<S> {
             let Ok(addr) = <PubKeyBytes>::try_from(addr_vec.as_slice()) else {
                 continue;
             };
-            match postcard::from_bytes::<PeerSession>(&bytes) {
-                Ok(ps) => {
-                    self.sessions.insert(addr, ps);
-                    self.unanchored_sessions.insert(addr);
-                }
-                Err(_) => self.rehydrate_report.note("session"),
+            let (ps, touched) = match postcard::from_bytes::<PersistedSession>(&bytes) {
+                Ok(p) => (p.session, p.last_touched_ms),
+                Err(_) => match postcard::from_bytes::<PeerSession>(&bytes) {
+                    Ok(ps) => (ps, 0),
+                    Err(_) => {
+                        self.rehydrate_report.note("session");
+                        continue;
+                    }
+                },
+            };
+            if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                self.rehydrate_report.note("session/cap");
+                continue;
+            }
+            self.sessions.insert(addr, ps);
+            if touched != 0 {
+                self.session_touch.insert(addr, touched);
+            } else {
+                self.unanchored_sessions.insert(addr);
             }
         }
 
@@ -2114,7 +2167,41 @@ impl<S: Store> Node<S> {
         for (_, bytes) in self.store.list_kv("inbox-seen/") {
             match postcard::from_bytes::<(BundleId, ReceiverSeen)>(&bytes) {
                 Ok((id, seen)) => {
-                    self.receiver_seen.insert(id, seen);
+                    if self.now_ms != 0 && seen.expires_at_ms <= self.now_ms {
+                        continue;
+                    }
+                    let bytes_len = bytes.len();
+                    if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+                        || self.receiver_seen_total_bytes.saturating_add(bytes_len)
+                            > MAX_RECEIVER_SEEN_BYTES
+                    {
+                        self.rehydrate_report.note("inbox-seen/cap");
+                        continue;
+                    }
+                    let sender = match &seen.acknowledgement {
+                        InboxAcknowledgement::Traced { to, .. }
+                        | InboxAcknowledgement::Private { to, .. } => Some(*to),
+                        InboxAcknowledgement::None => None,
+                    };
+                    if let Some(s) = sender {
+                        let sc = self
+                            .receiver_seen_sender_count
+                            .get(&s)
+                            .copied()
+                            .unwrap_or(0);
+                        let sb = self
+                            .receiver_seen_sender_bytes
+                            .get(&s)
+                            .copied()
+                            .unwrap_or(0);
+                        if sc >= MAX_RECEIVER_SEEN_PER_SENDER
+                            || sb.saturating_add(bytes_len) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+                        {
+                            self.rehydrate_report.note("inbox-seen/sender-cap");
+                            continue;
+                        }
+                    }
+                    self.insert_receiver_seen_entry(id, seen, sender, bytes_len);
                 }
                 Err(_) => self.rehydrate_report.note("inbox-seen"),
             }
@@ -2833,7 +2920,18 @@ impl<S: Store> Node<S> {
     /// Durably write a candidate ratchet before replacing the live in-memory session. Once this
     /// succeeds the old send state must never be restored, even if later bundle storage fails.
     fn commit_session(&mut self, peer: PubKeyBytes, candidate: PeerSession) -> Result<()> {
-        let bytes = postcard::to_allocvec(&candidate)?;
+        if !self.sessions.contains_key(&peer) && self.sessions.len() >= MAX_SESSIONS_COUNT {
+            self.gc_idle_sessions();
+            if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                return Err(Error::Other("session capacity reached".into()));
+            }
+        }
+        let now = self.now_ms;
+        let persisted = PersistedSession {
+            session: candidate.clone(),
+            last_touched_ms: now,
+        };
+        let bytes = postcard::to_allocvec(&persisted)?;
         self.store
             .put_kv_critical(&Self::session_kv_key(&peer), bytes)
             .map_err(|e| Error::Other(format!("session persistence failed: {e}")))?;
@@ -2842,6 +2940,73 @@ impl<S: Store> Node<S> {
         Ok(())
     }
 
+    fn insert_receiver_seen_entry(
+        &mut self,
+        id: BundleId,
+        seen: ReceiverSeen,
+        sender: Option<PubKeyBytes>,
+        bytes_len: usize,
+    ) {
+        if let Some(s) = sender {
+            let sc = self.receiver_seen_sender_count.entry(s).or_insert(0);
+            *sc = sc.saturating_add(1);
+            let sb = self.receiver_seen_sender_bytes.entry(s).or_insert(0);
+            *sb = sb.saturating_add(bytes_len);
+            self.receiver_seen_sender.insert(id, s);
+        }
+        self.receiver_seen_entry_bytes.insert(id, bytes_len);
+        self.receiver_seen_total_bytes = self.receiver_seen_total_bytes.saturating_add(bytes_len);
+        self.receiver_seen.insert(id, seen);
+    }
+
+    fn remove_receiver_seen_entry(&mut self, id: &BundleId) -> Option<ReceiverSeen> {
+        let removed = self.receiver_seen.remove(id)?;
+        let bytes_len = self.receiver_seen_entry_bytes.remove(id).unwrap_or(128);
+        self.receiver_seen_total_bytes = self.receiver_seen_total_bytes.saturating_sub(bytes_len);
+        if let Some(sender) = self.receiver_seen_sender.remove(id) {
+            if let Some(sc) = self.receiver_seen_sender_count.get_mut(&sender) {
+                *sc = sc.saturating_sub(1);
+                if *sc == 0 {
+                    self.receiver_seen_sender_count.remove(&sender);
+                }
+            }
+            if let Some(sb) = self.receiver_seen_sender_bytes.get_mut(&sender) {
+                *sb = sb.saturating_sub(bytes_len);
+                if *sb == 0 {
+                    self.receiver_seen_sender_bytes.remove(&sender);
+                }
+            }
+        }
+        Some(removed)
+    }
+
+    fn prune_expired_receiver_seen(&mut self) {
+        let now_ms = self.now_ms;
+        let expired_received: Vec<BundleId> = self
+            .receiver_seen
+            .iter()
+            .filter(|(id, seen)| {
+                seen.expires_at_ms <= now_ms && !self.durable_inbox.contains_key(*id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        const MAX_CLEANUP_BATCH: usize = 128;
+        for chunk in expired_received.chunks(MAX_CLEANUP_BATCH) {
+            let removals: Vec<KvMutation> = chunk
+                .iter()
+                .map(|id| KvMutation::Remove {
+                    key: Self::receiver_seen_kv_key(id),
+                })
+                .collect();
+            if self.store.apply_kv_batch(&removals).is_ok() {
+                for id in chunk {
+                    self.remove_receiver_seen_entry(id);
+                }
+            } else {
+                break;
+            }
+        }
+    }
     /// Delete the durable session first. A failed delete leaves the live ratchet and its idle-GC
     /// bookkeeping untouched, so restart and in-process state cannot diverge.
     fn delete_session(&mut self, peer: &PubKeyBytes) -> Result<()> {
@@ -3951,6 +4116,56 @@ impl<S: Store> Node<S> {
             return Ok(());
         }
 
+        if let Payload::SessionInit { .. } = &payload {
+            if !self.sessions.contains_key(&from) && self.sessions.len() >= MAX_SESSIONS_COUNT {
+                self.gc_idle_sessions();
+                if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                    return Err(Error::Other("session capacity reached".into()));
+                }
+            }
+        }
+        let est_seen_bytes = 200;
+        let sender_count = self
+            .receiver_seen_sender_count
+            .get(&from)
+            .copied()
+            .unwrap_or(0);
+        let sender_bytes = self
+            .receiver_seen_sender_bytes
+            .get(&from)
+            .copied()
+            .unwrap_or(0);
+        if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+            || self
+                .receiver_seen_total_bytes
+                .saturating_add(est_seen_bytes)
+                > MAX_RECEIVER_SEEN_BYTES
+            || sender_count >= MAX_RECEIVER_SEEN_PER_SENDER
+            || sender_bytes.saturating_add(est_seen_bytes) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+        {
+            self.prune_expired_receiver_seen();
+            let sender_count = self
+                .receiver_seen_sender_count
+                .get(&from)
+                .copied()
+                .unwrap_or(0);
+            let sender_bytes = self
+                .receiver_seen_sender_bytes
+                .get(&from)
+                .copied()
+                .unwrap_or(0);
+            if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+                || self
+                    .receiver_seen_total_bytes
+                    .saturating_add(est_seen_bytes)
+                    > MAX_RECEIVER_SEEN_BYTES
+                || sender_count >= MAX_RECEIVER_SEEN_PER_SENDER
+                || sender_bytes.saturating_add(est_seen_bytes) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+            {
+                return Err(Error::Other("receiver seen capacity reached".into()));
+            }
+        }
+
         let prepared = self.prepare_inbound_message(from, payload, authenticated)?;
         let acknowledgement = self.inbox_acknowledgement(bundle, from, private);
         let seen = ReceiverSeen {
@@ -3988,14 +4203,20 @@ impl<S: Store> Node<S> {
 
         let mut mutations = Vec::with_capacity(3);
         if let Some(candidate) = &prepared.session {
+            let persisted = PersistedSession {
+                session: candidate.clone(),
+                last_touched_ms: self.now_ms,
+            };
             mutations.push(KvMutation::Put {
                 key: Self::session_kv_key(&from),
-                value: postcard::to_allocvec(candidate)?,
+                value: postcard::to_allocvec(&persisted)?,
             });
         }
+        let seen_payload = postcard::to_allocvec(&(id, seen.clone()))?;
+        let seen_bytes_len = seen_payload.len();
         mutations.push(KvMutation::Put {
             key: Self::receiver_seen_kv_key(&id),
-            value: postcard::to_allocvec(&(id, seen.clone()))?,
+            value: seen_payload,
         });
         if let Some(item) = &item {
             mutations.push(KvMutation::Put {
@@ -4014,7 +4235,7 @@ impl<S: Store> Node<S> {
             self.sessions.insert(from, candidate);
             self.touch_session(from);
         }
-        self.receiver_seen.insert(id, seen);
+        self.insert_receiver_seen_entry(id, seen, Some(from), seen_bytes_len);
         if let Some(item) = item {
             self.inbox.push(bundle.clone());
             self.inbox_order.push(id);
@@ -7498,7 +7719,7 @@ impl<S: Store> Node<S> {
     /// already warm (DESIGN.md §28). Stores it for onward relay and offers it to live
     /// links, exactly as if a peer had handed it over. A cold-started node gets the same
     /// bundles for free via [`Node::with_store`]'s rehydrate.
-    pub fn ingest(&mut self, bundle: Bundle) {
+    pub fn ingest(&mut self, bundle: Bundle) -> IngestOutcome {
         // relay-F (pass-5 audit): re-inject via LOCAL_LINK, NOT a phantom `LinkId::MAX`. Both match no
         // real connection (so the bundle is offered to every live link, the offer step skips only the
         // arrival link), but ONLY LOCAL_LINK is exempt from the F-07 per-link private-ingest flood cap.
@@ -7507,7 +7728,16 @@ impl<S: Store> Node<S> {
         // and a beacon that pulls > MAX_PRIV_BUNDLES_PER_WINDOW bundles (a real backlog, or an attacker
         // co-locating spam under a shared mailbox prefix) would otherwise overflow the cap and silently
         // drop the overflow AFTER the durable copy is gone: permanent loss of offline messages.
-        self.on_bundle(LOCAL_LINK, bundle);
+        let id = bundle.id();
+        let was_held = self.store.contains(&id);
+        let stored = self.process_bundle(LOCAL_LINK, bundle);
+        if self.store.contains(&id) || self.durable_inbox.contains_key(&id) {
+            IngestOutcome::Held
+        } else if was_held || stored {
+            IngestOutcome::EvictedImmediately
+        } else {
+            IngestOutcome::Rejected
+        }
     }
 
     /// Drop everything we're currently holding: our own undelivered messages (stop
@@ -7675,29 +7905,8 @@ impl<S: Store> Node<S> {
         }
         self.store.prune(now_ms);
         self.expire_outgoing_carriers();
-        // Accepted receiver dedup expires with the bundle window. Unaccepted inbox rows never expire:
-        // host acceptance, not sender TTL, owns their retention and redelivery lifecycle.
-        let expired_received: Vec<BundleId> = self
-            .receiver_seen
-            .iter()
-            .filter(|(id, seen)| {
-                seen.expires_at_ms <= now_ms && !self.durable_inbox.contains_key(*id)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        if !expired_received.is_empty() {
-            let removals: Vec<KvMutation> = expired_received
-                .iter()
-                .map(|id| KvMutation::Remove {
-                    key: Self::receiver_seen_kv_key(id),
-                })
-                .collect();
-            if self.store.apply_kv_batch(&removals).is_ok() {
-                for id in expired_received {
-                    self.receiver_seen.remove(&id);
-                }
-            }
-        }
+        // Accepted receiver dedup expires with the bundle window, cleaned up in bounded batches.
+        self.prune_expired_receiver_seen();
         // Drop relay-queue entries whose bundles have been delivered or expired.
         self.relay_order.retain(|id| self.store.contains(id));
         self.relay_fwd.retain(|id, _| self.store.contains(id));
@@ -9246,7 +9455,9 @@ impl<S: Store> Node<S> {
             }
             self.evict_relayed_if_needed();
             // F-09: offer just the bundle we accepted to the other links, not the whole store.
-            self.offer_bundle_to_all_except(id, from_link);
+            if self.store.contains(&id) {
+                self.offer_bundle_to_all_except(id, from_link);
+            }
         }
         stored
     }
@@ -13763,15 +13974,13 @@ mod tests {
 
         let store = nodes[1].clone_store();
         nodes[1] = Node::with_store(Identity::from_secret_bytes(&bob_secret), store);
-        assert!(nodes[1].unanchored_sessions.contains(&alice));
+        assert!(nodes[1].has_session(&alice));
 
-        // The first post-restart tick uses a real epoch timestamp far beyond the idle horizon. It
-        // must establish the baseline, not interpret the restored session as decades idle.
+        // The post-restart tick uses a real epoch timestamp far beyond the idle horizon. It
+        // must use the persisted baseline, not interpret the restored session as decades idle.
         nodes[1].tick(0);
-        assert!(nodes[1].unanchored_sessions.contains(&alice));
         nodes[1].tick(real_now + 1_000);
         assert!(nodes[1].has_session(&alice));
-        assert!(nodes[1].unanchored_sessions.is_empty());
 
         nodes[0].handle(BearerEvent::Disconnected(1));
         let mut net = Wire2::new();
@@ -13786,6 +13995,165 @@ mod tests {
             .find_map(|bundle| nodes[1].read_message(bundle).ok().flatten())
             .expect("restored ratchet decrypts after its first real tick");
         assert_eq!(message.body, b"after first tick");
+    }
+
+    #[test]
+    fn hostile_repeated_restarts_must_not_renew_idle_session_past_max_lifetime() {
+        let real_now: u64 = 1_700_000_000_000;
+        let bob_secret = Identity::generate().to_secret_bytes();
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::from_identity_secret(&bob_secret),
+        ];
+        nodes[0].set_time(real_now);
+        nodes[1].set_time(real_now);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+        let bob = nodes[1].address();
+        let alice = nodes[0].address();
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"initial".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+        let first = nodes[1].take_inbox();
+        nodes[1].read_message(&first[0]).unwrap();
+        nodes[1].accept_inbox(&first[0].id()).unwrap();
+        assert!(nodes[1].has_session(&alice));
+
+        let t1 = real_now + 20 * 24 * 3600 * 1000;
+        let store = nodes[1].clone_store();
+        let mut restarted = Node::with_store(Identity::from_secret_bytes(&bob_secret), store);
+        restarted.set_time(t1);
+        restarted.tick(t1);
+
+        let t2 = t1 + 15 * 24 * 3600 * 1000;
+        restarted.set_time(t2);
+        restarted.tick(t2);
+
+        assert!(
+            !restarted.has_session(&alice),
+            "restarts must not renew idle session lifetime past 30 days"
+        );
+    }
+
+    #[test]
+    fn receiver_seen_budget_enforces_per_sender_and_global_capacity_leaving_messages_retryable() {
+        let real_now = 1_700_000_000_000u64;
+        let bob_secret = Identity::generate().to_secret_bytes();
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::from_identity_secret(&bob_secret),
+        ];
+        nodes[0].set_time(real_now);
+        nodes[1].set_time(real_now);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+        let bob = nodes[1].address();
+        let alice = nodes[0].address();
+
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"first".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+        let first = nodes[1].take_inbox();
+        assert_eq!(first.len(), 1);
+        nodes[1].read_message(&first[0]).unwrap();
+        nodes[1].accept_inbox(&first[0].id()).unwrap();
+
+        nodes[1]
+            .receiver_seen_sender_count
+            .insert(alice, MAX_RECEIVER_SEEN_PER_SENDER);
+
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"second".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert!(nodes[1].take_inbox().is_empty());
+
+        nodes[1].receiver_seen_sender_count.insert(alice, 1);
+        nodes[0].tick(real_now + 10_000);
+        nodes[1].tick(real_now + 10_000);
+        net.pump(&mut nodes);
+
+        let retried = nodes[1].take_inbox();
+        assert_eq!(retried.len(), 1, "retry succeeds after capacity clears");
+        let msg = nodes[1].read_message(&retried[0]).unwrap().unwrap();
+        assert_eq!(msg.body, b"second");
+    }
+
+    #[test]
+    fn session_budget_enforces_capacity_and_gc_idle_before_rejection() {
+        let real_now = 1_700_000_000_000u64;
+        let mut bob = Node::new(Identity::generate());
+        bob.set_time(real_now);
+
+        // Fill sessions up to MAX_SESSIONS_COUNT with simulated active peers
+        for i in 0..MAX_SESSIONS_COUNT {
+            let mut peer = [0u8; 32];
+            peer[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bob.sessions.insert(
+                peer,
+                PeerSession {
+                    session: Session::init_initiator([1u8; 32], [2u8; 32]),
+                    init_material: None,
+                    established_by: None,
+                },
+            );
+            bob.session_touch.insert(peer, real_now);
+        }
+        assert_eq!(bob.sessions.len(), MAX_SESSIONS_COUNT);
+
+        // Attempt to commit a session for a new peer when full -> should fail
+        let new_peer = [99u8; 32];
+        let candidate = PeerSession {
+            session: Session::init_initiator([3u8; 32], [4u8; 32]),
+            init_material: None,
+            established_by: None,
+        };
+        assert!(bob.commit_session(new_peer, candidate.clone()).is_err());
+
+        // Now mark one session as idle past SESSION_MAX_IDLE_MS
+        let idle_peer = [0u8; 32];
+        bob.session_touch.insert(
+            idle_peer,
+            real_now.saturating_sub(SESSION_MAX_IDLE_MS + 1000),
+        );
+
+        // Attempt to commit the new session again -> gc_idle_sessions frees idle_peer and succeeds
+        assert!(bob.commit_session(new_peer, candidate).is_ok());
+        assert!(!bob.sessions.contains_key(&idle_peer));
+        assert!(bob.sessions.contains_key(&new_peer));
+    }
+
+    #[test]
+    fn receiver_seen_cleanup_is_incrementally_chunked_below_backend_limits() {
+        let real_now = 1_700_000_000_000u64;
+        let mut bob = Node::new(Identity::generate());
+        bob.set_time(real_now);
+
+        // Insert 300 expired receiver seen entries (more than the 128 batch size)
+        for i in 0..300 {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bob.insert_receiver_seen_entry(
+                id,
+                ReceiverSeen {
+                    expires_at_ms: real_now.saturating_sub(100),
+                    acknowledgement: InboxAcknowledgement::None,
+                },
+                None,
+                128,
+            );
+        }
+        assert_eq!(bob.receiver_seen.len(), 300);
+
+        // Prune: must batch clean in chunks of 128
+        bob.prune_expired_receiver_seen();
+        assert_eq!(bob.receiver_seen.len(), 0);
+        assert_eq!(bob.receiver_seen_total_bytes, 0);
     }
 
     #[test]
@@ -17968,6 +18336,77 @@ mod tests {
             accepted, n,
             "every re-ingested mailbox bundle is accepted (LOCAL_LINK exempt from F-07); none dropped-after-delete"
         );
+    }
+
+    #[test]
+    fn ingest_returns_held_evicted_immediately_and_rejected() {
+        let mut relay = Node::new(Identity::generate());
+        relay.set_max_relayed(2);
+        let recipient = Identity::generate();
+        let spk = recipient.derive_prekey().public;
+        let prefix = crypto::mailbox_route(&crypto::mailbox_tag(&recipient.address(), 0));
+
+        let b1 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-1".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b1), IngestOutcome::Held);
+
+        let b2 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-2".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b2), IngestOutcome::Held);
+
+        let b3 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-3".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b3), IngestOutcome::EvictedImmediately);
+
+        let mut bad = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"bad".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts::default(),
+        )
+        .unwrap();
+        bad.inner.id = [0u8; 32];
+        assert_eq!(relay.ingest(bad), IngestOutcome::Rejected);
     }
 
     #[test]

@@ -1805,15 +1805,18 @@ fn serve_conn(
 /// - survives restarts), generating and persisting one on first run.
 fn load_identity(path: &Option<String>) -> Identity {
     if let Some(path) = path {
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Identity::from_secret_bytes(&seed);
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(seed) => return Identity::from_secret_bytes(&seed),
+                    Err(_) => panic!("--identity-file {path} must be exactly 32 bytes"),
+                },
+                Err(e) => panic!("--identity-file {path} unreadable: {e}"),
             }
         }
         let id = Identity::generate();
-        // services-13: a 32-byte long-term secret written 0600 (owner-only), never world-readable,
-        // with a loud warning on failure (a silent drop means the DNS-published address goes stale).
-        if let Err(e) = write_secret_600(path, &id.to_secret_bytes()) {
+        if let Err(e) = write_secret_atomic(path, &id.to_secret_bytes()) {
             eprintln!(
                 "warning: could not persist identity to {path}: {e}; address will change on restart"
             );
@@ -1824,9 +1827,63 @@ fn load_identity(path: &Option<String>) -> Identity {
     Identity::generate()
 }
 
-/// Write `bytes` to `path` with owner-only (0600) permissions (services-13). On Unix the mode is
-/// applied at create time so the secret is never briefly world-readable; non-Unix falls back to a
-/// plain write (the endpoint only ships on Unix).
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
+}
+
+/// Write `bytes` to `path` with owner-only (0600) permissions.
+#[cfg_attr(not(test), allow(dead_code))]
 fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -1839,7 +1896,6 @@ fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
             .open(path)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        // Re-assert 0600 in case the file pre-existed with looser perms (mode only applies on create).
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
@@ -1861,6 +1917,21 @@ mod tests {
 
     const TEST_PROXY_SUFFIX_CIDRS: &str = "192.0.2.8/32,2001:db8::8/128";
 
+    #[test]
+    fn hostile_corrupt_configured_identity_file_must_panic_not_rotate() {
+        let path = format!(
+            "{}/test-endpoint-corrupt-{}.key",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        std::fs::write(&path, [2u8; 16]).unwrap();
+        let r = std::panic::catch_unwind(|| load_identity(&Some(path.clone())));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            r.is_err(),
+            "endpoint must panic on a corrupt identity file, not overwrite it"
+        );
+    }
     fn trusted_policy(hops: usize, peer_cidrs: &str) -> TrustedProxy {
         let policy = resolve_trusted_proxy(
             Some("google-cloud-run"),
