@@ -7,6 +7,35 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+if [ "${1:-}" = "--list-outputs" ]; then
+    python3 - "$ROOT" <<'PY'
+import json
+import os
+import sys
+
+root = sys.argv[1]
+print("CHANGELOG.md")
+prefixes = [meta["prefix"] for meta in json.load(
+    open(os.path.join(root, "tools/copybara/components.json"))).values()]
+prefixes += [
+    "core/hop-endpoint",
+    "core/hop-sim",
+    "services/hop-telemetryd",
+]
+for prefix in prefixes:
+    if os.path.isdir(os.path.join(root, prefix)):
+        print(f"{prefix}/CHANGELOG.md")
+PY
+    exit 0
+fi
+
+if [ "${1:-}" = "--stage" ]; then
+    while IFS= read -r file; do
+        [ -n "$file" ] && git add -- "$file"
+    done < <("$0" --list-outputs)
+    exit 0
+fi
 CLIFF="${GIT_CLIFF:-git-cliff}"
 CONFIG="$ROOT/cliff.toml"
 
