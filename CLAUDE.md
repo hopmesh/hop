@@ -56,5 +56,6 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 ## Working with agents
 
 File-mutating work in parallel needs `isolation: "worktree"` on each agent, or they corrupt each other's HEAD in the shared checkout. Read-only fan-out is fine shared.
+Worktree checkpoint rule: every file-mutating session in a worktree must commit its changes to a named branch before yielding. Never leave uncommitted changes or detached-HEAD commits without explicit checkpointing. Before tearing down or pruning a worktree, verify `git status --porcelain` is empty and all commits are reachable from a branch or PR.
 
 Never enumerate environment values. For diagnostics, check fixed variable names and emit only `NAME=set` or `NAME=unset`; never print the value. The checked-in OpenCode policy blocks known environment dumps and clears recognized sensitive values before agent shell processes start.
