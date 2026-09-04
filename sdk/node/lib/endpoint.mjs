@@ -54,15 +54,35 @@ export class HopEndpoint extends EventEmitter {
   #activeNative = 0
   #closers = [] // bearer teardown hooks (server/sockets), run by close() before freeing the node
 
-  // opts: { key?: 32-byte Buffer secret, dbPath?, name?, tickMs=50,
+  // opts: { key?: 32-byte Buffer secret, dbPath?, dbKey?, appSecret?, name?, tickMs=50,
   //         cluster?: string passphrase | 32-byte Buffer secret, quorum?: min live members (CP) }
   constructor(opts = {}) {
     super()
     assertAbi()
-    const { key, dbPath, name, tickMs = 50, cluster, quorum } = opts
+    const { key, dbPath, dbKey, appSecret, name, tickMs = 50, cluster, quorum } = opts
     if (key != null) require32(key, 'identity key')
+    if (appSecret != null) require32(appSecret, 'app secret')
+    if (dbKey != null) require32(dbKey, 'database key')
     if (dbPath) {
-      this.#node = hop.node_open(dbPath, key ?? null, key ? key.length : 0, null, 0)
+      if (dbKey) {
+        this.#node = hop.node_open_keyed(
+          dbPath,
+          key ?? null,
+          key ? key.length : 0,
+          appSecret ?? null,
+          appSecret ? appSecret.length : 0,
+          dbKey,
+          dbKey.length,
+        )
+      } else {
+        this.#node = hop.node_open(
+          dbPath,
+          key ?? null,
+          key ? key.length : 0,
+          appSecret ?? null,
+          appSecret ? appSecret.length : 0,
+        )
+      }
     } else if (key) {
       this.#node = hop.node_with_secret(key, key.length)
     } else {
@@ -91,6 +111,22 @@ export class HopEndpoint extends EventEmitter {
     const o = Buffer.alloc(32)
     this.#native((node) => hop.node_address(node, o))
     return o
+  }
+
+  get isPersistent() {
+    return this.#native((node) => hop.node_is_persistent(node)) ?? false
+  }
+
+  get isEncrypted() {
+    return this.#native((node) => hop.node_is_encrypted(node)) ?? false
+  }
+
+  clusterMarkDone(from, requestId) {
+    return this.#native((node) => hop.cluster_mark_done(node, from, requestId))
+  }
+
+  clusterWouldDrop(from, requestId) {
+    return this.#native((node) => hop.cluster_would_drop(node, from, requestId)) ?? false
   }
 
   // Join the endpoint cluster so sibling replicas (same identity, no shared datastore) each handle a

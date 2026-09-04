@@ -1,13 +1,14 @@
 defmodule Hop.Request do
   @moduledoc "An inbound service request. `from` is the cryptographically verified sender identity."
-  defstruct [:from, :from_bytes, :service, :method, :args]
+  defstruct [:from, :from_bytes, :service, :method, :args, :request_id]
 
   @type t :: %__MODULE__{
           from: String.t(),
           from_bytes: binary(),
           service: String.t(),
           method: String.t(),
-          args: binary()
+          args: binary(),
+          request_id: binary()
         }
 end
 
@@ -44,6 +45,28 @@ defmodule Hop.Endpoint do
   end
 
   def close(pid), do: GenServer.stop(pid)
+
+  @doc "Returns true if this endpoint is backed by persistent storage."
+  def persistent?(pid), do: GenServer.call(pid, :is_persistent)
+
+  @doc "Returns true if this endpoint's persistent storage is encrypted."
+  def encrypted?(pid), do: GenServer.call(pid, :is_encrypted)
+
+  @doc "Durably accept a service request by its 32-byte request id."
+  def accept_service_request(pid, request_id),
+    do: GenServer.call(pid, {:accept_service_request, request_id})
+
+  @doc "Reject a service request without ACK so it can be retried."
+  def reject_service_request(pid, request_id),
+    do: GenServer.call(pid, {:reject_service_request, request_id})
+
+  @doc "Mark a request as done in the cluster dedup table."
+  def cluster_mark_done(pid, from, request_id),
+    do: GenServer.call(pid, {:cluster_mark_done, from, request_id})
+
+  @doc "Check if a request would be dropped by the cluster dedup table."
+  def cluster_would_drop(pid, from, request_id),
+    do: GenServer.call(pid, {:cluster_would_drop, from, request_id})
 
   @doc "Sign a self-certifying reachability record for this endpoint's address bound to `endpoint`."
   def sign_reach(pid, endpoint, ttl_secs \\ 3600),
@@ -84,10 +107,24 @@ defmodule Hop.Endpoint do
   # ---- GenServer ----
   @impl true
   def init(opts) do
+    secret = opts[:key] || opts[:secret]
+    app_secret = opts[:app_secret]
+    db_path = opts[:db_path]
+    db_key = opts[:db_key]
+
     node =
-      case opts[:key] do
-        nil -> Native.open_ephemeral()
-        key -> Native.open_with_secret(key)
+      cond do
+        db_path != nil and db_key != nil ->
+          Native.open_persistent_keyed(db_path, secret, app_secret, db_key)
+
+        db_path != nil ->
+          Native.open_persistent(db_path, secret, app_secret)
+
+        secret != nil ->
+          Native.open_with_secret(secret)
+
+        true ->
+          Native.open_ephemeral()
       end
 
     Native.tick(node, now())
@@ -114,6 +151,26 @@ defmodule Hop.Endpoint do
 
   def handle_call({:sign_reach, endpoint, ttl}, _from, st),
     do: {:reply, Native.sign_reach_record(st.node, endpoint, ttl), st}
+  def handle_call(:is_persistent, _from, st),
+    do: {:reply, Native.is_persistent(st.node), st}
+
+  def handle_call(:is_encrypted, _from, st),
+    do: {:reply, Native.is_encrypted(st.node), st}
+
+  def handle_call({:accept_service_request, request_id}, _from, st),
+    do: {:reply, Native.accept_service_request(st.node, request_id), st}
+
+  def handle_call({:reject_service_request, request_id}, _from, st),
+    do: {:reply, Native.reject_service_request(st.node, request_id), st}
+
+  def handle_call({:cluster_mark_done, from, request_id}, _from, st) do
+    Native.cluster_mark_done(st.node, from, request_id)
+    {:reply, :ok, st}
+  end
+
+  def handle_call({:cluster_would_drop, from, request_id}, _from, st),
+    do: {:reply, Native.cluster_would_drop(st.node, from, request_id), st}
+
 
   def handle_call({:register_link, link, role, send_fun}, _from, st) do
     Native.connected(st.node, link, role == :dialer)
@@ -172,14 +229,22 @@ defmodule Hop.Endpoint do
             from_bytes: from,
             service: service,
             method: method,
-            args: args
+            args: args,
+            request_id: req_id
           }
 
           reply = fn status, body ->
             Native.send_service_response(st.node, from, req_id, status, to_bin(body))
           end
 
-          fun.(req, reply)
+          try do
+            fun.(req, reply)
+            Native.accept_service_request(st.node, req_id)
+          rescue
+            _ ->
+              # Handler raised: leave request queued for redelivery (ABI-002)
+              :ok
+          end
       end
     end
 

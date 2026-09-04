@@ -27,6 +27,75 @@ fn open_with_secret(secret: Binary) -> ResourceArc<NodeRes> {
 }
 
 #[rustler::nif]
+fn open(
+    db_path: String,
+    secret: Option<Binary>,
+    app_secret: Option<Binary>,
+) -> ResourceArc<NodeRes> {
+    let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
+    let app_sec = app_secret
+        .map(|s| s.as_slice().to_vec())
+        .unwrap_or_default();
+    ResourceArc::new(NodeRes(HopNode::open(db_path, sec, app_sec)))
+}
+
+#[rustler::nif]
+fn open_persistent(
+    db_path: String,
+    secret: Option<Binary>,
+    app_secret: Option<Binary>,
+) -> ResourceArc<NodeRes> {
+    let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
+    let app_sec = app_secret
+        .map(|s| s.as_slice().to_vec())
+        .unwrap_or_default();
+    ResourceArc::new(NodeRes(HopNode::open(db_path, sec, app_sec)))
+}
+
+#[rustler::nif]
+fn open_keyed(
+    db_path: String,
+    secret: Option<Binary>,
+    app_secret: Option<Binary>,
+    key: Binary,
+) -> ResourceArc<NodeRes> {
+    let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
+    let app_sec = app_secret
+        .map(|s| s.as_slice().to_vec())
+        .unwrap_or_default();
+    ResourceArc::new(NodeRes(HopNode::open_keyed(
+        db_path,
+        sec,
+        app_sec,
+        key.as_slice().to_vec(),
+    )))
+}
+
+#[rustler::nif]
+fn open_persistent_keyed(
+    db_path: String,
+    secret: Option<Binary>,
+    app_secret: Option<Binary>,
+    key: Binary,
+) -> ResourceArc<NodeRes> {
+    let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
+    let app_sec = app_secret
+        .map(|s| s.as_slice().to_vec())
+        .unwrap_or_default();
+    ResourceArc::new(NodeRes(HopNode::open_keyed(
+        db_path,
+        sec,
+        app_sec,
+        key.as_slice().to_vec(),
+    )))
+}
+
+#[rustler::nif]
+fn is_persistent(node: ResourceArc<NodeRes>) -> bool {
+    node.0.is_persistent()
+}
+
+#[rustler::nif]
 fn address<'a>(env: Env<'a>, node: ResourceArc<NodeRes>) -> Binary<'a> {
     mkbin(env, &node.0.address())
 }
@@ -86,6 +155,22 @@ fn cluster_members(node: ResourceArc<NodeRes>) -> u32 {
 #[rustler::nif]
 fn cluster_quorum(node: ResourceArc<NodeRes>, min_live_members: u32) {
     node.0.cluster_quorum(min_live_members);
+}
+
+#[rustler::nif]
+fn cluster_mark_done(node: ResourceArc<NodeRes>, from: Binary, request_id: Binary) {
+    if let (Ok(f), Ok(r)) = (from.as_slice().try_into(), request_id.as_slice().try_into()) {
+        node.0.cluster_mark_done(f, r);
+    }
+}
+
+#[rustler::nif]
+fn cluster_would_drop(node: ResourceArc<NodeRes>, from: Binary, request_id: Binary) -> bool {
+    if let (Ok(f), Ok(r)) = (from.as_slice().try_into(), request_id.as_slice().try_into()) {
+        node.0.cluster_would_drop(f, r)
+    } else {
+        false
+    }
 }
 
 #[rustler::nif]
@@ -181,12 +266,16 @@ fn accept_service_response(node: ResourceArc<NodeRes>, for_request_id: Binary) -
 
 #[rustler::nif]
 fn accept_service_request(node: ResourceArc<NodeRes>, request_id: Binary) -> bool {
-    node.0.accept_service_request(request_id.as_slice().to_vec()).unwrap_or(false)
+    node.0
+        .accept_service_request(request_id.as_slice().to_vec())
+        .unwrap_or(false)
 }
 
 #[rustler::nif]
 fn reject_service_request(node: ResourceArc<NodeRes>, request_id: Binary) -> bool {
-    node.0.reject_service_request(request_id.as_slice().to_vec()).unwrap_or(false)
+    node.0
+        .reject_service_request(request_id.as_slice().to_vec())
+        .unwrap_or(false)
 }
 
 #[rustler::nif]

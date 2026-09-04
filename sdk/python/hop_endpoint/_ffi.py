@@ -51,6 +51,12 @@ _lib.hop_abi_version.restype = c_uint32
 _lib.hop_node_new.restype = c_void_p
 _lib.hop_node_with_secret.argtypes = [c_char_p, c_size_t]
 _lib.hop_node_with_secret.restype = c_void_p
+_lib.hop_node_open.argtypes = [c_char_p, c_char_p, c_size_t, c_char_p, c_size_t]
+_lib.hop_node_open.restype = c_void_p
+_lib.hop_node_open_keyed.argtypes = [c_char_p, c_char_p, c_size_t, c_char_p, c_size_t, c_char_p, c_size_t]
+_lib.hop_node_open_keyed.restype = c_void_p
+_lib.hop_node_is_persistent.argtypes = [c_void_p]
+_lib.hop_node_is_persistent.restype = c_bool
 _lib.hop_node_is_encrypted.argtypes = [c_void_p]
 _lib.hop_node_is_encrypted.restype = c_bool
 _lib.hop_node_free.argtypes = [c_void_p]
@@ -100,6 +106,9 @@ _lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
 _lib.hop_cluster_members.argtypes = [c_void_p]
 _lib.hop_cluster_members.restype = c_uint32
 _lib.hop_cluster_set_quorum.argtypes = [c_void_p, c_uint32]
+_lib.hop_cluster_mark_done.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_cluster_would_drop.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_cluster_would_drop.restype = c_bool
 # §32 hps:// pub/sub (services and channels, i.e. group chat). PLAT-005: the eighteen calls the
 # v5 -> v6 bump was taken for. The C ABI had no hps exports at all, so no wrapper sitting on it could
 # reach a channel even though the protocol has shipped in the two native UniFFI drivers for as long
@@ -178,6 +187,52 @@ def node_new() -> c_void_p:
 def node_with_secret(secret: bytes) -> c_void_p:
     return c_void_p(_lib.hop_node_with_secret(secret, len(secret)))
 
+
+def node_open(db_path: str, secret: bytes | None = None, app_secret: bytes | None = None) -> c_void_p:
+    path_bytes = db_path.encode("utf-8")
+    sec_ptr = secret if secret else None
+    sec_len = len(secret) if secret else 0
+    app_ptr = app_secret if app_secret else None
+    app_len = len(app_secret) if app_secret else 0
+    ptr = _lib.hop_node_open(path_bytes, sec_ptr, sec_len, app_ptr, app_len)
+    if not ptr:
+        raise RuntimeError("hop_node_open returned NULL")
+    return c_void_p(ptr)
+
+
+def node_open_keyed(
+    db_path: str,
+    secret: bytes | None = None,
+    app_secret: bytes | None = None,
+    key: bytes | None = None,
+) -> c_void_p:
+    path_bytes = db_path.encode("utf-8")
+    sec_ptr = secret if secret else None
+    sec_len = len(secret) if secret else 0
+    app_ptr = app_secret if app_secret else None
+    app_len = len(app_secret) if app_secret else 0
+    key_ptr = key if key else None
+    key_len = len(key) if key else 0
+    ptr = _lib.hop_node_open_keyed(path_bytes, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+    if not ptr:
+        raise RuntimeError("hop_node_open_keyed returned NULL")
+    return c_void_p(ptr)
+
+
+def node_is_persistent(node) -> bool:
+    return bool(_lib.hop_node_is_persistent(node))
+
+
+def node_is_encrypted(node) -> bool:
+    return bool(_lib.hop_node_is_encrypted(node))
+
+
+def cluster_mark_done(node, from_addr: bytes, request_id: bytes) -> None:
+    _lib.hop_cluster_mark_done(node, _require32(from_addr, "from"), _require32(request_id, "request_id"))
+
+
+def cluster_would_drop(node, from_addr: bytes, request_id: bytes) -> bool:
+    return bool(_lib.hop_cluster_would_drop(node, _require32(from_addr, "from"), _require32(request_id, "request_id")))
 
 def node_free(node) -> None:
     _lib.hop_node_free(node)

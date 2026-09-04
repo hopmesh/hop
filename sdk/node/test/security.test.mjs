@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { EventEmitter, once } from 'node:events'
 import http from 'node:http'
 import https from 'node:https'
@@ -530,4 +533,33 @@ test('service request throwing handler leaves request queued for redelivery (ABI
 
   server.close()
   client.close()
+})
+
+test('endpoint with dbPath persists state across restart (ABI-003)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hop-node-restart-'))
+  const dbPath = path.join(tmpDir, 'test-restart.db')
+  const secret = Buffer.alloc(32)
+  for (let i = 0; i < 32; i++) secret[i] = i + 1
+
+  const from = Buffer.alloc(32, 0xaa)
+  const reqId = Buffer.alloc(32, 0xbb)
+
+  const e1 = new HopEndpoint({ dbPath, key: secret, cluster: 'shared-cluster-passphrase' })
+  try {
+    assert.equal(e1.isPersistent, true)
+    assert.equal(e1.isEncrypted, false)
+    e1.clusterMarkDone(from, reqId)
+    assert.equal(e1.clusterWouldDrop(from, reqId), true)
+  } finally {
+    e1.close()
+  }
+
+  const e2 = new HopEndpoint({ dbPath, key: secret, cluster: 'shared-cluster-passphrase' })
+  try {
+    assert.equal(e2.isPersistent, true)
+    assert.equal(e2.clusterWouldDrop(from, reqId), true)
+  } finally {
+    e2.close()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
 })

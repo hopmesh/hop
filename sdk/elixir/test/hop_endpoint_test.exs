@@ -45,4 +45,84 @@ defmodule Hop.EndpointTest do
     assert is_binary(addr) and byte_size(addr) > 30
     Hop.Endpoint.close(ep)
   end
+
+  test "service request throwing handler leaves request queued for redelivery (ABI-002)" do
+    port = 9961
+    test_pid = self()
+    {:ok, server} = Hop.Endpoint.start_link([])
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    Hop.Endpoint.on(server, "flaky", fn _req, reply ->
+      attempt = Agent.get_and_update(counter, fn c -> {c + 1, c + 1} end)
+      send(test_pid, {:attempt, attempt})
+
+      if attempt == 1 do
+        raise "handler failed attempt 1"
+      else
+        reply.(200, "recovered")
+      end
+    end)
+
+    {:ok, _} = Hop.TcpBearer.listen(server, port)
+    addr = Hop.Endpoint.address(server)
+
+    {:ok, client} = Hop.Endpoint.start_link([])
+    {:ok, _} = Hop.TcpBearer.dial(client, "localhost", port)
+
+    task =
+      Task.async(fn ->
+        Hop.Endpoint.request(client, addr, "flaky", "call", "test", 5000)
+      end)
+
+    assert_receive {:attempt, 1}, 5000
+    assert_receive {:attempt, 2}, 5000
+
+    assert {:ok, 200, "recovered"} = Task.await(task, 5000)
+    assert Agent.get(counter, fn c -> c end) == 2
+
+    Hop.Endpoint.close(client)
+    Hop.Endpoint.close(server)
+  end
+
+  test "persists state across restart when backed by db_path (ABI-003)" do
+    tmp_dir = System.tmp_dir!()
+    db_path = Path.join(tmp_dir, "hop-elixir-restart-#{:erlang.unique_integer([:positive])}.db")
+    secret = :crypto.strong_rand_bytes(32)
+
+    # Step 1: Open with db_path, verify persistence, mark state handled in cluster
+    {:ok, e1} =
+      Hop.Endpoint.start_link(
+        db_path: db_path,
+        secret: secret,
+        cluster: "shared-cluster-passphrase"
+      )
+
+    assert Hop.Endpoint.persistent?(e1) == true
+    assert Hop.Endpoint.encrypted?(e1) == false
+
+    from = :crypto.strong_rand_bytes(32)
+    req_id = :crypto.strong_rand_bytes(32)
+
+    :ok = Hop.Endpoint.cluster_mark_done(e1, from, req_id)
+    assert Hop.Endpoint.cluster_would_drop(e1, from, req_id) == true
+    Hop.Endpoint.close(e1)
+    Process.sleep(100)
+    :erlang.garbage_collect()
+
+    # Step 2: Reopen same db_path, verify persistence and state recovery
+    {:ok, e2} =
+      Hop.Endpoint.start_link(
+        db_path: db_path,
+        secret: secret,
+        cluster: "shared-cluster-passphrase"
+      )
+
+    try do
+      assert Hop.Endpoint.persistent?(e2) == true
+      assert Hop.Endpoint.cluster_would_drop(e2, from, req_id) == true
+    after
+      Hop.Endpoint.close(e2)
+      File.rm(db_path)
+    end
+  end
 end
