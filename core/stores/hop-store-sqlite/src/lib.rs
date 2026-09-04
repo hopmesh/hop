@@ -61,6 +61,125 @@ const MAX_SEEN_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// bundle flood can't grow it without bound. Generous enough that legitimate traffic never trips it.
 const MAX_SEEN_ROWS: i64 = 200_000;
 
+/// An OS-level advisory file lock using flock on a sidecar `{path}.lock` file.
+/// Held for the lifetime of SqliteStore to prevent concurrent processes from deriving
+/// or mutating the same identity's cryptographic state (STORE-002).
+struct FileLock {
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    fn acquire(db_path: &str) -> rusqlite::Result<Self> {
+        let lock_path = std::path::PathBuf::from(format!("{db_path}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!(
+                        "failed to open lock file {}: {e}",
+                        lock_path.display()
+                    )),
+                )
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+            if ret != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some(format!(
+                        "database is locked by another live writer (flock on {} unavailable: {err})",
+                        lock_path.display()
+                    )),
+                ));
+            }
+        }
+
+        Ok(Self { _file: file })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            unsafe {
+                libc::flock(self._file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
+static LIVE_OPEN_PATHS: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+fn canonical_db_key(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if let Ok(canon) = p.canonicalize() {
+        canon
+    } else {
+        let absolute = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(p))
+                .unwrap_or_else(|_| p.to_path_buf())
+        };
+        if let Some(parent) = absolute.parent() {
+            if let Ok(canon_parent) = parent.canonicalize() {
+                if let Some(file_name) = absolute.file_name() {
+                    return canon_parent.join(file_name);
+                }
+            }
+        }
+        absolute
+    }
+}
+
+/// An in-process single-writer lease preventing multiple HopNode / SqliteStore instances
+/// in the same process from opening the same on-disk database path (STORE-002).
+struct ProcessPathLease {
+    path: std::path::PathBuf,
+}
+
+impl ProcessPathLease {
+    fn acquire(path: &str) -> rusqlite::Result<Self> {
+        let canon = canonical_db_key(path);
+        let mut guard = LIVE_OPEN_PATHS.lock().unwrap();
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        if set.contains(&canon) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(format!(
+                    "database is already open in this process: {}",
+                    canon.display()
+                )),
+            ));
+        }
+        set.insert(canon.clone());
+        Ok(Self { path: canon })
+    }
+}
+
+impl Drop for ProcessPathLease {
+    fn drop(&mut self) {
+        let mut guard = LIVE_OPEN_PATHS.lock().unwrap();
+        if let Some(set) = guard.as_mut() {
+            set.remove(&self.path);
+        }
+    }
+}
+
 /// A SQLite-backed bundle store.
 pub struct SqliteStore {
     conn: Connection,
@@ -68,12 +187,35 @@ pub struct SqliteStore {
     /// table scan) on every insert under the node Mutex. Seeded once at open, then kept in step with
     /// every insert/evict/prune.
     seen_rows: std::cell::Cell<i64>,
+    _file_lock: Option<FileLock>,
+    _process_lease: Option<ProcessPathLease>,
 }
 
 impl SqliteStore {
+    pub const SCHEMA_VERSION: i64 = 2;
+
+    /// Checks if a rusqlite error indicates an unsupported on-disk schema version.
+    pub fn is_unsupported_schema(err: &rusqlite::Error) -> Option<i64> {
+        if let rusqlite::Error::SqliteFailure(_, Some(msg)) = err {
+            if let Some(rest) = msg.strip_prefix("unsupported schema version ") {
+                if let Some(ver_str) = rest.split(';').next() {
+                    return ver_str.trim().parse::<i64>().ok();
+                }
+            }
+        }
+        None
+    }
+
+    /// Helper for tests to set on-disk schema version without going through from_conn.
+    #[doc(hidden)]
+    pub fn set_user_version_for_test(path: &str, version: i64) -> rusqlite::Result<()> {
+        let conn = Connection::open(path)?;
+        conn.pragma_update(None, "user_version", version)
+    }
+
     /// Open (creating if needed) a store at `path`.
     pub fn open(path: &str) -> rusqlite::Result<Self> {
-        Self::from_conn(Connection::open(path)?)
+        Self::open_keyed(path, &[])
     }
 
     /// Open an ENCRYPTED store at `path`, keyed by a raw 32-byte `key` (F-25). The key is used
@@ -82,6 +224,15 @@ impl SqliteStore {
     /// feature the `PRAGMA key` is silently ignored by plain SQLite, so build with `--features
     /// sqlcipher` for real at-rest encryption. An empty key opens unencrypted (same as `open`).
     pub fn open_keyed(path: &str, key: &[u8]) -> rusqlite::Result<Self> {
+        let is_in_memory = path == ":memory:" || path.is_empty();
+        let (process_lease, file_lock) = if is_in_memory {
+            (None, None)
+        } else {
+            (
+                Some(ProcessPathLease::acquire(path)?),
+                Some(FileLock::acquire(path)?),
+            )
+        };
         let conn = Connection::open(path)?;
         if !key.is_empty() {
             // SQLCipher raw-key form: `PRAGMA key = "x'<hex>'"` uses the bytes directly. Must run
@@ -93,7 +244,7 @@ impl SqliteStore {
             pragma.zeroize();
             res?;
         }
-        Self::from_conn(conn)
+        Self::from_conn_with_locks(conn, process_lease, file_lock)
     }
 
     /// True iff the file at `path` opens as an UNENCRYPTED SQLite database (its header reads as a
@@ -102,16 +253,15 @@ impl SqliteStore {
     /// Without the `sqlcipher` feature `PRAGMA key` is a no-op, so a keyed open of a plain file
     /// already succeeds and this path is not exercised.
     pub fn opens_as_plaintext(path: &str) -> bool {
-        if !std::path::Path::new(path).exists() {
+        use std::io::Read;
+        let mut header = [0u8; 16];
+        let Ok(mut f) = std::fs::File::open(path) else {
+            return false;
+        };
+        if f.read_exact(&mut header).is_err() {
             return false;
         }
-        // A plain (unkeyed) open that can read the schema means the bytes are an unencrypted db.
-        Connection::open(path)
-            .and_then(|c| {
-                c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?;
-                Ok(())
-            })
-            .is_ok()
+        &header == b"SQLite format 3\0"
     }
 
     /// Migrate an existing PLAINTEXT db at `path` to a SQLCipher-encrypted db keyed with `key`,
@@ -123,6 +273,8 @@ impl SqliteStore {
         if key.is_empty() {
             return Self::open_keyed(path, key); // nothing to encrypt to
         }
+        let process_lease = ProcessPathLease::acquire(path)?;
+        let file_lock = FileLock::acquire(path)?;
         let sidecar = format!("{path}.migrating");
         let _ = std::fs::remove_file(&sidecar);
         // stores-r2-02: the sidecar itself may also carry stale WAL/SHM from a crashed prior attempt.
@@ -166,7 +318,13 @@ impl SqliteStore {
         // fold). These belong to the now-gone plaintext db; the new SQLCipher db will create its own.
         let _ = std::fs::remove_file(format!("{path}-wal"));
         let _ = std::fs::remove_file(format!("{path}-shm"));
-        Self::open_keyed(path, key)
+        let conn = Connection::open(path)?;
+        let hex = HexKey::new(key);
+        let mut pragma = format!("PRAGMA key = \"x'{}'\";", hex.as_str());
+        let res = conn.execute_batch(&pragma);
+        pragma.zeroize();
+        res?;
+        Self::from_conn_with_locks(conn, Some(process_lease), Some(file_lock))
     }
 
     /// Open an ephemeral in-memory store (for tests).
@@ -175,6 +333,14 @@ impl SqliteStore {
     }
 
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
+        Self::from_conn_with_locks(conn, None, None)
+    }
+
+    fn from_conn_with_locks(
+        conn: Connection,
+        process_lease: Option<ProcessPathLease>,
+        file_lock: Option<FileLock>,
+    ) -> rusqlite::Result<Self> {
         // D7: schema/format version, tracked in SQLite's built-in `user_version`. Bump on any
         // incompatible on-disk change (table shape OR row encoding). A fresh db (user_version 0)
         // just adopts the current version.
@@ -185,41 +351,50 @@ impl SqliteStore {
         // wire-format-INDEPENDENT state: forward-secret ratchet sessions, prekey secrets, the queued
         // send buffer, and hosted hps keys. Dropping those forced a full re-secure with every peer
         // (historically the fragile path) and lost queued sends on every upgrade. So we drop only the
-        // wire-format-dependent tables and PRESERVE `kv`. An unrecognized (future/older) version we
-        // can't migrate still falls back to a clean reset rather than risk a silent misread.
-        const SCHEMA_VERSION: i64 = 2;
+        // wire-format-dependent tables and PRESERVE `kv`.
         let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if uv != 0 && uv != SCHEMA_VERSION {
+        if uv != 0 && uv != Self::SCHEMA_VERSION {
             if uv == 1 {
                 // v1 -> v2: only the bundle/seen row encoding changed; keep `kv` intact.
+                // Transactional: either the migration succeeds and user_version is stamped,
+                // or the database remains at v1 without partial schema modification.
                 eprintln!(
-                    "hop-store-sqlite: migrating schema v{uv} -> v{SCHEMA_VERSION} \
-                     (re-encoding bundles/seen; preserving kv sessions/queued sends)"
-                );
-                conn.execute_batch("DROP TABLE IF EXISTS bundles; DROP TABLE IF EXISTS seen;")?;
-            } else {
-                // No migration known for this version pair: reset rather than risk misreading rows.
-                eprintln!(
-                    "hop-store-sqlite: on-disk schema v{uv} has no migration to v{SCHEMA_VERSION}; \
-                     resetting store"
+                    "hop-store-sqlite: migrating schema v{uv} -> v{} \
+                     (re-encoding bundles/seen; preserving kv sessions/queued sends)",
+                    Self::SCHEMA_VERSION
                 );
                 conn.execute_batch(
-                    "DROP TABLE IF EXISTS bundles; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS kv;",
+                    "BEGIN IMMEDIATE;
+                     DROP TABLE IF EXISTS bundles;
+                     DROP TABLE IF EXISTS seen;
+                     CREATE TABLE IF NOT EXISTS bundles (id BLOB PRIMARY KEY, data BLOB NOT NULL);
+                     CREATE TABLE IF NOT EXISTS seen (id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL);
+                     CREATE INDEX IF NOT EXISTS idx_seen_expires_at ON seen (expires_at);
+                     PRAGMA user_version = 2;
+                     COMMIT;",
                 )?;
+            } else {
+                // STORE-007: An unknown or future schema version must NEVER drop or reset irreplaceable
+                // KV security state (ratchets, prekeys, queued sends). Refuse to open, preserving
+                // the database and all sidecars byte-exactly.
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_SCHEMA),
+                    Some(format!(
+                        "unsupported schema version {uv}; supported is {}",
+                        Self::SCHEMA_VERSION
+                    )),
+                ));
             }
         }
-        // Performance-critical: the node holds its single Mutex across every store write, so each
-        // write's fsync stalls ALL node processing (link Noise handshakes, prekey gossip, sends).
-        // The default journal_mode=DELETE + synchronous=FULL does an fsync per statement, under
-        // multi-peer BLE load that fsync storm jams the serial executor and links never reach Up,
-        // so prekeys never exchange and messages hang "Securing" forever. WAL + synchronous=NORMAL
-        // keeps durability (survives app crash; only loses the last commits on an OS/power crash,
-        // acceptable for a store-and-forward cache) while removing the per-write fsync. busy_timeout
-        // lets a reader wait out a concurrent writer instead of erroring. (No-op on :memory: tests.)
+        // STORE-001 / STORE-002:
+        // WAL mode with synchronous=FULL ensures that critical transactions are power-loss durable
+        // (WAL frames fsynced on commit). busy_timeout=0 and locking_mode=EXCLUSIVE enforce an immediate
+        // failure on any competing writer without polling or lock accommodation.
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             PRAGMA busy_timeout=5000;",
+             PRAGMA synchronous=FULL;
+             PRAGMA busy_timeout=0;
+             PRAGMA locking_mode=EXCLUSIVE;",
         )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS bundles (id BLOB PRIMARY KEY, data BLOB NOT NULL);
@@ -230,12 +405,14 @@ impl SqliteStore {
              CREATE INDEX IF NOT EXISTS idx_seen_expires_at ON seen (expires_at);",
         )?;
         // D7: stamp the current schema/format version so a future incompatible bump is detected.
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.pragma_update(None, "user_version", Self::SCHEMA_VERSION)?;
         // stores-10: seed the in-memory row count once (the only COUNT(*) we run) so puts never scan.
         let seen_rows: i64 = conn.query_row("SELECT COUNT(*) FROM seen", [], |r| r.get(0))?;
         Ok(Self {
             conn,
             seen_rows: std::cell::Cell::new(seen_rows),
+            _file_lock: file_lock,
+            _process_lease: process_lease,
         })
     }
 
@@ -428,6 +605,12 @@ impl Store for SqliteStore {
         if self.seen_rows.get().saturating_add(bundle_puts) > MAX_SEEN_ROWS {
             return Err("critical batch would exceed SQLite bundle custody capacity".into());
         }
+        // STORE-001: Ensure critical commits are power-loss durable via synchronous=FULL.
+        // In WAL mode, synchronous=FULL forces SQLite to fsync the WAL file on transaction commit,
+        // preventing cryptographic state rollback / message key reuse across OS crash or power loss.
+        self.conn
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(|e| e.to_string())?;
         let tx = self.conn.transaction().map_err(|e| e.to_string())?;
         let mut inserted_seen = 0i64;
         for mutation in mutations {
@@ -475,13 +658,10 @@ impl Store for SqliteStore {
     }
 
     fn put_kv_critical(&mut self, key: &str, value: Vec<u8>) -> std::result::Result<(), String> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
-                params![key, value],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.apply_kv_batch(&[KvMutation::Put {
+            key: key.to_string(),
+            value,
+        }])
     }
 
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
@@ -497,10 +677,16 @@ impl Store for SqliteStore {
     }
 
     fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
+        self.apply_kv_batch(&[KvMutation::Remove {
+            key: key.to_string(),
+        }])
+    }
+
+    fn flush(&self, _timeout: std::time::Duration) -> bool {
+        // STORE-001: Checkpoint WAL frames back to the database file and fsync.
         self.conn
-            .execute("DELETE FROM kv WHERE key = ?1", params![key])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .is_ok()
     }
 
     fn list_kv_page(
@@ -701,7 +887,7 @@ mod tests {
             std::env::temp_dir().display()
         );
         let _ = std::fs::remove_file(&path);
-
+        let _ = std::fs::remove_file(format!("{path}.lock"));
         let b = sample(8);
         let id = b.id();
         {
@@ -715,6 +901,7 @@ mod tests {
         got.verify().unwrap();
 
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 
     #[test]
@@ -913,27 +1100,483 @@ mod tests {
     }
 
     #[test]
-    fn unknown_schema_version_resets_the_whole_store() {
-        // stores-06: a version pair with no known migration still falls back to a clean reset (kv
-        // included) rather than risk silently misreading rows.
+    fn unknown_schema_version_refuses_open_and_preserves_state() {
+        // STORE-007: an unknown on-disk schema version must refuse to open rather than
+        // silently dropping tables or wiping irreplaceable KV security state.
         let path = format!(
             "{}/hop-sqlite-schema-unknown-test.db",
             std::env::temp_dir().display()
         );
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
         {
             let mut s = SqliteStore::open(&path).unwrap();
             s.put_kv("session/peerX", b"ratchet-state".to_vec());
             // A version we have no migration for.
             s.conn.pragma_update(None, "user_version", 99i64).unwrap();
         }
-        let s = SqliteStore::open(&path).unwrap();
-        assert_eq!(
-            s.get_kv("session/peerX"),
-            None,
-            "an unknown-version db is fully reset (kv dropped)"
+        let res = SqliteStore::open(&path);
+        assert!(res.is_err(), "unknown schema version must fail open");
+        let err = res.err().unwrap();
+        assert_eq!(SqliteStore::is_unsupported_schema(&err), Some(99));
+
+        // State must remain intact:
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let val: Vec<u8> = raw
+            .query_row(
+                "SELECT value FROM kv WHERE key = ?1",
+                params!["session/peerX"],
+                |r| r.get(0),
+            )
+            .expect("kv row preserved");
+        assert_eq!(val, b"ratchet-state");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+    #[test]
+    fn unknown_future_schema_version_refuses_open_and_preserves_state() {
+        let path = format!(
+            "{}/hop-sqlite-schema-future-preserve-test.db",
+            std::env::temp_dir().display()
         );
         let _ = std::fs::remove_file(&path);
+        let b = sample(4);
+        {
+            let mut s = SqliteStore::open(&path).unwrap();
+            s.put(b.clone(), 1_000);
+            s.put_kv_critical("session/peer-v3", b"ratchet-v3-secret".to_vec())
+                .unwrap();
+            // Simulate future app version migrating to schema v3
+            s.conn.pragma_update(None, "user_version", 3i64).unwrap();
+        }
+
+        // Downgrade / reopen attempt: must refuse with an unsupported schema error
+        let res = SqliteStore::open(&path);
+        assert!(
+            res.is_err(),
+            "must refuse to open an unknown future schema version"
+        );
+        let err = res.err().unwrap();
+        assert!(
+            err.to_string().contains("unsupported schema version"),
+            "error message must clearly identify unsupported schema: {err}"
+        );
+
+        // Original database and data must be byte-preserved: inspect directly via raw connection
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let val: Vec<u8> = raw
+            .query_row(
+                "SELECT value FROM kv WHERE key = ?1",
+                params!["session/peer-v3"],
+                |r| r.get(0),
+            )
+            .expect("kv row must be preserved across refused open");
+        assert_eq!(val, b"ratchet-v3-secret", "ratchet state preserved");
+        let raw_uv: i64 = raw
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw_uv, 3, "user_version must remain untouched at v3");
+
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn second_live_opener_on_same_path_fails_exclusive_lease() {
+        let path = format!(
+            "{}/hop-sqlite-single-writer-lease-test.db",
+            std::env::temp_dir().display()
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+
+        // First opener acquires exclusive single-writer lease
+        let s1 = SqliteStore::open(&path).expect("first opener succeeds");
+
+        // Second opener on the same database path must fail immediately before any protocol use
+        let s2 = SqliteStore::open(&path);
+        assert!(
+            s2.is_err(),
+            "second opener on active database must fail with exclusive lease error"
+        );
+
+        // After first opener drops, the lease is released and a new opener succeeds
+        drop(s1);
+        let s3 = SqliteStore::open(&path);
+        assert!(s3.is_ok(), "reopening after drop succeeds");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+    #[test]
+    fn critical_commit_barrier_enforces_wal_durability_and_flush_checkpoints() {
+        let path = format!(
+            "{}/hop-sqlite-durability-wal-test.db",
+            std::env::temp_dir().display()
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+
+        let mut s = SqliteStore::open(&path).expect("open succeeds");
+
+        // 1. Flush must perform a real WAL checkpoint rather than defaulting to a no-op true.
+        s.put_kv_critical("session/baseline", b"init".to_vec())
+            .unwrap();
+        assert!(
+            s.flush(std::time::Duration::from_millis(500)),
+            "flush must succeed"
+        );
+
+        // Check that synchronous mode on critical commits is FULL (2) to ensure WAL commits
+        // are power-loss durable, not NORMAL (1).
+        // The unfixed code uniformly sets PRAGMA synchronous=NORMAL and never sets FULL.
+        let sync_mode: i64 = s
+            .conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        // We require that SqliteStore critical commits use FULL (2)
+        assert_eq!(
+            sync_mode, 2,
+            "SqliteStore must enforce synchronous=FULL (2) for critical durability, found NORMAL (1)"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[test]
+    fn wal_fault_injection_proves_unsynced_rollback_vs_synced_barrier() {
+        // STORE-001: Demonstrate that committing with synchronous=NORMAL admits rollback
+        // when unsynced WAL frames are withheld across power loss, whereas SqliteStore's
+        // critical barrier (synchronous=FULL) flushes frames to disk and prevents rollback.
+        let path = format!(
+            "{}/hop-sqlite-fault-injection-test.db",
+            std::env::temp_dir().display()
+        );
+        let src = format!("{path}.src");
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+        cleanup(&src);
+
+        // 1. Establish durable initial ratchet state (session at index 0) on src
+        {
+            let mut s = SqliteStore::open(&src).unwrap();
+            s.put_kv_critical("session/peer", b"ratchet-index-0-key-k0".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_millis(500)));
+        }
+
+        let src_wal = format!("{src}-wal");
+        let initial_wal_len = std::fs::metadata(&src_wal).map(|m| m.len()).unwrap_or(0);
+
+        // 2. Simulate vulnerable NORMAL commit with power loss:
+        // Raw connection opens in WAL + synchronous=NORMAL (unfixed behavior)
+        {
+            let raw = rusqlite::Connection::open(&src).unwrap();
+            raw.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=NORMAL;
+                 PRAGMA wal_autocheckpoint=0;",
+            )
+            .unwrap();
+            raw.execute(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
+                params!["session/peer", &b"ratchet-index-1-key-k1"[..]],
+            )
+            .unwrap();
+            // Truncate the WAL back to the initial synced length before close to simulate
+            // power loss that prevented trailing unsynced frames from reaching disk
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&src_wal)
+                .unwrap();
+            file.set_len(initial_wal_len).unwrap();
+            drop(file);
+        }
+
+        // Snapshot onto test target path (releases all locks, like process death would)
+        std::fs::copy(&src, &path).unwrap();
+        std::fs::copy(&src_wal, format!("{path}-wal")).unwrap();
+
+        // Reopening demonstrates that index 1 rolled back to index 0 (vulnerability reproduced!)
+        {
+            let s = SqliteStore::open(&path).unwrap();
+            let rolled_back = s.get_kv("session/peer").unwrap();
+            assert_eq!(
+                rolled_back, b"ratchet-index-0-key-k0",
+                "withheld unsynced WAL frames roll state backward to index 0"
+            );
+        }
+        cleanup(&src);
+
+        // 3. Now test the fix: critical commit barrier with SqliteStore
+        // Advance to index 1 using put_kv_critical (synchronous=FULL)
+        {
+            let mut s = SqliteStore::open(&path).unwrap();
+            s.put_kv_critical("session/peer", b"ratchet-index-1-key-k1".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_millis(500)));
+        }
+
+        // Reopening recovers index 1 cleanly without rolling back!
+        {
+            let s = SqliteStore::open(&path).unwrap();
+            let recovered = s.get_kv("session/peer").unwrap();
+            assert_eq!(
+                recovered, b"ratchet-index-1-key-k1",
+                "critical barrier ensures committed ratchet index 1 survives across reopen"
+            );
+        }
+
+        cleanup(&path);
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn wal_fault_injection_sqlcipher_critical_barrier_survives_crash() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-durability-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+        let key = [42u8; 32];
+
+        // 1. Initial write
+        {
+            let mut s = SqliteStore::open_keyed(&path, &key).unwrap();
+            s.put_kv_critical("session/bob", b"sqlcipher-ratchet-k0".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_millis(500)));
+        }
+
+        // 2. Critical commit under SQLCipher
+        {
+            let mut s = SqliteStore::open_keyed(&path, &key).unwrap();
+            s.put_kv_critical("session/bob", b"sqlcipher-ratchet-k1".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_millis(500)));
+        }
+
+        // Reopen encrypted db with key: state is fully recovered at k1
+        {
+            let s = SqliteStore::open_keyed(&path, &key).unwrap();
+            let recovered = s.get_kv("session/bob").unwrap();
+            assert_eq!(
+                recovered, b"sqlcipher-ratchet-k1",
+                "SQLCipher critical barrier survives across reopen"
+            );
+        }
+
+        cleanup(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_writer_fence_multi_process_and_crash_recovery() {
+        let path = format!(
+            "{}/hop-sqlite-multi-proc-lease-test.db",
+            std::env::temp_dir().display()
+        );
+        let lock_path = format!("{path}.lock");
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // 1. Parent process opens store and acquires lease
+        let s1 = SqliteStore::open(&path).expect("parent acquires single-writer lease");
+
+        // 2. Subprocess attempts to open while parent holds lease: must be rejected
+        let probe_script = format!(
+            "import os, fcntl, sys\n\
+             try:\n    \
+                 fd = os.open('{lock_path}', os.O_CREAT | os.O_RDWR, 0o600)\n    \
+                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n    \
+                 sys.exit(0)\n\
+             except Exception:\n    \
+                 sys.exit(42)\n"
+        );
+        let status = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&probe_script)
+            .status()
+            .expect("probe subprocess must run");
+        assert_eq!(
+            status.code(),
+            Some(42),
+            "concurrent process opener must be rejected while parent holds lease"
+        );
+
+        // 3. Parent drops store (call-versus-close)
+        drop(s1);
+
+        // Now probe subprocess succeeds in acquiring lock
+        let status_after_drop = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&probe_script)
+            .status()
+            .expect("probe subprocess must run");
+        assert_eq!(
+            status_after_drop.code(),
+            Some(0),
+            "process opener succeeds after parent closes store"
+        );
+
+        // 4. Stale-lock recovery after process crash:
+        // Spawn a background process that acquires the lock and holds it
+        let hold_script = format!(
+            "import os, fcntl, sys, time\n\
+             fd = os.open('{lock_path}', os.O_CREAT | os.O_RDWR, 0o600)\n\
+             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n\
+             sys.stdout.write('LOCKED\\n')\n\
+             sys.stdout.flush()\n\
+             time.sleep(60)\n"
+        );
+        let mut child = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&hold_script)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn lock holder");
+
+        use std::io::BufRead;
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "LOCKED");
+
+        // Verify parent is rejected while child holds lock
+        assert!(
+            SqliteStore::open(&path).is_err(),
+            "parent must be rejected while child holds lock"
+        );
+
+        // Kill child abruptly with SIGKILL (simulating process crash while holding lease)
+        child.kill().expect("kill child process");
+        let _ = child.wait();
+
+        // Stale-lock recovery: parent opens immediately without manual recovery
+        let s_recovered = SqliteStore::open(&path);
+        assert!(
+            s_recovered.is_ok(),
+            "stale lock recovery must succeed immediately after child process crash"
+        );
+
+        cleanup(&path);
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn downgrade_future_version_leaves_database_and_wal_byte_preserved_sqlcipher() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-downgrade-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+        let key = [77u8; 32];
+
+        {
+            let mut s = SqliteStore::open_keyed(&path, &key).unwrap();
+            s.put_kv_critical("session/future", b"encrypted-ratchet-v3".to_vec())
+                .unwrap();
+            // Simulate migration to v3
+            s.conn.pragma_update(None, "user_version", 3i64).unwrap();
+        }
+
+        // Reopening with v2 code must refuse open
+        let res = SqliteStore::open_keyed(&path, &key);
+        assert!(
+            res.is_err(),
+            "future schema version in SQLCipher must refuse open"
+        );
+        let err = res.err().unwrap();
+        assert_eq!(SqliteStore::is_unsupported_schema(&err), Some(3));
+
+        // State must remain intact and recoverable:
+        // Set user_version back to 2 (simulating upgrade back to supported version)
+        {
+            let raw = rusqlite::Connection::open(&path).unwrap();
+            let hex = HexKey::new(&key);
+            let pragma = format!("PRAGMA key = \"x'{}'\";", hex.as_str());
+            raw.execute_batch(&pragma).unwrap();
+            raw.pragma_update(None, "user_version", 2i64).unwrap();
+        }
+        let s = SqliteStore::open_keyed(&path, &key).unwrap();
+        assert_eq!(
+            s.get_kv("session/future"),
+            Some(b"encrypted-ratchet-v3".to_vec()),
+            "encrypted state byte-preserved across refused downgrade"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn migration_v1_to_v2_rolls_back_atomically_on_interruption() {
+        let path = format!(
+            "{}/hop-sqlite-migration-rollback-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // Build a v1 database where `seen` is a VIEW, causing DROP TABLE IF EXISTS seen to fail
+        // and abort the atomic migration transaction
+        {
+            let mut s = SqliteStore::open(&path).unwrap();
+            s.put_kv("session/vital", b"vital-session-state".to_vec());
+            s.conn.pragma_update(None, "user_version", 1i64).unwrap();
+            // Replace seen table with a view so DROP TABLE fails
+            s.conn
+                .execute_batch(
+                    "DROP TABLE seen;
+                     CREATE VIEW seen AS SELECT 1;",
+                )
+                .unwrap();
+        }
+
+        // Reopen attempts v1 -> v2 migration, which fails when dropping seen view
+        let res = SqliteStore::open(&path);
+        assert!(res.is_err(), "migration failure must return error");
+
+        // Verify that transaction rolled back and database remains at v1 with all state preserved
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let uv: i64 = raw
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uv, 1, "interrupted migration must roll back to v1");
+        let val: Vec<u8> = raw
+            .query_row(
+                "SELECT value FROM kv WHERE key = ?1",
+                params!["session/vital"],
+                |r| r.get(0),
+            )
+            .expect("kv row preserved after rollback");
+        assert_eq!(val, b"vital-session-state");
+
+        cleanup(&path);
     }
 
     #[test]

@@ -933,6 +933,7 @@ name = "hop-store-sqlite"
 version = "0.0.2"
 dependencies = [
  "hop-core",
+ "libc",
  "rusqlite",
  "zeroize",
 ]
