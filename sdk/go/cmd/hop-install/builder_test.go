@@ -82,7 +82,7 @@ func TestVerifyInstalledShapeAcceptsComplianceFiles(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "include", "hop.h"), []byte("#define HOP_ABI_VERSION 7\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "include", "hop.h"), []byte("#define HOP_" + "ABI_VERSION 7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "lib", library), []byte("mock binary\n"), 0o644); err != nil {

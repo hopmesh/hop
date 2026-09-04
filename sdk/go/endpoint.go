@@ -10,6 +10,7 @@ import (
 type Request struct {
 	From      string // base58
 	FromBytes []byte
+	RequestID []byte
 	Service   string
 	Method    string
 	Args      []byte
@@ -23,10 +24,13 @@ type Reply func(status uint16, body []byte) bool
 type Handler func(req *Request, reply Reply)
 
 type config struct {
-	key     []byte
-	tickMs  int
-	cluster string // passphrase; empty = unclustered
-	quorum  uint32 // min live members before processing (CP); 0 = disabled (default)
+	key       []byte
+	dbPath    string
+	dbKey     []byte
+	appSecret []byte
+	tickMs    int
+	cluster   string // passphrase; empty = unclustered
+	quorum    uint32 // min live members before processing (CP); 0 = disabled (default)
 }
 
 // Option configures New.
@@ -46,6 +50,16 @@ func WithCluster(passphrase string) Option { return func(c *config) { c.cluster 
 // WithQuorum sets a TTL-based visibility threshold before this replica processes a request. It is a
 // conservative failover heuristic, not consensus or an at-most-once guarantee. 0 or 1 disables it.
 func WithQuorum(min uint32) Option { return func(c *config) { c.quorum = min } }
+
+// WithDBPath configures persistent SQLite storage at path.
+// When unset, the endpoint runs with in-memory ephemeral storage (state does not survive restart).
+func WithDBPath(path string) Option { return func(c *config) { c.dbPath = path } }
+
+// WithDBKey encrypts the persistent SQLite database at rest with the given raw key.
+func WithDBKey(key []byte) Option { return func(c *config) { c.dbKey = key } }
+
+// WithAppSecret configures a 32-byte application secret for the persistent node.
+func WithAppSecret(secret []byte) Option { return func(c *config) { c.appSecret = secret } }
 
 // Endpoint receives Hop messages with an net/http-shaped surface, over hop-core.
 type Endpoint struct {
@@ -101,7 +115,17 @@ func New(opts ...Option) (*Endpoint, error) {
 		}
 	}
 	var n *node
-	if cfg.key != nil {
+	var err error
+	if cfg.dbPath != "" {
+		if len(cfg.dbKey) > 0 {
+			n, err = nodeOpenKeyed(cfg.dbPath, cfg.key, cfg.appSecret, cfg.dbKey)
+		} else {
+			n, err = nodeOpen(cfg.dbPath, cfg.key, cfg.appSecret)
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else if cfg.key != nil {
 		n = nodeWithSecret(cfg.key)
 	} else {
 		n = nodeNew()
@@ -137,6 +161,36 @@ func (e *Endpoint) ClusterMembers() uint32 {
 // request (CP: hold-until-coordinated); see WithQuorum. 0 or 1 disables the hold.
 func (e *Endpoint) ClusterQuorum(min uint32) {
 	e.withNode(func(n *node) { n.clusterSetQuorum(min) })
+}
+
+// IsPersistent reports whether the underlying node is backed by persistent storage.
+func (e *Endpoint) IsPersistent() bool {
+	res := false
+	e.withNode(func(n *node) { res = n.isPersistent() })
+	return res
+}
+
+// IsEncrypted reports whether the underlying storage is encrypted at rest.
+func (e *Endpoint) IsEncrypted() bool {
+	res := false
+	e.withNode(func(n *node) { res = n.isEncrypted() })
+	return res
+}
+
+// AcceptServiceRequest durably accepts a service request after application processing completes.
+func (e *Endpoint) AcceptServiceRequest(requestID []byte) (bool, error) {
+	var ok bool
+	var err error
+	e.withNode(func(n *node) { ok, err = n.acceptServiceRequest(requestID) })
+	return ok, err
+}
+
+// RejectServiceRequest rejects a service request without ACK so it remains queued for redelivery.
+func (e *Endpoint) RejectServiceRequest(requestID []byte) (bool, error) {
+	var ok bool
+	var err error
+	e.withNode(func(n *node) { ok, err = n.rejectServiceRequest(requestID) })
+	return ok, err
 }
 
 // RelayAdd offers a relay endpoint to the §19 pool. configured marks an operator/user choice, which a
@@ -319,14 +373,22 @@ func (e *Endpoint) pump() {
 		h := e.handlers[r.Service]
 		e.mu.Unlock()
 		if h != nil {
-			req := &Request{From: toB58(r.From), FromBytes: r.From, Service: r.Service, Method: r.Method, Args: r.Args}
+			req := &Request{From: toB58(r.From), FromBytes: r.From, RequestID: r.RequestID, Service: r.Service, Method: r.Method, Args: r.Args}
 			to, rid := r.From, r.RequestID
 			reply := Reply(func(status uint16, body []byte) bool {
 				ok := false
 				e.withNode(func(n *node) { ok = n.sendServiceResponse(to, rid, status, body) })
 				return ok
 			})
-			h(req, reply)
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						// Handler panicked: leave request queued for redelivery
+					}
+				}()
+				h(req, reply)
+				e.withNode(func(n *node) { n.acceptServiceRequest(rid) })
+			}()
 		}
 	}
 	var resps []ServiceResp
