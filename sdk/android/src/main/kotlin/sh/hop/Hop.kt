@@ -697,17 +697,35 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
         }
     }
 
-    /** Drain inbound hops:// requests addressed to this node (acting as a service). */
+    /** Poll inbound hops:// requests addressed to this node (acting as a service).
+     *  The [sink] handler runs per request; if it completes successfully without throwing,
+     *  the request is accepted. If [sink] throws, the request is left queued for redelivery
+     *  and the exception is re-thrown. */
     fun pollServiceRequests(sink: (HopServiceRequest) -> Unit) {
+        pollServiceRequestsAccepting { req ->
+            sink(req)
+            true
+        }
+    }
+
+    /** Poll requests, accepting each only when [sink] returns true synchronously. */
+    fun pollServiceRequestsAccepting(sink: (HopServiceRequest) -> Boolean) {
         native { handle ->
+            var err: Throwable? = null
             C.hop_poll_service_requests(handle, ServiceReqSink { _, from, reqId, service, method, args, alen ->
-                sink(HopServiceRequest(
-                    from = from?.getByteArray(0, 32) ?: ByteArray(32),
-                    requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
-                    service = service ?: "", method = method ?: "",
-                    args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
-                1.toByte()
+                try {
+                    val accepted = sink(HopServiceRequest(
+                        from = from?.getByteArray(0, 32) ?: ByteArray(32),
+                        requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
+                        service = service ?: "", method = method ?: "",
+                        args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
+                    if (accepted) 1.toByte() else 0.toByte()
+                } catch (t: Throwable) {
+                    err = t
+                    0.toByte()
+                }
             }, null)
+            err?.let { throw it }
         }
     }
 
@@ -934,7 +952,9 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
             C.hop_hps_rekey(handle, path, newPath, packed, NativeLong(remove.size.toLong()),
                 HpsIdSink { _, id -> ids.add(id?.getByteArray(0, 32) ?: ByteArray(32)) }, null)
         }
-        if (count.toLong() < 0) return emptyList()
+        if (count.toLong() < 0) {
+            error("hop_hps_rekey(\"$path\") failed")
+        }
         return ids
     }
 
