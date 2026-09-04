@@ -292,7 +292,8 @@ internal class MeshFragHeader private constructor(
             val id = ((frag[0].toInt() and 0xff) shl 8) or (frag[1].toInt() and 0xff)
             val idx = frag[2].toInt() and 0xff
             val cnt = frag[3].toInt() and 0xff
-            if (cnt < 1 || cnt > MESH_MAX_FRAGS || idx >= cnt) return null
+            val chunkLen = frag.size - MESH_FRAG_HEADER
+            if (cnt < 1 || cnt > MESH_MAX_FRAGS || idx >= cnt || chunkLen > MESH_MAX_CHUNK) return null
             return MeshFragHeader(id, idx, cnt, frag.copyOfRange(MESH_FRAG_HEADER, frag.size))
         }
     }
