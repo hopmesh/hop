@@ -43,17 +43,19 @@ bool hop_send_service_response(const HopNode *node, const uint8_t *to,
                                 const uint8_t *for_request_id, uint16_t status,
                                 const uint8_t *body, uintptr_t body_len);
 bool hop_accept_service_response(const HopNode *node, const uint8_t *for_request_id);
+bool hop_accept_service_request(const HopNode *node, const uint8_t *request_id);
+bool hop_reject_service_request(const HopNode *node, const uint8_t *request_id);
+bool hop_node_is_encrypted(const HopNode *node);
 void hop_poll_service_requests(const HopNode *node,
-                               void (*sink)(void *ctx, const uint8_t *from, const uint8_t *request_id,
-                                             const char *service, const char *method,
-                                             const uint8_t *args, uintptr_t args_len),
+                               bool (*sink)(void *ctx, const uint8_t *from, const uint8_t *request_id,
+                                            const char *service, const char *method,
+                                            const uint8_t *args, uintptr_t args_len),
                                void *ctx);
 void hop_poll_service_responses(const HopNode *node,
                                  bool (*sink)(void *ctx, const uint8_t *from,
                                               const uint8_t *for_request_id, uint16_t status,
                                               const uint8_t *body, uintptr_t body_len),
                                  void *ctx);
-
 // Bearer seam.
 void hop_link_up(const HopNode *node, uint64_t link, uint32_t role);
 void hop_bytes_received(const HopNode *node, uint64_t link, const uint8_t *data, uintptr_t len);
@@ -127,9 +129,9 @@ bool hop_hps_deny(const HopNode *node, const char *path, const uint8_t *requeste
 // Selective forward rotation, which is how a member is REVOKED. remove_count is a COUNT of 32-byte
 // addresses packed back to back, so the call reads remove_count * 32 bytes: passing a byte length
 // here would read 32 times past the array.
-uintptr_t hop_hps_rekey(const HopNode *node, const char *path, const char *new_path,
-                        const uint8_t *remove, uintptr_t remove_count,
-                        void (*sink)(void *ctx, const uint8_t *id), void *ctx);
+intptr_t hop_hps_rekey(const HopNode *node, const char *path, const char *new_path,
+                       const uint8_t *remove, uintptr_t remove_count,
+                       void (*sink)(void *ctx, const uint8_t *id), void *ctx);
 uint32_t hop_hps_reach(const HopNode *node, const char *path);
 uintptr_t hop_hps_members(const HopNode *node, const char *path,
                           void (*sink)(void *ctx, const uint8_t *addr), void *ctx);
@@ -165,14 +167,37 @@ std::vector<uint8_t> copyBytes(const uint8_t *bytes, size_t len) {
   }
   return std::vector<uint8_t>(bytes, bytes + len);
 }
-
 } // namespace
+
+class CallbackGuard {
+ public:
+  CallbackGuard(int &depth, bool &deferred_reset, Hop *hop)
+      : depth_(depth), deferred_reset_(deferred_reset), hop_(hop) {
+    ++depth_;
+  }
+  ~CallbackGuard() {
+    --depth_;
+    if (depth_ == 0 && deferred_reset_) {
+      deferred_reset_ = false;
+      if (hop_) {
+        hop_->resetNode();
+      }
+    }
+  }
+ private:
+  int &depth_;
+  bool &deferred_reset_;
+  Hop *hop_;
+};
 
 Hop::~Hop() {
   resetNode();
 }
 
 bool Hop::begin() {
+  if (in_callback_ > 0) {
+    return false;
+  }
   resetNode();
   resetClock();
   if (hop_abi_version() != HOP_EMBEDDED_ABI_VERSION) {
@@ -184,6 +209,9 @@ bool Hop::begin() {
 }
 
 bool Hop::begin(const uint8_t *secret, size_t secret_len) {
+  if (in_callback_ > 0) {
+    return false;
+  }
   if (secret == nullptr || secret_len != kIdSize) {
     return false;
   }
@@ -336,6 +364,27 @@ bool Hop::acceptServiceResponse(const uint8_t *request_id, size_t request_id_len
   return hop_accept_service_response(node_, request_id);
 }
 
+bool Hop::acceptServiceRequest(const uint8_t *request_id, size_t request_id_len) {
+  if (!ready() || request_id == nullptr || request_id_len != kIdSize) {
+    return false;
+  }
+  return hop_accept_service_request(node_, request_id);
+}
+
+bool Hop::rejectServiceRequest(const uint8_t *request_id, size_t request_id_len) {
+  if (!ready() || request_id == nullptr || request_id_len != kIdSize) {
+    return false;
+  }
+  return hop_reject_service_request(node_, request_id);
+}
+
+bool Hop::isEncrypted() const {
+  if (node_ == nullptr) {
+    return false;
+  }
+  return hop_node_is_encrypted(node_);
+}
+
 OperationStatus Hop::linkUp(uint64_t link, LinkRole role) {
   if (node_ == nullptr) {
     return OperationStatus::NotInitialized;
@@ -447,8 +496,13 @@ size_t Hop::relayPoolSize(size_t *out_available) const {
 
 void Hop::outgoingTrampoline(void *ctx, uint64_t link, const uint8_t *bytes, size_t len) {
   Hop *self = static_cast<Hop *>(ctx);
-  if (self->on_outgoing_) {
+  if (!self || !self->on_outgoing_) {
+    return;
+  }
+  CallbackGuard guard(self->in_callback_, self->deferred_reset_, self);
+  try {
     self->on_outgoing_(link, bytes, len);
+  } catch (...) {
   }
 }
 
@@ -456,37 +510,56 @@ bool Hop::messageTrampoline(void *ctx, const uint8_t *inbox_id, const uint8_t *f
                             const char *content_type, const uint8_t *body, size_t body_len,
                             uint8_t hops, uint64_t created_at_ms) {
   Hop *self = static_cast<Hop *>(ctx);
-  if (!self->on_message_) {
+  if (!self || !self->on_message_) {
     return false;
   }
-  Message message{copyId(inbox_id), copyId(from), content_type == nullptr ? "" : content_type,
-                  copyBytes(body, body_len), hops, created_at_ms};
-  return self->on_message_(message);
+  CallbackGuard guard(self->in_callback_, self->deferred_reset_, self);
+  try {
+    Message message{copyId(inbox_id), copyId(from), content_type == nullptr ? "" : content_type,
+                    copyBytes(body, body_len), hops, created_at_ms};
+    return self->on_message_(message);
+  } catch (...) {
+    return false;
+  }
 }
 
-void Hop::requestTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
+bool Hop::requestTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
                             const char *service, const char *method, const uint8_t *args,
                             size_t args_len) {
   Hop *self = static_cast<Hop *>(ctx);
-  if (!self->on_service_request_) {
-    return;
+  if (!self || !self->on_service_request_) {
+    return false;
   }
-  ServiceRequest request{copyId(from), copyId(request_id), service == nullptr ? "" : service,
-                         method == nullptr ? "" : method, copyBytes(args, args_len)};
-  self->on_service_request_(request);
+  CallbackGuard guard(self->in_callback_, self->deferred_reset_, self);
+  try {
+    ServiceRequest request{copyId(from), copyId(request_id), service == nullptr ? "" : service,
+                           method == nullptr ? "" : method, copyBytes(args, args_len)};
+    return self->on_service_request_(request);
+  } catch (...) {
+    return false;
+  }
 }
 
 bool Hop::responseTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
                              uint16_t status, const uint8_t *body, size_t body_len) {
   Hop *self = static_cast<Hop *>(ctx);
-  if (!self->on_service_response_) {
+  if (!self || !self->on_service_response_) {
     return false;
   }
-  ServiceResponse response{copyId(from), copyId(request_id), status, copyBytes(body, body_len)};
-  return self->on_service_response_(response);
+  CallbackGuard guard(self->in_callback_, self->deferred_reset_, self);
+  try {
+    ServiceResponse response{copyId(from), copyId(request_id), status, copyBytes(body, body_len)};
+    return self->on_service_response_(response);
+  } catch (...) {
+    return false;
+  }
 }
 
 void Hop::resetNode() {
+  if (in_callback_ > 0) {
+    deferred_reset_ = true;
+    return;
+  }
   if (node_ != nullptr) {
     hop_node_free(node_);
     node_ = nullptr;
