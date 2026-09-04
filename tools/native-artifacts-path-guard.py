@@ -42,6 +42,10 @@ def required_paths(root):
         "core/**",
         "rust-toolchain.toml",
         "sdk/apple/build-xcframework.sh",
+        # Not a build input, but the release protocol (docs/apple-release.md) commits the bundle
+        # checksum into this file and then needs a native run AT THAT COMMIT to prove the archive did
+        # not change; without this entry the checksum commit would have no run to verify against.
+        "sdk/apple/Package.swift",
         "sdk/hop.h",
         "tools/build-aar.sh",
         "tools/build-xcframework.sh",

@@ -27,6 +27,7 @@ on:
       - 'core/**'
       - 'rust-toolchain.toml'
       - 'sdk/apple/build-xcframework.sh'
+      - 'sdk/apple/Package.swift'
       - 'sdk/hop.h'
       - 'tools/build-aar.sh'
       - 'tools/build-xcframework.sh'
