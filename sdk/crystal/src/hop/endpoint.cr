@@ -40,7 +40,7 @@ module Hop
       app_secret : Bytes? = nil,
       tick_ms : Int32 = 50,
       cluster : String | Bytes | Nil = nil,
-      quorum : Int? = nil
+      quorum : Int? = nil,
     )
       Hop::FFI.assert_abi!
       if secret && secret.size != 32

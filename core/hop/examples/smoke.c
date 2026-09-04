@@ -39,17 +39,21 @@ static bool on_message(void *ctx, const uint8_t *inbox_id, const uint8_t *from,
 }
 
 // hops:// host-side: capture one inbound service request (so we can seal a reply to its caller).
+// ABI 7 (ABI-002): the sink returns whether the host has taken the request. Returning true is
+// synchronous acceptance; returning false leaves it queued for redelivery, which is what happens to
+// a duplicate delivery here once the first one was captured.
 typedef struct { int got, answered; uint8_t from[32], req_id[32]; char service[64], method[64]; } ReqCap;
 
-static void on_request(void *ctx, const uint8_t *from, const uint8_t *request_id,
+static bool on_request(void *ctx, const uint8_t *from, const uint8_t *request_id,
                        const char *service, const char *method, const uint8_t *args, size_t args_len) {
     (void)args; (void)args_len;
     ReqCap *r = (ReqCap *)ctx;
-    if (r->got) return;
+    if (r->got) return false;
     memcpy(r->from, from, 32); memcpy(r->req_id, request_id, 32);
     snprintf(r->service, sizeof(r->service), "%s", service);
     snprintf(r->method, sizeof(r->method), "%s", method);
     r->got = 1;
+    return true;
 }
 
 // hops:// caller-side: capture the response sealed back to us.

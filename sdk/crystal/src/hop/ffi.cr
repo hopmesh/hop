@@ -245,6 +245,7 @@ module Hop
     def self.node_is_encrypted(node : Void*) : Bool
       LibHop.node_is_encrypted(node)
     end
+
     def self.node_open(db_path : String, secret : Bytes? = nil, app_secret : Bytes? = nil) : Void*
       sec_ptr = secret ? require_32(secret, "secret").to_unsafe : Pointer(UInt8).null
       sec_len = secret ? LibC::SizeT.new(secret.size) : LibC::SizeT.new(0)
@@ -278,7 +279,6 @@ module Hop
     def self.cluster_would_drop(node : Void*, from : Bytes, request_id : Bytes) : Bool
       LibHop.cluster_would_drop(node, require_32(from, "from").to_unsafe, require_32(request_id, "request id").to_unsafe)
     end
-
 
     def self.accept_service_request(node : Void*, request_id : Bytes) : Bool
       LibHop.accept_service_request(node, require_32(request_id, "request id").to_unsafe)

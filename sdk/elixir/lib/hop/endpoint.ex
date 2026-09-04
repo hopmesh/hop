@@ -151,6 +151,7 @@ defmodule Hop.Endpoint do
 
   def handle_call({:sign_reach, endpoint, ttl}, _from, st),
     do: {:reply, Native.sign_reach_record(st.node, endpoint, ttl), st}
+
   def handle_call(:is_persistent, _from, st),
     do: {:reply, Native.is_persistent(st.node), st}
 
@@ -170,7 +171,6 @@ defmodule Hop.Endpoint do
 
   def handle_call({:cluster_would_drop, from, request_id}, _from, st),
     do: {:reply, Native.cluster_would_drop(st.node, from, request_id), st}
-
 
   def handle_call({:register_link, link, role, send_fun}, _from, st) do
     Native.connected(st.node, link, role == :dialer)
