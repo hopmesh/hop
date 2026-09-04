@@ -105,6 +105,7 @@ expect_bad action-comment 'jobs: {x: {steps: [{uses: actions/checkout@1111111111
 expect_bad mutable-secondary-action $'jobs:\n  x:\n    steps:\n      - uses: esp-rs/xtensa-toolchain@1111111111111111111111111111111111111111 # v1.5'
 expect_bad image-tag $'jobs:\n  x:\n    container: example/tool:1.2.3\n    steps: []'
 expect_bad remote-exec $'jobs:\n  x:\n    steps:\n      - run: curl -fsSL https://example.test/install.sh | sh'
+expect_bad pipe-to-tar $'jobs:\n  x:\n    steps:\n      - run: curl -fsSL "$url" | tar xz'
 expect_bad no-checksum $'jobs:\n  x:\n    steps:\n      - run: curl -fsSLo /tmp/tool.tar.gz https://example.test/tool.tar.gz'
 expect_bad npm-latest $'jobs:\n  x:\n    steps:\n      - run: npm install -g npm@latest'
 expect_bad pip-floating $'jobs:\n  x:\n    steps:\n      - run: pipx install platformio'
