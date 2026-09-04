@@ -1536,6 +1536,6 @@ class HopBearer internal constructor(
         }
 
         fun sanitizeRelayUrl(input: String): String =
-            input.trim().substringBefore('?').substringBefore('#')
+            sh.hopme.bearers.relay.RelayBearer.sanitizeRelayUrl(input)
     }
 }

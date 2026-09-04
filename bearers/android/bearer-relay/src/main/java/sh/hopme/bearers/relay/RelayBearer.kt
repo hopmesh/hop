@@ -253,11 +253,14 @@ class RelayBearer(
     internal val socksForTest: SocksProxySetting get() = socks
     internal val clientProxyForTest: Proxy? get() = client.proxy
 
-    internal companion object {
+    companion object {
         /// The peer-id derivation, exposed so a test can compute the expected value rather than
         /// re-implementing SHA-256 and drifting from it.
         internal fun stablePeerIdForUrl(url: String): ByteArray =
             MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).copyOf(16)
+
+        fun sanitizeRelayUrl(input: String): String =
+            input.trim().substringBefore('?').substringBefore('#')
     }
 
     // ---- dial / down / reconnect (all on `exec`) ----
@@ -283,7 +286,7 @@ class RelayBearer(
             down()
             return
         }
-        Log.i(TAG, "relay dial $candidate")
+        Log.i(TAG, "relay dial ${sanitizeRelayUrl(candidate)}")
         // Capture the executor this connection belongs to. All of its OkHttp callbacks post here via
         // postTo(), so a callback racing stop() (or from this old connection after a restart onto a
         // fresh exec) lands on the shut executor and is dropped, never a RejectedExecutionException.
