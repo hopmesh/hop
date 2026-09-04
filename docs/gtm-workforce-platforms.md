@@ -1,7 +1,10 @@
 # GTM, workforce platforms
 
-> Strategy note. The first vertical where Hop is not a nice offline story but the fix for a
-> defect the buyer already pays for in staff time. Companion to `docs/positioning.md`.
+> **Editorial and placement decision (BIZ-007):** This document is retained in the public repository
+> as an architectural design note illustrating the integration of Hop's delay-tolerant transport into
+> mobile workforce platforms and background SDKs. Tactical company-specific targets have been generalized
+> to preserve commercial neutrality and avoid publishing private partner-targeting strategies in the open tree.
+> Companion to internal strategy notes (`hopmesh/internal/docs/positioning.md`).
 
 ## The one line
 
@@ -82,9 +85,9 @@ Small, but not zero. Name it up front, because this is what an engineer will ask
 
 Selling platform by platform is the value play and it is slow. There is a faster way to get nodes into the world.
 
-An SDK already inside many of these apps, doing background location for exactly this workforce, already holds the runtime real estate Hop needs: background execution, radio permissions, battery discipline, and a customer base whose core complaint is gaps in the record when connectivity dies. HyperTrack is the clearest example of that class.
+An SDK already inside many of these apps, doing background location for exactly this workforce, already holds the runtime real estate Hop needs: background execution, radio permissions, battery discipline, and a customer base whose core complaint is gaps in the record when connectivity dies. A workforce-location or fleet-telematics SDK is the clearest example of that class.
 
-- **For them:** their weakest surface is the coverage hole. Hop closes it without changing their product.
+- **For the partner:** their weakest surface is the connectivity dead-zone gap. Hop closes it without changing their product.
 - **For us:** one integration puts relay-capable nodes into many apps at once.
 - **The compounding part:** Hop is a shared fabric, so any Hop app relays for any other. Their install base becomes relay density for **every** Hop app, including the platform SDKs we sell directly. That is the cold-start problem solved by somebody else's distribution.
 
@@ -121,7 +124,7 @@ Two honest caveats. First, as the founder notes, this only covers the location p
 
 | ID | Source | State | Limitation |
 |---|---|---|---|
-| H-POS | `docs/positioning.md` | `live` | Internal strategy note |
+| H-POS | `hopmesh/internal/docs/positioning.md` | `live` | Internal strategy note (private repo) |
 | H-DES | `DESIGN.md`, Use Case A and B, non-goals | `live` | Design, not a production SLA. Real-time and exactly-once are explicit non-goals |
 | H-MEC | `MECHANISMS.md`, shared fabric and app isolation | `live` | Living catalog, wire versions change |
 | H-HOPS | [hops:// protocol](https://hopme.sh/protocol/hops/) | `live` | Whitepaper still forthcoming |

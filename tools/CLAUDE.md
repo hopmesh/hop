@@ -15,7 +15,7 @@ docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity inc
                            NOT scanned. "The source pass reported OK" is therefore not the same claim as
                            "no file in the repo has a dash". The wire-source-manifest exclusion was
                            RETIRED in the v13 to v14 bump (PROC-001), which also added U+2212 to the
-                           banned set and put fuzz/, mockups/, and business/ into the source pass.
+                           banned set and put fuzz/ into the source pass (mockups/ and business/ were moved to hopmesh/internal).
                            Self-test: docs-token-guard.test.sh.
 check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:` every other ci.yml
                            job, use `if: always()`, and fail on a failed/cancelled dep. Also fails on a

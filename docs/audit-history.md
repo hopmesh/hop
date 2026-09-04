@@ -37,9 +37,16 @@ form of an audit result. `mailbox-prefix-doc-guard.sh` (PROTO-004) and the retir
 
 See `SECURITY.md`. Report privately; do not open a public issue for a suspected vulnerability.
 
-## Fixed issues
+## Fixed issues and security disclosure policy
 
-Fixed vulnerabilities are worth publishing, and silence is a worse signal than disclosure. Advisories
-are published against this repository as they are prepared, each naming the affected versions and the
-commit that fixed it. Where an advisory corresponds to a corpus identifier, it cites it, so the two
-reconcile without the raw notes being public.
+Fixed vulnerabilities are worth publishing, and silence is a worse signal than disclosure.
+Advisory publication follows a clear division of responsibility:
+
+- **Externally-reported vulnerabilities:** For vulnerabilities reported through coordinated disclosure
+  channels (see `SECURITY.md`), GitHub Security Advisories (GHSAs) are published against this repository
+  upon remediation, naming the affected versions, remediation commits, and crediting reporters.
+- **Internal dogfooding and adversarial audit findings:** Severity-labeled findings originating from
+  internal audit rounds (such as F-xx, SVC-xxx, PROC-xxx, or pre-release items such as the pass-5 DNSSEC
+  name-hijack fix #138 and Node reply UAF #138) are resolved pre-release and tracked directly in
+  `CHANGELOG.md` and repository test vectors rather than as retrospective GHSAs. Where an advisory
+  corresponds to a corpus identifier, it cites it, so the two reconcile without the raw notes being public.
