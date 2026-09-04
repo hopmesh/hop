@@ -1,0 +1,50 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Acceptable Use Policy, Hop"
+  description="Acceptable Use Policy governing network traffic, relay infrastructure, and developer access on Hop."
+  path="/acceptable-use"
+>
+  <section class="hero" style="padding-bottom:16px;">
+    <div class="wrap">
+      <div class="eyebrow">Legal</div>
+      <h1>Acceptable Use <span class="grad">Policy.</span></h1>
+      <p class="lede">Standards of conduct for traffic traversing the Hop managed backbone and developer services.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap prose">
+      <p class="updated">Effective date: September 4, 2026</p>
+
+      <h2>1. Purpose and Scope</h2>
+      <p>This Acceptable Use Policy ("AUP") defines prohibited activities and usage standards for anyone accessing or using the Hop managed relay fleet, cloud backbone, developer console, or hosted APIs (the "Hosted Services"). This AUP supplements our <a href="/terms/">Terms of Service</a>.</p>
+
+      <h2>2. Prohibited Activities</h2>
+      <p>You may not use the Hosted Services to engage in, foster, or promote illegal, harmful, abusive, or irresponsible behavior, including:</p>
+      <ul>
+        <li><strong>Malware and Exploitation:</strong> Distributing viruses, worms, Trojan horses, rootkits, spyware, ransomware, or other malicious payloads.</li>
+        <li><strong>Botnets and C2:</strong> Operating or facilitating botnet command-and-control infrastructure or automated credential stuffing.</li>
+        <li><strong>Denial of Service &amp; Flooding:</strong> Generating distributed denial-of-service (DDoS) traffic, volumetric flood attacks, or deliberate resource exhaustion on relays.</li>
+        <li><strong>Relay Amplification &amp; Abuse:</strong> Exploiting store-and-forward mechanisms to flood recipient inboxes, exhaust mailbox storage caches, or amplify packet distribution maliciously.</li>
+        <li><strong>Unlawful Content:</strong> Transmitting child sexual abuse material (CSAM), promoting violent extremism, or engaging in human trafficking or unlawful surveillance.</li>
+        <li><strong>Credential &amp; Meter Bypassing:</strong> Circumventing authentication, rate limits, spending limits, or cryptographic identity validation.</li>
+      </ul>
+
+      <h2>3. End-to-End Encryption &amp; Perimeter Enforcement</h2>
+      <p>Hop is an end-to-end encrypted protocol. Relays carry sealed bundles (ciphertext) and do not have access to plaintext message contents. Consequently, our enforcement of this AUP relies on perimeter controls rather than content inspection:</p>
+      <ul>
+        <li><strong>Cryptographic Authentication:</strong> Transport sessions authenticate peer keys via the Noise Protocol Framework.</li>
+        <li><strong>Admission &amp; Rate Limiting:</strong> Inbound connections and frame rates are metered and capped per tenant routing token and per authenticated peer.</li>
+        <li><strong>Tenant Suspension:</strong> Accounts violating this policy face revocation of routing tokens and access credentials at the relay edge.</li>
+      </ul>
+
+      <h2>4. Enforcement and Termination</h2>
+      <p>Hop reserves the right, in its sole discretion, to investigate suspected violations of this AUP and take immediate corrective action, including issuing warnings, rate-limiting traffic, suspending routing tokens, or terminating accounts. Because Hop is fail-open by design, suspension of Hosted Services stops managed backbone carriage while leaving independent local peer-to-peer mesh connectivity intact.</p>
+
+      <h2>5. Reporting Violations</h2>
+      <p>To report violations of this Acceptable Use Policy, please email <a class="mono" style="color:var(--accent)" href="mailto:abuse@hopme.sh">abuse@hopme.sh</a> with relevant network headers, timestamps, and routing identifiers.</p>
+    </div>
+  </section>
+</Base>

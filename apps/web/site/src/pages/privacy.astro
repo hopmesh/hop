@@ -4,7 +4,7 @@ import Base from '../layouts/Base.astro';
 <Base
   title="Privacy, Hop"
   description="How Hop handles data: end-to-end encrypted content the network can't read, pseudonymous key-based identities, and billing metered on volume, never content."
-  path=""
+  path="/privacy"
 >
   <section class="hero" style="padding-bottom:16px;">
     <div class="wrap">
@@ -17,8 +17,14 @@ import Base from '../layouts/Base.astro';
 
   <section class="band" style="padding-top:24px;">
     <div class="wrap prose">
-      <p class="updated">Product privacy overview · last updated 2026-06-24. A formal policy
-         accompanies general availability; this describes how the system is designed to handle data.</p>
+      <p class="updated">Hop Privacy Policy · Effective date: September 4, 2026</p>
+
+      <h2>Data Controller &amp; Processor Roles</h2>
+      <p>Under applicable privacy frameworks including the General Data Protection Regulation (GDPR):</p>
+      <ul>
+        <li><strong>Data Controller:</strong> Hop acts as Data Controller for developer console accounts, authentication credentials, billing records, and support inquiries.</li>
+        <li><strong>Data Processor:</strong> For traffic traversing our hosted cloud backbone, Hop acts as a Data Processor on behalf of our customers pursuant to our <a href="/dpa/">Data Processing Addendum</a> and <a href="/terms/">Terms of Service</a>.</li>
+      </ul>
 
       <h2>Content is end-to-end encrypted</h2>
       <p>Every message payload is encrypted to the destination's key (X25519 + ChaCha20-Poly1305)
@@ -68,9 +74,11 @@ import Base from '../layouts/Base.astro';
       <p>You can run the SDK fully peer-to-peer with no backbone at all, or operate your own private
          backbone, in which case the data never touches our infrastructure and these backbone
          practices are yours to set.</p>
+      <h2>Data Subject Rights &amp; Retention</h2>
+      <p>Depending on your jurisdiction (including the EEA, UK, and California), you may have rights to access, correct, port, or request deletion of personal information we hold about you as a Data Controller. Held bundles in our relay spool are transient, purged immediately upon verified delivery or evicted automatically upon TTL expiration.</p>
 
       <h2>Contact</h2>
-      <p>Questions about data handling: <a class="mono" style="color:var(--accent)" href="mailto:privacy@hopme.sh">privacy@hopme.sh</a>.</p>
+      <p>Questions about data handling or privacy rights: <a class="mono" style="color:var(--accent)" href="mailto:privacy@hopme.sh">privacy@hopme.sh</a>.</p>
     </div>
   </section>
 </Base>
