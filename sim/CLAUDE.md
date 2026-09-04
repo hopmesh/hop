@@ -14,3 +14,4 @@ scenario player. `apps/web/site` syncs this whole directory into its `public/sim
 - `node sim/scenario-check.mjs`: all real-world scenarios must deliver + ack (run this after any core change).
 - `node sim/wasm-glue-check.mjs`: exercises the WasmNode methods the scenarios do not (the §39 receiver-beacon, traced send, custom TTL, inbox debug) against the real compiled pkg-node.
 - `cargo build -p hop-wasm --target wasm32-unknown-unknown` must stay clean (watch for a dep pulling a getrandom major with no wasm backend; bridge it via the `wasm_js` feature).
+- `bash sim/check-pkg-fresh.test.sh`: self-test for the freshness guard (verifies toolchain, build failure, and drift reporting).
