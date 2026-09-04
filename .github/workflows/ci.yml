@@ -1083,6 +1083,8 @@ jobs:
         run: python3 tools/dependabot-coverage-guard.py
       - name: Self-test Dependabot fix tag authorization
         run: bash .github/scripts/dep-fix-tag.test.sh
+      - name: Self-test PR auto-merge safety check (PROC-002)
+        run: bash .github/scripts/check-pr-automerge-safety.test.sh
 
   docs-tokens:
     name: Docs token guard (banned copy)
