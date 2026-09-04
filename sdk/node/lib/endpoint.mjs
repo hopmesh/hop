@@ -324,12 +324,13 @@ export class HopEndpoint extends EventEmitter {
     if (this.#closed) return
     // inbound service requests -> handlers
     this.#native((node) => hop.poll_service_requests(node, (_ctx, from, rid, service, method, argPtr, argLen) => {
-      if (this.#closed) return
+      if (this.#closed) return false
       const req = new HopRequest(addr(from), addr(rid), service, method, bytes(argPtr, Number(argLen)))
       const handler = this.#handlers.get(service)
       const reply = this.#makeReply(req)
       if (handler) Promise.resolve(handler(req, reply)).catch((e) => this.emit('error', e))
       else this.emit('unhandled', req, reply)
+      return true
     }, null))
     if (this.#closed) return
     // inbound service responses -> resolve pending client requests
