@@ -2,20 +2,21 @@
 import Base from '../layouts/Base.astro';
 ---
 <Base
-  title="Hop pricing, two usage meters, free P2P and self-host"
-  description="Hop bills two things: reach (backbone delivery to offline recipients, $0.002 each) and telemetry ($0.30 per million events). Direct connections, pure P2P, and self-hosting are free. Model your bill with the live calculator."
+  title="Hop pricing, usage meters, free P2P and self-host"
+  description="Hop bills usage: reach (backbone delivery to offline recipients, $0.002 each) and telemetry ($0.30 per million events). Direct connections, pure P2P, and self-hosting are free. Model your bill with the live calculator."
   path="/pricing"
 >
   <!-- hero -->
   <section class="hero" style="padding-bottom:20px;">
     <div class="wrap">
       <div class="eyebrow">Pricing</div>
-      <h1>You pay for <span class="c-reach">reach</span> and <span class="grad">telemetry</span>. Nothing else.</h1>
+      <h1>You pay for <span class="c-reach">reach</span> and <span class="grad">telemetry</span>.</h1>
       <p class="lede">
-        Two usage meters, both measured at our own edge so they can't be gamed. Direct
+        Two primary usage meters, both measured at our own edge so they can't be gamed. Direct
         connections, pure peer-to-peer, and self-hosting the whole fabric are free. No
         per-seat tax: you pay for the backbone we actually carry and the telemetry we
-        actually collect.
+        actually collect. Secondary dimensions (egress and mailbox storage) apply only when
+        traffic leaves the mesh or is held past your free allowance.
       </p>
       <div class="hero-meta">
         <span class="tag"><b class="c-reach">Reach</b> $0.002 / offline delivery</span>
@@ -25,11 +26,11 @@ import Base from '../layouts/Base.astro';
     </div>
   </section>
 
-  <!-- the two meters -->
+  <!-- the usage meters -->
   <section class="band" style="padding-top:44px;">
     <div class="wrap">
       <div class="section-head">
-        <div class="eyebrow">The two meters</div>
+        <div class="eyebrow">The usage meters</div>
         <h2>Metered where we can see them.</h2>
         <p>Not on the device, not self-reported. We bill only what crosses our infrastructure,
            which is also the only thing that costs us anything.</p>
@@ -140,9 +141,10 @@ import Base from '../layouts/Base.astro';
           <span id="footNums" class="mono"></span>
         </div>
       </div>
-      <p class="note mt-m center">Plus egress at $0.15 / GB and mailbox storage at $0.40 / GB-month past your
-         allowance, usually minor. Figures are illustrative, the model we're finalizing for general
-         availability, and move with your fleet's connectivity and telemetry cadence.</p>
+      <p class="note mt-m center">Model covers primary Reach and Telemetry usage. Internet egress at $0.15 / GB
+         and mailbox storage at $0.40 / GB-month apply only past your included allowance. Active devices (MAD)
+         are counted for tenant auth, never as a per-seat fee. Figures are illustrative, the model we're
+         finalizing for general availability, and move with your fleet's connectivity and telemetry cadence.</p>
     </div>
   </section>
 
@@ -156,11 +158,12 @@ import Base from '../layouts/Base.astro';
       <div class="grid-2">
         <div class="card">
           <div class="hostrow"><h3>Self-host</h3><span class="ptag free">$0</span></div>
-          <p class="mt-s">Run the relay and telemetry collector yourself. The services are
-             licensed&nbsp;<span class="mono" style="color:var(--accent)">Apache-2.0</span>,
-             with no restriction on running them for your own use. The protocol core they embed is
+          <p class="mt-s">Run the relay and telemetry collector yourself. The hosted services are
              source-available under&nbsp;<span class="mono" style="color:var(--accent)">FSL-1.1-ALv2</span>,
-             which converts to Apache-2.0 after two years.</p>
+             with a non-compete on commercial hosting that converts to Apache-2.0 after two years.
+             The protocol core, SDKs, bearers, and drivers they embed are licensed
+             outright under&nbsp;<span class="mono" style="color:var(--accent)">Apache-2.0</span>,
+             with no restriction on embedding or running them for your own use.</p>
           <ul class="checks">
             <li>Zero fees, full data sovereignty. Telemetry never leaves your infrastructure.</li>
             <li>Same protocol, same mesh, same delivery guarantees.</li>
@@ -205,7 +208,7 @@ import Base from '../layouts/Base.astro';
           </div>
           <div class="rung">
             <div class="ri"><i class="fa-duotone fa-solid fa-paper-plane"></i></div>
-            <div><h3>Anything in flight</h3><p>Bundles already accepted or spooled always deliver, even for an over-budget or suspended account. We never drop a message you handed us.</p></div>
+            <div><h3>Anything in flight</h3><p>Bundles already accepted or spooled keep being carried under the same at-least-once lifetime rules as any other bundle. Account suspension only halts new acceptance; it does not purge in-flight traffic.</p></div>
           </div>
         </div>
       </div>
@@ -215,12 +218,13 @@ import Base from '../layouts/Base.astro';
   <!-- cta -->
   <section class="cta-band">
     <div class="wrap">
-      <h2>Build for free. Pay only for reach and telemetry.</h2>
+      <h2>Build for free. Pay for the backbone you use.</h2>
       <p>P2P and direct connections are always free. Start on the SDK, add the managed backbone when you need to reach the disconnected.</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="https://dashboard.hopme.sh/">Start free</a>
         <a class="btn btn-ghost" href="/docs/quickstart/">See the docs</a>
       </div>
+      <p class="mt-s muted center" style="font-size:13px;">By starting free or using Hop, you agree to our <a href="/terms/">Terms of Service</a> and <a href="/acceptable-use/">Acceptable Use Policy</a>.</p>
     </div>
   </section>
 </Base>
