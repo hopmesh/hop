@@ -57,10 +57,21 @@ end)
 IO.puts(Hop.Endpoint.address(ep))           # publish this (or its name); senders reach you by it
 ```
 
-**The DX looks like HTTP; the semantics are better.** Inbound is a durable, store-and-forward consume; a
-reply is a new addressed message that may arrive later, even after a restart. It works when the peer is
-offline, and there is no auth layer to bolt on, the identity is cryptographic. `Hop.Endpoint` is a
-`GenServer` that owns the node and runs the poll-model pump on a timer.
+**The DX looks like HTTP; the semantics are better.** Inbound is a store-and-forward consume; a reply
+is a new addressed message that may arrive later. By default, `Hop.Endpoint.start_link([])` runs an in-memory
+node whose state is ephemeral to the process lifetime. For restart durability across crashes or redeploys,
+pass `db_path:` (and optionally `db_key:` for SQLCipher encryption-at-rest) along with a persisted `secret:` (or `key:`):
+
+```elixir
+# Persistent across process restarts:
+{:ok, ep} = Hop.Endpoint.start_link(
+  db_path: "/var/lib/hop/service.db",
+  secret: File.read!("/etc/hop/identity.key")
+)
+```
+
+It works when the peer is offline, and there is no auth layer to bolt on, the identity is cryptographic.
+`Hop.Endpoint` is a `GenServer` that owns the node and runs the poll-model pump on a timer.
 
 ## Reachable by name
 
