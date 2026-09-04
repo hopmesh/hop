@@ -88,6 +88,44 @@ expect "$TMP/stale_mech" fail "stale_mechanisms_version_fails"
 lay_down "$TMP/stale_sec" "16" "16" "bundle-v9.json" ""
 expect "$TMP/stale_sec" fail "stale_security_corpus_fails"
 
+# Helper to write a mock ci.yml
+lay_down_ci() {
+  local dir="$1"
+  local claude_job_text="$2"
+  mkdir -p "$dir/.github/workflows"
+  cat << 'EOF' > "$dir/.github/workflows/ci.yml"
+name: CI
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+  rust:
+    runs-on: ubuntu-latest
+  deny:
+    runs-on: ubuntu-latest
+  gate:
+    runs-on: ubuntu-latest
+    needs: [changes, rust, deny]
+EOF
+  cat << EOF >> "$dir/CLAUDE.md"
+- CI (\`.github/workflows/ci.yml\`) $claude_job_text
+EOF
+}
+
+# Test 6: Matching CI counts in CLAUDE.md -> PASS (CLAIM-015)
+lay_down "$TMP/ci_ok" "16" "16" "bundle-v16.json" ""
+lay_down_ci "$TMP/ci_ok" "is the gate: 4 jobs. The aggregate CI gate depends on the other 3 and is required."
+expect "$TMP/ci_ok" pass "matching_ci_counts_pass"
+
+# Test 7: Stale CI total jobs in CLAUDE.md -> FAIL (CLAIM-015)
+lay_down "$TMP/ci_stale_total" "16" "16" "bundle-v16.json" ""
+lay_down_ci "$TMP/ci_stale_total" "is the gate: 20 jobs. The aggregate CI gate depends on the other 3 and is required."
+expect "$TMP/ci_stale_total" fail "stale_ci_total_jobs_fails"
+
+# Test 8: Stale gate dependencies in CLAUDE.md -> FAIL (CLAIM-015)
+lay_down "$TMP/ci_stale_deps" "16" "16" "bundle-v16.json" ""
+lay_down_ci "$TMP/ci_stale_deps" "is the gate: 4 jobs. The aggregate CI gate depends on the other 19 and is required."
+expect "$TMP/ci_stale_deps" fail "stale_ci_gate_deps_fails"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "doc-path-guard.test.sh: all $pass tests passed"

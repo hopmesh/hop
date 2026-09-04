@@ -6,6 +6,7 @@
 #    with an external repository (for example hopmesh/platform/... or hopmesh/internal/...).
 # 2. Wire version numbers and corpus filenames cited in documentation (such as
 #    MECHANISMS.md and SECURITY.md) match the active BUNDLE_VERSION in bundle.rs.
+# 3. CI job counts stated in CLAUDE.md match .github/workflows/ci.yml (CLAIM-015).
 #
 # Self-tested by tools/doc-path-guard.test.sh.
 
@@ -54,6 +55,86 @@ else
   fi
 fi
 
+
+# --- Check 2: CI job and gate dependency counts in CLAUDE.md (CLAIM-015) ---
+
+CI_YML=".github/workflows/ci.yml"
+if [ -f "$CI_YML" ] && [ -f "CLAUDE.md" ]; then
+  ci_check_out="$(python3 - "$CI_YML" "CLAUDE.md" <<'PY' 2>&1
+import sys, re
+
+ci_path, claude_path = sys.argv[1:3]
+with open(ci_path, encoding='utf-8') as f:
+    ci_lines = f.read().splitlines()
+
+in_jobs = False
+jobs = []
+gate_lines = []
+in_gate = False
+
+for line in ci_lines:
+    if re.fullmatch(r"jobs:\s*", line):
+        in_jobs = True
+        continue
+    if not in_jobs or line.lstrip().startswith("#"):
+        continue
+    m = re.match(r"^  (\S[^:]*):(\s|$)", line)
+    if m:
+        job_name = m.group(1)
+        jobs.append(job_name)
+        in_gate = (job_name == "gate")
+    elif in_gate:
+        gate_lines.append(line)
+
+total_jobs = len(jobs)
+
+gate_needs = set()
+for idx, line in enumerate(gate_lines):
+    m = re.match(r"^\s*needs:\s*(.*)$", line)
+    if m:
+        inline = m.group(1).split("#", 1)[0].strip()
+        if inline.startswith("["):
+            gate_needs.update(re.findall(r"[A-Za-z0-9_-]+", inline))
+        elif inline:
+            gate_needs.add(inline)
+        else:
+            for nested in gate_lines[idx+1:]:
+                item = re.match(r"^\s*-\s+([A-Za-z0-9_-]+)\s*$", nested)
+                if not item:
+                    break
+                gate_needs.add(item.group(1))
+        break
+
+gate_deps = len(gate_needs)
+
+with open(claude_path, encoding='utf-8') as f:
+    claude_text = f.read()
+
+m_total = re.search(r"is the gate:\s*([0-9]+)\s*jobs", claude_text)
+m_deps = re.search(r"depends on the other\s*([0-9]+)", claude_text)
+
+errors = []
+if m_total:
+    claimed_total = int(m_total.group(1))
+    if claimed_total != total_jobs:
+        errors.append(f"CLAUDE.md cites stale CI job count ({claimed_total} jobs; ci.yml defines {total_jobs})")
+
+if m_deps:
+    claimed_deps = int(m_deps.group(1))
+    if claimed_deps != gate_deps:
+        errors.append(f"CLAUDE.md cites stale CI gate dependency count ({claimed_deps}; ci.yml gate depends on {gate_deps})")
+
+if errors:
+    for e in errors:
+        print(f"{e}", file=sys.stderr)
+    sys.exit(1)
+PY
+)" || {
+    while IFS= read -r line; do
+      [ -n "$line" ] && err "$line"
+    done <<< "$ci_check_out"
+  }
+fi
 # --- Check 2: Path existence in documentation and CLAUDE.md files (CLAIM-010) ---
 
 DOC_SCAN_TARGETS=(
