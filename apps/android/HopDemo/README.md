@@ -12,8 +12,8 @@ relay for each other (DESIGN.md §17).
 ```sh
 # Android SDK + NDK (or use Android Studio's SDK Manager instead)
 brew install --cask android-commandlinetools
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
-export ANDROID_NDK_HOME="$(dirname "$(command -v sdkmanager)")/../../ndk/26.3.11579264"
+sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+export ANDROID_NDK_HOME="$(dirname "$(command -v sdkmanager)")/../../ndk/27.1.12297006"
 
 cargo install cargo-ndk
 rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-androideabi

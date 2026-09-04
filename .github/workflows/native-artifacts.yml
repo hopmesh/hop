@@ -1,9 +1,43 @@
+# Build, verify, sign, and attest native artifacts for the Hop C ABI and platform wrappers.
+#
+# Gating and trigger architecture (PROC-005):
+# Push triggers are path-filtered to inputs that feed the native artifacts to avoid
+# unnecessary compute on unrelated commits. Matrix builds (host-linux, apple, android,
+# embedded) and canonical CI authorization (authorize-ci) run unconditionally on matching
+# pushes to main (and unfiltered workflow_dispatch) without requiring release secrets,
+# ensuring build regressions are never masked by missing signing credentials.
+#
+# The signing and attestation job (attest) is gated on `needs.authorize.outputs.can_sign`:
+# when NATIVE_ARTIFACT_SIGNING_KEY is provisioned in the release environment, it signs
+# and generates SLSA provenance; when absent, attest skips cleanly with a notice while
+# the build jobs still succeed.
+
 name: Native artifacts
 run-name: Native artifacts for ${{ github.sha }}
 
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/native-artifacts.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'LICENSE.md'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'core/**'
+      - 'rust-toolchain.toml'
+      - 'sdk/apple/build-xcframework.sh'
+      - 'sdk/apple/Package.swift'
+      - 'sdk/hop.h'
+      - 'tools/build-aar.sh'
+      - 'tools/build-xcframework.sh'
+      - 'tools/gen-third-party-notices.py'
+      - 'tools/native-artifacts-path-guard.py'
+      - 'tools/native-artifacts-public.pem'
+      - 'tools/native-artifacts.py'
+      - 'tools/native-artifacts.schema.json'
+      - 'tools/native-attestation/**'
+  workflow_dispatch:
 
 concurrency:
   group: native-artifacts-${{ github.sha }}
@@ -21,7 +55,7 @@ jobs:
   authorize:
     name: Authorize canonical source
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       github.repository == 'hopmesh/hop'
     runs-on: ubuntu-latest
@@ -41,7 +75,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$SOURCE_SHA" = "$EVENT_AFTER"
+          if [ -n "${EVENT_AFTER:-}" ]; then
+            test "$SOURCE_SHA" = "$EVENT_AFTER"
+          fi
           test "$SOURCE_REF" = "refs/heads/main"
           test "$SOURCE_REPOSITORY" = "hopmesh/hop"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
@@ -55,7 +91,6 @@ jobs:
   host-linux:
     name: Build Linux host artifact
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +132,6 @@ jobs:
   apple:
     name: Build Apple host and xcframework artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,7 +178,6 @@ jobs:
   android:
     name: Build Android ABI artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,9 +186,14 @@ jobs:
           persist-credentials: false
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      # REL-005: with SQLCipher on (ABI-001) openssl-src builds vendored OpenSSL, and OpenSSL 3.6's
+      # x86_64 SM3/SM4 assembly uses mnemonics (vsm3msg1, vsm4key4, ...) that NDK 26's LLVM 17
+      # integrated assembler rejects. NDK 27 ships LLVM 18, which accepts them; all four ABIs were
+      # proven locally on 27.1.12297006 before this pin moved. Keep it in step with
+      # apps/react-native/HopDemo/android/build.gradle's ndkVersion.
       - name: Install exact NDK and Rust builders
         run: |
-          sdkmanager "ndk;26.3.11579264"
+          sdkmanager "ndk;27.1.12297006"
           rustup toolchain install 1.97.0 --profile minimal
           rustup target add aarch64-linux-android armv7-linux-androideabi \
             i686-linux-android x86_64-linux-android --toolchain 1.97.0
@@ -165,7 +203,7 @@ jobs:
           HOP_ANDROID_OUT: ${{ runner.temp }}/android-generated
           HOP_SQLCIPHER: '1'
         run: |
-          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006"
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
           bash tools/build-aar.sh
       - name: Package each exact Android target
@@ -207,7 +245,6 @@ jobs:
   embedded:
     name: Build exact ESP-IDF target artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -241,6 +278,7 @@ jobs:
             cp LICENSE.md "$stage/LICENSE.md"
             python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
+          done
       - name: Upload immutable embedded partials
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -252,7 +290,6 @@ jobs:
   authorize-ci:
     name: Authorize successful canonical CI
     needs: [authorize, host-linux, apple, android, embedded]
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

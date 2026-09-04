@@ -8,7 +8,7 @@
 # Prerequisites (one-time):
 #   1. Android NDK. Either:
 #        brew install --cask android-commandlinetools
-#        sdkmanager "ndk;26.3.11579264"     # then: export ANDROID_NDK_HOME=...
+#        sdkmanager "ndk;27.1.12297006"     # then: export ANDROID_NDK_HOME=...
 #      or install via Android Studio's SDK Manager.
 #   2. cargo install cargo-ndk
 #   3. rustup target add aarch64-linux-android x86_64-linux-android \
