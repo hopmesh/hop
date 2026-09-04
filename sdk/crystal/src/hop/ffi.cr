@@ -12,6 +12,9 @@ lib LibHop
   fun abi_version = hop_abi_version : UInt32 # the C ABI returns uint32_t; keep the binding's sign honest
   fun node_new = hop_node_new : Void*
   fun node_with_secret = hop_node_with_secret(secret : UInt8*, secret_len : LibC::SizeT) : Void*
+  fun node_open = hop_node_open(db_path : LibC::Char*, secret : UInt8*, secret_len : LibC::SizeT, app_secret : UInt8*, app_secret_len : LibC::SizeT) : Void*
+  fun node_open_keyed = hop_node_open_keyed(db_path : LibC::Char*, secret : UInt8*, secret_len : LibC::SizeT, app_secret : UInt8*, app_secret_len : LibC::SizeT, key : UInt8*, key_len : LibC::SizeT) : Void*
+  fun node_is_persistent = hop_node_is_persistent(node : Void*) : Bool
   fun node_free = hop_node_free(node : Void*) : Void
   fun node_is_encrypted = hop_node_is_encrypted(node : Void*) : Bool
   fun node_address = hop_node_address(node : Void*, out_addr : UInt8*) : Bool
@@ -45,6 +48,8 @@ lib LibHop
   fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
   fun cluster_members = hop_cluster_members(node : Void*) : UInt32
   fun cluster_set_quorum = hop_cluster_set_quorum(node : Void*, min_live_members : UInt32) : Void
+  fun cluster_mark_done = hop_cluster_mark_done(node : Void*, from : UInt8*, request_id : UInt8*) : Void
+  fun cluster_would_drop = hop_cluster_would_drop(node : Void*, from : UInt8*, request_id : UInt8*) : Bool
   # §32 hps:// pub/sub: services and channels (group chat), the surface the v5 -> v6 ABI bump added.
   # PLAT-005: the C ABI exported NOTHING from hps:// before version 6 of the C ABI, so every wrapper that sits on it,
   # this one included, could not host, join, or post to a channel even though the protocol has shipped
@@ -240,6 +245,40 @@ module Hop
     def self.node_is_encrypted(node : Void*) : Bool
       LibHop.node_is_encrypted(node)
     end
+    def self.node_open(db_path : String, secret : Bytes? = nil, app_secret : Bytes? = nil) : Void*
+      sec_ptr = secret ? require_32(secret, "secret").to_unsafe : Pointer(UInt8).null
+      sec_len = secret ? LibC::SizeT.new(secret.size) : LibC::SizeT.new(0)
+      app_ptr = app_secret ? require_32(app_secret, "app secret").to_unsafe : Pointer(UInt8).null
+      app_len = app_secret ? LibC::SizeT.new(app_secret.size) : LibC::SizeT.new(0)
+      ptr = LibHop.node_open(db_path.to_unsafe, sec_ptr, sec_len, app_ptr, app_len)
+      raise "hop_node_open returned NULL for path #{db_path}" if ptr.null?
+      ptr
+    end
+
+    def self.node_open_keyed(db_path : String, secret : Bytes? = nil, app_secret : Bytes? = nil, key : Bytes? = nil) : Void*
+      sec_ptr = secret ? require_32(secret, "secret").to_unsafe : Pointer(UInt8).null
+      sec_len = secret ? LibC::SizeT.new(secret.size) : LibC::SizeT.new(0)
+      app_ptr = app_secret ? require_32(app_secret, "app secret").to_unsafe : Pointer(UInt8).null
+      app_len = app_secret ? LibC::SizeT.new(app_secret.size) : LibC::SizeT.new(0)
+      key_ptr = key ? key.to_unsafe : Pointer(UInt8).null
+      key_len = key ? LibC::SizeT.new(key.size) : LibC::SizeT.new(0)
+      ptr = LibHop.node_open_keyed(db_path.to_unsafe, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+      raise "hop_node_open_keyed returned NULL for path #{db_path}" if ptr.null?
+      ptr
+    end
+
+    def self.node_is_persistent(node : Void*) : Bool
+      LibHop.node_is_persistent(node)
+    end
+
+    def self.cluster_mark_done(node : Void*, from : Bytes, request_id : Bytes) : Nil
+      LibHop.cluster_mark_done(node, require_32(from, "from").to_unsafe, require_32(request_id, "request id").to_unsafe)
+    end
+
+    def self.cluster_would_drop(node : Void*, from : Bytes, request_id : Bytes) : Bool
+      LibHop.cluster_would_drop(node, require_32(from, "from").to_unsafe, require_32(request_id, "request id").to_unsafe)
+    end
+
 
     def self.accept_service_request(node : Void*, request_id : Bytes) : Bool
       LibHop.accept_service_request(node, require_32(request_id, "request id").to_unsafe)
@@ -257,7 +296,7 @@ module Hop
         Box(Array({Bytes, Bytes, String, String, Bytes})).unbox(ctx) <<
         {Hop::FFI.read_bytes(frm, LibC::SizeT.new(32)), Hop::FFI.read_bytes(rid, LibC::SizeT.new(32)),
          Hop::FFI.read_cstr(service), Hop::FFI.read_cstr(method), Hop::FFI.read_bytes(args, arglen)}
-        true
+        false
       }, boxed)
       buf
     end

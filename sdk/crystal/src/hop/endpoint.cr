@@ -3,7 +3,7 @@ require "./ffi"
 
 module Hop
   # An inbound service request. `from` is the cryptographically verified sender identity (base58).
-  record Request, from : String, from_bytes : Bytes, service : String, method : String, args : Bytes do
+  record Request, from : String, from_bytes : Bytes, service : String, method : String, args : Bytes, request_id : Bytes = Bytes.empty do
     def text : String
       String.new(args)
     end
@@ -33,12 +33,28 @@ module Hop
   class Endpoint
     @node : Void*
 
-    def initialize(secret : Bytes? = nil, tick_ms : Int32 = 50, cluster : String | Bytes | Nil = nil, quorum : Int? = nil)
+    def initialize(
+      secret : Bytes? = nil,
+      db_path : String? = nil,
+      db_key : Bytes? = nil,
+      app_secret : Bytes? = nil,
+      tick_ms : Int32 = 50,
+      cluster : String | Bytes | Nil = nil,
+      quorum : Int? = nil
+    )
       Hop::FFI.assert_abi!
       if secret && secret.size != 32
         raise ArgumentError.new("identity key must be exactly 32 bytes, got #{secret.size}")
       end
-      @node = secret ? Hop::FFI.node_with_secret(secret) : Hop::FFI.node_new
+      if db_path
+        @node = if db_key
+                  Hop::FFI.node_open_keyed(db_path, secret, app_secret, db_key)
+                else
+                  Hop::FFI.node_open(db_path, secret, app_secret)
+                end
+      else
+        @node = secret ? Hop::FFI.node_with_secret(secret) : Hop::FFI.node_new
+      end
       Hop::FFI.tick(@node, now_ms)
       Hop::FFI.publish_prekey(@node)
       @handlers = {} of String => Proc(Request, Reply, Nil)
@@ -59,6 +75,30 @@ module Hop
 
     def address_bytes : Bytes
       with_node { |n| Hop::FFI.address(n) } || raise "endpoint is closed"
+    end
+
+    def persistent? : Bool
+      with_node { |n| Hop::FFI.node_is_persistent(n) } || false
+    end
+
+    def encrypted? : Bool
+      with_node { |n| Hop::FFI.node_is_encrypted(n) } || false
+    end
+
+    def accept_service_request(request_id : Bytes) : Bool
+      with_node { |n| Hop::FFI.accept_service_request(n, request_id) } || false
+    end
+
+    def reject_service_request(request_id : Bytes) : Bool
+      with_node { |n| Hop::FFI.reject_service_request(n, request_id) } || false
+    end
+
+    def cluster_mark_done(from : Bytes, request_id : Bytes) : Nil
+      with_node { |n| Hop::FFI.cluster_mark_done(n, from, request_id) }
+    end
+
+    def cluster_would_drop(from : Bytes, request_id : Bytes) : Bool
+      with_node { |n| Hop::FFI.cluster_would_drop(n, from, request_id) } || false
     end
 
     # Join the endpoint cluster so sibling replicas (same identity, no shared datastore) each handle a
@@ -290,7 +330,12 @@ module Hop
       requests.each do |(frm, rid, service, method, args)|
         handler = @handlers[service]?
         next unless handler
-        handler.call(Request.new(Hop::FFI.to_b58(frm), frm, service, method, args), Reply.new(self, frm, rid))
+        begin
+          handler.call(Request.new(Hop::FFI.to_b58(frm), frm, service, method, args, rid), Reply.new(self, frm, rid))
+          with_node { |n| Hop::FFI.accept_service_request(n, rid) }
+        rescue ex
+          STDERR.puts "hop handler error: #{ex.message}"
+        end
       end
 
       responses = with_node { |n| Hop::FFI.take_service_responses(n) }
