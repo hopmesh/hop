@@ -1,7 +1,10 @@
 # Public repo catalog
 
 This monorepo is the source of truth. Copybara mirrors a component subtree to its own standalone repo
-and brings external contributions back without forking (see `tools/copybara/`).
+and brings external contributions back without forking (see `tools/copybara/`). Mirror export from this
+repository is true again as of 2026-09-04; the mirrors' history up to that point carries monorepo
+GitOrigin-RevId trailers (since `hopmesh/monorepo` continued running mirror exports until its workflows
+were disabled on 2026-09-04), which is why the first hop export was dispatched with `last_rev`.
 
 As of the 2026-08 mirror retirement, three components mirrored; twenty were retired and their repos
 deleted from the `hopmesh` org. One of the twenty, `hop-bearers-apple`, has been WIRED for return
@@ -94,7 +97,7 @@ Deleting a mirror does not unpublish anything that already shipped from it. This
 record of what is published, what is not, and which published artifact now carries a dead source link,
 so it does not have to be rediscovered by hand. All of it was verified at retirement time.
 
-Every published package whose `repository` field still points at the archived `hopmesh/monorepo` is
+Every published package whose `repository` field still points at the private `hopmesh/monorepo` is
 enumerated below, and the resolution is in "The published source links are permanently dead, and the
 in-tree fix is already in" at the end of this section. Short version: those links cannot be repaired
 retroactively, and the in-tree metadata already names `hopmesh/hop` for the next publish.
@@ -199,9 +202,10 @@ earlier conclusion is now obsolete.
 All three crates and `@hop-mesh/wasm` at v0.0.2 point their `repository` field at `hopmesh/monorepo`.
 That was already broken for the public before the mirror retirement, because the repo was private, so
 the retirement did not cause it. What has changed is the resolution. The earlier version of this
-paragraph said making that repo public would fix the links. It is not being made public: it is being
-ARCHIVED, and the canonical source is now `hopmesh/hop`. So those v0.0.2 links stay dead permanently,
-because a package's metadata is baked in at publish time and cannot be rewritten in place.
+paragraph said making that repo public would fix the links. It is not being made public: it is private,
+archiving it remains an owner action, and the canonical source is now `hopmesh/hop`. So those v0.0.2
+links stay dead permanently, because a package's metadata is baked in at publish time and cannot be
+rewritten in place.
 
 The in-tree fix is landed rather than pending. The workspace `repository` field, which every crate and
 the wasm package inherit, now names `hopmesh/hop`, and `sdk/node/package.json` carries an explicit
