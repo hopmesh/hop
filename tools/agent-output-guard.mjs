@@ -12,6 +12,77 @@ const SENSITIVE_ENV_EXACT =
 const SENSITIVE_URL_NAME =
   /(?:^|_)(?:(?:AMQP|BROKER|DATABASE|DB|MONGO(?:DB)?|MYSQL|POSTGRES|REDIS)_URL|WEBHOOK_URL)$/i
 
+
+export const DEFAULT_ALLOWED_ENV = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "TERM",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "JAVA_HOME",
+  "ANDROID_HOME",
+  "ANDROID_SDK_ROOT",
+  "GOPATH",
+  "GOROOT",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PNPM_HOME",
+  "NVM_DIR",
+  "BUN_INSTALL",
+  "DENO_INSTALL",
+  "GRADLE_USER_HOME",
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITHUB_WORKSPACE",
+  "RUNNER_OS",
+  "RUNNER_ARCH",
+  "RUNNER_TEMP",
+  "PWD",
+  "SHLVL",
+  "_",
+  "HOSTNAME",
+  "EDITOR",
+  "VISUAL",
+  "PAGER",
+  "HOP_ABI_GUARD_ROOT",
+  "DOC_GUARD_ROOT",
+  "CI_FILE",
+  "REQUIRED_CHECKS_FILE",
+]
+
+export function isAllowedEnvironmentVariable(name, allowlist = []) {
+  if (typeof name !== "string") return false
+  if (name.startsWith("LC_")) return true
+  if (DEFAULT_ALLOWED_ENV.includes(name)) return true
+  for (const item of allowlist) {
+    if (item === name) return true
+    if (item.endsWith("*") && name.startsWith(item.slice(0, -1))) return true
+  }
+  return false
+}
+
+export function loadOpencodeAllowlist(configPath) {
+  try {
+    const file = configPath ?? path.resolve(process.cwd(), "opencode.json")
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (Array.isArray(data.environmentAllowlist)) {
+        return data.environmentAllowlist
+      }
+      if (Array.isArray(data.allowlist)) {
+        return data.allowlist
+      }
+    }
+  } catch {}
+  return []
+}
 const PERMISSION_PROBES = [
   "env",
   "/bin/env",
@@ -451,11 +522,28 @@ export function redactCanaryOutput(text, canaryValues = []) {
   return text
 }
 
-export function scrubSensitiveEnvironment(output, environment = process.env) {
+export function scrubSensitiveEnvironment(output, environment = process.env, options = {}) {
+  const opts = typeof options === "string" ? { mode: options } : (options ?? {})
+  const mode = opts.mode ?? "denylist"
+  const customAllowlist = opts.allowlist ?? loadOpencodeAllowlist(opts.configPath)
+
   for (const [name, value] of Object.entries(environment)) {
     if (value === undefined) continue
-    if (!SENSITIVE_ENV_NAME.test(name) && !SENSITIVE_ENV_EXACT.test(name) && !SENSITIVE_URL_NAME.test(name)) continue
-    output[name] = ""
+    const isSensitive =
+      SENSITIVE_ENV_NAME.test(name) ||
+      SENSITIVE_ENV_EXACT.test(name) ||
+      SENSITIVE_URL_NAME.test(name)
+
+    if (mode === "allowlist") {
+      const isAllowed = isAllowedEnvironmentVariable(name, customAllowlist)
+      if (!isAllowed || isSensitive) {
+        output[name] = ""
+      }
+    } else {
+      if (isSensitive) {
+        output[name] = ""
+      }
+    }
   }
   return output
 }

@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url"
 import * as pluginModule from "./agent-output-plugin.mjs"
 import { AgentOutputGuard } from "./agent-output-plugin.mjs"
 import {
+  DEFAULT_ALLOWED_ENV,
   checkProjectPolicy,
+  isAllowedEnvironmentVariable,
   isEnvironmentDisclosure,
+  loadOpencodeAllowlist,
   scrubSensitiveEnvironment,
   validatePolicyConfig,
 } from "./agent-output-guard.mjs"
@@ -143,6 +146,82 @@ test("clears inherited sensitive values without breaking SSH or ordinary setting
     MAVEN_GPG_KEY: "",
     MAVEN_GPG_PASSPHRASE: "",
   })
+})
+
+test("allowlist mode drops non-allowlisted variables while keeping safe and allowlisted variables", () => {
+  const environment = {
+    PATH: "/usr/bin:/bin",
+    HOME: "/Users/test",
+    LANG: "en_US.UTF-8",
+    LC_ALL: "en_US.UTF-8",
+    TERM: "xterm-256color",
+    SHELL: "/bin/zsh",
+    USER: "testuser",
+    TMPDIR: "/tmp",
+    CARGO_HOME: "/Users/test/.cargo",
+    RUSTUP_HOME: "/Users/test/.rustup",
+    JAVA_HOME: "/Library/Java/Home",
+    ANDROID_HOME: "/Users/test/Library/Android/sdk",
+    GOPATH: "/Users/test/go",
+    NODE_OPTIONS: "--max-old-space-size=4096",
+    CUSTOM_TOOL_VAR: "custom-allowed-value",
+    UNTRACKED_SECRET: "untracked-leak-value",
+    SECRET_TOKEN: "sensitive-value",
+  }
+  const output = { EXPLICIT_VAR: "kept" }
+  scrubSensitiveEnvironment(output, environment, {
+    mode: "allowlist",
+    allowlist: ["CUSTOM_TOOL_VAR", "SECRET_TOKEN"],
+  })
+
+  // Allowed variables must NOT be blanked
+  assert.equal(output.PATH, undefined)
+  assert.equal(output.HOME, undefined)
+  assert.equal(output.LANG, undefined)
+  assert.equal(output.LC_ALL, undefined)
+  assert.equal(output.TERM, undefined)
+  assert.equal(output.SHELL, undefined)
+  assert.equal(output.USER, undefined)
+  assert.equal(output.TMPDIR, undefined)
+  assert.equal(output.CARGO_HOME, undefined)
+  assert.equal(output.RUSTUP_HOME, undefined)
+  assert.equal(output.JAVA_HOME, undefined)
+  assert.equal(output.ANDROID_HOME, undefined)
+  assert.equal(output.GOPATH, undefined)
+  assert.equal(output.NODE_OPTIONS, undefined)
+  assert.equal(output.CUSTOM_TOOL_VAR, undefined)
+
+  // Untracked variables NOT on allowlist must be blanked
+  assert.equal(output.UNTRACKED_SECRET, "")
+
+  // Belt and braces: sensitive variable is blanked even if named in custom allowlist
+  assert.equal(output.SECRET_TOKEN, "")
+
+  // Caller explicit settings are preserved
+  assert.equal(output.EXPLICIT_VAR, "kept")
+})
+
+test("plugin supports allowlist mode and custom allowlist from opencode.json", async () => {
+  const environment = {
+    PATH: "/usr/bin",
+    HOME: "/home/runner",
+    SSH_AUTH_SOCK: "/tmp/ssh.sock",
+    MY_PRIVATE_VAR: "must-be-dropped",
+    API_TOKEN: "sensitive-token",
+  }
+  const hooks = await AgentOutputGuard({}, {
+    environment,
+    mode: "allowlist",
+    allowlist: ["SSH_AUTH_SOCK"],
+  })
+  const output = { env: {} }
+  await hooks["shell.env"]({}, output)
+
+  assert.equal(output.env.PATH, undefined)
+  assert.equal(output.env.HOME, undefined)
+  assert.equal(output.env.SSH_AUTH_SOCK, undefined)
+  assert.equal(output.env.MY_PRIVATE_VAR, "")
+  assert.equal(output.env.API_TOKEN, "")
 })
 
 test("plugin blocks before execution and scrubs the child environment", async () => {
