@@ -61,6 +61,10 @@ RCT_EXTERN_METHOD(isPersistent:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+
+RCT_EXTERN_METHOD(isEncrypted:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(rehydrateDropped:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -117,6 +121,16 @@ RCT_EXTERN_METHOD(acceptServiceResponse:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+
+RCT_EXTERN_METHOD(acceptServiceRequest:(NSInteger)handle
+                  requestId:(NSString *)reqB64
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(rejectServiceRequest:(NSInteger)handle
+                  requestId:(NSString *)reqB64
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(linkUp:(NSInteger)handle
                   link:(double)link
                   role:(NSString *)role
