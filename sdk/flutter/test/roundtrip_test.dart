@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:hop_endpoint/hop_endpoint.dart';
@@ -160,6 +161,45 @@ void main() {
       }
     });
 
+    test(
+        'service request throwing handler leaves request queued for redelivery (ABI-002)',
+        () async {
+      final errors = <Object>[];
+      final server =
+          HopEndpoint(tick: _fastTick, onError: (e, _) => errors.add(e));
+      var attempts = 0;
+      final firstAttemptDone = Completer<void>();
+
+      server.on('flaky', (req, reply) {
+        attempts++;
+        if (attempts == 1) {
+          if (!firstAttemptDone.isCompleted) firstAttemptDone.complete();
+          throw StateError('handler failed on attempt 1');
+        }
+        reply(200, 'recovered');
+      });
+
+      final client = HopEndpoint(tick: _fastTick);
+      connectInProcess(server, client);
+
+      try {
+        final reqFuture = client.request(server.addressBytes, 'flaky', 'call',
+            args: 'test', timeout: const Duration(seconds: 3));
+
+        await firstAttemptDone.future;
+        expect(attempts, 1);
+
+        final resp = await reqFuture;
+        expect(attempts, 2,
+            reason: 'request was redelivered after throwing handler');
+        expect(resp.status, 200);
+        expect(resp.text, 'recovered');
+      } finally {
+        server.close();
+        client.close();
+      }
+    });
+
     test('cluster join + quorum bindings resolve and chain', () {
       final e =
           HopEndpoint(tick: _fastTick, cluster: 'shared-passphrase', quorum: 3);
@@ -184,6 +224,49 @@ void main() {
           () => e.request(addr, 'svc', 'get',
               timeout: const Duration(milliseconds: 10)),
           throwsStateError);
+    });
+
+    test('endpoint with dbPath persists state across restart (ABI-003)',
+        () async {
+      final tempDir =
+          Directory.systemTemp.createTempSync('hop-flutter-restart');
+      final dbPath = '${tempDir.path}/node.db';
+      final secret = Uint8List(32);
+      for (var i = 0; i < 32; i++) {
+        secret[i] = i + 1;
+      }
+
+      // Step 1: Open with dbPath, verify isPersistent, mark state handled in cluster.
+      final e1 = HopEndpoint(
+        tick: _fastTick,
+        key: secret,
+        dbPath: dbPath,
+        cluster: 'shared-passphrase',
+      );
+      expect(e1.isPersistent, isTrue);
+
+      final from = Uint8List(32)..[0] = 0xAA;
+      final reqId = Uint8List(32)..[0] = 0xBB;
+
+      e1.clusterMarkDone(from, reqId);
+      expect(e1.clusterWouldDrop(from, reqId), isTrue);
+      e1.close();
+
+      // Step 2: Reopen with same dbPath and key, verify persistence and state recovery.
+      final e2 = HopEndpoint(
+        tick: _fastTick,
+        key: secret,
+        dbPath: dbPath,
+        cluster: 'shared-passphrase',
+      );
+      try {
+        expect(e2.isPersistent, isTrue);
+        expect(e2.clusterWouldDrop(from, reqId), isTrue,
+            reason: 'persisted handled claim was not recovered after restart');
+      } finally {
+        e2.close();
+        tempDir.deleteSync(recursive: true);
+      }
     });
   });
 

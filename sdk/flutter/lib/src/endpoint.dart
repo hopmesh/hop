@@ -58,6 +58,9 @@ class HopRequest {
     required this.service,
     required this.method,
     required this.args,
+    this.requestId,
+    this.accept,
+    this.reject,
   });
 
   /// The verified sender address, base58 encoded.
@@ -68,6 +71,15 @@ class HopRequest {
   final String service;
   final String method;
   final Uint8List args;
+
+  /// The 32-byte request id.
+  final Uint8List? requestId;
+
+  /// Explicitly accept this request.
+  final bool Function()? accept;
+
+  /// Explicitly reject this request so it remains queued for redelivery.
+  final bool Function()? reject;
 
   /// The request body decoded as UTF-8 text.
   String get text => utf8.decode(args);
@@ -122,6 +134,9 @@ class HopEndpoint {
   /// [quorum] sets the failover visibility threshold.
   HopEndpoint({
     Uint8List? key,
+    String? dbPath,
+    Uint8List? dbKey,
+    Uint8List? appSecret,
     Duration tick = const Duration(milliseconds: 50),
     Object? cluster,
     int? quorum,
@@ -133,7 +148,14 @@ class HopEndpoint {
       throw ArgumentError(
           'identity key must be exactly 32 bytes, got ${key.length}');
     }
-    _node = key != null ? _ffi.nodeWithSecret(key) : _ffi.nodeNew();
+    if (dbPath != null) {
+      _node = dbKey != null
+          ? _ffi.nodeOpenKeyed(dbPath,
+              secret: key, appSecret: appSecret, key: dbKey)
+          : _ffi.nodeOpen(dbPath, secret: key, appSecret: appSecret);
+    } else {
+      _node = key != null ? _ffi.nodeWithSecret(key) : _ffi.nodeNew();
+    }
     if (cluster != null) this.cluster(cluster);
     if (quorum != null) clusterQuorum(quorum);
     _ffi.tick(_node, _nowMs());
@@ -156,6 +178,42 @@ class HopEndpoint {
 
   void _ensureOpen() {
     if (_closed) throw StateError('endpoint is closed');
+  }
+
+  /// Whether the underlying node is backed by persistent storage.
+  bool get isPersistent {
+    _ensureOpen();
+    return _ffi.nodeIsPersistent(_node);
+  }
+
+  /// Whether the underlying node storage is encrypted at rest.
+  bool get isEncrypted {
+    _ensureOpen();
+    return _ffi.nodeIsEncrypted(_node);
+  }
+
+  /// Durably accept a service request after application processing completes.
+  bool acceptServiceRequest(Uint8List requestId) {
+    _ensureOpen();
+    return _ffi.acceptServiceRequest(_node, requestId);
+  }
+
+  /// Reject a service request without ACK so it remains queued for redelivery.
+  bool rejectServiceRequest(Uint8List requestId) {
+    _ensureOpen();
+    return _ffi.rejectServiceRequest(_node, requestId);
+  }
+
+  /// Mark a request handled in the replica cluster.
+  void clusterMarkDone(Uint8List from, Uint8List requestId) {
+    _ensureOpen();
+    _ffi.clusterMarkDone(_node, from, requestId);
+  }
+
+  /// Whether a request would be dropped as already handled by a cluster replica.
+  bool clusterWouldDrop(Uint8List from, Uint8List requestId) {
+    _ensureOpen();
+    return _ffi.clusterWouldDrop(_node, from, requestId);
   }
 
   /// The endpoint's address, base58 encoded. Publish this (or a name that maps
@@ -343,11 +401,23 @@ class HopEndpoint {
           service: service,
           method: method,
           args: args,
+          requestId: rid,
+          accept: () => acceptServiceRequest(rid),
+          reject: () => rejectServiceRequest(rid),
         );
         // A synchronous throw in one handler must not skip response routing or
         // stall the others; isolate it.
         try {
-          handler(req, HopReply._(this, from, rid));
+          final res = handler(req, HopReply._(this, from, rid));
+          if (res is Future) {
+            res.then((_) {
+              if (!_closed) _ffi.acceptServiceRequest(_node, rid);
+            }).catchError((Object error, StackTrace stack) {
+              _reportError(error, stack);
+            });
+          } else {
+            _ffi.acceptServiceRequest(_node, rid);
+          }
         } catch (error, stack) {
           _reportError(error, stack);
         }
