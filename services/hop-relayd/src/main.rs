@@ -1924,8 +1924,10 @@ fn main() {
     let base_seed = base_identity.to_secret_bytes();
     let identity = regional_identity(base_identity, &base_seed, region.as_deref());
     let addr = identity.address();
-    let store = build_store(&firestore, &db, &addr)
+    let mut store = build_store(&firestore, &db, &addr)
         .unwrap_or_else(|error| panic!("durable store failed readiness: {error}"));
+    validate_or_set_identity_sentinel(store.as_mut(), &addr)
+        .unwrap_or_else(|error| panic!("identity sentinel verification failed: {error}"));
     let durability = store.durability_handle().unwrap_or_default();
     let _ = DURABILITY.set(durability.clone());
     let mut node = Node::with_store(identity, store);
@@ -2507,6 +2509,29 @@ fn build_store(
         .map_err(|error| format!("sqlite open failed: {error}"))
 }
 
+const IDENTITY_SENTINEL_KEY: &str = "identity/sentinel";
+
+/// Verify that the store is bound to `expected_addr`, or write the sentinel on first boot.
+fn validate_or_set_identity_sentinel(
+    store: &mut dyn Store,
+    expected_addr: &[u8],
+) -> std::result::Result<(), String> {
+    if let Some(existing) = store.get_kv(IDENTITY_SENTINEL_KEY) {
+        if existing != expected_addr {
+            return Err(format!(
+                "store identity sentinel mismatch: store is bound to address {}, but current node identity is {}",
+                bs58_addr(&existing),
+                bs58_addr(expected_addr)
+            ));
+        }
+    } else {
+        store
+            .put_kv_critical(IDENTITY_SENTINEL_KEY, expected_addr.to_vec())
+            .map_err(|e| format!("failed to write identity sentinel: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Load the relay identity: from a 32-byte file (mounted secret) when given, else
 /// from `<db>.key`, generating and persisting one on first run.
 fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
@@ -2519,17 +2544,27 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
             Err(e) => panic!("--identity-file {path} unreadable: {e}"),
         }
     }
-    if let Ok(bytes) = std::fs::read(key_path) {
-        if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-            return Identity::from_secret_bytes(&seed);
+    let key_p = std::path::Path::new(key_path);
+    if key_p.exists() {
+        match std::fs::read(key_path) {
+            Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(seed) => return Identity::from_secret_bytes(&seed),
+                Err(_) => panic!("identity key file {key_path} must be exactly 32 bytes"),
+            },
+            Err(e) => panic!("identity key file {key_path} unreadable: {e}"),
+        }
+    }
+    // If the database already exists, a missing key file is an invalid state (non-new deployment)
+    if let Some(db_path) = key_path.strip_suffix(".key") {
+        if std::path::Path::new(db_path).exists() {
+            panic!("database {db_path} exists but identity file {key_path} is missing");
         }
     }
     let id = Identity::generate();
-    // services-13: this is a 32-byte long-term secret. Write it 0600 (owner-only) so a shared VM's
-    // other users can't read the relay's private identity seed, and log LOUDLY on failure - a
-    // silently-dropped write means the address silently changes on every restart.
+    // services-13: this is a 32-byte long-term secret. Write it 0600 (owner-only) atomically so a
+    // shared VM's other users can't read the relay's private identity seed, and log LOUDLY on failure.
     let secret = id.to_secret_bytes();
-    if let Err(e) = write_secret_600(key_path, &secret) {
+    if let Err(e) = write_secret_atomic(key_path, &secret) {
         eprintln!(
             "relayd: FAILED to persist identity seed to {key_path}: {e} - \
              this relay's address WILL change on restart (fix perms/disk and retry)"
@@ -2538,9 +2573,64 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
     id
 }
 
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        NEXT_LINK.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
+}
+
 /// Write `bytes` to `path` with owner-only (0600) permissions, creating or truncating. On Unix the
 /// mode is applied at create time via `OpenOptions` so the secret is never briefly world-readable;
 /// on non-Unix targets it falls back to a plain write (the relay only ships on Unix).
+#[cfg_attr(not(test), allow(dead_code))]
 fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(unix)]
@@ -4466,6 +4556,58 @@ mod identity_tests {
             std::fs::metadata(&unwritable).is_err(),
             "the seed was NOT persisted (the parent dir does not exist)"
         );
+    }
+
+    #[test]
+    fn hostile_corrupt_default_key_must_panic_not_rotate() {
+        let key = tmp("corrupt_key");
+        std::fs::write(&key, [1u8; 16]).unwrap();
+        let r = std::panic::catch_unwind(|| load_identity(&None, &key));
+        let _ = std::fs::remove_file(&key);
+        assert!(
+            r.is_err(),
+            "a corrupt default key must panic, not silently rotate"
+        );
+    }
+
+    #[test]
+    fn hostile_missing_key_with_existing_db_must_panic_not_rotate() {
+        let key = tmp("existing_db.key");
+        let db = key.strip_suffix(".key").unwrap();
+        std::fs::write(db, b"sqlite dummy").unwrap();
+        let _ = std::fs::remove_file(&key);
+        let r = std::panic::catch_unwind(|| load_identity(&None, &key));
+        let _ = std::fs::remove_file(db);
+        assert!(
+            r.is_err(),
+            "missing identity file beside existing database must panic, not rotate"
+        );
+    }
+
+    #[test]
+    fn store_identity_sentinel_rejects_identity_mismatch() {
+        let mut store = MemoryStore::new();
+        let addr1 = [1u8; 32];
+        let addr2 = [2u8; 32];
+
+        // First boot sets sentinel
+        assert!(validate_or_set_identity_sentinel(&mut store, &addr1).is_ok());
+        // Re-boot with same address passes
+        assert!(validate_or_set_identity_sentinel(&mut store, &addr1).is_ok());
+        // Re-boot with different address fails
+        let err = validate_or_set_identity_sentinel(&mut store, &addr2);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("sentinel mismatch"));
+    }
+
+    #[test]
+    fn write_secret_atomic_refuses_to_overwrite_existing_file() {
+        let key = tmp("no_overwrite");
+        std::fs::write(&key, [1u8; 32]).unwrap();
+        let res = write_secret_atomic(&key, &[2u8; 32]);
+        let _ = std::fs::remove_file(&key);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
     }
 }
 
