@@ -82,6 +82,8 @@ jobs:
           mkdir -p "$stage/lib" "$stage/include" "$RUNNER_TEMP/out"
           cp "target/$TARGET/release/libhop.so" "$stage/lib/libhop.so"
           cp sdk/hop.h "$stage/include/hop.h"
+          cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+          cp LICENSE.md "$stage/LICENSE.md"
           python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
             --output "$RUNNER_TEMP/out/libhop-$TARGET.tar.gz"
       - name: Upload immutable Linux partial
@@ -110,7 +112,7 @@ jobs:
         run: rustup toolchain install 1.97.0 --profile minimal
       - name: Build exact Apple artifacts
         env:
-          HOP_SQLCIPHER: '0'
+          HOP_SQLCIPHER: '1'
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/out"
@@ -121,11 +123,13 @@ jobs:
           python3 tools/native-artifacts.py pack --root "$apple_stage" --path libhop.xcframework \
             --format zip --output "$RUNNER_TEMP/out/libhop.xcframework.zip"
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build -p hop --release --locked --target "$target"
+            cargo build -p hop --release --locked --no-default-features --features sqlcipher --target "$target"
             stage="$RUNNER_TEMP/$target"
             mkdir -p "$stage/lib" "$stage/include"
             cp "target/$target/release/libhop.dylib" "$stage/lib/libhop.dylib"
             cp sdk/hop.h "$stage/include/hop.h"
+            cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+            cp LICENSE.md "$stage/LICENSE.md"
             python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
           done
@@ -159,7 +163,7 @@ jobs:
       - name: Invoke the canonical Android native builder
         env:
           HOP_ANDROID_OUT: ${{ runner.temp }}/android-generated
-          HOP_SQLCIPHER: '0'
+          HOP_SQLCIPHER: '1'
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
@@ -179,6 +183,8 @@ jobs:
             mkdir -p "$stage/lib" "$stage/include"
             cp "$RUNNER_TEMP/android-generated/jniLibs/$abi/libhop.so" "$stage/lib/libhop.so"
             cp sdk/hop.h "$stage/include/hop.h"
+            cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+            cp LICENSE.md "$stage/LICENSE.md"
             case "$target" in
               aarch64-linux-android) machine='AArch64' ;;
               armv7-linux-androideabi) machine='ARM' ;;
@@ -231,9 +237,10 @@ jobs:
             mkdir -p "$stage/lib" "$stage/include"
             cp "target/$target/release/libhop.a" "$stage/lib/libhop.a"
             cp sdk/hop.h "$stage/include/hop.h"
+            cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+            cp LICENSE.md "$stage/LICENSE.md"
             python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
-          done
       - name: Upload immutable embedded partials
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

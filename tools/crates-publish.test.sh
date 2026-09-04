@@ -100,5 +100,39 @@ with tempfile.TemporaryDirectory() as temporary:
     assert request.data[offset + 4:] == payload
     assert crate_size == len(payload)
 
+    # ABI-012: dry-run packages all three monorepo crates and validates metadata
+    dry_run_dir = temporary / "dry-run"
+    produced = module.dry_run(type("Args", (), {"root": str(root), "output_dir": str(dry_run_dir)})())
+    assert len(produced) == 3
+    assert [p[0] for p in produced] == ["hop-mesh-core", "hop-mesh-store-sqlite", "hop-mesh-store-firestore"]
+    for name, cpath, mpath, mdata in produced:
+        assert Path(cpath).is_file()
+        assert Path(mpath).is_file()
+        assert mdata["name"] == name
+
+    # Mutation with local name rejected
+    orig_crates = module.PUBLISHED_CRATES
+    try:
+        module.PUBLISHED_CRATES = (
+            ("core/hop-core", "hop-core", "hop-core"), # local name not renamed
+            ("core/stores/hop-store-sqlite", "hop-store-sqlite", "hop-mesh-store-sqlite"),
+            ("core/stores/hop-store-firestore", "hop-store-firestore", "hop-mesh-store-firestore"),
+        )
+        rejected(
+            lambda: module.dry_run(type("Args", (), {"root": str(root), "output_dir": str(temporary / "mutated")})()),
+            "local crate name rejected",
+        )
+
+        # Omission rejected
+        module.PUBLISHED_CRATES = (
+            ("core/hop-core", "hop-core", "hop-mesh-core"),
+        )
+        rejected(
+            lambda: module.dry_run(type("Args", (), {"root": str(root), "output_dir": str(temporary / "omitted")})()),
+            "omitted crate rejected",
+        )
+    finally:
+        module.PUBLISHED_CRATES = orig_crates
+
 print("crate publication tests passed")
 PY

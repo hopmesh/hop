@@ -387,8 +387,8 @@ pub unsafe extern "C" fn hop_node_open(
 
 /// Like `hop_node_open`, but ENCRYPTS the store at rest with a raw `key` (typically 32 bytes) the host
 /// derives and stores in the platform Keychain/Keystore (F-25). Real encryption requires libhop to be
-/// built with the store's `sqlcipher` feature; otherwise the key is accepted but the db stays plain.
-/// A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
+/// built with the store's `sqlcipher` feature; builds without `sqlcipher` reject a non-empty key
+/// (fail closed) and return NULL. A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
 #[no_mangle]
 pub unsafe extern "C" fn hop_node_open_keyed(
     db_path: *const c_char,
@@ -403,6 +403,10 @@ pub unsafe extern "C" fn hop_node_open_keyed(
         return std::ptr::null();
     }
     if app_secret_len == 32 && app_secret.is_null() {
+        return std::ptr::null();
+    }
+    // ABI-001: plain builds without sqlcipher must fail closed (return NULL) when key is provided.
+    if key_len > 0 && !cfg!(feature = "sqlcipher") {
         return std::ptr::null();
     }
     let Some(path) = cstr(db_path) else {
@@ -1929,6 +1933,71 @@ mod tests {
                 node.is_null(),
                 "short app secret (31 bytes) must return NULL"
             );
+        }
+    }
+    #[test]
+    fn hostile_repro_abi_001_plain_build_fails_closed_on_keyed_open() {
+        unsafe {
+            let db_file = format!(
+                "{}/hop-abi-001-test-{}.db",
+                std::env::temp_dir().display(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let path = std::ffi::CString::new(db_file.clone()).unwrap();
+            let secret = [1u8; 32];
+            let key = [42u8; 32];
+
+            let node = hop_node_open_keyed(
+                path.as_ptr(),
+                secret.as_ptr(),
+                32,
+                std::ptr::null(),
+                0,
+                key.as_ptr(),
+                32,
+            );
+
+            #[cfg(not(feature = "sqlcipher"))]
+            {
+                assert!(
+                    node.is_null(),
+                    "plain build without sqlcipher must fail closed (return NULL) when key is provided"
+                );
+                assert!(
+                    !std::path::Path::new(&db_file).exists(),
+                    "plain build must not create a plaintext database when keyed open was requested"
+                );
+            }
+
+            #[cfg(feature = "sqlcipher")]
+            {
+                assert!(!node.is_null(), "sqlcipher build must succeed on keyed open");
+                assert!(hop_node_is_encrypted(node), "sqlcipher node must report is_encrypted=true");
+                hop_node_free(node);
+
+                // Reopen with wrong key
+                let bad_key = [99u8; 32];
+                let node_bad = hop_node_open_keyed(
+                    path.as_ptr(),
+                    secret.as_ptr(),
+                    32,
+                    std::ptr::null(),
+                    0,
+                    bad_key.as_ptr(),
+                    32,
+                );
+                assert!(
+                    node_bad.is_null() || !hop_node_is_encrypted(node_bad) || !hop_node_is_persistent(node_bad),
+                    "wrong key must not decrypt database"
+                );
+                if !node_bad.is_null() {
+                    hop_node_free(node_bad);
+                }
+                let _ = std::fs::remove_file(&db_file);
+            }
         }
     }
 

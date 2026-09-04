@@ -67,6 +67,17 @@ expect 1 "notice_file_missing"
 cp "$TMP/good.md" "$OUT"; printf '\nAn editorial note that ships no crate.\n' >> "$OUT"
 expect 0 "prose_edit_is_not_staleness"
 
+# (f) minimal features generate matching subset of crates (ABI-011)
+python3 "$GEN" --root hop --no-default-features --features minimal --out "$TMP/minimal.md" >/dev/null 2>&1 || {
+  echo "FAIL: minimal feature generation failed"; exit 1; }
+min_count="$(grep -c '^### ' "$TMP/minimal.md")"
+good_count="$(grep -c '^### ' "$TMP/good.md")"
+if [ "$min_count" -gt 0 ] && [ "$min_count" -lt "$good_count" ]; then
+  pass=$((pass + 1)); echo "ok   [minimal_feature_subset]: $min_count < $good_count crates as expected"
+else
+  fail=$((fail + 1)); echo "FAIL [minimal_feature_subset]: expected fewer crates, got $min_count vs $good_count"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "gen-third-party-notices.test: all $pass cases passed"

@@ -153,8 +153,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Assert the declared release-environment secrets exist
+        # ::error :: CRATES_IO_TOKEN is provisioned:false (see tools/workflow-secrets.json)
         env:
           NATIVE_ARTIFACT_SIGNING_KEY: ${{ secrets.NATIVE_ARTIFACT_SIGNING_KEY != '' }}
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN != '' }}
         run: python3 tools/workflow-secrets-guard.py --assert-present environment:release
 
   secret-presence-component-sync:

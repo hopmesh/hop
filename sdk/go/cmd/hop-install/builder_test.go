@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 // The canonical builder moved when hopmesh/monorepo was archived and hopmesh/hop became the source.
 // These cases exist because the tempting shape for that migration is an accepted-builder SET, which
@@ -62,5 +67,34 @@ func TestValidateManifestRejectsCrossEraBuilder(t *testing.T) {
 
 	if err := validateManifest(value, "v0.0.3", ""); err == nil {
 		t.Fatal("validateManifest accepted a v0.0.3 manifest built by the archived repository")
+	}
+}
+
+func TestVerifyInstalledShapeAcceptsComplianceFiles(t *testing.T) {
+	dir := t.TempDir()
+	library := "libhop.so"
+	if runtime.GOOS == "darwin" {
+		library = "libhop.dylib"
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "include"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "include", "hop.h"), []byte("#define HOP_ABI_VERSION 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lib", library), []byte("mock binary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "THIRD-PARTY-NOTICES.md"), []byte("mock notices\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "LICENSE.md"), []byte("mock license\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyInstalledShape(dir); err != nil {
+		t.Fatalf("verifyInstalledShape failed on compliant archive: %v", err)
 	}
 }

@@ -75,6 +75,8 @@ xcodebuild -create-xcframework \
   -library "$SIM_FAT/$LIB"                     -headers "$OUT/Headers" \
   -library "$MAC_FAT/$LIB"                     -headers "$OUT/Headers" \
   -output "$DEST" >/dev/null
+cp THIRD-PARTY-NOTICES.md "$DEST/THIRD-PARTY-NOTICES.md"
+cp LICENSE.md "$DEST/LICENSE.md"
 
 echo "✓ $DEST"
 echo "✓ $PKG/Sources/HopFFIBindings/hop.swift"
