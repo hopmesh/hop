@@ -1,0 +1,76 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Terms of Service, Hop"
+  description="Terms of Service governing the use of Hop software, client libraries, managed relay backbones, and developer services."
+  path="/terms"
+>
+  <section class="hero" style="padding-bottom:16px;">
+    <div class="wrap">
+      <div class="eyebrow">Legal</div>
+      <h1>Terms of <span class="grad">Service.</span></h1>
+      <p class="lede">The terms governing your access to Hop software, hosted backbones, and developer tools.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap prose">
+      <p class="updated">Effective date: September 4, 2026</p>
+
+      <h2>1. Agreement to Terms</h2>
+      <p>These Terms of Service ("Terms") constitute a legally binding agreement between you ("Customer", "you", or "your") and Hop ("Hop", "we", "us", or "our"). By accessing or using our website, developer dashboard, API keys, hosted relay backbone, or telemetry infrastructure (collectively, the "Hosted Services"), you agree to be bound by these Terms.</p>
+      <p>If you are accepting these Terms on behalf of an organization, you represent and warrant that you have the authority to bind that organization, and "you" refers to that organization.</p>
+
+      <h2>2. Software and Architecture</h2>
+      <p>Hop provides delay-tolerant mesh networking software and services under a hybrid model:</p>
+      <ul>
+        <li><strong>Client Libraries &amp; Protocol Core:</strong> The protocol implementation (`hop-core`), language SDKs, drivers, and local bearers are licensed under the Apache License, Version 2.0. You may embed, run, and distribute them subject to that license with no requirement to use our Hosted Services.</li>
+        <li><strong>Hosted Services:</strong> The managed cloud backbone, hosted relays, telemetry collectors, and developer console provide bridging, offline spooling, and observability. Hosted service source code is licensed under FSL-1.1-ALv2, converting to Apache-2.0 after two years, with a non-compete on commercial hosting services.</li>
+      </ul>
+
+      <h2>3. Account Registration &amp; API Keys</h2>
+      <p>To access the Hosted Services or obtain routing credentials, you must create an account and generate an API key or routing access token (RAT). You are responsible for safeguarding your credentials, configuring proper key rotation, and all activities that occur under your account.</p>
+
+      <h2>4. Acceptable Use</h2>
+      <p>Your use of the Hosted Services must comply with our <a href="/acceptable-use/">Acceptable Use Policy</a>. You agree not to transmit malware, conduct denial-of-service attacks, attempt unauthorized access to infrastructure, or circumvent billing meters or rate limits.</p>
+
+      <h2>5. Fees, Subscriptions &amp; Metering</h2>
+      <p>Access to the Hosted Services is billed according to the usage rate card on our <a href="/pricing/">Pricing page</a>, measured asynchronously at our edge:</p>
+      <ul>
+        <li><strong>Reach:</strong> Backbone delivery to offline recipients past included monthly allowances.</li>
+        <li><strong>Telemetry:</strong> Device event processing and OTLP translation past included monthly allowances.</li>
+        <li><strong>Secondary Dimensions:</strong> Internet egress and long-term mailbox storage past included allowances.</li>
+        <li><strong>Direct &amp; P2P:</strong> Pure peer-to-peer and local bearer traffic never incurs Hosted Service fees.</li>
+      </ul>
+      <p>All fees are exclusive of taxes, which will be billed where applicable. Invoices are charged automatically via your payment method on file. Unpaid balances may result in account suspension.</p>
+
+      <h2>6. Fail-Open Architecture &amp; Suspension</h2>
+      <p>Hop is designed to be fail-open. If your account hits a spending cap, fails payment, or is suspended for billing:</p>
+      <ul>
+        <li>The managed backbone halts acceptance of new bundles from your account.</li>
+        <li>Bundles already accepted keep being carried under standard at-least-once lifetime rules.</li>
+        <li>Direct peer-to-peer and local mesh connections continue operating uninterrupted.</li>
+      </ul>
+      <p>We reserve the right to immediately terminate access or revoke access keys for material breaches of our Acceptable Use Policy.</p>
+
+      <h2>7. Privacy &amp; Data Protection</h2>
+      <p>Message payloads are end-to-end encrypted before leaving your devices; our relays process ciphertext and cannot inspect payload contents. Our collection and handling of account metadata and billing usage are governed by our <a href="/privacy/">Privacy Policy</a> and, where applicable, our <a href="/dpa/">Data Processing Addendum</a>.</p>
+
+      <h2>8. Disclaimer of Warranties</h2>
+      <p>THE HOSTED SERVICES AND SOFTWARE ARE PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, OR NON-INFRINGEMENT. HOP DOES NOT GUARANTEE THAT THE SERVICES WILL BE UNINTERRUPTED, ERROR-FREE, OR FULLY IMMUNE TO PACKET LOSS IN DEGRADED OR DISCONNECTED ENVIRONMENTS.</p>
+
+      <h2>9. Limitation of Liability</h2>
+      <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL HOP BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, OR USE, ARISING OUT OF OR IN CONNECTION WITH THESE TERMS OR THE HOSTED SERVICES. HOP'S AGGREGATE LIABILITY UNDER THESE TERMS SHALL NOT EXCEED THE TOTAL FEES PAID BY YOU TO HOP IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM.</p>
+
+      <h2>10. Governing Law &amp; Dispute Resolution</h2>
+      <p>These Terms shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of law principles. Any legal action or proceeding arising under these Terms shall be brought exclusively in the state or federal courts located in Delaware, and the parties consent to personal jurisdiction therein.</p>
+
+      <h2>11. Enterprise &amp; Custom Terms</h2>
+      <p>Enterprise and public-sector deployments requiring negotiated Master Services Agreements (MSA), custom Service Level Agreements (SLA), or dedicated infrastructure may execute custom agreements that supersede these standard Terms.</p>
+
+      <h2>12. Contact</h2>
+      <p>For questions regarding these Terms, contact <a class="mono" style="color:var(--accent)" href="mailto:legal@hopme.sh">legal@hopme.sh</a>.</p>
+    </div>
+  </section>
+</Base>
