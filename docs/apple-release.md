@@ -6,9 +6,10 @@
 https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.3/libhop.xcframework.zip
 ```
 
-hopmesh/hop-sdk-apple has a v0.0.2 release, which published an ABI-5 binary while Swift sources
-require ABI 7 (finding ABI-008). Until the v0.0.3 release is cut and published, in-tree Apple builds
-swap `Package.local.swift` over `Package.swift` when compiling against local core changes.
+The C ABI is at level 7 (`HOP_ABI_VERSION` in `sdk/hop.h`). hopmesh/hop-sdk-apple's existing
+v0.0.2 release predates that level and its binary does not satisfy the Swift sources (finding
+ABI-008); until the v0.0.3 release is cut and published, in-tree Apple builds swap
+`Package.local.swift` over `Package.swift` when compiling against local core changes.
 
 This runbook is the ordered procedure a human follows to make that URL real. Every step below is
 grounded in a workflow or helper in this repo; the file that decides each behavior is named inline.
