@@ -49,6 +49,7 @@ function makeNative(overrides = {}) {
     publishPrekey: (...a) => record("publishPrekey", a, true),
     tick: (...a) => record("tick", a, undefined),
     isPersistent: (...a) => record("isPersistent", a, true),
+    isEncrypted: (...a) => record("isEncrypted", a, true),
     rehydrateDropped: (...a) => record("rehydrateDropped", a, 0),
     isSecured: (...a) => record("isSecured", a, false),
     send: (...a) => record("send", a, toBase64(new Uint8Array(32).fill(9))),
@@ -206,6 +207,59 @@ test("Hop.ephemeral and Hop.open build nodes over the injected native module", a
     assert.equal(keyed.handle, 10);
   } finally {
     __setHopNativeForTesting(null);
+  }
+});
+test("openKeyed yields an encrypted node (isEncrypted == true) and wrong key fails (ABI-001)", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+
+  const tmpDb = path.join(os.tmpdir(), "hop-rn-keyed-" + Date.now() + ".db");
+  fs.writeFileSync(tmpDb, "sqlite encrypted database contents");
+
+  const correctKey = new Uint8Array(32).fill(4);
+  const correctKeyB64 = toBase64(correctKey);
+
+  const native = makeNative({
+    openKeyed: (p, keyB64) => {
+      if (keyB64 === correctKeyB64) {
+        return Promise.resolve(10);
+      }
+      return Promise.resolve(-1);
+    },
+    isEncrypted: (h) => Promise.resolve(h === 10),
+  });
+
+  __setHopNativeForTesting(native, makeEmitter());
+  try {
+    const node = await Hop.open({ dbPath: tmpDb, key: correctKey });
+    assert.ok(node, "keyed open must succeed with valid key");
+    assert.equal(node.handle, 10);
+    assert.equal(await node.isPersistent(), true);
+    assert.equal(await node.isEncrypted(), true, "sqlcipher keyed node must report isEncrypted == true");
+
+    // Reopening with wrong key fails (resolves null)
+    const wrongKey = new Uint8Array(32).fill(9);
+    const badNode = await Hop.open({ dbPath: tmpDb, key: wrongKey });
+    assert.equal(badNode, null, "reopening with wrong key must resolve null");
+    assert.ok(fs.existsSync(tmpDb), "database file must remain on disk after wrong-key open");
+    assert.ok(fs.statSync(tmpDb).size > 0, "database file must remain non-empty");
+
+    // Reopening with throwing native also fails while file stays intact
+    __setHopNativeForTesting(
+      makeNative({
+        openKeyed: () => Promise.reject(new Error("SQLCipher: invalid key or database format")),
+      }),
+      makeEmitter()
+    );
+    await assert.rejects(
+      async () => Hop.open({ dbPath: tmpDb, key: wrongKey }),
+      /SQLCipher/
+    );
+    assert.ok(fs.existsSync(tmpDb), "database file must remain on disk after throwing wrong-key open");
+  } finally {
+    __setHopNativeForTesting(null);
+    try { fs.unlinkSync(tmpDb); } catch {}
   }
 });
 

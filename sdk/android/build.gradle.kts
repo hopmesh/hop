@@ -35,13 +35,31 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+val buildHopNative by tasks.registering(Exec::class) {
+    val rootDir = layout.projectDirectory.dir("../..").asFile
+    workingDir = rootDir
+    val cargoBin = File(System.getProperty("user.home"), ".cargo/bin")
+    val currentPath = System.getenv("PATH") ?: ""
+    val newPath = if (cargoBin.exists()) "${cargoBin.absolutePath}:${currentPath}" else currentPath
+    environment("PATH", newPath)
+    val sqlcipher = System.getenv("HOP_SQLCIPHER") ?: "1"
+    if (sqlcipher == "1") {
+        commandLine("cargo", "build", "-p", "hop", "--no-default-features", "--features", "sqlcipher")
+    } else {
+        commandLine("cargo", "build", "-p", "hop")
+    }
+}
+
 tasks.test {
+    val libDir = System.getenv("HOP_LIBDIR")
+        ?: layout.projectDirectory.dir("../../target/debug").asFile.absolutePath
+    val dylib = File(libDir, "libhop.dylib")
+    val so = File(libDir, "libhop.so")
+    if (!dylib.exists() && !so.exists() && System.getenv("HOP_SKIP_NATIVE_BUILD") == null) {
+        dependsOn(buildHopNative)
+    }
     useJUnitPlatform()
-    systemProperty(
-        "jna.library.path",
-        System.getenv("HOP_LIBDIR")
-            ?: layout.projectDirectory.dir("../../target/debug").asFile.absolutePath,
-    )
+    systemProperty("jna.library.path", libDir)
     finalizedBy(tasks.named("jacocoTestReport"))
 }
 

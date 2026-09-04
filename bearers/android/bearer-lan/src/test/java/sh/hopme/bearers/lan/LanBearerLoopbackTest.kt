@@ -429,23 +429,53 @@ class LanBearerLoopbackTest {
         assertEquals(HopRole.DIALER, recA.ups.first().second)
     }
 
-    @Test fun unauthenticatedClaimantCannotEvictSecuredPeer() {
+    @Test fun authenticatedLinkThroughBearerManagerSurvivesPastPreauthDeadlineWhileUnauthenticatedIsClosed() {
+        val mgr = sh.hop.BearerManager()
         val rec = Rec()
-        val bearer = startedBearer(fill(0xF0), rec)
+        mgr.sink = rec
+        val bearer = LanBearer(ctx, fill(0xF0))
+        bearers.add(bearer)
+        mgr.register(bearer)
+        bearer.start()
+        assertTrue("listener bound", waitUntil { bearer.boundPort != 0 })
 
         val peerA = RawPeer(bearer.boundPort)
-        val victimId = fill(0x02)
-        peerA.sendHello(victimId, dialer = true)
+        val peerAId = fill(0x02)
+        peerA.sendHello(peerAId, dialer = true)
         assertTrue("peerA linkUp", waitUntil { rec.upCount() == 1 })
         val linkA = rec.ups.first().first
 
-        bearer.markSecured(linkA)
+        // Drive authentication through the REAL BearerManager.markSecured path
+        mgr.markSecured(linkA)
 
-        val attackerB = RawPeer(bearer.boundPort)
-        attackerB.sendHello(victimId, dialer = true)
-        assertTrue("attackerB linkUp", waitUntil { rec.upCount() == 2 })
+        // Unauthenticated peer B links up
+        val peerB = RawPeer(bearer.boundPort)
+        val peerBId = fill(0x03)
+        peerB.sendHello(peerBId, dialer = true)
+        assertTrue("peerB linkUp", waitUntil { rec.upCount() == 2 })
+        val linkB = rec.ups[1].first
+
+        // An unauthenticated attacker claiming peerAId also attempts dedup eviction
+        val attacker = RawPeer(bearer.boundPort)
+        attacker.sendHello(peerAId, dialer = true)
+        assertTrue("attacker linkUp", waitUntil { rec.upCount() == 3 })
         assertTrue("dedup triggered", waitUntil { rec.downCount() >= 1 })
-        assertFalse("authenticated linkA must NOT be dropped by unauthenticated attackerB", rec.downs.contains(linkA))
+        assertFalse("authenticated linkA must NOT be dropped by unauthenticated attacker", rec.downs.contains(linkA))
+
+        // Send PINGs on both peerA and peerB so neither dies of liveness timeout,
+        // and wait past the 10.0s preauth deadline (11s)
+        val deadlineEnd = System.currentTimeMillis() + 11_000L
+        while (System.currentTimeMillis() < deadlineEnd) {
+            val ping = ByteArray(9)
+            ping[0] = L_PING.toByte()
+            runCatching { peerA.sendFrame(ping) }
+            runCatching { peerB.sendFrame(ping) }
+            Thread.sleep(200)
+            if (rec.downs.contains(linkA)) break
+        }
+
+        assertTrue("unauthenticated linkB must be closed after 10s preauth deadline", rec.downs.contains(linkB))
+        assertFalse("authenticated linkA must survive past 10s preauth deadline", rec.downs.contains(linkA))
     }
 
     @Test fun unauthenticatedPeerWithValidHelloAndPingIsClosedAfterPreauthDeadline() {

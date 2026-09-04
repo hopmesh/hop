@@ -67,11 +67,43 @@ class HopNodeIntegrationTest {
     fun openKeyedYieldsAPersistentNode() {
         assumeLibhop()
         val dir = Files.createTempDirectory("hop-kt-keyed").toFile()
+        val dbFile = File(dir, "node.db")
         try {
             val key = ByteArray(32) { (it * 7).toByte() }
-            val node = HopNode.openKeyed(File(dir, "node.db").absolutePath, key)
-            assertNotNull(node)
-            node!!.use { assertTrue(it.isPersistent()) }
+            val node = HopNode.openKeyed(dbFile.absolutePath, key)
+            if (node == null) {
+                // In a plain build without sqlcipher feature: openKeyed fails closed (returns null)
+                assertFalse(
+                    dbFile.exists(),
+                    "plain build must not create a plaintext database when keyed open was requested",
+                )
+                return
+            }
+            node.use {
+                assertTrue(it.isPersistent(), "keyed node must be persistent")
+                assertTrue(it.isEncrypted(), "sqlcipher keyed node must report isEncrypted == true")
+            }
+
+            // Reopening with wrong key fails to decrypt while the database file stays intact
+            val wrongKey = ByteArray(32) { (it * 13 + 1).toByte() }
+            val badNode = HopNode.openKeyed(dbFile.absolutePath, wrongKey)
+            val failedToDecrypt = badNode == null || !badNode.isPersistent() || !badNode.isEncrypted()
+            assertTrue(failedToDecrypt, "reopening with wrong key must fail (null or non-persistent/unencrypted fallback)")
+            badNode?.let {
+                assertFalse(it.isPersistent(), "wrong key must not yield a persistent store")
+                assertFalse(it.isEncrypted(), "wrong key must not yield an encrypted store")
+                it.close()
+            }
+            assertTrue(dbFile.exists(), "database file must remain on disk after wrong-key open")
+            assertTrue(dbFile.length() > 0, "database file must stay intact and non-empty")
+
+            // Reopening with original key succeeds
+            val reopened = HopNode.openKeyed(dbFile.absolutePath, key)
+            assertNotNull(reopened, "reopening with original key must succeed")
+            reopened!!.use {
+                assertTrue(it.isPersistent(), "reopened node must be persistent")
+                assertTrue(it.isEncrypted(), "reopened node must report isEncrypted == true")
+            }
         } finally {
             dir.deleteRecursively()
         }
