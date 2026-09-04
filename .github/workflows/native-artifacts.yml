@@ -1,9 +1,42 @@
+# Build, verify, sign, and attest native artifacts for the Hop C ABI and platform wrappers.
+#
+# Gating and trigger architecture (PROC-005):
+# Push triggers are path-filtered to inputs that feed the native artifacts to avoid
+# unnecessary compute on unrelated commits. Matrix builds (host-linux, apple, android,
+# embedded) and canonical CI authorization (authorize-ci) run unconditionally on matching
+# pushes to main (and unfiltered workflow_dispatch) without requiring release secrets,
+# ensuring build regressions are never masked by missing signing credentials.
+#
+# The signing and attestation job (attest) is gated on `needs.authorize.outputs.can_sign`:
+# when NATIVE_ARTIFACT_SIGNING_KEY is provisioned in the release environment, it signs
+# and generates SLSA provenance; when absent, attest skips cleanly with a notice while
+# the build jobs still succeed.
+
 name: Native artifacts
 run-name: Native artifacts for ${{ github.sha }}
 
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/native-artifacts.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'LICENSE.md'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'core/**'
+      - 'rust-toolchain.toml'
+      - 'sdk/apple/build-xcframework.sh'
+      - 'sdk/hop.h'
+      - 'tools/build-aar.sh'
+      - 'tools/build-xcframework.sh'
+      - 'tools/gen-third-party-notices.py'
+      - 'tools/native-artifacts-path-guard.py'
+      - 'tools/native-artifacts-public.pem'
+      - 'tools/native-artifacts.py'
+      - 'tools/native-artifacts.schema.json'
+      - 'tools/native-attestation/**'
+  workflow_dispatch:
 
 concurrency:
   group: native-artifacts-${{ github.sha }}
@@ -21,7 +54,7 @@ jobs:
   authorize:
     name: Authorize canonical source
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       github.repository == 'hopmesh/hop'
     runs-on: ubuntu-latest
@@ -41,7 +74,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$SOURCE_SHA" = "$EVENT_AFTER"
+          if [ -n "${EVENT_AFTER:-}" ]; then
+            test "$SOURCE_SHA" = "$EVENT_AFTER"
+          fi
           test "$SOURCE_REF" = "refs/heads/main"
           test "$SOURCE_REPOSITORY" = "hopmesh/hop"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
@@ -55,7 +90,6 @@ jobs:
   host-linux:
     name: Build Linux host artifact
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +131,6 @@ jobs:
   apple:
     name: Build Apple host and xcframework artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,7 +177,6 @@ jobs:
   android:
     name: Build Android ABI artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,7 +239,6 @@ jobs:
   embedded:
     name: Build exact ESP-IDF target artifacts
     needs: authorize
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,7 +284,6 @@ jobs:
   authorize-ci:
     name: Authorize successful canonical CI
     needs: [authorize, host-linux, apple, android, embedded]
-    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

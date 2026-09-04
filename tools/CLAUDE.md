@@ -50,6 +50,9 @@ workflow-run-syntax-guard.py validates syntax of every workflow `run:` script bl
                            catching unclosed loops or syntax errors (such as the missing `done` in
                            REL-006) before runs are scheduled, and runs `actionlint` if installed.
                            Self-test: workflow-run-syntax-guard.test.sh.
+native-artifacts-path-guard.py keeps `native-artifacts.yml` push path filters aligned with the native
+                           build graph (PROC-005), preventing missing or duplicate artifact inputs.
+                           Self-test: native-artifacts-path-guard.test.sh.
 mailbox-prefix-doc-guard.sh fails when the DOCUMENTED mailbox routing-prefix width disagrees with
                            `crypto::MAILBOX_ROUTE_PREFIX_BYTES`. It renders one canonical claim
                            sentence (buckets, anonymity set, small-N threshold) from the constant,

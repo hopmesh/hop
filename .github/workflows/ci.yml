@@ -1098,6 +1098,10 @@ jobs:
         run: bash .github/scripts/dep-fix-tag.test.sh
       - name: Self-test PR auto-merge safety check (PROC-002)
         run: bash .github/scripts/check-pr-automerge-safety.test.sh
+      - name: Self-test native-artifacts path guard (PROC-005)
+        run: bash tools/native-artifacts-path-guard.test.sh
+      - name: Enforce native-artifacts path filter
+        run: python3 tools/native-artifacts-path-guard.py
       # INFRA-012: Syntax check testkit automation scripts (bash -n, node --check)
       - name: Syntax check testkit automation scripts (bash -n, node --check)
         run: |

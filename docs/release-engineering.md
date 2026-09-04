@@ -75,10 +75,16 @@ per surface:
 
 ### Canonical native provenance
 
-The canonical native workflow starts from each `main` push alongside CI and builds every platform
-without release secrets. Only after the exact source commit has a successful canonical CI gate can a
-separate release job load the native key, create the complete archive inventory, sign its manifest,
-and create a GitHub OIDC SLSA v1 Sigstore bundle over the manifest, signature, and every native archive.
+The canonical native workflow (`.github/workflows/native-artifacts.yml`) triggers on `main` pushes
+that match the native artifact input path filter (and manual `workflow_dispatch`), building host and
+cross-compiled artifacts across Linux, macOS, iOS, Android, and ESP-IDF without release secrets. Matrix
+builds and CI authorization run unconditionally on matching pushes to prevent build regressions from
+hiding behind gated credentials (PROC-005). Only after the exact source commit has a successful
+canonical CI gate can the `attest` job sign and attest the release bundle: when
+`NATIVE_ARTIFACT_SIGNING_KEY` is provisioned in the `release` environment, it loads the key, creates the
+complete archive inventory, signs its manifest, and creates a GitHub OIDC SLSA v1 Sigstore bundle over
+the manifest, signature, and every native archive. If the signing key is unprovisioned, the `attest` job
+skips cleanly with a notice while the matrix build verification succeeds.
 The local Sigstore bundle is part of the immutable release artifact and is verified against the exact
 canonical workflow, source SHA, ref, run attempt, GitHub-hosted runner, certificate invocation, and
 complete 14-target subject set before a mirror publishes. GitHub's attestation API is an additional
