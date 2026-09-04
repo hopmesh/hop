@@ -45,9 +45,11 @@ FORBIDDEN = {
     "WeakRef": "not dependable on Hermes",
 }
 
-# A bare `new X()`, `X.from(...)`/`X(...)`, explicit globalThis/global/window access,
+# A bare `new X()`, `X.from(...)`/`X(...)`, explicit globalThis/global/window/self access,
 # destructuring, aliasing, or computed access to a denied global. Deliberately textual:
 # the type system is exactly what failed to catch this, so this check does not consult it.
+GLOBAL_OBJECTS = r"(?:globalThis|global|window|self|frames|top|parent)"
+
 def violations(text):
     found = []
     text_clean = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
@@ -56,16 +58,16 @@ def violations(text):
         if not code.strip():
             continue
         for name, reason in FORBIDDEN.items():
-            # 1. Access on globalThis, global, or window (property or optional chaining)
-            if re.search(r"\b(?:globalThis|global|window)\s*(?:\?\.|\.)\s*\b" + name + r"\b", code):
+            # 1. Access on globalThis, global, window, self, frames, top, parent (property or optional chaining)
+            if re.search(r"\b" + GLOBAL_OBJECTS + r"\s*(?:\?\.|\.)\s*\b" + name + r"\b", code):
                 found.append((line_no, name, reason, line.strip()))
                 continue
-            # 2. Computed access on globalThis, global, or window
-            if re.search(r"\b(?:globalThis|global|window)\s*(?:\?\.)?\s*\[\s*[\x22\x27]" + name + r"[\x22\x27]\s*\]", code):
+            # 2. Computed access on globalThis, global, window, self, frames, top, parent (quotes or backticks)
+            if re.search(r"\b" + GLOBAL_OBJECTS + r"\s*(?:\?\.)?\s*\[\s*[\x22\x27\`]" + name + r"[\x22\x27\`]\s*\]", code):
                 found.append((line_no, name, reason, line.strip()))
                 continue
-            # 3. Destructuring from globalThis, global, or window
-            if re.search(r"\{[^}]*\b" + name + r"\b[^}]*\}\s*=\s*(?:globalThis|global|window)\b", code):
+            # 3. Destructuring from globalThis, global, window, self, frames, top, parent
+            if re.search(r"\{[^}]*\b" + name + r"\b[^}]*\}\s*=\s*" + GLOBAL_OBJECTS + r"\b", code):
                 found.append((line_no, name, reason, line.strip()))
                 continue
             # 4. Bare reference, call, instantiation, or aliasing
