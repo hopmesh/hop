@@ -713,6 +713,17 @@ pub enum HnsLookup {
     NeedsResolver,
 }
 
+/// Outcome of ingesting a bundle into durable node storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// The bundle was admitted and remains held in durable storage.
+    Held,
+    /// The bundle was admitted, but immediately evicted by storage pressure.
+    EvictedImmediately,
+    /// The bundle was rejected by admission, deduplication, or verification policy.
+    Rejected,
+}
+
 /// An HTTP response a gateway sealed back to the requester.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HttpRespItem {
@@ -7508,7 +7519,7 @@ impl<S: Store> Node<S> {
     /// already warm (DESIGN.md §28). Stores it for onward relay and offers it to live
     /// links, exactly as if a peer had handed it over. A cold-started node gets the same
     /// bundles for free via [`Node::with_store`]'s rehydrate.
-    pub fn ingest(&mut self, bundle: Bundle) {
+    pub fn ingest(&mut self, bundle: Bundle) -> IngestOutcome {
         // relay-F (pass-5 audit): re-inject via LOCAL_LINK, NOT a phantom `LinkId::MAX`. Both match no
         // real connection (so the bundle is offered to every live link, the offer step skips only the
         // arrival link), but ONLY LOCAL_LINK is exempt from the F-07 per-link private-ingest flood cap.
@@ -7517,7 +7528,16 @@ impl<S: Store> Node<S> {
         // and a beacon that pulls > MAX_PRIV_BUNDLES_PER_WINDOW bundles (a real backlog, or an attacker
         // co-locating spam under a shared mailbox prefix) would otherwise overflow the cap and silently
         // drop the overflow AFTER the durable copy is gone: permanent loss of offline messages.
-        self.on_bundle(LOCAL_LINK, bundle);
+        let id = bundle.id();
+        let was_held = self.store.contains(&id);
+        let stored = self.process_bundle(LOCAL_LINK, bundle);
+        if self.store.contains(&id) || self.durable_inbox.contains_key(&id) {
+            IngestOutcome::Held
+        } else if was_held || stored {
+            IngestOutcome::EvictedImmediately
+        } else {
+            IngestOutcome::Rejected
+        }
     }
 
     /// Drop everything we're currently holding: our own undelivered messages (stop
@@ -9251,7 +9271,9 @@ impl<S: Store> Node<S> {
             }
             self.evict_relayed_if_needed();
             // F-09: offer just the bundle we accepted to the other links, not the whole store.
-            self.offer_bundle_to_all_except(id, from_link);
+            if self.store.contains(&id) {
+                self.offer_bundle_to_all_except(id, from_link);
+            }
         }
         stored
     }
@@ -17913,6 +17935,78 @@ mod tests {
             accepted, n,
             "every re-ingested mailbox bundle is accepted (LOCAL_LINK exempt from F-07); none dropped-after-delete"
         );
+    }
+
+    #[test]
+    #[test]
+    fn ingest_returns_held_evicted_immediately_and_rejected() {
+        let mut relay = Node::new(Identity::generate());
+        relay.set_max_relayed(2);
+        let recipient = Identity::generate();
+        let spk = recipient.derive_prekey().public;
+        let prefix = crypto::mailbox_route(&crypto::mailbox_tag(&recipient.address(), 0));
+
+        let b1 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-1".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b1), IngestOutcome::Held);
+
+        let b2 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-2".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b2), IngestOutcome::Held);
+
+        let b3 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-3".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b3), IngestOutcome::EvictedImmediately);
+
+        let mut bad = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"bad".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts::default(),
+        )
+        .unwrap();
+        bad.inner.id = [0u8; 32];
+        assert_eq!(relay.ingest(bad), IngestOutcome::Rejected);
     }
 
     #[test]

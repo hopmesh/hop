@@ -1650,14 +1650,16 @@ fn ingest_durable<S: Store>(node: &mut Node<S>, bytes: Vec<u8>, require_flush: b
         return false;
     }
     if let Ok(b) = Bundle::from_bytes(&bytes) {
+        let id = b.id();
         let dst = match b.inner.dst {
             Destination::Device(d) | Destination::AckTo(d, _) => short_b58(&d),
             Destination::Broadcast => "broadcast".to_string(),
             Destination::Vaccine(..) => "vaccine".to_string(),
         };
         // services-03: bundle id + destination address is per-message metadata.
-        netlog_private(format!("ingest: msg {} → dst {}", short_b58(&b.id()), dst));
-        if guard_core("ingest", || node.ingest(b)).is_none() {
+        netlog_private(format!("ingest: msg {} → dst {}", short_b58(&id), dst));
+        let outcome = guard_core("ingest", || node.ingest(b));
+        if outcome != Some(hop_core::node::IngestOutcome::Held) || !node.store.contains(&id) {
             return false;
         }
         return node.store.durability_status() == DurabilityReadiness::Ready
@@ -5505,6 +5507,135 @@ mod driver_tests {
         apply_event(&mut node, &mut writers, Ev::IngestCustody(bytes, ok_tx));
         assert_eq!(ok_rx.recv_timeout(Duration::from_secs(1)), Ok(true));
         assert!(!node.queue().is_empty());
+    }
+
+    #[test]
+    fn hostile_mailbox_pull_evicted_immediately_must_not_ack_custody() {
+        let mut node = test_node();
+        node.set_max_relayed(2);
+        let mut writers = HashMap::new();
+
+        let recipient = Identity::generate();
+        let sender = Identity::generate();
+        for i in 0..2 {
+            let b = Bundle::create(
+                &sender,
+                Destination::Device(recipient.address()),
+                &recipient.address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: vec![i as u8],
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..BundleOpts::default()
+                },
+            )
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+            let (tx, rx) = mpsc::sync_channel(1);
+            apply_event(&mut node, &mut writers, Ev::IngestCustody(b, tx));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        }
+
+        let victim = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"victim".to_vec(),
+            },
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        let victim_id = victim.id();
+        let victim_bytes = victim.to_bytes().unwrap();
+
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        apply_event(
+            &mut node,
+            &mut writers,
+            Ev::IngestCustody(victim_bytes, ack_tx),
+        );
+        let ack_result = ack_rx.recv_timeout(Duration::from_secs(1));
+
+        assert!(!node.store.contains(&victim_id), "victim was evicted");
+        assert_eq!(
+            ack_result,
+            Ok(false),
+            "custody ack must be false when bundle is immediately evicted"
+        );
+    }
+
+    #[test]
+    fn production_cap_8192_hostile_mailbox_pull_retains_source() {
+        let mut node = test_node();
+        node.set_max_relayed(8192);
+        let mut writers = HashMap::new();
+
+        let recipient = Identity::generate();
+        let sender = Identity::generate();
+
+        for i in 0..8192 {
+            let b = Bundle::create(
+                &sender,
+                Destination::Device(recipient.address()),
+                &recipient.address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: (i as u32).to_le_bytes().to_vec(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..BundleOpts::default()
+                },
+            )
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+            let (tx, rx) = mpsc::sync_channel(1);
+            apply_event(&mut node, &mut writers, Ev::IngestCustody(b, tx));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        }
+
+        assert_eq!(node.queue().len(), 8192);
+
+        let victim = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"victim-8193".to_vec(),
+            },
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        let victim_id = victim.id();
+        let victim_bytes = victim.to_bytes().unwrap();
+
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        apply_event(
+            &mut node,
+            &mut writers,
+            Ev::IngestCustody(victim_bytes, ack_tx),
+        );
+        let ack_result = ack_rx.recv_timeout(Duration::from_secs(1));
+
+        assert!(!node.store.contains(&victim_id), "victim 8193 was evicted");
+        assert_eq!(
+            ack_result,
+            Ok(false),
+            "production cap 8192 custody ack MUST be false on immediate eviction"
+        );
     }
 
     #[test]
