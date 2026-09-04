@@ -362,6 +362,7 @@ class HopBearer internal constructor(
     // Set by teardown() so the self-reposting tick loop stops re-arming and so a late core task after
     // shutdown is a no-op. Read on core (the tick loop) and set from teardown (which hops to core).
     @Volatile private var torndown = false
+    internal val isTorndown: Boolean get() = torndown
 
     fun start(name: String = config.deviceName) = core.post {
         if (started) return@post
@@ -1361,6 +1362,8 @@ class HopBearer internal constructor(
         val APP_SECRET = ByteArray(32) { 0x48 } // "H" ×32 - dev build only (matches iOS)
 
         @Volatile private var inst: HopBearer? = null
+        fun peek(): HopBearer? = inst
+        fun teardownShared() { synchronized(this) { inst }?.teardown() }
 
         /// One shared instance, owned by the foreground service and observed by the UI.
         /// Configure-once: the first caller's HopConfig wins; later callers get that same instance.
