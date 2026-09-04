@@ -935,8 +935,8 @@ back *out* to every region costs backbone bandwidth and wakes downstream devices
 the backbone must route **intelligently**, and the rule you called out is the core of
 it: *don't ship a topic to a region that has no subscribers.*
 
-The backbone tracks two recency-decayed signals (`hop-relay::region::RegionRouter`,
-implemented & tested), the §18 demand idea lifted from peers to **regions**:
+The backbone design separates two regional signals (lifting the §18 demand idea
+from peers to **regions**):
 - **presence**, which region a device address was last reachable through, so an
   *addressed* bundle goes to **one** region (the destination's) instead of flooding
   all of them. Unknown/stale ⇒ fall back to a broadcast.
@@ -974,9 +974,9 @@ always use the lowest-latency entrance and exit.
   refinement.
 - **Exit (backbone → device): the destination's current relay.** A bundle for B must
   leave the backbone at the relay **B is currently attached to**, which is the
-  closest exit by definition. `RegionRouter` tracks each address's current region from
-  presence, so the backbone files the bundle and points the fetch at B's region instead
-  of flooding every region. Delay-tolerant: if B is offline, the mailbox holds it
+  closest exit by definition. Regional presence tracking in `hop-store-firestore` tracks
+  each address's current region, so the backbone files the bundle and points the fetch at B's
+  region instead of flooding every region. Delay-tolerant: if B is offline, the mailbox holds it
   until B's region reappears.
 - **Relay ↔ relay discovery across regions.** Relays form a backbone mesh via a
   **membership layer**, a seed list / registry plus gossip (SWIM-style) so the set
@@ -989,9 +989,10 @@ always use the lowest-latency entrance and exit.
   untrusted store of sealed ciphertext (§19), so adding capacity is just adding nodes.
 
 **Status.** Implemented: `hop-relayd` (node + TCP bearer), the iOS relay bearer,
-`RegionRouter` (presence/demand). To build: GeoDNS/anycast fronting, client-side RTT
-race over resolved endpoints, relay membership/gossip + inter-relay RTT-aware routing,
-and wiring `RegionRouter` presence to pick the exit relay.
+and regional presence tracking in `hop-store-firestore`. Not implemented / roadmap: per-region
+demand-based topic routing (`RegionRouter` is removed / not implemented), GeoDNS/anycast fronting,
+client-side RTT race over resolved endpoints, relay membership/gossip + inter-relay RTT-aware routing,
+and wiring presence to pick the exit relay.
 
 ## 22. Background operation & beaconing
 
@@ -1578,7 +1579,7 @@ a device *can't* leak its app even by mistake; the relay daemon sets it explicit
 ### Status
 
 Design only. Building blocks exist: epidemic + vaccine (`routing`/`node`), §18
-reliability-weighted relay, §21 `RegionRouter`. To build: a **trace** field on the
+reliability-weighted relay, §21 regional presence tracking (per-region demand routing is not implemented). To build: a **trace** field on the
 bundle header; ACK/trace correlation → a per-node **route table** with decay;
 utility-ranked transmit/evict ordering; tier-aware table sizing; and **per-region relay
 identities** (replacing the single shared Cloud Run seed).
@@ -2280,22 +2281,26 @@ inbox **migrates**:
 
 Migration is a damped, occasional relocation of the primary, never a per-message decision.
 
-### Channels & services (`hps://`, §32)
+### Channels & services (historical design note; not live §32 spec)
 
-Two shapes, handled differently:
+> **Note:** This subsection records an earlier proposal for topic placement under the superseded
+> home-store architecture. Live channels and services are specified in §32; per-region demand-based
+> topic routing (`RegionRouter`) is not implemented.
 
-- **The subscribe handshake is unicast**, `HpsSubscribe`→host and `HpsKeys`→subscriber are
+Two shapes, handled differently in this earlier model:
+
+- **The subscribe handshake is unicast**, `HpsSubscribe`->host and `HpsKeys`->subscriber are
   `Device`-addressed, so they ride device inboxes with no special casing.
 - **Publishes are broadcasts**, one writer, many readers, *no subscriber registry* by design, so
-  they don't belong to any one inbox. They get a parallel **topic inbox** `topic/{path}/bundles`,
-  placed by **demand** (§21 `RegionRouter`): a relay holding a broadcast for topic `T` writes it
-  into `topic/{T}` only in **stores that have live subscriber demand** for `T`, a store with
-  nobody listening never receives it. A subscriber drains `topic/{T}` on check-in from a
+  they don't belong to any one inbox. In this earlier proposal, they received a parallel **topic inbox**
+  `topic/{path}/bundles`, which was planned to be placed by regional demand (§21, not implemented):
+  a relay holding a broadcast for topic `T` would write it into `topic/{T}` only in stores that have
+  live subscriber demand for `T`. In the live system, topic broadcasts flood to available stores and are
+  TTL-evicted. A subscriber drains `topic/{T}` on check-in from a
   **per-subscriber read cursor** (so each member gets each message once without a registry),
   decrypts with the content key, and verifies the sender (§32). **ACK-based reach** still works:
   the ACK to the host is `Device`-addressed, so it rides the host's inbox back. Topic inboxes are
   **TTL-evicted** (no per-member purge, since there's no membership list).
-
 ### Invariants & consolidation
 
 - **Nodes never wake nodes.** Every inbox / locator / topic-inbox operation is a passive Firestore
