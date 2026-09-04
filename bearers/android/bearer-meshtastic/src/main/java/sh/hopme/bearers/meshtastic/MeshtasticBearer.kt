@@ -80,8 +80,26 @@ class MeshtasticBearer internal constructor(
     private val myId: ByteArray,
     private val radio: MeshtasticRadio,
 ) : Bearer {
-    /** Production constructor: talk to a real Meshtastic radio over BLE. */
-    constructor(context: Context, myId: ByteArray) : this(myId, AndroidMeshtasticRadio(context))
+    /**
+     * Production constructor: talk to a real Meshtastic radio over BLE.
+     *
+     * PLAT-006 accessory authorization: `trustedAddress` pins the one radio this bearer may attach
+     * to; `requireBonded` (default true) refuses any peripheral the platform has not bonded. With
+     * neither criterion the radio layer does not scan at all, so a rogue peripheral advertising the
+     * Meshtastic service UUID can never become a link by default.
+     */
+    constructor(
+        context: Context,
+        myId: ByteArray,
+        trustedAddress: String? = null,
+        requireBonded: Boolean = true,
+    ) : this(
+        myId,
+        AndroidMeshtasticRadio(context).also {
+            it.trustedAddress = trustedAddress
+            it.requireBonded = requireBonded
+        },
+    )
 
     override var sink: LinkSink? = null
     /// Short transport tag for the consumer's UI (Bearer contract). Meshtastic/LoRa links surface as "LoRa".
