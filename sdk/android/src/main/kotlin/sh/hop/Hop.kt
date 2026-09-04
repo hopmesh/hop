@@ -650,7 +650,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Whether this node has durable storage (false ⇒ ephemeral fallback; F-26). */
     fun isPersistent(): Boolean = native { handle -> C.hop_node_is_persistent(handle).toBool() }
 
-    /** True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). */
+    /** True only when the store is SQLCipher-keyed at rest (F-25, audit-001). */
     fun isEncrypted(): Boolean = native { handle -> C.hop_node_is_encrypted(handle).toBool() }
 
     /** How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade. */

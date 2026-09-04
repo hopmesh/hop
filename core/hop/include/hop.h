@@ -151,7 +151,7 @@ const struct HopNode *hop_node_with_secret(const uint8_t *secret, uintptr_t secr
 // rather than treat the database as ground truth (F-26). NULL handle ⇒ false.
 bool hop_node_is_persistent(const struct HopNode *node);
 
-// True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). NULL handle returns false.
+// True only when the store is SQLCipher-keyed at rest (F-25, audit-001). NULL handle returns false.
 bool hop_node_is_encrypted(const struct HopNode *node);
 
 // How many persisted records failed to decode on startup (F-03). Non-zero ⇒ an upgrade changed

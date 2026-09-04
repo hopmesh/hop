@@ -46,7 +46,7 @@ lib LibHop
   fun cluster_members = hop_cluster_members(node : Void*) : UInt32
   fun cluster_set_quorum = hop_cluster_set_quorum(node : Void*, min_live_members : UInt32) : Void
   # §32 hps:// pub/sub: services and channels (group chat), the surface the v5 -> v6 ABI bump added.
-  # PLAT-005: the C ABI exported NOTHING from hps:// before ABI 6, so every wrapper that sits on it,
+  # PLAT-005: the C ABI exported NOTHING from hps:// before version 6 of the C ABI, so every wrapper that sits on it,
   # this one included, could not host, join, or post to a channel even though the protocol has shipped
   # in core and over UniFFI for as long as it has existed.
   #

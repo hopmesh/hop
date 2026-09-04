@@ -168,7 +168,7 @@ class TestHop < Minitest::Test
 
   # PLAT-003: sdk/hop.h justified the v4 -> v5 relay-pool bump with the §19 calls, and this SDK asserted
   # that level at load while binding none of them, so an SDK-only host could not fail over: the only
-  # reachable behavior was retrying one configured URL forever. The wrapper now asserts ABI 6 and binds
+  # reachable behavior was retrying one configured URL forever. The wrapper now asserts ABI 7 and binds
   # them, and this drives the failover the header describes through the published Endpoint surface, on
   # ONE endpoint that is never restarted.
   def test_relay_pool_fails_over_without_restarting_the_endpoint

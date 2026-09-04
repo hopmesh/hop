@@ -450,7 +450,7 @@ pub unsafe extern "C" fn hop_node_is_persistent(node: *const HopNode) -> bool {
     node_ref(node).map(|n| n.is_persistent()).unwrap_or(false)
 }
 
-/// True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). NULL handle returns false.
+/// True only when the store is SQLCipher-keyed at rest (F-25, audit-001). NULL handle returns false.
 #[no_mangle]
 pub unsafe extern "C" fn hop_node_is_encrypted(node: *const HopNode) -> bool {
     node_ref(node).map(|n| n.is_encrypted()).unwrap_or(false)

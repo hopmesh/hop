@@ -197,7 +197,7 @@ export class HopNode {
     return this.native.isPersistent(this.handle);
   }
 
-  /** True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). */
+  /** True only when the store is SQLCipher-keyed at rest (F-25, audit-001). */
   isEncrypted(): Promise<boolean> {
     return this.native.isEncrypted(this.handle);
   }

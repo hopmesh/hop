@@ -94,6 +94,7 @@ SWEEP_EXCLUDES=(
   --exclude-dir=audits
   --exclude=tarpaulin-report.html
   --exclude=check-abi-version.sh
+  --exclude=CHANGELOG.md
 )
 
 # ---- known declaration sites --------------------------------------------------------------------

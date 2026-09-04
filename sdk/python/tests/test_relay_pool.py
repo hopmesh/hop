@@ -1,6 +1,6 @@
 """PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
 bound none of them while asserting the level at import, so an SDK-only host could not fail over: the
-only reachable behavior was retrying one configured URL forever. The pin is now ABI 6 and the calls
+only reachable behavior was retrying one configured URL forever. The pin is now ABI 7 and the calls
 are bound; this drives the failover the header describes through the published HopEndpoint surface,
 on ONE endpoint that is never restarted."""
 import unittest

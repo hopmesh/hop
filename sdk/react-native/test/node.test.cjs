@@ -487,7 +487,7 @@ test("onHpsInvite decodes its payload and is node-scoped", async () => {
   assert.deepEqual(invites[0], { host: "z6MkHost", path: "town/square", kind: "channel" });
 });
 
-test("hostile repro ABI-013: node rejects invalid link, tick, and status numbers", async () => {
+test("hostile repro audit-013: node rejects invalid link, tick, and status numbers", async () => {
   const native = makeNative();
   const node = new HopNode(native, makeEmitter(), 7);
 

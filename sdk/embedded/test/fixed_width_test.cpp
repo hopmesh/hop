@@ -657,8 +657,8 @@ void testHostileReproAbi007ThrowingCallback() {
     node.tick(1100);
     assert(!message_was_accepted);
   } catch (const std::exception &) {
-    fprintf(stderr, "ABI-007 PRE-FIX FAILURE: exception escaped C trampoline across extern C boundary\n");
-    assert(false && "ABI-007: exception escaped C trampoline across extern C boundary");
+    fprintf(stderr, "audit 007 PRE-FIX FAILURE: exception escaped C trampoline across extern C boundary\n");
+    assert(false && "audit 007: exception escaped C trampoline across extern C boundary");
   }
 }
 
