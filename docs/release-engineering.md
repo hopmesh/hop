@@ -15,7 +15,7 @@ Two versions travel independently and MUST NOT be conflated:
    - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
      format. A change here is a protocol break and needs the wire-stability test
      updated deliberately.
-   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 6): the C-ABI contract every
+   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 7): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
 
@@ -40,7 +40,7 @@ ABI-version literals, fails on any that disagrees with `cabi.rs`, fails on any i
 classify (so a fourteenth copy is caught the day it lands), fails when a listed site stops
 declaring the constant, and fails when a wrapper pinned to the current level does not bind
 the `hop_*` calls that level's bump note in `sdk/hop.h` names. It also holds prose that
-states an ABI level ("asserts ABI 6") to the constant. It used to check six of twelve, and
+states an ABI level ("asserts ABI 7") to the constant. It used to check six of twelve, and
 that gap is how the v4 -> v5 bump shipped with a release validator still asserting the
 retired level (PLAT-004).
 
