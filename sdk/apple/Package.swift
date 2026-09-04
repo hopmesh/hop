@@ -43,18 +43,16 @@ let package = Package(
         // maintenance rule: a change to core/ (or sdk/hop.h) invalidates this checksum, and the same
         // change must bump the workspace version and update whatever depends on it.
         //
-        // Measured, not inferred, from the native-release bundle of the `Native artifacts` run for
-        // source 076737c528713536a2612441bd51e44f11341aa2, the first build with the sorted plist.
-        // ABI-008: the URL is updated to the v0.0.3 release asset. The checksum line is the v0.0.2 value
-        // pending the v0.0.3 bundle built at the release SHA (the lead replaces it in a follow-up commit
-        // once native-artifacts.yml produces the bundle).
-        // To update the pin to ABI 7: follow the release runbook in docs/apple-release.md once a release
-        // artifact is cut on GitHub Releases, and update the URL and checksum below.
+        // Measured, not inferred, from the native-release bundle of the `Native artifacts` run
+        // 33923564859 (attempt 1) for source cd1289256f23354042ba2b1107cb26c5ad53cbaa: the first bundle this
+        // repository signed and attested, verified with `native-artifacts.py verify-provenance` against
+        // the rotated tools/native-artifacts-public.pem before the value below was committed (ABI-008).
+        // Its header declares HOP_ABI_VERSION 7. To move the pin again, follow docs/apple-release.md.
         // tools/apple-pin-guard.py enforces compatibility and catches header/source drift.
         .binaryTarget(
             name: "CHop",
             url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.3/libhop.xcframework.zip",
-            checksum: "080ca47a257f68c42e991aa4632ce6960705bc7880b8a335e215c133d8c688fd"
+            checksum: "1102f6632813e0de621a0fec0c7ebd9eb692a9cf2043016278944779bf75f9f7"
         ),
         .target(name: "Hop", dependencies: ["CHop", "HopContract"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),
