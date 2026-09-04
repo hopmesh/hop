@@ -266,7 +266,9 @@ def _register(prefix, name):
         core.move(RELEASE_ARTIFACT_HELPER, ".github/release-artifact.py"),
         core.move(COMPONENT_MAP, ".github/components.json"),
         core.move(EXPORT_SMOKE, ".github/package-export-smoke.py"),
-        core.move(THIRD_PARTY_NOTICES, "THIRD-PARTY-NOTICES.md"),
+        # THIRD_PARTY_NOTICES already lives at the mirror root path, so it travels through origin_paths
+        # below with no move: Copybara rejects a same-path move as a no-op and refuses the whole config
+        # (REL-003, the export died at config load on every run after ABI-011 added such a move).
     ]
     if is_native:
         export_transforms.extend([
@@ -308,6 +310,7 @@ def _register(prefix, name):
         RELEASE_ARTIFACT_HELPER,
         COMPONENT_MAP,
         EXPORT_SMOKE,
+        THIRD_PARTY_NOTICES,
     ]
     if is_native:
         origin_paths.extend([NATIVE_HELPER, NATIVE_SCHEMA, NATIVE_PUBLIC_KEY])

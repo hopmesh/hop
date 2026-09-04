@@ -1006,6 +1006,14 @@ jobs:
         run: bash tools/copybara/dispatch.test.sh
       - name: Self-test auto-export plan (preflight + changed components)
         run: bash tools/copybara/auto-export-plan.test.sh
+      # REL-003: the Python export model cannot see a config Copybara itself refuses to load (a same-path
+      # core.move shipped in ABI-011 and killed every real export at config load while the model passed).
+      # Load the config in the exact pinned image sync-components.yml runs; the self-test proves the
+      # guard rejects that defect class before the guard is trusted.
+      - name: Self-test Copybara config validation
+        run: bash tools/copybara/validate-config.test.sh
+      - name: Validate copy.bara.sky in the pinned Copybara image
+        run: bash tools/copybara/validate-config.sh
       - name: Self-test Pages dependency graph
         run: bash tools/pages-path-guard.test.sh
       - name: Enforce Pages dependency graph

@@ -24,6 +24,12 @@ commit-message-guard.sh      scans introduced commit messages for banned em/en/l
 commit-message-guard-range.sh computes the revision range to scan from GitHub event context (pull_request
                            base..HEAD, push before..HEAD with zero-SHA and unreachable fallbacks to HEAD,
                            workflow_dispatch HEAD). Self-test: commit-message-guard.test.sh.
+copybara/validate-config.sh loads tools/copybara/copy.bara.sky in the exact digest-pinned Copybara image
+                           sync-components.yml runs (`copybara validate`). The Python export model in
+                           package-export-smoke.py reimplements the transforms and CANNOT see a config
+                           Copybara refuses (a same-path core.move shipped in ABI-011 and killed every
+                           real export at config load while the model passed, REL-003). Needs docker.
+                           Self-test: copybara/validate-config.test.sh (must reject that defect class).
 check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:` every other ci.yml
                            job, use `if: always()`, and fail on a failed/cancelled dep. Also fails on a
                            nameless job, an anchor/inline job, or a ${{ }}-templated name (any of which
