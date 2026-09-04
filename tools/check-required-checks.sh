@@ -7,8 +7,8 @@
 # failed or cancelled dependencies while allowing path-filtered skips. It also refuses a CI job that a
 # renamed/anchored/templated name could hide, so a job cannot gate merges while dodging the aggregate.
 #
-# There is no separate GCP deploy gate anymore: the runtime deploy (GitHub Actions, runtime-deploy.yml)
-# fires on the CI workflow's own success conclusion. But the canonical CI job set still has one live
+# There is no separate GCP deploy gate anymore: the runtime deploy workflows moved to
+# hopmesh/platform, which fires on the CI workflow's own success conclusion. But the canonical CI job set still has one live
 # consumer: tools/release-provenance.py verifies a mirror release tag's CI ran every one of these jobs,
 # and it reads them from tools/required-checks.json. So this guard ALSO pins that config to ci.yml (in
 # order), so a renamed/added/dropped job forces a matching config edit in the same PR.

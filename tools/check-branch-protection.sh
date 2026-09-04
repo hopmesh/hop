@@ -83,6 +83,14 @@ actual="$(printf '%s' "$body" | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 rsc = d.get("required_status_checks") or {}
+strict = rsc.get("strict")
+if strict is not True:
+    print(f"::error:: required_status_checks.strict must be True (got {strict!r})", file=sys.stderr)
+    sys.exit(1)
+enforce_admins = d.get("enforce_admins", {}).get("enabled")
+if enforce_admins is not True:
+    print(f"::error:: enforce_admins must be enabled (got {enforce_admins!r})", file=sys.stderr)
+    sys.exit(1)
 ctx = set()
 for c in rsc.get("checks", []) or []:
     if c.get("context"): ctx.add(c["context"])
@@ -155,4 +163,37 @@ if [ "$auto_merge" != "True" ]; then
   exit 1
 fi
 
-echo "branch protection on main requires exactly the single CI gate check, and auto-merge is enabled"
+for env_name in component-sync release github-pages; do
+  env_api="https://api.github.com/repos/${REPO}/environments/${env_name}"
+  env_resp="$(curl -sSL -w '\n%{http_code}' \
+    -H "Authorization: Bearer $GH_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "$env_api")"
+  env_code="$(printf '%s' "$env_resp" | tail -n1)"
+  env_body="$(printf '%s' "$env_resp" | sed '$d')"
+  if [ "$env_code" != "200" ]; then
+    echo "::error:: unexpected HTTP $env_code reading environment $env_name from $env_api"
+    printf '%s\n' "$env_body" | head -5
+    exit 1
+  fi
+  env_check="$(printf '%s' "$env_body" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+policy = d.get("deployment_branch_policy") or {}
+rules = d.get("protection_rules") or []
+has_rule = any(r.get("type") == "branch_policy" for r in rules)
+if policy.get("protected_branches") is True and policy.get("custom_branch_policies") is False and has_rule:
+    print("OK")
+else:
+    pb = policy.get("protected_branches")
+    cb = policy.get("custom_branch_policies")
+    print(f"INVALID: protected_branches={pb}, custom={cb}, has_rule={has_rule}")
+')"
+  if [ "$env_check" != "OK" ]; then
+    echo "::error:: environment $env_name must enforce deployment_branch_policy with protected_branches: true (got $env_check)"
+    exit 1
+  fi
+done
+
+echo "branch protection on main requires exactly the single CI gate check, strict is true, auto-merge is enabled, and environments are protected"
