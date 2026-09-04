@@ -24,9 +24,20 @@ else
   echo "▸ cbindgen not installed; using the committed hop.h (kept in sync by the contract CI job)"
 fi
 
+# F-25 / audit ABI-001: ship libhop with SQLCipher (encryption at rest) by DEFAULT, matching
+# tools/build-xcframework.sh so HopNode.open_keyed actually encrypts the store.
+# Set HOP_SQLCIPHER=0 to disable for plain-SQLite dev builds.
+if [ "${HOP_SQLCIPHER:-1}" = "1" ]; then
+  FEAT=(--no-default-features --features sqlcipher)
+  echo "▸ SQLCipher at-rest ENABLED (set HOP_SQLCIPHER=0 to disable)"
+else
+  FEAT=()
+  echo "▸ SQLCipher DISABLED, plain SQLite (no at-rest encryption)"
+fi
+
 echo "▸ cross-compiling libhop.a (release) for each slice"
 for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build -p "$CRATE" --release --target "$t"
+  cargo build -p "$CRATE" --release --target "$t" ${FEAT[@]+"${FEAT[@]}"}
 done
 
 # The xcframework header dir: hop.h + a module map naming the module CHop (what Hop.swift imports).
@@ -77,6 +88,8 @@ if libraries:
     with open(path, "wb") as handle:
         plistlib.dump(plist, handle, sort_keys=True)
 PY
+cp "$ROOT/THIRD-PARTY-NOTICES.md" "$DEST/THIRD-PARTY-NOTICES.md"
+cp "$ROOT/LICENSE.md" "$DEST/LICENSE.md"
 python3 "$ROOT/tools/native-artifacts.py" apple-manifest \
   --xcframework "$DEST" --output "$DEST/architecture-manifest.json"
 python3 "$ROOT/tools/native-artifacts.py" apple-verify \
