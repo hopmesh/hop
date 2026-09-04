@@ -359,3 +359,34 @@ public enum HopQR {
         return (String(addr), name)
     }
 }
+
+/// Screen and recents privacy policy (PLAT-011):
+/// When an app becomes inactive or backgrounded, OS snapshots and casual screen capture must not
+/// retain readable message bodies, media, identity addresses, or private endpoint configuration.
+public struct ScreenPrivacyState: Equatable, Sendable {
+    public enum Phase: Sendable {
+        case active
+        case inactive
+        case background
+    }
+
+    /// Whether the privacy shield must cover the window. Starts true on launch so cold background
+    /// launch, notification entry, and process restoration never flash sensitive UI before active.
+    public private(set) var isObscured: Bool
+
+    public init(initiallyObscured: Bool = true) {
+        self.isObscured = initiallyObscured
+    }
+
+    /// Transition to a new scene phase. Only .active uncovers sensitive content.
+    @discardableResult
+    public mutating func transition(to phase: Phase) -> Bool {
+        switch phase {
+        case .active:
+            isObscured = false
+        case .inactive, .background:
+            isObscured = true
+        }
+        return isObscured
+    }
+}

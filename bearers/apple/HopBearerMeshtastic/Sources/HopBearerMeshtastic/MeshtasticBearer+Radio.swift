@@ -17,12 +17,12 @@
 
 import Foundation
 import CoreBluetooth
-
+import HopContract
 final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
     var onConnect: (() -> Void)?
     var onDisconnect: (() -> Void)?
     var onFromRadio: (([UInt8]) -> Void)?
-
+    var trustedPeripheralIdentifier: UUID?
     static let serviceUUID = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273eafd")
     static let toRadioUUID = CBUUID(string: "f75c76d2-129e-4dad-a1dd-7866124401e7")
     static let fromRadioUUID = CBUUID(string: "2c55e69e-4993-11ed-b878-0242ac120002")
@@ -34,7 +34,8 @@ final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
     private var toRadio: CBCharacteristic?
     private var fromRadio: CBCharacteristic?
     private var running = false
-
+    private var consecutiveReads = 0
+    private let maxConsecutiveReads = 64
     func start() {
         cbQueue.async {
             self.running = true
@@ -50,11 +51,11 @@ final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
         cbQueue.async {
             self.running = false
             self.central?.stopScan()
+            self.consecutiveReads = 0
             if let p = self.peripheral { self.central?.cancelPeripheralConnection(p) }
             self.peripheral = nil; self.toRadio = nil; self.fromRadio = nil
         }
     }
-
     func send(toRadio bytes: [UInt8]) {
         cbQueue.async {
             guard let p = self.peripheral, let ch = self.toRadio else { return }
@@ -69,16 +70,22 @@ final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
 
     private func drainFromRadio() {
         guard let p = peripheral, let ch = fromRadio else { return }
+        consecutiveReads += 1
+        guard consecutiveReads <= maxConsecutiveReads else {
+            log("WARN", "mesh fromRadio drain exceeded \(maxConsecutiveReads) consecutive reads, disconnecting")
+            central?.cancelPeripheralConnection(p)
+            return
+        }
         p.readValue(for: ch)   // each read yields one FromRadio; we re-read on every value until empty
     }
 }
-
 extension CoreBluetoothMeshtasticRadio: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) { scanIfPowered() }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard self.peripheral == nil else { return }
+        if let trusted = trustedPeripheralIdentifier, peripheral.identifier != trusted { return }
         self.peripheral = peripheral
         peripheral.delegate = self
         central.stopScan()
@@ -91,6 +98,7 @@ extension CoreBluetoothMeshtasticRadio: CBCentralManagerDelegate, CBPeripheralDe
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
+        self.consecutiveReads = 0
         self.peripheral = nil; self.toRadio = nil; self.fromRadio = nil
         onDisconnect?()
         scanIfPowered()   // reconnect: scan again while we are still running
@@ -130,7 +138,10 @@ extension CoreBluetoothMeshtasticRadio: CBCentralManagerDelegate, CBPeripheralDe
             return
         }
         guard characteristic.uuid == Self.fromRadioUUID else { return }
-        guard let value = characteristic.value, !value.isEmpty else { return }  // empty read = drained
+        guard let value = characteristic.value, !value.isEmpty else {
+            consecutiveReads = 0
+            return
+        }  // empty read = drained
         onFromRadio?([UInt8](value))
         drainFromRadio()       // keep reading until an empty value drains the queue
     }

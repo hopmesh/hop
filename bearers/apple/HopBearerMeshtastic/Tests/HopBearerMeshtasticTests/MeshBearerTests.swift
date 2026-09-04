@@ -33,9 +33,11 @@ final class MeshBearerTests: XCTestCase {
     }
 
     /// Deliver a full Hop link frame from `peerNode` by fragmenting it exactly as a peer bearer would.
-    private func deliverFrame(_ bearer: MeshtasticBearer, _ radio: FakeRadio, _ frame: [UInt8]) {
-        for frag in meshFragment(frame, msgId: 55)! {
-            radio.deliverHopPacket(from: peerNode, payload: frag)
+    private func deliverFrame(_ bearer: MeshtasticBearer, _ radio: FakeRadio, _ frame: [UInt8],
+                              fromNode: UInt32? = nil, msgId: UInt16 = 55) {
+        let node = fromNode ?? peerNode
+        for frag in meshFragment(frame, msgId: msgId)! {
+            radio.deliverHopPacket(from: node, payload: frag)
         }
         _ = bearer.testLinkCount   // barrier
     }
@@ -182,5 +184,24 @@ final class MeshBearerTests: XCTestCase {
         deliverFrame(bearer, radio, MeshFrame.hello(myId: myId, isGreater: false))
         XCTAssertEqual(bearer.testLinkCount, 0)
         XCTAssertTrue(sink.ups.isEmpty)
+    }
+
+    // MARK: - PLAT-006 hostile repro: synthetic nodes stopped at max link cap
+
+    func testSyntheticNodesStopAtMaxLinksCap() {
+        let (bearer, radio, sink) = makeBearer()
+        connect(bearer, radio)
+
+        // Deliver HELLOs from 50 distinct synthetic node numbers
+        for i: UInt32 in 1...50 {
+            var peer = Data([0x01] + [UInt8](repeating: 0, count: 15))
+            peer[15] = UInt8(i & 0xFF)
+            deliverFrame(bearer, radio, MeshFrame.hello(myId: peer, isGreater: false), fromNode: 1000 + i, msgId: UInt16(i))
+        }
+
+        // On unfixed tree: bearer.testLinkCount is 50, sink.ups.count is 50.
+        // On fixed tree: capped at MESH_MAX_LINKS (32).
+        XCTAssertLessThanOrEqual(bearer.testLinkCount, 32, "links must be bounded by MESH_MAX_LINKS")
+        XCTAssertLessThanOrEqual(sink.ups.count, 32, "surfaced links must be bounded by MESH_MAX_LINKS")
     }
 }

@@ -7,10 +7,29 @@ import Foundation
 import Security
 
 private let processStart = Date()
+#if DEBUG
+public var diagnosticsLoggingEnabled: Bool = true
+#else
+public var diagnosticsLoggingEnabled: Bool = false
+#endif
+
+/// URL component redaction (PLAT-008): userinfo, query, fragment, and path secrets must never appear in logs.
+public func redactURL(_ raw: String) -> String {
+    guard let comps = URLComponents(string: raw) else { return "<invalid-url>" }
+    var clean = URLComponents()
+    clean.scheme = comps.scheme
+    clean.host = comps.host
+    clean.port = comps.port
+    return clean.string ?? "\(comps.scheme ?? "ws")://\(comps.host ?? "redacted")"
+}
+
+public var logOutputSinkForTesting: ((String, String) -> Void)? = nil
 
 /// Grep-able structured log. Every line begins with `HOPLAB`. Categories: STATE, DEDUP, STATUS, WARN.
 public func log(_ category: String, _ message: String) {
+    guard diagnosticsLoggingEnabled else { return }
     let t = Date().timeIntervalSince(processStart)
+    logOutputSinkForTesting?(category, message)
     print("HOPLAB \(String(format: "%9.3f", t)) \(category) \(message)")
     NSLog("HOPLAB %9.3f %@ %@", t, category, message)
 }

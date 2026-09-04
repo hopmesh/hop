@@ -555,4 +555,27 @@ final class DemoFormatTests: XCTestCase {
         let sendQ = [(name: "to", value: Optional("abc")), (name: "text", value: Optional("m"))]
         XCTAssertNil(DemoFormat.parseBearerURL(scheme: "hopdemo", host: "send", queryItems: sendQ))
     }
+
+    // MARK: - PLAT-011 ScreenPrivacyState
+
+    func testScreenPrivacyStateStartsObscuredAndOnlyActiveUncovers() {
+        var state = ScreenPrivacyState()
+        XCTAssertTrue(state.isObscured, "cold launch must start obscured to prevent flash on restore")
+
+        // Active reveals content
+        XCTAssertFalse(state.transition(to: .active))
+        XCTAssertFalse(state.isObscured)
+
+        // Inactive obscures (task-switcher snapshot timing)
+        XCTAssertTrue(state.transition(to: .inactive))
+        XCTAssertTrue(state.isObscured)
+
+        // Background keeps obscured
+        XCTAssertTrue(state.transition(to: .background))
+        XCTAssertTrue(state.isObscured)
+
+        // Active uncovers again
+        XCTAssertFalse(state.transition(to: .active))
+        XCTAssertFalse(state.isObscured)
+    }
 }

@@ -91,7 +91,7 @@ public final class MeshtasticBearer: Bearer {
     // MARK: - Bearer lifecycle
 
     public func start() {
-        log("STATE", "mesh node-start myId=\(hex(myId)) port=\(MESH_HOP_PORTNUM)")
+        log("STATE", "mesh node-start myId=\(shortHex(myId)) port=\(MESH_HOP_PORTNUM)")
         meshQueue.async { [weak self] in
             guard let self else { return }
             self.stopped = false
@@ -111,6 +111,7 @@ public final class MeshtasticBearer: Bearer {
             self.stopped = true
             self.maintenanceTimer?.cancel(); self.maintenanceTimer = nil
             for link in Array(self.linksByNode.values) { self.teardown(link, why: "stop") }
+            self.reassembler.clear()
             self.radio.stop()
         }
     }
@@ -136,6 +137,7 @@ public final class MeshtasticBearer: Bearer {
     private func onRadioDisconnected() {
         log("STATE", "mesh radio-disconnected, tearing down \(linksByNode.count) link(s)")
         for link in Array(linksByNode.values) { teardown(link, why: "radio down") }
+        reassembler.clear()
         myNodeNum = nil
     }
 
@@ -181,6 +183,10 @@ public final class MeshtasticBearer: Bearer {
         if let existing = linksByNode[node] {
             existing.peerId = peerId
             existing.lastRxMs = nowMs()
+            return
+        }
+        guard linksByNode.count < MESH_MAX_LINKS else {
+            log("WARN", "mesh link cap reached (\(MESH_MAX_LINKS)), ignoring new node \(node)")
             return
         }
         let isGreater = meshKeepGreaterLeg(myId: myId, peer: peerId)
