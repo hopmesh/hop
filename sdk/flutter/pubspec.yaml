@@ -2,7 +2,7 @@ name: hop_endpoint
 description: >-
   Receive Hop messages in your Dart or Flutter app. An embeddable, first-class
   endpoint on the Hop mesh over the libhop C ABI via dart:ffi.
-version: 0.0.2
+version: 0.0.3
 homepage: https://hopme.sh
 
 environment:

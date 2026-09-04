@@ -23,7 +23,7 @@ members = [
 exclude = ["site", "sdk/elixir/native/hop_endpoint", "fuzz", "services/hop-accountd", "services/hop-billingd"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 # No repo-wide license: this is a monorepo; components carry their own license as they split out.
 repository = "https://github.com/hopmesh/hop"
@@ -40,12 +40,12 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [workspace.dependencies]
-hop-core = { path = "core/hop-core", version = "0.0.2" }
-hop-endpoint-core = { path = "core/hop-endpoint", version = "0.0.2" }
+hop-core = { path = "core/hop-core", version = "0.0.3" }
+hop-endpoint-core = { path = "core/hop-endpoint", version = "0.0.3" }
 # default-features off so each consumer picks plain `bundled` (default) OR encrypted `sqlcipher`
 # explicitly (F-25). The two SQLite bundling backends can't both be active in one build.
-hop-store-sqlite = { path = "core/stores/hop-store-sqlite", version = "0.0.2", default-features = false }
-hop-store-firestore = { path = "core/stores/hop-store-firestore", version = "0.0.2" }
+hop-store-sqlite = { path = "core/stores/hop-store-sqlite", version = "0.0.3", default-features = false }
+hop-store-firestore = { path = "core/stores/hop-store-firestore", version = "0.0.3" }
 
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }

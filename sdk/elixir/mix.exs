@@ -4,7 +4,7 @@ defmodule Hop.MixProject do
   def project do
     [
       app: :hop_endpoint,
-      version: "0.0.2",
+      version: "0.0.3",
       elixir: "~> 1.15",
       deps: deps(),
       package: package(),

@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name        = "hop-endpoint"
-  spec.version     = "0.0.2"
+  spec.version     = "0.0.3"
   spec.summary     = "Embeddable Hop mesh endpoint for Ruby (Sinatra/Rails-shaped) over the libhop C ABI"
   spec.description = "Receive Hop messages in Ruby with a hop.on / reply surface, over libhop via Fiddle. " \
                      "Your service becomes directly reachable on the mesh, no relay. Zero gems (stdlib only)."
