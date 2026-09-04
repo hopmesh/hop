@@ -129,8 +129,8 @@ const struct HopNode *hop_node_open(const char *db_path,
 
 // Like `hop_node_open`, but ENCRYPTS the store at rest with a raw `key` (typically 32 bytes) the host
 // derives and stores in the platform Keychain/Keystore (F-25). Real encryption requires libhop to be
-// built with the store's `sqlcipher` feature; otherwise the key is accepted but the db stays plain.
-// A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
+// built with the store's `sqlcipher` feature; builds without `sqlcipher` reject a non-empty key
+// (fail closed) and return NULL. A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
 const struct HopNode *hop_node_open_keyed(const char *db_path,
                                           const uint8_t *secret,
                                           uintptr_t secret_len,

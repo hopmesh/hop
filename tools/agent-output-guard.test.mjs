@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
@@ -12,11 +13,13 @@ import {
   isAllowedEnvironmentVariable,
   isEnvironmentDisclosure,
   loadOpencodeAllowlist,
+  loadOpencodeEnvironmentMode,
   scrubSensitiveEnvironment,
   validatePolicyConfig,
 } from "./agent-output-guard.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const OPENCODE_CONFIG = path.join(root, "opencode.json")
 
 test("plugin exposes exactly one function for the OpenCode 1.18 loader", () => {
   assert.deepEqual(Object.keys(pluginModule), ["AgentOutputGuard"])
@@ -106,7 +109,7 @@ test("allows environment setup and targeted presence checks that emit no values"
   for (const command of allowed) assert.equal(isEnvironmentDisclosure(command), false, command)
 })
 
-test("clears inherited sensitive values without breaking SSH or ordinary settings", () => {
+test("default mode is allowlist: clears sensitive AND unknown values without breaking SSH", () => {
   const environment = {
     HOP_TEST_API_TOKEN: "hop-test-canary-value-123",
     PGPASSWORD: "short",
@@ -127,7 +130,9 @@ test("clears inherited sensitive values without breaking SSH or ordinary setting
     ORDINARY_SETTING: "ordinary-visible-value",
   }
   const output = { EXPLICIT_SETTING: "kept" }
-  scrubSensitiveEnvironment(output, environment)
+  // No mode given: the runtime default applies (INFRA-015). SSH_AUTH_SOCK survives because
+  // opencode.json allowlists it; ORDINARY_SETTING is unknown and must NOT reach the child.
+  scrubSensitiveEnvironment(output, environment, { configPath: OPENCODE_CONFIG })
   assert.deepEqual(output, {
     EXPLICIT_SETTING: "kept",
     HOP_TEST_API_TOKEN: "",
@@ -145,24 +150,52 @@ test("clears inherited sensitive values without breaking SSH or ordinary setting
     STRIPE_ACCOUNT_KEY: "",
     MAVEN_GPG_KEY: "",
     MAVEN_GPG_PASSPHRASE: "",
+    ORDINARY_SETTING: "",
   })
+})
+
+test("explicit denylist mode still inherits ordinary settings", () => {
+  const environment = {
+    HOP_TEST_API_TOKEN: "hop-test-canary-value-123",
+    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+    ORDINARY_SETTING: "ordinary-visible-value",
+  }
+  const output = { EXPLICIT_SETTING: "kept" }
+  scrubSensitiveEnvironment(output, environment, { mode: "denylist" })
+  assert.deepEqual(output, { EXPLICIT_SETTING: "kept", HOP_TEST_API_TOKEN: "" })
+})
+
+test("environmentMode in opencode.json selects the mode, and an absent or invalid value means allowlist", () => {
+  assert.equal(loadOpencodeEnvironmentMode(OPENCODE_CONFIG), "allowlist")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hop-guard-mode-"))
+  try {
+    const legacy = path.join(dir, "legacy.json")
+    fs.writeFileSync(legacy, JSON.stringify({ environmentMode: "denylist" }))
+    assert.equal(loadOpencodeEnvironmentMode(legacy), "denylist")
+    const bogus = path.join(dir, "bogus.json")
+    fs.writeFileSync(bogus, JSON.stringify({ environmentMode: "everything" }))
+    assert.equal(loadOpencodeEnvironmentMode(bogus), "allowlist")
+    assert.equal(loadOpencodeEnvironmentMode(path.join(dir, "missing.json")), "allowlist")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test("allowlist mode drops non-allowlisted variables while keeping safe and allowlisted variables", () => {
   const environment = {
     PATH: "/usr/bin:/bin",
-    HOME: "/Users/test",
+    HOME: "/opt/hop-fixture-home",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
     TERM: "xterm-256color",
     SHELL: "/bin/zsh",
     USER: "testuser",
     TMPDIR: "/tmp",
-    CARGO_HOME: "/Users/test/.cargo",
-    RUSTUP_HOME: "/Users/test/.rustup",
+    CARGO_HOME: "/opt/hop-fixture-home/.cargo",
+    RUSTUP_HOME: "/opt/hop-fixture-home/.rustup",
     JAVA_HOME: "/Library/Java/Home",
-    ANDROID_HOME: "/Users/test/Library/Android/sdk",
-    GOPATH: "/Users/test/go",
+    ANDROID_HOME: "/opt/hop-fixture-home/Library/Android/sdk",
+    GOPATH: "/opt/hop-fixture-home/go",
     NODE_OPTIONS: "--max-old-space-size=4096",
     CUSTOM_TOOL_VAR: "custom-allowed-value",
     UNTRACKED_SECRET: "untracked-leak-value",
@@ -230,7 +263,7 @@ test("plugin blocks before execution and scrubs the child environment", async ()
     SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
     ORDINARY_SETTING: "ordinary-visible-value",
   }
-  const hooks = await AgentOutputGuard({}, { environment })
+  const hooks = await AgentOutputGuard({}, { environment, allowlist: ["SSH_AUTH_SOCK"] })
   await assert.rejects(
     hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "env | sort" } }),
     /Blocked environment-value output/,
@@ -239,7 +272,7 @@ test("plugin blocks before execution and scrubs the child environment", async ()
 
   const output = { env: { EXPLICIT_SETTING: "kept" } }
   await hooks["shell.env"]({}, output)
-  assert.deepEqual(output.env, { EXPLICIT_SETTING: "kept", HOP_TEST_API_TOKEN: "" })
+  assert.deepEqual(output.env, { EXPLICIT_SETTING: "kept", HOP_TEST_API_TOKEN: "", ORDINARY_SETTING: "" })
 })
 test("plugin redacts leaked canary values in tool output", async () => {
   const canary = "hop-secret-canary-789"

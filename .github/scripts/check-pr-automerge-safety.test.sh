@@ -141,4 +141,22 @@ test_case "experiment_marker" \
   "Testing benchmarks." \
   "false"
 
+# 17. Zero-width characters BETWEEN the marker's words (deleting them would fuse do+not+merge into
+# one token and hide the word boundary; the checker must match the space-mapped form too).
+test_case "zero_width_between_words" \
+  "feat: do"$'\u200B'"not"$'\u200B'"merge yet" \
+  "Landing later." \
+  "false"
+
+test_case "zero_width_joiner_inside_dnm" \
+  "chore: d"$'\u2060'"n"$'\u2060'"m" \
+  "Hold this." \
+  "false"
+
+# 18. A clean title with an unrelated zero-width character must still be allowed to auto-merge.
+test_case "zero_width_in_clean_title" \
+  "feat(core): tighten"$'\u200B'" bundle parsing" \
+  "Adds the size ceiling." \
+  "true"
+
 echo "PR auto-merge safety tests passed"

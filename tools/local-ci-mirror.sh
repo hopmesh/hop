@@ -140,7 +140,8 @@ CI_COVERAGE=(
   "elixir-sdk|none|the endpoint SDK suites are not run here, including the mix format check that has broken CI repeatedly"
   "flutter-sdk|none|the endpoint SDK suites are not run here, including the dart analyze and dart format checks that need the Dart SDK"
   "react-native-sdk|none|the React Native SDK typecheck and JS bridge tests are not run here; unlike the other SDKs it has no mirror CI, so ci.yml is its only gate"
-  "gate|none|the aggregate that depends on the other 20; it exists only in CI and is the ONE required context on main"
+  "lowest-supported-bounds|none|the Python + Go lowest-supported-dependency-bounds run (go mod tidy -compat, uv lowest resolution) is not run here; it needs pinned Go 1.22 and Python 3.12 toolchains, and it is what INFRA-013 gates on"
+  "gate|none|the aggregate that depends on the other 21; it exists only in CI and is the ONE required context on main"
 )
 
 step() { printf '%-46s' "$1"; shift; if "$@" >"$LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$LOG" | sed 's/^/    /'; fi; }

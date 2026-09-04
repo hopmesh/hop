@@ -83,6 +83,23 @@ export function loadOpencodeAllowlist(configPath) {
   } catch {}
   return []
 }
+
+// The runtime mode of the child-environment scrub (INFRA-015). `allowlist` is the default: a child
+// process inherits only the documented baseline (PATH, HOME, locale, toolchain homes) plus
+// `environmentAllowlist`, and the sensitive-name denylist still applies on top. `denylist` is the
+// legacy shape and has to be asked for explicitly in opencode.json.
+export function loadOpencodeEnvironmentMode(configPath) {
+  try {
+    const file = configPath ?? path.resolve(process.cwd(), "opencode.json")
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (data.environmentMode === "denylist" || data.environmentMode === "allowlist") {
+        return data.environmentMode
+      }
+    }
+  } catch {}
+  return "allowlist"
+}
 const PERMISSION_PROBES = [
   "env",
   "/bin/env",
@@ -524,7 +541,7 @@ export function redactCanaryOutput(text, canaryValues = []) {
 
 export function scrubSensitiveEnvironment(output, environment = process.env, options = {}) {
   const opts = typeof options === "string" ? { mode: options } : (options ?? {})
-  const mode = opts.mode ?? "denylist"
+  const mode = opts.mode ?? loadOpencodeEnvironmentMode(opts.configPath)
   const customAllowlist = opts.allowlist ?? loadOpencodeAllowlist(opts.configPath)
 
   for (const [name, value] of Object.entries(environment)) {

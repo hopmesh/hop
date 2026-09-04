@@ -10,19 +10,34 @@ import sys
 import unicodedata
 
 
-def normalize_text(text: str) -> str:
-    if not text:
-        return ""
-    # 1. NFKC normalization
-    norm = unicodedata.normalize("NFKC", text)
-    # 2. Strip zero-width and invisible characters
-    norm = re.sub(r"[\u200b-\u200f\u2060\ufeff\xad]", "", norm)
-    # 3. Casefold
+ZERO_WIDTH = r"[\u200b-\u200f\u2060\ufeff\xad]"
+
+
+def _finish(norm: str) -> str:
+    # Casefold, map hyphens, underscores, dots, slashes and common punctuation between words to
+    # spaces, then collapse whitespace.
     norm = norm.casefold()
-    # 4. Map hyphens, underscores, dots, slashes, and common punctuation between words to spaces
     norm = re.sub(r"[-_./:;,!?()\[\]{}'\"]+", " ", norm)
-    # 5. Normalize whitespace
     return " " + " ".join(norm.split()) + " "
+
+
+def normalize_forms(text: str) -> list[str]:
+    """Every normalized shape a marker can hide in.
+
+    Zero-width characters are the one class that cannot be normalized one way: an attacker can put
+    them BETWEEN words (`do<zw>not<zw>merge`, where deleting them fuses the words and hides the
+    boundary) or INSIDE a word (`w<zw>ip`, where treating them as spaces splits the word). So both
+    forms are produced and a marker matching either one counts.
+    """
+    if not text:
+        return []
+    norm = unicodedata.normalize("NFKC", text)
+    return [_finish(re.sub(ZERO_WIDTH, " ", norm)), _finish(re.sub(ZERO_WIDTH, "", norm))]
+
+
+def normalize_text(text: str) -> str:
+    forms = normalize_forms(text)
+    return forms[0] if forms else ""
 
 
 def check_review_intent(title: str, body: str) -> list[str]:
@@ -49,14 +64,14 @@ def check_review_intent(title: str, body: str) -> list[str]:
         (r"\bexperiment\b", "experiment"),
     ]
 
-    norm_title = normalize_text(title)
-    norm_body = normalize_text(body)
+    title_forms = normalize_forms(title)
+    body_forms = normalize_forms(body)
 
     found = []
     for pat, label in patterns:
-        if re.search(pat, norm_title):
+        if any(re.search(pat, form) for form in title_forms):
             found.append(f"title matched '{label}'")
-        elif re.search(pat, norm_body):
+        elif any(re.search(pat, form) for form in body_forms):
             found.append(f"body matched '{label}'")
     return found
 
