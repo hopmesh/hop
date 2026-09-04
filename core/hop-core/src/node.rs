@@ -137,6 +137,13 @@ pub const REACK_MIN_INTERVAL_MS: u64 = 30_000;
 /// are never counted or evicted; relayed ones decay under this bound.
 pub const DEFAULT_MAX_RELAYED: usize = 128;
 
+/// Minimum number of relay custody slots guaranteed to an active tenant or sender
+/// before its undelivered bundles become eligible for fair-share eviction under multi-tenant load.
+pub const MIN_RELAYED_PER_TENANT_GUARANTEE: usize = 4;
+
+/// Bound on the number of distinct senders tracked for fair-share custody partitioning.
+pub const DEFAULT_MAX_RELAYED_DISTINCT_SENDERS: usize = 256;
+
 /// After we've relayed a not-ours bundle to ≥1 peer, keep it at least this long before
 /// it becomes eviction-eligible, so in a populated area it can be handed off again, and
 /// so a flood of big transfers can't immediately evict freshly-relayed traffic (DESIGN.md
@@ -713,6 +720,36 @@ pub enum HnsLookup {
     NeedsResolver,
 }
 
+/// Outcome of ingesting a bundle into durable node storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// The bundle was admitted and remains held in durable storage.
+    Held,
+    /// The bundle was admitted, but immediately evicted by storage pressure.
+    EvictedImmediately,
+    /// The bundle was rejected by admission, deduplication, or verification policy.
+    Rejected,
+}
+
+/// Maximum aggregate count of receiver-seen deduplication rows.
+pub const MAX_RECEIVER_SEEN_COUNT: usize = 65_536;
+/// Maximum aggregate byte budget for receiver-seen deduplication state.
+pub const MAX_RECEIVER_SEEN_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum receiver-seen deduplication rows admitted per authenticated sender.
+pub const MAX_RECEIVER_SEEN_PER_SENDER: usize = 4_096;
+/// Maximum receiver-seen deduplication bytes admitted per authenticated sender.
+pub const MAX_RECEIVER_SEEN_BYTES_PER_SENDER: usize = 2 * 1024 * 1024;
+
+/// Maximum active forward-secret sessions admitted into memory and durable storage.
+pub const MAX_SESSIONS_COUNT: usize = 4_096;
+
+/// Persisted representation of a forward-secret session with its last activity timestamp.
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedSession {
+    session: PeerSession,
+    last_touched_ms: u64,
+}
+
 /// An HTTP response a gateway sealed back to the requester.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HttpRespItem {
@@ -727,6 +764,7 @@ pub struct HttpRespItem {
 
 /// A service request addressed to this node that the embedding app should fulfill
 /// (built-in `hop.` services are answered by the node and never surface here).
+#[derive(Clone)]
 pub struct ServiceReqItem {
     pub from: PubKeyBytes,
     /// The request bundle's id. Pass it to [`Node::send_service_response`] to reply.
@@ -1094,6 +1132,11 @@ pub struct Node<S: Store = MemoryStore> {
     /// Receiver-only dedup, separate from relay `Store::seen` so an unrecognized private-header
     /// chimera cannot suppress the genuine copy. The retained acknowledgement enables safe re-ACK.
     receiver_seen: HashMap<BundleId, ReceiverSeen>,
+    receiver_seen_sender: HashMap<BundleId, PubKeyBytes>,
+    receiver_seen_sender_count: HashMap<PubKeyBytes, usize>,
+    receiver_seen_sender_bytes: HashMap<PubKeyBytes, usize>,
+    receiver_seen_entry_bytes: HashMap<BundleId, usize>,
+    receiver_seen_total_bytes: usize,
     /// Locally-originated bundles awaiting an ACK, retransmitted until acked/expired.
     pending: HashMap<BundleId, PendingTx>,
     retx_interval_ms: u64,
@@ -1525,6 +1568,12 @@ impl Node<MemoryStore> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CustodyOwner {
+    Tenant(TenantId),
+    Sender(PubKeyBytes),
+}
+
 impl<S: Store> Node<S> {
     /// Create a node with an explicit store backend (e.g. a persistent one).
     pub fn with_store(identity: Identity, store: S) -> Self {
@@ -1585,6 +1634,11 @@ impl<S: Store> Node<S> {
             durable_inbox: HashMap::new(),
             inbox_order: Vec::new(),
             receiver_seen: HashMap::new(),
+            receiver_seen_sender: HashMap::new(),
+            receiver_seen_sender_count: HashMap::new(),
+            receiver_seen_sender_bytes: HashMap::new(),
+            receiver_seen_entry_bytes: HashMap::new(),
+            receiver_seen_total_bytes: 0,
             pending: HashMap::new(),
             retx_interval_ms: DEFAULT_RETX_INTERVAL_MS,
             advert_seq: 0,
@@ -2099,12 +2153,25 @@ impl<S: Store> Node<S> {
             let Ok(addr) = <PubKeyBytes>::try_from(addr_vec.as_slice()) else {
                 continue;
             };
-            match postcard::from_bytes::<PeerSession>(&bytes) {
-                Ok(ps) => {
-                    self.sessions.insert(addr, ps);
-                    self.unanchored_sessions.insert(addr);
-                }
-                Err(_) => self.rehydrate_report.note("session"),
+            let (ps, touched) = match postcard::from_bytes::<PersistedSession>(&bytes) {
+                Ok(p) => (p.session, p.last_touched_ms),
+                Err(_) => match postcard::from_bytes::<PeerSession>(&bytes) {
+                    Ok(ps) => (ps, 0),
+                    Err(_) => {
+                        self.rehydrate_report.note("session");
+                        continue;
+                    }
+                },
+            };
+            if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                self.rehydrate_report.note("session/cap");
+                continue;
+            }
+            self.sessions.insert(addr, ps);
+            if touched != 0 {
+                self.session_touch.insert(addr, touched);
+            } else {
+                self.unanchored_sessions.insert(addr);
             }
         }
 
@@ -2114,7 +2181,41 @@ impl<S: Store> Node<S> {
         for (_, bytes) in self.store.list_kv("inbox-seen/") {
             match postcard::from_bytes::<(BundleId, ReceiverSeen)>(&bytes) {
                 Ok((id, seen)) => {
-                    self.receiver_seen.insert(id, seen);
+                    if self.now_ms != 0 && seen.expires_at_ms <= self.now_ms {
+                        continue;
+                    }
+                    let bytes_len = bytes.len();
+                    if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+                        || self.receiver_seen_total_bytes.saturating_add(bytes_len)
+                            > MAX_RECEIVER_SEEN_BYTES
+                    {
+                        self.rehydrate_report.note("inbox-seen/cap");
+                        continue;
+                    }
+                    let sender = match &seen.acknowledgement {
+                        InboxAcknowledgement::Traced { to, .. }
+                        | InboxAcknowledgement::Private { to, .. } => Some(*to),
+                        InboxAcknowledgement::None => None,
+                    };
+                    if let Some(s) = sender {
+                        let sc = self
+                            .receiver_seen_sender_count
+                            .get(&s)
+                            .copied()
+                            .unwrap_or(0);
+                        let sb = self
+                            .receiver_seen_sender_bytes
+                            .get(&s)
+                            .copied()
+                            .unwrap_or(0);
+                        if sc >= MAX_RECEIVER_SEEN_PER_SENDER
+                            || sb.saturating_add(bytes_len) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+                        {
+                            self.rehydrate_report.note("inbox-seen/sender-cap");
+                            continue;
+                        }
+                    }
+                    self.insert_receiver_seen_entry(id, seen, sender, bytes_len);
                 }
                 Err(_) => self.rehydrate_report.note("inbox-seen"),
             }
@@ -2833,7 +2934,18 @@ impl<S: Store> Node<S> {
     /// Durably write a candidate ratchet before replacing the live in-memory session. Once this
     /// succeeds the old send state must never be restored, even if later bundle storage fails.
     fn commit_session(&mut self, peer: PubKeyBytes, candidate: PeerSession) -> Result<()> {
-        let bytes = postcard::to_allocvec(&candidate)?;
+        if !self.sessions.contains_key(&peer) && self.sessions.len() >= MAX_SESSIONS_COUNT {
+            self.gc_idle_sessions();
+            if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                return Err(Error::Other("session capacity reached".into()));
+            }
+        }
+        let now = self.now_ms;
+        let persisted = PersistedSession {
+            session: candidate.clone(),
+            last_touched_ms: now,
+        };
+        let bytes = postcard::to_allocvec(&persisted)?;
         self.store
             .put_kv_critical(&Self::session_kv_key(&peer), bytes)
             .map_err(|e| Error::Other(format!("session persistence failed: {e}")))?;
@@ -2842,6 +2954,73 @@ impl<S: Store> Node<S> {
         Ok(())
     }
 
+    fn insert_receiver_seen_entry(
+        &mut self,
+        id: BundleId,
+        seen: ReceiverSeen,
+        sender: Option<PubKeyBytes>,
+        bytes_len: usize,
+    ) {
+        if let Some(s) = sender {
+            let sc = self.receiver_seen_sender_count.entry(s).or_insert(0);
+            *sc = sc.saturating_add(1);
+            let sb = self.receiver_seen_sender_bytes.entry(s).or_insert(0);
+            *sb = sb.saturating_add(bytes_len);
+            self.receiver_seen_sender.insert(id, s);
+        }
+        self.receiver_seen_entry_bytes.insert(id, bytes_len);
+        self.receiver_seen_total_bytes = self.receiver_seen_total_bytes.saturating_add(bytes_len);
+        self.receiver_seen.insert(id, seen);
+    }
+
+    fn remove_receiver_seen_entry(&mut self, id: &BundleId) -> Option<ReceiverSeen> {
+        let removed = self.receiver_seen.remove(id)?;
+        let bytes_len = self.receiver_seen_entry_bytes.remove(id).unwrap_or(128);
+        self.receiver_seen_total_bytes = self.receiver_seen_total_bytes.saturating_sub(bytes_len);
+        if let Some(sender) = self.receiver_seen_sender.remove(id) {
+            if let Some(sc) = self.receiver_seen_sender_count.get_mut(&sender) {
+                *sc = sc.saturating_sub(1);
+                if *sc == 0 {
+                    self.receiver_seen_sender_count.remove(&sender);
+                }
+            }
+            if let Some(sb) = self.receiver_seen_sender_bytes.get_mut(&sender) {
+                *sb = sb.saturating_sub(bytes_len);
+                if *sb == 0 {
+                    self.receiver_seen_sender_bytes.remove(&sender);
+                }
+            }
+        }
+        Some(removed)
+    }
+
+    fn prune_expired_receiver_seen(&mut self) {
+        let now_ms = self.now_ms;
+        let expired_received: Vec<BundleId> = self
+            .receiver_seen
+            .iter()
+            .filter(|(id, seen)| {
+                seen.expires_at_ms <= now_ms && !self.durable_inbox.contains_key(*id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        const MAX_CLEANUP_BATCH: usize = 128;
+        for chunk in expired_received.chunks(MAX_CLEANUP_BATCH) {
+            let removals: Vec<KvMutation> = chunk
+                .iter()
+                .map(|id| KvMutation::Remove {
+                    key: Self::receiver_seen_kv_key(id),
+                })
+                .collect();
+            if self.store.apply_kv_batch(&removals).is_ok() {
+                for id in chunk {
+                    self.remove_receiver_seen_entry(id);
+                }
+            } else {
+                break;
+            }
+        }
+    }
     /// Delete the durable session first. A failed delete leaves the live ratchet and its idle-GC
     /// bookkeeping untouched, so restart and in-process state cannot diverge.
     fn delete_session(&mut self, peer: &PubKeyBytes) -> Result<()> {
@@ -3951,6 +4130,56 @@ impl<S: Store> Node<S> {
             return Ok(());
         }
 
+        if let Payload::SessionInit { .. } = &payload {
+            if !self.sessions.contains_key(&from) && self.sessions.len() >= MAX_SESSIONS_COUNT {
+                self.gc_idle_sessions();
+                if self.sessions.len() >= MAX_SESSIONS_COUNT {
+                    return Err(Error::Other("session capacity reached".into()));
+                }
+            }
+        }
+        let est_seen_bytes = 200;
+        let sender_count = self
+            .receiver_seen_sender_count
+            .get(&from)
+            .copied()
+            .unwrap_or(0);
+        let sender_bytes = self
+            .receiver_seen_sender_bytes
+            .get(&from)
+            .copied()
+            .unwrap_or(0);
+        if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+            || self
+                .receiver_seen_total_bytes
+                .saturating_add(est_seen_bytes)
+                > MAX_RECEIVER_SEEN_BYTES
+            || sender_count >= MAX_RECEIVER_SEEN_PER_SENDER
+            || sender_bytes.saturating_add(est_seen_bytes) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+        {
+            self.prune_expired_receiver_seen();
+            let sender_count = self
+                .receiver_seen_sender_count
+                .get(&from)
+                .copied()
+                .unwrap_or(0);
+            let sender_bytes = self
+                .receiver_seen_sender_bytes
+                .get(&from)
+                .copied()
+                .unwrap_or(0);
+            if self.receiver_seen.len() >= MAX_RECEIVER_SEEN_COUNT
+                || self
+                    .receiver_seen_total_bytes
+                    .saturating_add(est_seen_bytes)
+                    > MAX_RECEIVER_SEEN_BYTES
+                || sender_count >= MAX_RECEIVER_SEEN_PER_SENDER
+                || sender_bytes.saturating_add(est_seen_bytes) > MAX_RECEIVER_SEEN_BYTES_PER_SENDER
+            {
+                return Err(Error::Other("receiver seen capacity reached".into()));
+            }
+        }
+
         let prepared = self.prepare_inbound_message(from, payload, authenticated)?;
         let acknowledgement = self.inbox_acknowledgement(bundle, from, private);
         let seen = ReceiverSeen {
@@ -3988,14 +4217,20 @@ impl<S: Store> Node<S> {
 
         let mut mutations = Vec::with_capacity(3);
         if let Some(candidate) = &prepared.session {
+            let persisted = PersistedSession {
+                session: candidate.clone(),
+                last_touched_ms: self.now_ms,
+            };
             mutations.push(KvMutation::Put {
                 key: Self::session_kv_key(&from),
-                value: postcard::to_allocvec(candidate)?,
+                value: postcard::to_allocvec(&persisted)?,
             });
         }
+        let seen_payload = postcard::to_allocvec(&(id, seen.clone()))?;
+        let seen_bytes_len = seen_payload.len();
         mutations.push(KvMutation::Put {
             key: Self::receiver_seen_kv_key(&id),
-            value: postcard::to_allocvec(&(id, seen.clone()))?,
+            value: seen_payload,
         });
         if let Some(item) = &item {
             mutations.push(KvMutation::Put {
@@ -4014,7 +4249,7 @@ impl<S: Store> Node<S> {
             self.sessions.insert(from, candidate);
             self.touch_session(from);
         }
-        self.receiver_seen.insert(id, seen);
+        self.insert_receiver_seen_entry(id, seen, Some(from), seen_bytes_len);
         if let Some(item) = item {
             self.inbox.push(bundle.clone());
             self.inbox_order.push(id);
@@ -4093,25 +4328,12 @@ impl<S: Store> Node<S> {
         authenticated: bool,
     ) -> Result<PreparedInbound> {
         match payload {
-            Payload::PeerMessage { content_type, body } => {
-                if !authenticated {
-                    // A bare PeerMessage inside an unsigned Private seal: anyone knowing the
-                    // recipient's public address + published prekey could forge this "from
-                    // <victim>". Device-to-device content is always forward-secret (a send
-                    // without a ratchet is an error), so a private static PeerMessage is never
-                    // legitimate; drop it rather than attribute it.
-                    return Ok(PreparedInbound {
-                        message: None,
-                        session: None,
-                        flush_pending: false,
-                    });
-                }
+            Payload::PeerMessage { .. } => {
+                // PROTO-007: Device-to-device user content is always forward-secret (Double
+                // Ratchet). A bare PeerMessage carries no session ratchet and is never legitimate
+                // on either the private or traced receive path; drop it rather than attribute it.
                 Ok(PreparedInbound {
-                    message: Some(ReadMessage {
-                        from,
-                        content_type,
-                        body,
-                    }),
+                    message: None,
                     session: None,
                     flush_pending: false,
                 })
@@ -4470,6 +4692,9 @@ impl<S: Store> Node<S> {
     /// the entity controlling `domain`'s TLS asserts this address. A verify failure (bad signature,
     /// expired, malformed) caches a short negative.
     pub fn provide_reach_record(&mut self, domain: &str, record: Vec<u8>) {
+        if record.len() > crate::reach::MAX_REACH_RECORD_BYTES {
+            return;
+        }
         let key = normalize_domain(domain);
         let now_ms = self.now_ms;
         let (address, expires_at_ms) =
@@ -4589,15 +4814,15 @@ impl<S: Store> Node<S> {
         kind: hps::ServiceKind,
         access: hps::AccessMode,
         visibility: hps::Visibility,
-    ) -> Option<[u8; 32]> {
+    ) -> Result<Option<[u8; 32]>> {
         let cfg = hps::ServiceConfig::new_with(kind, access, visibility);
         let pk = cfg.service_pubkey();
+        self.persist_service(path, &cfg)?;
         if visibility == hps::Visibility::Discoverable {
             self.publish_topic_advert(path, &cfg);
         }
-        self.persist_service(path, &cfg);
         self.services.insert(path.to_string(), cfg);
-        pk
+        Ok(pk)
     }
 
     /// Current join-proof time bucket (DESIGN.md §32 app isolation).
@@ -4755,7 +4980,10 @@ impl<S: Store> Node<S> {
         let proof = self.hps_proof(path, &self.identity.address());
         self.hps_invites_out
             .insert((path.to_string(), dest), self.now_ms);
-        self.persist_invites();
+        if let Err(e) = self.persist_invites() {
+            self.hps_invites_out.remove(&(path.to_string(), dest));
+            return Err(e);
+        }
         self.send_to_host(
             dest,
             Payload::HpsInvite {
@@ -4766,11 +4994,11 @@ impl<S: Store> Node<S> {
         )
     }
 
-    /// Member → host: accept an invite we received, which prompts the host to seal us the keys.
+    /// Member -> host: accept an invite we received, which prompts the host to seal us the keys.
     pub fn hps_accept_invite(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
         self.expect_hps_keys(host, path)?;
         self.remove_hps_invite_item(host, path);
-        self.persist_invites();
+        self.persist_invites()?;
         let proof = self.hps_proof(path, &self.identity.address());
         self.send_to_host(
             host,
@@ -4888,17 +5116,17 @@ impl<S: Store> Node<S> {
         if let Some(q) = self.hps_pending.get_mut(path) {
             q.retain(|a| *a != requester);
         }
-        self.persist_pending(path);
-        self.record_member(path, requester);
+        self.persist_pending(path)?;
+        self.record_member(path, requester)?;
         self.send_keys(path, requester)
     }
 
     /// Host: deny/drop a pending requester (no keys).
-    pub fn hps_deny(&mut self, path: &str, requester: PubKeyBytes) {
+    pub fn hps_deny(&mut self, path: &str, requester: PubKeyBytes) -> Result<()> {
         if let Some(q) = self.hps_pending.get_mut(path) {
             q.retain(|a| *a != requester);
         }
-        self.persist_pending(path);
+        self.persist_pending(path)
     }
 
     /// Host: unique acking addresses for a topic (its reach / sense of delivery, DESIGN.md §32).
@@ -4928,7 +5156,7 @@ impl<S: Store> Node<S> {
     /// Decline an invite (member side): drop it from the durable set so it doesn't reappear.
     pub fn hps_decline_invite(&mut self, host: PubKeyBytes, path: &str) {
         self.remove_hps_invite_item(host, path);
-        self.persist_invites();
+        let _ = self.persist_invites();
     }
 
     fn remove_hps_invite_item(&mut self, host: PubKeyBytes, path: &str) {
@@ -5312,7 +5540,7 @@ impl<S: Store> Node<S> {
             }
             None => {
                 // We're the host: a member posting is direct evidence of membership.
-                self.record_member(&path, bundle.inner.src);
+                let _ = self.record_member(&path, bundle.inner.src);
                 self.hps_reach
                     .entry(path)
                     .or_default()
@@ -5362,15 +5590,21 @@ impl<S: Store> Node<S> {
     }
 
     /// Host: remember a member for reach/rekey.
-    fn record_member(&mut self, path: &str, who: PubKeyBytes) {
+    fn record_member(&mut self, path: &str, who: PubKeyBytes) -> Result<()> {
         let added = self
             .hps_members
             .entry(path.to_string())
             .or_default()
             .insert(who);
         if added {
-            self.persist_members(path);
+            if let Err(e) = self.persist_members(path) {
+                if let Some(set) = self.hps_members.get_mut(path) {
+                    set.remove(&who);
+                }
+                return Err(e);
+            }
         }
+        Ok(())
     }
 
     /// Store a subscription we've been handed (Open keys, invite/approve keys, or a rekey).
@@ -5391,7 +5625,7 @@ impl<S: Store> Node<S> {
             topic_tag: self.app.topic_tag(path),
         };
         self.directory.subscribe(path.to_string());
-        self.persist_subscription(path, &sub);
+        let _ = self.persist_subscription(path, &sub);
         self.subscriptions.insert(path.to_string(), sub);
     }
 
@@ -5802,57 +6036,75 @@ impl<S: Store> Node<S> {
         }
     }
 
-    fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) {
-        if let Ok(bytes) = postcard::to_allocvec(cfg) {
-            self.store.put_kv(&Self::hps_svc_key(path), bytes);
-        }
+    fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) -> Result<()> {
+        let bytes = postcard::to_allocvec(cfg)
+            .map_err(|e| Error::Other(format!("service serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_svc_key(path), bytes)
+            .map_err(|e| Error::Other(format!("service persistence failed: {e}")))?;
+        Ok(())
     }
     #[cfg(test)]
-    fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) {
-        if let Ok(bytes) = postcard::to_allocvec(sub) {
-            self.store.put_kv(&Self::hps_sub_key(path), bytes);
-        }
+    fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) -> Result<()> {
+        let bytes = postcard::to_allocvec(sub)
+            .map_err(|e| Error::Other(format!("subscription serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_sub_key(path), bytes)
+            .map_err(|e| Error::Other(format!("subscription persistence failed: {e}")))?;
+        Ok(())
     }
-    fn persist_pending(&mut self, path: &str) {
+    fn persist_pending(&mut self, path: &str) -> Result<()> {
         let q: Vec<PubKeyBytes> = self.hps_pending.get(path).cloned().unwrap_or_default();
-        if let Ok(bytes) = postcard::to_allocvec(&q) {
-            self.store.put_kv(&Self::hps_pending_key(path), bytes);
-        }
+        let bytes = postcard::to_allocvec(&q)
+            .map_err(|e| Error::Other(format!("pending serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_pending_key(path), bytes)
+            .map_err(|e| Error::Other(format!("pending persistence failed: {e}")))?;
+        Ok(())
     }
-    fn persist_members(&mut self, path: &str) {
+    fn persist_members(&mut self, path: &str) -> Result<()> {
         let members = self.hps_members.get(path).cloned().unwrap_or_default();
-        self.persist_member_set(path, &members);
+        self.persist_member_set(path, &members)
     }
-    fn persist_member_set(&mut self, path: &str, members: &HashSet<PubKeyBytes>) {
+    fn persist_member_set(&mut self, path: &str, members: &HashSet<PubKeyBytes>) -> Result<()> {
         let m: Vec<PubKeyBytes> = members.iter().copied().collect();
-        if let Ok(bytes) = postcard::to_allocvec(&m) {
-            self.store.put_kv(&Self::hps_members_key(path), bytes);
-        }
+        let bytes = postcard::to_allocvec(&m)
+            .map_err(|e| Error::Other(format!("members serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_members_key(path), bytes)
+            .map_err(|e| Error::Other(format!("members persistence failed: {e}")))?;
+        Ok(())
     }
 
     /// Persist the deferred-content queue (messages the user sent that are waiting on a prekey)
     /// so a restart before the prekey arrives doesn't silently drop them (DESIGN.md §25).
     fn persist_pending_content(&mut self, pending: &[PendingContent]) -> Result<()> {
-        let bytes = postcard::to_allocvec(&pending)?;
+        let bytes = postcard::to_allocvec(&pending)
+            .map_err(|e| Error::Other(format!("deferred content serialization failed: {e}")))?;
         self.store
             .put_kv_critical("pending_content", bytes)
             .map_err(|e| Error::Other(format!("deferred content persistence failed: {e}")))
     }
 
     /// Persist received + outstanding `hps://` invites so they survive a restart (§32).
-    fn persist_invites(&mut self) {
+    fn persist_invites(&mut self) -> Result<()> {
         let inc: Vec<(String, PubKeyBytes, bool)> = self
             .hps_invites_in
             .iter()
             .map(|i| (i.path.clone(), i.host, i.kind == hps::ServiceKind::Channel))
             .collect();
-        if let Ok(b) = postcard::to_allocvec(&inc) {
-            self.store.put_kv("hps/invites_in", b);
-        }
+        let b = postcard::to_allocvec(&inc)
+            .map_err(|e| Error::Other(format!("invites serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical("hps/invites_in", b)
+            .map_err(|e| Error::Other(format!("invites persistence failed: {e}")))?;
         let out: Vec<(String, PubKeyBytes)> = self.hps_invites_out.keys().cloned().collect();
-        if let Ok(b) = postcard::to_allocvec(&out) {
-            self.store.put_kv("hps/invites_out", b);
-        }
+        let b = postcard::to_allocvec(&out)
+            .map_err(|e| Error::Other(format!("invites serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical("hps/invites_out", b)
+            .map_err(|e| Error::Other(format!("invites persistence failed: {e}")))?;
+        Ok(())
     }
 
     /// A diagnostic snapshot of the live HNS cache: `(domain, address?, remaining_ttl_ms)`
@@ -6488,19 +6740,38 @@ impl<S: Store> Node<S> {
         Ok(id)
     }
 
-    /// Drain custom service requests addressed to us (built-in `hop.` services are
-    /// answered by the node and never appear here).
-    pub fn take_service_requests(&mut self) -> Vec<ServiceReqItem> {
-        let pending = self.take_service_requests_deferred();
-        let mut accepted = Vec::with_capacity(pending.len());
-        for item in pending {
-            if self.complete_app_delivery(&item.id) {
-                accepted.push(item);
-            } else {
-                self.service_requests.push(item);
+    /// Poll custom service requests addressed to us without consuming them (built-in `hop.` services
+    /// are answered by the node and never appear here). Use [`Self::accept_service_request`] or
+    /// [`Self::reject_service_request`] for explicit lifecycle decisions.
+    pub fn take_service_requests(&self) -> Vec<ServiceReqItem> {
+        self.service_requests.clone()
+    }
+
+    /// Durably accept one service request previously returned by [`Self::take_service_requests`].
+    /// Commits the seen dedup row and ACK only after successful storage admission.
+    pub fn accept_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.complete_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
             }
+            true
+        } else {
+            false
         }
-        accepted
+    }
+
+    /// Reject one service request without ACK or dedup consumption so a retransmission can retry.
+    pub fn reject_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.reject_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Move service requests into a higher-level admission gate without ACKing or consuming dedup.
@@ -7508,7 +7779,7 @@ impl<S: Store> Node<S> {
     /// already warm (DESIGN.md §28). Stores it for onward relay and offers it to live
     /// links, exactly as if a peer had handed it over. A cold-started node gets the same
     /// bundles for free via [`Node::with_store`]'s rehydrate.
-    pub fn ingest(&mut self, bundle: Bundle) {
+    pub fn ingest(&mut self, bundle: Bundle) -> IngestOutcome {
         // relay-F (pass-5 audit): re-inject via LOCAL_LINK, NOT a phantom `LinkId::MAX`. Both match no
         // real connection (so the bundle is offered to every live link, the offer step skips only the
         // arrival link), but ONLY LOCAL_LINK is exempt from the F-07 per-link private-ingest flood cap.
@@ -7517,7 +7788,16 @@ impl<S: Store> Node<S> {
         // and a beacon that pulls > MAX_PRIV_BUNDLES_PER_WINDOW bundles (a real backlog, or an attacker
         // co-locating spam under a shared mailbox prefix) would otherwise overflow the cap and silently
         // drop the overflow AFTER the durable copy is gone: permanent loss of offline messages.
-        self.on_bundle(LOCAL_LINK, bundle);
+        let id = bundle.id();
+        let was_held = self.store.contains(&id);
+        let stored = self.process_bundle(LOCAL_LINK, bundle);
+        if self.store.contains(&id) || self.durable_inbox.contains_key(&id) {
+            IngestOutcome::Held
+        } else if was_held || stored {
+            IngestOutcome::EvictedImmediately
+        } else {
+            IngestOutcome::Rejected
+        }
     }
 
     /// Drop everything we're currently holding: our own undelivered messages (stop
@@ -7685,29 +7965,8 @@ impl<S: Store> Node<S> {
         }
         self.store.prune(now_ms);
         self.expire_outgoing_carriers();
-        // Accepted receiver dedup expires with the bundle window. Unaccepted inbox rows never expire:
-        // host acceptance, not sender TTL, owns their retention and redelivery lifecycle.
-        let expired_received: Vec<BundleId> = self
-            .receiver_seen
-            .iter()
-            .filter(|(id, seen)| {
-                seen.expires_at_ms <= now_ms && !self.durable_inbox.contains_key(*id)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        if !expired_received.is_empty() {
-            let removals: Vec<KvMutation> = expired_received
-                .iter()
-                .map(|id| KvMutation::Remove {
-                    key: Self::receiver_seen_kv_key(id),
-                })
-                .collect();
-            if self.store.apply_kv_batch(&removals).is_ok() {
-                for id in expired_received {
-                    self.receiver_seen.remove(&id);
-                }
-            }
-        }
+        // Accepted receiver dedup expires with the bundle window, cleaned up in bounded batches.
+        self.prune_expired_receiver_seen();
         // Drop relay-queue entries whose bundles have been delivered or expired.
         self.relay_order.retain(|id| self.store.contains(id));
         self.relay_fwd.retain(|id, _| self.store.contains(id));
@@ -8624,8 +8883,13 @@ impl<S: Store> Node<S> {
                 // Route by payload. User content decrypts and commits its durable inbox state here;
                 // every other addressed protocol payload keeps its existing immediate processing.
                 match bundle.open(&self.identity) {
-                    Ok(payload @ Payload::PeerMessage { .. })
-                    | Ok(payload @ Payload::SessionInit { .. })
+                    Ok(Payload::PeerMessage { .. }) => {
+                        // PROTO-007: Device-to-device user content is always forward-secret (Double
+                        // Ratchet). A bare PeerMessage send without a session ratchet is a protocol
+                        // violation; drop it without delivering to inbox or emitting an ACK.
+                        return false;
+                    }
+                    Ok(payload @ Payload::SessionInit { .. })
                     | Ok(payload @ Payload::SessionMessage { .. }) => {
                         if !self.app_payload_policy.supports(AppQueueKind::PeerInbox) {
                             return false;
@@ -8746,36 +9010,54 @@ impl<S: Store> Node<S> {
                             // tenant from the carriage stamp (§35, the SAME verified attribution as
                             // billing), then surface it. Fire-and-forget (no response); a malformed
                             // or oversized batch is dropped rather than trusted.
-                            //
-                            // Attribution is BOUNDED (`attribute_fresh`), not any-epoch: this path
-                            // performs no dedup and no replay check, so the unbounded form would
-                            // leave a captured stamp valid for its bundle id indefinitely. The
-                            // window (`MAX_ATTRIBUTION_AGE_EPOCHS`) is wide enough that a device
-                            // offline overnight still attributes, which is the delay tolerance §40
-                            // actually needs; the unbounded `attribute` stays for the durable
-                            // re-ingest path, which was already admitted once against a fresh stamp.
-                            if let Some(batch) = TelemetryBatch::from_bytes(&args) {
-                                if !self.app_payload_policy.supports(AppQueueKind::Telemetry) {
+                            let Some(batch) = TelemetryBatch::from_bytes(&args) else {
+                                return false;
+                            };
+                            if !self.app_payload_policy.supports(AppQueueKind::Telemetry) {
+                                return false;
+                            }
+                            let now = self.now_ms;
+                            let epoch_hour = bundle
+                                .env
+                                .access
+                                .as_deref()
+                                .map(|s| s.epoch)
+                                .unwrap_or(now / 3_600_000);
+                            let dedup_key = format!(
+                                "telemetry_seen/{}/{}",
+                                epoch_hour,
+                                bs58::encode(id).into_string()
+                            );
+                            match self
+                                .store
+                                .put_kv_if_absent_critical(&dedup_key, now.to_le_bytes().to_vec())
+                            {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    // Duplicate telemetry batch already processed (SVC-006)
                                     return false;
                                 }
-                                let now = self.now_ms;
-                                let tenant = bundle.env.access.as_deref().and_then(|stamp| {
-                                    self.access_policy.attribute_fresh(stamp, &id, now)
-                                });
-                                let Some(charge) = self.reserve_app_queue(
-                                    AppQueueKind::Telemetry,
-                                    Some(from),
-                                    args.len().saturating_add(40),
-                                ) else {
+                                Err(_) => {
+                                    // Critical persistence failure: fail closed
                                     return false;
-                                };
-                                self.telemetry_in.push(TelemetryIn {
-                                    from,
-                                    batch,
-                                    tenant,
-                                });
-                                self.telemetry_charges.push(charge);
+                                }
                             }
+                            let tenant = bundle.env.access.as_deref().and_then(|stamp| {
+                                self.access_policy.attribute_fresh(stamp, &id, now)
+                            });
+                            let Some(charge) = self.reserve_app_queue(
+                                AppQueueKind::Telemetry,
+                                Some(from),
+                                args.len().saturating_add(40),
+                            ) else {
+                                return false;
+                            };
+                            self.telemetry_in.push(TelemetryIn {
+                                from,
+                                batch,
+                                tenant,
+                            });
+                            self.telemetry_charges.push(charge);
                         } else {
                             // Custom service: hand to the embedding app to fulfill.
                             let item = ServiceReqItem {
@@ -8804,14 +9086,14 @@ impl<S: Store> Node<S> {
                             let who = bundle.inner.src;
                             match self.services.get(&path).map(|c| c.access) {
                                 Some(hps::AccessMode::Open) => {
-                                    self.record_member(&path, who);
+                                    let _ = self.record_member(&path, who);
                                     let _ = self.send_keys(&path, who);
                                 }
                                 Some(hps::AccessMode::RequestToJoin) => {
                                     let q = self.hps_pending.entry(path.clone()).or_default();
                                     if !q.contains(&who) {
                                         q.push(who);
-                                        self.persist_pending(&path);
+                                        let _ = self.persist_pending(&path);
                                     }
                                 }
                                 _ => {} // Invite-only or unregistered → ignore
@@ -8840,18 +9122,18 @@ impl<S: Store> Node<S> {
                                 };
                                 self.hps_invites_in.push(HpsInviteItem { path, host, kind });
                                 self.hps_invite_charges.push(charge);
-                                self.persist_invites();
+                                let _ = self.persist_invites();
                             }
                         }
                     }
-                    // Destination → host: an invite was accepted; seal them the keys.
+                    // Destination -> host: an invite was accepted; seal them the keys.
                     Ok(Payload::HpsInviteAccept { path, proof }) => {
                         let who = bundle.inner.src;
                         if self.hps_authorized(&bundle, &path, &proof)
                             && self.hps_invites_out.remove(&(path.clone(), who)).is_some()
                         {
-                            self.persist_invites();
-                            self.record_member(&path, who);
+                            let _ = self.persist_invites();
+                            let _ = self.record_member(&path, who);
                             let _ = self.send_keys(&path, who);
                         }
                     }
@@ -8898,7 +9180,7 @@ impl<S: Store> Node<S> {
                                 );
                             if authorized {
                                 self.hps_reach.entry(path.clone()).or_default().insert(who);
-                                self.record_member(&path, who);
+                                let _ = self.record_member(&path, who);
                             }
                         }
                     }
@@ -9251,7 +9533,9 @@ impl<S: Store> Node<S> {
             }
             self.evict_relayed_if_needed();
             // F-09: offer just the bundle we accepted to the other links, not the whole store.
-            self.offer_bundle_to_all_except(id, from_link);
+            if self.store.contains(&id) {
+                self.offer_bundle_to_all_except(id, from_link);
+            }
         }
         stored
     }
@@ -9317,11 +9601,23 @@ impl<S: Store> Node<S> {
         }
     }
 
-    /// Choose an eviction victim by lowest utility (priority, route, oldest). When
-    /// `settled_only`, consider only bundles we've already relayed once and held past
-    /// [`EVICT_GRACE_MS`], the preferred, safe-to-drop set.
+    fn bundle_custody_owner(&self, id: &BundleId) -> CustodyOwner {
+        if let Some((tenant, _)) = self.metered_attribution.get(id) {
+            CustodyOwner::Tenant(*tenant)
+        } else if let Some(b) = self.store.get(id) {
+            CustodyOwner::Sender(b.inner.src)
+        } else {
+            CustodyOwner::Sender(PubKeyBytes::default())
+        }
+    }
+
+    /// Choose an eviction victim by lowest utility (priority, route, oldest), enforcing fair-share
+    /// custody bounds (SVC-007) so a high-priority flood from one tenant or sender cannot evict
+    /// undelivered bundles from another tenant within their fair share. When `settled_only`, consider
+    /// only bundles we've already relayed once and held past [`EVICT_GRACE_MS`], the preferred, safe-to-drop set.
     fn pick_evict_victim(&self, now: u64, settled_only: bool) -> Option<(usize, BundleId)> {
-        self.relay_order
+        let candidates: Vec<(usize, BundleId)> = self
+            .relay_order
             .iter()
             .enumerate()
             .filter(|(_, id)| {
@@ -9331,13 +9627,63 @@ impl<S: Store> Node<S> {
                         .get(*id)
                         .is_some_and(|t| now.saturating_sub(*t) >= EVICT_GRACE_MS)
             })
-            .min_by(|(ia, a), (ib, b)| {
-                self.bundle_utility(a, now)
-                    .partial_cmp(&self.bundle_utility(b, now))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(ia.cmp(ib))
-            })
             .map(|(idx, id)| (idx, *id))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let mut owner_counts: HashMap<CustodyOwner, usize> = HashMap::new();
+        for id in &self.relay_order {
+            *owner_counts
+                .entry(self.bundle_custody_owner(id))
+                .or_default() += 1;
+        }
+        let num_owners = owner_counts
+            .len()
+            .clamp(1, DEFAULT_MAX_RELAYED_DISTINCT_SENDERS);
+        let fair_share = (self.max_relayed / num_owners).max(MIN_RELAYED_PER_TENANT_GUARANTEE);
+        let max_owner_count = owner_counts.values().copied().max().unwrap_or(0);
+
+        if max_owner_count > fair_share {
+            let over_allocated: Vec<&(usize, BundleId)> = candidates
+                .iter()
+                .filter(|(_, id)| {
+                    let owner = self.bundle_custody_owner(id);
+                    owner_counts.get(&owner).copied().unwrap_or(0) > fair_share
+                })
+                .collect();
+            if !over_allocated.is_empty() {
+                return over_allocated
+                    .into_iter()
+                    .min_by(|(ia, a), (ib, b)| {
+                        let count_a = owner_counts
+                            .get(&self.bundle_custody_owner(a))
+                            .copied()
+                            .unwrap_or(0);
+                        let count_b = owner_counts
+                            .get(&self.bundle_custody_owner(b))
+                            .copied()
+                            .unwrap_or(0);
+                        count_b
+                            .cmp(&count_a)
+                            .then_with(|| {
+                                self.bundle_utility(a, now)
+                                    .partial_cmp(&self.bundle_utility(b, now))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .then(ia.cmp(ib))
+                    })
+                    .copied();
+            }
+        }
+
+        candidates.into_iter().min_by(|(ia, a), (ib, b)| {
+            self.bundle_utility(a, now)
+                .partial_cmp(&self.bundle_utility(b, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(ia.cmp(ib))
+        })
     }
 
     /// Bound the forwarded-route memory (§27): drop the oldest entries past the cap.
@@ -9747,12 +10093,28 @@ impl<S: Store> Node<S> {
     /// Utility from an ALREADY-loaded bundle; avoids a `store.get` per call. `offer_bundles_to_link`
     /// uses this so its transmit-order sort does O(N) reads (load once), not O(N log N) (one read per
     /// sort comparison), which under the held node Mutex was starving link handshakes.
+    ///
+    /// SVC-007: `priority` is an unauthenticated QoS hint on the wire (`u8`, default 4). It is
+    /// used for intra-tenant QoS ordering (transmitting and evicting within a tenant's own traffic).
+    /// It does not grant cross-tenant eviction privileges: cross-tenant custody is partitioned by
+    /// fair share in `pick_evict_victim` so an unauthenticated priority=255 flood cannot displace
+    /// undelivered messages from an honest tenant or sender within their fair share.
+    ///
+    /// Under Open policy (or for untenanted bundles), priority is clamped to the default normal
+    /// level (4) so an unauthenticated priority=255 from a free identity buys no eviction immunity.
     fn bundle_utility_of(&self, b: &Bundle, now: u64) -> f64 {
         let route = match b.inner.dst {
             Destination::Device(d) => self.routes.utility(&d, now),
             _ => 0.0,
         };
-        b.inner.priority as f64 * 100.0 + route
+        let effective_priority = if matches!(self.access_policy, AccessPolicy::Open)
+            || !self.metered_attribution.contains_key(&b.id())
+        {
+            b.inner.priority.min(4)
+        } else {
+            b.inner.priority
+        };
+        effective_priority as f64 * 100.0 + route
     }
 
     /// Offer stored bundles to one link, applying the epidemic forward policy (DESIGN.md §6).
@@ -10259,6 +10621,44 @@ mod tests {
                 body: body.to_vec(),
             },
             BundleOpts::default(),
+        )
+        .unwrap()
+    }
+
+    fn ratcheted_msg<S: Store>(
+        from: &Identity,
+        to: &Node<S>,
+        content_type: &str,
+        body: &[u8],
+        request_ack: bool,
+    ) -> Bundle {
+        let pkb = to.prekey_bundle();
+        let spk_pub = pkb.spk_pub;
+        let (ek_pub, root) = crate::crypto::x3dh_initiate(from, &pkb, None).unwrap();
+        let mut session = crate::session::Session::init_initiator(root, spk_pub);
+        let inner = postcard::to_allocvec(&SessionInner {
+            content_type: content_type.into(),
+            body: body.to_vec(),
+        })
+        .unwrap();
+        let msg = session.encrypt(&inner).unwrap();
+        Bundle::create(
+            from,
+            Destination::Device(to.address()),
+            &to.address(),
+            &Payload::SessionInit {
+                ek_pub,
+                spk_pub,
+                opk_id: None,
+                msg,
+            },
+            BundleOpts {
+                flags: BundleFlags {
+                    request_ack,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         )
         .unwrap()
     }
@@ -13165,23 +13565,13 @@ mod tests {
             Identity::from_secret_bytes(&recipient_secret),
             FaultStore::default(),
         );
-        let original = Bundle::create(
+        let original = ratcheted_msg(
             &sender,
-            Destination::Device(recipient.address()),
-            &recipient.address(),
-            &Payload::PeerMessage {
-                content_type: "application/test".into(),
-                body: vec![7u8; 512],
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
+            &recipient,
+            "application/test",
+            &vec![7u8; 512],
+            true,
+        );
         let original_id = original.id();
         let bytes = original.to_bytes().unwrap();
         let split = bytes.len() / 2;
@@ -13232,17 +13622,13 @@ mod tests {
     fn final_carrier_waits_for_queue_capacity_then_retries_without_losing_spool() {
         let sender = Identity::generate();
         let mut recipient = Node::new(Identity::generate());
-        let original = Bundle::create(
+        let original = ratcheted_msg(
             &sender,
-            Destination::Device(recipient.address()),
-            &recipient.address(),
-            &Payload::PeerMessage {
-                content_type: "text/plain".into(),
-                body: b"retry after pressure".to_vec(),
-            },
-            BundleOpts::default(),
-        )
-        .unwrap();
+            &recipient,
+            "text/plain",
+            b"retry after pressure",
+            false,
+        );
         let stream_id = [0x32; 16];
         let final_chunk = carrier(
             &sender,
@@ -13744,15 +14130,13 @@ mod tests {
 
         let store = nodes[1].clone_store();
         nodes[1] = Node::with_store(Identity::from_secret_bytes(&bob_secret), store);
-        assert!(nodes[1].unanchored_sessions.contains(&alice));
+        assert!(nodes[1].has_session(&alice));
 
-        // The first post-restart tick uses a real epoch timestamp far beyond the idle horizon. It
-        // must establish the baseline, not interpret the restored session as decades idle.
+        // The post-restart tick uses a real epoch timestamp far beyond the idle horizon. It
+        // must use the persisted baseline, not interpret the restored session as decades idle.
         nodes[1].tick(0);
-        assert!(nodes[1].unanchored_sessions.contains(&alice));
         nodes[1].tick(real_now + 1_000);
         assert!(nodes[1].has_session(&alice));
-        assert!(nodes[1].unanchored_sessions.is_empty());
 
         nodes[0].handle(BearerEvent::Disconnected(1));
         let mut net = Wire2::new();
@@ -13767,6 +14151,165 @@ mod tests {
             .find_map(|bundle| nodes[1].read_message(bundle).ok().flatten())
             .expect("restored ratchet decrypts after its first real tick");
         assert_eq!(message.body, b"after first tick");
+    }
+
+    #[test]
+    fn hostile_repeated_restarts_must_not_renew_idle_session_past_max_lifetime() {
+        let real_now: u64 = 1_700_000_000_000;
+        let bob_secret = Identity::generate().to_secret_bytes();
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::from_identity_secret(&bob_secret),
+        ];
+        nodes[0].set_time(real_now);
+        nodes[1].set_time(real_now);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+        let bob = nodes[1].address();
+        let alice = nodes[0].address();
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"initial".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+        let first = nodes[1].take_inbox();
+        nodes[1].read_message(&first[0]).unwrap();
+        nodes[1].accept_inbox(&first[0].id()).unwrap();
+        assert!(nodes[1].has_session(&alice));
+
+        let t1 = real_now + 20 * 24 * 3600 * 1000;
+        let store = nodes[1].clone_store();
+        let mut restarted = Node::with_store(Identity::from_secret_bytes(&bob_secret), store);
+        restarted.set_time(t1);
+        restarted.tick(t1);
+
+        let t2 = t1 + 15 * 24 * 3600 * 1000;
+        restarted.set_time(t2);
+        restarted.tick(t2);
+
+        assert!(
+            !restarted.has_session(&alice),
+            "restarts must not renew idle session lifetime past 30 days"
+        );
+    }
+
+    #[test]
+    fn receiver_seen_budget_enforces_per_sender_and_global_capacity_leaving_messages_retryable() {
+        let real_now = 1_700_000_000_000u64;
+        let bob_secret = Identity::generate().to_secret_bytes();
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::from_identity_secret(&bob_secret),
+        ];
+        nodes[0].set_time(real_now);
+        nodes[1].set_time(real_now);
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+        exchange_prekeys(&mut net, &mut nodes);
+        let bob = nodes[1].address();
+        let alice = nodes[0].address();
+
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"first".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+        let first = nodes[1].take_inbox();
+        assert_eq!(first.len(), 1);
+        nodes[1].read_message(&first[0]).unwrap();
+        nodes[1].accept_inbox(&first[0].id()).unwrap();
+
+        nodes[1]
+            .receiver_seen_sender_count
+            .insert(alice, MAX_RECEIVER_SEEN_PER_SENDER);
+
+        nodes[0]
+            .send_message_traced(bob, "t".into(), b"second".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert!(nodes[1].take_inbox().is_empty());
+
+        nodes[1].receiver_seen_sender_count.insert(alice, 1);
+        nodes[0].tick(real_now + 10_000);
+        nodes[1].tick(real_now + 10_000);
+        net.pump(&mut nodes);
+
+        let retried = nodes[1].take_inbox();
+        assert_eq!(retried.len(), 1, "retry succeeds after capacity clears");
+        let msg = nodes[1].read_message(&retried[0]).unwrap().unwrap();
+        assert_eq!(msg.body, b"second");
+    }
+
+    #[test]
+    fn session_budget_enforces_capacity_and_gc_idle_before_rejection() {
+        let real_now = 1_700_000_000_000u64;
+        let mut bob = Node::new(Identity::generate());
+        bob.set_time(real_now);
+
+        // Fill sessions up to MAX_SESSIONS_COUNT with simulated active peers
+        for i in 0..MAX_SESSIONS_COUNT {
+            let mut peer = [0u8; 32];
+            peer[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bob.sessions.insert(
+                peer,
+                PeerSession {
+                    session: Session::init_initiator([1u8; 32], [2u8; 32]),
+                    init_material: None,
+                    established_by: None,
+                },
+            );
+            bob.session_touch.insert(peer, real_now);
+        }
+        assert_eq!(bob.sessions.len(), MAX_SESSIONS_COUNT);
+
+        // Attempt to commit a session for a new peer when full -> should fail
+        let new_peer = [99u8; 32];
+        let candidate = PeerSession {
+            session: Session::init_initiator([3u8; 32], [4u8; 32]),
+            init_material: None,
+            established_by: None,
+        };
+        assert!(bob.commit_session(new_peer, candidate.clone()).is_err());
+
+        // Now mark one session as idle past SESSION_MAX_IDLE_MS
+        let idle_peer = [0u8; 32];
+        bob.session_touch.insert(
+            idle_peer,
+            real_now.saturating_sub(SESSION_MAX_IDLE_MS + 1000),
+        );
+
+        // Attempt to commit the new session again -> gc_idle_sessions frees idle_peer and succeeds
+        assert!(bob.commit_session(new_peer, candidate).is_ok());
+        assert!(!bob.sessions.contains_key(&idle_peer));
+        assert!(bob.sessions.contains_key(&new_peer));
+    }
+
+    #[test]
+    fn receiver_seen_cleanup_is_incrementally_chunked_below_backend_limits() {
+        let real_now = 1_700_000_000_000u64;
+        let mut bob = Node::new(Identity::generate());
+        bob.set_time(real_now);
+
+        // Insert 300 expired receiver seen entries (more than the 128 batch size)
+        for i in 0..300 {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bob.insert_receiver_seen_entry(
+                id,
+                ReceiverSeen {
+                    expires_at_ms: real_now.saturating_sub(100),
+                    acknowledgement: InboxAcknowledgement::None,
+                },
+                None,
+                128,
+            );
+        }
+        assert_eq!(bob.receiver_seen.len(), 300);
+
+        // Prune: must batch clean in chunks of 128
+        bob.prune_expired_receiver_seen();
+        assert_eq!(bob.receiver_seen.len(), 0);
+        assert_eq!(bob.receiver_seen_total_bytes, 0);
     }
 
     #[test]
@@ -13940,23 +14483,7 @@ mod tests {
         let alice = Identity::generate();
         let bob = Node::new(Identity::generate());
 
-        let b = Bundle::create(
-            &alice,
-            Destination::Device(bob.address()),
-            &bob.address(),
-            &Payload::PeerMessage {
-                content_type: "t".into(),
-                body: b"hi".to_vec(),
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let b = ratcheted_msg(&alice, &bob, "t", b"hi", true);
         let id = b.id();
         relay.ingest(b);
         assert!(relay.store.contains(&id));
@@ -14477,6 +15004,58 @@ mod tests {
         assert!(
             bob.read_message(&bundle).unwrap().is_none(),
             "a bare PeerMessage inside an unsigned Private seal must not be attributed to the claimed sender"
+        );
+    }
+
+    #[test]
+    fn a_traced_bare_peer_message_is_rejected_on_receive_and_not_inboxed() {
+        // PROTO-007: Device-to-device user content is always forward-secret (Double Ratchet).
+        // A correspondent or adversary holding a valid Hop identity must not be able to bypass
+        // the Double Ratchet by sending an Ed25519-signed bare PeerMessage on the traced path.
+        // The receive path must reject it symmetrically with the private path: it must not be
+        // surfaced by read_message, delivered to the inbox, or acknowledged.
+        let attacker = Identity::generate();
+        let victim_id = Identity::generate();
+        let victim_addr = victim_id.address();
+
+        let bundle = Bundle::create(
+            &attacker,
+            Destination::Device(victim_addr),
+            &victim_addr,
+            &Payload::PeerMessage {
+                content_type: "text/plain".into(),
+                body: b"statically sealed content without forward secrecy".to_vec(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        assert!(bundle.verify().is_ok(), "attacker bundle is validly signed");
+
+        let mut victim = Node::new(victim_id);
+
+        // 1. Direct decrypt seam (read_message) must reject bare PeerMessage.
+        assert!(
+            victim.read_message(&bundle).unwrap().is_none(),
+            "read_message must reject a bare PeerMessage on the traced path"
+        );
+
+        // 2. Live network ingress (on_bundle pipeline) must reject bare PeerMessage.
+        let attacker_node = Node::new(attacker);
+        let mut nodes = [attacker_node, victim];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        nodes[0].submit(bundle);
+        net.pump(&mut nodes);
+
+        assert!(
+            nodes[1].take_inbox().is_empty(),
+            "on_bundle must drop bare PeerMessage without delivering to inbox"
+        );
+        assert!(
+            !nodes[1].has_session(&nodes[0].address()),
+            "no session established from bare PeerMessage"
         );
     }
 
@@ -17916,6 +18495,77 @@ mod tests {
     }
 
     #[test]
+    fn ingest_returns_held_evicted_immediately_and_rejected() {
+        let mut relay = Node::new(Identity::generate());
+        relay.set_max_relayed(2);
+        let recipient = Identity::generate();
+        let spk = recipient.derive_prekey().public;
+        let prefix = crypto::mailbox_route(&crypto::mailbox_tag(&recipient.address(), 0));
+
+        let b1 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-1".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b1), IngestOutcome::Held);
+
+        let b2 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-2".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 255,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b2), IngestOutcome::Held);
+
+        let b3 = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"msg-3".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(relay.ingest(b3), IngestOutcome::EvictedImmediately);
+
+        let mut bad = Bundle::create_private(
+            &recipient.address(),
+            &spk,
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"bad".to_vec(),
+            },
+            Some(prefix),
+            BundleOpts::default(),
+        )
+        .unwrap();
+        bad.inner.id = [0u8; 32];
+        assert_eq!(relay.ingest(bad), IngestOutcome::Rejected);
+    }
+
+    #[test]
     fn an_evicted_then_repulled_mailbox_bundle_is_rehydrated_not_dropped() {
         // relay-A audit (2nd data-loss vector): the rate-cap fix closed the >cap-burst drop; this closes
         // the dedup-after-eviction drop. A private bundle spooled + held, then EVICTED from held under
@@ -18493,12 +19143,12 @@ mod tests {
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
-        let inbox = nodes[1].take_inbox();
-        assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[1].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"hello neighbor"),
-            _ => panic!("wrong payload"),
-        }
+        // PROTO-007: a bare PeerMessage without a session ratchet is rejected on receive:
+        // device-to-device content is always forward-secret.
+        assert!(
+            nodes[1].take_inbox().is_empty(),
+            "bare PeerMessage must be rejected on the traced receive path"
+        );
     }
 
     #[test]
@@ -18519,7 +19169,7 @@ mod tests {
 
         // Drive a message and pump with a byte/round budget. A loop manifests as either hitting
         // the round cap (never quiescent) or an explosive byte count.
-        let b = msg(&nodes[0], &nodes[1], b"hi");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", b"hi", false);
         nodes[0].submit(b);
 
         let mut total_bytes = 0usize;
@@ -19272,7 +19922,7 @@ mod tests {
         net.connect(&mut nodes, 0, 10, 1, 11);
         net.connect(&mut nodes, 1, 12, 2, 13);
 
-        let b = msg(&nodes[0], &nodes[2], b"relay me");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[2], "t", b"relay me", false);
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
@@ -19282,10 +19932,11 @@ mod tests {
         );
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[2].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"relay me"),
-            _ => panic!("wrong payload"),
-        }
+        let read = nodes[2]
+            .read_message(&inbox[0])
+            .unwrap()
+            .expect("valid ratcheted message");
+        assert_eq!(read.body, b"relay me");
     }
 
     #[test]
@@ -19380,7 +20031,7 @@ mod tests {
         let s0 = short_addr(&nodes[0].address());
         let s1 = short_addr(&nodes[1].address());
 
-        let b = msg(&nodes[0], &nodes[2], b"trace me");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[2], "t", b"trace me", false);
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
@@ -19475,7 +20126,7 @@ mod tests {
         }
 
         let secret = b"top secret payload bytes";
-        let bundle = msg(&nodes[0], &nodes[1], secret);
+        let bundle = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", secret, false);
         nodes[0].submit(bundle);
         for (_, b) in nodes[0].drain_outgoing() {
             captured.extend_from_slice(&b);
@@ -19489,26 +20140,6 @@ mod tests {
         );
     }
 
-    fn msg_ack(from: &Node, to: &Node, body: &[u8]) -> Bundle {
-        Bundle::create(
-            &from.identity,
-            Destination::Device(to.address()),
-            &to.identity.address(),
-            &Payload::PeerMessage {
-                content_type: "t".into(),
-                body: body.to_vec(),
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    }
-
     #[test]
     fn ack_returns_and_clears_sender_pending() {
         let mut nodes = [
@@ -19518,7 +20149,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
-        let b = msg_ack(&nodes[0], &nodes[1], b"please confirm");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", b"please confirm", true);
         nodes[0].submit(b);
         assert_eq!(
             nodes[0].pending_count(),
@@ -19674,12 +20305,14 @@ mod tests {
         net.connect(&mut nodes, 0, 1, 1, 1);
 
         // Node 0 hosts a service at "news"; node 1 subscribes and is handed the keys.
-        let svc_pubkey = nodes[0].register_service(
-            "news",
-            crate::hps::ServiceKind::Service,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        let svc_pubkey = nodes[0]
+            .register_service(
+                "news",
+                crate::hps::ServiceKind::Service,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         assert!(svc_pubkey.is_some(), "a service mints a signing key");
         nodes[1].hps_subscribe(nodes[0].address(), "news").unwrap();
         net.pump(&mut nodes);
@@ -19721,6 +20354,7 @@ mod tests {
                     crate::hps::AccessMode::Open,
                     crate::hps::Visibility::Private
                 )
+                .unwrap()
                 .is_none(),
             "a channel has no service signing key"
         );
@@ -19753,12 +20387,14 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
 
@@ -19800,12 +20436,14 @@ mod tests {
         let mut nodes = [app_node(4), app_node(4)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
 
@@ -19825,12 +20463,14 @@ mod tests {
         let mut nodes = [app_node(5), app_node(5)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::RequestToJoin,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::RequestToJoin,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let requester = nodes[1].address();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
@@ -19863,12 +20503,14 @@ mod tests {
         let mut nodes = [app_node(6), app_node(6)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "vip",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Invite,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "vip",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Invite,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let dest = nodes[1].address();
 
         // Self-join is ignored for an Invite topic.
@@ -19906,12 +20548,14 @@ mod tests {
         let mut nodes = [app_node(1), app_node(2)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
         nodes[0].hps_publish("lobby", b"members only").unwrap();
@@ -19935,12 +20579,14 @@ mod tests {
         net.connect(&mut nodes, 0, 1, 1, 1);
         net.connect(&mut nodes, 0, 2, 2, 2);
         net.connect(&mut nodes, 1, 3, 2, 3);
-        nodes[0].register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let m2 = nodes[2].address();
         nodes[1].hps_subscribe(nodes[0].address(), "room").unwrap();
         nodes[2].hps_subscribe(nodes[0].address(), "room").unwrap();
@@ -20108,7 +20754,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         let host_addr = host.address();
         let sub_secret = Identity::generate().to_secret_bytes();
@@ -20267,7 +20914,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         let tag = host.app.topic_tag("room");
         let member = Identity::generate();
@@ -20348,14 +20996,14 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::RequestToJoin,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let retained = Identity::generate().address();
         let removed = Identity::generate().address();
-        host.record_member("room", retained);
-        host.record_member("room", removed);
+        host.record_member("room", retained).unwrap();
+        host.record_member("room", removed).unwrap();
         host.hps_pending.insert("room".into(), vec![removed]);
-        host.persist_pending("room");
-
+        host.persist_pending("room").unwrap();
         host.hps_rekey("room", Some("room-v2"), &[removed]).unwrap();
         assert!(host.store.get_kv("hps/svc/room").is_none());
         assert!(host.store.get_kv("hps/members/room").is_none());
@@ -20386,16 +21034,18 @@ mod tests {
             FaultStore::default(),
             app.clone(),
         );
-        baseline.register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::RequestToJoin,
-            crate::hps::Visibility::Private,
-        );
-        baseline.record_member("room", retained);
-        baseline.record_member("room", removed);
+        baseline
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::RequestToJoin,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
+        baseline.record_member("room", retained).unwrap();
+        baseline.record_member("room", removed).unwrap();
         baseline.hps_pending.insert("room".into(), vec![removed]);
-        baseline.persist_pending("room");
+        baseline.persist_pending("room").unwrap();
         let old_cfg = baseline.services["room"].clone();
         let durable = baseline.store.inner.clone();
 
@@ -20514,12 +21164,14 @@ mod tests {
         ];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let member = nodes[1].address();
         let old_epoch = nodes[0].services["room"].epoch;
         nodes[1].hps_subscribe(nodes[0].address(), "room").unwrap();
@@ -20660,7 +21312,8 @@ mod tests {
             crate::hps::ServiceKind::Service,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["news"].clone();
         sub.install_subscription(
             "news",
@@ -20705,7 +21358,8 @@ mod tests {
             crate::hps::ServiceKind::Service,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["news"].clone();
         subscriber.install_subscription(
             "news",
@@ -20764,7 +21418,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         subscriber.install_subscription("room", host.address(), cfg.content_key, None, cfg.epoch);
         let outer_id = host.hps_publish("room", b"persist me").unwrap();
@@ -20927,7 +21582,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         subscriber.install_subscription("room", host.address(), cfg.content_key, None, cfg.epoch);
         let original_id = host.hps_publish("room", b"once").unwrap();
@@ -21620,6 +22276,37 @@ mod tests {
             "an out-of-window past epoch secret is wiped"
         );
     }
+
+    #[test]
+    fn hps_register_service_store_failure_publishes_no_advert_and_returns_error() {
+        let app = crate::app::AppKeys::from_secret([21u8; 32]);
+        let mut node = Node::with_store_app(
+            Identity::generate(),
+            FaultStore {
+                fail_critical_put_prefix: Some("hps/svc/".into()),
+                ..Default::default()
+            },
+            app,
+        );
+        let res = node.register_service(
+            "news",
+            crate::hps::ServiceKind::Service,
+            crate::hps::AccessMode::Open,
+            crate::hps::Visibility::Discoverable,
+        );
+        assert!(
+            res.is_err(),
+            "register_service must return an error when durable persistence fails"
+        );
+        assert!(
+            !node.hps_adverts.contains_key("news"),
+            "no advert must be published when persistence fails"
+        );
+        assert!(
+            !node.services.contains_key("news"),
+            "service must not be registered when persistence fails"
+        );
+    }
 }
 
 /// §35 carriage gate + meter tests (rotating key-hint stamps): a `Keyed` node only takes custody
@@ -22192,5 +22879,247 @@ mod access_gate_tests {
             relay.take_usage().is_empty(),
             "admitted, billed only on delivery"
         );
+    }
+
+    #[test]
+    fn priority_flood_cannot_evict_other_tenants_normal_priority_bundles() {
+        // SVC-007: A relay's shared custody window must enforce fair-share custody bounds.
+        // A tenant flooding unsettled bundles with priority=255 must not starve another
+        // tenant's normal-priority (4) undelivered bundles purely due to priority weighting.
+        let (stamper_a, key_a) = tenant_stamper();
+        let key_b = Identity::generate();
+        let tenant_b: TenantId = [0x42; 16];
+        let stamper_b = Stamper::new(
+            tenant_b,
+            Identity::from_secret_bytes(&key_b.to_secret_bytes()),
+        );
+
+        let mut server = KeyServer::new();
+        server.insert(TENANT, key_a.address());
+        server.insert(tenant_b, key_b.address());
+
+        let mut relay = Node::new(Identity::generate());
+        relay.set_time(NOW);
+        relay.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(
+            server,
+            HashSet::new(),
+        )));
+        relay.refresh_access();
+
+        let window = 10usize;
+        relay.set_max_relayed(window);
+
+        // Tenant A fills 9 slots with priority=255 unsettled bundles.
+        let mut a_bundles = Vec::new();
+        for i in 0..9 {
+            let mut b = Bundle::create(
+                &Identity::generate(),
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("flood-a-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            b.env.access = Some(Box::new(stamper_a.stamp(&id, NOW)));
+            relay.on_bundle(1, b);
+            assert!(relay.store.contains(&id));
+            a_bundles.push(id);
+        }
+
+        // Tenant B sends 1 bundle with default priority=4 into the remaining 10th slot.
+        let mut b_bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"normal-b-0".to_vec(),
+            },
+            BundleOpts {
+                priority: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b_id = b_bundle.id();
+        b_bundle.env.access = Some(Box::new(stamper_b.stamp(&b_id, NOW)));
+        relay.on_bundle(2, b_bundle);
+        assert!(relay.store.contains(&b_id));
+
+        // Now the window is 10/10.
+        // Tenant A attempts to flood an 11th bundle with priority=255.
+        let mut a_11 = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"flood-a-10".to_vec(),
+            },
+            BundleOpts {
+                priority: 255,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let a_11_id = a_11.id();
+        a_11.env.access = Some(Box::new(stamper_a.stamp(&a_11_id, NOW)));
+        relay.on_bundle(1, a_11);
+
+        // Invariant: Tenant B's bundle must NOT be evicted purely due to Tenant A's priority!
+        // Tenant A exceeded its fair share, so Tenant A's bundle should have been evicted.
+        assert!(
+            relay.store.contains(&b_id),
+            "Tenant B's normal-priority bundle was evicted by Tenant A's priority=255 flood"
+        );
+    }
+
+    #[test]
+    fn open_policy_priority_flood_cannot_evict_other_senders_normal_priority_bundles() {
+        // SVC-007: Open policy nodes must also enforce fair-share custody bounds.
+        // Sender A flooding priority=255 unsettled bundles must not starve Sender B's
+        // normal-priority (4) undelivered bundles purely due to priority weighting.
+        let sender_a = Identity::generate();
+        let sender_b = Identity::generate();
+        let mut node = Node::new(Identity::generate());
+        node.set_time(NOW);
+        let window = 10usize;
+        node.set_max_relayed(window);
+
+        // Sender A fills 9 slots with priority=255 unsettled bundles.
+        for i in 0..9 {
+            let b = Bundle::create(
+                &sender_a,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-flood-a-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(1, b);
+            assert!(node.store.contains(&id));
+        }
+
+        // Sender B sends 1 normal-priority (4) bundle into the remaining 10th slot.
+        let b_bundle = Bundle::create(
+            &sender_b,
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"open-normal-b".to_vec(),
+            },
+            BundleOpts {
+                priority: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b_id = b_bundle.id();
+        node.on_bundle(2, b_bundle);
+        assert!(node.store.contains(&b_id));
+
+        // Sender A attempts to flood an 11th bundle with priority=255.
+        let a_11 = Bundle::create(
+            &sender_a,
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"open-flood-a-10".to_vec(),
+            },
+            BundleOpts {
+                priority: 255,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        node.on_bundle(1, a_11);
+
+        // Sender B's bundle must NOT be evicted: Sender A is over fair share.
+        assert!(
+            node.store.contains(&b_id),
+            "Sender B's normal-priority bundle was evicted by Sender A's priority=255 flood under Open policy"
+        );
+    }
+
+    #[test]
+    fn open_policy_sybil_priority_flood_cannot_evict_legitimate_sender_bundles() {
+        // SVC-007 (Sybil churn): Under Open policy, an attacker generating fresh identities
+        // per bundle at priority=255 must not buy eviction immunity against legitimate
+        // normal-priority (4) bundles. The effective priority must be clamped to normal (4).
+        let mut node = Node::new(Identity::generate());
+        node.set_time(NOW);
+        let window = 10usize;
+        node.set_max_relayed(window);
+
+        // Attacker fills all 10 slots with fresh identities at priority=255.
+        for i in 0..10 {
+            let attacker = Identity::generate();
+            let b = Bundle::create(
+                &attacker,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-sybil-flood-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(1, b);
+            assert!(node.store.contains(&id));
+        }
+
+        // Now the custody window is 10/10.
+        // Legitimate sender B sends 4 normal-priority (4) bundles.
+        let sender_b = Identity::generate();
+        let mut b_ids = Vec::new();
+        for i in 0..4 {
+            let b = Bundle::create(
+                &sender_b,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-normal-b-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 4,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(2, b);
+            b_ids.push(id);
+        }
+
+        // With priority clamped under Open policy, priority=255 buys no eviction immunity;
+        // the legitimate sender's normal bundles evict older unsettled bundles and survive.
+        for (i, b_id) in b_ids.iter().enumerate() {
+            assert!(
+                node.store.contains(b_id),
+                "Sender B's normal-priority bundle {i} was evicted by Sybil priority=255 flood under Open policy"
+            );
+        }
     }
 }

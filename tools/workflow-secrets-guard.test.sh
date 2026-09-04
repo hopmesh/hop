@@ -101,6 +101,33 @@ rejects(
     },
     "but the job declares no environment",
 )
+# A workflow_dispatch workflow reading an organization or repository secret from a job with no environment (INFRA-008).
+DISPATCH_WORKFLOW = """\\
+name: example-dispatch
+on:
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "syncing"
+        env:
+          TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+"""
+
+rejects(
+    "workflow_dispatch job reading secret with no environment (INFRA-008)",
+    DISPATCH_WORKFLOW,
+    lambda secrets: {
+        "HOP_SYNC_TOKEN": {
+            "scope": "organization",
+            "purpose": "sync",
+            "blocked_on": "owner PAT",
+        }
+    },
+    "reads declared organization secret `HOP_SYNC_TOKEN` in a workflow with workflow_dispatch, but declares no environment binding (INFRA-008)",
+)
+
 
 # A manifest entry no workflow reads is stale and must be reported, so the file stays a real inventory.
 rejects(
@@ -274,6 +301,38 @@ presence(
     ["organization", "repository"],
     "HOP_SYNC_TOKEN was not passed",
 )
+
+# Verify canonical repository constant.
+assert guard.REPOSITORY == "hopmesh/hop", f"expected hopmesh/hop, got {guard.REPOSITORY}"
+
+# Verify repository identity check rejects archived or non-canonical repositories.
+orig_run = guard.subprocess.run
+try:
+    # Test 1: archived repository is rejected
+    class FakeResult:
+        def __init__(self, returncode, stdout):
+            self.returncode = returncode
+            self.stdout = stdout
+    guard.subprocess.run = lambda *a, **k: FakeResult(0, '{"full_name": "hopmesh/monorepo", "id": 100, "archived": true}')
+    try:
+        guard.verify_repo_identity("hopmesh/monorepo")
+        assert False, "expected failure for archived repository"
+    except guard.WorkflowSecretsError as err:
+        assert "not canonical hopmesh/hop or is archived" in str(err)
+
+    # Test 2: wrong repository name with identical secret names is rejected
+    guard.subprocess.run = lambda *a, **k: FakeResult(0, '{"full_name": "attacker/hop", "id": 100, "archived": false}')
+    try:
+        guard.verify_repo_identity("attacker/hop")
+        assert False, "expected failure for wrong repo"
+    except guard.WorkflowSecretsError as err:
+        assert "not canonical hopmesh/hop or is archived" in str(err)
+
+    # Test 3: canonical repository succeeds
+    guard.subprocess.run = lambda *a, **k: FakeResult(0, '{"full_name": "hopmesh/hop", "id": 100, "archived": false}')
+    guard.verify_repo_identity("hopmesh/hop")
+finally:
+    guard.subprocess.run = orig_run
 
 print("workflow secrets guard tests passed")
 PY

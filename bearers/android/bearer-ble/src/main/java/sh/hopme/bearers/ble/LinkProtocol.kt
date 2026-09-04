@@ -41,6 +41,9 @@ internal class LinkProtocol(
     var up = false
 
     @Volatile
+    var secured = false
+
+    @Volatile
     private var becameUpMs = 0L
 
     @Volatile
@@ -98,6 +101,10 @@ internal class LinkProtocol(
         val now = clock()
         if (!up && now - openedMs > REAP_MS) {
             close("no-HELLO reap")
+            return
+        }
+        if (up && !secured && now - openedMs > 10_000L) {
+            close("preauth deadline")
             return
         }
         if (up && now - lastRxMs > deadLimit()) {
@@ -222,7 +229,7 @@ internal class LinkProtocol(
                 if (rxSeq != 0L && seq != rxSeq + 1) {
                     Log.w(TAG, "counter gap $rxSeq -> $seq (peer=${peerId?.toHex()?.take(8)})")
                 } else if (seq > rxSeq) {
-                    Log.i(
+                    Log.d(
                         TAG,
                         "RX peer counter advanced rx=$seq peer=${peerId?.toHex()?.take(8)} rxBytes=$rxBytes",
                     )

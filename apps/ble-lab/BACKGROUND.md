@@ -436,12 +436,11 @@ Both sides must agree byte-for-byte:
 ### Step 1: build & install
 ```bash
 # Android
-cd /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/android && ./gradlew installDebug
+cd apps/ble-lab/android && ./gradlew installDebug
 adb shell am start -n sh.hopme.blelab/.MainActivity
 
 # iOS (XcodeGen project)
-cd /Users/jwaldrip/dev/src/github.com/jwaldrip/hop/ble-lab/apple-ios && xcodegen generate
-# then build+install+launch onto the USB device via Xcode (Run), or:
+cd apps/ble-lab/apple-ios && xcodegen generate
 xcrun devicectl list devices                       # grab the iPhone's identifier
 xcrun devicectl device install app --device <UDID> <path-to-HopBleLab.app>
 xcrun devicectl device process launch --device <UDID> sh.hopme.blelab

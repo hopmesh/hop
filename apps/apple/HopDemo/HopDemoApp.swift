@@ -64,7 +64,7 @@ final class HopAppDelegate: NSObject, UIApplicationDelegate {
 struct HopDemoApp: App {
     @UIApplicationDelegateAdaptor(HopAppDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
-
+    @State private var privacyState = ScreenPrivacyState()
     init() {
         // BGProcessingTask gets a longer window (runs when idle, best-effort on battery /
         // reliably when charging), used to *drain a backlog* like a large image that
@@ -78,9 +78,15 @@ struct HopDemoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                // TEST/AUTOMATION: drive a send from `hopdemo://send?to=<base58>&text=<marker>`.
-                .onOpenURL { url in HopDemoApp.handleAutomationURL(url) }
+            ZStack {
+                ContentView()
+                    // TEST/AUTOMATION: drive a send from `hopdemo://send?to=<base58>&text=<marker>`.
+                    .onOpenURL { url in HopDemoApp.handleAutomationURL(url) }
+                if privacyState.isObscured {
+                    PrivacyCoverView()
+                        .transition(.identity)
+                }
+            }
         }
         // Short, frequent-ish OS wake to tick + reconnect the relay + drain (best-effort,
         // OS-scheduled; more often for actively-used apps). See DESIGN.md §22/§28.
@@ -89,13 +95,21 @@ struct HopDemoApp: App {
             HopDemoApp.scheduleRefresh()
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .background {
+            switch phase {
+            case .active:
+                privacyState.transition(to: .active)
+            case .inactive:
+                privacyState.transition(to: .inactive)
+            case .background:
+                privacyState.transition(to: .background)
                 // apple-r3-01: force any debounced UI-history mirror write to disk NOW, before iOS can
                 // suspend/kill us in the ≤1s save-debounce window, so a message drained from the node
                 // inbox on a background wake can't vanish from chat history on relaunch.
                 HopBearer.shared.flushPendingSaves()
                 HopDemoApp.scheduleRefresh()
                 HopDemoApp.scheduleProcessing()
+            @unknown default:
+                privacyState.transition(to: .inactive)
             }
         }
     }
@@ -214,6 +228,28 @@ struct HopDemoApp: App {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { attempt(0) }
         #endif
+    }
+}
+
+/// Privacy shield view (PLAT-011): displayed over the window whenever the app transitions
+/// to .inactive or .background, so iOS app-switcher snapshots and task-switch views do not
+/// reveal message bodies, images, addresses, or peer ids.
+struct PrivacyCoverView: View {
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
+                .ignoresSafeArea()
+            VStack(spacing: 12) {
+                Image("ic_fa_lock")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 48, height: 48)
+                    .foregroundStyle(.secondary)
+                Text("Hop Mesh Messenger")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+            }
+        }
     }
 }
 

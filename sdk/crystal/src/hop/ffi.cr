@@ -12,7 +12,11 @@ lib LibHop
   fun abi_version = hop_abi_version : UInt32 # the C ABI returns uint32_t; keep the binding's sign honest
   fun node_new = hop_node_new : Void*
   fun node_with_secret = hop_node_with_secret(secret : UInt8*, secret_len : LibC::SizeT) : Void*
+  fun node_open = hop_node_open(db_path : LibC::Char*, secret : UInt8*, secret_len : LibC::SizeT, app_secret : UInt8*, app_secret_len : LibC::SizeT) : Void*
+  fun node_open_keyed = hop_node_open_keyed(db_path : LibC::Char*, secret : UInt8*, secret_len : LibC::SizeT, app_secret : UInt8*, app_secret_len : LibC::SizeT, key : UInt8*, key_len : LibC::SizeT) : Void*
+  fun node_is_persistent = hop_node_is_persistent(node : Void*) : Bool
   fun node_free = hop_node_free(node : Void*) : Void
+  fun node_is_encrypted = hop_node_is_encrypted(node : Void*) : Bool
   fun node_address = hop_node_address(node : Void*, out_addr : UInt8*) : Bool
   fun node_tick = hop_node_tick(node : Void*, now_ms : UInt64) : Void
   fun link_up = hop_link_up(node : Void*, link : UInt64, role : UInt32) : Void
@@ -23,9 +27,11 @@ lib LibHop
   fun publish_prekey = hop_publish_prekey(node : Void*) : Bool
   fun accept_inbox = hop_accept_inbox(node : Void*, inbox_id : UInt8*) : Bool
   fun accept_service_response = hop_accept_service_response(node : Void*, request_id : UInt8*) : Bool
+  fun accept_service_request = hop_accept_service_request(node : Void*, request_id : UInt8*) : Bool
+  fun reject_service_request = hop_reject_service_request(node : Void*, request_id : UInt8*) : Bool
   fun send_service_request = hop_send_service_request(node : Void*, dst : UInt8*, service : LibC::Char*, method : LibC::Char*, args : UInt8*, args_len : LibC::SizeT, out_id : UInt8*) : Bool
   fun send_service_response = hop_send_service_response(node : Void*, to : UInt8*, for_request_id : UInt8*, status : UInt16, body : UInt8*, body_len : LibC::SizeT) : Bool
-  fun poll_service_requests = hop_poll_service_requests(node : Void*, sink : (Void*, UInt8*, UInt8*, LibC::Char*, LibC::Char*, UInt8*, LibC::SizeT ->), ctx : Void*) : Void
+  fun poll_service_requests = hop_poll_service_requests(node : Void*, sink : (Void*, UInt8*, UInt8*, LibC::Char*, LibC::Char*, UInt8*, LibC::SizeT -> Bool), ctx : Void*) : Void
   fun poll_service_responses = hop_poll_service_responses(node : Void*, sink : (Void*, UInt8*, UInt8*, UInt16, UInt8*, LibC::SizeT -> Bool), ctx : Void*) : Void
   fun address_to_base58 = hop_address_to_base58(addr : UInt8*, out_buf : LibC::Char*, out_cap : LibC::SizeT) : LibC::SizeT
   fun address_from_base58 = hop_address_from_base58(text : LibC::Char*, out32 : UInt8*) : Bool
@@ -42,8 +48,10 @@ lib LibHop
   fun cluster_join_passphrase = hop_cluster_join_passphrase(node : Void*, pass : UInt8*, pass_len : LibC::SizeT) : Void
   fun cluster_members = hop_cluster_members(node : Void*) : UInt32
   fun cluster_set_quorum = hop_cluster_set_quorum(node : Void*, min_live_members : UInt32) : Void
+  fun cluster_mark_done = hop_cluster_mark_done(node : Void*, from : UInt8*, request_id : UInt8*) : Void
+  fun cluster_would_drop = hop_cluster_would_drop(node : Void*, from : UInt8*, request_id : UInt8*) : Bool
   # §32 hps:// pub/sub: services and channels (group chat), the surface the v5 -> v6 ABI bump added.
-  # PLAT-005: the C ABI exported NOTHING from hps:// before ABI 6, so every wrapper that sits on it,
+  # PLAT-005: the C ABI exported NOTHING from hps:// before version 6 of the C ABI, so every wrapper that sits on it,
   # this one included, could not host, join, or post to a channel even though the protocol has shipped
   # in core and over UniFFI for as long as it has existed.
   #
@@ -81,7 +89,7 @@ lib LibHop
   fun hps_pending = hop_hps_pending(node : Void*, path : LibC::Char*, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
   fun hps_approve = hop_hps_approve(node : Void*, path : LibC::Char*, requester : UInt8*, out_id : UInt8*) : Bool
   fun hps_deny = hop_hps_deny(node : Void*, path : LibC::Char*, requester : UInt8*) : Bool
-  fun hps_rekey = hop_hps_rekey(node : Void*, path : LibC::Char*, new_path : LibC::Char*, remove : UInt8*, remove_count : LibC::SizeT, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
+  fun hps_rekey = hop_hps_rekey(node : Void*, path : LibC::Char*, new_path : LibC::Char*, remove : UInt8*, remove_count : LibC::SizeT, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SSizeT
   fun hps_reach = hop_hps_reach(node : Void*, path : LibC::Char*) : UInt32
   fun hps_members = hop_hps_members(node : Void*, path : LibC::Char*, sink : (Void*, UInt8* ->), ctx : Void*) : LibC::SizeT
   fun hps_my_topics = hop_hps_my_topics(node : Void*, sink : (Void*, UInt8*, LibC::Char*, UInt32, Bool, UInt32 ->), ctx : Void*) : LibC::SizeT
@@ -92,7 +100,7 @@ module Hop
   # Thin, one-to-one helpers over LibHop: turn raw pointers + synchronous sink callbacks into Crystal
   # Bytes/String/arrays. Everything ergonomic lives in Hop::Endpoint.
   module FFI
-    ABI_EXPECTED = 6_u32
+    ABI_EXPECTED = 7_u32
 
     # Verified reach record fields (mirrors ReachInfo on the Rust side).
     record Reach, address : Bytes, endpoint : String, issued_at : UInt64, ttl_secs : UInt32
@@ -234,6 +242,52 @@ module Hop
         require_32(for_request_id, "request id").to_unsafe, status, body.to_unsafe, body.size)
     end
 
+    def self.node_is_encrypted(node : Void*) : Bool
+      LibHop.node_is_encrypted(node)
+    end
+
+    def self.node_open(db_path : String, secret : Bytes? = nil, app_secret : Bytes? = nil) : Void*
+      sec_ptr = secret ? require_32(secret, "secret").to_unsafe : Pointer(UInt8).null
+      sec_len = secret ? LibC::SizeT.new(secret.size) : LibC::SizeT.new(0)
+      app_ptr = app_secret ? require_32(app_secret, "app secret").to_unsafe : Pointer(UInt8).null
+      app_len = app_secret ? LibC::SizeT.new(app_secret.size) : LibC::SizeT.new(0)
+      ptr = LibHop.node_open(db_path.to_unsafe, sec_ptr, sec_len, app_ptr, app_len)
+      raise "hop_node_open returned NULL for path #{db_path}" if ptr.null?
+      ptr
+    end
+
+    def self.node_open_keyed(db_path : String, secret : Bytes? = nil, app_secret : Bytes? = nil, key : Bytes? = nil) : Void*
+      sec_ptr = secret ? require_32(secret, "secret").to_unsafe : Pointer(UInt8).null
+      sec_len = secret ? LibC::SizeT.new(secret.size) : LibC::SizeT.new(0)
+      app_ptr = app_secret ? require_32(app_secret, "app secret").to_unsafe : Pointer(UInt8).null
+      app_len = app_secret ? LibC::SizeT.new(app_secret.size) : LibC::SizeT.new(0)
+      key_ptr = key ? key.to_unsafe : Pointer(UInt8).null
+      key_len = key ? LibC::SizeT.new(key.size) : LibC::SizeT.new(0)
+      ptr = LibHop.node_open_keyed(db_path.to_unsafe, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+      raise "hop_node_open_keyed returned NULL for path #{db_path}" if ptr.null?
+      ptr
+    end
+
+    def self.node_is_persistent(node : Void*) : Bool
+      LibHop.node_is_persistent(node)
+    end
+
+    def self.cluster_mark_done(node : Void*, from : Bytes, request_id : Bytes) : Nil
+      LibHop.cluster_mark_done(node, require_32(from, "from").to_unsafe, require_32(request_id, "request id").to_unsafe)
+    end
+
+    def self.cluster_would_drop(node : Void*, from : Bytes, request_id : Bytes) : Bool
+      LibHop.cluster_would_drop(node, require_32(from, "from").to_unsafe, require_32(request_id, "request id").to_unsafe)
+    end
+
+    def self.accept_service_request(node : Void*, request_id : Bytes) : Bool
+      LibHop.accept_service_request(node, require_32(request_id, "request id").to_unsafe)
+    end
+
+    def self.reject_service_request(node : Void*, request_id : Bytes) : Bool
+      LibHop.reject_service_request(node, require_32(request_id, "request id").to_unsafe)
+    end
+
     # [{from32, request_id32, service, method, args}]
     def self.take_service_requests(node : Void*) : Array({Bytes, Bytes, String, String, Bytes})
       buf = [] of {Bytes, Bytes, String, String, Bytes}
@@ -242,7 +296,7 @@ module Hop
         Box(Array({Bytes, Bytes, String, String, Bytes})).unbox(ctx) <<
         {Hop::FFI.read_bytes(frm, LibC::SizeT.new(32)), Hop::FFI.read_bytes(rid, LibC::SizeT.new(32)),
          Hop::FFI.read_cstr(service), Hop::FFI.read_cstr(method), Hop::FFI.read_bytes(args, arglen)}
-        nil
+        false
       }, boxed)
       buf
     end

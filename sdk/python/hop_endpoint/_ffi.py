@@ -8,11 +8,11 @@ from __future__ import annotations
 import ctypes as C
 import os
 import sys
-from ctypes import CFUNCTYPE, POINTER, c_char_p, c_size_t, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p, c_bool
+from ctypes import CFUNCTYPE, POINTER, c_char_p, c_size_t, c_ssize_t, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p, c_bool
 from pathlib import Path
 
 _EXT = {"darwin": "dylib", "win32": "dll"}.get(sys.platform, "so")
-_ABI_EXPECTED = 6
+_ABI_EXPECTED = 7
 
 
 def _resolve_lib() -> str:
@@ -34,7 +34,7 @@ _lib = C.CDLL(_resolve_lib())
 
 # ---- callback prototypes (invoked synchronously during the poll/drain call) ----
 DRAIN_SINK = CFUNCTYPE(None, c_void_p, c_uint64, POINTER(c_uint8), c_size_t)
-SVCREQ_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_char_p, c_char_p, POINTER(c_uint8), c_size_t)
+SVCREQ_SINK = CFUNCTYPE(c_bool, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_char_p, c_char_p, POINTER(c_uint8), c_size_t)
 SVCRESP_SINK = CFUNCTYPE(c_bool, c_void_p, POINTER(c_uint8), POINTER(c_uint8), c_uint16, POINTER(c_uint8), c_size_t)
 REACH_SIGN_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_size_t)
 REACH_VERIFY_SINK = CFUNCTYPE(None, c_void_p, POINTER(c_uint8), c_char_p, c_uint64, c_uint32)
@@ -51,6 +51,14 @@ _lib.hop_abi_version.restype = c_uint32
 _lib.hop_node_new.restype = c_void_p
 _lib.hop_node_with_secret.argtypes = [c_char_p, c_size_t]
 _lib.hop_node_with_secret.restype = c_void_p
+_lib.hop_node_open.argtypes = [c_char_p, c_char_p, c_size_t, c_char_p, c_size_t]
+_lib.hop_node_open.restype = c_void_p
+_lib.hop_node_open_keyed.argtypes = [c_char_p, c_char_p, c_size_t, c_char_p, c_size_t, c_char_p, c_size_t]
+_lib.hop_node_open_keyed.restype = c_void_p
+_lib.hop_node_is_persistent.argtypes = [c_void_p]
+_lib.hop_node_is_persistent.restype = c_bool
+_lib.hop_node_is_encrypted.argtypes = [c_void_p]
+_lib.hop_node_is_encrypted.restype = c_bool
 _lib.hop_node_free.argtypes = [c_void_p]
 _lib.hop_node_address.argtypes = [c_void_p, c_char_p]
 _lib.hop_node_address.restype = c_bool
@@ -72,6 +80,10 @@ _lib.hop_poll_service_requests.argtypes = [c_void_p, SVCREQ_SINK, c_void_p]
 _lib.hop_poll_service_responses.argtypes = [c_void_p, SVCRESP_SINK, c_void_p]
 _lib.hop_accept_service_response.argtypes = [c_void_p, c_char_p]
 _lib.hop_accept_service_response.restype = c_bool
+_lib.hop_accept_service_request.argtypes = [c_void_p, c_char_p]
+_lib.hop_accept_service_request.restype = c_bool
+_lib.hop_reject_service_request.argtypes = [c_void_p, c_char_p]
+_lib.hop_reject_service_request.restype = c_bool
 _lib.hop_address_to_base58.argtypes = [c_char_p, c_char_p, c_size_t]
 _lib.hop_address_to_base58.restype = c_size_t
 _lib.hop_address_from_base58.argtypes = [c_char_p, c_char_p]
@@ -94,6 +106,9 @@ _lib.hop_cluster_join_passphrase.argtypes = [c_void_p, c_char_p, c_size_t]
 _lib.hop_cluster_members.argtypes = [c_void_p]
 _lib.hop_cluster_members.restype = c_uint32
 _lib.hop_cluster_set_quorum.argtypes = [c_void_p, c_uint32]
+_lib.hop_cluster_mark_done.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_cluster_would_drop.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.hop_cluster_would_drop.restype = c_bool
 # §32 hps:// pub/sub (services and channels, i.e. group chat). PLAT-005: the eighteen calls the
 # v5 -> v6 bump was taken for. The C ABI had no hps exports at all, so no wrapper sitting on it could
 # reach a channel even though the protocol has shipped in the two native UniFFI drivers for as long
@@ -141,7 +156,7 @@ _lib.hop_hps_approve.restype = c_bool
 _lib.hop_hps_deny.argtypes = [c_void_p, c_char_p, c_char_p]
 _lib.hop_hps_deny.restype = c_bool
 _lib.hop_hps_rekey.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p, c_size_t, ADDR32_SINK, c_void_p]
-_lib.hop_hps_rekey.restype = c_size_t
+_lib.hop_hps_rekey.restype = c_ssize_t
 _lib.hop_hps_reach.argtypes = [c_void_p, c_char_p]
 _lib.hop_hps_reach.restype = c_uint32
 _lib.hop_hps_members.argtypes = [c_void_p, c_char_p, ADDR32_SINK, c_void_p]
@@ -172,6 +187,52 @@ def node_new() -> c_void_p:
 def node_with_secret(secret: bytes) -> c_void_p:
     return c_void_p(_lib.hop_node_with_secret(secret, len(secret)))
 
+
+def node_open(db_path: str, secret: bytes | None = None, app_secret: bytes | None = None) -> c_void_p:
+    path_bytes = db_path.encode("utf-8")
+    sec_ptr = secret if secret else None
+    sec_len = len(secret) if secret else 0
+    app_ptr = app_secret if app_secret else None
+    app_len = len(app_secret) if app_secret else 0
+    ptr = _lib.hop_node_open(path_bytes, sec_ptr, sec_len, app_ptr, app_len)
+    if not ptr:
+        raise RuntimeError("hop_node_open returned NULL")
+    return c_void_p(ptr)
+
+
+def node_open_keyed(
+    db_path: str,
+    secret: bytes | None = None,
+    app_secret: bytes | None = None,
+    key: bytes | None = None,
+) -> c_void_p:
+    path_bytes = db_path.encode("utf-8")
+    sec_ptr = secret if secret else None
+    sec_len = len(secret) if secret else 0
+    app_ptr = app_secret if app_secret else None
+    app_len = len(app_secret) if app_secret else 0
+    key_ptr = key if key else None
+    key_len = len(key) if key else 0
+    ptr = _lib.hop_node_open_keyed(path_bytes, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+    if not ptr:
+        raise RuntimeError("hop_node_open_keyed returned NULL")
+    return c_void_p(ptr)
+
+
+def node_is_persistent(node) -> bool:
+    return bool(_lib.hop_node_is_persistent(node))
+
+
+def node_is_encrypted(node) -> bool:
+    return bool(_lib.hop_node_is_encrypted(node))
+
+
+def cluster_mark_done(node, from_addr: bytes, request_id: bytes) -> None:
+    _lib.hop_cluster_mark_done(node, _require32(from_addr, "from"), _require32(request_id, "request_id"))
+
+
+def cluster_would_drop(node, from_addr: bytes, request_id: bytes) -> bool:
+    return bool(_lib.hop_cluster_would_drop(node, _require32(from_addr, "from"), _require32(request_id, "request_id")))
 
 def node_free(node) -> None:
     _lib.hop_node_free(node)
@@ -249,6 +310,17 @@ def accept_service_response(node, request_id: bytes) -> bool:
     return bool(_lib.hop_accept_service_response(node, _require32(request_id, "request id")))
 
 
+def is_encrypted(node) -> bool:
+    return bool(_lib.hop_node_is_encrypted(node))
+
+
+def accept_service_request(node, request_id: bytes) -> bool:
+    return bool(_lib.hop_accept_service_request(node, _require32(request_id, "request id")))
+
+
+def reject_service_request(node, request_id: bytes) -> bool:
+    return bool(_lib.hop_reject_service_request(node, _require32(request_id, "request id")))
+
 def take_service_requests(node) -> list[tuple[bytes, bytes, str, str, bytes]]:
     out: list[tuple[bytes, bytes, str, str, bytes]] = []
 
@@ -263,6 +335,7 @@ def take_service_requests(node) -> list[tuple[bytes, bytes, str, str, bytes]]:
                 C.string_at(args, arglen) if arglen else b"",
             )
         )
+        return False
 
     _lib.hop_poll_service_requests(node, sink, None)
     return out
@@ -350,6 +423,31 @@ def relay_pool(node) -> tuple[int, int]:
 
 def cluster_join(node, secret: bytes) -> None:
     _lib.hop_cluster_join(node, _require32(secret, "cluster secret"))
+
+
+def hps_rekey(node, path: str, new_path: str = "", remove: list[bytes] | None = None) -> list[bytes]:
+    remove_list = remove or []
+    packed = bytearray()
+    for addr in remove_list:
+        packed.extend(_require32(addr, "remove address"))
+    out: list[bytes] = []
+
+    @ADDR32_SINK
+    def sink(_ctx, id_ptr):
+        out.append(C.string_at(id_ptr, 32))
+
+    res = _lib.hop_hps_rekey(
+        node,
+        path.encode(),
+        new_path.encode() if new_path else None,
+        bytes(packed) if packed else None,
+        len(remove_list),
+        sink,
+        None,
+    )
+    if res < 0:
+        raise RuntimeError(f'hop_hps_rekey("{path}") failed')
+    return out
 
 
 def cluster_join_passphrase(node, passphrase: bytes) -> None:

@@ -7,9 +7,9 @@ incident is about availability and metadata, not message confidentiality.
 
 ## First 5 minutes: triage
 
-1. Is the fleet even supposed to be on?
+1. Is the fleet even supposed to be on? (Check in the private `hopmesh/platform` repository)
    ```sh
-   grep relays_enabled infra/cloudbuild.trigger.yaml
+   grep relays_enabled hopmesh/platform/infra/cloudbuild.trigger.yaml
    ```
    If `false`, the fleet is intentionally torn down (P2P test phase). "No relay
    delivery" is expected, not an incident. Clients still dial and retry-loop.
@@ -21,7 +21,7 @@ incident is about availability and metadata, not message confidentiality.
    cycle). Activity streaming but delivery failing points at Firestore or a region.
 3. Which regions are unhealthy? Check Cloud Run in the console (project `hop-mesh`)
    for revisions that are erroring or stuck. 5xx / 429 spikes are the "Relay Cloud
-   Run 5xx/429" signal (see `infra/observability.tf`).
+   Run 5xx/429" signal (see `hopmesh/platform/infra/observability.tf`).
 
 Note on the activity log: `curl -sN https://relay.hopme.sh/` is an UNAUTHENTICATED
 live stream and it leaks relay traffic metadata to anyone who hits it. Treat the
@@ -38,7 +38,7 @@ Likely causes, in order:
   regions cold-starting with `relay_identity_version=latest` pick up a DIFFERENT
   identity and orphan their Firestore partition / registry entries. Fix: pin
   `TF_VAR_relay_identity_version` to the KNOWN-GOOD version number in
-  `infra/cloudbuild.trigger.yaml`, then push to `main`. Do not re-seed.
+  `hopmesh/platform/infra/cloudbuild.trigger.yaml`, then push to `main` in `hopmesh/platform`. Do not re-seed.
 - Firestore IAM / quota failure. Handoff, presence, and §39-P5 pull all just log
   "... FAILED" and keep serving degraded. Check the runtime SA's Firestore perms
   and Firestore quota. With alerting off (`alert_email` empty) these are silent, so
@@ -69,7 +69,7 @@ left the LB chain half-built:
    The chain is designed to converge when the whole count-gated set is applied
    together. See `docs/runbooks/relay-enable-disable.md` for the cycle explanation.
    Only if Cloud Build itself is unavailable, use the break-glass `make apply` in
-   `infra/`, and only after step 2 confirms you are level with `origin/main`.
+   `hopmesh/platform/infra/`, and only after step 2 confirms you are level with `origin/main`.
 
 ## Rollback
 
@@ -78,7 +78,7 @@ rebuilds from the reverted source and re-applies Terraform with the reverted ima
 SHA. Because state lives in `gs://hop-mesh-tfstate`, the apply reconciles the fleet
 back to the reverted definition.
 
-For an infra-only mistake (Terraform, no code change), revert the `infra/` commit
+For an infra-only mistake (Terraform, no code change), revert the `hopmesh/platform/infra/` commit
 and push; the same trigger re-applies.
 
 ## After the incident

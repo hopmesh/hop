@@ -170,6 +170,7 @@ extension HopBearer {
         let session = relaySession ?? URLSession(configuration: .default, delegate: self, delegateQueue: .main)
         relaySession = session
         let task = session.webSocketTask(with: url)
+        task.maximumMessageSize = 65536
         endpointWS[id] = task
         task.resume()   // node.connected fires in didOpenWithProtocol (we're the initiator)
         receiveEndpoint(id)
@@ -181,8 +182,22 @@ extension HopBearer {
             guard let self else { return }
             switch result {
             case .success(let message):
-                if case .data(let d) = message { self.deliver(link: id, bytes: d) }
-                self.receiveEndpoint(id)
+                switch message {
+                case .data(let d):
+                    guard d.count <= 65536 else {
+                        self.onMain { self.endpointWS[id]?.cancel(with: .messageTooBig, reason: nil); self.endpointWS[id] = nil }
+                        self.linkDown(id)
+                        return
+                    }
+                    self.deliver(link: id, bytes: d)
+                    self.receiveEndpoint(id)
+                case .string:
+                    // PLAT-007: protocol-disallowed text must close/refuse rather than be reinterpreted
+                    self.onMain { self.endpointWS[id]?.cancel(with: .unsupportedData, reason: nil); self.endpointWS[id] = nil }
+                    self.linkDown(id)
+                @unknown default:
+                    break
+                }
             case .failure:
                 self.onMain { self.endpointWS[id] = nil }
                 self.linkDown(id)

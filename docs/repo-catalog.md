@@ -124,20 +124,12 @@ retirement emptied out because no Rust crate MIRROR survived. True about mirrors
 only in-tree record of the local-to-published naming for three crates that are still live. Someone
 grepping crates.io for `hop-store-sqlite` lands on a 404 and concludes we never shipped it.
 
-**Those three crates now have no publishing path, and that is a real gap rather than a tidy-up.** They
-were published FROM the Rust mirrors: `tools/crates-publish.py` reached a mirror only through
-`RUST_EXPORTS` in `tools/package-export-smoke.py`, which copies it to `.github/crates-publish.py`, and
-that copy is gated on `component in RUST_MIRRORS`. With `RUST_MIRRORS` empty, nothing exports it, and no
-monorepo workflow invokes `crates-publish.py publish` either (verified: zero hits across
-`.github/workflows/`). So a new version of any of the three cannot currently be cut from anywhere.
-
-Worse, the obvious repair is a trap. Publishing straight from the monorepo would use each crate's own
-`[package] name`, which is `hop-core`, `hop-store-sqlite` and `hop-store-firestore`. `hop-core` on
-crates.io belongs to an unrelated third party, so that publish would either fail or, for the two store
-crates, silently claim NEW names and orphan the `hop-mesh-*` ones already depended on. Whoever wires
-monorepo-side crate publishing has to carry the rename forward deliberately; it is a release contract,
-not a naming preference.
-
+**Publishing from the monorepo.** The monorepo publishing path is restored via
+`tools/crates-publish.py dry-run` / `publish-all` and `.github/workflows/crates-publish.yml`,
+using `CRATE_RENAMES` in `tools/copybara/copy.bara.sky`. The dry run produces `.crate` archives
+and metadata for `hop-mesh-core`, `hop-mesh-store-sqlite`, and `hop-mesh-store-firestore`,
+resolving all workspace dependencies into concrete crates.io version dependencies without path
+fallbacks, and publishing `hop-mesh-core` first before its dependents.
 Everything above is confirmed ours by scope or namespace AND by the `repository` field, which is the
 standard to meet before calling any package ours. A URL returning 200 proves the name is taken, not
 that we own it.

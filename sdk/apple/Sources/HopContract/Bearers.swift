@@ -26,6 +26,13 @@ public protocol Bearer: AnyObject {
     func start()
     func stop()
     func send(_ bytes: Data, on link: LinkId)
+    func close(_ link: LinkId)
+    func authenticated(_ link: LinkId)
+}
+
+public extension Bearer {
+    func close(_ link: LinkId) {}
+    func authenticated(_ link: LinkId) {}
 }
 
 /// The registry + multiplexer. Register bearers, set `sink`, drive everything as one `Bearer`. Mints a
@@ -42,6 +49,9 @@ public final class BearerManager: Bearer {
     private var nextGlobal: LinkId = 1
     private var toGlobal: [ObjectIdentifier: [LinkId: LinkId]] = [:]
     private var fromGlobal: [LinkId: (Bearer, LinkId)] = [:]
+    private var pendingLinks: [LinkId: (Bearer, LinkId)] = [:]
+    private var pendingOpenedMs: [LinkId: UInt64] = [:]
+    public static let preauthDeadlineMs: UInt64 = 10_000
     /// Enablement keyed by `transportName`, NOT by bearer object. Absent means enabled.
     ///
     /// The name is the key because the guarantee is stated per name ("no bearer carrying that
@@ -223,6 +233,8 @@ public final class BearerManager: Bearer {
         let g = nextGlobal; nextGlobal += 1
         toGlobal[oid, default: [:]][local] = g
         fromGlobal[g] = (bearer, local)
+        pendingLinks[g] = (bearer, local)
+        pendingOpenedMs[g] = UInt64(Date().timeIntervalSince1970 * 1000)
         lock.unlock()
         sink?.linkUp(g, role: role, peerId: peerId)
     }
@@ -233,11 +245,46 @@ public final class BearerManager: Bearer {
         sink?.linkBytes(g, data)
     }
 
+    public func markSecured(_ globalLinkId: LinkId) {
+        lock.lock()
+        pendingOpenedMs.removeValue(forKey: globalLinkId)
+        let route = pendingLinks.removeValue(forKey: globalLinkId) ?? fromGlobal[globalLinkId]
+        lock.unlock()
+        route?.0.authenticated(route!.1)
+    }
+
+    public func checkPreauthDeadlines(_ nowMs: UInt64, deadlineMs: UInt64 = preauthDeadlineMs) {
+        var expired: [(Bearer, LinkId)] = []
+        lock.lock()
+        for (g, opened) in pendingOpenedMs {
+            if nowMs >= opened && (nowMs - opened) > deadlineMs {
+                if let route = pendingLinks.removeValue(forKey: g) {
+                    expired.append(route)
+                }
+            }
+        }
+        for (b, l) in expired {
+            if let g = toGlobal[ObjectIdentifier(b)]?[l] {
+                pendingOpenedMs.removeValue(forKey: g)
+            }
+        }
+        lock.unlock()
+        for (b, l) in expired {
+            b.close(l)
+            down(b, l)
+        }
+    }
+
     fileprivate func down(_ bearer: Bearer, _ local: LinkId) {
         let oid = ObjectIdentifier(bearer)
         lock.lock()
         let g = toGlobal[oid]?[local]
-        if let g { toGlobal[oid]?[local] = nil; fromGlobal[g] = nil }
+        if let g {
+            toGlobal[oid]?[local] = nil
+            fromGlobal[g] = nil
+            pendingLinks[g] = nil
+            pendingOpenedMs[g] = nil
+        }
         lock.unlock()
         guard let g else { return }
         sink?.linkDown(g)

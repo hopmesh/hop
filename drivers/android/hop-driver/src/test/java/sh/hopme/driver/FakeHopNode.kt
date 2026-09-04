@@ -117,6 +117,7 @@ class FakeHopNode(
     override fun secret(): ByteArray = ByteArray(32) { 0x5 }
     override fun isInternet(): Boolean = internetOn
     override fun isPersistent(): Boolean = persistent
+    override fun isEncrypted(): Boolean = false
     override fun rehydrateDropped(): UInt = 0u
     override fun pendingCount(): UInt = pendingCountVal
 
@@ -178,6 +179,20 @@ class FakeHopNode(
         return removed
     }
     override fun takeServiceRequests(): List<ServiceReq> = drain(pendingServiceRequests)
+    // ABI 7 (ABI-002): polling is non-destructive in the real node; the fake keeps the same shape,
+    // an accept or reject is acknowledged only for a request it still holds.
+    val acceptedServiceRequestIds = mutableListOf<ByteArray>()
+    val rejectedServiceRequestIds = mutableListOf<ByteArray>()
+    override fun acceptServiceRequest(id: ByteArray): Boolean {
+        val removed = pendingServiceRequests.removeAll { it.requestId.contentEquals(id) }
+        if (removed) acceptedServiceRequestIds.add(id.copyOf())
+        return removed
+    }
+    override fun rejectServiceRequest(id: ByteArray): Boolean {
+        val known = pendingServiceRequests.any { it.requestId.contentEquals(id) }
+        if (known) rejectedServiceRequestIds.add(id.copyOf())
+        return known
+    }
 
     // hps:// (§32)
     override fun registerService(path: String, kind: HpsKind, access: HpsAccess, visibility: HpsVisibility): ByteArray {

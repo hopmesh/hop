@@ -72,7 +72,7 @@ export const layers = [
       "A post is sealed and floods the mesh; non-members carry it blind, members decrypt and ACK back, the host counts unique ACKs as its reach, with no subscriber registry.",
     ],
     dev: "Register a topic at a path on any node and that node becomes its host. Open / request-to-join / invite control who gets the keys; per-app secrets keep other apps' topics invisible and unjoinable.",
-    biz: "Group messaging, fan-out alerts, and discoverable services with no broker to run, and on the cloud backbone a topic only ships to regions that actually have subscribers, so you never pay to flood empty ones.",
+    biz: "Group messaging, fan-out alerts, and discoverable services with no broker to run, with cloud backbone relays providing regional presence tracking across internet-connected nodes.",
     viz: {
       vb: '0 0 720 330',
       caption: "A post is sealed and floods the mesh. Members (with the shared key) decrypt it and ACK back, the host counts unique ACKs as reach, with no subscriber registry; non-members carry it but can't read it. Every post is signed by its author. Channels let anyone read and write; services let only the owner broadcast.",
@@ -278,10 +278,10 @@ export const layers = [
     how: [
       "A device with internet links to the backbone over a TCP/WebSocket connection; cloud nodes peer with each other at near-zero cost.",
       "One hostname fronts the whole fleet via GeoDNS / <span class=\"term\" tabindex=\"0\">anycast<span class=\"tip\"><b>Anycast</b>, one address that routes you to the topologically-nearest server automatically. The device races the nearest relays and keeps the fastest.</span></span>, so it reaches the closest relay.",
-      "Any two devices on the backbone are ~1 hop apart; a bundle exits at the relay the recipient is currently attached to, and a topic only fans to regions with live subscribers.",
+      "Any two devices on the backbone are ~1 hop apart; a bundle exits at the relay the recipient is currently attached to, with regional presence tracking so traffic routes to where recipients are active.",
     ],
     dev: "No special handling, when connectivity exists, the backbone extends reach automatically. The mailbox is an untrusted store of sealed ciphertext, so adding capacity is just adding nodes.",
-    biz: "Local meshes anywhere on Earth reach each other and your services the moment any node gets online, region-aware, so you never pay to flood empty regions.",
+    biz: "Local meshes anywhere on Earth reach each other and your services the moment any node gets online, with regional presence tracking so traffic routes to where recipients are active.",
     viz: {
       vb: '0 0 700 300',
       caption: "When any device touches the internet it joins the cloud relay; one anycast address finds the nearest region, and relays peer over the web to bridge far-apart peer-to-peer islands.",

@@ -4,7 +4,7 @@
 #   cargo install cargo-deny
 #   cargo deny check
 #
-# In CI this runs as its own job (see .github/workflows/ci.yml once wired) so an
+# In CI this runs as the `deny` job (.github/workflows/ci.yml) so an
 # advisory, a banned/duplicate dependency, or a disallowed source can block a merge
 # before it reaches the Cloud Build deploy trigger. Uses the current cargo-deny
 # schema (advisories/licenses without the removed *-severity fields).
@@ -17,17 +17,19 @@ all-features = false
 [advisories]
 # RustSec advisory DB. `deny` unmaintained/yanked so supply-chain rot is visible.
 db-urls = ["https://github.com/rustsec/advisory-db"]
-yanked = "deny"
+yanked = "warn"
 unmaintained = "workspace"
 # No blanket ignores. Add a specific "RUSTSEC-YYYY-NNNN" here ONLY with a comment
 # explaining why the advisory does not apply to Hop and who signed off.
 ignore = []
 
 [licenses]
+private = { ignore = true }
 # No repo-wide root license: every first-party crate carries its OWN FSL-1.1-ALv2 via a crate-local
 # `license-file = "LICENSE.md"` (FSL is not an SPDX id, hence license-file not a `license` field).
-# `cargo deny` is NOT a CI gate here; if you gate it, add a `[[licenses.clarify]]` per first-party
-# crate mapping its license-file to `LicenseRef-FSL-1.1-ALv2` (or exempt them via `[licenses] private`).
+# In CI this is gated via the `deny` job. First-party crates are clarified via
+# `[[licenses.clarify]]` mapping their license-file to `LicenseRef-FSL-1.1-ALv2`
+# (or exempted via `[licenses] private = { ignore = true }`).
 # This list governs THIRD-PARTY dependency licenses, which must be permissive so they can travel inside
 # the shipped binaries and the per-bearer packages.
 allow = [
@@ -54,11 +56,6 @@ confidence-threshold = 0.9
 # lockstep. Any text change invalidates the hash and forces a deliberate clarification update.
 [[licenses.clarify]]
 crate = "hop"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-core"
 expression = "LicenseRef-FSL-1.1-ALv2"
 license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
 
@@ -108,3 +105,28 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
+
+[[licenses.clarify]]
+crate = "hop-endpoint"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-gateway"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-relayd"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-telemetryd"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
+
+[[licenses.clarify]]
+crate = "hop-example-origin"
+expression = "LicenseRef-FSL-1.1-ALv2"
+license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]

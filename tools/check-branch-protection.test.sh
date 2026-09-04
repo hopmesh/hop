@@ -7,9 +7,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin"
 
-# The guard makes TWO calls now: the protection endpoint, then the repo endpoint for allow_auto_merge.
-# So the stub dispatches on URL instead of returning one body for everything. It still exits 97 on an
-# unrecognized URL, which is what proves the guard is talking to the repository the test intends.
+# The guard makes calls to: the protection endpoint, the repo endpoint for allow_auto_merge,
+# and the environment endpoints for deployment_branch_policy.
+# The stub dispatches on URL instead of returning one body for everything. It exits 97 on an
+# unrecognized URL, proving the guard talks to the intended endpoints.
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env sh
 protection="https://api.github.com/repos/hopmesh/hop/branches/main/protection"
@@ -19,13 +20,17 @@ for argument in "$@"; do
   case "$argument" in
     "$protection") target=protection ;;
     "$repo") target=repo ;;
+    https://api.github.com/repos/hopmesh/hop/environments/*) target=env ;;
   esac
 done
 repo_body="${FAKE_REPO_BODY:-}"
 [ -n "$repo_body" ] || repo_body='{"allow_auto_merge": true}'
+env_body="${FAKE_ENV_BODY:-}"
+[ -n "$env_body" ] || env_body='{"protection_rules":[{"type":"branch_policy"}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}'
 case "$target" in
   protection) printf '%s\n%s\n' "$FAKE_BODY" "${FAKE_CODE:-200}" ;;
   repo) printf '%s\n%s\n' "$repo_body" "${FAKE_REPO_CODE:-200}" ;;
+  env) printf '%s\n%s\n' "$env_body" "${FAKE_ENV_CODE:-200}" ;;
   *) exit 97 ;;
 esac
 SH
@@ -36,7 +41,8 @@ run_case() {
   expected="$2"
   body="$3"
   if output="$(PATH="$tmp/bin:$PATH" GH_TOKEN=test FAKE_BODY="$body" \
-      FAKE_REPO_BODY="${CASE_REPO_BODY:-}" FAKE_REPO_CODE="${CASE_REPO_CODE:-}" bash "$guard" 2>&1)"; then
+      FAKE_REPO_BODY="${CASE_REPO_BODY:-}" FAKE_REPO_CODE="${CASE_REPO_CODE:-}" \
+      FAKE_ENV_BODY="${CASE_ENV_BODY:-}" FAKE_ENV_CODE="${CASE_ENV_CODE:-}" bash "$guard" 2>&1)"; then
     actual=pass
   else
     actual=fail
@@ -48,11 +54,16 @@ run_case() {
   fi
 }
 
-good='{"required_status_checks":{"checks":[{"context":"CI gate"}]}}'
+good='{"required_status_checks":{"strict":true,"checks":[{"context":"CI gate"}]},"enforce_admins":{"enabled":true}}'
 
 run_case exact pass "$good"
-run_case stale-extra fail '{"required_status_checks":{"checks":[{"context":"CI gate"},{"context":"Stale check"}]}}'
-run_case missing-gate fail '{"required_status_checks":{"checks":[{"context":"Other check"}]}}'
+run_case stale-extra fail '{"required_status_checks":{"strict":true,"checks":[{"context":"CI gate"},{"context":"Stale check"}]},"enforce_admins":{"enabled":true}}'
+run_case missing-gate fail '{"required_status_checks":{"strict":true,"checks":[{"context":"Other check"}]},"enforce_admins":{"enabled":true}}'
+run_case strict-false fail '{"required_status_checks":{"strict":false,"checks":[{"context":"CI gate"}]},"enforce_admins":{"enabled":true}}'
+run_case strict-missing fail '{"required_status_checks":{"checks":[{"context":"CI gate"}]},"enforce_admins":{"enabled":true}}'
+run_case strict-non-boolean fail '{"required_status_checks":{"strict":"yes","checks":[{"context":"CI gate"}]},"enforce_admins":{"enabled":true}}'
+run_case enforce-admins-false fail '{"required_status_checks":{"strict":true,"checks":[{"context":"CI gate"}]},"enforce_admins":{"enabled":false}}'
+run_case enforce-admins-missing fail '{"required_status_checks":{"strict":true,"checks":[{"context":"CI gate"}]}}'
 
 # allow_auto_merge is live repo config that no repo file can hold, exactly like the protection rule.
 # hopmesh/hop shipped with it OFF and every pr-automerge run failed with "Auto merge is not allowed for
@@ -64,6 +75,14 @@ CASE_REPO_BODY='{"allow_auto_merge": true}'  run_case auto-merge-enabled  pass "
 # Unable to READ the setting is an unknown, never a pass, matching the protection branches above.
 CASE_REPO_CODE=500 CASE_REPO_BODY='{}'       run_case auto-merge-api-error fail "$good"
 
+
+# Environment deployment branch policy tests.
+# Environments (component-sync, release, github-pages) must have deployment_branch_policy with
+# protected_branches: true. Test that the prior unconfigured live state fails.
+CASE_ENV_BODY='{"protection_rules":[],"deployment_branch_policy":null}' run_case env-unprotected fail "$good"
+CASE_ENV_BODY='{"protection_rules":[],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":false}}' run_case env-branches-unprotected fail "$good"
+CASE_ENV_CODE=404 run_case env-missing fail "$good"
+CASE_ENV_CODE=500 run_case env-api-error fail "$good"
 # The workflow WRAPPER, not just the script. This audit is the only live assertion that main still
 # requires the CI gate, and it used to `exit 0` when BRANCH_PROTECTION_TOKEN was absent: deleting one
 # secret disarmed the detector and every subsequent run reported green. Inability to read the live rule

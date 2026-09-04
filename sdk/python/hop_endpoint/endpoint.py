@@ -41,6 +41,7 @@ class HopRequest:
     service: str
     method: str
     args: bytes
+    request_id: bytes = b""
 
     @property
     def text(self) -> str:
@@ -65,17 +66,36 @@ class HopResponse:
 
 
 class HopEndpoint:
-    def __init__(self, key: Optional[bytes] = None, tick_ms: int = 50, cluster=None, quorum=None):
+    def __init__(
+        self,
+        key: Optional[bytes] = None,
+        db_path: Optional[str] = None,
+        db_key: Optional[bytes] = None,
+        app_secret: Optional[bytes] = None,
+        tick_ms: int = 50,
+        cluster=None,
+        quorum=None,
+    ):
         ffi.assert_abi()
         if key is not None and len(key) != 32:
             raise ValueError(f"identity key must be exactly 32 bytes, got {len(key)}")
+        if app_secret is not None and len(app_secret) != 32:
+            raise ValueError(f"app_secret must be exactly 32 bytes, got {len(app_secret)}")
         # Reentrant because a synchronous ctypes sink can call back into the endpoint. _native_calls
         # keeps a callback-reentrant close from freeing the node until the outer native call returns.
         self._lock = threading.RLock()
         self._closed = False
         self._native_calls = 0
         self._node_freed = False
-        self._node = ffi.node_with_secret(key) if key else ffi.node_new()
+        if db_path is not None:
+            if db_key is not None:
+                self._node = ffi.node_open_keyed(db_path, key, app_secret, db_key)
+            else:
+                self._node = ffi.node_open(db_path, key, app_secret)
+        elif key:
+            self._node = ffi.node_with_secret(key)
+        else:
+            self._node = ffi.node_new()
         self._handlers: dict[str, Callable] = {}
         self._links: dict[int, Callable[[bytes], None]] = {}
         self._pending: dict[bytes, tuple[threading.Event, dict]] = {}
@@ -263,6 +283,32 @@ class HopEndpoint:
         dial(self, info["wss_url"], _ssl_context(insecure_tls))
         return info["address"]
 
+    def accept_service_request(self, request_id: bytes) -> bool:
+        """Durably accept a service request by its 32-byte request id."""
+        return bool(self._with_node(lambda n: ffi.accept_service_request(n, request_id)))
+
+    def reject_service_request(self, request_id: bytes) -> bool:
+        """Reject a service request without ACK so it can be retried."""
+        return bool(self._with_node(lambda n: ffi.reject_service_request(n, request_id)))
+
+    @property
+    def is_persistent(self) -> bool:
+        """True if this endpoint is backed by persistent storage."""
+        return bool(self._with_node(ffi.node_is_persistent))
+
+    @property
+    def is_encrypted(self) -> bool:
+        """True if this endpoint's persistent store is encrypted at rest (SQLCipher)."""
+        return bool(self._with_node(ffi.node_is_encrypted))
+
+    def cluster_mark_done(self, from_addr: bytes, request_id: bytes) -> None:
+        """Mark a request as done in the cluster dedup table."""
+        self._with_node(lambda n: ffi.cluster_mark_done(n, from_addr, request_id))
+
+    def cluster_would_drop(self, from_addr: bytes, request_id: bytes) -> bool:
+        """Check if a request would be dropped by the cluster dedup table."""
+        return bool(self._with_node(lambda n: ffi.cluster_would_drop(n, from_addr, request_id)))
+
     # ---- bearer seam (used by tcp_bearer) ----
     def _register_link(self, link: int, role: str, send_fn: Callable[[bytes], None]) -> None:
         def register(node):
@@ -311,9 +357,14 @@ class HopEndpoint:
         for frm, rid, service, method, args in reqs:
             handler = self._handlers.get(service)
             if handler:
-                req = HopRequest(ffi.to_b58(frm), frm, service, method, args)
+                req = HopRequest(ffi.to_b58(frm), frm, service, method, args, rid)
                 reply = _Reply(self, frm, rid)
-                handler(req, reply)
+                try:
+                    handler(req, reply)
+                    self._try_with_node(lambda n: ffi.accept_service_request(n, rid))
+                except Exception:
+                    # handler threw: leave request queued for redelivery
+                    pass
         resps = self._try_with_node(ffi.take_service_responses)
         if resps is None:
             return
@@ -364,3 +415,6 @@ class _Reply:
         )
         self._sent = True
         return bool(sent)
+
+# Alias Endpoint to HopEndpoint for standard convention
+Endpoint = HopEndpoint

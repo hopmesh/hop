@@ -56,6 +56,7 @@ export interface HopNativeModule {
   publishPrekey(handle: number): Promise<boolean>;
   tick(handle: number, nowMs: number): Promise<void>;
   isPersistent(handle: number): Promise<boolean>;
+  isEncrypted(handle: number): Promise<boolean>;
   rehydrateDropped(handle: number): Promise<number>;
   isSecured(handle: number, addrB58: string): Promise<boolean>;
 
@@ -69,6 +70,8 @@ export interface HopNativeModule {
   sendServiceRequest(handle: number, toB58: string, service: string, method: string, argsB64: string): Promise<string | null>;
   sendServiceResponse(handle: number, toB58: string, forRequestIdB64: string, status: number, bodyB64: string): Promise<boolean>;
   acceptServiceResponse(handle: number, forRequestIdB64: string): Promise<boolean>;
+  acceptServiceRequest(handle: number, requestIdB64: string): Promise<boolean>;
+  rejectServiceRequest(handle: number, requestIdB64: string): Promise<boolean>;
 
   // ---- pump: ticks, drains outbound, and polls inbox/requests/responses/hps queues, emitting events ----
   startPump(handle: number, intervalMs: number): Promise<void>;

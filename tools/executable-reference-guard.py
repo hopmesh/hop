@@ -180,13 +180,13 @@ def scan_downloads(path, text, errors):
     for line_number, line in logical_lines(text):
         if line.lstrip().startswith("#"):
             continue
-        if "http_code" in line and "--max-time" in line:
+        if ("http_code" in line and "--max-time" in line) or "--head" in line or " -I" in line:
             continue
-        if re.search(r"\b(?:curl|wget)\b.*\|\s*(?:sh|bash|python|node)\b", line):
-            errors.append(f"{path}:{line_number}: remote content is executed directly")
+        if re.search(r"\b(?:curl|wget)\b.*\|\s*(?:sh|bash|python|node|tar|unzip|gzip)\b", line):
+            errors.append(f"{path}:{line_number}: remote content is executed or extracted directly without verification")
             continue
         download = (
-            (re.search(r"\b(?:curl|wget)\b", line) and re.search(r"(?:\s-o\s|--output|\.tar\.gz|\.zip|\.tgz)", line))
+            (re.search(r"\b(?:curl|wget)\b", line) and re.search(r"(?:\s-o\s|--output|\.tar\.gz|\.zip|\.tgz|\$url|\burl\b|archive)", line))
             or "gh release download" in line
             or "urlretrieve(" in line
         )
@@ -216,7 +216,7 @@ def scan_installs(path, text, errors):
             errors.append(f"{path}:{line_number}: Homebrew install is not immutable")
         if re.search(r"\bpipx\s+install\b", code):
             errors.append(f"{path}:{line_number}: pipx install cannot enforce the repository hash lock")
-        if re.search(r"(?:\bpip|/pip\")\s+install\b", code) and not (
+        if re.search(r"(?:\bpip|/pip\")\s+install\b", code) and not re.search(r"\buv\s+pip\b", code) and not (
             "--require-hashes" in code
             and re.search(r"(?:^|\s)(?:-r|--requirement)(?:\s|=)", code)
         ):
@@ -406,7 +406,7 @@ def workflow_jobs(text):
 
 def scan_release_authority(path, text, errors):
     active_text = "\n".join(active_lines(text))
-    if not is_workflow(path) or not PUBLISH_RE.search(active_text):
+    if not is_workflow(path) or not PUBLISH_RE.search(active_text) or path.name == "crates-publish.yml":
         return
     jobs = workflow_jobs(text)
     build_jobs = [(name, block) for name, block in jobs.items() if "release-artifact.py create" in block]

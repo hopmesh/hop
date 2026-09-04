@@ -39,7 +39,7 @@ examples/           raw-roundtrip, echo, tcp, server/client, discovery (HTTPS we
   mount `wellKnownHandler()` and pass `serveWellKnown:false` (a WS upgrade is a server-level hook, not
   an app route, which is why `attach` takes the server).
 - **koffi sink callbacks** decode pointers that are valid ONLY during the call (see `bytes`/`addr` in
-  ffi.mjs); copy anything you keep. `assertAbi()` fails loudly if the library does not report ABI 6,
+  ffi.mjs); copy anything you keep. `assertAbi()` fails loudly if the library does not report ABI 7,
   the level `ABI_EXPECTED` pins (`tools/codegen/check-abi-version.sh` holds this line to the constant).
 - **The §32 `hps://` calls are DECLARED, not wrapped.** `ffi.mjs` binds all eighteen (`hps_register`
   through `hps_browse`) with the same fixed-width guards as the rest of the file, because the ABI level

@@ -245,9 +245,13 @@ pub trait Store {
     // A small durable key→bytes surface alongside bundles, for state that must survive a
     // restart but isn't a bundle: forward-secret ratchet sessions, prekey secrets, etc. The
     // host supplies the backing store (SQLite on device, Firestore on the cloud relay). Best-effort
-    // metadata methods default to no-ops; security-critical mutations are mandatory and fallible.
+    // metadata methods default to no-ops; financial (usage, carriage, storage, telemetry meters),
+    // authorization, HPS registration, and cluster HANDLED namespaces MUST use the fallible
+    // put_kv_critical or apply_kv_batch path (STORE-005).
 
     /// Persist `value` under `key`, replacing any prior value. Default: no-op (not durable).
+    /// Strictly for non-critical ephemeral/telemetry hints where loss is acceptable. All financial,
+    /// authorization, and cluster coordination state MUST use [`put_kv_critical`].
     fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
     /// Atomically apply security-critical store mutations and report whether the backend durably
     /// accepted the whole batch. Implementations must not expose a prefix of the batch, return
@@ -260,6 +264,19 @@ pub trait Store {
             key: key.to_string(),
             value,
         }])
+    }
+    /// Atomically persist `value` under `key` only if `key` does not already exist.
+    /// Returns `Ok(true)` if inserted, `Ok(false)` if already present, or `Err(err)` on failure.
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        if self.get_kv(key).is_some() {
+            return Ok(false);
+        }
+        self.put_kv_critical(key, value)?;
+        Ok(true)
     }
     /// Fetch a persisted value by exact key. Default: `None`.
     fn get_kv(&self, _key: &str) -> Option<Vec<u8>> {
@@ -411,6 +428,13 @@ impl Store for Box<dyn Store> {
     }
     fn put_kv_critical(&mut self, key: &str, value: Vec<u8>) -> std::result::Result<(), String> {
         (**self).put_kv_critical(key, value)
+    }
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        (**self).put_kv_if_absent_critical(key, value)
     }
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         (**self).get_kv(key)
@@ -1040,5 +1064,17 @@ mod tests {
             prop_assert_eq!(&store.held, &before.held, "failed batch changed bundle custody");
             prop_assert_eq!(&store.seen, &before.seen, "failed batch changed dedup state");
         }
+    }
+
+    /// Conformance helper: verifies that put_kv_critical/get_kv/remove_kv_critical adhere to contract.
+    #[test]
+    fn critical_kv_durability_conformance() {
+        let mut store = MemoryStore::new();
+        let key = "conformance/test_critical";
+        let val = vec![1, 2, 3, 4];
+        assert!(store.put_kv_critical(key, val.clone()).is_ok());
+        assert_eq!(store.get_kv(key), Some(val));
+        assert!(store.remove_kv_critical(key).is_ok());
+        assert_eq!(store.get_kv(key), None);
     }
 }

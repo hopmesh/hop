@@ -1,5 +1,7 @@
 """Round-trip proofs: hops:// request/response in-process and over a real TCP bearer. Stdlib only."""
 import socket
+import os
+import tempfile
 import ssl
 import struct
 import threading
@@ -223,6 +225,39 @@ class RoundTrip(unittest.TestCase):
             server.close()
             client.close()
 
+    def test_service_request_throwing_handler_leaves_request_queued(self):
+        server, client = HopEndpoint(), HopEndpoint()
+        attempts = []
+        first_attempt_done = threading.Event()
+
+        def handler(req, reply):
+            attempts.append(req.service)
+            if len(attempts) == 1:
+                first_attempt_done.set()
+                raise RuntimeError("handler failed attempt 1")
+            reply(200, b"recovered")
+        server.on("flaky", handler)
+        connect_in_process(server, client)
+        try:
+            res = {}
+            def do_req():
+                try:
+                    res["result"] = client.request(server.address_bytes, "flaky", "call", b"test", timeout=5.0)
+                except Exception as e:
+                    res["error"] = e
+
+            req_thread = threading.Thread(target=do_req)
+            req_thread.start()
+            self.assertTrue(first_attempt_done.wait(5))
+            self.assertEqual(len(attempts), 1)
+            req_thread.join(5)
+            self.assertEqual(len(attempts), 2, "request was redelivered after throwing handler")
+            resp = res.get("result")
+            self.assertEqual((resp.status, resp.body), (200, b"recovered"))
+        finally:
+            server.close()
+            client.close()
+
     def test_tcp_bearer(self):
         server = HopEndpoint()
         server.on("acme/orders", lambda req, reply: reply(201, req.args))
@@ -237,6 +272,29 @@ class RoundTrip(unittest.TestCase):
             server.close()
             client.close()
 
+
+    def test_endpoint_persists_state_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test-restart.db")
+            secret = bytes(range(1, 33))
+
+            e1 = HopEndpoint(key=secret, db_path=db_path, cluster="shared-cluster-passphrase")
+            self.assertTrue(e1.is_persistent)
+            self.assertFalse(e1.is_encrypted)
+
+            from_addr = bytes([0xAA] * 32)
+            req_id = bytes([0xBB] * 32)
+
+            e1.cluster_mark_done(from_addr, req_id)
+            self.assertTrue(e1.cluster_would_drop(from_addr, req_id))
+            e1.close()
+
+            e2 = HopEndpoint(key=secret, db_path=db_path, cluster="shared-cluster-passphrase")
+            try:
+                self.assertTrue(e2.is_persistent)
+                self.assertTrue(e2.cluster_would_drop(from_addr, req_id))
+            finally:
+                e2.close()
 
 class Cluster(unittest.TestCase):
     def test_join_and_quorum(self):

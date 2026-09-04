@@ -28,6 +28,7 @@ import urllib.request
 
 API = "https://api.github.com"
 OWNER = "hopmesh"
+CANONICAL_REPO = "hop"
 ANCHOR_SOURCE = "workspace anchor"
 
 
@@ -106,7 +107,7 @@ GIT_ORIGIN_REV = re.compile(r"^GitOrigin-RevId: ([0-9a-f]{40})$", re.MULTILINE)
 
 
 def source_revision(repo, token):
-    """The monorepo commit a mirror's main was exported from, via copybara's GitOrigin-RevId."""
+    """The canonical repository commit a mirror's main was exported from, via copybara's GitOrigin-RevId."""
     head, status = request(f"/repos/{OWNER}/{repo}/git/ref/heads/main", token)
     if status != 200:
         return None
@@ -128,7 +129,7 @@ def source_is_releasable(source_sha, token):
     mirror main permanently and was skipped forever. Every release in this repo's first real run hit
     that race, repeatedly. So check the same two things the release job checks, and simply wait.
     """
-    checks, status = request(f"/repos/{OWNER}/monorepo/commits/{source_sha}/check-runs", token)
+    checks, status = request(f"/repos/{OWNER}/{CANONICAL_REPO}/commits/{source_sha}/check-runs", token)
     if status != 200:
         return False, f"cannot read canonical checks ({status})"
     gate = [run for run in (checks.get("check_runs") or []) if run.get("name") == "CI gate"]
@@ -141,7 +142,7 @@ def source_is_releasable(source_sha, token):
         return False, f"canonical CI gate concluded {latest.get('conclusion')}"
 
     runs, status = request(
-        f"/repos/{OWNER}/monorepo/actions/workflows/native-artifacts.yml/runs"
+        f"/repos/{OWNER}/{CANONICAL_REPO}/actions/workflows/native-artifacts.yml/runs"
         f"?head_sha={source_sha}&per_page=10",
         token,
     )

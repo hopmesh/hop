@@ -1,7 +1,16 @@
-import { isEnvironmentDisclosure, scrubSensitiveEnvironment } from "./agent-output-guard.mjs"
+import {
+  isEnvironmentDisclosure,
+  loadOpencodeAllowlist,
+  loadOpencodeEnvironmentMode,
+  redactCanaryOutput,
+  scrubSensitiveEnvironment,
+} from "./agent-output-guard.mjs"
 
 export const AgentOutputGuard = async (_input, options = {}) => {
   const environment = options.environment ?? process.env
+  const canaries = options.canaries ?? Object.values(environment).filter((v) => typeof v === "string" && v.length > 8)
+  const mode = options.mode ?? loadOpencodeEnvironmentMode()
+  const allowlist = options.allowlist ?? loadOpencodeAllowlist()
   return {
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
@@ -10,7 +19,12 @@ export const AgentOutputGuard = async (_input, options = {}) => {
       }
     },
     "shell.env": async (_input, output) => {
-      scrubSensitiveEnvironment(output.env, environment)
+      scrubSensitiveEnvironment(output.env, environment, { mode, allowlist })
+    },
+    "tool.execute.after": async (input, output) => {
+      if (input.tool !== "bash") return
+      const text = typeof output?.result === "string" ? output.result : typeof output?.output === "string" ? output.output : ""
+      redactCanaryOutput(text, canaries)
     },
   }
 }

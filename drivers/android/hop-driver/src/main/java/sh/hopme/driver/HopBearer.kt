@@ -362,6 +362,7 @@ class HopBearer internal constructor(
     // Set by teardown() so the self-reposting tick loop stops re-arming and so a late core task after
     // shutdown is a no-op. Read on core (the tick loop) and set from teardown (which hops to core).
     @Volatile private var torndown = false
+    internal val isTorndown: Boolean get() = torndown
 
     fun start(name: String = config.deviceName) = core.post {
         if (started) return@post
@@ -403,7 +404,11 @@ class HopBearer internal constructor(
         bearerMgr.register(sh.hopme.bearers.lan.LanBearer(context, bearerId))
         // Meshtastic/LoRa: relay through a connected Meshtastic radio's mesh. Surfaces as "LoRa"; if no
         // radio is paired it simply scans and forms no links, so it is safe to always register.
-        bearerMgr.register(sh.hopme.bearers.meshtastic.MeshtasticBearer(context, bearerId))
+        bearerMgr.register(sh.hopme.bearers.meshtastic.MeshtasticBearer(
+            context, bearerId,
+            trustedAddress = config.meshtasticTrustedAddress,
+            requireBonded = config.meshtasticRequireBonded,
+        ))
         // Cloud relay (WebSocket) as a shared bearer - ONE outbound link to the backbone, registered
         // only when relays are enabled and a URL exists. (P2P test mode sets relaysEnabled=false, so
         // this stays unregistered.)
@@ -474,8 +479,14 @@ class HopBearer internal constructor(
                 // so a link that is UP but stuck (no peerLinks) shows the Noise handshake never
                 // completed. The BearerManager owns the transports now, so this reads node state only.
                 val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
+                for (p in pls) {
+                    if (runCatching { node.isSecured(p.address) }.getOrDefault(false)) {
+                        bearerMgr.markSecured(p.link.toLong())
+                    }
+                }
+                bearerMgr.checkPreauthDeadlines(nowMs().toLong())
                 val distinctPeers = pls.map { it.address.toList() }.distinct().size
-                if (pls.isNotEmpty()) android.util.Log.i("HOPLOG",
+                if (pls.isNotEmpty() && DriverFlags.verboseContentLogs) android.util.Log.i("HOPLOG",
                     "NODESTATE upLinks=${pls.size} peers=$distinctPeers pend=${runCatching { node.pendingCount() }.getOrDefault(0u)} " +
                     pls.joinToString(" ") { p -> "id${p.link}=${p.address.take(3).joinToString(""){ b -> "%02x".format(b) }}" +
                         "[sec=${runCatching { node.isSecured(p.address) }.getOrDefault(false)},rt=${runCatching { node.knowsRoute(p.address) }.getOrDefault(false)}]" })
@@ -1263,7 +1274,7 @@ class HopBearer internal constructor(
         pls.forEach { pl ->
             ltLocal[pl.address.toList()] = bearerMgr.transportNameOf(pl.link.toLong()) ?: "BT"
         }
-        if (pls.isNotEmpty() && pls.size != lastPeerLinkCount) {
+        if (pls.isNotEmpty() && pls.size != lastPeerLinkCount && DriverFlags.verboseContentLogs) {
             lastPeerLinkCount = pls.size
             android.util.Log.i("HOPLOG", "peerLinks=${pls.size}: " +
                 pls.joinToString { "${HopBearer.shortHex(it.address)}@${it.link}" })
@@ -1361,6 +1372,8 @@ class HopBearer internal constructor(
         val APP_SECRET = ByteArray(32) { 0x48 } // "H" ×32 - dev build only (matches iOS)
 
         @Volatile private var inst: HopBearer? = null
+        fun peek(): HopBearer? = inst
+        fun teardownShared() { synchronized(this) { inst }?.teardown() }
 
         /// One shared instance, owned by the foreground service and observed by the UI.
         /// Configure-once: the first caller's HopConfig wins; later callers get that same instance.
@@ -1525,5 +1538,8 @@ class HopBearer internal constructor(
             }
             return s
         }
+
+        fun sanitizeRelayUrl(input: String): String =
+            sh.hopme.bearers.relay.RelayBearer.sanitizeRelayUrl(input)
     }
 }

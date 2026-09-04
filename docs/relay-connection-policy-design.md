@@ -53,9 +53,9 @@ reduce the cost below, and weakens the privacy posture.
 ## 2. The actual cost driver
 
 Cloud Run runs `min_instance_count = 0` with `cpu_idle = true`
-(`infra/cloud_run.tf:26,84`). Scale-to-zero only pays off **between** connections. A held
+(`hopmesh/platform/infra/cloud_run.tf:26,84`, see `docs/repo-catalog.md`). Scale-to-zero only pays off **between** connections. A held
 WebSocket is a long-running request, so the region instance stays warm and CPU-allocated
-for its whole lifetime. The relay is 1 vCPU / 2 GiB (`infra/cloud_run.tf:77-83`). At the
+for its whole lifetime. The relay is 1 vCPU / 2 GiB (`hopmesh/platform/infra/cloud_run.tf:77-83`). At the
 cost-model doc's rates:
 
 ```
@@ -186,7 +186,7 @@ the foreground-service `onResume`/`onPause`.
 ## 4. What does *not* change
 
 - **Relay/server:** nothing. It already scales to zero when the last socket drops
-  (`infra/cloud_run.tf:1-3`). Drain-and-drop just makes that drop happen minutes sooner.
+  (`hopmesh/platform/infra/cloud_run.tf:1-3`). Drain-and-drop just makes that drop happen minutes sooner.
 - **Mailbox durability:** unchanged, reliability rides on Firestore, not the socket.
 - **Local bearers:** BLE/LAN/Multipeer deliver in real time regardless of relay policy.
 - **Presence + handoff:** presence TTL is 90 s (`services/hop-relayd/src/main.rs`). Between
@@ -195,6 +195,7 @@ the foreground-service `onResume`/`onPause`.
   backbone model rather than fighting it.
 - **`mesh_fanout = 0`** (handoff-only) stays, the relay-to-relay epidemic is the expensive
   egress + N² warm-link path (DESIGN.md §1434/§2008).
+- **Relay custody and priority:** priority is an unauthenticated QoS hint on the wire; cross-tenant custody is partitioned by fair share (`core/hop-core/src/node.rs:pick_evict_victim`), so high-priority traffic cannot starve co-tenants' undelivered messages. Under Open policy, effective priority of unstamped or untenanted bundles is clamped to normal (4) so priority=255 from a free identity buys no eviction immunity. Note that an Open relay cannot be fair against pure Sybil volume because fresh sender identities cost nothing; only stamped tenants under Keyed policy receive a guaranteed custody share.
 
 ## 5. Tradeoffs
 

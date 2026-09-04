@@ -24,6 +24,8 @@ interface Bearer {
     fun start()
     fun stop()
     fun send(bytes: ByteArray, link: Long)
+    fun close(link: Long) {}
+    fun authenticated(link: Long) {}
 }
 
 /** Registry + multiplexer. Mints a process-global LinkId per link and translates each bearer's local
@@ -38,6 +40,8 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
     private var nextGlobal = baseLinkId
     private val toGlobal = HashMap<Bearer, HashMap<Long, Long>>()
     private val fromGlobal = HashMap<Long, Pair<Bearer, Long>>()
+    private val pendingLinks = HashMap<Long, Pair<Bearer, Long>>()
+    private val pendingOpenedMs = HashMap<Long, Long>()
     /** Enablement keyed by [Bearer.transportName], NOT by bearer object. ABSENT MEANS ENABLED.
      *
      *  The name is the key because the guarantee is stated per name ("no bearer carrying that
@@ -189,6 +193,36 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
         out
     }
 
+    fun markSecured(globalLinkId: Long) {
+        val route = synchronized(lock) {
+            pendingOpenedMs.remove(globalLinkId)
+            val r = pendingLinks.remove(globalLinkId) ?: fromGlobal[globalLinkId]
+            r
+        }
+        route?.let { (bearer, local) -> bearer.authenticated(local) }
+    }
+
+    fun checkPreauthDeadlines(nowMs: Long = System.currentTimeMillis(), deadlineMs: Long = PREAUTH_DEADLINE_MS) {
+        val expired = ArrayList<Pair<Bearer, Long>>()
+        synchronized(lock) {
+            val it = pendingLinks.entries.iterator()
+            while (it.hasNext()) {
+                val entry = it.next()
+                val g = entry.key
+                val opened = pendingOpenedMs[g] ?: continue
+                if (nowMs - opened > deadlineMs) {
+                    it.remove()
+                    pendingOpenedMs.remove(g)
+                    expired.add(entry.value)
+                }
+            }
+        }
+        for ((bearer, local) in expired) {
+            bearer.close(local)
+            down(bearer, local)
+        }
+    }
+
     internal fun up(bearer: Bearer, local: Long, role: HopRole, peerId: ByteArray) {
         val g: Long
         synchronized(lock) {
@@ -202,6 +236,8 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
             g = nextGlobal++
             toGlobal.getOrPut(bearer) { HashMap() }[local] = g
             fromGlobal[g] = bearer to local
+            pendingLinks[g] = bearer to local
+            pendingOpenedMs[g] = System.currentTimeMillis()
         }
         sink?.linkUp(g, role, peerId)
     }
@@ -214,10 +250,19 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
     internal fun down(bearer: Bearer, local: Long) {
         val g = synchronized(lock) {
             val g = toGlobal[bearer]?.get(local)
-            if (g != null) { toGlobal[bearer]?.remove(local); fromGlobal.remove(g) }
+            if (g != null) {
+                toGlobal[bearer]?.remove(local)
+                fromGlobal.remove(g)
+                pendingLinks.remove(g)
+                pendingOpenedMs.remove(g)
+            }
             g
         } ?: return
         sink?.linkDown(g)
+    }
+
+    companion object {
+        const val PREAUTH_DEADLINE_MS = 10_000L
     }
 }
 

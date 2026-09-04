@@ -66,8 +66,11 @@ state tracking so it can run continuously.
    enable prevention of self-review, and store `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` only as
    environment secrets. Mirror dispatch workflows that retain these credentials need the same protected
    environment. Do not create repository or organization copies of these secrets, a shared PAT, or a
-   `COPYBARA_TOKEN`. Repository administrators configure these settings; the workflow only references
-   them and does not create or verify the environment policy.
+   `COPYBARA_TOKEN`. Live environments `component-sync`, `release`, and `github-pages` enforce deployment
+   branch policy restricted to protected `main` branches (`protected_branches: true, custom_branch_policies: false`),
+   and `tools/check-branch-protection.sh` asserts this policy on every scheduled run and push. Workflows
+   explicitly verify `github.ref == 'refs/heads/main'` before any secret or deployment step, so manual
+   dispatches on arbitrary non-main refs cannot access environment authority.
 
 3. **Create the source-verifier GitHub App.** Install this separate read-only App on
    `hopmesh/hop` with Actions read, Attestations read, Checks read, and Contents read. Store its credentials as

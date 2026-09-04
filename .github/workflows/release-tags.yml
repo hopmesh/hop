@@ -51,7 +51,7 @@ jobs:
   tag:
     # Only after a SUCCESSFUL export (a failed sync means the mirrors may not carry the bump yet), and
     # only from canonical main.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && github.ref == 'refs/heads/main' && github.repository == 'hopmesh/hop' }}
     runs-on: ubuntu-latest
     environment:
       name: component-sync
@@ -68,7 +68,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 tools/release/plan.py
 
+      - name: Check whether mirror release credentials are provisioned
+        id: check-secrets
+        run: |
+          if [ -z "${{ secrets.HOP_SYNC_APP_ID }}" ]; then
+            echo "::notice title=Release tags skipped::HOP_SYNC_APP_ID is not provisioned in environment component-sync; skipping mirror tagging cleanly until credentials are set."
+            echo "can_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_tag=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Mint mirror tokens for the releasable components
+        if: steps.check-secrets.outputs.can_tag == 'true'
         id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -79,10 +90,11 @@ jobs:
           permission-contents: write
 
       - name: Tag each mirror that is not yet tagged at its declared version
+        if: steps.check-secrets.outputs.can_tag == 'true'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           # Reads the CANONICAL repo's CI gate + native-artifacts runs. The App token above is scoped
-          # to the mirrors and cannot see the monorepo, so the readiness check needs this one.
+          # to the mirrors and cannot see the canonical repository, so the readiness check needs this one.
           SOURCE_TOKEN: ${{ github.token }}
           PLAN: ${{ steps.plan.outputs.plan }}
           # Components whose mirror does not exist. Reported AFTER everything taggable is tagged.

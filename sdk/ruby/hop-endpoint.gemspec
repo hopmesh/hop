@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
 
   spec.required_ruby_version = ">= 3.0"
 
-  spec.files       = Dir["lib/**/*.rb", "README.md", "CLAUDE.md"]
+  spec.files       = Dir["lib/**/*.rb", "README.md", "CLAUDE.md", "LICENSE.md", "THIRD-PARTY-NOTICES.md"]
   spec.require_paths = ["lib"]
 
   # Runtime deps: none. Fiddle, OpenSSL, Socket, Net::HTTP, JSON, Base64, Digest are all stdlib.

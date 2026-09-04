@@ -180,6 +180,8 @@ _calls = {}
 def _fake_source(responses):
     def _request(path, token, method="GET", payload=None):
         _calls[path] = _calls.get(path, 0) + 1
+        assert not path.startswith("/repos/hopmesh/monorepo/"), f"queried archived repo: {path}"
+        assert path.startswith("/repos/hopmesh/hop/"), f"did not query canonical hopmesh/hop repo: {path}"
         for fragment, value in responses.items():
             if fragment in path:
                 return value

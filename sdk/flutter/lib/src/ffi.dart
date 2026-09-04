@@ -25,12 +25,12 @@ import 'library.dart';
 /// The ABI version this wrapper was written against (`HOP_ABI_VERSION` in
 /// `sdk/hop.h`). Asserted at construction so a wrapper built against a newer
 /// header fails loudly instead of drifting silently (F-28).
-const int hopAbiVersion = 6;
+const int hopAbiVersion = 7;
 
 // ---- native callback signatures (invoked synchronously during poll/drain) ----
 typedef _DrainSinkC = Void Function(
     Pointer<Void>, Uint64, Pointer<Uint8>, Size);
-typedef _SvcReqSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
+typedef _SvcReqSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Uint8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Size);
 typedef _SvcRespSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Uint8>, Uint16, Pointer<Uint8>, Size);
@@ -46,6 +46,30 @@ typedef _HpsTopicSinkC = Void Function(
     Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32, Bool, Uint32);
 typedef _HpsBrowseSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Utf8>, Uint32, Pointer<Utf8>, Pointer<Utf8>, Uint32);
+typedef _NodeIsEncryptedC = Bool Function(Pointer<Void>);
+typedef _NodeIsEncryptedDart = bool Function(Pointer<Void>);
+typedef _AcceptSvcReqC = Bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _AcceptSvcReqDart = bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _RejectSvcReqC = Bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _RejectSvcReqDart = bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _NodeIsPersistentC = Bool Function(Pointer<Void>);
+typedef _NodeIsPersistentDart = bool Function(Pointer<Void>);
+typedef _NodeOpenC = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Uint8>, Size, Pointer<Uint8>, Size);
+typedef _NodeOpenDart = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Uint8>, int, Pointer<Uint8>, int);
+typedef _NodeOpenKeyedC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Uint8>,
+    Size, Pointer<Uint8>, Size, Pointer<Uint8>, Size);
+typedef _NodeOpenKeyedDart = Pointer<Void> Function(Pointer<Utf8>,
+    Pointer<Uint8>, int, Pointer<Uint8>, int, Pointer<Uint8>, int);
+typedef _ClusterMarkDoneC = Void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _ClusterMarkDoneDart = void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _ClusterWouldDropC = Bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _ClusterWouldDropDart = bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
 
 // ---- native function signatures ----
 typedef _AbiVersionC = Uint32 Function();
@@ -179,8 +203,14 @@ typedef _HpsApproveDart = bool Function(
 typedef _HpsDenyC = Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
 typedef _HpsDenyDart = bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
-typedef _HpsRekeyC = Size Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>,
-    Pointer<Uint8>, Size, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
+typedef _HpsRekeyC = IntPtr Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Uint8>,
+    Size,
+    Pointer<NativeFunction<_Addr32SinkC>>,
+    Pointer<Void>);
 typedef _HpsRekeyDart = int Function(
     Pointer<Void>,
     Pointer<Utf8>,
@@ -313,6 +343,9 @@ class HopFfi {
       _lib.lookupFunction<_NodeFreeC, _NodeFreeDart>('hop_node_free');
   late final _nodeAddress =
       _lib.lookupFunction<_NodeAddressC, _NodeAddressDart>('hop_node_address');
+  late final _nodeIsEncrypted =
+      _lib.lookupFunction<_NodeIsEncryptedC, _NodeIsEncryptedDart>(
+          'hop_node_is_encrypted');
   late final _tick = _lib.lookupFunction<_TickC, _TickDart>('hop_node_tick');
   late final _linkUp =
       _lib.lookupFunction<_LinkUpC, _LinkUpDart>('hop_link_up');
@@ -343,6 +376,12 @@ class HopFfi {
   late final _acceptSvcResp =
       _lib.lookupFunction<_AcceptSvcRespC, _AcceptSvcRespDart>(
           'hop_accept_service_response');
+  late final _acceptSvcReq =
+      _lib.lookupFunction<_AcceptSvcReqC, _AcceptSvcReqDart>(
+          'hop_accept_service_request');
+  late final _rejectSvcReq =
+      _lib.lookupFunction<_RejectSvcReqC, _RejectSvcReqDart>(
+          'hop_reject_service_request');
   late final _toB58 =
       _lib.lookupFunction<_ToB58C, _ToB58Dart>('hop_address_to_base58');
   late final _fromB58 =
@@ -363,6 +402,20 @@ class HopFfi {
   late final _clusterSetQuorum =
       _lib.lookupFunction<_ClusterSetQuorumC, _ClusterSetQuorumDart>(
           'hop_cluster_set_quorum');
+  late final _nodeIsPersistent =
+      _lib.lookupFunction<_NodeIsPersistentC, _NodeIsPersistentDart>(
+          'hop_node_is_persistent');
+  late final _nodeOpen =
+      _lib.lookupFunction<_NodeOpenC, _NodeOpenDart>('hop_node_open');
+  late final _nodeOpenKeyed =
+      _lib.lookupFunction<_NodeOpenKeyedC, _NodeOpenKeyedDart>(
+          'hop_node_open_keyed');
+  late final _clusterMarkDone =
+      _lib.lookupFunction<_ClusterMarkDoneC, _ClusterMarkDoneDart>(
+          'hop_cluster_mark_done');
+  late final _clusterWouldDrop =
+      _lib.lookupFunction<_ClusterWouldDropC, _ClusterWouldDropDart>(
+          'hop_cluster_would_drop');
   // ---- hps:// pub/sub (DESIGN.md section 32) ----
   late final _hpsRegister =
       _lib.lookupFunction<_HpsRegisterC, _HpsRegisterDart>('hop_hps_register');
@@ -628,10 +681,13 @@ class HopFfi {
       },
     );
     try {
-      _withBytes(
+      final res = _withBytes(
           remove,
           (rPtr, rLen) => _hpsRekey(
               node, p, np, rPtr, rLen ~/ 32, cb.nativeFunction, nullptr));
+      if (res < 0) {
+        throw StateError('hop_hps_rekey failed');
+      }
     } finally {
       cb.close();
       calloc.free(p);
@@ -732,6 +788,83 @@ class HopFfi {
     }
   }
 
+  R _withOptionalBytes<R>(
+      Uint8List? data, R Function(Pointer<Uint8>, int) body) {
+    if (data == null || data.isEmpty) {
+      return body(nullptr, 0);
+    }
+    return _withBytes(data, body);
+  }
+
+  bool nodeIsPersistent(Pointer<Void> node) => _nodeIsPersistent(node);
+
+  Pointer<Void> nodeOpen(
+    String dbPath, {
+    Uint8List? secret,
+    Uint8List? appSecret,
+  }) {
+    final pathPtr = dbPath.toNativeUtf8();
+    try {
+      final sec = secret != null ? _require32(secret, 'secret') : null;
+      final app =
+          appSecret != null ? _require32(appSecret, 'app secret') : null;
+      return _withOptionalBytes(sec, (secPtr, secLen) {
+        return _withOptionalBytes(app, (appPtr, appLen) {
+          final ptr = _nodeOpen(pathPtr, secPtr, secLen, appPtr, appLen);
+          if (ptr == nullptr) {
+            throw StateError('hop_node_open returned NULL for path $dbPath');
+          }
+          return ptr;
+        });
+      });
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  Pointer<Void> nodeOpenKeyed(
+    String dbPath, {
+    Uint8List? secret,
+    Uint8List? appSecret,
+    Uint8List? key,
+  }) {
+    final pathPtr = dbPath.toNativeUtf8();
+    try {
+      final sec = secret != null ? _require32(secret, 'secret') : null;
+      final app =
+          appSecret != null ? _require32(appSecret, 'app secret') : null;
+      return _withOptionalBytes(sec, (secPtr, secLen) {
+        return _withOptionalBytes(app, (appPtr, appLen) {
+          return _withOptionalBytes(key, (keyPtr, keyLen) {
+            final ptr = _nodeOpenKeyed(
+                pathPtr, secPtr, secLen, appPtr, appLen, keyPtr, keyLen);
+            if (ptr == nullptr) {
+              throw StateError(
+                  'hop_node_open_keyed returned NULL for path $dbPath');
+            }
+            return ptr;
+          });
+        });
+      });
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  void clusterMarkDone(
+          Pointer<Void> node, Uint8List from, Uint8List requestId) =>
+      _withBytes(
+          _require32(from, 'from'),
+          (fromPtr, _) => _withBytes(_require32(requestId, 'request id'),
+              (ridPtr, _) => _clusterMarkDone(node, fromPtr, ridPtr)));
+
+  bool clusterWouldDrop(
+          Pointer<Void> node, Uint8List from, Uint8List requestId) =>
+      _withBytes(
+          _require32(from, 'from'),
+          (fromPtr, _) => _withBytes(_require32(requestId, 'request id'),
+              (ridPtr, _) => _clusterWouldDrop(node, fromPtr, ridPtr)));
+
   // ---- node lifecycle ----
   Pointer<Void> nodeNew() => _nodeNew();
 
@@ -739,6 +872,7 @@ class HopFfi {
       _withBytes(secret, (ptr, len) => _nodeWithSecret(ptr, len));
 
   void nodeFree(Pointer<Void> node) => _nodeFree(node);
+  bool nodeIsEncrypted(Pointer<Void> node) => _nodeIsEncrypted(node);
 
   Uint8List address(Pointer<Void> node) {
     final out = calloc<Uint8>(32);
@@ -828,6 +962,14 @@ class HopFfi {
       _withBytes(_require32(requestId, 'request id'),
           (ptr, _) => _acceptSvcResp(node, ptr));
 
+  bool acceptServiceRequest(Pointer<Void> node, Uint8List requestId) =>
+      _withBytes(_require32(requestId, 'request id'),
+          (ptr, _) => _acceptSvcReq(node, ptr));
+
+  bool rejectServiceRequest(Pointer<Void> node, Uint8List requestId) =>
+      _withBytes(_require32(requestId, 'request id'),
+          (ptr, _) => _rejectSvcReq(node, ptr));
+
   List<ServiceRequestRow> takeServiceRequests(Pointer<Void> node) {
     final out = <ServiceRequestRow>[];
     final cb = NativeCallable<_SvcReqSinkC>.isolateLocal(
@@ -845,7 +987,9 @@ class HopFfi {
           method.toDartString(),
           _copy(args, argsLen),
         ));
+        return false;
       },
+      exceptionalReturn: false,
     );
     try {
       _pollSvcReq(node, cb.nativeFunction, nullptr);

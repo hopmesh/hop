@@ -103,4 +103,84 @@ run_case empty fail "would pass vacuously" "$work"
 # 8. A missing package directory is an unknown, never a pass.
 run_case absent fail "not found under" "$tmp/case-absent"
 
+# 9. ABI-010: Explicit globalThis access must fail
+work="$(sandbox globalthis)"
+printf 'export function d(b: Uint8Array): string {\n  return new globalThis.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case globalthis fail "TextDecoder is not safe on Hermes" "$work"
+
+# 10. ABI-010: Explicit global access must fail
+work="$(sandbox global)"
+printf 'export function d(b: Uint8Array): string {\n  return new global.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case global fail "TextDecoder is not safe on Hermes" "$work"
+
+# 11. ABI-010: Computed property access must fail
+work="$(sandbox computed)"
+printf 'export function d(b: Uint8Array): string {\n  const TD = globalThis["TextDecoder"];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case computed fail "TextDecoder is not safe on Hermes" "$work"
+
+# 12. ABI-010: Destructuring from globalThis must fail
+work="$(sandbox destructure)"
+printf 'const { TextDecoder } = globalThis;\nexport function d(b: Uint8Array): string {\n  return new TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case destructure fail "TextDecoder is not safe on Hermes" "$work"
+
+# 13. ABI-010: Aliasing bare global must fail
+work="$(sandbox alias)"
+printf 'const TD = TextDecoder;\nexport function d(b: Uint8Array): string {\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case alias fail "TextDecoder is not safe on Hermes" "$work"
+
+# 14. ABI-010: Optional chaining on globalThis must fail
+work="$(sandbox optchain)"
+printf 'export function d(b: Uint8Array): unknown {\n  return globalThis?.TextDecoder;\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case optchain fail "TextDecoder is not safe on Hermes" "$work"
+
+# 15. ABI-010: Strings and block comments containing the global name must pass
+work="$(sandbox strings-and-comments)"
+cat > "$work/$src/scratch.ts" <<'TS'
+/* Block comment mentioning TextDecoder */
+export const errMsg = "TextDecoder is not available in Hermes";
+TS
+run_case strings-and-comments pass "" "$work"
+
+# 16. ABI-010: self.TextDecoder property access must fail
+work="$(sandbox self-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new self.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case self-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 17. ABI-010: self["TextDecoder"] bracket access must fail
+work="$(sandbox self-bracket)"
+printf 'export function d(b: Uint8Array): unknown {\n  const TD = self["TextDecoder"];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case self-bracket fail "TextDecoder is not safe on Hermes" "$work"
+
+# 18. ABI-010: Template literal computed access must fail
+work="$(sandbox template-literal)"
+printf 'export function d(b: Uint8Array): unknown {\n  const TD = globalThis[`TextDecoder`];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case template-literal fail "TextDecoder is not safe on Hermes" "$work"
+
+# 19. ABI-010: frames.TextDecoder must fail
+work="$(sandbox frames-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new frames.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case frames-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 20. ABI-010: top.TextDecoder must fail
+work="$(sandbox top-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new top.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case top-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 21. ABI-010: parent.TextDecoder must fail
+work="$(sandbox parent-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new parent.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case parent-property fail "TextDecoder is not safe on Hermes" "$work"
+
 echo "rn hermes globals guard tests passed"

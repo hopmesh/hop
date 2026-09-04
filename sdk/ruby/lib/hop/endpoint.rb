@@ -6,7 +6,7 @@ require "hop/ffi"
 
 module Hop
   # An inbound service request. `from` is the cryptographically verified sender identity (base58).
-  Request = Struct.new(:from, :from_bytes, :service, :method, :args) do
+  Request = Struct.new(:from, :from_bytes, :service, :method, :args, :request_id) do
     def text = args
   end
 
@@ -23,12 +23,25 @@ module Hop
     # waiting out its full timeout. A unique object, never equal to a real [status, body] response.
     CLOSED = Object.new
 
-    def initialize(key: nil, tick_ms: 50, cluster: nil, quorum: nil)
+    def initialize(key: nil, db_path: nil, db_key: nil, app_secret: nil, tick_ms: 50, cluster: nil, quorum: nil)
       Hop::FFI.assert_abi!
       if key && key.bytesize != 32
         raise ArgumentError, "identity key must be exactly 32 bytes, got #{key.bytesize}"
       end
-      @node = key ? Hop::FFI.node_with_secret(key) : Hop::FFI.node_new
+      if app_secret && app_secret.bytesize != 32
+        raise ArgumentError, "app_secret must be exactly 32 bytes, got #{app_secret.bytesize}"
+      end
+      @node = if db_path
+                if db_key
+                  Hop::FFI.node_open_keyed(db_path, key, app_secret, db_key)
+                else
+                  Hop::FFI.node_open(db_path, key, app_secret)
+                end
+              elsif key
+                Hop::FFI.node_with_secret(key)
+              else
+                Hop::FFI.node_new
+              end
       Hop::FFI.tick(@node, now_ms)
       Hop::FFI.publish_prekey(@node)
       @handlers = {}
@@ -69,6 +82,17 @@ module Hop
     def cluster_quorum(min)
       with_node { |n| Hop::FFI.cluster_set_quorum(n, min) }
       self
+    end
+
+    def persistent? = with_node { |n| Hop::FFI.node_is_persistent(n) } || false
+    def encrypted? = with_node { |n| Hop::FFI.node_is_encrypted(n) } || false
+
+    def cluster_mark_done(from, request_id)
+      with_node { |n| Hop::FFI.cluster_mark_done(n, from, request_id) }
+    end
+
+    def cluster_would_drop(from, request_id)
+      with_node { |n| Hop::FFI.cluster_would_drop(n, from, request_id) } || false
     end
 
     # ---- §19 relay pool ------------------------------------------------------------------------
@@ -156,6 +180,16 @@ module Hop
       block.call if run_now
     end
 
+    # Durably accept a service request by its 32-byte request id.
+    def accept_service_request(request_id)
+      with_node { |n| Hop::FFI.accept_service_request(n, request_id) }
+    end
+
+    # Reject a service request without ACK so it can be retried.
+    def reject_service_request(request_id)
+      with_node { |n| Hop::FFI.reject_service_request(n, request_id) }
+    end
+
     # ---- bearer seam (called from bearer threads) ----
     def register_link(link, role, send_fn)
       with_node do |n|
@@ -237,9 +271,14 @@ module Hop
         handler = @handlers[service]
         next unless handler
 
-        req = Request.new(Hop::FFI.to_b58(frm), frm, service, method, args)
+        req = Request.new(Hop::FFI.to_b58(frm), frm, service, method, args, rid)
         reply = ->(status, body = "") { with_node { |n| Hop::FFI.send_service_response(n, frm, rid, status, to_bytes(body)) } }
-        handler.call(req, reply)
+        begin
+          handler.call(req, reply)
+          with_node { |n| Hop::FFI.accept_service_request(n, rid) }
+        rescue StandardError
+          # handler threw: leave queued for redelivery
+        end
       end
       responses.each do |_frm, for_id, status, body|
         q = @mutex.synchronize { @pending.delete(for_id) }

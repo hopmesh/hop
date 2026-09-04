@@ -156,4 +156,108 @@ final class MultipeerBearerTests: XCTestCase {
         XCTAssertNotNil(second)
         XCTAssertNotEqual(first, second, "a reconnect must not reuse the dead link id")
     }
+
+    // MARK: - PLAT-007: 65,536 accepted, 65,537 rejected with link teardown
+
+    func testInboundMessageCapAt65536AndRejectionAt65537() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+
+        guard let link = b.noteConnected(peerName: "peer1") else {
+            XCTFail("failed to note connected")
+            return
+        }
+
+        // 1) 65,536 bytes (cap) is accepted
+        let atCap = Data(repeating: 0x41, count: 65536)
+        XCTAssertTrue(b.acceptInboundData(atCap, for: link, peerName: "peer1"))
+        XCTAssertEqual(sink.bytes.count, 1)
+        XCTAssertEqual(sink.bytes[0].0, link)
+        XCTAssertEqual(sink.bytes[0].1.count, 65536)
+        XCTAssertTrue(sink.downs.isEmpty)
+
+        // 2) 65,537 bytes (cap + 1) is rejected and link is torn down
+        let overCap = Data(repeating: 0x42, count: 65537)
+        XCTAssertFalse(b.acceptInboundData(overCap, for: link, peerName: "peer1"))
+        XCTAssertEqual(sink.bytes.count, 1, "rejected frame must not reach sink")
+        XCTAssertEqual(sink.downs, [link], "cap violation must surface linkDown")
+        XCTAssertNil(b.linkId(forPeer: "peer1"), "link table must drop offending peer")
+    }
+
+    // MARK: - PLAT-005: preauth admission cap, authentication feedback, and consumer-driven close
+
+    /// Unauthenticated peers may hold at most `maxPreauthLinks` slots. The 17th preauth connect is
+    /// refused (no link minted), which is what stops a same-network flood from occupying the table
+    /// before Noise ever runs.
+    func testPreauthAdmissionRefusesTheSeventeenthUnauthenticatedPeer() {
+        let b = MultipeerBearer(transportId: "aa")
+        for i in 0..<MultipeerBearer.maxPreauthLinks {
+            XCTAssertNotNil(b.noteConnected(peerName: "flood\(i)"), "preauth slot \(i) must admit")
+        }
+        XCTAssertNil(b.noteConnected(peerName: "flood-overflow"), "the preauth cap must refuse the next peer")
+        // A slot frees when one of them leaves.
+        XCTAssertNotNil(b.noteDisconnected(peerName: "flood0"))
+        XCTAssertNotNil(b.noteConnected(peerName: "flood-after-free"))
+    }
+
+    /// `authenticated(_:)` is the driver's signal that Noise completed on a link. Once a link is
+    /// authenticated it no longer counts against the preauth cap, so honest peers keep admitting
+    /// while the flood stays capped, and the total cap (`maxLinks`) is what remains.
+    func testAuthenticatedLinksStopCountingAgainstThePreauthCap() {
+        let b = MultipeerBearer(transportId: "aa")
+        // The link table is owned by the bearer's queue (the +Radio callbacks hop onto it), so every
+        // read here goes through `queue.sync` once `authenticated` (async on that queue) is in play.
+        func admit(_ name: String) -> LinkId? { b.queue.sync { b.noteConnected(peerName: name) } }
+        var links: [LinkId] = []
+        for i in 0..<MultipeerBearer.maxPreauthLinks {
+            links.append(admit("peer\(i)")!)
+        }
+        XCTAssertNil(admit("blocked"), "table is full of preauth links")
+        // Authenticate all of them through the public Bearer entry point.
+        for l in links { b.authenticated(l) }
+        XCTAssertNotNil(admit("after-auth"), "authenticated links free preauth capacity")
+        // Total cap still holds: fill to maxLinks, then the next is refused whatever its auth state.
+        var count = MultipeerBearer.maxPreauthLinks + 1
+        while count < MultipeerBearer.maxLinks {
+            let l = admit("fill\(count)")
+            XCTAssertNotNil(l, "fill\(count) should admit below maxLinks")
+            if let l { b.authenticated(l) }
+            count += 1
+        }
+        XCTAssertNil(admit("over-max"), "maxLinks is the hard ceiling")
+        XCTAssertNotNil(b.queue.sync { b.noteDisconnected(peerName: "fill17") })
+        XCTAssertNotNil(admit("after-free"), "a freed slot admits again below maxLinks")
+    }
+
+    /// `close(_:)` is what the BearerManager calls when the preauth deadline expires. It must tear
+    /// the link down, report `linkDown` to the sink exactly once, and be a no-op for an unknown id.
+    func testCloseTearsDownAndReportsLinkDownOnce() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+        let link = b.noteConnected(peerName: "peer1")!
+        b.close(link)
+        b.close(link)          // second close: the link is gone, nothing to report
+        b.close(9_999)         // never existed
+        let drained = expectation(description: "queue drained")
+        b.queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+        XCTAssertEqual(sink.downs, [link])
+        XCTAssertNil(b.linkId(forPeer: "peer1"))
+        XCTAssertNotNil(b.noteConnected(peerName: "peer1"), "a closed peer may reconnect")
+    }
+
+    /// `send` on a known link must reach the radio path. The +Radio send with no MCSession is a
+    /// no-op, so this pins only that the queue hop resolves the peer name rather than dropping the
+    /// bytes before it. (Unknown-link no-op is covered above.)
+    func testSendOnAKnownLinkResolvesThePeerName() {
+        let b = MultipeerBearer(transportId: "aa")
+        let link = b.noteConnected(peerName: "peer1")!
+        b.send(Data([1, 2, 3]), on: link)
+        let drained = expectation(description: "queue drained")
+        b.queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+        XCTAssertEqual(b.linkId(forPeer: "peer1"), link, "sending must not disturb the link table")
+    }
 }

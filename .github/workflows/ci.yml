@@ -46,6 +46,7 @@ env:
   # the version that produced the committed sdk/hop.h. When bumping, regenerate the header with the
   # same cbindgen version (core/hop/regen-header.sh) in the same PR so the drift check stays green.
   CBINDGEN_VERSION: "0.29.4"
+  CARGO_DENY_VERSION: "0.20.2"
 
 jobs:
   # Detect which product areas changed so the heavy jobs can skip on an unrelated PR (cost control).
@@ -91,18 +92,25 @@ jobs:
               - 'sdk/hop.h'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'deny.toml'
               - 'rust-toolchain*'
-              - '.github/workflows/ci.yml'
-              # tools/ EXCEPT tools/copybara/** (mirror machinery, affects no build). A `!` negation would
-              # not work here: dorny's default predicate-quantifier is `some`, under which "!tools/copybara/**"
-              # is true for every file NOT under copybara, matching almost everything. So enumerate instead:
-              # top-level tool files + the codegen subdir. Add any NEW tools/ subdir (besides copybara) here.
+              - '.github/**'
+              - '.agents/**'
+              - '.claude/**'
+              - '.vscode/**'
+              - 'cliff.toml'
+              - 'tarpaulin.toml'
+              - 'opencode.json'
+              - '.gitignore'
+              - '.gcloudignore'
               - 'tools/*'
               - 'tools/codegen/**'
               - 'tools/native-attestation/**'
               - 'tools/release/**'
             rust:
               - 'services/**'
+              - 'fuzz/**'
+              - 'fuzz/Cargo.toml'
               - '**/*.rs'
             kotlin:
               - 'sdk/android/**'
@@ -113,6 +121,7 @@ jobs:
               - 'drivers/android/**'
               - 'sdk/android/**'
               - 'apps/android/**'
+              - 'apps/ble-lab/**'
             apple:
               - 'bearers/apple/**'
               - 'drivers/apple/**'
@@ -141,8 +150,15 @@ jobs:
               - '**/.github/workflows/**'
               - 'docs/**'
               - 'learn/**'
+              - 'DESIGN.md'
+              - 'SECURITY.md'
+              - 'MECHANISMS.md'
               - 'README.md'
               - '**/README.md'
+              - 'CLAUDE.md'
+              - 'CONTRIBUTING.md'
+              - 'CHANGELOG.md'
+              - 'THIRD-PARTY-NOTICES.md'
               - 'LICENSE.md'
               - '**/LICENSE.md'
               - 'tools/copybara/**'
@@ -152,8 +168,9 @@ jobs:
               - 'bearers/**'
               - 'apps/**'
               - 'examples/**'
-              - 'testkit/**'
               - 'assets/**'
+            automation:
+              - 'testkit/**'
             sdk_node:
               - 'sdk/node/**'
             sdk_python:
@@ -170,6 +187,7 @@ jobs:
               - 'sdk/flutter/**'
             sdk_react_native:
               - 'sdk/react-native/**'
+              - 'apps/react-native/HopDemo/**'
 
   rust:
     name: Rust (test · clippy · fmt)
@@ -328,6 +346,24 @@ jobs:
       # keeps it from silently resolving a different dep set than Cargo.lock pins.
       - name: Build minimal C-ABI (embedded feature, host smoke)
         run: cargo build -p hop --no-default-features --features minimal --locked
+
+  deny:
+    name: Cargo supply-chain deny (cargo-deny)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+      - name: Install cargo-deny (pinned)
+        run: |
+          command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
+      - name: Cargo supply-chain check (advisories · bans · licenses · sources)
+        run: cargo deny check
 
   kotlin-sdk:
     name: Kotlin SDK tests (BearerManager)
@@ -493,6 +529,11 @@ jobs:
         working-directory: apps/android/HopDemo
         run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
 
+      # INFRA-012: Build and test apps/ble-lab/android
+      - name: Build and test apps/ble-lab/android
+        working-directory: apps/ble-lab/android
+        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon --stacktrace
+
   apple:
     name: Apple bearers + driver + app (build-only)
     # GitHub-hosted, and it must stay that way. This ran on the self-hosted `cirunner-m5max` (an
@@ -560,6 +601,9 @@ jobs:
       # the CoreLocation wake (BeaconWake.swift) are EXCLUDED from the BLE denominator (covered by the
       # on-device hopmac/testkit workflow). Previously all three re-modeled their logic in the test file
       # and sat at ~7-10% line coverage. `swift test` also builds, so these subsume the old build-only step.
+      - name: Self-test Apple coverage gate
+        run: bash tools/apple-cov-gate.test.sh
+
       - name: Test + coverage-gate the BLE bearer (>=80% of the CB-free cores)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerBle "BleBearer.swift + CentralCore.swift + PeripheralCore.swift" 80 'BleBearer\+Radio\.swift|BeaconWake\.swift'
 
@@ -780,6 +824,8 @@ jobs:
       # can't ship a stale "your browser is running the real Hop protocol" artifact. check-pkg-fresh.sh
       # compares the deterministic wasm-bindgen interface (JS glue + typings), not the optimized .wasm
       # bytes (which vary by toolchain).
+      - name: Self-test sim pkg freshness guard
+        run: bash sim/check-pkg-fresh.test.sh
       - name: Guard sim/pkg against drift from core
         run: bash sim/check-pkg-fresh.sh
 
@@ -797,6 +843,8 @@ jobs:
       # observable effect for each (see wasm_glue.rs's header comment + sim/wasm-glue-check.mjs).
       - name: Sim wasm-glue check (direct WasmNode API coverage)
         run: node sim/wasm-glue-check.mjs
+      - name: Sim OPFS timeout check (PLAT-012)
+        run: node --test sim/opfs-timeout-check.mjs
 
       # Astro 7 requires Node >=22.12 (dropped Node 20 support).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -814,6 +862,10 @@ jobs:
         working-directory: apps/web/site
         run: npm run build
 
+      - name: Site consistency regression tests (CLAIM-012, BIZ-001..003, BIZ-005)
+        run: node --test apps/web/site/test/site-consistency.test.mjs
+      - name: Self-test internal link check
+        run: node --test tools/check-web-links.test.mjs
       # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
       - name: Internal link check (apps/web/site/dist)
         run: node tools/check-web-links.mjs apps/web/site/dist
@@ -833,6 +885,8 @@ jobs:
           # and break (or mask) the drift check for every PR at once.
           cargo install cbindgen --locked --version "$CBINDGEN_VERSION"
 
+      - name: Self-test contract purity guard
+        run: bash tools/codegen/check-contract-purity.test.sh
       - name: Contract purity (no transport symbols in the SDK/contract)
         run: bash tools/codegen/check-contract-purity.sh
 
@@ -997,6 +1051,8 @@ jobs:
         run: bash tools/release/check-mirror-secrets.test.sh
       - name: Self-test immutable release artifacts
         run: bash tools/release-artifact.test.sh
+      - name: Self-test native release artifacts
+        run: bash tools/native-artifacts.test.sh
       - name: Self-test exact crates.io publication payloads
         run: bash tools/crates-publish.test.sh
       # The Apple pods reach CocoaPods trunk from the mirror's release workflow, which nothing in this
@@ -1024,6 +1080,33 @@ jobs:
           python3 .agents/skills/hop-adversarial-audit/scripts/validate_ledger.py \
             .agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json
           bash tools/docs-token-guard.sh .agents/skills/hop-adversarial-audit
+      - name: Self-test identity secret guard
+        run: bash tools/identity-secret-guard.test.sh
+      - name: Identity secret guard
+        run: python3 tools/identity-secret-guard.py
+      - name: Self-test changelog generation
+        run: bash tools/gen-changelogs.test.sh
+      - name: Self-test CI path ownership guard
+        run: bash tools/ci-path-ownership-guard.test.sh
+      - name: CI path ownership guard
+        run: python3 tools/ci-path-ownership-guard.py
+      - name: Self-test Dependabot coverage guard
+        run: bash tools/dependabot-coverage-guard.test.sh
+      - name: Dependabot coverage guard
+        run: python3 tools/dependabot-coverage-guard.py
+      - name: Self-test Dependabot fix tag authorization
+        run: bash .github/scripts/dep-fix-tag.test.sh
+      - name: Self-test PR auto-merge safety check (PROC-002)
+        run: bash .github/scripts/check-pr-automerge-safety.test.sh
+      # INFRA-012: Syntax check testkit automation scripts (bash -n, node --check)
+      - name: Syntax check testkit automation scripts (bash -n, node --check)
+        run: |
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \)); do
+            bash -n "$f"
+          done
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \)); do
+            node --check "$f"
+          done
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1056,6 +1139,10 @@ jobs:
       # and comments too, not just docs. See the `docs` path filter above.
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
+      - name: Self-test the documentation path guard
+        run: bash tools/doc-path-guard.test.sh
+      - name: Run documentation path guard
+        run: bash tools/doc-path-guard.sh
       # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is
       # empty, missing, truncated below a sane floor, stripped of its signature line, or (for the two
       # LICENSE copies) drifted apart. A 0-byte LICENSE.md shipped TWICE before (restored, then
@@ -1130,6 +1217,10 @@ jobs:
           python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
           python -m unittest discover -s tests
           python examples/discovery.py
+      # INFRA-013: Report resolved dependency graph
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/python
+        run: python -m pip freeze
 
   go-sdk:
     name: Go endpoint SDK (race)
@@ -1163,6 +1254,12 @@ jobs:
           test -z "$(gofmt -l . | grep -v _test || true)"
           go vet ./...
           go test -race ./...
+      # INFRA-013: Report resolved dependency graph
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/go
+        run: |
+          go list -m all
+          go mod graph
 
   ruby-sdk:
     name: Ruby endpoint SDK (proofs)
@@ -1192,6 +1289,15 @@ jobs:
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: ruby -Ilib test/test_hop.rb
+      # INFRA-013: Report resolved dependency graph. The gem has no runtime dependencies beyond
+      # Ruby's stdlib (fiddle binds libhop directly), so the report is the gemspec's own declared
+      # graph plus the interpreter that resolved it; `gem dependency` has no --list flag.
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/ruby
+        run: |
+          ruby -v
+          ruby -e 'spec = Gem::Specification.load("hop-endpoint.gemspec") or abort("gemspec failed to load"); puts "#{spec.name} #{spec.version}"; puts "runtime dependencies: #{spec.runtime_dependencies.map(&:to_s).inspect}"; puts "development dependencies: #{spec.development_dependencies.map(&:to_s).inspect}"'
+          gem dependency --local
 
   crystal-sdk:
     name: Crystal endpoint SDK (spec)
@@ -1267,6 +1373,7 @@ jobs:
         run: |
           mix local.hex 2.2.1 --force
           mix deps.get
+          mix deps.tree
           mix format --check-formatted
           mix test
       # The Elixir EXPORT validation lived here and is gone with the hop-sdk-elixir mirror (2026-08
@@ -1316,10 +1423,71 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
         run: |
           dart pub get
+          dart pub deps
           dart analyze
           dart format --output=none --set-exit-if-changed .
           dart test
 
+
+  lowest-supported-bounds:
+    name: Lowest supported dependency bounds (Python + Go)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_python == 'true' || needs.changes.outputs.sdk_go == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.22.12"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lowest-bounds-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-lowest-bounds-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      # Go: go.mod minimally requires gorilla/websocket v1.5.3 (its lowest bound); tidy with -compat pins the minimum version set
+      - name: Test Go SDK lowest supported bounds (go mod tidy -compat + go test)
+        working-directory: sdk/go
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          go mod tidy -compat=1.21
+          go test ./...
+      # Python: install uv pinned by sha256, then resolve lowest supported bounds for optional/dev dependencies
+      - name: Install uv (pinned by sha256)
+        run: |
+          ver="0.5.2"
+          archive="$RUNNER_TEMP/uv-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://github.com/astral-sh/uv/releases/download/${ver}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' d2d9d4b9ce536ab7ebb09d33629694385a3ebb72d156ae0b4dd28c9b6f6cbd13 "$archive" \
+            | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/uv-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+      # `--resolution lowest-direct` pins OUR declared floors (cryptography>=41) and lets transitive
+      # dependencies resolve normally: plain `lowest` also takes cryptography's own `cffi>=1.12`
+      # floor literally, and cffi 1.12.0 has no wheel for and does not compile on CPython 3.12, so
+      # the job could never test the floor this SDK actually declares.
+      - name: Test Python SDK lowest supported bounds (uv lowest-direct resolution)
+        working-directory: sdk/python
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: |
+          uv pip install --system --resolution lowest-direct ".[dev]"
+          python -c 'import cryptography, cffi; print("cryptography", cryptography.__version__, "cffi", cffi.__version__)'
+          python -m unittest discover -s tests
   # Aggregate gate: the single required check for branch protection. The runtime deploy it used to
   # trigger moved to hopmesh/platform with the infra tree, so nothing fires on success here.
   # It `needs:` every other job and, via `if: always()`,
@@ -1341,6 +1509,13 @@ jobs:
       - uses: ./sdk/react-native/.github/actions/ci
         with:
           pkg-dir: sdk/react-native
+      # INFRA-012: Build and test apps/react-native/HopDemo (typecheck + tests)
+      - name: Build and test apps/react-native/HopDemo (typecheck + tests)
+        working-directory: apps/react-native/HopDemo
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
 
   gate:
     name: CI gate
@@ -1348,6 +1523,7 @@ jobs:
     if: always()
     needs:
       - rust
+      - deny
       - kotlin-sdk
       - compose-sdk
       - android
@@ -1364,6 +1540,7 @@ jobs:
       - crystal-sdk
       - elixir-sdk
       - flutter-sdk
+      - lowest-supported-bounds
       - react-native-sdk
       - changes
     steps:

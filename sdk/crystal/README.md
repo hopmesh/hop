@@ -74,10 +74,12 @@ end
 
 Same delivery either way; `channel` is just `on` wired to a `Channel`.
 
-**The DX looks like HTTP; the semantics are better.** Inbound is a durable, store-and-forward consume; a
-reply is a new addressed message that may arrive later, even after a restart. It works when the peer is
-offline, and there is no auth layer to bolt on, the identity is cryptographic. core is poll-model, so the
-endpoint runs a background pump fiber (the node is thread-safe).
+**The DX looks like HTTP; the semantics are better.** Inbound is a store-and-forward consume; a reply
+is a new addressed message that may arrive later. By default, `Hop::Endpoint.new` runs an in-memory
+node with ephemeral storage (state does not survive a process restart). To enable durability across
+restarts, pass `db_path: "/path/to/node.db"` (and optionally `db_key: ...` for encryption at rest).
+When backed by persistent storage, handled state, ratchets, and unconsumed queues survive restarts.
+core is poll-model, so the endpoint runs a background pump fiber (the node is thread-safe).
 
 ## Reachable by name
 

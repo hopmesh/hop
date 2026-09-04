@@ -83,6 +83,24 @@ unsafe fn node_ref<'a>(node: *const HopNode) -> Option<&'a HopNode> {
         Some(&*node)
     }
 }
+
+struct ActiveNodeGuard(*const HopNode);
+impl Drop for ActiveNodeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            Arc::decrement_strong_count(self.0);
+        }
+    }
+}
+
+unsafe fn node_guard<'a>(node: *const HopNode) -> Option<(&'a HopNode, ActiveNodeGuard)> {
+    if node.is_null() {
+        None
+    } else {
+        Arc::increment_strong_count(node);
+        Some((&*node, ActiveNodeGuard(node)))
+    }
+}
 unsafe fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
         return None;
@@ -198,7 +216,10 @@ unsafe fn write_id(out: *mut u8, id: &[u8]) {
 /// `hop_hps_members`, `hop_hps_my_topics` and `hop_hps_browse`. Additive, so a v5 caller still
 /// links; the bump is what stops a wrapper that binds them being paired with a v5 library that does
 /// not export them, and what holds every wrapper to binding the whole surface (PLAT-003).
-pub const HOP_ABI_VERSION: u32 = 6;
+///
+/// v6 -> v7: added explicit service-request acceptance (`hop_accept_service_request`,
+/// `hop_reject_service_request`) and storage encryption inspection (`hop_node_is_encrypted`).
+pub const HOP_ABI_VERSION: u32 = 7;
 
 /// Returns the ABI version this shared library implements (see [`HOP_ABI_VERSION`]).
 #[no_mangle]
@@ -343,6 +364,12 @@ pub unsafe extern "C" fn hop_node_open(
     app_secret: *const u8,
     app_secret_len: usize,
 ) -> *const HopNode {
+    if app_secret_len != 0 && app_secret_len != 32 {
+        return std::ptr::null();
+    }
+    if app_secret_len == 32 && app_secret.is_null() {
+        return std::ptr::null();
+    }
     let Some(path) = cstr(db_path) else {
         return std::ptr::null();
     };
@@ -360,8 +387,8 @@ pub unsafe extern "C" fn hop_node_open(
 
 /// Like `hop_node_open`, but ENCRYPTS the store at rest with a raw `key` (typically 32 bytes) the host
 /// derives and stores in the platform Keychain/Keystore (F-25). Real encryption requires libhop to be
-/// built with the store's `sqlcipher` feature; otherwise the key is accepted but the db stays plain.
-/// A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
+/// built with the store's `sqlcipher` feature; builds without `sqlcipher` reject a non-empty key
+/// (fail closed) and return NULL. A NULL/empty key behaves like `hop_node_open`. NULL/non-UTF-8 `db_path` ⇒ NULL.
 #[no_mangle]
 pub unsafe extern "C" fn hop_node_open_keyed(
     db_path: *const c_char,
@@ -372,6 +399,16 @@ pub unsafe extern "C" fn hop_node_open_keyed(
     key: *const u8,
     key_len: usize,
 ) -> *const HopNode {
+    if app_secret_len != 0 && app_secret_len != 32 {
+        return std::ptr::null();
+    }
+    if app_secret_len == 32 && app_secret.is_null() {
+        return std::ptr::null();
+    }
+    // ABI-001: plain builds without sqlcipher must fail closed (return NULL) when key is provided.
+    if key_len > 0 && !cfg!(feature = "sqlcipher") {
+        return std::ptr::null();
+    }
     let Some(path) = cstr(db_path) else {
         return std::ptr::null();
     };
@@ -415,6 +452,12 @@ pub unsafe extern "C" fn hop_node_with_secret(
 #[no_mangle]
 pub unsafe extern "C" fn hop_node_is_persistent(node: *const HopNode) -> bool {
     node_ref(node).map(|n| n.is_persistent()).unwrap_or(false)
+}
+
+/// True only when the store is SQLCipher-keyed at rest (F-25, audit-001). NULL handle returns false.
+#[no_mangle]
+pub unsafe extern "C" fn hop_node_is_encrypted(node: *const HopNode) -> bool {
+    node_ref(node).map(|n| n.is_encrypted()).unwrap_or(false)
 }
 
 /// How many persisted records failed to decode on startup (F-03). Non-zero ⇒ an upgrade changed
@@ -626,7 +669,7 @@ pub unsafe extern "C" fn hop_drain_outgoing(
     sink: Option<extern "C" fn(ctx: *mut c_void, link: u64, bytes: *const u8, len: usize)>,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     // core-ffi-01: the node-side drain may panic; contain it so it can't unwind across the ABI. The
@@ -684,7 +727,7 @@ pub unsafe extern "C" fn hop_poll_inbox(
     >,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     let inbox = catch(Vec::new(), || node.take_inbox());
@@ -885,13 +928,19 @@ pub unsafe extern "C" fn hop_send_service_response(
         let Some(body) = bounded_slice(body, body_len, MAX_C_ABI_INPUT_BYTES) else {
             return false;
         };
-        node.send_service_response(
-            slice(to, 32).to_vec(),
-            slice(for_request_id, 32).to_vec(),
-            status,
-            body.to_vec(),
-        )
-        .is_ok()
+        let for_req = slice(for_request_id, 32);
+        let ok = node
+            .send_service_response(
+                slice(to, 32).to_vec(),
+                for_req.to_vec(),
+                status,
+                body.to_vec(),
+            )
+            .is_ok();
+        if ok {
+            let _ = node.accept_service_request(for_req.to_vec());
+        }
+        ok
     })
 }
 
@@ -994,8 +1043,10 @@ pub unsafe extern "C" fn hop_cluster_set_quorum(node: *const HopNode, min_live_m
     })
 }
 
-/// Drain hops:// service requests addressed to this node (host side). Invokes
+/// Poll hops:// service requests addressed to this node (host side) without consuming them. Invokes
 /// `sink(ctx, from32, request_id32, service_cstr, method_cstr, args_ptr, args_len)` per request.
+/// Returning true is synchronous host acceptance. Returning false leaves the request queued for
+/// redelivery until [`hop_accept_service_request`] or [`hop_reject_service_request`] succeeds.
 #[no_mangle]
 pub unsafe extern "C" fn hop_poll_service_requests(
     node: *const HopNode,
@@ -1008,11 +1059,11 @@ pub unsafe extern "C" fn hop_poll_service_requests(
             method: *const c_char,
             args: *const u8,
             args_len: usize,
-        ),
+        ) -> bool,
     >,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     // core-ffi-01: the node-side drain may panic; contain it so it can't unwind across the ABI (the
@@ -1021,7 +1072,7 @@ pub unsafe extern "C" fn hop_poll_service_requests(
     for r in requests {
         let svc = c_string_lossy(r.service);
         let mth = c_string_lossy(r.method);
-        sink(
+        let accepted = sink(
             ctx,
             r.from.as_ptr(),
             r.request_id.as_ptr(),
@@ -1030,7 +1081,45 @@ pub unsafe extern "C" fn hop_poll_service_requests(
             r.args.as_ptr(),
             r.args.len(),
         );
+        if accepted {
+            let _ = node.accept_service_request(r.request_id);
+        }
     }
+}
+
+/// Durably accept one request previously returned by [`hop_poll_service_requests`].
+/// `request_id` points to exactly 32 bytes. Returns false for NULL, an unknown/already-accepted
+/// request id, or a persistence failure.
+#[no_mangle]
+pub unsafe extern "C" fn hop_accept_service_request(
+    node: *const HopNode,
+    request_id: *const u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), false) = (node_ref(node), request_id.is_null()) else {
+            return false;
+        };
+        let request_id = slice(request_id, 32);
+        node.accept_service_request(request_id.to_vec())
+            .unwrap_or(false)
+    })
+}
+
+/// Reject one request previously returned by [`hop_poll_service_requests`] without ACK or dedup
+/// consumption so a retransmission can retry. Returns false for NULL or an unknown request id.
+#[no_mangle]
+pub unsafe extern "C" fn hop_reject_service_request(
+    node: *const HopNode,
+    request_id: *const u8,
+) -> bool {
+    catch(false, || {
+        let (Some(node), false) = (node_ref(node), request_id.is_null()) else {
+            return false;
+        };
+        let request_id = slice(request_id, 32);
+        node.reject_service_request(request_id.to_vec())
+            .unwrap_or(false)
+    })
 }
 
 /// Poll hops:// service responses sealed back to this node (caller side). Invokes
@@ -1052,7 +1141,7 @@ pub unsafe extern "C" fn hop_poll_service_responses(
     >,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     // core-ffi-01: contain a panic in the node-side drain (see hop_poll_service_requests).
@@ -1149,7 +1238,10 @@ pub unsafe extern "C" fn hop_hps_register(
         ) else {
             return false;
         };
-        let pk = node.register_service(path.to_string(), kind, access, visibility);
+        let pk = match node.try_register_service(path.to_string(), kind, access, visibility) {
+            Ok(pk) => pk,
+            Err(_) => return false,
+        };
         if !out_pubkey.is_null() {
             if pk.len() > out_pubkey_cap {
                 return false;
@@ -1242,7 +1334,7 @@ pub unsafe extern "C" fn hop_poll_hps_messages(
     >,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     let msgs = catch(Vec::new(), || node.take_hps_messages());
@@ -1361,7 +1453,7 @@ pub unsafe extern "C" fn hop_poll_hps_invites(
     sink: Option<extern "C" fn(ctx: *mut c_void, host: *const u8, path: *const c_char, kind: u32)>,
     ctx: *mut c_void,
 ) {
-    let (Some(node), Some(sink)) = (node_ref(node), sink) else {
+    let (Some((node, _guard)), Some(sink)) = (node_guard(node), sink) else {
         return;
     };
     let invites = catch(Vec::new(), || node.take_hps_invites());
@@ -1485,10 +1577,10 @@ pub unsafe extern "C" fn hop_hps_rekey(
     remove_count: usize,
     sink: Option<extern "C" fn(ctx: *mut c_void, id: *const u8)>,
     ctx: *mut c_void,
-) -> usize {
-    catch(0, || {
+) -> isize {
+    catch(-1, || {
         let (Some(node), Some(path)) = (node_ref(node), cstr(path)) else {
-            return 0;
+            return -1;
         };
         // A NULL new_path means "keep the path", the same as the empty string the core expects.
         let new_path = if new_path.is_null() {
@@ -1496,28 +1588,28 @@ pub unsafe extern "C" fn hop_hps_rekey(
         } else {
             match cstr(new_path) {
                 Some(s) => s,
-                None => return 0,
+                None => return -1,
             }
         };
-        // remove_count is a COUNT of addresses, so the byte length it implies has to be checked
-        // against the input cap before the pointer is read; a count near usize::MAX would otherwise
-        // overflow the multiply and produce a slice over unmapped memory.
+        if remove_count > 0 && remove.is_null() {
+            return -1;
+        }
         let Some(bytes) = remove_count
             .checked_mul(32)
             .and_then(|n| bounded_slice(remove, n, MAX_C_ABI_INPUT_BYTES))
         else {
-            return 0;
+            return -1;
         };
         let removed: Vec<Vec<u8>> = bytes.chunks_exact(32).map(|c| c.to_vec()).collect();
         let Ok(ids) = node.hps_rekey(path.to_string(), new_path.to_string(), removed) else {
-            return 0;
+            return -1;
         };
         if let Some(sink) = sink {
             for id in &ids {
                 sink(ctx, id.as_ptr());
             }
         }
-        ids.len()
+        ids.len() as isize
     })
 }
 
@@ -1820,6 +1912,190 @@ mod tests {
     #[test]
     fn abi_version_matches_the_constant() {
         assert_eq!(hop_abi_version(), HOP_ABI_VERSION);
+    }
+
+    #[test]
+    fn hostile_repro_abi_005_nonzero_short_app_secret_fails_construction() {
+        unsafe {
+            let path = std::ffi::CString::new(format!(
+                "{}/hop-short-secret-test.db",
+                std::env::temp_dir().display()
+            ))
+            .unwrap();
+            let secret = [1u8; 32];
+            let short_app_secret = [99u8; 31];
+
+            let node = hop_node_open(
+                path.as_ptr(),
+                secret.as_ptr(),
+                32,
+                short_app_secret.as_ptr(),
+                31,
+            );
+            assert!(
+                node.is_null(),
+                "short app secret (31 bytes) must return NULL"
+            );
+        }
+    }
+    #[test]
+    fn hostile_repro_abi_001_plain_build_fails_closed_on_keyed_open() {
+        unsafe {
+            let db_file = format!(
+                "{}/hop-abi-001-test-{}.db",
+                std::env::temp_dir().display(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let path = std::ffi::CString::new(db_file.clone()).unwrap();
+            let secret = [1u8; 32];
+            let key = [42u8; 32];
+
+            let node = hop_node_open_keyed(
+                path.as_ptr(),
+                secret.as_ptr(),
+                32,
+                std::ptr::null(),
+                0,
+                key.as_ptr(),
+                32,
+            );
+
+            #[cfg(not(feature = "sqlcipher"))]
+            {
+                assert!(
+                    node.is_null(),
+                    "plain build without sqlcipher must fail closed (return NULL) when key is provided"
+                );
+                assert!(
+                    !std::path::Path::new(&db_file).exists(),
+                    "plain build must not create a plaintext database when keyed open was requested"
+                );
+            }
+
+            #[cfg(feature = "sqlcipher")]
+            {
+                assert!(
+                    !node.is_null(),
+                    "sqlcipher build must succeed on keyed open"
+                );
+                assert!(
+                    hop_node_is_encrypted(node),
+                    "sqlcipher node must report is_encrypted=true"
+                );
+                hop_node_free(node);
+
+                // Reopen with wrong key
+                let bad_key = [99u8; 32];
+                let node_bad = hop_node_open_keyed(
+                    path.as_ptr(),
+                    secret.as_ptr(),
+                    32,
+                    std::ptr::null(),
+                    0,
+                    bad_key.as_ptr(),
+                    32,
+                );
+                assert!(
+                    node_bad.is_null()
+                        || !hop_node_is_encrypted(node_bad)
+                        || !hop_node_is_persistent(node_bad),
+                    "wrong key must not decrypt database"
+                );
+                if !node_bad.is_null() {
+                    hop_node_free(node_bad);
+                }
+                let _ = std::fs::remove_file(&db_file);
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_repro_abi_004_hps_rekey_failure_distinguishable_from_zero_recipients() {
+        unsafe {
+            let node = hop_node_new();
+            let topic = std::ffi::CString::new("test/topic").unwrap();
+            let bad_topic = std::ffi::CString::new("nonexistent/topic").unwrap();
+            assert!(hop_hps_register(
+                node,
+                topic.as_ptr(),
+                HopHpsKind::Channel as u32,
+                HopHpsAccess::Open as u32,
+                HopHpsVisibility::Discoverable as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut()
+            ));
+
+            let count = hop_hps_rekey(
+                node,
+                topic.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                None,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(count, 0, "successful rekey with 0 members emits 0 bundles");
+
+            let err_count = hop_hps_rekey(
+                node,
+                bad_topic.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                None,
+                std::ptr::null_mut(),
+            ) as isize;
+            assert_eq!(
+                err_count, -1,
+                "rekeying nonexistent topic must return -1 error"
+            );
+            hop_node_free(node);
+        }
+    }
+
+    #[test]
+    fn hostile_repro_abi_002_service_request_polling_is_non_destructive() {
+        unsafe {
+            let a = hop_node_new();
+            let b = hop_node_new();
+            let (_aa, ba) = connect(a, b);
+
+            let service = std::ffi::CString::new("test.service").unwrap();
+            let method = std::ffi::CString::new("call").unwrap();
+            let mut req_id1 = [0u8; 32];
+            assert!(hop_send_service_request(
+                a,
+                ba.as_ptr(),
+                service.as_ptr(),
+                method.as_ptr(),
+                b"arg1".as_ptr(),
+                4,
+                req_id1.as_mut_ptr(),
+            ));
+
+            pump(a, 11, b, 22);
+
+            // First poll: simulates handler running without accepting.
+            let reqs = poll_requests(b);
+            assert_eq!(reqs.len(), 1);
+
+            // Invariant: polling must be non-destructive until explicit acceptance.
+            // On unfixed tree, take_service_requests completed app delivery during the first poll,
+            // so the request was drained and the second poll returns empty!
+            let reqs2 = poll_requests(b);
+            assert_eq!(
+                reqs2.len(),
+                1,
+                "unaccepted service request must remain queued across polls"
+            );
+
+            hop_node_free(a);
+            hop_node_free(b);
+        }
     }
 
     #[test]
@@ -2140,6 +2416,10 @@ mod tests {
         }
     }
 
+    // ABI-001: a keyed open on a build without the sqlcipher feature now fails closed (see
+    // hostile_repro_abi_001_plain_build_fails_closed_on_keyed_open), so the at-rest round trip is only
+    // meaningful, and only runs, when the cipher is compiled in.
+    #[cfg(feature = "sqlcipher")]
     #[test]
     fn node_open_keyed_encrypts_at_rest_and_still_round_trips_identity() {
         // hop_node_open_keyed is the SQLCipher-at-rest ctor (F-25): same identity guarantees as
@@ -2449,6 +2729,7 @@ mod tests {
 
     struct SvcReqCollector {
         reqs: Vec<SvcReqRow>,
+        accept: bool,
     }
     #[allow(clippy::too_many_arguments)]
     extern "C" fn svc_req_sink(
@@ -2459,7 +2740,7 @@ mod tests {
         method: *const c_char,
         args: *const u8,
         args_len: usize,
-    ) {
+    ) -> bool {
         unsafe {
             let c = &mut *(ctx as *mut SvcReqCollector);
             c.reqs.push((
@@ -2469,12 +2750,19 @@ mod tests {
                 CStr::from_ptr(method).to_string_lossy().into_owned(),
                 slice(args, args_len).to_vec(),
             ));
+            c.accept
         }
     }
-    unsafe fn poll_requests(node: *const HopNode) -> Vec<SvcReqRow> {
-        let mut c = SvcReqCollector { reqs: Vec::new() };
+    unsafe fn poll_requests_with_acceptance(node: *const HopNode, accept: bool) -> Vec<SvcReqRow> {
+        let mut c = SvcReqCollector {
+            reqs: Vec::new(),
+            accept,
+        };
         hop_poll_service_requests(node, Some(svc_req_sink), &mut c as *mut _ as *mut c_void);
         c.reqs
+    }
+    unsafe fn poll_requests(node: *const HopNode) -> Vec<SvcReqRow> {
+        poll_requests_with_acceptance(node, false)
     }
 
     struct SvcRespCollector {
@@ -3795,7 +4083,7 @@ mod tests {
                     None,
                     std::ptr::null_mut()
                 ),
-                0
+                -1
             );
             assert_eq!(hop_hps_reach(null, path.as_ptr()), 0);
             assert_eq!(
@@ -3833,10 +4121,50 @@ mod tests {
                     None,
                     std::ptr::null_mut()
                 ),
-                0,
+                -1,
                 "an overflowing remove_count is refused, never dereferenced"
             );
             hop_node_free(node);
+        }
+    }
+
+    /// STORE-005 at the C seam: when durable persistence of the service record fails,
+    /// `hop_hps_register` returns false and no advert ever reaches a peer.
+    #[test]
+    fn cabi_hps_register_store_failure_returns_false_and_publishes_no_advert() {
+        unsafe {
+            let (a, b) = hps_pair(25);
+            let _ = connect(a, b);
+            let a_node = node_ref(a).unwrap();
+            a_node.inject_kv_failure("hps/svc/%").unwrap();
+            let path = cs("failed-topic");
+            let mut pk = [0u8; 32];
+            let mut pk_len = 0usize;
+            let ok = hop_hps_register(
+                a,
+                path.as_ptr(),
+                HopHpsKind::Service as u32,
+                HopHpsAccess::Open as u32,
+                HopHpsVisibility::Discoverable as u32,
+                pk.as_mut_ptr(),
+                pk.len(),
+                &mut pk_len,
+            );
+            assert!(
+                !ok,
+                "hop_hps_register must return false when durable persistence fails"
+            );
+            pump(a, 11, b, 22);
+            pump(a, 11, b, 22);
+            let mut seen = BrowseCollector { found: Vec::new() };
+            let n = hop_hps_browse(b, Some(browse_sink), &mut seen as *mut _ as *mut c_void);
+            assert_eq!(n, 0);
+            assert!(
+                !seen.found.iter().any(|t| t.0 == "failed-topic"),
+                "no advert must be published"
+            );
+            hop_node_free(a);
+            hop_node_free(b);
         }
     }
 }

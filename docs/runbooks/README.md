@@ -1,7 +1,8 @@
 # Operational runbooks
 
 These runbooks capture the operational knowledge needed to run the Hop relay
-fleet and its supporting infra, so a second operator can act without reverse
+fleet and its supporting infra (maintained in the private `hopmesh/platform` repository
+under `infra/`; see `docs/repo-catalog.md`), so a second operator can act without reverse
 engineering the Terraform.
 
 | Runbook | When you need it |
@@ -15,12 +16,12 @@ Prerequisites shared by all runbooks:
 - `gcloud` authenticated to project `hop-mesh` (`gcloud config set project hop-mesh`).
 - OpenTofu `1.12.3` or newer (the version that wrote the GCS state).
 - Access to the Terraform state bucket `gs://hop-mesh-tfstate`.
-- The deploy path is GitOps: pushing to `main` triggers a Cloud Build run that
-  builds both images and runs the runtime apply. Do not apply locally. A local
-apply from a checkout that is behind plans a partial destroy of everything in
-remote state that your files no longer declare. `hopmesh/platform/infra/bootstrap` is applied
-only by dispatching `.github/workflows/bootstrap-apply.yml`, and `hopmesh/platform/infra/billing`
-only by `.github/workflows/billing-catalog.yml`.
+- The deploy path is GitOps in the platform repository: pushing to `main` in
+  `hopmesh/platform` triggers the deploy pipeline. Do not apply locally. A local
+  apply from a checkout that is behind plans a partial destroy of everything in
+  remote state that your files no longer declare. `hopmesh/platform/infra/bootstrap` is applied
+  only by dispatching `hopmesh/platform/.github/workflows/bootstrap-apply.yml`, and `hopmesh/platform/infra/billing`
+  only by `hopmesh/platform/.github/workflows/billing-catalog.yml`.
 
 Ground truth for what the fleet is doing right now:
 

@@ -18,14 +18,16 @@
 typedef struct { const HopNode *peer; } Pipe;
 static void forward(void *ctx, uint64_t link, const uint8_t *b, size_t n) { (void)link; hop_bytes_received(((Pipe *)ctx)->peer, 1, b, n); }
 
-// The cloud weather service captures the request and what to reply.
+// The cloud weather service captures the request and what to reply. ABI 7: returning true accepts
+// the request synchronously; a duplicate delivery after capture is left queued (false).
 typedef struct { int got, answered; uint8_t from[32], req_id[32]; } Req;
-static void on_request(void *ctx, const uint8_t *from, const uint8_t *rid, const char *svc, const char *method,
+static bool on_request(void *ctx, const uint8_t *from, const uint8_t *rid, const char *svc, const char *method,
                        const uint8_t *args, size_t alen) {
     Req *r = (Req *)ctx;
-    if (r->got) return;
+    if (r->got) return false;
     memcpy(r->from, from, 32); memcpy(r->req_id, rid, 32); r->got = 1;
     printf("[cloud] request %s/%s args=\"%.*s\"\n", svc, method, (int)alen, (const char *)args);
+    return true;
 }
 typedef struct { int got; uint16_t status; char body[128]; } Resp;
 static bool on_response(void *ctx, const uint8_t *from, const uint8_t *rid, uint16_t status, const uint8_t *b, size_t n) {

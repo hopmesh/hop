@@ -168,7 +168,7 @@ class TestHop < Minitest::Test
 
   # PLAT-003: sdk/hop.h justified the v4 -> v5 relay-pool bump with the §19 calls, and this SDK asserted
   # that level at load while binding none of them, so an SDK-only host could not fail over: the only
-  # reachable behavior was retrying one configured URL forever. The wrapper now asserts ABI 6 and binds
+  # reachable behavior was retrying one configured URL forever. The wrapper now asserts ABI 7 and binds
   # them, and this drives the failover the header describes through the published Endpoint surface, on
   # ONE endpoint that is never restarted.
   def test_relay_pool_fails_over_without_restarting_the_endpoint
@@ -203,6 +203,65 @@ class TestHop < Minitest::Test
     assert_equal [2, 0], e.relay_pool
   ensure
     e&.close
+  end
+
+  def test_service_request_throwing_handler_leaves_request_queued
+    server = Hop::Endpoint.new(tick_ms: 10)
+    client = Hop::Endpoint.new(tick_ms: 10)
+    attempts = []
+    first_attempt_done = Queue.new
+
+    server.on("flaky") do |req, reply|
+      attempts << req.service
+      if attempts.length == 1
+        first_attempt_done.push(true)
+        raise "handler failed attempt 1"
+      end
+      reply.call(200, "recovered")
+    end
+
+    Hop.connect_in_process(server, client)
+    res = nil
+    req_thread = Thread.new do
+      res = client.request(server.address_bytes, "flaky", "call", "test", timeout: 3)
+    end
+
+    assert first_attempt_done.pop
+    assert_equal 1, attempts.length
+
+    req_thread.join(3)
+    assert_equal 2, attempts.length, "request was redelivered after throwing handler"
+    assert_equal [200, "recovered"], res
+  ensure
+    server&.close
+    client&.close
+  end
+
+  def test_endpoint_persists_state_across_restart
+    require "tmpdir"
+    Dir.mktmpdir do |tmpdir|
+      db_path = File.join(tmpdir, "test-restart.db")
+      secret = (1..32).to_a.pack("C*")
+
+      e1 = Hop::Endpoint.new(key: secret, db_path: db_path, cluster: "shared-cluster-passphrase")
+      assert e1.persistent?
+      refute e1.encrypted?
+
+      from = ("\xAA" * 32).b
+      req_id = ("\xBB" * 32).b
+
+      e1.cluster_mark_done(from, req_id)
+      assert e1.cluster_would_drop(from, req_id)
+      e1.close
+
+      e2 = Hop::Endpoint.new(key: secret, db_path: db_path, cluster: "shared-cluster-passphrase")
+      begin
+        assert e2.persistent?
+        assert e2.cluster_would_drop(from, req_id)
+      ensure
+        e2.close
+      end
+    end
   end
 
   private

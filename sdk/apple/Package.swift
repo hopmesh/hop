@@ -44,9 +44,11 @@ let package = Package(
         // change must bump the workspace version and update whatever depends on it.
         //
         // Measured, not inferred, from the native-release bundle of the `Native artifacts` run for
-        // source 076737c528713536a2612441bd51e44f11341aa2, the first build with the sorted plist. To refresh: download that run's
-        // native-release-bundle and run `swift package compute-checksum libhop.xcframework.zip`.
-        // See docs/apple-release.md.
+        // source 076737c528713536a2612441bd51e44f11341aa2, the first build with the sorted plist.
+        // ABI-008: the pinned v0.0.2 binary was built for C-ABI level 5, while Swift sources require ABI 7.
+        // To update the pin to ABI 7: follow the release runbook in docs/apple-release.md once a release
+        // artifact is cut on GitHub Releases, and update the URL and checksum below.
+        // tools/apple-pin-guard.py enforces compatibility and catches header/source drift.
         .binaryTarget(
             name: "CHop",
             url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.2/libhop.xcframework.zip",

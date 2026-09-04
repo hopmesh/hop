@@ -42,6 +42,8 @@ internal const val MESH_DEAD_MS = 180_000L
 /** Drop a half-assembled inbound message after this long; bound concurrent partials per peer. */
 internal const val MESH_REASSEMBLY_TTL_MS = 120_000L
 internal const val MESH_MAX_PARTIAL_PER_PEER = 8
+internal const val MESH_MAX_GLOBAL_PARTIALS = 64
+internal const val MESH_MAX_GLOBAL_PARTIAL_BYTES = 64 * 1024
 
 // Hop link-frame type tags (identical to :bearer-lan L_HELLO/L_PING/L_PONG/L_DATA).
 internal const val M_HELLO = 0x01
@@ -292,7 +294,8 @@ internal class MeshFragHeader private constructor(
             val id = ((frag[0].toInt() and 0xff) shl 8) or (frag[1].toInt() and 0xff)
             val idx = frag[2].toInt() and 0xff
             val cnt = frag[3].toInt() and 0xff
-            if (cnt < 1 || cnt > MESH_MAX_FRAGS || idx >= cnt) return null
+            val chunkLen = frag.size - MESH_FRAG_HEADER
+            if (cnt < 1 || cnt > MESH_MAX_FRAGS || idx >= cnt || chunkLen > MESH_MAX_CHUNK) return null
             return MeshFragHeader(id, idx, cnt, frag.copyOfRange(MESH_FRAG_HEADER, frag.size))
         }
     }
@@ -304,10 +307,15 @@ internal class MeshFragHeader private constructor(
 internal class MeshReassembler {
     private class Partial(val count: Int, val firstSeenMs: Long) {
         val chunks = HashMap<Int, ByteArray>()
+        val byteCount: Int get() = chunks.values.sumOf { it.size }
     }
 
     // node num -> msgId -> Partial
     private val partials = HashMap<Long, HashMap<Int, Partial>>()
+    var totalPartials: Int = 0
+        private set
+    var totalBytes: Int = 0
+        private set
 
     fun accept(peer: Long, fragment: ByteArray, nowMs: Long): ByteArray? {
         val h = MeshFragHeader.parse(fragment) ?: return null
@@ -320,32 +328,97 @@ internal class MeshReassembler {
         }
 
         var p = byId[h.msgId]
-        if (p == null || p.count != h.count) { p = Partial(h.count, nowMs); byId[h.msgId] = p }
+        val isNew = (p == null)
+        val oldBytes = p?.byteCount ?: 0
+        if (p == null || p.count != h.count) {
+            p = Partial(h.count, nowMs)
+            byId[h.msgId] = p
+        }
         p.chunks[h.index] = h.chunk
+        val newBytes = p.byteCount
 
+        // Enforce global bounds: drop oldest partial across all peers if needed
+        while ((totalPartials + (if (isNew) 1 else 0) > MESH_MAX_GLOBAL_PARTIALS ||
+                totalBytes - oldBytes + newBytes > MESH_MAX_GLOBAL_PARTIAL_BYTES) && totalPartials > 0) {
+            evictOldestGlobal()
+        }
+
+        byId[h.msgId] = p
+        if (isNew) totalPartials += 1
+        totalBytes += (newBytes - oldBytes)
+
+        // Bound concurrent partials per peer: drop oldest if over budget
         if (byId.size > MESH_MAX_PARTIAL_PER_PEER) {
-            byId.minByOrNull { it.value.firstSeenMs }?.key?.let { byId.remove(it) }
+            val oldest = byId.minByOrNull { it.value.firstSeenMs }?.key
+            if (oldest != null) {
+                val dropped = byId.remove(oldest)
+                if (dropped != null) {
+                    totalPartials = maxOf(0, totalPartials - 1)
+                    totalBytes = maxOf(0, totalBytes - dropped.byteCount)
+                }
+            }
         }
 
         if (p.chunks.size != p.count) return null
 
         val body = ArrayList<Byte>()
         for (idx in 0 until p.count) p.chunks[idx]?.forEach { body.add(it) }
-        byId.remove(h.msgId)
+        val completed = byId.remove(h.msgId)
+        if (completed != null) {
+            totalPartials = maxOf(0, totalPartials - 1)
+            totalBytes = maxOf(0, totalBytes - completed.byteCount)
+        }
         if (byId.isEmpty()) partials.remove(peer)
         return body.toByteArray()
+    }
+
+    private fun evictOldestGlobal() {
+        var oldestPeer: Long? = null
+        var oldestMsgId: Int? = null
+        var oldestTime = Long.MAX_VALUE
+        for ((peer, byId) in partials) {
+            for ((id, p) in byId) {
+                if (p.firstSeenMs < oldestTime) {
+                    oldestTime = p.firstSeenMs
+                    oldestPeer = peer
+                    oldestMsgId = id
+                }
+            }
+        }
+        val p = oldestPeer ?: return
+        val m = oldestMsgId ?: return
+        val dropped = partials[p]?.remove(m)
+        if (dropped != null) {
+            totalPartials = maxOf(0, totalPartials - 1)
+            totalBytes = maxOf(0, totalBytes - dropped.byteCount)
+            if (partials[p]?.isEmpty() == true) partials.remove(p)
+        }
     }
 
     fun evictStale(nowMs: Long) {
         val deadPeers = ArrayList<Long>()
         for ((peer, byId) in partials) {
-            byId.entries.removeAll { nowMs - it.value.firstSeenMs > MESH_REASSEMBLY_TTL_MS }
+            val deadIds = ArrayList<Int>()
+            for ((id, p) in byId) {
+                if (nowMs - p.firstSeenMs > MESH_REASSEMBLY_TTL_MS) {
+                    deadIds.add(id)
+                    totalPartials = maxOf(0, totalPartials - 1)
+                    totalBytes = maxOf(0, totalBytes - p.byteCount)
+                }
+            }
+            deadIds.forEach { byId.remove(it) }
             if (byId.isEmpty()) deadPeers.add(peer)
         }
         deadPeers.forEach { partials.remove(it) }
     }
 
-    fun forget(peer: Long) { partials.remove(peer) }
+    fun forget(peer: Long) {
+        val byId = partials.remove(peer) ?: return
+        for (p in byId.values) {
+            totalPartials = maxOf(0, totalPartials - 1)
+            totalBytes = maxOf(0, totalBytes - p.byteCount)
+        }
+    }
 
     val partialPeerCount: Int get() = partials.size
 }
@@ -354,3 +427,22 @@ internal class MeshReassembler {
 
 /** Keep the leg whose "I am the greater id" role matches, identical to the LAN/BLE bearers. */
 internal fun meshKeepGreaterLeg(amGreater: Boolean): Boolean = amGreater
+
+/**
+ * Pure accessory authorization gate (PLAT-006): require an explicitly configured trusted peripheral
+ * address or bonded status. Returns false when no accessory is configured or when an untrusted
+ * peripheral is discovered.
+ */
+internal fun shouldConnectAccessory(
+    deviceAddress: String,
+    trustedAddress: String?,
+    requireBonded: Boolean,
+    bondedAddresses: Set<String>?,
+): Boolean {
+    if (trustedAddress != null) {
+        return deviceAddress.equals(trustedAddress, ignoreCase = true)
+    }
+    if (!requireBonded) return false
+    val bonded = bondedAddresses ?: return false
+    return bonded.any { it.equals(deviceAddress, ignoreCase = true) }
+}

@@ -122,6 +122,7 @@ trap cleanup EXIT
 CI_COVERAGE=(
   "changes|none|dorny path-filter computation, no local analogue; it decides which jobs run, it gates nothing"
   "rust|full|fmt, clippy, the workspace tests, both wire guards, the deterministic corpus and every feature-matrix cargo invocation ci.yml runs, including the reqwest and sqlcipher clippy passes and the live and live+firestore telemetryd tests; the fuzz smoke needs cargo-fuzz and is named in NOT RUN without it"
+  "deny|partial|cargo deny check runs locally when cargo-deny is installed (cargo install cargo-deny --locked --version 0.20.2); skipped if missing"
   "kotlin-sdk|full|gradle test + jacocoTestReport + jacocoTestCoverageVerification, the same tasks ci.yml runs, when mise java/android-sdk and gradle are present"
   "compose-sdk|none|the Compose Multiplatform desktopTest suite is not run here; it needs the Compose Multiplatform gradle toolchain, which the local mirror does not provision"
   "android|full|the bearers and HopDemo JVM unit suites AND all five per-module JaCoCo coverage-verification floors ci.yml gates on, when mise java/android-sdk and gradle are present"
@@ -139,7 +140,8 @@ CI_COVERAGE=(
   "elixir-sdk|none|the endpoint SDK suites are not run here, including the mix format check that has broken CI repeatedly"
   "flutter-sdk|none|the endpoint SDK suites are not run here, including the dart analyze and dart format checks that need the Dart SDK"
   "react-native-sdk|none|the React Native SDK typecheck and JS bridge tests are not run here; unlike the other SDKs it has no mirror CI, so ci.yml is its only gate"
-  "gate|none|the aggregate that depends on the other 19; it exists only in CI and is the ONE required context on main"
+  "lowest-supported-bounds|none|the Python + Go lowest-supported-dependency-bounds run (go mod tidy -compat, uv lowest resolution) is not run here; it needs pinned Go 1.22 and Python 3.12 toolchains, and it is what INFRA-013 gates on"
+  "gate|none|the aggregate that depends on the other 21; it exists only in CI and is the ONE required context on main"
 )
 
 step() { printf '%-46s' "$1"; shift; if "$@" >"$LOG" 2>&1; then echo "OK"; else echo "FAIL"; fail=1; tail -6 "$LOG" | sed 's/^/    /'; fi; }
@@ -184,6 +186,11 @@ if cargo fuzz --version >/dev/null 2>&1; then
   step "fuzz smoke (outside workspace)" bash tools/fuzz-smoke.sh
 else
   skip "fuzz smoke" "cargo-fuzz not installed"
+fi
+if have cargo-deny; then
+  step "cargo deny check" cargo deny check
+else
+  skip "cargo deny check" "cargo-deny not installed; cargo install cargo-deny --locked --version 0.20.2"
 fi
 
 # --- guards --------------------------------------------------------------------------------------

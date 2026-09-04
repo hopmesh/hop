@@ -45,19 +45,49 @@ FORBIDDEN = {
     "WeakRef": "not dependable on Hermes",
 }
 
-# A bare `new X()` or `X.from(...)`/`X(...)` reference to a denied global. Deliberately textual: the
-# type system is exactly what failed to catch this, so this check does not consult it.
+# A bare `new X()`, `X.from(...)`/`X(...)`, explicit globalThis/global/window/self access,
+# destructuring, aliasing, or computed access to a denied global. Deliberately textual:
+# the type system is exactly what failed to catch this, so this check does not consult it.
+GLOBAL_OBJECTS = r"(?:globalThis|global|window|self|frames|top|parent)"
+
 def violations(text):
     found = []
-    for line_no, line in enumerate(text.splitlines(), start=1):
+    text_clean = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    for line_no, line in enumerate(text_clean.splitlines(), start=1):
         code = line.split("//", 1)[0]
         if not code.strip():
             continue
         for name, reason in FORBIDDEN.items():
-            # `new Name(`, `Name.method(`, or `Name(` as a call, but not `HopTextDecoder` or a
-            # property access like `foo.TextDecoder`.
-            if re.search(rf"(?<![\w.$])(new\s+)?{re.escape(name)}\s*[.(]", code):
+            # 1. Access on globalThis, global, window, self, frames, top, parent (property or optional chaining)
+            if re.search(r"\b" + GLOBAL_OBJECTS + r"\s*(?:\?\.|\.)\s*\b" + name + r"\b", code):
                 found.append((line_no, name, reason, line.strip()))
+                continue
+            # 2. Computed access on globalThis, global, window, self, frames, top, parent (quotes or backticks)
+            if re.search(r"\b" + GLOBAL_OBJECTS + r"\s*(?:\?\.)?\s*\[\s*[\x22\x27\`]" + name + r"[\x22\x27\`]\s*\]", code):
+                found.append((line_no, name, reason, line.strip()))
+                continue
+            # 3. Destructuring from globalThis, global, window, self, frames, top, parent
+            if re.search(r"\{[^}]*\b" + name + r"\b[^}]*\}\s*=\s*" + GLOBAL_OBJECTS + r"\b", code):
+                found.append((line_no, name, reason, line.strip()))
+                continue
+            # 4. Bare reference, call, instantiation, or aliasing
+            code_no_strings = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"|\x27[^\x27\\]*(?:\\.[^\x27\\]*)*\x27|`[^`\\]*(?:\\.[^`\\]*)*`', '""', code)
+            is_bare_violation = False
+            for m in re.finditer(r"(?<![\w.$])" + name + r"\b", code_no_strings):
+                start, end = m.start(), m.end()
+                after = code_no_strings[end:].lstrip()
+                if after.startswith(":") and not after.startswith("::"):
+                    continue
+                if after.startswith("?:"):
+                    continue
+                pre = code_no_strings[:start].rstrip()
+                if pre.endswith(":") or pre.endswith("type") or pre.endswith("interface") or pre.endswith("as"):
+                    continue
+                is_bare_violation = True
+                break
+            if is_bare_violation:
+                found.append((line_no, name, reason, line.strip()))
+                continue
     return found
 
 

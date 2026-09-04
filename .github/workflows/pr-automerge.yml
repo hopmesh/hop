@@ -1,6 +1,10 @@
 # Enable auto-merge on a maintainer's or Dependabot's non-draft PR as it opens (or leaves draft), so
 # those PRs merge themselves ONCE the required CI gate passes. Branch protection still gates
-# everything: a red or stale branch never merges. See the author gate on the job below for why this
+# everything: a red or stale branch never merges. With strict: true now enforced on main (INFRA-011),
+# auto-merge requires the PR branch to be fully updated with main before the CI gate passes and
+# auto-merge executes. In addition, step inspection of PR title and body blocks auto-merging PRs with
+# review-intent or hold markers (such as 'do not merge', 'dnm', 'wip', 'rfc', 'research', 'hold', 'review-only'),
+# preventing accidental publishing of unreviewed work (PROC-002). See the author gate on the job below for why this
 # is not armed for every PR. This replaces dependabot-automerge.yml, which was broken in two ways:
 #   1. It requested SQUASH auto-merge, but this repo forbids squash merges, so every enablement
 #      failed and Dependabot PRs piled up unmerged.
@@ -48,7 +52,18 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Inspect PR title and body for review-intent and hold markers (PROC-002)
+        id: review-intent
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/check-pr-automerge-safety.py
+
       - name: Enable merge-commit auto-merge
+        if: steps.review-intent.outputs.arm_automerge == 'true'
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

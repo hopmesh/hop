@@ -189,6 +189,9 @@ final class HopMesh: RCTEventEmitter {
   @objc(tick:nowMs:resolver:rejecter:)
   func tick(_ handle: Int, nowMs: Double, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard !nowMs.isNaN, !nowMs.isInfinite, nowMs >= 0, nowMs.rounded() == nowMs, nowMs <= 9007199254740991.0 else {
+      return reject("hop_error", "nowMs must be a safe non-negative integer", nil)
+    }
     node.tick(nowMs: UInt64(nowMs)); resolve(nil)
   }
 
@@ -196,6 +199,12 @@ final class HopMesh: RCTEventEmitter {
   func isPersistent(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.isPersistent)
+  }
+
+  @objc(isEncrypted:resolver:rejecter:)
+  func isEncrypted(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.isEncrypted)
   }
 
   @objc(rehydrateDropped:resolver:rejecter:)
@@ -259,8 +268,11 @@ final class HopMesh: RCTEventEmitter {
   func sendServiceResponse(_ handle: Int, to toB58: String, forRequestId reqB64: String, status: Int, body bodyB64: String,
                            resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard status >= 0 && status <= 65535 else {
+      return reject("hop_error", "status must be between 0 and 65535", nil)
+    }
     guard let dst = HopAddress.fromBase58(toB58) else { return resolve(false) }
-    let ok = node.sendServiceResponse(to: dst, forRequestId: data(reqB64), status: UInt16(truncatingIfNeeded: status), body: data(bodyB64))
+    let ok = node.sendServiceResponse(to: dst, forRequestId: data(reqB64), status: UInt16(status), body: data(bodyB64))
     resolve(ok)
   }
 
@@ -270,23 +282,44 @@ final class HopMesh: RCTEventEmitter {
     resolve(node.acceptServiceResponse(forRequestId: data(reqB64)))
   }
 
+  @objc(acceptServiceRequest:requestId:resolver:rejecter:)
+  func acceptServiceRequest(_ handle: Int, requestId reqB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.acceptServiceRequest(data(reqB64)))
+  }
+
+  @objc(rejectServiceRequest:requestId:resolver:rejecter:)
+  func rejectServiceRequest(_ handle: Int, requestId reqB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(node.rejectServiceRequest(data(reqB64)))
+  }
+
   // MARK: bearer seam
 
   @objc(linkUp:link:role:resolver:rejecter:)
   func linkUp(_ handle: Int, link: Double, role: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard !link.isNaN, !link.isInfinite, link >= 0, link.rounded() == link, link <= 9007199254740991.0 else {
+      return reject("hop_error", "link must be a safe non-negative integer", nil)
+    }
     node.linkUp(UInt64(link), role: role == "dialer" ? .dialer : .acceptor); resolve(nil)
   }
 
   @objc(linkDown:link:resolver:rejecter:)
   func linkDown(_ handle: Int, link: Double, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard !link.isNaN, !link.isInfinite, link >= 0, link.rounded() == link, link <= 9007199254740991.0 else {
+      return reject("hop_error", "link must be a safe non-negative integer", nil)
+    }
     node.linkDown(UInt64(link)); resolve(nil)
   }
 
   @objc(bytesReceived:link:bytes:resolver:rejecter:)
   func bytesReceived(_ handle: Int, link: Double, bytes bytesB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    guard !link.isNaN, !link.isInfinite, link >= 0, link.rounded() == link, link <= 9007199254740991.0 else {
+      return reject("hop_error", "link must be a safe non-negative integer", nil)
+    }
     node.bytesReceived(UInt64(link), data(bytesB64)); resolve(nil)
   }
 
@@ -421,7 +454,12 @@ final class HopMesh: RCTEventEmitter {
       }
       remove.append(addr)
     }
-    resolve(node.hpsRekey(path: path, newPath: newPath, remove: remove).map(b64))
+    do {
+      let ids = try node.hpsRekey(path: path, newPath: newPath, remove: remove)
+      resolve(ids.map(b64))
+    } catch {
+      reject("hop_error", error.localizedDescription, error)
+    }
   }
 
   @objc(hpsReach:path:resolver:rejecter:)
@@ -512,7 +550,7 @@ final class HopMesh: RCTEventEmitter {
         "createdAt": Double(m.createdAt),
       ])
     }
-    node.pollServiceRequests { r in
+    node.pollServiceRequestsAccepting { r in
       self.send("HopMesh:serviceRequest", [
         "node": handle,
         "from": HopAddress.base58(r.from),
@@ -521,6 +559,7 @@ final class HopMesh: RCTEventEmitter {
         "method": r.method,
         "args": self.b64(r.args),
       ])
+      return false
     }
     node.pollServiceResponses { r in
       self.send("HopMesh:serviceResponse", [

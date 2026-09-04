@@ -7,6 +7,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
@@ -30,6 +31,16 @@ class HopAppTest {
             app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_ALLOW_BACKUP != 0,
         )
     }
+    @Test fun applicationSetsFlagSecureOnCreatedActivities() {
+        val app = ApplicationProvider.getApplicationContext<HopApp>()
+        val activity = Robolectric.buildActivity(android.app.Activity::class.java).create().get()
+        val flags = activity.window.attributes.flags
+        assertTrue(
+            "FLAG_SECURE must be applied to all activities to protect recents and screen captures",
+            (flags and android.view.WindowManager.LayoutParams.FLAG_SECURE) != 0,
+        )
+    }
+
 
     /** Records the last exception it was handed instead of failing the test the way Robolectric's does. */
     private class Recorder : Thread.UncaughtExceptionHandler {

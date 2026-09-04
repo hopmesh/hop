@@ -67,11 +67,43 @@ class HopNodeIntegrationTest {
     fun openKeyedYieldsAPersistentNode() {
         assumeLibhop()
         val dir = Files.createTempDirectory("hop-kt-keyed").toFile()
+        val dbFile = File(dir, "node.db")
         try {
             val key = ByteArray(32) { (it * 7).toByte() }
-            val node = HopNode.openKeyed(File(dir, "node.db").absolutePath, key)
-            assertNotNull(node)
-            node!!.use { assertTrue(it.isPersistent()) }
+            val node = HopNode.openKeyed(dbFile.absolutePath, key)
+            if (node == null) {
+                // In a plain build without sqlcipher feature: openKeyed fails closed (returns null)
+                assertFalse(
+                    dbFile.exists(),
+                    "plain build must not create a plaintext database when keyed open was requested",
+                )
+                return
+            }
+            node.use {
+                assertTrue(it.isPersistent(), "keyed node must be persistent")
+                assertTrue(it.isEncrypted(), "sqlcipher keyed node must report isEncrypted == true")
+            }
+
+            // Reopening with wrong key fails to decrypt while the database file stays intact
+            val wrongKey = ByteArray(32) { (it * 13 + 1).toByte() }
+            val badNode = HopNode.openKeyed(dbFile.absolutePath, wrongKey)
+            val failedToDecrypt = badNode == null || !badNode.isPersistent() || !badNode.isEncrypted()
+            assertTrue(failedToDecrypt, "reopening with wrong key must fail (null or non-persistent/unencrypted fallback)")
+            badNode?.let {
+                assertFalse(it.isPersistent(), "wrong key must not yield a persistent store")
+                assertFalse(it.isEncrypted(), "wrong key must not yield an encrypted store")
+                it.close()
+            }
+            assertTrue(dbFile.exists(), "database file must remain on disk after wrong-key open")
+            assertTrue(dbFile.length() > 0, "database file must stay intact and non-empty")
+
+            // Reopening with original key succeeds
+            val reopened = HopNode.openKeyed(dbFile.absolutePath, key)
+            assertNotNull(reopened, "reopening with original key must succeed")
+            reopened!!.use {
+                assertTrue(it.isPersistent(), "reopened node must be persistent")
+                assertTrue(it.isEncrypted(), "reopened node must report isEncrypted == true")
+            }
         } finally {
             dir.deleteRecursively()
         }
@@ -250,7 +282,7 @@ class HopNodeIntegrationTest {
 
     /**
      * sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and the wrapper that
-     * now pins ABI 6 asserted its level at load while binding none of them, so a host built on the
+     * now pins ABI 7 asserted its level at load while binding none of them, so a host built on the
      * published SDK could not fail over: the only reachable behavior was retrying one configured URL
      * forever. Drives the failover the header describes on ONE node that is never recreated.
      */
@@ -710,5 +742,65 @@ class HopNodeIntegrationTest {
         assertEquals(2, HpsAccess.INVITE.c)
         assertEquals(0, HpsVisibility.PRIVATE.c)
         assertEquals(1, HpsVisibility.DISCOVERABLE.c)
+    }
+
+    @Test
+    fun hpsRekeyFailureThrowsRatherThanEmptyList() {
+        assumeLibhop()
+        HopNode.ephemeral().use { n ->
+            assertFailsWith<IllegalStateException> {
+                n.hpsRekey("unknown_topic")
+            }
+        }
+    }
+
+    @Test
+    fun serviceRequestThrowingHandlerLeavesRequestQueued() {
+        assumeLibhop()
+        val appSecret = ByteArray(32) { 9 }
+        HopNode.open(":memory:", appSecret = appSecret)!!.use { host ->
+            HopNode.open(":memory:", appSecret = appSecret)!!.use { member ->
+                val hostLink = 11L
+                val memberLink = 22L
+                host.tick(1_700_000_000_000L)
+                member.tick(1_700_000_000_000L)
+                host.linkUp(hostLink, HopRole.DIALER)
+                member.linkUp(memberLink, HopRole.ACCEPTOR)
+                val pump = {
+                    for (i in 0 until 50) {
+                        var moved = false
+                        host.drainOutgoing { _, b -> moved = true; member.bytesReceived(memberLink, b) }
+                        member.drainOutgoing { _, b -> moved = true; host.bytesReceived(hostLink, b) }
+                        if (!moved) break
+                    }
+                }
+                pump()
+                val reqId = host.sendServiceRequest(member.address(), "svc", "m", byteArrayOf(1, 2))
+                assertNotNull(reqId)
+                pump()
+
+                var attempts = 0
+                assertFailsWith<IllegalStateException> {
+                    member.pollServiceRequests {
+                        attempts++
+                        error("handler failed")
+                    }
+                }
+                assertEquals(1, attempts)
+
+                var redelivered: HopServiceRequest? = null
+                member.pollServiceRequests { req ->
+                    redelivered = req
+                }
+                assertNotNull(redelivered, "request must be redelivered after throwing handler")
+                assertTrue(redelivered!!.requestId.contentEquals(reqId))
+
+                var afterAccept: HopServiceRequest? = null
+                member.pollServiceRequests { req ->
+                    afterAccept = req
+                }
+                assertNull(afterAccept, "request must be cleared after successful handler")
+            }
+        }
     }
 }

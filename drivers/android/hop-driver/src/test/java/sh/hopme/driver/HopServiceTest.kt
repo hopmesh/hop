@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -45,5 +46,40 @@ class HopServiceTest : DriverTestBase() {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val started = shadowOf(app).nextStartedService
         assertTrue("HopService was started", started.component?.className?.contains("HopService") == true)
+    }
+
+    @Test fun serviceDestroyInvokesTeardownAndQuiescesDriver() {
+        val seeded = newBearer(FakeHopNode())
+        seedSingleton(seeded)
+
+        val controller = Robolectric.buildService(HopService::class.java).create().startCommand(0, 1)
+        settleOn(seeded)
+        assertFalse("driver is not torn down initially", seeded.isTorndown)
+
+        controller.destroy()
+        assertTrue("driver was torn down on service destroy", seeded.isTorndown)
+        assertNull("singleton instance was cleared on teardown", HopBearer.peek())
+    }
+
+    @Test fun serviceRestartAfterDestroyYieldsFreshGeneration() {
+        val firstBearer = newBearer(FakeHopNode())
+        seedSingleton(firstBearer)
+
+        val controller = Robolectric.buildService(HopService::class.java).create().startCommand(0, 1)
+        settleOn(firstBearer)
+        controller.destroy()
+        assertTrue("first driver was torn down", firstBearer.isTorndown)
+        assertNull("singleton cleared", HopBearer.peek())
+
+        val secondBearer = newBearer(FakeHopNode())
+        seedSingleton(secondBearer)
+        val restartController = Robolectric.buildService(HopService::class.java).create().startCommand(0, 2)
+        settleOn(secondBearer)
+        assertFalse("new driver is active", secondBearer.isTorndown)
+        assertEquals("active singleton is second generation", secondBearer, HopBearer.peek())
+
+        restartController.destroy()
+        assertTrue("second driver torn down", secondBearer.isTorndown)
+        assertNull("singleton cleared", HopBearer.peek())
     }
 }

@@ -355,11 +355,27 @@ struct MeshFragHeader: Equatable {
         let idx = Int(frag[2])
         let cnt = Int(frag[3])
         guard cnt >= 1, cnt <= MESH_MAX_FRAGS, idx < cnt else { return nil }
+        let chunkData = Array(frag[MESH_FRAG_HEADER...])
+        guard chunkData.count <= MESH_MAX_CHUNK else { return nil }
         self.msgId = id
         self.index = idx
         self.count = cnt
-        self.chunk = Array(frag[MESH_FRAG_HEADER...])
+        self.chunk = chunkData
     }
+}
+
+public let MESH_MAX_LINKS = 32
+public let MESH_MAX_GLOBAL_PARTIALS = 64
+public let MESH_MAX_GLOBAL_PARTIAL_BYTES = 64 * 1024
+
+/// Pure accessory authorization gate (PLAT-006): require an explicitly configured trusted peripheral
+/// identifier. Returns false when no accessory is configured (default: nil) or when an untrusted peripheral is discovered.
+public func meshShouldConnectAccessory(
+    discoveredIdentifier: UUID,
+    trustedIdentifier: UUID?
+) -> Bool {
+    guard let trusted = trustedIdentifier else { return false }
+    return discoveredIdentifier == trusted
 }
 
 /// Per-peer reassembly of fragmented Hop frames. Keyed by (peer node num, msgId). A message completes when
@@ -371,10 +387,13 @@ final class MeshReassembler {
         var count: Int
         var chunks: [Int: [UInt8]]
         var firstSeenS: Double
+        var byteCount: Int { chunks.values.reduce(0) { $0 + $1.count } }
     }
 
     // node num -> msgId -> Partial
     private var partials = [UInt32: [UInt16: Partial]]()
+    private(set) var totalPartials = 0
+    private(set) var totalBytes = 0
 
     /// Feed one inbound fragment from `peer`. Returns the fully reassembled frame body when this fragment
     /// completes a message, else nil. `nowS` is the caller's clock (seconds).
@@ -390,15 +409,31 @@ final class MeshReassembler {
         }
 
         var p = byId[h.msgId] ?? Partial(count: h.count, chunks: [:], firstSeenS: nowS)
+        let oldBytes = p.byteCount
+        let isNew = (byId[h.msgId] == nil)
         // A count mismatch across fragments of one id means corruption; restart this id from scratch.
         if p.count != h.count { p = Partial(count: h.count, chunks: [:], firstSeenS: nowS) }
         p.chunks[h.index] = h.chunk
+        let newBytes = p.byteCount
+
+        // Enforce global bounds: drop oldest partial across all peers if needed.
+        while (totalPartials + (isNew ? 1 : 0) > MESH_MAX_GLOBAL_PARTIALS ||
+               totalBytes - oldBytes + newBytes > MESH_MAX_GLOBAL_PARTIAL_BYTES) && totalPartials > 0 {
+            evictOldestGlobal()
+            byId = partials[peer] ?? [:]
+        }
+
         byId[h.msgId] = p
+        if isNew { totalPartials += 1 }
+        totalBytes += (newBytes - oldBytes)
 
         // Bound concurrent partials per peer: drop the oldest if over budget.
         if byId.count > MESH_MAX_PARTIAL_PER_PEER {
             if let oldest = byId.min(by: { $0.value.firstSeenS < $1.value.firstSeenS })?.key {
-                byId.removeValue(forKey: oldest)
+                if let dropped = byId.removeValue(forKey: oldest) {
+                    totalPartials = max(0, totalPartials - 1)
+                    totalBytes = max(0, totalBytes - dropped.byteCount)
+                }
             }
         }
 
@@ -407,9 +442,31 @@ final class MeshReassembler {
         // Complete: concatenate in index order and drop the partial.
         var body = [UInt8]()
         for idx in 0..<p.count { body.append(contentsOf: p.chunks[idx] ?? []) }
-        byId.removeValue(forKey: h.msgId)
+        if let completed = byId.removeValue(forKey: h.msgId) {
+            totalPartials = max(0, totalPartials - 1)
+            totalBytes = max(0, totalBytes - completed.byteCount)
+        }
         if byId.isEmpty { partials.removeValue(forKey: peer) } else { partials[peer] = byId }
         return body
+    }
+
+    private func evictOldestGlobal() {
+        var oldestPeer: UInt32?
+        var oldestMsgId: UInt16?
+        var oldestTime = Double.greatestFiniteMagnitude
+        for (peer, byId) in partials {
+            for (id, p) in byId where p.firstSeenS < oldestTime {
+                oldestTime = p.firstSeenS
+                oldestPeer = peer
+                oldestMsgId = id
+            }
+        }
+        guard let p = oldestPeer, let m = oldestMsgId else { return }
+        if let dropped = partials[p]?.removeValue(forKey: m) {
+            totalPartials = max(0, totalPartials - 1)
+            totalBytes = max(0, totalBytes - dropped.byteCount)
+            if partials[p]?.isEmpty == true { partials.removeValue(forKey: p) }
+        }
     }
 
     /// Drop every peer's partials whose first fragment is older than the TTL.
@@ -417,14 +474,31 @@ final class MeshReassembler {
         for (peer, byId) in partials {
             var kept = byId
             for (id, p) in byId where nowS - p.firstSeenS > MESH_REASSEMBLY_TTL_S {
-                kept.removeValue(forKey: id)
+                if let dropped = kept.removeValue(forKey: id) {
+                    totalPartials = max(0, totalPartials - 1)
+                    totalBytes = max(0, totalBytes - dropped.byteCount)
+                }
             }
             if kept.isEmpty { partials.removeValue(forKey: peer) } else { partials[peer] = kept }
         }
     }
 
     /// Forget everything buffered for a peer (called when its link goes down).
-    func forget(peer: UInt32) { partials.removeValue(forKey: peer) }
+    func forget(peer: UInt32) {
+        if let byId = partials.removeValue(forKey: peer) {
+            for (_, p) in byId {
+                totalPartials = max(0, totalPartials - 1)
+                totalBytes = max(0, totalBytes - p.byteCount)
+            }
+        }
+    }
+
+    /// Clear all partials (stop / disconnect / adapter bounce).
+    func clear() {
+        partials.removeAll()
+        totalPartials = 0
+        totalBytes = 0
+    }
 
     var partialPeerCount: Int { partials.count }
 }

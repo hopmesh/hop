@@ -99,12 +99,17 @@ public final class HopBearer: NSObject, ObservableObject {
         /// that does not parse makes the relay bearer refuse to dial rather than fall back to the
         /// clearnet. See `docs/tor.md`.
         public var socksProxy: String?
+        /// Explicitly configured trusted Meshtastic/LoRa accessory peripheral identifier (UUID).
+        /// Default is nil ("no accessory"), denying auto-connect to arbitrary advertising devices (PLAT-006).
+        public var meshtasticPeripheralId: UUID?
         public init(dbPath: String, deviceSeed: Data, appSecret: Data,
                     displayName: String, defaultRelay: String?, role: Role = .full,
-                    dbKey: Data = Data(), socksProxy: String? = nil) {
+                    dbKey: Data = Data(), socksProxy: String? = nil,
+                    meshtasticPeripheralId: UUID? = nil) {
             self.dbPath = dbPath; self.deviceSeed = deviceSeed; self.appSecret = appSecret
             self.displayName = displayName; self.defaultRelay = defaultRelay; self.role = role
             self.dbKey = dbKey; self.socksProxy = socksProxy
+            self.meshtasticPeripheralId = meshtasticPeripheralId
         }
     }
 
@@ -571,6 +576,13 @@ public final class HopBearer: NSObject, ObservableObject {
         core.async { [weak self] in
             guard let self else { return }
             self.node.tick(nowMs: now)
+            let peerLinks = self.node.peerLinks()
+            for pl in peerLinks {
+                if self.node.isSecured(address: pl.address) {
+                    self.bearerMgr.markSecured(pl.link)
+                }
+            }
+            self.bearerMgr.checkPreauthDeadlines(now)
             // Re-publish our prekey periodically so a neighbour whose cached copy lapsed (or who
             // arrived after ours did) can always open a forward-secret session to us (§25).
             if doPrekey { _ = try? self.node.publishPrekey() }
@@ -661,7 +673,7 @@ public final class HopBearer: NSObject, ObservableObject {
             // Meshtastic/LoRa: relay Hop traffic through a connected Meshtastic radio's mesh, reaching
             // peers far past BLE/Wi-Fi range. Surfaces as "LoRa"; with no radio paired it simply scans
             // and forms no links. Full host only (needs the app's Bluetooth role, not the headless nodes).
-            bearerMgr.register(MeshtasticBearer(myId: bearerId))
+            bearerMgr.register(MeshtasticBearer(myId: bearerId, trustedPeripheralIdentifier: config.meshtasticPeripheralId))
         }
         // Cloud relay (WebSocket) as a shared bearer - ONE outbound link to the backbone, on any host that
         // wants a relay (full app, or the relay-only test client) with a relay configured.
@@ -1061,6 +1073,12 @@ public final class HopBearer: NSObject, ObservableObject {
             let browse = self.node.browse(service: HopBearer.presenceService, tag: "")
                 .filter { $0.publisher != mine }
             let peerLinks = self.node.peerLinks()
+            for pl in peerLinks {
+                if self.node.isSecured(address: pl.address) {
+                    self.bearerMgr.markSecured(pl.link)
+                }
+            }
+            self.bearerMgr.checkPreauthDeadlines(HopBearer.nowMs())
             let secured = Set(contactKeys.filter { self.node.isSecured(address: $0) })
             let routed = Set(contactKeys.filter { self.node.knowsRoute(address: $0) })
             let queue = self.node.queue()

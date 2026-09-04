@@ -55,6 +55,8 @@ internal interface MeshtasticRadio {
     fun stop()
     fun sendToRadio(bytes: ByteArray)
 }
+internal const val MESH_MAX_LINKS = 32
+
 
 /** One logical link to a remote Meshtastic node (at most one per node num). */
 internal class MeshLink(
@@ -78,8 +80,26 @@ class MeshtasticBearer internal constructor(
     private val myId: ByteArray,
     private val radio: MeshtasticRadio,
 ) : Bearer {
-    /** Production constructor: talk to a real Meshtastic radio over BLE. */
-    constructor(context: Context, myId: ByteArray) : this(myId, AndroidMeshtasticRadio(context))
+    /**
+     * Production constructor: talk to a real Meshtastic radio over BLE.
+     *
+     * PLAT-006 accessory authorization: `trustedAddress` pins the one radio this bearer may attach
+     * to; `requireBonded` (default true) refuses any peripheral the platform has not bonded. With
+     * neither criterion the radio layer does not scan at all, so a rogue peripheral advertising the
+     * Meshtastic service UUID can never become a link by default.
+     */
+    constructor(
+        context: Context,
+        myId: ByteArray,
+        trustedAddress: String? = null,
+        requireBonded: Boolean = true,
+    ) : this(
+        myId,
+        AndroidMeshtasticRadio(context).also {
+            it.trustedAddress = trustedAddress
+            it.requireBonded = requireBonded
+        },
+    )
 
     override var sink: LinkSink? = null
     /// Short transport tag for the consumer's UI (Bearer contract). Meshtastic/LoRa links surface as "LoRa".
@@ -188,6 +208,10 @@ class MeshtasticBearer internal constructor(
     private fun onHello(node: Long, peerId: ByteArray) {
         if (peerId.contentEquals(myId)) return   // our own HELLO reflected by the mesh
         linksByNode[node]?.let { it.peerId = peerId; it.lastRxMs = System.currentTimeMillis(); return }
+        if (linksByNode.size >= MESH_MAX_LINKS) {
+            Log.w(TAG, "mesh link cap $MESH_MAX_LINKS reached; dropping node $node")
+            return
+        }
         val isGreater = meshKeepGreaterLeg(nodeIdGreater(myId, peerId))
         val link = MeshLink(mint(), node, peerId, isGreater, System.currentTimeMillis())
         link.up = true
@@ -291,11 +315,20 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
     private var gatt: BluetoothGatt? = null
     private var toRadio: BluetoothGattCharacteristic? = null
     private var fromRadio: BluetoothGattCharacteristic? = null
+    var trustedAddress: String? = null
+    var requireBonded: Boolean = true
+    private var consecutiveReads = 0
+    private val maxConsecutiveFromRadioReads = 64
+
     private var running = false
 
     @SuppressLint("MissingPermission")
     override fun start() {
         running = true
+        if (trustedAddress == null && !requireBonded) {
+            // PLAT-006: Documented default / explicit "no accessory": do not scan
+            return
+        }
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
         adapter = mgr.adapter
         val scanner = adapter?.bluetoothLeScanner ?: return
@@ -321,9 +354,11 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
     }
 
     private val scanCallback = object : ScanCallback() {
-        @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (gatt != null) return
+            val addr = result.device.address
+            val bonded = adapter?.bondedDevices?.map { it.address }?.toSet()
+            if (!shouldConnectAccessory(addr, trustedAddress, requireBonded, bonded)) return
             adapter?.bluetoothLeScanner?.stopScan(this)
             gatt = result.device.connectGatt(context, false, gattCallback)
         }
@@ -362,12 +397,19 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
         }
 
         // Each FromRadio read yields one protobuf frame; an empty value means the radio's queue is drained.
-        @SuppressLint("MissingPermission")
         private fun onFromRadioValue(g: BluetoothGatt, uuid: UUID, value: ByteArray?) {
             if (uuid != fromRadioUuid) return
             if (value != null && value.isNotEmpty()) {
+                if (++consecutiveReads > maxConsecutiveFromRadioReads) {
+                    Log.w(TAG, "mesh abusive fromRadio stream; disconnecting")
+                    stop()
+                    onDisconnect?.invoke()
+                    return
+                }
                 onFromRadio?.invoke(value)
                 fromRadio?.let { g.readCharacteristic(it) }   // keep reading until an empty value drains it
+            } else {
+                consecutiveReads = 0
             }
         }
 

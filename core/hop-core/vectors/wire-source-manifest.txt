@@ -28,15 +28,23 @@
 # storage change a FALSE wire bump, which is exactly the failure the header above warns about, and it
 # fired the moment the dead Store::split_copies/set_copies methods were deleted. Same precedent as the
 # node.rs and access.rs retirements: the byte-deciding code moved to a hashed file, the rest stayed.)
+# retired: core/hop-core/src/reach.rs -> core/hop-core/src/wire_reach.rs (ReachClaim and
+# ReachRecord layout moved: their postcard field order, the REACH_CONTEXT domain separator,
+# signing_bytes, and ReachRecord::sign/to_bytes, which are the only producers of reach bytes.
+# What remains in reach.rs decides whether to ACCEPT a record, never how one is shaped: verify(),
+# the MAX_REACH_RECORD_BYTES pre-decode input ceiling, and the MAX_REACH_ENDPOINT_BYTES endpoint
+# length bound. Rejecting an oversized or malformed record is an acceptance policy check, not a
+# format change, so it cannot move a wire byte; the same precedent the access.rs and node.rs
+# retirements set, where acceptance ceilings and replay bounds stayed out of the manifest)
 
 core/hop-core/src/bundle.rs
 core/hop-core/src/crypto.rs
 core/hop-core/src/discover.rs
 core/hop-core/src/hps.rs
 core/hop-core/src/link.rs
-core/hop-core/src/reach.rs
 core/hop-core/src/session.rs
 core/hop-core/src/wire_emit.rs
 core/hop-core/src/wire_have.rs
+core/hop-core/src/wire_reach.rs
 core/hop-core/src/wire_stamp.rs
 core/hop-core/src/wire_vectors.rs

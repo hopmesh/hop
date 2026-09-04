@@ -44,6 +44,9 @@ use hop_gateway::resolve_relay;
 use hop_store_firestore::FirestoreStore;
 use hop_store_sqlite::SqliteStore;
 use tungstenite::Message;
+#[cfg(any(feature = "live", test))]
+#[allow(dead_code)]
+const _OTLP_RESP_MAX: usize = otlp::MAX_OTLP_RESPONSE_BYTES;
 
 static NEXT_LINK: AtomicU64 = AtomicU64::new(1);
 
@@ -131,6 +134,13 @@ fn well_known_body() -> &'static Mutex<Vec<u8>> {
 fn ingest_ready() -> &'static std::sync::atomic::AtomicBool {
     static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     &READY
+}
+
+/// Whether durable store writes are succeeding. Degraded store sets this to false so /healthz
+/// reflects store write failures and Cloud Run can alert (STORE-005 / CAND-NET-01).
+fn store_healthy() -> &'static std::sync::atomic::AtomicBool {
+    static HEALTHY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    &HEALTHY
 }
 
 /// Sign this collector's reach record for `public_url` and render the `/.well-known/hop` JSON body.
@@ -304,17 +314,36 @@ impl TelemetryMeter {
             return;
         }
         let hour = now_ms / 3_600_000;
-        for (tenant, counts) in self.counts.drain() {
-            if counts == TelemetryCounts::default() {
+        let mut committed = Vec::new();
+        let mut failed = false;
+        for (tenant, counts) in &self.counts {
+            if *counts == TelemetryCounts::default() {
+                committed.push(*tenant);
                 continue;
             }
-            let key = key_for(hour, &tenant);
+            let key = key_for(hour, tenant);
             let mut total = store
                 .get_kv(&key)
                 .map(|b| decode_counts(&b))
                 .unwrap_or_default();
-            total.add(&counts);
-            store.put_kv(&key, encode_counts(&total));
+            total.add(counts);
+            match store.put_kv_critical(&key, encode_counts(&total)) {
+                Ok(()) => {
+                    committed.push(*tenant);
+                }
+                Err(e) => {
+                    failed = true;
+                    eprintln!("hop-telemetryd: telemetry_usage write failed for {key}: {e}");
+                }
+            }
+        }
+        for tenant in committed {
+            self.counts.remove(&tenant);
+        }
+        if failed {
+            store_healthy().store(false, Ordering::SeqCst);
+        } else {
+            store_healthy().store(true, Ordering::SeqCst);
         }
     }
 
@@ -773,7 +802,7 @@ fn setup_otlp(
     file: Option<String>,
     firestore: Option<&str>,
 ) -> Option<std::sync::mpsc::SyncSender<OtlpItem>> {
-    // Start from the static file (if any); an absent file is an empty map the registry may still fill.
+    #[cfg_attr(not(feature = "firestore"), allow(unused_mut))]
     let mut map = file
         .and_then(|p| std::fs::read_to_string(p).ok())
         .or_else(|| {
@@ -954,7 +983,9 @@ fn run<S: Store>(
         // Merge per-tenant billable counts into the durable telemetry_usage ledger (§37 reconciler
         // reads it). Attribution is aggregate-only in the log (services-03: no per-tenant line).
         if last_flush.elapsed() >= TELEMETRY_FLUSH {
-            meter.flush_to_store(&mut node.store, now_ms());
+            let now = now_ms();
+            meter.flush_to_store(&mut node.store, now);
+            sweep_expired_telemetry_markers(&mut node.store, now);
             let unattributed = meter.take_unattributed();
             if unattributed > 0 {
                 eprintln!(
@@ -979,6 +1010,47 @@ fn run<S: Store>(
             }
         }
     }
+}
+
+/// Bounded sweep to prune telemetry dedup markers older than MAX_ATTRIBUTION_AGE_EPOCHS + 1 hours
+/// via list_kv_page, bounding the marker set to the 24 h attribution window (SVC-006).
+pub fn sweep_expired_telemetry_markers<S: Store>(store: &mut S, now_ms: u64) -> usize {
+    let now_epoch_hour = now_ms / 3_600_000;
+    let cutoff_epoch_hour =
+        now_epoch_hour.saturating_sub(hop_core::access::MAX_ATTRIBUTION_AGE_EPOCHS + 1);
+    let mut deleted = 0;
+    let mut cursor: Option<String> = None;
+    const SWEEP_PAGE_LIMIT: usize = 100;
+    const MAX_SWEEP_PAGES: usize = 50;
+    let mut pages = 0;
+
+    while pages < MAX_SWEEP_PAGES {
+        pages += 1;
+        let page = store.list_kv_page("telemetry_seen/", cursor.as_deref(), SWEEP_PAGE_LIMIT);
+        if page.is_empty() {
+            break;
+        }
+        let has_more = page.len() == SWEEP_PAGE_LIMIT;
+        let last_key = page.last().map(|(k, _)| k.clone());
+        for (key, _) in page {
+            let mut parts = key.split('/');
+            let prefix = parts.next();
+            let epoch_str = parts.next();
+            if prefix == Some("telemetry_seen") {
+                if let Some(epoch) = epoch_str.and_then(|s| s.parse::<u64>().ok()) {
+                    if epoch < cutoff_epoch_hour {
+                        let _ = store.remove_kv_critical(&key);
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+        if !has_more {
+            break;
+        }
+        cursor = last_key;
+    }
+    deleted
 }
 
 /// Hand each received batch to the sink (throughput), the meter (per-tenant billing), and, for
@@ -1186,43 +1258,50 @@ fn serve_http_min(mut stream: TcpStream) {
     let target = parts.next().unwrap_or("");
     let path = target.split(['?', '#']).next().unwrap_or("");
 
-    let (code, ctype, body): (&str, &str, Vec<u8>) =
-        if method.eq_ignore_ascii_case("GET") && path == "/healthz" {
-            // A collector that cannot attribute anything is refusing every batch, so it is NOT
-            // healthy even though the process is up. Report that, or the misconfiguration hides
-            // behind a green probe until someone notices the telemetry never arrived.
-            if ingest_ready().load(Ordering::SeqCst) {
-                ("200 OK", "text/plain", b"ok".to_vec())
-            } else {
-                (
-                    "503 Service Unavailable",
-                    "text/plain",
-                    b"hop-telemetryd: no tenant key server; every batch is refused (fail closed). \
+    let (code, ctype, body): (&str, &str, Vec<u8>) = if method.eq_ignore_ascii_case("GET")
+        && path == "/healthz"
+    {
+        // A collector that cannot attribute anything is refusing every batch, so it is NOT
+        // healthy even though the process is up. Report that, or the misconfiguration hides
+        // behind a green probe until someone notices the telemetry never arrived.
+        if !ingest_ready().load(Ordering::SeqCst) {
+            (
+                "503 Service Unavailable",
+                "text/plain",
+                b"hop-telemetryd: no tenant key server; every batch is refused (fail closed). \
                       Configure --key-server, or pass --allow-unattributed for local/dev."
-                        .to_vec(),
-                )
-            }
-        } else if method.eq_ignore_ascii_case("GET") && path == "/.well-known/hop" {
-            let record = well_known_body()
-                .lock()
-                .map(|b| b.clone())
-                .unwrap_or_default();
-            if record.is_empty() {
-                (
-                    "404 Not Found",
-                    "text/plain",
-                    b"hop-telemetryd: reach record not ready".to_vec(),
-                )
-            } else {
-                ("200 OK", "application/json", record)
-            }
+                    .to_vec(),
+            )
+        } else if !store_healthy().load(Ordering::SeqCst) {
+            (
+                "503 Service Unavailable",
+                "text/plain",
+                b"hop-telemetryd: degraded store; durable telemetry_usage write failed\n".to_vec(),
+            )
         } else {
+            ("200 OK", "text/plain", b"ok\n".to_vec())
+        }
+    } else if method.eq_ignore_ascii_case("GET") && path == "/.well-known/hop" {
+        let record = well_known_body()
+            .lock()
+            .map(|b| b.clone())
+            .unwrap_or_default();
+        if record.is_empty() {
             (
                 "404 Not Found",
                 "text/plain",
-                b"hop-telemetryd: not found".to_vec(),
+                b"hop-telemetryd: reach record not ready".to_vec(),
             )
-        };
+        } else {
+            ("200 OK", "application/json", record)
+        }
+    } else {
+        (
+            "404 Not Found",
+            "text/plain",
+            b"hop-telemetryd: not found".to_vec(),
+        )
+    };
 
     let header = format!(
         "HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1998,6 +2077,7 @@ mod tests {
         }
 
         // Misconfigured: no key server and no explicit opt-in, so every batch is refused.
+        store_healthy().store(true, Ordering::SeqCst);
         ingest_ready().store(false, Ordering::SeqCst);
         let refused = probe();
         assert!(
@@ -2015,6 +2095,642 @@ mod tests {
         assert!(
             ok.starts_with("HTTP/1.1 200"),
             "a working collector must pass its probe, got: {ok}"
+        );
+    }
+
+    // --- STORE-005 hostile regression tests --------------------------------------------------
+
+    #[test]
+    fn store_005_hostile_telemetry_flush_failure_discards_drained_meter_counts_and_hides_from_healthz(
+    ) {
+        use hop_core::store::{KvMutation, Store};
+
+        struct FailingStore(hop_core::store::MemoryStore);
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                _mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                Err("disk full / firestore unavailable".into())
+            }
+        }
+
+        let mut meter = TelemetryMeter::default();
+        let tenant: TenantId = [42u8; 16];
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 100,
+                payload_bytes: 4096,
+            },
+        );
+
+        assert_eq!(meter.counts.len(), 1);
+
+        let mut store = FailingStore(hop_core::store::MemoryStore::new());
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        // On the unfixed tree:
+        // 1. meter.counts was drained unconditionally by self.counts.drain(), so meter.counts is EMPTY!
+        // 2. store_healthy() was not tracked or /healthz was not set to unhealthy!
+        assert!(
+            !meter.counts.is_empty(),
+            "STORE-005 failure: drained meter counts were lost after store write failure"
+        );
+        assert_eq!(
+            meter.counts.get(&tenant).copied(),
+            Some(TelemetryCounts {
+                events: 100,
+                payload_bytes: 4096,
+            }),
+            "unwritten tenant counts must be retained in retry buffer"
+        );
+        assert!(!store_healthy().load(Ordering::SeqCst));
+        store_healthy().store(true, Ordering::SeqCst);
+    }
+
+    // --- SVC-006 regression tests -----------------------------------------------------------
+
+    #[derive(Clone, Default)]
+    struct SharedMirrorState {
+        kv: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+    }
+
+    struct SimulatedPartitionStore {
+        inner: hop_core::store::MemoryStore,
+        remote: SharedMirrorState,
+        _eager_cap: usize,
+    }
+
+    impl Store for SimulatedPartitionStore {
+        fn put(&mut self, b: Bundle, now: u64) -> bool {
+            self.inner.put(b, now)
+        }
+        fn get(&self, id: &BundleId) -> Option<Bundle> {
+            self.inner.get(id)
+        }
+        fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+            self.inner.remove(id)
+        }
+        fn seen(&self, id: &BundleId) -> bool {
+            self.inner.seen(id)
+        }
+        fn contains(&self, id: &BundleId) -> bool {
+            self.inner.contains(id)
+        }
+        fn have(&self) -> hop_core::store::HaveSet {
+            self.inner.have()
+        }
+        fn prune(&mut self, now: u64) {
+            self.inner.prune(now);
+        }
+        fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+            self.remote
+                .kv
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.clone());
+            self.inner.put_kv(key, value);
+        }
+        fn apply_kv_batch(
+            &mut self,
+            mutations: &[hop_core::store::KvMutation],
+        ) -> std::result::Result<(), String> {
+            for m in mutations {
+                if let hop_core::store::KvMutation::Put { key, value } = m {
+                    self.remote
+                        .kv
+                        .lock()
+                        .unwrap()
+                        .insert(key.clone(), value.clone());
+                } else if let hop_core::store::KvMutation::Remove { key } = m {
+                    self.remote.kv.lock().unwrap().remove(key);
+                }
+            }
+            self.inner.apply_kv_batch(mutations)
+        }
+        fn put_kv_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<(), String> {
+            self.remote
+                .kv
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.clone());
+            self.inner.put_kv_critical(key, value)
+        }
+        fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+            if let Some(val) = self.inner.get_kv(key) {
+                return Some(val);
+            }
+            // Remote read-through for exempt/lazy prefixes like telemetry_seen/
+            if key.starts_with("telemetry_seen/") {
+                return self.remote.kv.lock().unwrap().get(key).cloned();
+            }
+            None
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            if self.inner.get_kv(key).is_some() {
+                return Ok(false);
+            }
+            let mut remote = self.remote.kv.lock().unwrap();
+            if let Some(existing) = remote.get(key) {
+                self.inner.put_kv(key, existing.clone());
+                return Ok(false);
+            }
+            remote.insert(key.to_string(), value.clone());
+            self.inner.put_kv(key, value);
+            Ok(true)
+        }
+        fn list_kv_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> Vec<(String, Vec<u8>)> {
+            let remote = self.remote.kv.lock().unwrap();
+            remote
+                .iter()
+                .filter(|(k, _)| k.starts_with(prefix) && after.is_none_or(|cur| k.as_str() > cur))
+                .take(limit)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        }
+        fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
+            self.remote.kv.lock().unwrap().remove(key);
+            self.inner.remove_kv_critical(key)
+        }
+    }
+
+    impl SimulatedPartitionStore {
+        fn open(remote: SharedMirrorState, eager_cap: usize) -> Self {
+            let mut inner = hop_core::store::MemoryStore::new();
+            let remote_guard = remote.kv.lock().unwrap();
+            let mut loaded = 0;
+            for (k, v) in remote_guard.iter() {
+                // telemetry_seen keys are exempt from eager KV admission
+                if k.starts_with("telemetry_seen/") {
+                    continue;
+                }
+                if loaded < eager_cap {
+                    inner.put_kv(k, v.clone());
+                    loaded += 1;
+                }
+            }
+            drop(remote_guard);
+            Self {
+                inner,
+                remote,
+                _eager_cap: eager_cap,
+            }
+        }
+    }
+
+    #[test]
+    fn svc_006_two_instances_over_shared_mirror_does_not_double_meter() {
+        let collector_id = Identity::generate();
+        let collector_seed = collector_id.to_secret_bytes();
+        let shared_remote = SharedMirrorState::default();
+        let now = 1_000_000u64;
+
+        // Instance A connects to partition
+        let mut instance_a = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SimulatedPartitionStore::open(shared_remote.clone(), 100),
+        );
+        instance_a.set_time(now);
+        configure_collector_node(&mut instance_a, None, None);
+
+        let batch = TelemetryBatch::new().counter("test.events", 5, now);
+        let bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(collector_id.address()),
+            &collector_id.address(),
+            &Payload::ServiceRequest {
+                service: hop_core::node::SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        // Instance A receives bundle and meters it
+        instance_a.ingest(bundle.clone());
+        let received_a = instance_a.take_telemetry();
+        assert_eq!(
+            received_a.len(),
+            1,
+            "Instance A must accept initial delivery"
+        );
+
+        // Instance B runs concurrently over the same partition, with its own in-memory state
+        let mut instance_b = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SimulatedPartitionStore::open(shared_remote.clone(), 100),
+        );
+        instance_b.set_time(now + 100);
+        configure_collector_node(&mut instance_b, None, None);
+
+        // Instance B receives the exact same bundle
+        instance_b.ingest(bundle);
+        let received_b = instance_b.take_telemetry();
+        assert!(
+            received_b.is_empty(),
+            "SVC-006 failure: Instance B double-metered a bundle already processed by Instance A"
+        );
+    }
+
+    #[test]
+    fn svc_006_restart_with_eager_cap_reached_still_dedups() {
+        let collector_id = Identity::generate();
+        let collector_seed = collector_id.to_secret_bytes();
+        let shared_remote = SharedMirrorState::default();
+
+        // Saturate eager KV capacity with session keys
+        let eager_cap = 5usize;
+        for i in 0..eager_cap {
+            shared_remote
+                .kv
+                .lock()
+                .unwrap()
+                .insert(format!("session/peer_{i}"), vec![i as u8; 32]);
+        }
+
+        let now = 1_000_000u64;
+        let mut node = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SimulatedPartitionStore::open(shared_remote.clone(), eager_cap),
+        );
+        node.set_time(now);
+        configure_collector_node(&mut node, None, None);
+
+        let batch = TelemetryBatch::new().counter("test.events", 10, now);
+        let bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(collector_id.address()),
+            &collector_id.address(),
+            &Payload::ServiceRequest {
+                service: hop_core::node::SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        // First delivery admitted
+        node.ingest(bundle.clone());
+        let received = node.take_telemetry();
+        assert_eq!(received.len(), 1, "first delivery accepted");
+
+        // Simulate cold restart with eager cap already full
+        let mut restarted = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SimulatedPartitionStore::open(shared_remote.clone(), eager_cap),
+        );
+        restarted.set_time(now + 2000);
+        configure_collector_node(&mut restarted, None, None);
+
+        // Replay bundle to restarted node: must dedup even though eager cap was reached on cold open
+        restarted.ingest(bundle);
+        let replayed = restarted.take_telemetry();
+        assert!(
+            replayed.is_empty(),
+            "SVC-006 failure: restarted node with saturated eager KV cap failed to dedup replayed bundle"
+        );
+    }
+
+    #[test]
+    fn svc_006_sweep_bounds_total_markers() {
+        let mut store = hop_core::store::MemoryStore::new();
+        let base_hour = 30u64;
+        let now_ms = base_hour * 3_600_000;
+
+        // Seed markers from hour 0 to hour 30 (31 markers)
+        for hour in 0..=base_hour {
+            let key = format!("telemetry_seen/{hour}/marker_{hour}");
+            store.put_kv_critical(&key, vec![1, 2, 3]).unwrap();
+        }
+
+        assert_eq!(store.list_kv_page("telemetry_seen/", None, 100).len(), 31);
+
+        // Sweep at hour 30. MAX_ATTRIBUTION_AGE_EPOCHS is 24, so cutoff is 30 - 25 = 5.
+        // Markers for hours 0..4 (5 markers) should be deleted.
+        // Markers for hours 5..30 (26 markers) should remain.
+        let deleted = sweep_expired_telemetry_markers(&mut store, now_ms);
+        assert_eq!(deleted, 5, "sweep must prune exactly 5 expired markers");
+
+        for hour in 0..5 {
+            let key = format!("telemetry_seen/{hour}/marker_{hour}");
+            assert!(store.get_kv(&key).is_none(), "hour {hour} must be pruned");
+        }
+        for hour in 5..=base_hour {
+            let key = format!("telemetry_seen/{hour}/marker_{hour}");
+            assert!(store.get_kv(&key).is_some(), "hour {hour} must be retained");
+        }
+        assert_eq!(store.list_kv_page("telemetry_seen/", None, 100).len(), 26);
+    }
+
+    #[test]
+    fn svc_006_sqlite_telemetry_replay_after_restart_does_not_double_meter() {
+        let db = tmp_db("svc006-restart");
+        let _ = std::fs::remove_file(&db);
+
+        let collector_id = Identity::generate();
+        let collector_seed = collector_id.to_secret_bytes();
+        let now = 1_000_000u64;
+
+        let batch = TelemetryBatch::new().counter("test.events", 5, now);
+        let bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(collector_id.address()),
+            &collector_id.address(),
+            &Payload::ServiceRequest {
+                service: hop_core::node::SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        // Open SQLite store on disk
+        {
+            let store = SqliteStore::open(&db).expect("open sqlite");
+            let mut collector =
+                Node::with_store(Identity::from_secret_bytes(&collector_seed), store);
+            collector.set_time(now);
+            configure_collector_node(&mut collector, None, None);
+
+            collector.ingest(bundle.clone());
+            let received = collector.take_telemetry();
+            assert_eq!(
+                received.len(),
+                1,
+                "first delivery must yield batch on SQLite"
+            );
+        }
+
+        // Reopen SQLite store from disk (process restart)
+        {
+            let store = SqliteStore::open(&db).expect("reopen sqlite");
+            let mut restarted =
+                Node::with_store(Identity::from_secret_bytes(&collector_seed), store);
+            restarted.set_time(now + 1000);
+            configure_collector_node(&mut restarted, None, None);
+
+            restarted.ingest(bundle);
+            let replayed = restarted.take_telemetry();
+            assert!(
+                replayed.is_empty(),
+                "SVC-006 failure: SQLite backend replayed telemetry after restart"
+            );
+
+            // Also verify sweep works on SQLite store
+            let pruned = sweep_expired_telemetry_markers(&mut restarted.store, now + 1000);
+            assert_eq!(pruned, 0, "fresh marker must not be pruned");
+        }
+
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[cfg(feature = "firestore")]
+    #[test]
+    fn svc_006_firestore_two_instances_and_restart_with_eager_cap() {
+        use hop_store_firestore::{
+            BundleMirror, BundleMirrorRow, FirestoreStore, KvMirrorRow, MirrorBatchError,
+            MirrorPage,
+        };
+
+        #[allow(clippy::type_complexity)]
+        #[derive(Clone, Default)]
+        struct DoubleMirror {
+            bundles: std::sync::Arc<
+                std::sync::Mutex<std::collections::BTreeMap<BundleId, (Vec<u8>, u64)>>,
+            >,
+            kv: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+        }
+
+        impl BundleMirror for DoubleMirror {
+            fn list_bundle_page(
+                &self,
+                _cursor: Option<&str>,
+                _limit: usize,
+                _max_bytes: usize,
+            ) -> std::result::Result<MirrorPage<BundleMirrorRow>, String> {
+                Ok(MirrorPage {
+                    rows: Vec::new(),
+                    next: None,
+                    scanned_bytes: 0,
+                    scanned_pages: 1,
+                })
+            }
+            fn put_bundle(
+                &self,
+                id: &BundleId,
+                data: &[u8],
+                expires_at: u64,
+            ) -> std::result::Result<(), String> {
+                self.bundles
+                    .lock()
+                    .unwrap()
+                    .insert(*id, (data.to_vec(), expires_at));
+                Ok(())
+            }
+            fn delete_bundle(&self, id: &BundleId) -> std::result::Result<(), String> {
+                self.bundles.lock().unwrap().remove(id);
+                Ok(())
+            }
+            fn list_eager_kv_page(
+                &self,
+                after: Option<&str>,
+                limit: usize,
+                _max_bytes: usize,
+                _max_pages: usize,
+            ) -> std::result::Result<MirrorPage<KvMirrorRow>, String> {
+                let kv = self.kv.lock().unwrap();
+                let mut rows = Vec::new();
+                for (k, v) in kv.iter() {
+                    if !hop_store_firestore::is_telemetry_seen_key(k)
+                        && !hop_store_firestore::is_billing_ledger_key(k)
+                        && after.is_none_or(|cur| k.as_str() > cur)
+                    {
+                        rows.push(KvMirrorRow {
+                            document_id: bs58::encode(k.as_bytes()).into_string(),
+                            key: k.clone(),
+                            value: Some(v.clone()),
+                        });
+                        if rows.len() == limit {
+                            break;
+                        }
+                    }
+                }
+                Ok(MirrorPage {
+                    rows,
+                    next: None,
+                    scanned_bytes: 0,
+                    scanned_pages: 1,
+                })
+            }
+            fn list_kv_page(
+                &self,
+                prefix: &str,
+                after: Option<&str>,
+                limit: usize,
+            ) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+                let kv = self.kv.lock().unwrap();
+                let rows: Vec<_> = kv
+                    .iter()
+                    .filter(|(k, _)| {
+                        k.starts_with(prefix) && after.is_none_or(|cur| k.as_str() > cur)
+                    })
+                    .take(limit)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                Ok(rows)
+            }
+            fn put_kv(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
+                self.kv
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), value.to_vec());
+                Ok(())
+            }
+            fn delete_kv(&self, key: &str) -> std::result::Result<(), String> {
+                self.kv.lock().unwrap().remove(key);
+                Ok(())
+            }
+            fn get_kv(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+                Ok(self.kv.lock().unwrap().get(key).cloned())
+            }
+            fn put_kv_if_absent(
+                &self,
+                key: &str,
+                value: &[u8],
+            ) -> std::result::Result<bool, MirrorBatchError> {
+                let mut kv = self.kv.lock().unwrap();
+                if kv.contains_key(key) {
+                    return Ok(false);
+                }
+                kv.insert(key.to_string(), value.to_vec());
+                Ok(true)
+            }
+            fn apply_kv_batch(
+                &self,
+                mutations: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), MirrorBatchError> {
+                let mut kv = self.kv.lock().unwrap();
+                for m in mutations {
+                    match m {
+                        hop_core::store::KvMutation::Put { key, value } => {
+                            kv.insert(key.clone(), value.clone());
+                        }
+                        hop_core::store::KvMutation::Remove { key } => {
+                            kv.remove(key);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let collector_id = Identity::generate();
+        let collector_seed = collector_id.to_secret_bytes();
+        let shared_mirror = DoubleMirror::default();
+        let now = 1_000_000u64;
+
+        // 1. Concurrent instance dedup check over FirestoreStore
+        let store_a = FirestoreStore::open_with_mirror(shared_mirror.clone()).unwrap();
+        let mut node_a = Node::with_store(Identity::from_secret_bytes(&collector_seed), store_a);
+        node_a.set_time(now);
+        configure_collector_node(&mut node_a, None, None);
+
+        let batch = TelemetryBatch::new().counter("test.events", 5, now);
+        let bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(collector_id.address()),
+            &collector_id.address(),
+            &Payload::ServiceRequest {
+                service: hop_core::node::SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        node_a.ingest(bundle.clone());
+        let received_a = node_a.take_telemetry();
+        assert_eq!(received_a.len(), 1, "Node A accepts delivery");
+
+        // Node B opens independently over the same mirror
+        let store_b = FirestoreStore::open_with_mirror(shared_mirror.clone()).unwrap();
+        let mut node_b = Node::with_store(Identity::from_secret_bytes(&collector_seed), store_b);
+        node_b.set_time(now + 50);
+        configure_collector_node(&mut node_b, None, None);
+
+        node_b.ingest(bundle.clone());
+        let received_b = node_b.take_telemetry();
+        assert!(
+            received_b.is_empty(),
+            "SVC-006 failure: FirestoreStore Node B double-metered across shared mirror"
+        );
+
+        // 2. Restart with eager cap reached over FirestoreStore
+        let mirror_c = DoubleMirror::default();
+        // Populate 2 session keys
+        mirror_c.put_kv("session/peer_1", &[1; 32]).unwrap();
+        mirror_c.put_kv("session/peer_2", &[2; 32]).unwrap();
+
+        let store_c1 = FirestoreStore::open_with_mirror(mirror_c.clone()).unwrap();
+        let mut node_c1 = Node::with_store(Identity::from_secret_bytes(&collector_seed), store_c1);
+        node_c1.set_time(now);
+        configure_collector_node(&mut node_c1, None, None);
+
+        node_c1.ingest(bundle.clone());
+        assert_eq!(node_c1.take_telemetry().len(), 1);
+        drop(node_c1);
+
+        // Restart store C with eager cap reached
+        let store_c2 = FirestoreStore::open_with_mirror(mirror_c.clone()).unwrap();
+        let mut node_c2 = Node::with_store(Identity::from_secret_bytes(&collector_seed), store_c2);
+        node_c2.set_time(now + 1000);
+        configure_collector_node(&mut node_c2, None, None);
+
+        node_c2.ingest(bundle);
+        assert!(
+            node_c2.take_telemetry().is_empty(),
+            "SVC-006 failure: FirestoreStore restart with eager cap reached failed to dedup"
         );
     }
 }

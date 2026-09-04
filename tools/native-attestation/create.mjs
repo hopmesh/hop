@@ -8,8 +8,8 @@ import { CIContextProvider, DSSEBundleBuilder, FulcioSigner, TSAWitness } from "
 const MANIFEST_NAME = "native-artifacts.json";
 const SIGNATURE_NAME = "native-artifacts.json.sig";
 const PROVENANCE_NAME = "native-artifacts.provenance.sigstore.json";
-const CANONICAL_REPOSITORY = "https://github.com/hopmesh/monorepo";
-const CANONICAL_GITHUB_REPOSITORY = "hopmesh/monorepo";
+const CANONICAL_REPOSITORY = "https://github.com/hopmesh/hop";
+const CANONICAL_GITHUB_REPOSITORY = "hopmesh/hop";
 const NATIVE_WORKFLOW = ".github/workflows/native-artifacts.yml";
 const MAIN_REF = "refs/heads/main";
 const INTOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1";

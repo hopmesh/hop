@@ -12,11 +12,11 @@ function canonicalEnvironment() {
   return {
     GITHUB_ACTIONS: "true",
     GITHUB_SERVER_URL: "https://github.com",
-    GITHUB_REPOSITORY: "hopmesh/monorepo",
+    GITHUB_REPOSITORY: "hopmesh/hop",
     GITHUB_REF: "refs/heads/main",
     GITHUB_EVENT_NAME: "push",
     GITHUB_SHA: sourceSHA,
-    GITHUB_WORKFLOW_REF: "hopmesh/monorepo/.github/workflows/native-artifacts.yml@refs/heads/main",
+    GITHUB_WORKFLOW_REF: "hopmesh/hop/.github/workflows/native-artifacts.yml@refs/heads/main",
     GITHUB_WORKFLOW_SHA: sourceSHA,
     GITHUB_JOB: "attest",
     GITHUB_RUN_ID: "7",
@@ -61,15 +61,15 @@ test("creates a local provenance bundle for the exact canonical statement", asyn
   assert.equal(statement._type, "https://in-toto.io/Statement/v1");
   assert.equal(statement.predicateType, "https://slsa.dev/provenance/v1");
   assert.deepEqual(statement.predicate.buildDefinition.resolvedDependencies, [{
-    uri: "git+https://github.com/hopmesh/monorepo@refs/heads/main",
+    uri: "git+https://github.com/hopmesh/hop@refs/heads/main",
     digest: { gitCommit: sourceSHA },
   }]);
   assert.deepEqual(statement.predicate.runDetails, {
     builder: {
-      id: "https://github.com/hopmesh/monorepo/.github/workflows/native-artifacts.yml@refs/heads/main",
+      id: "https://github.com/hopmesh/hop/.github/workflows/native-artifacts.yml@refs/heads/main",
     },
     metadata: {
-      invocationId: "https://github.com/hopmesh/monorepo/actions/runs/7/attempts/2",
+      invocationId: "https://github.com/hopmesh/hop/actions/runs/7/attempts/2",
     },
   });
   assert.deepEqual(subjects.map((subject) => subject.name), [
@@ -86,6 +86,7 @@ test("rejects noncanonical signing contexts", async () => {
   const subjects = [{ name: "artifact", digest: { sha256: "a".repeat(64) } }];
   for (const [name, value] of [
     ["GITHUB_REPOSITORY", "attacker/fork"],
+    ["GITHUB_REPOSITORY", "hopmesh/monorepo"],
     ["GITHUB_REF", "refs/heads/feature"],
     ["GITHUB_EVENT_NAME", "workflow_dispatch"],
     ["GITHUB_WORKFLOW_SHA", "2".repeat(40)],

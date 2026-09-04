@@ -36,6 +36,11 @@ data class HopConfig(
      *  an `.onion` relay reachable; hop ships no Tor implementation. A value that does not parse makes
      *  the relay bearer refuse to dial rather than fall back to the clearnet. See `docs/tor.md`. */
     val socksProxy: String = "",
+    /** Explicitly configured trusted Meshtastic accessory address, or null for default policy (PLAT-006). */
+    val meshtasticTrustedAddress: String? = null,
+    /** Require bonded device when connecting to a Meshtastic accessory. Defaults to true ("bonded only")
+     *  so unbonded rogue peripherals advertising the Meshtastic UUID are not auto-connected (PLAT-006). */
+    val meshtasticRequireBonded: Boolean = true,
 ) {
     companion object {
         /// android-r2-02: the ONE persisted pref both init paths read for the relay flag, so a

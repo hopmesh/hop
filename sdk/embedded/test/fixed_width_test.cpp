@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -179,7 +180,7 @@ bool hop_send_service_response(const HopNode *, const uint8_t *to,
 }
 
 void hop_poll_service_requests(const HopNode *,
-                               void (*sink)(void *, const uint8_t *, const uint8_t *, const char *,
+                               bool (*sink)(void *, const uint8_t *, const uint8_t *, const char *,
                                             const char *, const uint8_t *, uintptr_t),
                                void *ctx) {
   ++service_request_poll_calls;
@@ -225,6 +226,18 @@ void hop_poll_service_responses(const HopNode *,
 
 bool hop_accept_service_response(const HopNode *, const uint8_t *request_id) {
   return request_id != nullptr;
+}
+
+bool hop_accept_service_request(const HopNode *, const uint8_t *request_id) {
+  return request_id != nullptr;
+}
+
+bool hop_reject_service_request(const HopNode *, const uint8_t *request_id) {
+  return request_id != nullptr;
+}
+
+bool hop_node_is_encrypted(const HopNode *) {
+  return false;
 }
 
 void hop_link_up(const HopNode *, uint64_t, uint32_t) { ++link_up_calls; }
@@ -526,9 +539,10 @@ void testRpcCorrelationAndCallbackCopies() {
     return true;
   });
   node.onServiceRequest(
-      [&saved_request, &request_callbacks](const hop::ServiceRequest &request) {
+      [&saved_request, &request_callbacks](const hop::ServiceRequest &request) -> bool {
         saved_request = request;
         ++request_callbacks;
+        return true;
       });
   node.onServiceResponse(
       [&saved_response, &response_callbacks](const hop::ServiceResponse &response) {
@@ -632,6 +646,41 @@ void testRelayPoolSurface() {
   relay_pool.clear();
 }
 
+void testHostileReproAbi007ThrowingCallback() {
+  hop::Hop node;
+  assert(node.begin());
+  assert(node.synchronizeClock(1700003000000ULL, 1000) == hop::ClockStatus::Ready);
+  node.onMessage([](const hop::Message &) -> bool {
+    throw std::runtime_error("application callback failure");
+  });
+  emit_message = true;
+  try {
+    node.tick(1100);
+    assert(!message_was_accepted);
+  } catch (const std::exception &) {
+    fprintf(stderr, "audit 007 PRE-FIX FAILURE: exception escaped C trampoline across extern C boundary\n");
+    assert(false && "audit 007: exception escaped C trampoline across extern C boundary");
+  }
+}
+
+void testHostileReproAbi006ReentrantFreeInCallback() {
+  hop::Hop node;
+  assert(node.begin());
+  assert(node.synchronizeClock(1700003000000ULL, 1000) == hop::ClockStatus::Ready);
+  int free_calls_during_callback = 0;
+  bool reentrant_begin_rejected = false;
+  node.onMessage([&node, &free_calls_during_callback, &reentrant_begin_rejected](const hop::Message &) -> bool {
+    int before = free_calls;
+    reentrant_begin_rejected = !node.begin();
+    free_calls_during_callback = free_calls - before;
+    return true;
+  });
+  emit_message = true;
+  assert(node.tick(1100) == hop::ClockStatus::Ready);
+  assert(reentrant_begin_rejected && "begin during active callback must be rejected");
+  assert(free_calls_during_callback == 0 && "node must not be freed reentrantly during active callback");
+}
+
 } // namespace
 
 int main() {
@@ -640,6 +689,8 @@ int main() {
   testFixedWidthGuardsAndSymbolRouting();
   testRpcCorrelationAndCallbackCopies();
   testRelayPoolSurface();
+  testHostileReproAbi007ThrowingCallback();
+  testHostileReproAbi006ReentrantFreeInCallback();
   assert(new_calls > 0);
   assert(free_calls > 0);
   assert(inbox_poll_calls > 0);

@@ -194,8 +194,17 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     promise.resolve(e.node.publishPrekey())
   }
 
+  private fun validateNumber(value: Double, name: String, promise: Promise): Boolean {
+    if (value.isNaN() || value.isInfinite() || value < 0 || value > 9007199254740991.0 || value != Math.floor(value)) {
+      promise.reject("hop_error", "$name must be a safe non-negative integer")
+      return false
+    }
+    return true
+  }
+
   @ReactMethod
   fun tick(handle: Int, nowMs: Double, promise: Promise) {
+    if (!validateNumber(nowMs, "nowMs", promise)) return
     val e = entry(handle, promise) ?: return
     e.node.tick(nowMs.toLong())
     promise.resolve(null)
@@ -205,6 +214,12 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun isPersistent(handle: Int, promise: Promise) {
     val e = entry(handle, promise) ?: return
     promise.resolve(e.node.isPersistent())
+  }
+
+  @ReactMethod
+  fun isEncrypted(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.isEncrypted())
   }
 
   @ReactMethod
@@ -268,6 +283,10 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun sendServiceResponse(handle: Int, toB58: String, reqB64: String, status: Int, bodyB64: String, promise: Promise) {
+    if (status < 0 || status > 65535) {
+      promise.reject("hop_error", "status must be between 0 and 65535")
+      return
+    }
     val e = entry(handle, promise) ?: return
     val dst = HopAddress.fromBase58(toB58) ?: return promise.resolve(false)
     promise.resolve(e.node.sendServiceResponse(dst, dec(reqB64), status, dec(bodyB64)))
@@ -279,10 +298,23 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     promise.resolve(e.node.acceptServiceResponse(dec(reqB64)))
   }
 
+  @ReactMethod
+  fun acceptServiceRequest(handle: Int, reqB64: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.acceptServiceRequest(dec(reqB64)))
+  }
+
+  @ReactMethod
+  fun rejectServiceRequest(handle: Int, reqB64: String, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(e.node.rejectServiceRequest(dec(reqB64)))
+  }
+
   // MARK: bearer seam
 
   @ReactMethod
   fun linkUp(handle: Int, link: Double, role: String, promise: Promise) {
+    if (!validateNumber(link, "link", promise)) return
     val e = entry(handle, promise) ?: return
     e.node.linkUp(link.toLong(), if (role == "dialer") HopRole.DIALER else HopRole.ACCEPTOR)
     promise.resolve(null)
@@ -290,6 +322,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun linkDown(handle: Int, link: Double, promise: Promise) {
+    if (!validateNumber(link, "link", promise)) return
     val e = entry(handle, promise) ?: return
     e.node.linkDown(link.toLong())
     promise.resolve(null)
@@ -297,6 +330,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun bytesReceived(handle: Int, link: Double, bytesB64: String, promise: Promise) {
+    if (!validateNumber(link, "link", promise)) return
     val e = entry(handle, promise) ?: return
     e.node.bytesReceived(link.toLong(), dec(bytesB64))
     promise.resolve(null)
@@ -440,7 +474,11 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       }
       remove.add(addr)
     }
-    promise.resolve(bundleIds(e.node.hpsRekey(path, newPath, remove)))
+    try {
+      promise.resolve(bundleIds(e.node.hpsRekey(path, newPath, remove)))
+    } catch (t: Throwable) {
+      promise.reject("hop_error", t.message ?: "hpsRekey failed", t)
+    }
   }
 
   @ReactMethod
@@ -527,7 +565,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putDouble("createdAt", msg.createdAt.toDouble())
       emit("HopMesh:message", m)
     }
-    node.pollServiceRequests { req ->
+    node.pollServiceRequestsAccepting { req ->
       val m = Arguments.createMap()
       m.putInt("node", handle)
       m.putString("from", HopAddress.base58(req.from))
@@ -536,6 +574,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putString("method", req.method)
       m.putString("args", enc(req.args))
       emit("HopMesh:serviceRequest", m)
+      false
     }
     node.pollServiceResponses { resp ->
       val m = Arguments.createMap()

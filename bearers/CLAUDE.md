@@ -126,6 +126,10 @@ reddens CI. This table existed BEFORE the two implementations could diverge, whi
 the BLE table was written after a divergence bug shipped, and this one is the cheaper version of that
 lesson applied up front.
 
+## Bearer pre-authentication deadline (Contract 4, PLAT-005)
+
+A link that is not authenticated (Noise handshake complete) within `PREAUTH_DEADLINE` (10 seconds: `PREAUTH_DEADLINE_S = 10.0` on Apple, `PREAUTH_DEADLINE_MS = 10_000L` on Android) is closed and its admission lease released, independent of transport liveness. Message-oriented transports cap a single inbound message at the core's `MAX_LINK_PACKET_BYTES` (64 KiB) before materialising it.
+
 ## The Apple BLE radio lifecycle is guarded structurally, because it cannot be tested
 
 `Central`/`CentralCore` and `Peripheral`/`PeripheralCore` are owned exclusively by `bleQueue` and

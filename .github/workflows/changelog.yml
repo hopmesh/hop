@@ -25,22 +25,27 @@ concurrency:
 
 jobs:
   regenerate:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # git-cliff walks the whole history
-          token: ${{ secrets.HOP_SYNC_TOKEN }}
+          persist-credentials: false
 
       - name: Install git-cliff
         env:
           GIT_CLIFF_VERSION: "2.13.1"
+          GIT_CLIFF_SHA256: "9a1263f24e59a2f508c7b3d3283c9dea94a8bf697f96dbc18cc783cac6284546"
         run: |
           set -euo pipefail
-          url="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSL "$url" | tar xz
-          echo "GIT_CLIFF=$PWD/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" >> "$GITHUB_ENV"
-
+          mkdir -p "$RUNNER_TEMP/git-cliff"
+          archive="$RUNNER_TEMP/git-cliff.tar.gz"
+          curl -fsSL --output "$archive" "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$GIT_CLIFF_SHA256  $archive" | sha256sum -c -
+          tar xzf "$archive" -C "$RUNNER_TEMP/git-cliff"
+          echo "GIT_CLIFF=$RUNNER_TEMP/git-cliff/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" >> "$GITHUB_ENV"
       - name: Regenerate changelogs
         run: bash tools/gen-changelogs.sh
 
@@ -68,8 +73,16 @@ jobs:
           fi
           git checkout -b "$BRANCH"
           git add -- CHANGELOG.md '**/CHANGELOG.md'
+          # Guard: ensure no other modified or untracked files were staged
+          staged="$(git diff --name-only --cached)"
+          while IFS= read -r file; do
+            case "$file" in
+              CHANGELOG.md|*/CHANGELOG.md) ;;
+              *) echo "::error:: Unexpected file staged for changelog PR: $file"; exit 1 ;;
+            esac
+          done <<< "$staged"
           git commit -m "docs(changelog): regenerate from conventional commits"
-          git push origin "$BRANCH"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
           gh pr create --base main --head "$BRANCH" \
             --title "docs(changelog): regenerate from conventional commits" \
             --body "Automated changelog refresh from conventional commits (git-cliff, see cliff.toml and tools/gen-changelogs.sh). Opened by the scheduled Changelog workflow; auto-merges once CI is green."

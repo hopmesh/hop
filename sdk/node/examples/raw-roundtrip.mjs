@@ -49,6 +49,7 @@ pump(a, b)
 let got
 hop.poll_service_requests(b, (_ctx, from, rid, service, method, argPtr, argLen) => {
   got = { from: addr(from), rid: addr(rid), service, method, args: bytes(argPtr, Number(argLen)) }
+  return true
 }, null)
 console.log('B received:', got.service + '/' + got.method, '=', got.args.toString(), ' from', b58(got.from).slice(0, 12))
 

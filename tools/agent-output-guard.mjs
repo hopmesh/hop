@@ -12,6 +12,94 @@ const SENSITIVE_ENV_EXACT =
 const SENSITIVE_URL_NAME =
   /(?:^|_)(?:(?:AMQP|BROKER|DATABASE|DB|MONGO(?:DB)?|MYSQL|POSTGRES|REDIS)_URL|WEBHOOK_URL)$/i
 
+
+export const DEFAULT_ALLOWED_ENV = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "TERM",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "JAVA_HOME",
+  "ANDROID_HOME",
+  "ANDROID_SDK_ROOT",
+  "GOPATH",
+  "GOROOT",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PNPM_HOME",
+  "NVM_DIR",
+  "BUN_INSTALL",
+  "DENO_INSTALL",
+  "GRADLE_USER_HOME",
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITHUB_WORKSPACE",
+  "RUNNER_OS",
+  "RUNNER_ARCH",
+  "RUNNER_TEMP",
+  "PWD",
+  "SHLVL",
+  "_",
+  "HOSTNAME",
+  "EDITOR",
+  "VISUAL",
+  "PAGER",
+  "HOP_ABI_GUARD_ROOT",
+  "DOC_GUARD_ROOT",
+  "CI_FILE",
+  "REQUIRED_CHECKS_FILE",
+]
+
+export function isAllowedEnvironmentVariable(name, allowlist = []) {
+  if (typeof name !== "string") return false
+  if (name.startsWith("LC_")) return true
+  if (DEFAULT_ALLOWED_ENV.includes(name)) return true
+  for (const item of allowlist) {
+    if (item === name) return true
+    if (item.endsWith("*") && name.startsWith(item.slice(0, -1))) return true
+  }
+  return false
+}
+
+export function loadOpencodeAllowlist(configPath) {
+  try {
+    const file = configPath ?? path.resolve(process.cwd(), "opencode.json")
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (Array.isArray(data.environmentAllowlist)) {
+        return data.environmentAllowlist
+      }
+      if (Array.isArray(data.allowlist)) {
+        return data.allowlist
+      }
+    }
+  } catch {}
+  return []
+}
+
+// The runtime mode of the child-environment scrub (INFRA-015). `allowlist` is the default: a child
+// process inherits only the documented baseline (PATH, HOME, locale, toolchain homes) plus
+// `environmentAllowlist`, and the sensitive-name denylist still applies on top. `denylist` is the
+// legacy shape and has to be asked for explicitly in opencode.json.
+export function loadOpencodeEnvironmentMode(configPath) {
+  try {
+    const file = configPath ?? path.resolve(process.cwd(), "opencode.json")
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (data.environmentMode === "denylist" || data.environmentMode === "allowlist") {
+        return data.environmentMode
+      }
+    }
+  } catch {}
+  return "allowlist"
+}
 const PERMISSION_PROBES = [
   "env",
   "/bin/env",
@@ -89,6 +177,52 @@ function shellWords(command) {
   if (escaped) current += "\\"
   if (started) words.push(current)
   return words
+}
+
+function extractHeredocs(command) {
+  const heredocs = []
+  let delimiter
+  let currentBody = []
+  let executable = ""
+  for (const line of command.split("\n")) {
+    if (delimiter) {
+      if (line.trim() === delimiter) {
+        heredocs.push({ executable, body: currentBody.join("\n") })
+        currentBody = []
+        delimiter = undefined
+      } else {
+        currentBody.push(line)
+      }
+      continue
+    }
+    const match = line.match(/(?:^|\s)([a-zA-Z0-9_.-]+)\s+.*?<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+    if (match) {
+      executable = executableName(match[1])
+      delimiter = match[2]
+    }
+  }
+  return heredocs
+}
+
+function isHeredocDisclosure(exec, body) {
+  const isInterp = ["python", "python3", "node", "ruby", "bash", "sh", "zsh", "dash"].includes(exec)
+  if (!isInterp) return false
+  if (["python", "python3"].includes(exec)) {
+    if (/\bos\.environ\b/.test(body) && !/os\.environ(?:\.get)?\s*\(/.test(body)) return true
+    if (/\b(?:print|pprint|dump|dumps|items|values)\b.*?\bos\.environ\b/.test(body)) return true
+    if (/for\s+.*?\bin\s+os\.environ\b/.test(body)) return true
+  }
+  if (exec === "node") {
+    if (/\bprocess\.env\b/.test(body) && !/process\.env\.[A-Za-z0-9_]+\b/.test(body)) return true
+    if (/for\s*\(.*?\bprocess\.env\b/.test(body)) return true
+  }
+  if (exec === "ruby") {
+    if (/\bENV\.(?:each|inspect|to_h|values)\b/.test(body)) return true
+  }
+  if (["bash", "sh", "zsh", "dash"].includes(exec)) {
+    if (/(?:^|[;&|\n])\s*(?:env|printenv|export|declare\s+-p|set)\s*(?:$|[;&|\n])/.test(body)) return true
+  }
+  return false
 }
 
 function stripHeredocBodies(command) {
@@ -346,26 +480,31 @@ function unsafeWords(input, depth) {
   if (["python", "python3"].includes(executable)) {
     const command = words.indexOf("-c")
     const code = words[command + 1] ?? ""
-    if (
-      command >= 0 &&
-      (/(?:print|pprint)\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
+    if (command >= 0) {
+      if (
+        /(?:print|pprint)\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
         /os\.environ\.(?:items|values)\s*\(/.test(code) ||
-        /json\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code))
-    )
-      return true
+        /json\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
+        /for\s+.*?\bin\s+os\.environ\b/.test(code) ||
+        /\[.*?for\s+.*?\bin\s+os\.environ\b/.test(code)
+      )
+        return true
+    }
   }
 
   if (executable === "node") {
     const command = words.findIndex((word) => ["-e", "--eval", "-p", "--print"].includes(word))
     const code = words[command + 1] ?? ""
-    if (
-      command >= 0 &&
-      (/console\.(?:dir|log)\s*\(\s*process\.env\s*\)/.test(code) ||
+    if (command >= 0) {
+      if (
+        /console\.(?:dir|log)\s*\(\s*process\.env\s*\)/.test(code) ||
         /JSON\.stringify\s*\(\s*process\.env\b/.test(code) ||
-        /Object\.(?:entries|values)\s*\(\s*process\.env\s*\)/.test(code) ||
-        (["-p", "--print"].includes(words[command]) && /^process\.env$/.test(code.trim())))
-    )
-      return true
+        /Object\.(?:entries|values|keys)\s*\(\s*process\.env\s*\)/.test(code) ||
+        /for\s*\(.*?\bprocess\.env\b/.test(code) ||
+        (["-p", "--print"].includes(words[command]) && /^process\.env$/.test(code.trim()))
+      )
+        return true
+    }
   }
 
   if (executable === "ruby") {
@@ -385,14 +524,43 @@ function unsafeWords(input, depth) {
 export function isEnvironmentDisclosure(command, depth = 0) {
   if (typeof command !== "string" || depth > 4) return false
   if (/\/proc\/(?:self|\d+|\$\$)\/environ(?=["'\s]|$)/.test(command)) return true
+  const heredocs = extractHeredocs(command)
+  if (heredocs.some(({ executable, body }) => isHeredocDisclosure(executable, body))) return true
   return shellSegments(command).some((segment) => unsafeWords(shellWords(segment), depth))
 }
 
-export function scrubSensitiveEnvironment(output, environment = process.env) {
+export function redactCanaryOutput(text, canaryValues = []) {
+  if (typeof text !== "string") return text
+  for (const canary of canaryValues) {
+    if (canary && text.includes(canary)) {
+      throw new Error("Blocked environment-value output. Sensitive canary value leaked in tool output.")
+    }
+  }
+  return text
+}
+
+export function scrubSensitiveEnvironment(output, environment = process.env, options = {}) {
+  const opts = typeof options === "string" ? { mode: options } : (options ?? {})
+  const mode = opts.mode ?? loadOpencodeEnvironmentMode(opts.configPath)
+  const customAllowlist = opts.allowlist ?? loadOpencodeAllowlist(opts.configPath)
+
   for (const [name, value] of Object.entries(environment)) {
     if (value === undefined) continue
-    if (!SENSITIVE_ENV_NAME.test(name) && !SENSITIVE_ENV_EXACT.test(name) && !SENSITIVE_URL_NAME.test(name)) continue
-    output[name] = ""
+    const isSensitive =
+      SENSITIVE_ENV_NAME.test(name) ||
+      SENSITIVE_ENV_EXACT.test(name) ||
+      SENSITIVE_URL_NAME.test(name)
+
+    if (mode === "allowlist") {
+      const isAllowed = isAllowedEnvironmentVariable(name, customAllowlist)
+      if (!isAllowed || isSensitive) {
+        output[name] = ""
+      }
+    } else {
+      if (isSensitive) {
+        output[name] = ""
+      }
+    }
   }
   return output
 }

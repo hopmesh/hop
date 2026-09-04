@@ -10,10 +10,11 @@ module Hop
     I  = Fiddle::TYPE_INT
     LL = Fiddle::TYPE_LONG_LONG
     SZ = Fiddle::TYPE_SIZE_T
+    SSZ = Fiddle::TYPE_INTPTR_T
     CH = Fiddle::TYPE_CHAR
     V  = Fiddle::TYPE_VOID
 
-    ABI_EXPECTED = 6
+    ABI_EXPECTED = 7
 
     def self.lib_path
       ext = case RbConfig::CONFIG["host_os"]
@@ -39,6 +40,9 @@ module Hop
     ABI_VERSION            = fn("hop_abi_version", [], I)
     NODE_NEW               = fn("hop_node_new", [], P)
     NODE_WITH_SECRET       = fn("hop_node_with_secret", [P, SZ], P)
+    NODE_OPEN              = fn("hop_node_open", [P, P, SZ, P, SZ], P)
+    NODE_OPEN_KEYED        = fn("hop_node_open_keyed", [P, P, SZ, P, SZ, P, SZ], P)
+    NODE_IS_PERSISTENT     = fn("hop_node_is_persistent", [P], CH)
     NODE_FREE              = fn("hop_node_free", [P], V)
     NODE_ADDRESS           = fn("hop_node_address", [P, P], CH)
     NODE_TICK              = fn("hop_node_tick", [P, LL], V)
@@ -48,12 +52,15 @@ module Hop
     DRAIN_OUTGOING         = fn("hop_drain_outgoing", [P, P, P], V)
     SUBSCRIBE              = fn("hop_subscribe", [P, P], V)
     PUBLISH_PREKEY         = fn("hop_publish_prekey", [P], CH)
+    NODE_IS_ENCRYPTED      = fn("hop_node_is_encrypted", [P], CH)
     ACCEPT_INBOX           = fn("hop_accept_inbox", [P, P], CH)
     SEND_SERVICE_REQUEST   = fn("hop_send_service_request", [P, P, P, P, P, SZ, P], CH)
     SEND_SERVICE_RESPONSE  = fn("hop_send_service_response", [P, P, P, I, P, SZ], CH)
     POLL_SERVICE_REQUESTS  = fn("hop_poll_service_requests", [P, P, P], V)
     POLL_SERVICE_RESPONSES = fn("hop_poll_service_responses", [P, P, P], V)
     ACCEPT_SERVICE_RESPONSE = fn("hop_accept_service_response", [P, P], CH)
+    ACCEPT_SERVICE_REQUEST = fn("hop_accept_service_request", [P, P], CH)
+    REJECT_SERVICE_REQUEST = fn("hop_reject_service_request", [P, P], CH)
     ADDRESS_TO_BASE58      = fn("hop_address_to_base58", [P, P, SZ], SZ)
     ADDRESS_FROM_BASE58    = fn("hop_address_from_base58", [P, P], CH)
     SIGN_REACH_RECORD      = fn("hop_sign_reach_record", [P, P, I, P, P], V)
@@ -69,6 +76,8 @@ module Hop
     CLUSTER_JOIN_PASSPHRASE = fn("hop_cluster_join_passphrase", [P, P, SZ], V)
     CLUSTER_MEMBERS         = fn("hop_cluster_members", [P], I)
     CLUSTER_SET_QUORUM      = fn("hop_cluster_set_quorum", [P, I], V)
+    CLUSTER_MARK_DONE       = fn("hop_cluster_mark_done", [P, P, P], V)
+    CLUSTER_WOULD_DROP      = fn("hop_cluster_would_drop", [P, P, P], CH)
     # §32 hps:// pub/sub: services and channels, i.e. group chat. The eighteen exports the v5 -> v6 ABI
     # bump added, which the C ABI had none of before, so no wrapper sitting on it could reach channels
     # however completely the Rust core implemented them. Declared here because a Fiddle::Function
@@ -102,7 +111,7 @@ module Hop
     HPS_PENDING             = fn("hop_hps_pending", [P, P, P, P], SZ)
     HPS_APPROVE             = fn("hop_hps_approve", [P, P, P, P], CH)
     HPS_DENY                = fn("hop_hps_deny", [P, P, P], CH)
-    HPS_REKEY               = fn("hop_hps_rekey", [P, P, P, P, SZ, P, P], SZ)
+    HPS_REKEY               = fn("hop_hps_rekey", [P, P, P, P, SZ, P, P], SSZ)
     HPS_REACH               = fn("hop_hps_reach", [P, P], I)
     HPS_MEMBERS             = fn("hop_hps_members", [P, P, P, P], SZ)
     HPS_MY_TOPICS           = fn("hop_hps_my_topics", [P, P, P], SZ)
@@ -138,6 +147,40 @@ module Hop
     # ---- thin wrappers ----
     def self.node_new = NODE_NEW.call
     def self.node_with_secret(secret) = NODE_WITH_SECRET.call(secret, secret.bytesize)
+    def self.node_open(db_path, secret = nil, app_secret = nil)
+      sec_ptr = secret ? require_32(secret, "secret") : nil
+      sec_len = secret ? secret.bytesize : 0
+      app_ptr = app_secret ? require_32(app_secret, "app secret") : nil
+      app_len = app_secret ? app_secret.bytesize : 0
+      ptr = NODE_OPEN.call(db_path, sec_ptr, sec_len, app_ptr, app_len)
+      raise "hop_node_open returned NULL" if ptr.to_i.zero?
+
+      ptr
+    end
+
+    def self.node_open_keyed(db_path, secret = nil, app_secret = nil, key = nil)
+      sec_ptr = secret ? require_32(secret, "secret") : nil
+      sec_len = secret ? secret.bytesize : 0
+      app_ptr = app_secret ? require_32(app_secret, "app secret") : nil
+      app_len = app_secret ? app_secret.bytesize : 0
+      key_ptr = key ? key : nil
+      key_len = key ? key.bytesize : 0
+      ptr = NODE_OPEN_KEYED.call(db_path, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+      raise "hop_node_open_keyed returned NULL" if ptr.to_i.zero?
+
+      ptr
+    end
+
+    def self.node_is_persistent(node) = NODE_IS_PERSISTENT.call(node) != 0
+    def self.node_is_encrypted(node) = NODE_IS_ENCRYPTED.call(node) != 0
+
+    def self.cluster_mark_done(node, from, request_id)
+      CLUSTER_MARK_DONE.call(node, require_32(from, "from"), require_32(request_id, "request id"))
+    end
+
+    def self.cluster_would_drop(node, from, request_id)
+      CLUSTER_WOULD_DROP.call(node, require_32(from, "from"), require_32(request_id, "request id")) != 0
+    end
     def self.node_free(node) = NODE_FREE.call(node)
     def self.tick(node, now_ms) = NODE_TICK.call(node, now_ms)
     def self.connected(node, link, initiator) = LINK_UP.call(node, link, initiator ? 0 : 1)
@@ -183,10 +226,23 @@ module Hop
       ACCEPT_SERVICE_RESPONSE.call(node, require_32(request_id, "request id")) != 0
     end
 
+    def self.node_is_encrypted(node)
+      NODE_IS_ENCRYPTED.call(node) != 0
+    end
+
+    def self.accept_service_request(node, request_id)
+      ACCEPT_SERVICE_REQUEST.call(node, require_32(request_id, "request id")) != 0
+    end
+
+    def self.reject_service_request(node, request_id)
+      REJECT_SERVICE_REQUEST.call(node, require_32(request_id, "request id")) != 0
+    end
+
     def self.take_service_requests(node)
       out = []
-      sink = Closure.new(V, [P, P, P, P, P, P, SZ]) do |_ctx, frm, rid, service, method, args, arglen|
+      sink = Closure.new(CH, [P, P, P, P, P, P, SZ]) do |_ctx, frm, rid, service, method, args, arglen|
         out << [read_bytes(frm, 32), read_bytes(rid, 32), read_cstr(service), read_cstr(method), read_bytes(args, arglen)]
+        0
       end
       POLL_SERVICE_REQUESTS.call(node, sink, nil)
       out

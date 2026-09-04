@@ -258,7 +258,7 @@ describe Hop do
 
   # PLAT-003: sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and this SDK
   # asserted that level at load while binding none of them, so an SDK-only host could not fail over:
-  # the only reachable behavior was retrying one configured URL forever. It now pins ABI 6 and binds
+  # the only reachable behavior was retrying one configured URL forever. It now pins ABI 7 and binds
   # the pool, so this drives the failover the header describes through the published Endpoint
   # surface, on ONE endpoint that is never restarted.
   it "fails the relay pool over to another endpoint without restarting the endpoint" do
@@ -293,6 +293,70 @@ describe Hop do
       e.relay_pool.should eq({2, 0})
     ensure
       e.close
+    end
+  end
+
+  it "leaves service request queued for redelivery when handler fails (ABI-002)" do
+    server = Hop::Endpoint.new(tick_ms: 10)
+    client = Hop::Endpoint.new(tick_ms: 10)
+    attempts = 0
+    first_attempt_done = Channel(Nil).new
+
+    server.on("flaky") do |req, reply|
+      attempts += 1
+      if attempts == 1
+        first_attempt_done.send(nil)
+        raise "handler failed attempt 1"
+      end
+      reply.call(200, "recovered")
+    end
+
+    Hop.connect_in_process(server, client)
+    begin
+      ch = Channel({UInt16, Bytes}).new
+      spawn do
+        res = client.request(server.address_bytes, "flaky", "call", "test", timeout: 3.seconds)
+        ch.send(res)
+      end
+
+      first_attempt_done.receive
+      attempts.should eq 1
+
+      status, body = ch.receive
+      attempts.should eq 2
+      status.should eq 200_u16
+      String.new(body).should eq "recovered"
+    ensure
+      server.close
+      client.close
+    end
+  end
+
+  it "persists state across restart when backed by db_path (ABI-003)" do
+    db_path = File.tempfile("hop-cr-restart", ".db").path
+    secret = Bytes.new(32) { |i| (i + 1).to_u8 }
+
+    # Step 1: Open with db_path, verify persistence, mark state handled in cluster
+    e1 = Hop::Endpoint.new(secret: secret, db_path: db_path, cluster: "shared-passphrase")
+    e1.persistent?.should be_true
+
+    from = Bytes.new(32)
+    from[0] = 0xAA_u8
+    req_id = Bytes.new(32)
+    req_id[0] = 0xBB_u8
+
+    e1.cluster_mark_done(from, req_id)
+    e1.cluster_would_drop(from, req_id).should be_true
+    e1.close
+
+    # Step 2: Reopen same db_path, verify persistence and state recovery
+    e2 = Hop::Endpoint.new(secret: secret, db_path: db_path, cluster: "shared-passphrase")
+    begin
+      e2.persistent?.should be_true
+      e2.cluster_would_drop(from, req_id).should be_true
+    ensure
+      e2.close
+      File.delete(db_path) if File.exists?(db_path)
     end
   end
 end

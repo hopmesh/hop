@@ -41,11 +41,23 @@ LICENSE_NAMES = (
 )
 
 
-def shipping_packages(root_name: str, follow_build: bool) -> list[dict]:
+def shipping_packages(
+    root_name: str,
+    follow_build: bool,
+    features: list[str] | None = None,
+    no_default_features: bool = False,
+    target: str | None = None,
+) -> list[dict]:
     """Every package reachable from `root_name` over non-dev edges, root excluded."""
-    md = json.loads(subprocess.run(
-        ["cargo", "metadata", "--format-version", "1"],
-        capture_output=True, text=True, check=True).stdout)
+    cmd = ["cargo", "metadata", "--format-version", "1"]
+    if no_default_features:
+        cmd.append("--no-default-features")
+    if features:
+        for f in features:
+            cmd.extend(["--features", f])
+    if target:
+        cmd.extend(["--filter-platform", target])
+    md = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
     pkgs = {p["id"]: p for p in md["packages"]}
     nodes = {n["id"]: n for n in md["resolve"]["nodes"]}
     roots = [i for i, p in pkgs.items() if p["name"] == root_name]
@@ -177,9 +189,18 @@ def main() -> int:
     ap.add_argument("--out", default="THIRD-PARTY-NOTICES.md")
     ap.add_argument("--check", action="store_true", help="fail if the committed file is out of date")
     ap.add_argument("--no-build", action="store_true", help="drop build-dependency edges too")
+    ap.add_argument("--features", action="append", help="cargo features to activate")
+    ap.add_argument("--no-default-features", action="store_true", help="do not activate default features")
+    ap.add_argument("--target", help="target platform to filter")
     a = ap.parse_args()
 
-    pkgs = shipping_packages(a.root, follow_build=not a.no_build)
+    pkgs = shipping_packages(
+        a.root,
+        follow_build=not a.no_build,
+        features=a.features,
+        no_default_features=a.no_default_features,
+        target=a.target,
+    )
     text = render(a.root, pkgs)
     out = pathlib.Path(a.out)
 

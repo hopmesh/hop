@@ -39,7 +39,7 @@ export const InboxSink = koffi.proto(
   'bool InboxSink(void *ctx, uint8_t *inbox_id, uint8_t *from, const char *content_type, uint8_t *body, size_t body_len, uint8_t hops, uint64_t created_at)',
 )
 export const SvcReqSink = koffi.proto(
-  'void SvcReqSink(void *ctx, uint8_t *from, uint8_t *request_id, const char *service, const char *method, uint8_t *args, size_t args_len)',
+  'bool SvcReqSink(void *ctx, uint8_t *from, uint8_t *request_id, const char *service, const char *method, uint8_t *args, size_t args_len)',
 )
 export const SvcRespSink = koffi.proto(
   'bool SvcRespSink(void *ctx, uint8_t *from, uint8_t *for_request_id, uint16_t status, uint8_t *body, size_t body_len)',
@@ -87,7 +87,12 @@ const rawHop = {
   node_open: lib.func(
     'void *hop_node_open(const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len)',
   ),
+  node_open_keyed: lib.func(
+    'void *hop_node_open_keyed(const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len, uint8_t *key, size_t key_len)',
+  ),
+  node_is_persistent: lib.func('bool hop_node_is_persistent(void *node)'),
   node_free: lib.func('void hop_node_free(void *node)'),
+  node_is_encrypted: lib.func('bool hop_node_is_encrypted(void *node)'),
   node_address: lib.func('bool hop_node_address(void *node, uint8_t *out)'),
   node_secret: lib.func('size_t hop_node_secret(void *node, uint8_t *out)'),
   node_set_name: lib.func('void hop_node_set_name(void *node, const char *name)'),
@@ -112,6 +117,8 @@ const rawHop = {
   poll_service_requests: lib.func('void hop_poll_service_requests(void *node, SvcReqSink *sink, void *ctx)'),
   poll_service_responses: lib.func('void hop_poll_service_responses(void *node, SvcRespSink *sink, void *ctx)'),
   accept_service_response: lib.func('bool hop_accept_service_response(void *node, uint8_t *request_id)'),
+  accept_service_request: lib.func('bool hop_accept_service_request(void *node, uint8_t *request_id)'),
+  reject_service_request: lib.func('bool hop_reject_service_request(void *node, uint8_t *request_id)'),
   address_to_base58: lib.func('size_t hop_address_to_base58(uint8_t *addr, char *out, size_t out_cap)'),
   address_from_base58: lib.func('bool hop_address_from_base58(const char *text, uint8_t *out32)'),
   sign_reach_record: lib.func(
@@ -171,7 +178,7 @@ const rawHop = {
   // Selective forward rotation, which is how a member is REVOKED. `remove_count` is a COUNT of
   // 32-byte addresses packed back to back, not a byte length, so the C call reads remove_count * 32.
   hps_rekey: lib.func(
-    'size_t hop_hps_rekey(void *node, const char *path, const char *new_path, uint8_t *remove, size_t remove_count, HpsIdSink *sink, void *ctx)',
+    'intptr_t hop_hps_rekey(void *node, const char *path, const char *new_path, uint8_t *remove, size_t remove_count, HpsIdSink *sink, void *ctx)',
   ),
   hps_reach: lib.func('uint32_t hop_hps_reach(void *node, const char *path)'),
   hps_members: lib.func('size_t hop_hps_members(void *node, const char *path, HpsAddrSink *sink, void *ctx)'),
@@ -218,6 +225,10 @@ export const hop = {
       body,
       bodyLen,
     ),
+  node_is_encrypted: (node) => rawHop.node_is_encrypted(node),
+  node_is_persistent: (node) => rawHop.node_is_persistent(node),
+  accept_service_request: (node, reqId) => rawHop.accept_service_request(node, require32(reqId, 'request id')),
+  reject_service_request: (node, reqId) => rawHop.reject_service_request(node, require32(reqId, 'request id')),
   address_to_base58: (address, out, outCap) =>
     rawHop.address_to_base58(require32(address, 'address'), out, outCap),
   address_from_base58: (text, out) =>
@@ -281,11 +292,15 @@ export const hop = {
           `got ${remove == null ? 0 : remove.byteLength}`,
       )
     }
-    return rawHop.hps_rekey(node, path, newPath, remove, removeCount, sink, ctx)
+    const res = rawHop.hps_rekey(node, path, newPath, remove, removeCount, sink, ctx)
+    if (res < 0) {
+      throw new Error(`hop_hps_rekey("${path}") failed`)
+    }
+    return res
   },
 }
 
-const ABI_EXPECTED = 6
+const ABI_EXPECTED = 7
 export function assertAbi() {
   const got = hop.abi_version()
   if (got !== ABI_EXPECTED) {

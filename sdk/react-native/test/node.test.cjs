@@ -49,6 +49,7 @@ function makeNative(overrides = {}) {
     publishPrekey: (...a) => record("publishPrekey", a, true),
     tick: (...a) => record("tick", a, undefined),
     isPersistent: (...a) => record("isPersistent", a, true),
+    isEncrypted: (...a) => record("isEncrypted", a, true),
     rehydrateDropped: (...a) => record("rehydrateDropped", a, 0),
     isSecured: (...a) => record("isSecured", a, false),
     send: (...a) => record("send", a, toBase64(new Uint8Array(32).fill(9))),
@@ -58,6 +59,8 @@ function makeNative(overrides = {}) {
     sendServiceRequest: (...a) => record("sendServiceRequest", a, toBase64(new Uint8Array(32).fill(5))),
     sendServiceResponse: (...a) => record("sendServiceResponse", a, true),
     acceptServiceResponse: (...a) => record("acceptServiceResponse", a, true),
+    acceptServiceRequest: (...a) => record("acceptServiceRequest", a, true),
+    rejectServiceRequest: (...a) => record("rejectServiceRequest", a, true),
     startPump: (...a) => record("startPump", a, undefined),
     stopPump: (...a) => record("stopPump", a, undefined),
     linkUp: (...a) => record("linkUp", a, undefined),
@@ -204,6 +207,59 @@ test("Hop.ephemeral and Hop.open build nodes over the injected native module", a
     assert.equal(keyed.handle, 10);
   } finally {
     __setHopNativeForTesting(null);
+  }
+});
+test("openKeyed yields an encrypted node (isEncrypted == true) and wrong key fails (ABI-001)", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+
+  const tmpDb = path.join(os.tmpdir(), "hop-rn-keyed-" + Date.now() + ".db");
+  fs.writeFileSync(tmpDb, "sqlite encrypted database contents");
+
+  const correctKey = new Uint8Array(32).fill(4);
+  const correctKeyB64 = toBase64(correctKey);
+
+  const native = makeNative({
+    openKeyed: (p, keyB64) => {
+      if (keyB64 === correctKeyB64) {
+        return Promise.resolve(10);
+      }
+      return Promise.resolve(-1);
+    },
+    isEncrypted: (h) => Promise.resolve(h === 10),
+  });
+
+  __setHopNativeForTesting(native, makeEmitter());
+  try {
+    const node = await Hop.open({ dbPath: tmpDb, key: correctKey });
+    assert.ok(node, "keyed open must succeed with valid key");
+    assert.equal(node.handle, 10);
+    assert.equal(await node.isPersistent(), true);
+    assert.equal(await node.isEncrypted(), true, "sqlcipher keyed node must report isEncrypted == true");
+
+    // Reopening with wrong key fails (resolves null)
+    const wrongKey = new Uint8Array(32).fill(9);
+    const badNode = await Hop.open({ dbPath: tmpDb, key: wrongKey });
+    assert.equal(badNode, null, "reopening with wrong key must resolve null");
+    assert.ok(fs.existsSync(tmpDb), "database file must remain on disk after wrong-key open");
+    assert.ok(fs.statSync(tmpDb).size > 0, "database file must remain non-empty");
+
+    // Reopening with throwing native also fails while file stays intact
+    __setHopNativeForTesting(
+      makeNative({
+        openKeyed: () => Promise.reject(new Error("SQLCipher: invalid key or database format")),
+      }),
+      makeEmitter()
+    );
+    await assert.rejects(
+      async () => Hop.open({ dbPath: tmpDb, key: wrongKey }),
+      /SQLCipher/
+    );
+    assert.ok(fs.existsSync(tmpDb), "database file must remain on disk after throwing wrong-key open");
+  } finally {
+    __setHopNativeForTesting(null);
+    try { fs.unlinkSync(tmpDb); } catch {}
   }
 });
 
@@ -485,4 +541,63 @@ test("onHpsInvite decodes its payload and is node-scoped", async () => {
 
   assert.equal(invites.length, 1);
   assert.deepEqual(invites[0], { host: "z6MkHost", path: "town/square", kind: "channel" });
+});
+
+test("hostile repro audit-013: node rejects invalid link, tick, and status numbers", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  await assert.rejects(() => node.linkUp(NaN, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(Infinity, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(-1, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(1.5, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(Number.MAX_SAFE_INTEGER + 100, "dialer"), RangeError);
+
+  await assert.rejects(() => node.tick(NaN), RangeError);
+  await assert.rejects(() => node.tick(-1), RangeError);
+
+  await assert.rejects(() => node.sendServiceResponse({
+    to: "z6Mkmz...",
+    forRequestId: new Uint8Array(32),
+    status: 65536,
+    body: "test",
+  }), RangeError);
+});
+
+test("hpsRekey rejects when native call fails (ABI-004)", async () => {
+  const native = makeNative({
+    hpsRekey: () => Promise.reject(new Error("hop_hps_rekey failed")),
+  });
+  const node = new HopNode(native, makeEmitter(), 7);
+  await assert.rejects(async () => {
+    await node.hpsRekey("unknown_topic");
+  }, /hop_hps_rekey failed/);
+});
+
+test("service requests are delivered and application controls acceptance (ABI-002)", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+  const reqId = new Uint8Array(32).fill(7);
+  let seen = null;
+  node.onServiceRequest((req) => {
+    seen = req;
+  });
+  emitter.emit("HopMesh:serviceRequest", {
+    node: 7,
+    from: "z6MkAddr",
+    requestId: toBase64(reqId),
+    service: "svc",
+    method: "m",
+    args: toBase64(new Uint8Array([1, 2])),
+  });
+  assert.notEqual(seen, null);
+  assert.equal(seen.service, "svc");
+  assert.deepEqual(seen.requestId, reqId);
+  const accepted = await node.acceptServiceRequest(seen.requestId);
+  assert.equal(accepted, true);
+  assert.deepEqual(native.calls.at(-1), {
+    name: "acceptServiceRequest",
+    args: [7, toBase64(reqId)],
+  });
 });

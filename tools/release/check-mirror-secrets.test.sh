@@ -106,5 +106,52 @@ try:
 finally:
     mod.gh_json = original
 
+# --- audit verdict: missing secrets must fail, complete secrets must pass --------------------------
+def fake_gh_json_missing(path):
+    if "secrets" in path:
+        return {"secrets": []}
+    return None
+
+mod.gh_json = fake_gh_json_missing
+try:
+    findings = mod.audit(root)
+    broken = [entry for entry in findings if entry["missing"]]
+    assert len(broken) == len(findings), "all mirrors must be flagged when no secrets are seeded"
+    for entry in broken:
+        assert "HOP_SOURCE_APP_ID" in entry["missing"], f"{entry['component']} must report missing APP_ID"
+        assert "HOP_SOURCE_APP_PRIVATE_KEY" in entry["missing"], f"{entry['component']} must report missing private key"
+finally:
+    mod.gh_json = original
+
+def fake_gh_json_all_seeded(path):
+    if "secrets" in path:
+        return {
+            "secrets": [
+                {"name": "HOP_SOURCE_APP_ID", "visibility": "all"},
+                {"name": "HOP_SOURCE_APP_PRIVATE_KEY", "visibility": "all"},
+                {"name": "COCOAPODS_TRUNK_TOKEN", "visibility": "all"},
+            ]
+        }
+    return None
+
+mod.gh_json = fake_gh_json_all_seeded
+try:
+    findings = mod.audit(root)
+    broken = [entry for entry in findings if entry["missing"]]
+    assert len(broken) == 0, f"audit must pass when all secrets are seeded, got {broken}"
+finally:
+    mod.gh_json = original
+# Verify workflow wrapper fails closed when MIRROR_TOKEN is absent (INFRA-016)
+import subprocess
+workflow = root / ".github/workflows/branch-protection-audit.yml"
+import re
+text = workflow.read_text(encoding="utf-8")
+match = re.search(r"mirror-secrets:.*?steps:.*?run: \|\n(.*?)(?=^\s+[A-Za-z0-9_-]+:|\Z)", text, re.S)
+assert match, "mirror-secrets step not found"
+step = "\n".join(line[10:] for line in match.group(1).splitlines())
+res = subprocess.run(["bash", "-c", step], capture_output=True, text=True)
+assert res.returncode != 0, f"mirror-secrets step must fail when MIRROR_TOKEN is absent, got {res.returncode}"
+assert "MIRROR_SECRET_AUDIT_TOKEN is absent or empty" in res.stdout or "MIRROR_SECRET_AUDIT_TOKEN is absent or empty" in res.stderr
+
 print("mirror secret checker tests passed")
 PY

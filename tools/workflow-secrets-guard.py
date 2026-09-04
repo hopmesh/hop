@@ -43,7 +43,7 @@ import sys
 from pathlib import Path
 
 
-REPOSITORY = "hopmesh/monorepo"
+REPOSITORY = "hopmesh/hop"
 ORGANIZATION = "hopmesh"
 # The workflow that asserts, on a schedule, that every declared name is really provisioned.
 PRESENCE_WORKFLOW = ".github/workflows/branch-protection-audit.yml"
@@ -143,6 +143,16 @@ def check_static(root):
                     "step that names it",
                 )
         if not scope.startswith("environment:"):
+            # Any job reading a declared secret in a workflow with workflow_dispatch must
+            # declare an environment binding, so branch policy refuses non-main dispatch (INFRA-008).
+            for workflow, job_id, declared_environment in used[name]:
+                workflow_text = (Path(root) / ".github/workflows" / workflow).read_text(encoding="utf-8")
+                if "workflow_dispatch" in workflow_text:
+                    require(
+                        bool(declared_environment),
+                        f"{workflow} job `{job_id}` reads declared {scope} secret `{name}` in a workflow "
+                        f"with workflow_dispatch, but declares no environment binding (INFRA-008)",
+                    )
             continue
         environment = scope.split(":", 1)[1]
         for workflow, job_id, declared_environment in used[name]:
@@ -236,6 +246,27 @@ def assert_present(declared, scopes, environ):
     require(not problems, "; ".join(problems))
 
 
+def verify_repo_identity(repo):
+    """Verify the target repository is canonical and active before auditing secrets."""
+    result = subprocess.run(
+        ["gh", "api", f"repos/{repo}", "--jq", "{full_name: .full_name, id: .id, archived: .archived}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise WorkflowSecretsError(f"cannot verify repository identity at repos/{repo}")
+    import json
+    try:
+        data = json.loads(result.stdout)
+    except Exception as exc:
+        raise WorkflowSecretsError(f"cannot parse repository identity from repos/{repo}: {exc}")
+    if data.get("full_name") != REPOSITORY or data.get("archived") is True:
+        raise WorkflowSecretsError(f"repository {repo} is not canonical hopmesh/hop or is archived")
+    if not isinstance(data.get("id"), int) or data.get("id") <= 0:
+        raise WorkflowSecretsError(f"repository {repo} has invalid ID")
+
+
 def _inventory(path):
     result = subprocess.run(
         ["gh", "api", path, "--jq", ".secrets[].name"],
@@ -250,6 +281,7 @@ def _inventory(path):
 
 def check_live(declared):
     """Assert each declared name is set in exactly the scope claimed. Names only, never values."""
+    verify_repo_identity(REPOSITORY)
     scopes = {"organization": _inventory(f"orgs/{ORGANIZATION}/actions/secrets")}
     scopes["repository"] = _inventory(f"repos/{REPOSITORY}/actions/secrets")
     for entry in declared.values():

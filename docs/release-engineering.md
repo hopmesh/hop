@@ -15,7 +15,7 @@ Two versions travel independently and MUST NOT be conflated:
    - `BUNDLE_VERSION` (`core/hop-core/src/bundle.rs`): the on-the-wire bundle/frame
      format. A change here is a protocol break and needs the wire-stability test
      updated deliberately.
-   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 6): the C-ABI contract every
+   - `HOP_ABI_VERSION` (`sdk/hop.h`, currently ABI 7): the C-ABI contract every
      non-Rust client binds. Wrappers assert `hop_abi_version() == HOP_ABI_VERSION`
      at load, so a mismatch fails loudly at app launch.
 
@@ -40,7 +40,7 @@ ABI-version literals, fails on any that disagrees with `cabi.rs`, fails on any i
 classify (so a fourteenth copy is caught the day it lands), fails when a listed site stops
 declaring the constant, and fails when a wrapper pinned to the current level does not bind
 the `hop_*` calls that level's bump note in `sdk/hop.h` names. It also holds prose that
-states an ABI level ("asserts ABI 6") to the constant. It used to check six of twelve, and
+states an ABI level ("asserts ABI 7") to the constant. It used to check six of twelve, and
 that gap is how the v4 -> v5 bump shipped with a release validator still asserting the
 retired level (PLAT-004).
 
@@ -88,7 +88,7 @@ storage mirror when the repository plan supports it, not the sole copy of proven
 
 Verifying provenance means reading the CANONICAL repository from a PUBLIC mirror: every mirror's
 `release.yml` mints a GitHub App token and `release-provenance.py` follows the `GitOrigin-RevId` label
-on the mirror commit back to the monorepo SHA, then checks that SHA's CI. That needs two secrets to
+on the mirror commit back to the canonical repository SHA, then checks that SHA's CI. That needs two secrets to
 resolve inside the mirror's `release` environment:
 
 | Secret | Value |
@@ -115,7 +115,7 @@ To arm publishing:
 
 1. Create a GitHub App (org `hopmesh`), e.g. `hop-source-read`, with repository permissions
    **`actions: read`, `checks: read`, `contents: read` and nothing else**. Install it on
-   **`hopmesh/monorepo` only**: the mirrors hold the key to mint the token, they are not its target.
+   **`hopmesh/hop` only**: the mirrors hold the key to mint the token, they are not its target.
 2. Seed both values ONCE as organization secrets scoped to the publishing mirrors, rather than
    fifteen times (the release workflows read them through the `release` environment):
 
@@ -137,7 +137,7 @@ say which piece is missing. Read the error rather than re-seeding:
 | Mint step error | Meaning |
 | --- | --- |
 | `'client-id' ... must be set to a non-empty string` | the secrets do not resolve in this repo (unset, or scoped to the wrong repositories). Run the checker. |
-| `Failed to create token for "hopmesh/monorepo": Not Found` (404, `get-a-repository-installation-for-the-authenticated-app`) | the App id and key are a valid pair, but the App is **not installed** on the org with `monorepo` selected. Install it; `gh api orgs/hopmesh/installations` should list it. |
+| `Failed to create token for "hopmesh/hop": Not Found` (404, `get-a-repository-installation-for-the-authenticated-app`) | the App id and key are a valid pair, but the App is **not installed** on the org with `hop` selected. Install it; `gh api orgs/hopmesh/installations` should list it. |
 | a 401, or `integration not found` | the id and the private key are not from the same App. |
 | a permissions error naming actions/checks/contents | installed, but that permission was added after installation and the pending request was never approved. |
 
@@ -257,19 +257,45 @@ not "fix" the README back to URLs on the strength of a 200 response.
 
 ### Rust crates
 
-- Each workspace crate carries its OWN crate-local `LICENSE.md` (FSL-1.1-ALv2) and
-  points at it via `license-file = "LICENSE.md"` in its `[package]` (FSL is not an
-  SPDX id, so it is a `license-file`, not a `license` field). So a crate cut from
-  the release tag with `cargo publish` ships its FSL terms with no extra step.
-
+- Each workspace crate carries its OWN crate-local `LICENSE.md`. Crates under
+  `services/` use FSL-1.1-ALv2 (and point at it via `license-file = "LICENSE.md"`
+  in their `[package]`, since FSL is not an SPDX id). Crates under `core/` use
+  Apache-2.0.
+- The three published public crates (`hop-mesh-core`, `hop-mesh-store-sqlite`, and
+  `hop-mesh-store-firestore`) are published from the monorepo using `tools/crates-publish.py`
+  via `.github/workflows/crates-publish.yml`, mapping the local crate names to their
+  crates.io package identities and resolving sibling dependencies to versioned requirements.
 ## License note (per-component)
 
 There is no repo-wide root license. Each component carries its own `LICENSE.md` so its
-terms travel with any package or split repository. Components under `core/` use
-FSL-1.1-ALv2; SDKs, services, bearers, drivers, and apps use Apache-2.0. The
+terms travel with any package or split repository. Components under `services/` use
+FSL-1.1-ALv2; `core/`, SDKs, bearers, drivers, and apps use Apache-2.0. The
 `tools/repo-integrity-guard.sh` check enforces the exact text for each tier and rejects
 missing, truncated, or cross-tier copies. The Font Awesome asset license remains
 separate from these code licenses.
+
+## Dependency resolution and lowest-supported-bound policy (INFRA-013)
+
+Hop ships client endpoint SDKs across several library ecosystems. Unlike standalone
+applications that ship a checked-in lockfile, published libraries resolve dependencies
+against consumer environments. To prevent unannounced breakage:
+
+1. Resolved graph reporting: every unpinned SDK job in CI reports its resolved dependency
+   graph (`pip freeze` for Python, `go list -m all` + `go mod graph` for Go,
+   `gem dependency --list` for Ruby, `mix deps.tree` for Elixir, `dart pub deps` for
+   Flutter/Dart). This makes the exact resolved set visible in every CI run.
+
+2. Lowest-supported-bound verification: ecosystems with native or standard lowest-bound
+   resolution tooling test the minimal declared dependency bounds in CI (`lowest-supported-bounds` job).
+   - Go: `go.mod` specifies minimal dependency versions, and `go mod tidy -compat=1.21`
+     plus `go test` exercises the lowest bound.
+   - Python: `uv pip install --resolution lowest` resolves and installs the minimum
+     permissible dependency versions for test suites.
+
+3. Principled residual: ecosystems lacking standard lowest-bound resolution tools
+   (Ruby Bundler lacks a native lowest-resolution resolver; Elixir Hex/Mix resolves
+   latest compatible; Dart/Flutter pub resolves highest compatible without manual constraint
+   downgrades) are audited manually during release review.
 
 ## Pre-release checklist
 

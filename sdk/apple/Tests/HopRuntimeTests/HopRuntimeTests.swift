@@ -229,7 +229,7 @@ final class HopRuntimeTests: XCTestCase {
     /// asserted that level on first use while binding none of them, so an SDK-only integrator could
     /// not fail over: with no relay call on HopNode, the only usable RelayBearer constructor is the
     /// fixed-URL one, and one dead endpoint ended internet reach until the app restarted. The
-    /// wrapper now pins ABI 6 and binds the relay pool, and this test is what makes the binding
+    /// wrapper now pins ABI 7 and binds the relay pool, and this test is what makes the binding
     /// load-bearing rather than merely present.
     ///
     /// This drives the failover through the SAME closure shape RelayBearer's pooled constructor takes
@@ -333,7 +333,7 @@ final class HopRuntimeTests: XCTestCase {
     /// This also pins the browse row's field order. `hop_hps_browse` hands a Swift callback SEVEN
     /// arguments, so a kind or access read out of the wrong slot would still compile and would show a
     /// closed topic as open: asserting both discriminants is what catches that.
-    func testAnInviteKeysAMemberAndARekeyRevokesThem() {
+    func testAnInviteKeysAMemberAndARekeyRevokesThem() throws {
         guard let pair = HpsPair(app: 8) else { return XCTFail("HpsPair returned nil") }
         let path = "vip"
         XCTAssertNotNil(pair.host.hpsRegister(path: path, kind: .channel,
@@ -371,14 +371,14 @@ final class HopRuntimeTests: XCTestCase {
         // A mis-sized removal is DROPPED, so this is an ordinary rotation and the member is retained.
         // If the wrapper packed the short entry instead, the buffer would slide and this member would
         // be the one revoked by a call that named nobody.
-        XCTAssertFalse(pair.host.hpsRekey(path: path, remove: [Data(count: 31)]).isEmpty,
+        XCTAssertFalse(try pair.host.hpsRekey(path: path, remove: [Data(count: 31)]).isEmpty,
                        "a rotation seals the new key to the retained member")
         pair.pumpUntilQuiet()
         XCTAssertTrue(pair.host.hpsMembers(path: path).contains(pair.memberAddress),
                       "a 31-byte entry revoked a member it had no right to name")
 
         // Naming them properly is the revocation: they keep the dead key and nothing published after.
-        _ = pair.host.hpsRekey(path: path, remove: [pair.memberAddress])
+        _ = try pair.host.hpsRekey(path: path, remove: [pair.memberAddress])
         pair.pumpUntilQuiet()
         XCTAssertFalse(pair.host.hpsMembers(path: path).contains(pair.memberAddress),
                        "a rekey naming the member drops them from the retained set")
@@ -448,7 +448,7 @@ final class HopRuntimeTests: XCTestCase {
         // A rekey drops a mis-sized removal rather than packing it: the C call reads count * 32 bytes
         // from one buffer, so a short entry would slide every later address and revoke a member nobody
         // named. Dropping it leaves an ordinary rotation, which on a memberless topic seals nothing.
-        XCTAssertTrue(node.hpsRekey(path: "room", remove: [Data(count: 31)]).isEmpty)
+        XCTAssertTrue(try node.hpsRekey(path: "room", remove: [Data(count: 31)]).isEmpty)
     }
 
     /// `hpsMyTopics` is how an app rebuilds its channel list after a restart, since the node persists
@@ -476,5 +476,82 @@ final class HopRuntimeTests: XCTestCase {
         let left = node.hpsLeave(path: "lobby")
         XCTAssertTrue(left.ok, "leaving a hosted topic succeeds")
         XCTAssertNil(left.id, "and emits no bundle to report")
+    }
+
+    enum TestHandlerError: Error {
+        case handlerFailed
+    }
+
+    func testServiceRequestThrowingHandlerLeavesRequestQueued() throws {
+        guard let pair = HpsPair(app: 9) else { return XCTFail("HpsPair returned nil") }
+        guard let reqId = pair.host.sendServiceRequest(to: pair.memberAddress, service: "svc", method: "m", args: Data([1, 2])) else {
+            return XCTFail("sendServiceRequest failed")
+        }
+        pair.pumpUntilQuiet()
+
+        var attempts = 0
+        XCTAssertThrowsError(try pair.member.pollServiceRequests { req in
+            attempts += 1
+            throw TestHandlerError.handlerFailed
+        })
+        XCTAssertEqual(attempts, 1)
+
+        var redelivered: HopServiceRequest?
+        try pair.member.pollServiceRequests { req in
+            redelivered = req
+        }
+        XCTAssertNotNil(redelivered, "request must be redelivered after throwing handler")
+        XCTAssertEqual(redelivered?.requestId, reqId)
+
+        var afterAccept: HopServiceRequest?
+        try pair.member.pollServiceRequests { req in
+            afterAccept = req
+        }
+        XCTAssertNil(afterAccept, "request must be cleared after successful handler")
+    }
+
+    func testHpsRekeyFailureThrowsRatherThanEmptyList() {
+        guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
+        XCTAssertThrowsError(try node.hpsRekey(path: "unknown_topic"))
+    }
+
+    func testOpenKeyedWithSqlcipherIsEncryptedAndWrongKeyFails() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("hop-swift-keyed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let dbPath = tempDir.appendingPathComponent("node.db").path
+        let key = Data(repeating: 0x42, count: 32)
+
+        do {
+            guard let node = HopNode.openKeyed(dbPath: dbPath, key: key) else {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath),
+                               "plain build must not create a plaintext database when keyed open was requested")
+                return
+            }
+            XCTAssertTrue(node.isPersistent, "keyed node must be persistent")
+            XCTAssertTrue(node.isEncrypted, "sqlcipher keyed node must report isEncrypted == true")
+        }
+
+        // Reopening with wrong key fails to open the encrypted database while the file stays intact
+        let wrongKey = Data(repeating: 0x99, count: 32)
+        let badNode = HopNode.openKeyed(dbPath: dbPath, key: wrongKey)
+        let failedToDecrypt = (badNode == nil || badNode?.isPersistent == false || badNode?.isEncrypted == false)
+        XCTAssertTrue(failedToDecrypt, "reopening with wrong key must fail (returns nil or fails closed to non-persistent/unencrypted)")
+        if let bad = badNode {
+            XCTAssertFalse(bad.isPersistent, "wrong key must not yield a persistent store")
+            XCTAssertFalse(bad.isEncrypted, "wrong key must not yield an encrypted store")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dbPath), "database file must remain on disk after wrong-key open")
+        let attrs = try FileManager.default.attributesOfItem(atPath: dbPath)
+        let fileSize = attrs[.size] as? UInt64 ?? 0
+        XCTAssertGreaterThan(fileSize, 0, "database file must stay intact and non-empty")
+
+        // Reopening with correct key succeeds
+        guard let reopened = HopNode.openKeyed(dbPath: dbPath, key: key) else {
+            return XCTFail("reopening with original key must succeed")
+        }
+        XCTAssertTrue(reopened.isPersistent, "reopened node must be persistent")
+        XCTAssertTrue(reopened.isEncrypted, "reopened node must report isEncrypted == true")
     }
 }

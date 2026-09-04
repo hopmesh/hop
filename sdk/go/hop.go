@@ -20,8 +20,9 @@ extern bool goSvcRespSink(uintptr_t ctx, uint8_t *from, uint8_t *forid, uint16_t
 static void drain_tramp(void *ctx, uint64_t link, const uint8_t *b, size_t n) {
     goDrainSink((uintptr_t)ctx, link, (uint8_t *)b, n);
 }
-static void svcreq_tramp(void *ctx, const uint8_t *f, const uint8_t *r, const char *s, const char *m, const uint8_t *a, size_t n) {
+static bool svcreq_tramp(void *ctx, const uint8_t *f, const uint8_t *r, const char *s, const char *m, const uint8_t *a, uintptr_t n) {
     goSvcReqSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, (char *)s, (char *)m, (uint8_t *)a, n);
+    return false;
 }
 static bool svcresp_tramp(void *ctx, const uint8_t *f, const uint8_t *r, uint16_t st, const uint8_t *b, size_t n) {
     return goSvcRespSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, st, (uint8_t *)b, n);
@@ -78,8 +79,8 @@ static uintptr_t call_hps_pending(const HopNode *node, const char *path, uintptr
 static uintptr_t call_hps_members(const HopNode *node, const char *path, uintptr_t ctx) {
     return hop_hps_members(node, path, hpsaddr_tramp, (void *)ctx);
 }
-static uintptr_t call_hps_rekey(const HopNode *node, const char *path, const char *new_path,
-                                const uint8_t *remove, uintptr_t remove_count, uintptr_t ctx) {
+static intptr_t call_hps_rekey(const HopNode *node, const char *path, const char *new_path,
+                               const uint8_t *remove, uintptr_t remove_count, uintptr_t ctx) {
     return hop_hps_rekey(node, path, new_path, remove, remove_count, hpsaddr_tramp, (void *)ctx);
 }
 static uintptr_t call_hps_my_topics(const HopNode *node, uintptr_t ctx) { return hop_hps_my_topics(node, hpstopic_tramp, (void *)ctx); }
@@ -94,7 +95,7 @@ import (
 	"unsafe"
 )
 
-const abiExpected = 6
+const abiExpected = 7
 
 // OutPacket is one drained outbound frame for a link.
 type OutPacket struct {
@@ -143,6 +144,80 @@ func nodeWithSecret(secret []byte) *node {
 	defer C.free(cb)
 	return &node{p: (*C.HopNode)(C.hop_node_with_secret((*C.uint8_t)(cb), C.size_t(len(secret))))}
 }
+
+func nodeOpen(dbPath string, secret []byte, appSecret []byte) (*node, error) {
+	cPath := C.CString(dbPath)
+	defer C.free(unsafe.Pointer(cPath))
+	var secPtr *C.uint8_t
+	var secLen C.size_t
+	if len(secret) > 0 {
+		if err := require32(secret, "secret"); err != nil {
+			return nil, err
+		}
+		cb := C.CBytes(secret)
+		defer C.free(cb)
+		secPtr = (*C.uint8_t)(cb)
+		secLen = C.size_t(len(secret))
+	}
+	var appPtr *C.uint8_t
+	var appLen C.size_t
+	if len(appSecret) > 0 {
+		if err := require32(appSecret, "appSecret"); err != nil {
+			return nil, err
+		}
+		ab := C.CBytes(appSecret)
+		defer C.free(ab)
+		appPtr = (*C.uint8_t)(ab)
+		appLen = C.size_t(len(appSecret))
+	}
+	p := C.hop_node_open(cPath, secPtr, secLen, appPtr, appLen)
+	if p == nil {
+		return nil, fmt.Errorf("hop_node_open returned NULL for path %q", dbPath)
+	}
+	return &node{p: (*C.HopNode)(p)}, nil
+}
+
+func nodeOpenKeyed(dbPath string, secret []byte, appSecret []byte, key []byte) (*node, error) {
+	cPath := C.CString(dbPath)
+	defer C.free(unsafe.Pointer(cPath))
+	var secPtr *C.uint8_t
+	var secLen C.size_t
+	if len(secret) > 0 {
+		if err := require32(secret, "secret"); err != nil {
+			return nil, err
+		}
+		cb := C.CBytes(secret)
+		defer C.free(cb)
+		secPtr = (*C.uint8_t)(cb)
+		secLen = C.size_t(len(secret))
+	}
+	var appPtr *C.uint8_t
+	var appLen C.size_t
+	if len(appSecret) > 0 {
+		if err := require32(appSecret, "appSecret"); err != nil {
+			return nil, err
+		}
+		ab := C.CBytes(appSecret)
+		defer C.free(ab)
+		appPtr = (*C.uint8_t)(ab)
+		appLen = C.size_t(len(appSecret))
+	}
+	var keyPtr *C.uint8_t
+	var keyLen C.size_t
+	if len(key) > 0 {
+		kb := C.CBytes(key)
+		defer C.free(kb)
+		keyPtr = (*C.uint8_t)(kb)
+		keyLen = C.size_t(len(key))
+	}
+	p := C.hop_node_open_keyed(cPath, secPtr, secLen, appPtr, appLen, keyPtr, keyLen)
+	if p == nil {
+		return nil, fmt.Errorf("hop_node_open_keyed returned NULL for path %q", dbPath)
+	}
+	return &node{p: (*C.HopNode)(p)}, nil
+}
+
+func (n *node) isPersistent() bool { return bool(C.hop_node_is_persistent(n.p)) }
 
 func (n *node) free()             { C.hop_node_free(n.p) }
 func (n *node) tick(nowMs uint64) { C.hop_node_tick(n.p, C.uint64_t(nowMs)) }
@@ -208,6 +283,32 @@ func (n *node) clusterJoinPassphrase(pass []byte) {
 }
 
 func (n *node) clusterMembers() uint32 { return uint32(C.hop_cluster_members(n.p)) }
+
+func (n *node) clusterMarkDone(from, requestID []byte) error {
+	if err := require32(from, "from"); err != nil {
+		return err
+	}
+	if err := require32(requestID, "request id"); err != nil {
+		return err
+	}
+	cFrom := C.CBytes(from)
+	defer C.free(cFrom)
+	cRid := C.CBytes(requestID)
+	defer C.free(cRid)
+	C.hop_cluster_mark_done(n.p, (*C.uint8_t)(cFrom), (*C.uint8_t)(cRid))
+	return nil
+}
+
+func (n *node) clusterWouldDrop(from, requestID []byte) bool {
+	if len(from) != 32 || len(requestID) != 32 {
+		return false
+	}
+	cFrom := C.CBytes(from)
+	defer C.free(cFrom)
+	cRid := C.CBytes(requestID)
+	defer C.free(cRid)
+	return bool(C.hop_cluster_would_drop(n.p, (*C.uint8_t)(cFrom), (*C.uint8_t)(cRid)))
+}
 
 func (n *node) clusterSetQuorum(min uint32) { C.hop_cluster_set_quorum(n.p, C.uint32_t(min)) }
 
@@ -301,6 +402,28 @@ func (n *node) acceptServiceResponse(requestID []byte) (bool, error) {
 	id := C.CBytes(requestID)
 	defer C.free(id)
 	return bool(C.hop_accept_service_response(n.p, (*C.uint8_t)(id))), nil
+}
+
+func (n *node) isEncrypted() bool {
+	return bool(C.hop_node_is_encrypted(n.p))
+}
+
+func (n *node) acceptServiceRequest(requestID []byte) (bool, error) {
+	if err := require32(requestID, "request id"); err != nil {
+		return false, err
+	}
+	id := C.CBytes(requestID)
+	defer C.free(id)
+	return bool(C.hop_accept_service_request(n.p, (*C.uint8_t)(id))), nil
+}
+
+func (n *node) rejectServiceRequest(requestID []byte) (bool, error) {
+	if err := require32(requestID, "request id"); err != nil {
+		return false, err
+	}
+	id := C.CBytes(requestID)
+	defer C.free(id)
+	return bool(C.hop_reject_service_request(n.p, (*C.uint8_t)(id))), nil
 }
 
 // §32 hps:// pub/sub, the surface the v5 -> v6 ABI bump added: the C ABI had no hps exports at all,
@@ -590,8 +713,11 @@ func (n *node) hpsRekey(path, newPath string, remove [][]byte) ([][]byte, error)
 	var out [][]byte
 	h := cgo.NewHandle(&out)
 	defer h.Delete()
-	C.call_hps_rekey(n.p, cp, cn, removed, C.uintptr_t(len(remove)), C.uintptr_t(h))
+	res := C.call_hps_rekey(n.p, cp, cn, removed, C.uintptr_t(len(remove)), C.uintptr_t(h))
 	runtime.KeepAlive(packed)
+	if res < 0 {
+		return nil, fmt.Errorf("hop_hps_rekey(%q) failed", path)
+	}
 	return out, nil
 }
 

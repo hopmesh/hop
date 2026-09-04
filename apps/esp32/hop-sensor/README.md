@@ -53,7 +53,7 @@ idf.py build
 
 # 3. The ONLY on-hardware step: flash + watch the logs.
 idf.py -p /dev/ttyUSB0 flash monitor
-# -> I (...) hop-sensor: libhop ABI version 6
+# -> I (...) hop-sensor: libhop ABI version 7
 # -> W (...) hop-sensor: protocol gated: implausible Unix time
 # -> I (...) hop-sensor: trusted Unix clock synchronized; protocol ready
 # -> I (...) hop-sensor: POST weather/report seq=1

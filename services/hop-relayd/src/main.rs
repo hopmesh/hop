@@ -967,64 +967,73 @@ fn decode_usage(bytes: &[u8]) -> Usage {
     }
 }
 
+static RETRY_USAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_CARRIAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Read-modify-write the drained per-tenant usage into this writer's hour-bucketed ledger rows.
-/// Returns the number of rows touched. See [`merge_rows_into_store`] for the concurrency premise.
+/// Returns the number of rows touched. See [`merge_rows_into_store_buffered`] for the concurrency premise.
 fn merge_usage_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store(store, drained, now_ms, usage_kv_key)
+    merge_rows_into_store_buffered(store, drained, now_ms, usage_kv_key, &RETRY_USAGE)
 }
 
 /// Read-modify-write the drained per-tenant CARRIAGE measurement into its own hour-bucketed rows.
-///
-/// This records real work the relay performed that the delivery-justified meter never charges for:
-/// bundles it accepted, stored, spooled, and forwarded which produced no delivery event (no
-/// returning ACK, no §39 vaccine), so `meter_delivered` never fired. §40 telemetry is the systematic
-/// case rather than an edge case: telemetry bundles set `request_ack: false`, the collector
-/// deliberately never responds, and they are `Destination::Device` so no vaccine fires, meaning NO
-/// telemetry bundle can ever produce a `hop_backbone_delivery`. The relay carries that traffic for
-/// free today.
-///
-/// This is MEASUREMENT ONLY. It is written to its own `carriage_usage/` prefix so it cannot disturb
-/// the live `usage/` reach ledger or its parser, it emits no Stripe event, and nothing bills off it.
-/// Whether any of this carriage should be priced (and on what unit) is the owner's decision; the
-/// point here is that the volume stops being invisible when someone goes to make it.
 fn merge_carriage_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store(store, drained, now_ms, carriage_kv_key)
+    merge_rows_into_store_buffered(store, drained, now_ms, carriage_kv_key, &RETRY_CARRIAGE)
 }
 
-/// The shared RMW body for both 16-byte ledger shapes.
-///
-/// The premise this depends on, stated exactly (services-r19-05 / SVC-005): the read half reads the
-/// process-LOCAL in-memory kv copy, not the durable row, so this merge is safe ONLY against a row no
-/// other process writes. It used to claim "only this node writes its own kv, so the RMW is
-/// race-free", which is false whenever two processes share a node address, and a Cloud Run revision
-/// rollout does exactly that. The row key now carries [`ledger_writer_id`], so the row this merge
-/// owns is private to THIS process and the premise holds structurally rather than by deployment
-/// convention. Concurrent writers compose because the reconciler sums the per-writer rows.
+/// Test-only wrapper over the usage retry buffer for the ledger unit tests.
+#[cfg(test)]
 fn merge_rows_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
 ) -> usize {
-    let hour = now_ms / 3_600_000;
+    merge_rows_into_store_buffered(store, drained, now_ms, key_for, &RETRY_USAGE)
+}
+
+/// The shared RMW body for both 16-byte ledger shapes, backed by an in-memory retry buffer.
+/// Failed writes are retained until confirmed committed (STORE-005).
+fn merge_rows_into_store_buffered<S: Store>(
+    store: &mut S,
+    drained: &[(TenantId, Usage)],
+    now_ms: u64,
+    key_for: impl Fn(u64, &TenantId) -> String,
+    retry_map: &std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>>,
+) -> usize {
+    let mut map = retry_map.lock().unwrap();
     for (tenant, usage) in drained {
+        map.entry(*tenant).or_default().add(usage);
+    }
+    let hour = now_ms / 3_600_000;
+    let mut committed = Vec::new();
+    for (tenant, usage) in map.iter() {
         let key = key_for(hour, tenant);
         let mut total = store
             .get_kv(&key)
             .map(|b| decode_usage(&b))
             .unwrap_or_default();
         total.add(usage);
-        store.put_kv(&key, encode_usage(&total));
+        if store.put_kv_critical(&key, encode_usage(&total)).is_ok() {
+            committed.push(*tenant);
+        }
     }
-    drained.len()
+    for tenant in &committed {
+        map.remove(tenant);
+    }
+    committed.len()
 }
 
 /// One storage-occupancy row key: per (hour bucket, tenant, writer). A SEPARATE prefix from `usage/`
@@ -1059,18 +1068,30 @@ fn merge_storage_into_store<S: Store>(
     accrued: &[(TenantId, u64)],
     now_ms: u64,
 ) -> usize {
-    let hour = now_ms / 3_600_000;
-    let mut rows = 0;
+    let mut map = RETRY_STORAGE.lock().unwrap();
     for (tenant, byte_ms) in accrued {
         if *byte_ms == 0 {
             continue;
         }
+        let current = map.entry(*tenant).or_default();
+        *current = current.saturating_add(*byte_ms);
+    }
+    let hour = now_ms / 3_600_000;
+    let mut committed = Vec::new();
+    for (tenant, byte_ms) in map.iter() {
         let key = storage_usage_kv_key(hour, tenant);
         let prev = store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0);
-        store.put_kv(&key, encode_storage(prev.saturating_add(*byte_ms)));
-        rows += 1;
+        if store
+            .put_kv_critical(&key, encode_storage(prev.saturating_add(*byte_ms)))
+            .is_ok()
+        {
+            committed.push(*tenant);
+        }
     }
-    rows
+    for tenant in &committed {
+        map.remove(tenant);
+    }
+    committed.len()
 }
 
 /// Drain the node's §35 meter + refusal counter into the ledger and the private log, now.
@@ -1650,14 +1671,16 @@ fn ingest_durable<S: Store>(node: &mut Node<S>, bytes: Vec<u8>, require_flush: b
         return false;
     }
     if let Ok(b) = Bundle::from_bytes(&bytes) {
+        let id = b.id();
         let dst = match b.inner.dst {
             Destination::Device(d) | Destination::AckTo(d, _) => short_b58(&d),
             Destination::Broadcast => "broadcast".to_string(),
             Destination::Vaccine(..) => "vaccine".to_string(),
         };
         // services-03: bundle id + destination address is per-message metadata.
-        netlog_private(format!("ingest: msg {} → dst {}", short_b58(&b.id()), dst));
-        if guard_core("ingest", || node.ingest(b)).is_none() {
+        netlog_private(format!("ingest: msg {} → dst {}", short_b58(&id), dst));
+        let outcome = guard_core("ingest", || node.ingest(b));
+        if outcome != Some(hop_core::node::IngestOutcome::Held) || !node.store.contains(&id) {
             return false;
         }
         return node.store.durability_status() == DurabilityReadiness::Ready
@@ -1922,8 +1945,10 @@ fn main() {
     let base_seed = base_identity.to_secret_bytes();
     let identity = regional_identity(base_identity, &base_seed, region.as_deref());
     let addr = identity.address();
-    let store = build_store(&firestore, &db, &addr)
+    let mut store = build_store(&firestore, &db, &addr)
         .unwrap_or_else(|error| panic!("durable store failed readiness: {error}"));
+    validate_or_set_identity_sentinel(store.as_mut(), &addr)
+        .unwrap_or_else(|error| panic!("identity sentinel verification failed: {error}"));
     let durability = store.durability_handle().unwrap_or_default();
     let _ = DURABILITY.set(durability.clone());
     let mut node = Node::with_store(identity, store);
@@ -2391,6 +2416,25 @@ fn serve_ws(stream: TcpStream, kind: WsKind, ev_tx: &EventTx) {
     let _ = ev_tx.send(Ev::Down(link));
 }
 
+/// Strip any userinfo component (`user:pass@` or `user@`) from a dial URL before logging.
+///
+/// SVC-010: Dial URLs must never carry credentials as the supported auth path. Noise handles
+/// peer authentication; this redaction is defense-in-depth against credential leaks into operator
+/// and public netlog streams if an operator inadvertently configures HTTP Basic Auth userinfo.
+/// Only the peer dialer logs a URL, so the helper is compiled with it.
+#[cfg(feature = "firestore")]
+fn redact_dial_url(raw: &str) -> String {
+    if let Some((scheme, rest)) = raw.split_once("://") {
+        let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..path_start];
+        let suffix = &rest[path_start..];
+        if let Some((_userinfo, host_port)) = authority.split_once('@') {
+            return format!("{scheme}://{host_port}{suffix}");
+        }
+    }
+    raw.to_string()
+}
+
 /// Dial one **currently-online** peer relay over TLS WebSocket and bridge it to the driver as
 /// an Initiator link, the relay-to-relay epidemic of DESIGN.md §28. Dials **once**: on
 /// disconnect it returns, and the backbone's observe loop re-dials only if the peer is still in
@@ -2399,12 +2443,15 @@ fn serve_ws(stream: TcpStream, kind: WsKind, ev_tx: &EventTx) {
 /// reliably surface as WouldBlock; non-blocking does, same fix as the endpoint dialer).
 #[cfg(feature = "firestore")]
 fn dial_peer(url: &str, ev_tx: &EventTx) {
+    // The registry URL is dialed as published; only what reaches a log line is redacted (SVC-010).
+    let log_url = redact_dial_url(url);
     use tungstenite::stream::MaybeTlsStream;
     let (mut ws, _resp) =
         match tungstenite::client::connect_with_config(url, Some(ws_bearer_config()), 3) {
             Ok(c) => c,
             Err(e) => {
-                netlog_event(format!("peer: {url} unreachable ({e})"));
+                let err_msg = redact_dial_url(&e.to_string());
+                netlog_event(format!("peer: {log_url} unreachable ({err_msg})"));
                 return;
             }
         };
@@ -2422,7 +2469,7 @@ fn dial_peer(url: &str, ev_tx: &EventTx) {
     if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
         return;
     }
-    netlog_event(format!("peer: dialed {url} (link {link})"));
+    netlog_event(format!("peer: dialed {log_url} (link {link})"));
     'conn: loop {
         loop {
             match out_rx.try_recv() {
@@ -2467,7 +2514,32 @@ fn dial_peer(url: &str, ev_tx: &EventTx) {
         }
     }
     let _ = ev_tx.send(Ev::Down(link));
-    netlog_event(format!("peer: link {link} to {url} closed"));
+    netlog_event(format!("peer: link {link} to {log_url} closed"));
+}
+
+#[cfg(all(test, feature = "firestore"))]
+#[test]
+fn dial_peer_redacts_userinfo_from_logs() {
+    // SVC-010: dial URLs must never leak embedded credentials into netlog_event / public logs
+    std::env::set_var("HOP_PUBLIC_LOG_STREAM", "1");
+    let (_who, _backlog, rx) = log_hub().subscribe();
+    let (ev_tx, _rx) = event_channel();
+    dial_peer("wss://operator:secret_token_123@127.0.0.1:1/ws", &ev_tx);
+    let line = rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("log line emitted");
+    assert!(
+        !line.contains("secret_token_123"),
+        "log line leaked userinfo credential: {line}"
+    );
+    assert!(
+        !line.contains("operator@"),
+        "log line leaked userinfo username: {line}"
+    );
+    assert!(
+        line.contains("127.0.0.1:1/ws"),
+        "log line preserves destination host and path: {line}"
+    );
 }
 
 /// Pick the store backend: durable per-node Firestore (scale-to-zero) when built with
@@ -2505,6 +2577,29 @@ fn build_store(
         .map_err(|error| format!("sqlite open failed: {error}"))
 }
 
+const IDENTITY_SENTINEL_KEY: &str = "identity/sentinel";
+
+/// Verify that the store is bound to `expected_addr`, or write the sentinel on first boot.
+fn validate_or_set_identity_sentinel(
+    store: &mut dyn Store,
+    expected_addr: &[u8],
+) -> std::result::Result<(), String> {
+    if let Some(existing) = store.get_kv(IDENTITY_SENTINEL_KEY) {
+        if existing != expected_addr {
+            return Err(format!(
+                "store identity sentinel mismatch: store is bound to address {}, but current node identity is {}",
+                bs58_addr(&existing),
+                bs58_addr(expected_addr)
+            ));
+        }
+    } else {
+        store
+            .put_kv_critical(IDENTITY_SENTINEL_KEY, expected_addr.to_vec())
+            .map_err(|e| format!("failed to write identity sentinel: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Load the relay identity: from a 32-byte file (mounted secret) when given, else
 /// from `<db>.key`, generating and persisting one on first run.
 fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
@@ -2517,17 +2612,27 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
             Err(e) => panic!("--identity-file {path} unreadable: {e}"),
         }
     }
-    if let Ok(bytes) = std::fs::read(key_path) {
-        if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-            return Identity::from_secret_bytes(&seed);
+    let key_p = std::path::Path::new(key_path);
+    if key_p.exists() {
+        match std::fs::read(key_path) {
+            Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(seed) => return Identity::from_secret_bytes(&seed),
+                Err(_) => panic!("identity key file {key_path} must be exactly 32 bytes"),
+            },
+            Err(e) => panic!("identity key file {key_path} unreadable: {e}"),
+        }
+    }
+    // If the database already exists, a missing key file is an invalid state (non-new deployment)
+    if let Some(db_path) = key_path.strip_suffix(".key") {
+        if std::path::Path::new(db_path).exists() {
+            panic!("database {db_path} exists but identity file {key_path} is missing");
         }
     }
     let id = Identity::generate();
-    // services-13: this is a 32-byte long-term secret. Write it 0600 (owner-only) so a shared VM's
-    // other users can't read the relay's private identity seed, and log LOUDLY on failure - a
-    // silently-dropped write means the address silently changes on every restart.
+    // services-13: this is a 32-byte long-term secret. Write it 0600 (owner-only) atomically so a
+    // shared VM's other users can't read the relay's private identity seed, and log LOUDLY on failure.
     let secret = id.to_secret_bytes();
-    if let Err(e) = write_secret_600(key_path, &secret) {
+    if let Err(e) = write_secret_atomic(key_path, &secret) {
         eprintln!(
             "relayd: FAILED to persist identity seed to {key_path}: {e} - \
              this relay's address WILL change on restart (fix perms/disk and retry)"
@@ -2536,9 +2641,64 @@ fn load_identity(identity_file: &Option<String>, key_path: &str) -> Identity {
     id
 }
 
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        NEXT_LINK.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
+}
+
 /// Write `bytes` to `path` with owner-only (0600) permissions, creating or truncating. On Unix the
 /// mode is applied at create time via `OpenOptions` so the secret is never briefly world-readable;
 /// on non-Unix targets it falls back to a plain write (the relay only ships on Unix).
+#[cfg_attr(not(test), allow(dead_code))]
 fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(unix)]
@@ -4465,6 +4625,58 @@ mod identity_tests {
             "the seed was NOT persisted (the parent dir does not exist)"
         );
     }
+
+    #[test]
+    fn hostile_corrupt_default_key_must_panic_not_rotate() {
+        let key = tmp("corrupt_key");
+        std::fs::write(&key, [1u8; 16]).unwrap();
+        let r = std::panic::catch_unwind(|| load_identity(&None, &key));
+        let _ = std::fs::remove_file(&key);
+        assert!(
+            r.is_err(),
+            "a corrupt default key must panic, not silently rotate"
+        );
+    }
+
+    #[test]
+    fn hostile_missing_key_with_existing_db_must_panic_not_rotate() {
+        let key = tmp("existing_db.key");
+        let db = key.strip_suffix(".key").unwrap();
+        std::fs::write(db, b"sqlite dummy").unwrap();
+        let _ = std::fs::remove_file(&key);
+        let r = std::panic::catch_unwind(|| load_identity(&None, &key));
+        let _ = std::fs::remove_file(db);
+        assert!(
+            r.is_err(),
+            "missing identity file beside existing database must panic, not rotate"
+        );
+    }
+
+    #[test]
+    fn store_identity_sentinel_rejects_identity_mismatch() {
+        let mut store = MemoryStore::new();
+        let addr1 = [1u8; 32];
+        let addr2 = [2u8; 32];
+
+        // First boot sets sentinel
+        assert!(validate_or_set_identity_sentinel(&mut store, &addr1).is_ok());
+        // Re-boot with same address passes
+        assert!(validate_or_set_identity_sentinel(&mut store, &addr1).is_ok());
+        // Re-boot with different address fails
+        let err = validate_or_set_identity_sentinel(&mut store, &addr2);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("sentinel mismatch"));
+    }
+
+    #[test]
+    fn write_secret_atomic_refuses_to_overwrite_existing_file() {
+        let key = tmp("no_overwrite");
+        std::fs::write(&key, [1u8; 32]).unwrap();
+        let res = write_secret_atomic(&key, &[2u8; 32]);
+        let _ = std::fs::remove_file(&key);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+    }
 }
 
 #[cfg(test)]
@@ -5505,6 +5717,135 @@ mod driver_tests {
         apply_event(&mut node, &mut writers, Ev::IngestCustody(bytes, ok_tx));
         assert_eq!(ok_rx.recv_timeout(Duration::from_secs(1)), Ok(true));
         assert!(!node.queue().is_empty());
+    }
+
+    #[test]
+    fn hostile_mailbox_pull_evicted_immediately_must_not_ack_custody() {
+        let mut node = test_node();
+        node.set_max_relayed(2);
+        let mut writers = HashMap::new();
+
+        let recipient = Identity::generate();
+        let sender = Identity::generate();
+        for i in 0..2 {
+            let b = Bundle::create(
+                &sender,
+                Destination::Device(recipient.address()),
+                &recipient.address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: vec![i as u8],
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..BundleOpts::default()
+                },
+            )
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+            let (tx, rx) = mpsc::sync_channel(1);
+            apply_event(&mut node, &mut writers, Ev::IngestCustody(b, tx));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        }
+
+        let victim = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"victim".to_vec(),
+            },
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        let victim_id = victim.id();
+        let victim_bytes = victim.to_bytes().unwrap();
+
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        apply_event(
+            &mut node,
+            &mut writers,
+            Ev::IngestCustody(victim_bytes, ack_tx),
+        );
+        let ack_result = ack_rx.recv_timeout(Duration::from_secs(1));
+
+        assert!(!node.store.contains(&victim_id), "victim was evicted");
+        assert_eq!(
+            ack_result,
+            Ok(false),
+            "custody ack must be false when bundle is immediately evicted"
+        );
+    }
+
+    #[test]
+    fn production_cap_8192_hostile_mailbox_pull_retains_source() {
+        let mut node = test_node();
+        node.set_max_relayed(8192);
+        let mut writers = HashMap::new();
+
+        let recipient = Identity::generate();
+        let sender = Identity::generate();
+
+        for i in 0..8192 {
+            let b = Bundle::create(
+                &sender,
+                Destination::Device(recipient.address()),
+                &recipient.address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: (i as u32).to_le_bytes().to_vec(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..BundleOpts::default()
+                },
+            )
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+            let (tx, rx) = mpsc::sync_channel(1);
+            apply_event(&mut node, &mut writers, Ev::IngestCustody(b, tx));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        }
+
+        assert_eq!(node.queue().len(), 8192);
+
+        let victim = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"victim-8193".to_vec(),
+            },
+            BundleOpts {
+                priority: 0,
+                ..BundleOpts::default()
+            },
+        )
+        .unwrap();
+        let victim_id = victim.id();
+        let victim_bytes = victim.to_bytes().unwrap();
+
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        apply_event(
+            &mut node,
+            &mut writers,
+            Ev::IngestCustody(victim_bytes, ack_tx),
+        );
+        let ack_result = ack_rx.recv_timeout(Duration::from_secs(1));
+
+        assert!(!node.store.contains(&victim_id), "victim 8193 was evicted");
+        assert_eq!(
+            ack_result,
+            Ok(false),
+            "production cap 8192 custody ack MUST be false on immediate eviction"
+        );
     }
 
     #[test]
@@ -7283,5 +7624,67 @@ mod access_and_ledger_tests {
             );
             assert_eq!(key.split('/').count(), 4, "exactly four segments: {key}");
         }
+    }
+
+    // --- STORE-005 hostile regression tests --------------------------------------------------
+
+    #[test]
+    fn store_005_hostile_relay_flush_failure_retains_drained_atoms_in_retry_buffer() {
+        use hop_core::store::{KvMutation, MemoryStore};
+
+        struct FailingStore(MemoryStore);
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                _mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                Err("disk full / firestore unavailable".into())
+            }
+        }
+
+        RETRY_USAGE.lock().unwrap().clear();
+        let tenant: TenantId = [7u8; 16];
+        let drained = vec![(
+            tenant,
+            Usage {
+                bundles: 5,
+                payload_bytes: 1024,
+            },
+        )];
+
+        let mut store = FailingStore(MemoryStore::new());
+        let committed = merge_usage_into_store(&mut store, &drained, 3_600_000);
+
+        // On the unfixed tree, merge_usage_into_store uses void put_kv, claims all rows merged (committed == 1),
+        // and leaves no retry buffer, so the drained usage is lost forever.
+        assert_eq!(
+            committed, 0,
+            "STORE-005 failure: failed store write claimed success, reported {} committed",
+            committed
+        );
+        assert!(RETRY_USAGE.lock().unwrap().contains_key(&tenant));
+        RETRY_USAGE.lock().unwrap().clear();
     }
 }

@@ -1,6 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["./tools/agent-output-plugin.mjs"],
+  "environmentMode": "allowlist",
+  "environmentAllowlist": [
+    "SSH_AUTH_SOCK"
+  ],
   "permission": {
     "bash": {
       "env": "deny",

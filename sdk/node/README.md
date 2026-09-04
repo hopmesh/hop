@@ -51,10 +51,20 @@ await listen(hop, 9944)   // reachable by any device
 console.log(hop.address)   // publish this (or its name); senders reach you by it
 ```
 
-**The DX looks like HTTP; the semantics are better.** Inbound is a durable, store-and-forward consume;
-a reply is a new addressed message that may arrive later, even after a restart. It works when the peer
-is offline, and there is no auth layer to bolt on, the identity is cryptographic.
+**The DX looks like HTTP; the semantics are better.** Inbound is a store-and-forward consume; a reply
+is a new addressed message that may arrive later. By default, `new HopEndpoint()` runs an in-memory
+node whose state is ephemeral to the process lifetime. For restart durability across crashes or redeploys,
+pass `dbPath:` (and optionally `dbKey:` for SQLCipher encryption-at-rest) along with a persisted `key:`:
 
+```js
+// Persistent across process restarts:
+const hop = new HopEndpoint({
+  dbPath: '/var/lib/hop/service.db',
+  key: fs.readFileSync('/etc/hop/identity.key'),
+})
+```
+
+It works when the peer is offline, and there is no auth layer to bolt on, the identity is cryptographic.
 ## Reachable by name (WSS + discovery)
 
 Make your endpoint reachable at `myaddress.com` with no new port and no DNS records beyond a plain `A`.
