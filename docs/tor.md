@@ -140,10 +140,10 @@ points. There is no scale-to-zero for it.
 
 ### What would change in infra (NOT changed in this item)
 
-Today the fleet is one **scale-to-zero Cloud Run service per region** (`infra/cloud_run.tf`,
-`min_instance_count = 0`), fronted by a global anycast load balancer
-(`infra/load_balancer.tf`), with the whole serving chain count-gated on `var.relays_enabled`,
-which is currently `false`. If and when the onion side is built, this is what would have to
+Today the fleet is one **scale-to-zero Cloud Run service per region** (in the private platform repo,
+`hopmesh/platform/infra/cloud_run.tf`, `min_instance_count = 0`), fronted by a global anycast load balancer
+(`hopmesh/platform/infra/load_balancer.tf`), with the whole serving chain count-gated on `var.relays_enabled`,
+which is currently `false` (see `docs/repo-catalog.md`). If and when the onion side is built, this is what would have to
 change:
 
 - **A long-lived VM per continent, not Cloud Run.** Cloud Run gives request-scoped CPU, no
@@ -163,8 +163,8 @@ change:
 - **The load balancer, certificate, and DNS chain are untouched.** Tor terminates at the
   instance, not at the LB. There is no certificate to get for a `.onion` and none is needed
   (see below).
-- **Every one of those applies runs in CI**, per `infra/CLAUDE.md`. A merge to `main` is the
-  deploy; nothing is applied from a workstation.
+- **Every one of those applies runs in CI**, per `hopmesh/platform/infra/CLAUDE.md`. A merge to `main` in
+  the platform repository is the deploy; nothing is applied from a workstation.
 
 ## 5. Google Cloud AUP: run an onion SERVICE, never a Tor relay or exit
 

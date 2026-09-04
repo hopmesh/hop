@@ -6,7 +6,7 @@ single anycast load balancer) is controlled by ONE Terraform variable:
 
 ## The one-line switch
 
-The live value is set in `infra/cloudbuild.trigger.yaml` in the `apply` step env:
+The live value is set in `hopmesh/platform/infra/cloudbuild.trigger.yaml` in the `apply` step env:
 
 ```yaml
 - 'TF_VAR_relays_enabled=false'   # P2P-only test phase (fleet OFF)
@@ -22,12 +22,12 @@ clients to learn a new endpoint. `relay.hopme.sh` stays stable across the flip.
 
 ## To re-enable the fleet
 
-1. Edit `infra/cloudbuild.trigger.yaml`, change the line to
+1. Edit `hopmesh/platform/infra/cloudbuild.trigger.yaml`, change the line to
    `TF_VAR_relays_enabled=true`.
 2. Validate locally BEFORE pushing (this is the guardrail that catches the
    destroy-time cycle described below):
    ```sh
-   cd infra
+   cd hopmesh/platform/infra
    tofu init -input=false
    tofu plan -input=false \
      -var 'project_id=hop-mesh' \
@@ -46,7 +46,7 @@ clients to learn a new endpoint. `relay.hopme.sh` stays stable across the flip.
 
 ## To disable the fleet
 
-1. Edit `infra/cloudbuild.trigger.yaml`, change the line to
+1. Edit `hopmesh/platform/infra/cloudbuild.trigger.yaml`, change the line to
    `TF_VAR_relays_enabled=false`.
 2. `tofu plan` locally (same command, `relays_enabled=false`). Expect the WHOLE
    relay HTTPS serving chain to be destroyed as one set, and the url_map to fall
@@ -57,7 +57,7 @@ clients to learn a new endpoint. `relay.hopme.sh` stays stable across the flip.
 
 Emptying the regions naively deadlocks OpenTofu. The load balancer chain is
 `count`-gated on `var.relays_enabled` as a WHOLE, not backend-by-backend, on
-purpose. See `infra/load_balancer.tf`.
+purpose. See `hopmesh/platform/infra/load_balancer.tf`.
 
 Why: if the anycast backend service were left as an in-place UPDATE to "zero
 backends" while the url_map still references it AND the per-region NEGs it points
@@ -83,11 +83,11 @@ in production. Verify these, all currently unset in the live trigger:
 
 - `TF_VAR_alert_email` is empty, so ALL alerting is off (crash loops, Firestore
   failures, and 429 wake-churn are invisible). Set it before or with the enable.
-  See `infra/observability.tf`.
+  See `hopmesh/platform/infra/observability.tf`.
 - `TF_VAR_relay_identity_version` defaults to `latest`. If a new secret version
   was ever created, cold-starting regions will pick it up and split-brain the
   fleet identity. Pin it to a specific version number for a production enable.
-  See `infra/variables.tf` and `docs/runbooks/incident-response.md`.
+  See `hopmesh/platform/infra/variables.tf` and `docs/runbooks/incident-response.md`.
 - `TF_VAR_cloud_run_ingress=INGRESS_TRAFFIC_ALL` means `*.run.app` URLs bypass the
   anycast LB. Switch to `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` once the LB is the
   intended single front door.

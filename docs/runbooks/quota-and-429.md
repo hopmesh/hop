@@ -11,7 +11,7 @@ Do NOT raise `max_instances_per_region` to absorb 429s.
 Each relay keeps presence and the bundle hot-path IN MEMORY per process. A second
 instance in a region is a second, disconnected node: split-brain. Raising the
 ceiling is WORSE than the 429s, not a fix. This is called out directly in
-`infra/variables.tf`:
+`hopmesh/platform/infra/variables.tf`:
 
 > D-429: raising this is NOT the fix, it would be worse than the 429s.
 
@@ -25,7 +25,7 @@ There are two contributing causes; both are already mitigated by the default
 config, so if you see 429/wake-churn, first confirm the defaults are still in place.
 
 1. Relay-to-relay full-mesh dialing. Controlled by `mesh_fanout` in
-   `infra/variables.tf`. The safe default is `0` (handoff-only: regions do not
+   `hopmesh/platform/infra/variables.tf`. The safe default is `0` (handoff-only: regions do not
    dial each other, so no full-mesh wake storm). If someone raised it, a large
    value re-creates the 429 load. Lever: set `mesh_fanout = 0`, or a small value
    (2-3) at most for the partial-mesh epidemic. Never a large value.
@@ -39,8 +39,8 @@ config, so if you see 429/wake-churn, first confirm the defaults are still in pl
 
 1. Are the defaults intact?
    ```sh
-   grep -A2 'max_instances_per_region\|mesh_fanout' infra/variables.tf
-   grep 'TF_VAR_max_instances_per_region\|TF_VAR_mesh_fanout' infra/cloudbuild.trigger.yaml
+   grep -A2 'max_instances_per_region\|mesh_fanout' hopmesh/platform/infra/variables.tf
+   grep 'TF_VAR_max_instances_per_region\|TF_VAR_mesh_fanout' hopmesh/platform/infra/cloudbuild.trigger.yaml
    ```
    Expect `max_instances_per_region = 1` and `mesh_fanout = 0` (or unset, which
    uses the safe defaults). If either was overridden, that is your regression.
@@ -50,7 +50,7 @@ config, so if you see 429/wake-churn, first confirm the defaults are still in pl
    presence / §39-P5 pull.
 3. Do NOT add an external uptime check against the region endpoints. An external
    health probe WAKES the region on every check, which is itself a source of
-   wake-churn (see the note in `infra/cloud_run.tf`). Use the LB / Cloud Run
+   wake-churn (see the note in `hopmesh/platform/infra/cloud_run.tf`). Use the LB / Cloud Run
    built-in health, not an external pinger.
 
 ## If 429s persist with defaults intact
@@ -65,4 +65,4 @@ designed ceiling; escalate to that project rather than tuning the ceiling.
 With `TF_VAR_alert_email` unset (its current state), the "Relay Cloud Run 5xx/429"
 alert policy is not created, so 429/wake-churn is invisible until someone notices.
 Set `TF_VAR_alert_email` when the fleet is on so this pages you. See
-`infra/observability.tf`.
+`hopmesh/platform/infra/observability.tf`.
