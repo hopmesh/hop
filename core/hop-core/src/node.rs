@@ -4470,6 +4470,9 @@ impl<S: Store> Node<S> {
     /// the entity controlling `domain`'s TLS asserts this address. A verify failure (bad signature,
     /// expired, malformed) caches a short negative.
     pub fn provide_reach_record(&mut self, domain: &str, record: Vec<u8>) {
+        if record.len() > crate::reach::MAX_REACH_RECORD_BYTES {
+            return;
+        }
         let key = normalize_domain(domain);
         let now_ms = self.now_ms;
         let (address, expires_at_ms) =

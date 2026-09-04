@@ -26,6 +26,14 @@
 use crate::crypto::{self, Identity, PubKeyBytes};
 use serde::{Deserialize, Serialize};
 
+/// Maximum wire bytes accepted by [`ReachRecord::verify`].
+/// Checked before postcard deserialization to bound attacker-controlled allocation.
+pub const MAX_REACH_RECORD_BYTES: usize = 64 * 1024;
+
+/// Maximum length of an endpoint string in a reach claim.
+/// Checked before signature verification to bound dial string size.
+pub const MAX_REACH_ENDPOINT_BYTES: usize = 2 * 1024;
+
 /// Domain separator so a reach-record signature can never be confused with any other signed blob
 /// this identity produces (prekeys, bundles, hps records).
 const REACH_CONTEXT: &[u8] = b"hop/reach-record/v1\0";
@@ -86,7 +94,16 @@ impl ReachRecord {
     /// record must be unexpired. Returns the verified record, or `None` on malformed / bad-signature /
     /// expired. Self-certifying: no external key or anchor is consulted.
     pub fn verify(bytes: &[u8], now_secs: Option<u64>) -> Option<ReachRecord> {
+        if bytes.len() > MAX_REACH_RECORD_BYTES {
+            return None;
+        }
         let rec: ReachRecord = postcard::from_bytes(bytes).ok()?;
+        if rec.sig.len() != 64 {
+            return None;
+        }
+        if rec.claim.endpoint.len() > MAX_REACH_ENDPOINT_BYTES {
+            return None;
+        }
         if !crypto::verify(&rec.claim.address, &signing_bytes(&rec.claim), &rec.sig) {
             return None;
         }
@@ -145,6 +162,34 @@ mod tests {
         assert!(
             ReachRecord::verify(&rec.to_bytes(), Some(2_000)).is_none(),
             "past issued_at + ttl"
+        );
+    }
+
+    #[test]
+    fn oversized_reach_record_is_rejected_before_postcard_allocation() {
+        let id = Identity::generate();
+        let big_endpoint = "w".repeat(65_536);
+        let rec = ReachRecord::sign(&id, big_endpoint, 3600, 1_000);
+        let bytes = rec.to_bytes();
+        assert!(
+            bytes.len() > 64 * 1024,
+            "precondition: serialized bytes exceed 64 KiB ceiling"
+        );
+        assert!(
+            ReachRecord::verify(&bytes, Some(1_000)).is_none(),
+            "ReachRecord::verify must reject records exceeding MAX_REACH_RECORD_BYTES"
+        );
+    }
+
+    #[test]
+    fn oversized_endpoint_is_rejected_before_signature_verification() {
+        let id = Identity::generate();
+        let big_endpoint = "w".repeat(2_049);
+        let rec = ReachRecord::sign(&id, big_endpoint, 3600, 1_000);
+        let bytes = rec.to_bytes();
+        assert!(
+            ReachRecord::verify(&bytes, Some(1_000)).is_none(),
+            "ReachRecord::verify must reject claims with endpoint exceeding MAX_REACH_ENDPOINT_BYTES"
         );
     }
 }
