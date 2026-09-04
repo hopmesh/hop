@@ -137,6 +137,13 @@ pub const REACK_MIN_INTERVAL_MS: u64 = 30_000;
 /// are never counted or evicted; relayed ones decay under this bound.
 pub const DEFAULT_MAX_RELAYED: usize = 128;
 
+/// Minimum number of relay custody slots guaranteed to an active tenant or sender
+/// before its undelivered bundles become eligible for fair-share eviction under multi-tenant load.
+pub const MIN_RELAYED_PER_TENANT_GUARANTEE: usize = 4;
+
+/// Bound on the number of distinct senders tracked for fair-share custody partitioning.
+pub const DEFAULT_MAX_RELAYED_DISTINCT_SENDERS: usize = 256;
+
 /// After we've relayed a not-ours bundle to ≥1 peer, keep it at least this long before
 /// it becomes eviction-eligible, so in a populated area it can be handed off again, and
 /// so a flood of big transfers can't immediately evict freshly-relayed traffic (DESIGN.md
@@ -1558,6 +1565,12 @@ impl Node<MemoryStore> {
     fn holds_prekey_secret(&self, pk: &XPubKeyBytes) -> bool {
         self.spk_secrets.contains_key(pk)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CustodyOwner {
+    Tenant(TenantId),
+    Sender(PubKeyBytes),
 }
 
 impl<S: Store> Node<S> {
@@ -9535,11 +9548,24 @@ impl<S: Store> Node<S> {
         }
     }
 
-    /// Choose an eviction victim by lowest utility (priority, route, oldest). When
-    /// `settled_only`, consider only bundles we've already relayed once and held past
-    /// [`EVICT_GRACE_MS`], the preferred, safe-to-drop set.
+
+    fn bundle_custody_owner(&self, id: &BundleId) -> CustodyOwner {
+        if let Some((tenant, _)) = self.metered_attribution.get(id) {
+            CustodyOwner::Tenant(*tenant)
+        } else if let Some(b) = self.store.get(id) {
+            CustodyOwner::Sender(b.inner.src)
+        } else {
+            CustodyOwner::Sender(PubKeyBytes::default())
+        }
+    }
+
+    /// Choose an eviction victim by lowest utility (priority, route, oldest), enforcing fair-share
+    /// custody bounds (SVC-007) so a high-priority flood from one tenant or sender cannot evict
+    /// undelivered bundles from another tenant within their fair share. When `settled_only`, consider
+    /// only bundles we've already relayed once and held past [`EVICT_GRACE_MS`], the preferred, safe-to-drop set.
     fn pick_evict_victim(&self, now: u64, settled_only: bool) -> Option<(usize, BundleId)> {
-        self.relay_order
+        let candidates: Vec<(usize, BundleId)> = self
+            .relay_order
             .iter()
             .enumerate()
             .filter(|(_, id)| {
@@ -9549,13 +9575,55 @@ impl<S: Store> Node<S> {
                         .get(*id)
                         .is_some_and(|t| now.saturating_sub(*t) >= EVICT_GRACE_MS)
             })
+            .map(|(idx, id)| (idx, *id))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let mut owner_counts: HashMap<CustodyOwner, usize> = HashMap::new();
+        for id in &self.relay_order {
+            *owner_counts.entry(self.bundle_custody_owner(id)).or_default() += 1;
+        }
+        let num_owners = owner_counts.len().min(DEFAULT_MAX_RELAYED_DISTINCT_SENDERS).max(1);
+        let fair_share = (self.max_relayed / num_owners).max(MIN_RELAYED_PER_TENANT_GUARANTEE);
+        let max_owner_count = owner_counts.values().copied().max().unwrap_or(0);
+
+        if max_owner_count > fair_share {
+            let over_allocated: Vec<&(usize, BundleId)> = candidates
+                .iter()
+                .filter(|(_, id)| {
+                    let owner = self.bundle_custody_owner(id);
+                    owner_counts.get(&owner).copied().unwrap_or(0) > fair_share
+                })
+                .collect();
+            if !over_allocated.is_empty() {
+                return over_allocated
+                    .into_iter()
+                    .min_by(|(ia, a), (ib, b)| {
+                        let count_a = owner_counts.get(&self.bundle_custody_owner(a)).copied().unwrap_or(0);
+                        let count_b = owner_counts.get(&self.bundle_custody_owner(b)).copied().unwrap_or(0);
+                        count_b
+                            .cmp(&count_a)
+                            .then_with(|| {
+                                self.bundle_utility(a, now)
+                                    .partial_cmp(&self.bundle_utility(b, now))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .then(ia.cmp(ib))
+                    })
+                    .copied();
+            }
+        }
+
+        candidates
+            .into_iter()
             .min_by(|(ia, a), (ib, b)| {
                 self.bundle_utility(a, now)
                     .partial_cmp(&self.bundle_utility(b, now))
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then(ia.cmp(ib))
             })
-            .map(|(idx, id)| (idx, *id))
     }
 
     /// Bound the forwarded-route memory (§27): drop the oldest entries past the cap.
@@ -9965,6 +10033,12 @@ impl<S: Store> Node<S> {
     /// Utility from an ALREADY-loaded bundle; avoids a `store.get` per call. `offer_bundles_to_link`
     /// uses this so its transmit-order sort does O(N) reads (load once), not O(N log N) (one read per
     /// sort comparison), which under the held node Mutex was starving link handshakes.
+    ///
+    /// SVC-007: `priority` is an unauthenticated QoS hint on the wire (`u8`, default 4). It is
+    /// used for intra-tenant QoS ordering (transmitting and evicting within a tenant's own traffic).
+    /// It does not grant cross-tenant eviction privileges: cross-tenant custody is partitioned by
+    /// fair share in `pick_evict_victim` so an unauthenticated priority=255 flood cannot displace
+    /// undelivered messages from an honest tenant or sender within their fair share.
     fn bundle_utility_of(&self, b: &Bundle, now: u64) -> f64 {
         let route = match b.inner.dst {
             Destination::Device(d) => self.routes.utility(&d, now),
@@ -22678,6 +22752,176 @@ mod access_gate_tests {
         assert!(
             relay.take_usage().is_empty(),
             "admitted, billed only on delivery"
+        );
+    }
+
+    #[test]
+    fn priority_flood_cannot_evict_other_tenants_normal_priority_bundles() {
+        // SVC-007: A relay's shared custody window must enforce fair-share custody bounds.
+        // A tenant flooding unsettled bundles with priority=255 must not starve another
+        // tenant's normal-priority (4) undelivered bundles purely due to priority weighting.
+        let (stamper_a, key_a) = tenant_stamper();
+        let key_b = Identity::generate();
+        let tenant_b: TenantId = [0x42; 16];
+        let stamper_b = Stamper::new(tenant_b, Identity::from_secret_bytes(&key_b.to_secret_bytes()));
+
+        let mut server = KeyServer::new();
+        server.insert(TENANT, key_a.address());
+        server.insert(tenant_b, key_b.address());
+
+        let mut relay = Node::new(Identity::generate());
+        relay.set_time(NOW);
+        relay.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(server, HashSet::new())));
+        relay.refresh_access();
+
+        let window = 10usize;
+        relay.set_max_relayed(window);
+
+        // Tenant A fills 9 slots with priority=255 unsettled bundles.
+        let mut a_bundles = Vec::new();
+        for i in 0..9 {
+            let mut b = Bundle::create(
+                &Identity::generate(),
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("flood-a-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            b.env.access = Some(Box::new(stamper_a.stamp(&id, NOW)));
+            relay.on_bundle(1, b);
+            assert!(relay.store.contains(&id));
+            a_bundles.push(id);
+        }
+
+        // Tenant B sends 1 bundle with default priority=4 into the remaining 10th slot.
+        let mut b_bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"normal-b-0".to_vec(),
+            },
+            BundleOpts {
+                priority: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b_id = b_bundle.id();
+        b_bundle.env.access = Some(Box::new(stamper_b.stamp(&b_id, NOW)));
+        relay.on_bundle(2, b_bundle);
+        assert!(relay.store.contains(&b_id));
+
+        // Now the window is 10/10.
+        // Tenant A attempts to flood an 11th bundle with priority=255.
+        let mut a_11 = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"flood-a-10".to_vec(),
+            },
+            BundleOpts {
+                priority: 255,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let a_11_id = a_11.id();
+        a_11.env.access = Some(Box::new(stamper_a.stamp(&a_11_id, NOW)));
+        relay.on_bundle(1, a_11);
+
+        // Invariant: Tenant B's bundle must NOT be evicted purely due to Tenant A's priority!
+        // Tenant A exceeded its fair share, so Tenant A's bundle should have been evicted.
+        assert!(
+            relay.store.contains(&b_id),
+            "Tenant B's normal-priority bundle was evicted by Tenant A's priority=255 flood"
+        );
+    }
+
+    #[test]
+    fn open_policy_priority_flood_cannot_evict_other_senders_normal_priority_bundles() {
+        // SVC-007: Open policy nodes must also enforce fair-share custody bounds.
+        // Sender A flooding priority=255 unsettled bundles must not starve Sender B's
+        // normal-priority (4) undelivered bundles purely due to priority weighting.
+        let sender_a = Identity::generate();
+        let sender_b = Identity::generate();
+        let mut node = Node::new(Identity::generate());
+        node.set_time(NOW);
+        let window = 10usize;
+        node.set_max_relayed(window);
+
+        // Sender A fills 9 slots with priority=255 unsettled bundles.
+        for i in 0..9 {
+            let b = Bundle::create(
+                &sender_a,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-flood-a-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(1, b);
+            assert!(node.store.contains(&id));
+        }
+
+        // Sender B sends 1 normal-priority (4) bundle into the remaining 10th slot.
+        let b_bundle = Bundle::create(
+            &sender_b,
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"open-normal-b".to_vec(),
+            },
+            BundleOpts {
+                priority: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b_id = b_bundle.id();
+        node.on_bundle(2, b_bundle);
+        assert!(node.store.contains(&b_id));
+
+        // Sender A attempts to flood an 11th bundle with priority=255.
+        let a_11 = Bundle::create(
+            &sender_a,
+            Destination::Device(Identity::generate().address()),
+            &Identity::generate().address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"open-flood-a-10".to_vec(),
+            },
+            BundleOpts {
+                priority: 255,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        node.on_bundle(1, a_11);
+
+        // Sender B's bundle must NOT be evicted: Sender A is over fair share.
+        assert!(
+            node.store.contains(&b_id),
+            "Sender B's normal-priority bundle was evicted by Sender A's priority=255 flood under Open policy"
         );
     }
 }
