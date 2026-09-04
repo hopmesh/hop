@@ -79,11 +79,9 @@ class RelayBearerSocketTest {
         val link = rec.ups.first().first
         assertTrue("server saw the client connect", waitUntil { sws.socket != null })
 
-        // server -> client, both binary and text, each surfaces one linkBytes.
+        // server -> client: binary frame surfaces linkBytes.
         sws.socket!!.send(byteArrayOf(9, 8, 7).toByteString())
-        sws.socket!!.send("hi-text")
         assertTrue("binary msg surfaced", waitUntil { rec.bytes.any { it.second.contentEquals(byteArrayOf(9, 8, 7)) } })
-        assertTrue("text msg surfaced", waitUntil { rec.bytes.any { String(it.second) == "hi-text" } })
 
         // client -> server: send() puts a real binary frame on the socket.
         b.send(byteArrayOf(1, 2, 3, 4), link)
@@ -162,5 +160,46 @@ class RelayBearerSocketTest {
         b.stop()
         assertTrue("stop() surfaces linkDown for the live link", waitUntil { rec.downs.isNotEmpty() })
         assertTrue("stop() releases the reconnect executor", b.isTornDown)
+    }
+
+    @Test fun oversizedMessageRejectedWithoutSurfacingToSink() {
+        val s = server()
+        val sws = ServerWs()
+        s.enqueue(MockResponse().withWebSocketUpgrade(sws))
+        val rec = Rec()
+        val b = RelayBearer(wsUrl(s)).also { it.sink = rec }
+        bearers.add(b)
+        b.start()
+
+        assertTrue("relay link up", waitUntil { rec.ups.isNotEmpty() })
+        assertTrue("server socket ready", waitUntil { sws.socket != null })
+
+        val maxFrame = ByteArray(65536) { 0x42 }
+        sws.socket!!.send(maxFrame.toByteString())
+        assertTrue("65536 byte frame surfaces to sink", waitUntil(3000) { rec.bytes.any { it.second.size == 65536 } })
+
+        val oversized = ByteArray(65537) { 0x43 }
+        sws.socket!!.send(oversized.toByteString())
+        Thread.sleep(150)
+
+        assertFalse("oversized frame (65537 bytes) must NOT reach sink", rec.bytes.any { it.second.size == 65537 })
+    }
+
+    @Test fun textFrameRejectedProtocolDisallowed() {
+        val s = server()
+        val sws = ServerWs()
+        s.enqueue(MockResponse().withWebSocketUpgrade(sws))
+        val rec = Rec()
+        val b = RelayBearer(wsUrl(s)).also { it.sink = rec }
+        bearers.add(b)
+        b.start()
+
+        assertTrue("relay link up", waitUntil { rec.ups.isNotEmpty() })
+        assertTrue("server socket ready", waitUntil { sws.socket != null })
+
+        sws.socket!!.send("disallowed-text-frame")
+        Thread.sleep(150)
+
+        assertFalse("text frame must NOT reach sink", rec.bytes.any { String(it.second) == "disallowed-text-frame" })
     }
 }
