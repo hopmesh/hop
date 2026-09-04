@@ -156,6 +156,8 @@ def check_ownership(
         ("apps/react-native/HopDemo/App.tsx", "sdk_react_native"),
         ("apps/ble-lab/android/app/src/main/java/sh/hopme/blelab/MainActivity.kt", "android"),
         ("apps/ble-lab/android/app/src/main/java/sh/hopme/blelab/MainActivity.kt", "apple"),
+        ("testkit/tk", "automation"),
+        ("testkit/soak.workflow.js", "automation"),
         ("fuzz/Cargo.toml", "rust"),
         ("fuzz/Cargo.lock", "rust"),
         ("DESIGN.md", "docs"),
@@ -171,6 +173,73 @@ def check_ownership(
         if required_filter not in matches and "full" not in matches:
             errors.append(
                 f"Hostile path '{path_str}' must match filter '{required_filter}' (got: {sorted(matches)})"
+            )
+
+    # testkit must NOT be matched under docs filter (INFRA-012)
+    testkit_docs_matches = [
+        f for f in files if f.startswith("testkit/") and "docs" in match_path(f, filters)
+    ]
+    if testkit_docs_matches:
+        errors.append(
+            f"testkit files must not be routed to 'docs' filter (INFRA-012): {sorted(testkit_docs_matches)[:3]}"
+        )
+
+    # 4. Job step consumption contracts (INFRA-012):
+    # Routing a path to a filter is necessary but not sufficient: the target job must
+    # contain an observable step that builds or tests the component.
+    raw = yaml.safe_load(ci_path.read_text(encoding="utf-8"))
+    jobs = raw.get("jobs", {}) if isinstance(raw, dict) else {}
+
+    step_contracts = [
+        {
+            "path": "apps/react-native/HopDemo/package.json",
+            "filter": "sdk_react_native",
+            "job": "react-native-sdk",
+            "step_marker": "apps/react-native/HopDemo",
+        },
+        {
+            "path": "apps/ble-lab/android/app/src/main/java/sh/hopme/blelab/MainActivity.kt",
+            "filter": "android",
+            "job": "android",
+            "step_marker": "apps/ble-lab/android",
+        },
+        {
+            "path": "testkit/tk",
+            "filter": "automation",
+            "job": "automation",
+            "step_marker": "testkit",
+        },
+    ]
+
+    for contract in step_contracts:
+        path_str = contract["path"]
+        req_filter = contract["filter"]
+        target_job = contract["job"]
+        marker = contract["step_marker"]
+
+        if target_job not in jobs:
+            errors.append(
+                f"Required job '{target_job}' for path '{path_str}' not found in {ci_path}"
+            )
+            continue
+
+        job_steps = jobs[target_job].get("steps", []) if isinstance(jobs[target_job], dict) else []
+        step_matched = False
+        for step in job_steps:
+            if not isinstance(step, dict):
+                continue
+            step_name = str(step.get("name", ""))
+            step_run = str(step.get("run", ""))
+            step_uses = str(step.get("uses", ""))
+            step_text = f"{step_name} {step_run} {step_uses}"
+            if marker in step_text:
+                step_matched = True
+                break
+
+        if not step_matched:
+            errors.append(
+                f"Job '{target_job}' routed from '{req_filter}' has no step building or testing '{path_str}' "
+                f"(expected step marker '{marker}') (INFRA-012)"
             )
 
     return errors

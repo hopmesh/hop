@@ -168,8 +168,9 @@ jobs:
               - 'bearers/**'
               - 'apps/**'
               - 'examples/**'
-              - 'testkit/**'
               - 'assets/**'
+            automation:
+              - 'testkit/**'
             sdk_node:
               - 'sdk/node/**'
             sdk_python:
@@ -527,6 +528,11 @@ jobs:
       - name: Test HopDemo app (+ non-UI 80% line-coverage gate)
         working-directory: apps/android/HopDemo
         run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
+
+      # INFRA-012: Build and test apps/ble-lab/android
+      - name: Build and test apps/ble-lab/android
+        working-directory: apps/ble-lab/android
+        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon --stacktrace
 
   apple:
     name: Apple bearers + driver + app (build-only)
@@ -1085,6 +1091,15 @@ jobs:
         run: bash .github/scripts/dep-fix-tag.test.sh
       - name: Self-test PR auto-merge safety check (PROC-002)
         run: bash .github/scripts/check-pr-automerge-safety.test.sh
+      # INFRA-012: Syntax check testkit automation scripts (bash -n, node --check)
+      - name: Syntax check testkit automation scripts (bash -n, node --check)
+        run: |
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \)); do
+            bash -n "$f"
+          done
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \)); do
+            node --check "$f"
+          done
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1406,6 +1421,13 @@ jobs:
       - uses: ./sdk/react-native/.github/actions/ci
         with:
           pkg-dir: sdk/react-native
+      # INFRA-012: Build and test apps/react-native/HopDemo (typecheck + tests)
+      - name: Build and test apps/react-native/HopDemo (typecheck + tests)
+        working-directory: apps/react-native/HopDemo
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
 
   gate:
     name: CI gate
