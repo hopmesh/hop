@@ -12,6 +12,7 @@ drivers/apple/HopDriver/.build-staging/
 /fuzz/artifacts
 /fuzz/coverage
 **/*.rs.bk
+/tarpaulin-report.html
 # Python verification helpers
 __pycache__/
 *.py[cod]
