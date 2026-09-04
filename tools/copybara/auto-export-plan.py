@@ -17,16 +17,22 @@ import os
 import re
 import sys
 import textwrap
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 API = "https://api.github.com/repos/hopmesh/hop/"
 EXPECTED = "hopmesh/hop"
+OWNER = "hopmesh"
+
+
+def _api_url():
+    return os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 
 
 def _api(path, token):
     req = urllib.request.Request(
-        API + path,
+        f"{_api_url()}/repos/{EXPECTED}/" + path,
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": "Bearer " + token,
@@ -37,6 +43,38 @@ def _api(path, token):
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.load(response)
 
+
+def mirror_exists(component, token=None):
+    """Is this component's public mirror actually there? None means we could not tell."""
+    req = urllib.request.Request(f"{_api_url()}/repos/{OWNER}/{component}")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "hop-component-sync")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as error:
+        # 404 is the answer we are looking for. Anything else (403, 5xx) is us being unable to ask,
+        # and must NOT be reported as "missing" or a rate limit would silently drop every mirror.
+        return False if error.code == 404 else None
+    except OSError:
+        return None
+
+
+def filter_existing_mirrors(components, token=None):
+    """Drop components whose destination repository definitively does not exist (404)."""
+    kept = []
+    for component in components:
+        if mirror_exists(component, token) is False:
+            print(
+                f"::notice::auto-export: skipping {component}: repository "
+                f"hopmesh/{component} does not exist (create it per tools/copybara/bootstrap-mirrors.sh)"
+            )
+            continue
+        kept.append(component)
+    return kept
 
 def preflight(env):
     """Reject anything that is not a push to the current canonical protected main."""
@@ -173,6 +211,8 @@ def main():
     preflight(env)
     files = _changed_files(env)
     changed = changed_components(files, components, paths_by_component)
+    token = env.get("GITHUB_TOKEN") or env.get("GH_TOKEN")
+    changed = filter_existing_mirrors(changed, token=token)
     out = env.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a", encoding="utf-8") as handle:

@@ -344,6 +344,7 @@ jobs:
           REF_PROTECTED: ${{ github.ref_protected }}
           SHA: ${{ github.sha }}
           BEFORE: ${{ github.event.before }}
+          GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/copybara/auto-export-plan.py
       - name: Mint mirror tokens for the changed components
