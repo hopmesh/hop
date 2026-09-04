@@ -156,4 +156,32 @@ final class MultipeerBearerTests: XCTestCase {
         XCTAssertNotNil(second)
         XCTAssertNotEqual(first, second, "a reconnect must not reuse the dead link id")
     }
+
+    // MARK: - PLAT-007: 65,536 accepted, 65,537 rejected with link teardown
+
+    func testInboundMessageCapAt65536AndRejectionAt65537() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+
+        guard let link = b.noteConnected(peerName: "peer1") else {
+            XCTFail("failed to note connected")
+            return
+        }
+
+        // 1) 65,536 bytes (cap) is accepted
+        let atCap = Data(repeating: 0x41, count: 65536)
+        XCTAssertTrue(b.acceptInboundData(atCap, for: link, peerName: "peer1"))
+        XCTAssertEqual(sink.bytes.count, 1)
+        XCTAssertEqual(sink.bytes[0].0, link)
+        XCTAssertEqual(sink.bytes[0].1.count, 65536)
+        XCTAssertTrue(sink.downs.isEmpty)
+
+        // 2) 65,537 bytes (cap + 1) is rejected and link is torn down
+        let overCap = Data(repeating: 0x42, count: 65537)
+        XCTAssertFalse(b.acceptInboundData(overCap, for: link, peerName: "peer1"))
+        XCTAssertEqual(sink.bytes.count, 1, "rejected frame must not reach sink")
+        XCTAssertEqual(sink.downs, [link], "cap violation must surface linkDown")
+        XCTAssertNil(b.linkId(forPeer: "peer1"), "link table must drop offending peer")
+    }
 }
