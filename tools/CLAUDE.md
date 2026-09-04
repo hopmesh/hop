@@ -77,6 +77,7 @@ release/                    plan.py resolves each publishing component's declare
                             unset secret resolves to "" rather than erroring, so nothing ever published and
                             the only symptom was an action complaining about an empty input. Needs a
                             secrets-read token; the weekly branch-protection-audit runs it when armed.
+                            Self-test: release/check-mirror-secrets.test.sh.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical on Apple and Android
                             (port, chunk size, fragment-header layout, frame tags, keepalive timing),
@@ -85,8 +86,10 @@ meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical 
                             follow from max_chunk. Self-test: meshtastic-parity.test.sh. Runs in the
                             `automation` job alongside ble-backoff-parity.sh.
 cov-floor-gate.py           gates Swift coverage from llvm-cov JSON (named fields, not a positional awk).
-apple-cov-gate.sh           per-package Swift coverage floor.
-check-web-links.mjs         internal-link checker for apps/web/site/dist.
+apple-cov-gate.sh           per-package Swift coverage floor. Self-test: apple-cov-gate.test.sh.
+check-web-links.mjs         internal-link checker for apps/web/site/dist. Self-test: check-web-links.test.mjs.
+native-artifacts.py         native release artifact pack, create, verify, and extraction tool.
+                            Self-test: native-artifacts.test.sh.
 build-xcframework.sh        builds the Apple SDK xcframework + Swift bindings into drivers/apple/HopDriver.
 build-aar.sh                generates the Android UniFFI bindings + native libs into the demo app's dir.
 smoke-test.sh               compiles + runs a Swift program against libhop on the macOS host.

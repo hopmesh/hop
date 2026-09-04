@@ -601,6 +601,9 @@ jobs:
       # the CoreLocation wake (BeaconWake.swift) are EXCLUDED from the BLE denominator (covered by the
       # on-device hopmac/testkit workflow). Previously all three re-modeled their logic in the test file
       # and sat at ~7-10% line coverage. `swift test` also builds, so these subsume the old build-only step.
+      - name: Self-test Apple coverage gate
+        run: bash tools/apple-cov-gate.test.sh
+
       - name: Test + coverage-gate the BLE bearer (>=80% of the CB-free cores)
         run: bash tools/apple-cov-gate.sh bearers/apple/HopBearerBle "BleBearer.swift + CentralCore.swift + PeripheralCore.swift" 80 'BleBearer\+Radio\.swift|BeaconWake\.swift'
 
@@ -861,6 +864,8 @@ jobs:
 
       - name: Site consistency regression tests (CLAIM-012, BIZ-001..003, BIZ-005)
         run: node --test apps/web/site/test/site-consistency.test.mjs
+      - name: Self-test internal link check
+        run: node --test tools/check-web-links.test.mjs
       # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
       - name: Internal link check (apps/web/site/dist)
         run: node tools/check-web-links.mjs apps/web/site/dist
@@ -1046,6 +1051,8 @@ jobs:
         run: bash tools/release/check-mirror-secrets.test.sh
       - name: Self-test immutable release artifacts
         run: bash tools/release-artifact.test.sh
+      - name: Self-test native release artifacts
+        run: bash tools/native-artifacts.test.sh
       - name: Self-test exact crates.io publication payloads
         run: bash tools/crates-publish.test.sh
       # The Apple pods reach CocoaPods trunk from the mirror's release workflow, which nothing in this
