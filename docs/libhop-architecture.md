@@ -24,7 +24,7 @@ and beacon wake on the fleet). Per-finding remediation status lives in `hopmesh/
   Those are additive header extensions (bump `HOP_ABI_VERSION` when they land), tracked under
   "Deferred by design" below. So "universal floor" means the seam, messaging, and pub/sub every
   target needs, not yet every UniFFI method.
-- **`hps://` pub/sub is on the floor as of ABI 6.** It was the largest hole and it was load-bearing:
+- **`hps://` pub/sub is on the floor as of version 6 of the C ABI.** It was the largest hole and it was load-bearing:
   group chat and channels are §32, so a client that binds the C ABI rather than UniFFI could not host
   a channel, join one, or post to one, while the two native UniFFI drivers had shipped the feature for
   as long as it had existed. The header now carries the whole surface the UniFFI layer has: register,
@@ -111,7 +111,7 @@ remains is the on-device Stage-D fleet run.
   queue introspection (`queue`/`clear_queue`/`pending_count`), `name`, `send_message_traced`, and the
   §27 trace fields on `poll_inbox`. Each is an additive `sdk/hop.h` extension; bump
   `HOP_ABI_VERSION` when it lands. Pattern is set; add along the way.
-- ~~`hps://` register/subscribe/publish/invites/rekey~~ → **done at ABI 6**: the whole §32 surface is
+- ~~`hps://` register/subscribe/publish/invites/rekey~~ → **done at version 6 of the C ABI**: the whole §32 surface is
   on the C ABI. It was the one deferred item that was not optional, because it is what group chat and
   channels are, so leaving it off the floor meant every SDK-based client was locked out of a shipped
   protocol feature. Deferring a capability is only honest while nothing needs it.

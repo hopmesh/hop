@@ -23,7 +23,7 @@ void main() {
 
     test('ABI version matches the header the wrapper was built against', () {
       // HopFfi.open() asserts it; reaching here means the assert passed.
-      expect(hopAbiVersion, 6);
+      expect(hopAbiVersion, 7);
     });
 
     test('every fixed-width argument requires exactly 32 bytes', () {

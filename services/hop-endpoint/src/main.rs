@@ -662,7 +662,8 @@ fn main() {
     let identity = load_identity(&identity_file);
     // Normalize origin/domain and configure the leaf endpoint node bound to that domain (extracted
     // so the normalization + node setup is unit-testable; main keeps the socket/thread orchestration).
-    let (mut node, origin, domain) = build_endpoint(origin, domain, identity, &listen, db.as_deref());
+    let (mut node, origin, domain) =
+        build_endpoint(origin, domain, identity, &listen, db.as_deref());
 
     // Publish this endpoint's HNS reach record at /.well-known/hop (§30): a client resolves the domain
     // by fetching it (its TLS cert proves the domain; the signed record self-certifies the address).
@@ -1053,7 +1054,11 @@ fn process_driver_events<S: hop_core::store::Store>(
     true
 }
 
-fn apply_driver_event<S: hop_core::store::Store>(node: &mut Endpoint<S>, writers: &mut HashMap<u64, SyncSender<Vec<u8>>>, event: Ev) {
+fn apply_driver_event<S: hop_core::store::Store>(
+    node: &mut Endpoint<S>,
+    writers: &mut HashMap<u64, SyncSender<Vec<u8>>>,
+    event: Ev,
+) {
     match event {
         Ev::Up(link, role, out) => {
             writers.insert(link, out);
@@ -1086,7 +1091,12 @@ fn apply_driver_event<S: hop_core::store::Store>(node: &mut Endpoint<S>, writers
     }
 }
 
-fn tick_if_due<S: hop_core::store::Store>(node: &mut Endpoint<S>, next_tick: &mut Instant, last_wk: &mut Instant, public_url: &str) {
+fn tick_if_due<S: hop_core::store::Store>(
+    node: &mut Endpoint<S>,
+    next_tick: &mut Instant,
+    last_wk: &mut Instant,
+    public_url: &str,
+) {
     let monotonic_now = Instant::now();
     if monotonic_now < *next_tick {
         return;

@@ -37,6 +37,9 @@ data class HopClientConfig(
     /** Stop refreshing a sent message's status once it is Delivered or Failed, or after this many ticks
      *  without progress, so the status map does not grow without bound in a long session. */
     val statusPollTicks: Int = 300,
+    /** Optional durable persistence hook. Return true only after the message is committed;
+     *  false defers acceptance in libhop so it is redelivered across restarts. */
+    val onPersistInbox: ((HopMessage) -> Boolean)? = null,
 )
 
 /** A running Hop node, projected as reactive state for a Compose UI.
@@ -127,9 +130,12 @@ class HopClient(
                     createdAtMs = raw.createdAtMs,
                     delivery = HopDelivery.Delivered, // an inbound message, from our side, is simply here.
                 )
-                emitObserved(msg, peer)
-                arrived += msg
-                true // accept: we have folded it into state, so it must not be redelivered.
+                val accepted = config.onPersistInbox?.invoke(msg) ?: true
+                if (accepted) {
+                    emitObserved(msg, peer)
+                    arrived += msg
+                }
+                accepted
             }
         }
         for (m in arrived) _inbox.emit(m)

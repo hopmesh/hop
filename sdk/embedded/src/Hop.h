@@ -20,7 +20,7 @@
 // same value via hop_abi_version(), so a wrapper paired with a mismatched prebuilt archive fails
 // loudly at startup instead of drifting silently. Keep it in step with HOP_ABI_VERSION in hop.h.
 #ifndef HOP_EMBEDDED_ABI_VERSION
-#define HOP_EMBEDDED_ABI_VERSION 6
+#define HOP_EMBEDDED_ABI_VERSION 7
 #endif
 
 // Opaque handle to the running node, owned by libhop. Declared here so the class can hold a pointer
@@ -112,11 +112,13 @@ using OutgoingHandler = std::function<void(uint64_t link, const uint8_t *data, s
 // Return true only after the application has accepted the copied message. False leaves it queued in
 // libhop for redelivery on a later tick.
 using MessageHandler = std::function<bool(const Message &msg)>;
-using ServiceRequestHandler = std::function<void(const ServiceRequest &request)>;
+using ServiceRequestHandler = std::function<bool(const ServiceRequest &request)>;
 // Return true for synchronous acceptance. Return false after copying the response for asynchronous
 // work, then call acceptServiceResponse() when that work is durable.
 using ServiceResponseHandler = std::function<bool(const ServiceResponse &response)>;
 using UnixTimeProvider = std::function<bool(uint64_t &unix_epoch_ms)>;
+
+class CallbackGuard;
 
 // A Hop node for a microcontroller. Not copyable: it owns one libhop handle.
 class Hop {
@@ -212,6 +214,27 @@ public:
     return acceptServiceResponse(response.correlationId.data(), response.correlationId.size());
   }
 
+  bool acceptServiceRequest(const uint8_t *request_id, size_t request_id_len);
+
+  template <size_t N> bool acceptServiceRequest(const uint8_t (&request_id)[N]) {
+    return acceptServiceRequest(request_id, N);
+  }
+  bool acceptServiceRequest(const ServiceRequest &request) {
+    return acceptServiceRequest(request.requestId.data(), request.requestId.size());
+  }
+
+  bool rejectServiceRequest(const uint8_t *request_id, size_t request_id_len);
+
+  template <size_t N> bool rejectServiceRequest(const uint8_t (&request_id)[N]) {
+    return rejectServiceRequest(request_id, N);
+  }
+
+  bool rejectServiceRequest(const ServiceRequest &request) {
+    return rejectServiceRequest(request.requestId.data(), request.requestId.size());
+  }
+
+  bool isEncrypted() const;
+
   // Set the callback invoked (inside tick()) for each message that arrives.
   void onMessage(MessageHandler handler) { on_message_ = std::move(handler); }
 
@@ -280,11 +303,13 @@ private:
   static bool messageTrampoline(void *ctx, const uint8_t *inbox_id, const uint8_t *from,
                                 const char *content_type, const uint8_t *body, size_t body_len,
                                 uint8_t hops, uint64_t created_at_ms);
-  static void requestTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
-                                 const char *service, const char *method, const uint8_t *args,
-                                 size_t args_len);
+  static bool requestTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
+                                const char *service, const char *method, const uint8_t *args,
+                                size_t args_len);
   static bool responseTrampoline(void *ctx, const uint8_t *from, const uint8_t *request_id,
                                  uint16_t status, const uint8_t *body, size_t body_len);
+
+  friend class CallbackGuard;
 
   void resetNode();
   void resetClock();
@@ -306,6 +331,8 @@ private:
   ServiceRequestHandler on_service_request_;
   ServiceResponseHandler on_service_response_;
   OutgoingHandler on_outgoing_;
+  int in_callback_ = 0;
+  bool deferred_reset_ = false;
 };
 
 } // namespace hop

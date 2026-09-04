@@ -764,6 +764,7 @@ pub struct HttpRespItem {
 
 /// A service request addressed to this node that the embedding app should fulfill
 /// (built-in `hop.` services are answered by the node and never surface here).
+#[derive(Clone)]
 pub struct ServiceReqItem {
     pub from: PubKeyBytes,
     /// The request bundle's id. Pass it to [`Node::send_service_response`] to reply.
@@ -6716,19 +6717,38 @@ impl<S: Store> Node<S> {
         Ok(id)
     }
 
-    /// Drain custom service requests addressed to us (built-in `hop.` services are
-    /// answered by the node and never appear here).
-    pub fn take_service_requests(&mut self) -> Vec<ServiceReqItem> {
-        let pending = self.take_service_requests_deferred();
-        let mut accepted = Vec::with_capacity(pending.len());
-        for item in pending {
-            if self.complete_app_delivery(&item.id) {
-                accepted.push(item);
-            } else {
-                self.service_requests.push(item);
+    /// Poll custom service requests addressed to us without consuming them (built-in `hop.` services
+    /// are answered by the node and never appear here). Use [`Self::accept_service_request`] or
+    /// [`Self::reject_service_request`] for explicit lifecycle decisions.
+    pub fn take_service_requests(&self) -> Vec<ServiceReqItem> {
+        self.service_requests.clone()
+    }
+
+    /// Durably accept one service request previously returned by [`Self::take_service_requests`].
+    /// Commits the seen dedup row and ACK only after successful storage admission.
+    pub fn accept_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.complete_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
             }
+            true
+        } else {
+            false
         }
-        accepted
+    }
+
+    /// Reject one service request without ACK or dedup consumption so a retransmission can retry.
+    pub fn reject_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.reject_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Move service requests into a higher-level admission gate without ACKing or consuming dedup.
@@ -9548,7 +9568,6 @@ impl<S: Store> Node<S> {
         }
     }
 
-
     fn bundle_custody_owner(&self, id: &BundleId) -> CustodyOwner {
         if let Some((tenant, _)) = self.metered_attribution.get(id) {
             CustodyOwner::Tenant(*tenant)
@@ -9583,9 +9602,14 @@ impl<S: Store> Node<S> {
 
         let mut owner_counts: HashMap<CustodyOwner, usize> = HashMap::new();
         for id in &self.relay_order {
-            *owner_counts.entry(self.bundle_custody_owner(id)).or_default() += 1;
+            *owner_counts
+                .entry(self.bundle_custody_owner(id))
+                .or_default() += 1;
         }
-        let num_owners = owner_counts.len().min(DEFAULT_MAX_RELAYED_DISTINCT_SENDERS).max(1);
+        let num_owners = owner_counts
+            .len()
+            .min(DEFAULT_MAX_RELAYED_DISTINCT_SENDERS)
+            .max(1);
         let fair_share = (self.max_relayed / num_owners).max(MIN_RELAYED_PER_TENANT_GUARANTEE);
         let max_owner_count = owner_counts.values().copied().max().unwrap_or(0);
 
@@ -9601,8 +9625,14 @@ impl<S: Store> Node<S> {
                 return over_allocated
                     .into_iter()
                     .min_by(|(ia, a), (ib, b)| {
-                        let count_a = owner_counts.get(&self.bundle_custody_owner(a)).copied().unwrap_or(0);
-                        let count_b = owner_counts.get(&self.bundle_custody_owner(b)).copied().unwrap_or(0);
+                        let count_a = owner_counts
+                            .get(&self.bundle_custody_owner(a))
+                            .copied()
+                            .unwrap_or(0);
+                        let count_b = owner_counts
+                            .get(&self.bundle_custody_owner(b))
+                            .copied()
+                            .unwrap_or(0);
                         count_b
                             .cmp(&count_a)
                             .then_with(|| {
@@ -9616,14 +9646,12 @@ impl<S: Store> Node<S> {
             }
         }
 
-        candidates
-            .into_iter()
-            .min_by(|(ia, a), (ib, b)| {
-                self.bundle_utility(a, now)
-                    .partial_cmp(&self.bundle_utility(b, now))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(ia.cmp(ib))
-            })
+        candidates.into_iter().min_by(|(ia, a), (ib, b)| {
+            self.bundle_utility(a, now)
+                .partial_cmp(&self.bundle_utility(b, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(ia.cmp(ib))
+        })
     }
 
     /// Bound the forwarded-route memory (§27): drop the oldest entries past the cap.
@@ -22763,7 +22791,10 @@ mod access_gate_tests {
         let (stamper_a, key_a) = tenant_stamper();
         let key_b = Identity::generate();
         let tenant_b: TenantId = [0x42; 16];
-        let stamper_b = Stamper::new(tenant_b, Identity::from_secret_bytes(&key_b.to_secret_bytes()));
+        let stamper_b = Stamper::new(
+            tenant_b,
+            Identity::from_secret_bytes(&key_b.to_secret_bytes()),
+        );
 
         let mut server = KeyServer::new();
         server.insert(TENANT, key_a.address());
@@ -22771,7 +22802,10 @@ mod access_gate_tests {
 
         let mut relay = Node::new(Identity::generate());
         relay.set_time(NOW);
-        relay.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(server, HashSet::new())));
+        relay.set_access_policy(AccessPolicy::Keyed(KeyedAccess::new(
+            server,
+            HashSet::new(),
+        )));
         relay.refresh_access();
 
         let window = 10usize;
