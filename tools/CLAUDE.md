@@ -46,6 +46,10 @@ workflow-if-guard.py       fails if any workflow `if:` kept a literal newline in
                            CI stays green while a gate silently does nothing. That is exactly how
                            pr-automerge's author gate shipped dead. Equal-indent folds are fine.
                            Self-test: workflow-if-guard.test.sh.
+workflow-run-syntax-guard.py validates syntax of every workflow `run:` script block via `bash -n`,
+                           catching unclosed loops or syntax errors (such as the missing `done` in
+                           REL-006) before runs are scheduled, and runs `actionlint` if installed.
+                           Self-test: workflow-run-syntax-guard.test.sh.
 mailbox-prefix-doc-guard.sh fails when the DOCUMENTED mailbox routing-prefix width disagrees with
                            `crypto::MAILBOX_ROUTE_PREFIX_BYTES`. It renders one canonical claim
                            sentence (buckets, anonymity set, small-N threshold) from the constant,
