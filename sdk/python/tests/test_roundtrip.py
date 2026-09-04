@@ -1,5 +1,7 @@
 """Round-trip proofs: hops:// request/response in-process and over a real TCP bearer. Stdlib only."""
 import socket
+import os
+import tempfile
 import ssl
 import struct
 import threading
@@ -270,6 +272,29 @@ class RoundTrip(unittest.TestCase):
             server.close()
             client.close()
 
+
+    def test_endpoint_persists_state_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test-restart.db")
+            secret = bytes(range(1, 33))
+
+            e1 = HopEndpoint(key=secret, db_path=db_path, cluster="shared-cluster-passphrase")
+            self.assertTrue(e1.is_persistent)
+            self.assertFalse(e1.is_encrypted)
+
+            from_addr = bytes([0xAA] * 32)
+            req_id = bytes([0xBB] * 32)
+
+            e1.cluster_mark_done(from_addr, req_id)
+            self.assertTrue(e1.cluster_would_drop(from_addr, req_id))
+            e1.close()
+
+            e2 = HopEndpoint(key=secret, db_path=db_path, cluster="shared-cluster-passphrase")
+            try:
+                self.assertTrue(e2.is_persistent)
+                self.assertTrue(e2.cluster_would_drop(from_addr, req_id))
+            finally:
+                e2.close()
 
 class Cluster(unittest.TestCase):
     def test_join_and_quorum(self):

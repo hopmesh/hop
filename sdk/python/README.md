@@ -51,11 +51,21 @@ listen(hop, 9944)     # reachable by any device
 print(hop.address)    # publish this (or its name); senders reach you by it
 ```
 
-**The DX looks like HTTP; the semantics are better.** Inbound is a durable, store-and-forward consume; a
-reply is a new addressed message that may arrive later, even after a restart. It works when the peer is
-offline, and there is no auth layer to bolt on, the identity is cryptographic. core is poll-model, so the
-endpoint runs a background pump thread (the node is thread-safe).
+**The DX looks like HTTP; the semantics are better.** Inbound is a store-and-forward consume; a reply
+is a new addressed message that may arrive later. By default, `HopEndpoint()` runs an in-memory
+node whose state is ephemeral to the process lifetime. For restart durability across crashes or redeploys,
+pass `db_path=` (and optionally `db_key=` for SQLCipher encryption-at-rest) along with a persisted `key=`:
 
+```python
+# Persistent across process restarts:
+with open("/etc/hop/identity.key", "rb") as f:
+    secret = f.read()
+
+hop = HopEndpoint(db_path="/var/lib/hop/service.db", key=secret)
+```
+
+It works when the peer is offline, and there is no auth layer to bolt on, the identity is cryptographic.
+core is poll-model, so the endpoint runs a background pump thread (the node is thread-safe).
 ## Reachable by name
 
 Make your endpoint reachable at `myaddress.com` with no new port and no DNS records beyond a plain `A`.
