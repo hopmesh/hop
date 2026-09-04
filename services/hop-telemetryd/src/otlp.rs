@@ -258,57 +258,10 @@ impl<T: OtlpTransport> OtlpSink<T> {
     }
 }
 
-/// SVC-002: is `ip` a target the collector must NEVER connect to? An exact twin of
-/// `hop_accountd::keys_api::ip_is_forbidden` and of `hop-gateway`'s `ip_is_forbidden`
-/// (services-r18-10). The v4 arm blocks every non-global range; the v6 arm is an ALLOWLIST (global
-/// unicast `2000::/3`), which is what refuses the IPv4-mapped/compatible/NAT64 spellings of an
-/// internal address, and the two translation ranges inside `2000::/3` (6to4, Teredo) are folded
-/// through the v4 arm on their embedded address. Three crates that share no dependency hold this
-/// function; a change to one belongs in all three.
+/// SVC-002, SVC-008: is `ip` a target the collector must NEVER connect to? Reuses
+/// `hop_gateway::ip_is_forbidden` as the single canonical implementation to prevent drift.
 #[cfg(feature = "live")]
-fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || o[0] == 0
-                || (o[0] == 100 && (o[1] & 0xc0) == 64)
-                || (o[0] == 198 && (o[1] & 0xfe) == 18)
-                || (o[0] & 0xf0) == 240
-        }
-        IpAddr::V6(v6) => {
-            let seg = v6.segments();
-            if (seg[0] & 0xe000) != 0x2000 {
-                return true;
-            }
-            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
-                return true;
-            }
-            let embedded = if seg[0] == 0x2002 {
-                Some(std::net::Ipv4Addr::from(
-                    ((seg[1] as u32) << 16) | seg[2] as u32,
-                ))
-            } else if seg[0] == 0x2001 && seg[1] == 0x0000 {
-                Some(std::net::Ipv4Addr::from(
-                    !(((seg[6] as u32) << 16) | seg[7] as u32),
-                ))
-            } else {
-                None
-            };
-            embedded
-                .map(IpAddr::V4)
-                .map(ip_is_forbidden)
-                .unwrap_or(false)
-        }
-    }
-}
+pub(crate) use hop_gateway::ip_is_forbidden;
 
 /// The reqwest OTLP transport (live only). A short client timeout so one slow tenant endpoint holds
 /// the export thread for seconds, not minutes; the queue is bounded, so backpressure drops rather than

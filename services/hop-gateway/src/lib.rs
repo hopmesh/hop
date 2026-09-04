@@ -156,35 +156,90 @@ fn parse_outbound_url(raw: &str) -> Option<Url> {
     Some(url)
 }
 
-/// services-r18-10 (ADV18-10): is `ip` a target an egress fetch must NEVER reach? The allowlist matches
+/// services-r18-10 (ADV18-10, SVC-008): is `ip` a target an egress fetch must NEVER reach? The allowlist matches
 /// only the URL host STRING; it says nothing about where that host RESOLVES. An allowlisted name whose
 /// DNS the attacker controls (or any allowlisted name pointed at an internal address) would otherwise
 /// reach loopback, the cloud metadata endpoint (169.254.169.254), RFC1918/ULA internal ranges, or
 /// 0.0.0.0. Reject every non-global-unicast destination so a passed host string cannot be turned into
 /// an internal fetch. Redirects are already disabled, so vetting the resolved connect IP closes the gap.
-#[cfg(feature = "reqwest")]
-fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
+///
+/// Vets IPv4 addresses against all non-global unicast ranges, and enforces an allowlist (2000::/3)
+/// on IPv6, explicitly unwrapping translation ranges (IPv4-mapped, RFC 6052 NAT64 64:ff9b::/96,
+/// 6to4 2002::/16, Teredo 2001:0000::/32, and deprecated IPv4-compatible ::/96).
+pub fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_documentation()
                 || v4.is_unspecified()
-                // Carrier-grade NAT 100.64.0.0/10 and the 0.0.0.0/8 "this network" block.
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
-                || v4.octets()[0] == 0
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
+                || (o[0] & 0xf0) == 240
         }
         IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                // Unique-local fc00::/7 and link-local fe80::/10.
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                // An IPv4-mapped v6 address must be vetted as its embedded v4.
-                || v6.to_ipv4_mapped().map(IpAddr::V4).map(ip_is_forbidden).unwrap_or(false)
+            let seg = v6.segments();
+            // An IPv4-mapped v6 address must be vetted as its embedded v4.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return ip_is_forbidden(IpAddr::V4(v4));
+            }
+            // RFC 6052 NAT64 well-known prefix 64:ff9b::/96
+            if seg[0] == 0x0064
+                && seg[1] == 0xff9b
+                && seg[2] == 0
+                && seg[3] == 0
+                && seg[4] == 0
+                && seg[5] == 0
+            {
+                let v4 = std::net::Ipv4Addr::from(((seg[6] as u32) << 16) | seg[7] as u32);
+                return ip_is_forbidden(IpAddr::V4(v4));
+            }
+            // Deprecated IPv4-compatible ::a.b.c.d (::/96)
+            if seg[0] == 0
+                && seg[1] == 0
+                && seg[2] == 0
+                && seg[3] == 0
+                && seg[4] == 0
+                && seg[5] == 0
+            {
+                if seg[6] == 0 && seg[7] == 1 {
+                    return true; // ::1 loopback
+                }
+                if seg[6] == 0 && seg[7] == 0 {
+                    return true; // :: unspecified
+                }
+                let v4 = std::net::Ipv4Addr::from(((seg[6] as u32) << 16) | seg[7] as u32);
+                return ip_is_forbidden(IpAddr::V4(v4));
+            }
+            // Global unicast allowlist (2000::/3), excluding documentation (2001:db8::/32).
+            if (seg[0] & 0xe000) != 0x2000 {
+                return true;
+            }
+            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
+                return true;
+            }
+            // 6to4 (2002::/16) and Teredo (2001:0000::/32) unwrapping
+            let embedded = if seg[0] == 0x2002 {
+                Some(std::net::Ipv4Addr::from(
+                    ((seg[1] as u32) << 16) | seg[2] as u32,
+                ))
+            } else if seg[0] == 0x2001 && seg[1] == 0x0000 {
+                Some(std::net::Ipv4Addr::from(
+                    !(((seg[6] as u32) << 16) | seg[7] as u32),
+                ))
+            } else {
+                None
+            };
+            embedded
+                .map(IpAddr::V4)
+                .map(ip_is_forbidden)
+                .unwrap_or(false)
         }
     }
 }
@@ -781,6 +836,11 @@ mod tests {
             "fc00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::7f00:1",
+            "::127.0.0.1",
+            "2002:a9fe:a9fe::",
+            "2001:db8::1",
         ] {
             assert!(forbid(bad), "{bad} must be rejected as an egress target");
         }
@@ -790,6 +850,8 @@ mod tests {
             "1.1.1.1",
             "93.184.216.34",
             "2606:4700:4700::1111",
+            "64:ff9b::808:808",
+            "::8.8.8.8",
         ] {
             assert!(!forbid(ok), "{ok} is a public target and must be allowed");
         }
@@ -807,6 +869,8 @@ mod tests {
             "http://169.254.169.254/latest/meta-data/",
             "http://[::1]/x",
             "http://10.0.0.1/x",
+            "http://[64:ff9b::a9fe:a9fe]/x",
+            "http://[::127.0.0.1]/x",
         ] {
             assert_eq!(
                 client.vetted_client(url).err(),
