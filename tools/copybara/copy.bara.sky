@@ -116,6 +116,10 @@ def _go_import_paths():
         multiline = True,
     )
 
+# DORMANT: hop-sdk-elixir mirror was retired (the repo was deleted; see docs/repo-catalog.md).
+# The vendoring transforms below are retained dormant so that when hop-sdk-elixir is
+# re-registered in COMPONENTS for a Hex re-publish, the vendoring transforms are preserved.
+# The functional validity of these transforms is exercised by tools/copybara/dispatch.test.sh.
 # The Hex package vendors the four Rust crates needed by its Rustler NIF. This avoids an unpublished
 # path dependency and keeps every Rust source file under native/vendor, inside Hex's package checksum.
 ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop" }
