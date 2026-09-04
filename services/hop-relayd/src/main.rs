@@ -975,7 +975,7 @@ static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Read-modify-write the drained per-tenant usage into this writer's hour-bucketed ledger rows.
-/// Returns the number of rows touched. See [`merge_rows_into_store`] for the concurrency premise.
+/// Returns the number of rows touched. See [`merge_rows_into_store_buffered`] for the concurrency premise.
 fn merge_usage_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
@@ -993,7 +993,8 @@ fn merge_carriage_into_store<S: Store>(
     merge_rows_into_store_buffered(store, drained, now_ms, carriage_kv_key, &RETRY_CARRIAGE)
 }
 
-/// Compatibility wrapper for existing callers and tests.
+/// Test-only wrapper over the usage retry buffer for the ledger unit tests.
+#[cfg(test)]
 fn merge_rows_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
@@ -2415,17 +2416,13 @@ fn serve_ws(stream: TcpStream, kind: WsKind, ev_tx: &EventTx) {
     let _ = ev_tx.send(Ev::Down(link));
 }
 
-/// Dial one **currently-online** peer relay over TLS WebSocket and bridge it to the driver as
-/// an Initiator link, the relay-to-relay epidemic of DESIGN.md §28. Dials **once**: on
-/// disconnect it returns, and the backbone's observe loop re-dials only if the peer is still in
-/// the registry (so a peer that went offline is never re-woken). Mirrors `serve_ws`'s
-/// single-thread read/drain interleave, as a non-blocking client (a TLS read timeout doesn't
-/// reliably surface as WouldBlock; non-blocking does, same fix as the endpoint dialer).
 /// Strip any userinfo component (`user:pass@` or `user@`) from a dial URL before logging.
 ///
 /// SVC-010: Dial URLs must never carry credentials as the supported auth path. Noise handles
 /// peer authentication; this redaction is defense-in-depth against credential leaks into operator
 /// and public netlog streams if an operator inadvertently configures HTTP Basic Auth userinfo.
+/// Only the peer dialer logs a URL, so the helper is compiled with it.
+#[cfg(feature = "firestore")]
 fn redact_dial_url(raw: &str) -> String {
     if let Some((scheme, rest)) = raw.split_once("://") {
         let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -2438,12 +2435,19 @@ fn redact_dial_url(raw: &str) -> String {
     raw.to_string()
 }
 
+/// Dial one **currently-online** peer relay over TLS WebSocket and bridge it to the driver as
+/// an Initiator link, the relay-to-relay epidemic of DESIGN.md §28. Dials **once**: on
+/// disconnect it returns, and the backbone's observe loop re-dials only if the peer is still in
+/// the registry (so a peer that went offline is never re-woken). Mirrors `serve_ws`'s
+/// single-thread read/drain interleave, as a non-blocking client (a TLS read timeout doesn't
+/// reliably surface as WouldBlock; non-blocking does, same fix as the endpoint dialer).
 #[cfg(feature = "firestore")]
 fn dial_peer(url: &str, ev_tx: &EventTx) {
+    // The registry URL is dialed as published; only what reaches a log line is redacted (SVC-010).
     let log_url = redact_dial_url(url);
     use tungstenite::stream::MaybeTlsStream;
     let (mut ws, _resp) =
-        match tungstenite::client::connect_with_config(&log_url, Some(ws_bearer_config()), 3) {
+        match tungstenite::client::connect_with_config(url, Some(ws_bearer_config()), 3) {
             Ok(c) => c,
             Err(e) => {
                 let err_msg = redact_dial_url(&e.to_string());
