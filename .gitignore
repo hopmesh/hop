@@ -18,9 +18,16 @@ __pycache__/
 *.py[cod]
 # Node dependency trees
 node_modules/
-# relay identity seeds + on-disk stores (never commit secrets/state)
+# relay identity seeds, private keys, and local secrets (never commit secrets/state)
 *.db
 *.db.key
+*.key
+*.secret
+*.identity
+identity.bin
+identity.seed
+local/
+.secrets/
 
 # ---- OpenTofu / Terraform ----
 # State lives in GCS (the `backend "gcs"` blocks in infra/versions.tf, infra/billing/providers.tf,
