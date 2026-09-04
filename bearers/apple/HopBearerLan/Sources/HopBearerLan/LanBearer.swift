@@ -23,10 +23,13 @@ let LAN_SERVICE_TYPE = "_hoplan._tcp"
 private let LAN_PING_S: Double = 1.0
 private let LAN_DEAD_S: Double = 15.0     // TCP is reliable; a generous liveness deadline
 var LAN_REAP_S: Double = 5.0              // close a connection that never completes HELLO (test seam: raised so a slow CI runner does not reap pending peers mid-test)
+var PREAUTH_DEADLINE_S: Double = 10.0     // Contract 4: reap connection that never authenticates via Noise
 private let LAN_CONNECT_S: Double = 8.0   // F-11: give up a dial that never reaches .ready
 private let LAN_RESTART_S: Double = 2.0   // F-11: backoff before restarting a failed listener/browser
 let LAN_MAX_FRAME = 1 << 20
 let LAN_MAX_PENDING_LINKS = 32
+let LAN_MAX_PREAUTH_LINKS = 16
+let LAN_MAX_TOTAL_LINKS = 32
 let LAN_MAX_PREAUTH_BYTES_PER_LINK = LAN_MAX_FRAME + 4
 let LAN_MAX_PREAUTH_BYTES_TOTAL = 4 * LAN_MAX_PREAUTH_BYTES_PER_LINK
 
@@ -41,43 +44,62 @@ final class LanAdmission {
     final class Lease {
         private let admission: LanAdmission
         fileprivate let id = UUID()
+        fileprivate(set) var isPreauth: Bool
 
-        fileprivate init(_ admission: LanAdmission) { self.admission = admission }
+        fileprivate init(_ admission: LanAdmission, isPreauth: Bool = true) {
+            self.admission = admission
+            self.isPreauth = isPreauth
+        }
         func reserve(_ bytes: Int) -> Bool { admission.reserve(self, bytes) }
         func release(_ bytes: Int) { admission.release(self, bytes) }
         func close() { admission.close(self) }
+        func promote() { admission.promote(self) }
         var retainedBytes: Int { admission.retained(self) }
         deinit { close() }
     }
 
     private let maxLinks: Int
+    private let maxPreauthLinks: Int
     private let maxBytesPerLink: Int
     private let maxBytesTotal: Int
     private let lock = NSLock()
-    private var held = [UUID: Int]()
+    private var held = [UUID: (bytes: Int, isPreauth: Bool)]()
     private var bytes = 0
 
     init(maxLinks: Int = LAN_MAX_PENDING_LINKS,
+         maxPreauthLinks: Int? = nil,
          maxBytesPerLink: Int = LAN_MAX_PREAUTH_BYTES_PER_LINK,
          maxBytesTotal: Int = LAN_MAX_PREAUTH_BYTES_TOTAL) {
         self.maxLinks = maxLinks
+        self.maxPreauthLinks = maxPreauthLinks ?? maxLinks
         self.maxBytesPerLink = maxBytesPerLink
         self.maxBytesTotal = maxBytesTotal
     }
 
-    func tryAcquire() -> Lease? {
+    func tryAcquire(preauth: Bool = true) -> Lease? {
         lock.lock(); defer { lock.unlock() }
         guard held.count < maxLinks else { return nil }
-        let lease = Lease(self)
-        held[lease.id] = 0
+        if preauth {
+            let currentPreauth = held.values.filter { $0.isPreauth }.count
+            guard currentPreauth < maxPreauthLinks else { return nil }
+        }
+        let lease = Lease(self, isPreauth: preauth)
+        held[lease.id] = (bytes: 0, isPreauth: preauth)
         return lease
+    }
+
+    fileprivate func promote(_ lease: Lease) {
+        lock.lock(); defer { lock.unlock() }
+        guard let current = held[lease.id], current.isPreauth else { return }
+        held[lease.id] = (bytes: current.bytes, isPreauth: false)
+        lease.isPreauth = false
     }
 
     private func reserve(_ lease: Lease, _ amount: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard amount >= 0, let current = held[lease.id],
-              current + amount <= maxBytesPerLink, bytes + amount <= maxBytesTotal else { return false }
-        held[lease.id] = current + amount
+              current.bytes + amount <= maxBytesPerLink, bytes + amount <= maxBytesTotal else { return false }
+        held[lease.id] = (bytes: current.bytes + amount, isPreauth: current.isPreauth)
         bytes += amount
         return true
     }
@@ -85,23 +107,24 @@ final class LanAdmission {
     private func release(_ lease: Lease, _ amount: Int) {
         lock.lock(); defer { lock.unlock() }
         guard let current = held[lease.id] else { return }
-        let released = min(max(amount, 0), current)
-        held[lease.id] = current - released
+        let released = min(max(amount, 0), current.bytes)
+        held[lease.id] = (bytes: current.bytes - released, isPreauth: current.isPreauth)
         bytes -= released
     }
 
     private func close(_ lease: Lease) {
         lock.lock(); defer { lock.unlock() }
-        guard let retained = held.removeValue(forKey: lease.id) else { return }
-        bytes -= retained
+        guard let current = held.removeValue(forKey: lease.id) else { return }
+        bytes -= current.bytes
     }
 
     private func retained(_ lease: Lease) -> Int {
         lock.lock(); defer { lock.unlock() }
-        return held[lease.id] ?? 0
+        return held[lease.id]?.bytes ?? 0
     }
 
     var linkCount: Int { lock.lock(); defer { lock.unlock() }; return held.count }
+    var preauthLinkCount: Int { lock.lock(); defer { lock.unlock() }; return held.values.filter { $0.isPreauth }.count }
     var retainedBytes: Int { lock.lock(); defer { lock.unlock() }; return bytes }
 }
 
@@ -191,6 +214,8 @@ final class LanLink {
     private let myId: Data
     private(set) var peerId: Data?
     private(set) var up = false
+    private(set) var authenticated = false
+    private var upMs: UInt64 = 0
     // apple-12: set true by the bearer iff this exact leg was announced to the sink via linkUp. A
     // deduped loser is closed without ever being surfaced, so its onClose must NOT emit a linkDown.
     // Touched only from bearer code on `lanQueue` (single-threaded), so no extra synchronization here.
@@ -257,6 +282,7 @@ final class LanLink {
         guard !closed else { return }
         if !ready && Double(now - openedMs) / 1000 > LAN_CONNECT_S { close("connect timeout"); return }
         if ready && !up && Double(now - openedMs) / 1000 > LAN_REAP_S { close("no-HELLO reap"); return }
+        if up && !authenticated && Double(now - upMs) / 1000 > PREAUTH_DEADLINE_S { close("preauth deadline"); return }
         if up && Double(now - lastRxMs) / 1000 > LAN_DEAD_S { close("liveness DEAD"); return }
         if ready && Double(now - lastPingMs) / 1000 >= LAN_PING_S {
             lastPingMs = now
@@ -269,6 +295,12 @@ final class LanLink {
         txSeq += 1
         var b = Data([L_PING]); appU64(&b, txSeq); appU64(&b, nowMs())
         sendFrame(b)
+    }
+
+    func markAuthenticated() {
+        guard !authenticated else { return }
+        authenticated = true
+        admission.promote()
     }
 
     func sendData(_ bytes: Data) {
@@ -316,6 +348,7 @@ final class LanLink {
         case L_HELLO:
             if b.count >= 17, !up {
                 peerId = Data(b[1..<17]); up = true
+                upMs = nowMs()
                 log("STATE", "lan hello-recv peer=\(peerShort)")
                 onUp(self)
             }
@@ -367,7 +400,7 @@ public final class LanBearer: Bearer {
     public init(myId: Data) { self.myId = myId }
 
     public func start() {
-        log("STATE", "lan node-start myId=\(hex(myId)) service=\(LAN_SERVICE_TYPE)")
+        log("STATE", "lan node-start myId=\(shortHex(myId)) service=\(LAN_SERVICE_TYPE)")
         lanQueue.async { [weak self] in
             guard let self else { return }
             self.stopped = false
@@ -554,14 +587,16 @@ public final class LanBearer: Bearer {
         // announced, and only the survivor carries wasSurfaced so only it can emit a linkDown later.
         linksByLinkId[link.linkId] = link           // register for send routing + linkDown pairing
         if let existing = linksByPeerId[peer], existing !== link {
-            // Survivor pick via the pure, unit-tested keep-rule (this used to be re-inlined here, so the
-            // extracted `lanNewLegSurvives` was tested but never actually run in production). `newSurvives`
-            // == "the just-arrived leg wins": keep MY dialed leg iff I'm the greater id, so both ends agree.
+            if existing.authenticated && !link.authenticated {
+                // PLAT-005: an unauthenticated new leg claiming an already-authenticated peer's
+                // transport id must not evict or shadow that peer before cryptographic binding.
+                link.close("unauthenticated shadow rejected")
+                return
+            }
             let newSurvives = lanNewLegSurvives(myId: myId, peer: peer,
                                                 existingIsDialer: existing.isDialer, newIsDialer: link.isDialer)
             let keep = newSurvives ? link : existing
             let drop = newSurvives ? existing : link
-            linksByPeerId[peer] = keep                      // set survivor BEFORE closing the dropped leg
             if newSurvives { link.wasSurfaced = true }      // only the survivor is announced (apple-12)
             drop.close("dedup")                             // loser was never surfaced -> no linkDown for it
             log("DEDUP", "lan kept isDialer=\(keep.isDialer) peer=\(shortHex(peer))")
@@ -585,6 +620,13 @@ public final class LanBearer: Bearer {
         // `link.wasSurfaced` records whether onUp announced this exact leg to the sink, so every linkDown
         // pairs with a prior linkUp (mirrors the BLE bearer).
         if wasUp && link.wasSurfaced { sink?.linkDown(link.linkId) }
+    }
+
+    public func setAuthenticated(linkId: LinkId) {
+        lanQueue.async { [weak self] in
+            guard let self, let link = self.linksByLinkId[linkId] else { return }
+            link.markAuthenticated()
+        }
     }
 }
 
