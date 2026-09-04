@@ -507,7 +507,10 @@ export class HopNode {
     return this.subscribe$(HopEvent.Message, decodeMessage, cb);
   }
 
-  /** Subscribe to inbound hops:// service requests (this node acting as a service). */
+  /** Subscribe to inbound hops:// service requests (this node acting as a service).
+   *  The application owns acceptance: call `acceptServiceRequest(req.requestId)` once processing
+   *  succeeds, or `rejectServiceRequest(req.requestId)` (or leave unaccepted) on failure.
+   */
   onServiceRequest(cb: (request: HopServiceRequest) => void): Subscription {
     return this.subscribe$(HopEvent.ServiceRequest, decodeServiceRequest, cb);
   }

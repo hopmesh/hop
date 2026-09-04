@@ -454,7 +454,12 @@ final class HopMesh: RCTEventEmitter {
       }
       remove.append(addr)
     }
-    resolve(node.hpsRekey(path: path, newPath: newPath, remove: remove).map(b64))
+    do {
+      let ids = try node.hpsRekey(path: path, newPath: newPath, remove: remove)
+      resolve(ids.map(b64))
+    } catch {
+      reject("hop_error", error.localizedDescription, error)
+    }
   }
 
   @objc(hpsReach:path:resolver:rejecter:)
@@ -545,7 +550,7 @@ final class HopMesh: RCTEventEmitter {
         "createdAt": Double(m.createdAt),
       ])
     }
-    node.pollServiceRequests { r in
+    node.pollServiceRequestsAccepting { r in
       self.send("HopMesh:serviceRequest", [
         "node": handle,
         "from": HopAddress.base58(r.from),
@@ -554,6 +559,7 @@ final class HopMesh: RCTEventEmitter {
         "method": r.method,
         "args": self.b64(r.args),
       ])
+      return false
     }
     node.pollServiceResponses { r in
       self.send("HopMesh:serviceResponse", [

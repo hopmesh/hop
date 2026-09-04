@@ -58,6 +58,8 @@ function makeNative(overrides = {}) {
     sendServiceRequest: (...a) => record("sendServiceRequest", a, toBase64(new Uint8Array(32).fill(5))),
     sendServiceResponse: (...a) => record("sendServiceResponse", a, true),
     acceptServiceResponse: (...a) => record("acceptServiceResponse", a, true),
+    acceptServiceRequest: (...a) => record("acceptServiceRequest", a, true),
+    rejectServiceRequest: (...a) => record("rejectServiceRequest", a, true),
     startPump: (...a) => record("startPump", a, undefined),
     stopPump: (...a) => record("stopPump", a, undefined),
     linkUp: (...a) => record("linkUp", a, undefined),
@@ -506,4 +508,42 @@ test("hostile repro audit-013: node rejects invalid link, tick, and status numbe
     status: 65536,
     body: "test",
   }), RangeError);
+});
+
+test("hpsRekey rejects when native call fails (ABI-004)", async () => {
+  const native = makeNative({
+    hpsRekey: () => Promise.reject(new Error("hop_hps_rekey failed")),
+  });
+  const node = new HopNode(native, makeEmitter(), 7);
+  await assert.rejects(async () => {
+    await node.hpsRekey("unknown_topic");
+  }, /hop_hps_rekey failed/);
+});
+
+test("service requests are delivered and application controls acceptance (ABI-002)", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+  const reqId = new Uint8Array(32).fill(7);
+  let seen = null;
+  node.onServiceRequest((req) => {
+    seen = req;
+  });
+  emitter.emit("HopMesh:serviceRequest", {
+    node: 7,
+    from: "z6MkAddr",
+    requestId: toBase64(reqId),
+    service: "svc",
+    method: "m",
+    args: toBase64(new Uint8Array([1, 2])),
+  });
+  assert.notEqual(seen, null);
+  assert.equal(seen.service, "svc");
+  assert.deepEqual(seen.requestId, reqId);
+  const accepted = await node.acceptServiceRequest(seen.requestId);
+  assert.equal(accepted, true);
+  assert.deepEqual(native.calls.at(-1), {
+    name: "acceptServiceRequest",
+    args: [7, toBase64(reqId)],
+  });
 });

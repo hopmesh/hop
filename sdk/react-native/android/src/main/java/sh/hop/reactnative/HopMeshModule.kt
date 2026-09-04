@@ -474,7 +474,11 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       }
       remove.add(addr)
     }
-    promise.resolve(bundleIds(e.node.hpsRekey(path, newPath, remove)))
+    try {
+      promise.resolve(bundleIds(e.node.hpsRekey(path, newPath, remove)))
+    } catch (t: Throwable) {
+      promise.reject("hop_error", t.message ?: "hpsRekey failed", t)
+    }
   }
 
   @ReactMethod
@@ -561,7 +565,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putDouble("createdAt", msg.createdAt.toDouble())
       emit("HopMesh:message", m)
     }
-    node.pollServiceRequests { req ->
+    node.pollServiceRequestsAccepting { req ->
       val m = Arguments.createMap()
       m.putInt("node", handle)
       m.putString("from", HopAddress.base58(req.from))
@@ -570,6 +574,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       m.putString("method", req.method)
       m.putString("args", enc(req.args))
       emit("HopMesh:serviceRequest", m)
+      false
     }
     node.pollServiceResponses { resp ->
       val m = Arguments.createMap()
