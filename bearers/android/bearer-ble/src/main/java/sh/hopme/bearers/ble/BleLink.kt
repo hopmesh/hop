@@ -12,6 +12,8 @@ internal interface BleLink {
     val linkId: Long
     val peerId: ByteArray?
     val isDialer: Boolean
+    val isSecured: Boolean get() = false
+    fun markSecured() {}
     fun sendData(bytes: ByteArray)
     fun close(why: String)
 }

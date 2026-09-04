@@ -576,6 +576,13 @@ public final class HopBearer: NSObject, ObservableObject {
         core.async { [weak self] in
             guard let self else { return }
             self.node.tick(nowMs: now)
+            let peerLinks = self.node.peerLinks()
+            for pl in peerLinks {
+                if self.node.isSecured(address: pl.address) {
+                    self.bearerMgr.markSecured(pl.link)
+                }
+            }
+            self.bearerMgr.checkPreauthDeadlines(now)
             // Re-publish our prekey periodically so a neighbour whose cached copy lapsed (or who
             // arrived after ours did) can always open a forward-secret session to us (§25).
             if doPrekey { _ = try? self.node.publishPrekey() }
@@ -1066,6 +1073,12 @@ public final class HopBearer: NSObject, ObservableObject {
             let browse = self.node.browse(service: HopBearer.presenceService, tag: "")
                 .filter { $0.publisher != mine }
             let peerLinks = self.node.peerLinks()
+            for pl in peerLinks {
+                if self.node.isSecured(address: pl.address) {
+                    self.bearerMgr.markSecured(pl.link)
+                }
+            }
+            self.bearerMgr.checkPreauthDeadlines(HopBearer.nowMs())
             let secured = Set(contactKeys.filter { self.node.isSecured(address: $0) })
             let routed = Set(contactKeys.filter { self.node.knowsRoute(address: $0) })
             let queue = self.node.queue()

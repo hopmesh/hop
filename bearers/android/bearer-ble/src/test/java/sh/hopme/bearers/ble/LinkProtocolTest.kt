@@ -190,6 +190,7 @@ class LinkProtocolTest {
 
     @Test fun tickTripsLivenessWatchdogWhenSilent() {
         withUpLink { p, _, s, clock ->
+            p.secured = true
             clock.addAndGet(DEAD_MS + 10_000L) // no rx for well past the foreground deadline
             p.tick()
             assertTrue("a silent link trips the liveness watchdog", s.closes.any { it.contains("DEAD") })
@@ -207,6 +208,7 @@ class LinkProtocolTest {
 
     @Test fun stableUpAfterThirtySeconds() {
         withUpLink { p, _, _, clock ->
+            p.secured = true
             assertFalse("not stable immediately", p.stableUp())
             clock.addAndGet(30_000L)
             assertTrue("stable after 30s up", p.stableUp())
@@ -329,4 +331,22 @@ class LinkProtocolTest {
             rx.join(1000)
         }
     }
+    @Test fun unauthenticatedUpLinkReapedAtPreauthDeadlineEvenWithPings() {
+        withUpLink { p, _, s, clock ->
+            // Advance clock past 10,000ms preauth deadline (started at 1,000ms)
+            clock.set(12_000L)
+            p.tick()
+            assertTrue("unauthenticated link must be reaped at preauth deadline", s.closes.any { it.contains("preauth deadline") })
+        }
+    }
+
+    @Test fun authenticatedUpLinkSurvivesPastPreauthDeadline() {
+        withUpLink { p, _, s, clock ->
+            p.secured = true
+            clock.set(15_000L)
+            p.tick()
+            assertFalse("authenticated link must not be reaped", s.closes.any { it.contains("preauth deadline") })
+        }
+    }
+
 }

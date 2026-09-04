@@ -5,6 +5,7 @@
 
 import XCTest
 import Foundation
+import HopContract
 @testable import HopDriver
 
 final class HeadlessSeamTests: XCTestCase {
@@ -36,4 +37,40 @@ final class HeadlessSeamTests: XCTestCase {
         XCTAssertEqual(b.reachable.first?.name, "Current", "the fresher advert keeps the display name")
         XCTAssertEqual(b.reachable.first?.hops, 1, "the stale advert still contributes its nearer hop count")
     }
+    private class DummyBearer: Bearer {
+        var sink: LinkSink?
+        let transportName = "Dummy"
+        var closedLinks: [LinkId] = []
+        var authenticatedLinks: [LinkId] = []
+        func start() {}
+        func stop() {}
+        func send(_ bytes: Data, on link: LinkId) {}
+        func close(_ link: LinkId) { closedLinks.append(link) }
+        func authenticated(_ link: LinkId) { authenticatedLinks.append(link) }
+    }
+
+    func testDriverManagerPathReapsUnauthenticatedLinkWhileAuthenticatedSurvives() {
+        let b = makeHeadlessBearer()
+        let dummy = DummyBearer()
+        b.bearerMgr.register(dummy)
+        dummy.sink?.linkUp(101, role: .acceptor, peerId: addr(0x01))
+        dummy.sink?.linkUp(102, role: .acceptor, peerId: addr(0x02))
+
+        let global1 = b.bearerMgr.transportName(of: 1_000_000) != nil ? 1_000_000 : 1_000_001
+        // Mark link 101 secured through the manager
+        b.bearerMgr.markSecured(1_000_000)
+        XCTAssertTrue(dummy.authenticatedLinks.contains(101))
+
+        // Check preauth deadlines 5 seconds later: neither is reaped
+        b.bearerMgr.checkPreauthDeadlines(HopBearer.nowMs() + 5_000)
+        XCTAssertFalse(dummy.closedLinks.contains(101))
+        XCTAssertFalse(dummy.closedLinks.contains(102))
+
+        // Check preauth deadlines 15 seconds later (past 10s deadline):
+        // Authenticated peer survives; unauthenticated peer is closed!
+        b.bearerMgr.checkPreauthDeadlines(HopBearer.nowMs() + 15_000)
+        XCTAssertFalse(dummy.closedLinks.contains(101), "authenticated peer must survive past 10s")
+        XCTAssertTrue(dummy.closedLinks.contains(102), "unauthenticated peer must be reaped at deadline")
+    }
+
 }

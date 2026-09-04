@@ -48,6 +48,9 @@ let DIAL_TIMEOUT_S: Double = 12.0
 let MAX_FRAME = 1 << 20
 let STABLE_UP_MS: UInt64 = 30_000
 let LOST_S: Double = 30.0
+public let BLE_MAX_LINKS = 32
+public let BLE_MAX_PREAUTH_LINKS = 16
+public let BLE_PREAUTH_DEADLINE_S: Double = 10.0
 
 // MARK: - Dial backoff schedule (shared with Android's DialBackoff.kt)
 //
@@ -337,11 +340,32 @@ public final class BleBearer: Bearer {
     /// Called by the radio shells the instant a `Link` is constructed, before HELLO. Registers it so
     /// `closeAllLinks()` can reach it, or closes it immediately if the bearer is already stopped (the
     /// callback that produced it was queued before stop() and landed after).
+    private var authenticatedLinks = Set<LinkId>()
+
+    public func close(_ link: LinkId) {
+        mapLock.lock()
+        let l = allLinks[link]
+        mapLock.unlock()
+        l?.close("preauth-deadline")
+    }
+
+    public func authenticated(_ link: LinkId) {
+        mapLock.lock()
+        authenticatedLinks.insert(link)
+        mapLock.unlock()
+    }
+
     func adopt(_ link: DedupLink) {
         mapLock.lock()
         if stopped {
             mapLock.unlock()
             link.close("bearer-stopped")
+            return
+        }
+        let preauth = allLinks.count - authenticatedLinks.count
+        if preauth >= BLE_MAX_PREAUTH_LINKS || allLinks.count >= BLE_MAX_LINKS {
+            mapLock.unlock()
+            link.close("preauth-limit")
             return
         }
         allLinks[link.linkId] = link
@@ -448,6 +472,7 @@ public final class BleBearer: Bearer {
     func onClose(_ link: DedupLink) {               // SPEC R3: identity-checked removal
         mapLock.lock()
         if allLinks[link.linkId] === link { allLinks.removeValue(forKey: link.linkId) }   // PLAT-001
+        authenticatedLinks.remove(link.linkId)
         let wasUp = linksByLinkId.removeValue(forKey: link.linkId) != nil        // true iff registered in onUp
         if let peer = link.peerId, linksByPeerId[peer] === link { linksByPeerId.removeValue(forKey: peer) }
         let noLinksLeft = linksByPeerId.isEmpty

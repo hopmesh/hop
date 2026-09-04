@@ -44,9 +44,28 @@ public final class MultipeerBearer: NSObject, Bearer {
     /// without the driver's involvement.
     let queue = DispatchQueue(label: "hop.mc")
 
+    public static let maxLinks = 32
+    public static let maxPreauthLinks = 16
+    private var authenticatedLinks = Set<LinkId>()
     var linkByPeer: [String: LinkId] = [:]     // display name -> our local link id
     var peerNameByLink: [LinkId: String] = [:]
     private var nextLinkId: LinkId = 1
+
+    public func close(_ link: LinkId) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let peerName = self.peerNameByLink[link] else { return }
+            _ = self.noteDisconnected(peerName: peerName)
+            self.sink?.linkDown(link)
+        }
+    }
+
+    public func authenticated(_ link: LinkId) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.authenticatedLinks.insert(link)
+        }
+    }
 
     /// Set by the host for §39 private mode: browse (so we can still reach peers who advertise) but
     /// do not advertise ourselves. Persisted rather than applied once, so a later `start()` (from the
@@ -136,6 +155,8 @@ public final class MultipeerBearer: NSObject, Bearer {
     /// second link the consumer would treat as a distinct path).
     func noteConnected(peerName: String) -> LinkId? {
         guard linkByPeer[peerName] == nil else { return nil }
+        let preauth = linkByPeer.count - authenticatedLinks.count
+        guard preauth < Self.maxPreauthLinks && linkByPeer.count < Self.maxLinks else { return nil }
         let id = mint()
         linkByPeer[peerName] = id
         peerNameByLink[id] = peerName
@@ -146,6 +167,7 @@ public final class MultipeerBearer: NSObject, Bearer {
     func noteDisconnected(peerName: String) -> LinkId? {
         guard let id = linkByPeer.removeValue(forKey: peerName) else { return nil }
         peerNameByLink[id] = nil
+        authenticatedLinks.remove(id)
         return id
     }
 
