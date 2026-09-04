@@ -344,6 +344,10 @@ impl ReqwestOtlpTransport {
     }
 }
 
+/// Maximum bytes read from an OTLP export response body (SVC-009).
+/// Bounds memory allocation in the shared, multi-tenant collector daemon.
+pub const MAX_OTLP_RESPONSE_BYTES: usize = 64 * 1024;
+
 #[cfg(feature = "live")]
 impl OtlpTransport for ReqwestOtlpTransport {
     fn post_json(
@@ -367,7 +371,23 @@ impl OtlpTransport for ReqwestOtlpTransport {
             .send()
             .map_err(|e| format!("otlp post: {}", e.without_url()))?;
         let status = resp.status().as_u16();
-        let text = resp.text().unwrap_or_default();
+        // SVC-009: cap the response body read using a chunked streaming read so a slow or hostile
+        // tenant-configured endpoint returning an unbounded response cannot exhaust memory in the
+        // shared, multi-tenant telemetryd collector.
+        use std::io::Read as _;
+        let mut reader = resp;
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while body.len() < MAX_OTLP_RESPONSE_BYTES {
+            let allowance = (MAX_OTLP_RESPONSE_BYTES - body.len()).min(chunk.len());
+            match reader.read(&mut chunk[..allowance]) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&body).into_owned();
         Ok((status, text))
     }
 }
@@ -610,6 +630,40 @@ mod tests {
         assert!(
             matches!(redirect_target.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "the redirect target must never be dialed"
+        );
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn otlp_transport_caps_large_response_body_to_prevent_unbounded_allocation() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let server_url = format!("http://{}/v1/metrics", server.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .expect("read line");
+            let large_body = vec![b'A'; 256 * 1024];
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                large_body.len()
+            )
+            .expect("write headers");
+            stream.write_all(&large_body).expect("write body");
+        });
+
+        let t = ReqwestOtlpTransport::new_allowing_private_egress();
+        let (status, text) = t.post_json(&server_url, "{}", None).expect("post");
+        assert_eq!(status, 200);
+        assert!(
+            text.len() <= 64 * 1024,
+            "response body was not capped: got {} bytes, expected <= 65536 bytes",
+            text.len()
         );
     }
 }
