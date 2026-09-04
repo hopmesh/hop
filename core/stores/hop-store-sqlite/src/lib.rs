@@ -675,6 +675,24 @@ impl Store for SqliteStore {
             value,
         }])
     }
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        self.conn
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(|e| e.to_string())?;
+        let tx = self.conn.transaction().map_err(|e| e.to_string())?;
+        let inserted = tx
+            .execute(
+                "INSERT OR IGNORE INTO kv (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(inserted > 0)
+    }
 
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         self.conn

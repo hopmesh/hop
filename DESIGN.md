@@ -2077,7 +2077,7 @@ surfaces are **not** equal under GDPR:
   A partition holds whichever of these its node writes: one document per peer it has a forward-secret
   session with (`session/<base58 peer public key>`, the sharp one on a relay), carrier-stream chunks
   (`strm/<base58 sender public key>/<stream id>/<seq>`), inbox and dedup rows (`inbox/`,
-  `inbox-seen/`, keyed by bundle id), `hps/` service, subscription and membership rows keyed by
+  `inbox-seen/`, and `telemetry_seen/<epoch_hour>/<bundle_id>` bounded to the 24 h attribution window by periodic sweep),
   service path when the node hosts services, `response/` rows keyed by request id, and the metering
   ledger (`usage/`, `carriage_usage/`, `telemetry_usage/`, `storage_usage/`, each
   `{hour}/{tenant}/{writer}`, tenant identifiers rather than device ones). The **values** on the
@@ -2708,6 +2708,9 @@ never counted twice:
 - **MAD**, deduped by `(tenant, period, address)` via the HLL/bloom set above.
 - **Mailbox**, a sampler walks held inbox bytes per interval and adds byte-hours; idempotent by
   `(tenant, period, sample-tick)` so a re-run of a tick can't double-add.
+- **Telemetry**, deduped across restarts and concurrent collector instances by `telemetry_seen/<epoch_hour>/<bundle_id>`
+  via `put_kv_if_absent_critical` with create-with-exists=false preconditions; exempt from eager KV caps
+  and bounded to the 24 h attribution window by periodic sweep (SVC-006).
 
 Writes use fallible critical KV mutations (`put_kv_critical` / `apply_kv_batch`) and are small and
 sharded to avoid hot-doc contention; in-memory drained counters are retained in retry buffers on

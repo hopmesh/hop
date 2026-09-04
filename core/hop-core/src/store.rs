@@ -265,6 +265,19 @@ pub trait Store {
             value,
         }])
     }
+    /// Atomically persist `value` under `key` only if `key` does not already exist.
+    /// Returns `Ok(true)` if inserted, `Ok(false)` if already present, or `Err(err)` on failure.
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        if self.get_kv(key).is_some() {
+            return Ok(false);
+        }
+        self.put_kv_critical(key, value)?;
+        Ok(true)
+    }
     /// Fetch a persisted value by exact key. Default: `None`.
     fn get_kv(&self, _key: &str) -> Option<Vec<u8>> {
         None
@@ -415,6 +428,13 @@ impl Store for Box<dyn Store> {
     }
     fn put_kv_critical(&mut self, key: &str, value: Vec<u8>) -> std::result::Result<(), String> {
         (**self).put_kv_critical(key, value)
+    }
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        (**self).put_kv_if_absent_critical(key, value)
     }
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         (**self).get_kv(key)

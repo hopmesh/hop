@@ -9010,44 +9010,54 @@ impl<S: Store> Node<S> {
                             // tenant from the carriage stamp (§35, the SAME verified attribution as
                             // billing), then surface it. Fire-and-forget (no response); a malformed
                             // or oversized batch is dropped rather than trusted.
-                            //
-                            // Attribution is BOUNDED (`attribute_fresh`), not any-epoch: this path
-                            // performs no dedup and no replay check, so the unbounded form would
-                            // leave a captured stamp valid for its bundle id indefinitely. The
-                            // window (`MAX_ATTRIBUTION_AGE_EPOCHS`) is wide enough that a device
-                            // offline overnight still attributes, which is the delay tolerance §40
-                            // actually needs; the unbounded `attribute` stays for the durable
-                            // re-ingest path, which was already admitted once against a fresh stamp.
-                            let dedup_key =
-                                format!("telemetry_seen/{}", bs58::encode(id).into_string());
-                            if self.store.get_kv(&dedup_key).is_some() {
+                            let Some(batch) = TelemetryBatch::from_bytes(&args) else {
+                                return false;
+                            };
+                            if !self.app_payload_policy.supports(AppQueueKind::Telemetry) {
                                 return false;
                             }
-                            if let Some(batch) = TelemetryBatch::from_bytes(&args) {
-                                if !self.app_payload_policy.supports(AppQueueKind::Telemetry) {
+                            let now = self.now_ms;
+                            let epoch_hour = bundle
+                                .env
+                                .access
+                                .as_deref()
+                                .map(|s| s.epoch)
+                                .unwrap_or(now / 3_600_000);
+                            let dedup_key = format!(
+                                "telemetry_seen/{}/{}",
+                                epoch_hour,
+                                bs58::encode(id).into_string()
+                            );
+                            match self
+                                .store
+                                .put_kv_if_absent_critical(&dedup_key, now.to_le_bytes().to_vec())
+                            {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    // Duplicate telemetry batch already processed (SVC-006)
                                     return false;
                                 }
-                                let now = self.now_ms;
-                                let tenant = bundle.env.access.as_deref().and_then(|stamp| {
-                                    self.access_policy.attribute_fresh(stamp, &id, now)
-                                });
-                                let Some(charge) = self.reserve_app_queue(
-                                    AppQueueKind::Telemetry,
-                                    Some(from),
-                                    args.len().saturating_add(40),
-                                ) else {
+                                Err(_) => {
+                                    // Critical persistence failure: fail closed
                                     return false;
-                                };
-                                let _ = self
-                                    .store
-                                    .put_kv_critical(&dedup_key, now.to_le_bytes().to_vec());
-                                self.telemetry_in.push(TelemetryIn {
-                                    from,
-                                    batch,
-                                    tenant,
-                                });
-                                self.telemetry_charges.push(charge);
+                                }
                             }
+                            let tenant = bundle.env.access.as_deref().and_then(|stamp| {
+                                self.access_policy.attribute_fresh(stamp, &id, now)
+                            });
+                            let Some(charge) = self.reserve_app_queue(
+                                AppQueueKind::Telemetry,
+                                Some(from),
+                                args.len().saturating_add(40),
+                            ) else {
+                                return false;
+                            };
+                            self.telemetry_in.push(TelemetryIn {
+                                from,
+                                batch,
+                                tenant,
+                            });
+                            self.telemetry_charges.push(charge);
                         } else {
                             // Custom service: hand to the embedding app to fulfill.
                             let item = ServiceReqItem {
@@ -22284,7 +22294,10 @@ mod tests {
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Discoverable,
         );
-        assert!(res.is_err(), "register_service must return an error when durable persistence fails");
+        assert!(
+            res.is_err(),
+            "register_service must return an error when durable persistence fails"
+        );
         assert!(
             !node.hps_adverts.contains_key("news"),
             "no advert must be published when persistence fails"

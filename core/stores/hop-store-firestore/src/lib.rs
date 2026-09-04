@@ -107,6 +107,13 @@ pub fn is_billing_ledger_key(key: &str) -> bool {
         .any(|prefix| key.starts_with(prefix))
 }
 
+/// Telemetry deduplication markers are exempt from eager-KV row caps and startup deletion (SVC-006).
+pub const TELEMETRY_SEEN_PREFIX: &str = "telemetry_seen/";
+
+pub fn is_telemetry_seen_key(key: &str) -> bool {
+    key.starts_with(TELEMETRY_SEEN_PREFIX)
+}
+
 /// Cold-open limits match relayd's 8,192-bundle custody ceiling and keep the complete durable hot
 /// snapshot within the 2 GiB Cloud Run instance. Bundles and eager KV share one byte ceiling, so a
 /// large security-state namespace cannot consume a second unaccounted pool beside bundle custody.
@@ -383,6 +390,29 @@ pub trait BundleMirror: Send + Sync + 'static {
         }
     }
 
+    /// Check if a KV document exists in the remote mirror. Default: none.
+    fn get_kv(&self, _key: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
+
+    /// Atomically insert `value` under `key` only if `key` does not already exist,
+    /// committed through the critical journal with create-with-exists=false precondition.
+    /// Returns `Ok(true)` if inserted, `Ok(false)` if key already exists, or `Err` on failure.
+    fn put_kv_if_absent(&self, key: &str, value: &[u8]) -> Result<bool, MirrorBatchError> {
+        if self
+            .get_kv(key)
+            .map_err(MirrorBatchError::definitive)?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        self.apply_kv_batch(&[KvMutation::Put {
+            key: key.to_string(),
+            value: value.to_vec(),
+        }])?;
+        Ok(true)
+    }
+
     /// Definitive write/read/delete probe used before startup admission and during recovery.
     fn durability_probe(&self) -> Result<(), String> {
         Ok(())
@@ -464,6 +494,12 @@ impl BundleMirror for FirestoreClient {
     }
     fn confirm_critical_operation_fence(&self) -> Result<(), String> {
         FirestoreClient::confirm_critical_operation_fence(self)
+    }
+    fn get_kv(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        FirestoreClient::get_kv(self, key)
+    }
+    fn put_kv_if_absent(&self, key: &str, value: &[u8]) -> Result<bool, MirrorBatchError> {
+        FirestoreClient::put_kv_if_absent(self, key, value)
     }
 }
 
@@ -969,11 +1005,12 @@ fn run_startup_maintenance_round(
                         // Already loaded into memory; do not delete from remote store.
                         continue;
                     }
-                    if is_billing_ledger_key(&row.key) {
-                        // Billing-ledger prefixes (usage/, carriage_usage/, storage_usage/,
-                        // telemetry_usage/) are exempt from eager-KV row caps and delete-on-overflow
-                        // (STORE-003 / CAND-NET-02). They do not compete with ratchets or inboxes.
-                        if usage.bytes.saturating_add(bytes) <= limits.max_bytes {
+                    if is_billing_ledger_key(&row.key) || is_telemetry_seen_key(&row.key) {
+                        // Billing-ledger prefixes and telemetry_seen are exempt from eager-KV row caps
+                        // and delete-on-overflow (STORE-003 / SVC-006).
+                        if !is_telemetry_seen_key(&row.key)
+                            && usage.bytes.saturating_add(bytes) <= limits.max_bytes
+                        {
                             inner.put_kv(&row.key, value);
                             usage.bytes += bytes;
                         }
@@ -1247,7 +1284,51 @@ impl Store for FirestoreStore {
 
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         // The in-memory copy is authoritative in-process (loaded on open, kept in sync on write).
-        self.inner.get_kv(key)
+        if let Some(val) = self.inner.get_kv(key) {
+            return Some(val);
+        }
+        if key.starts_with(TELEMETRY_SEEN_PREFIX) || key.starts_with(LAZY_KV_PREFIX) {
+            if let Ok(Some(val)) = self.mirror.get_kv(key) {
+                return Some(val);
+            }
+        }
+        None
+    }
+
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        if !self.durability.is_ready() {
+            return Err(format!(
+                "durable store is {:?} with {} unreconciled mutation(s)",
+                self.durability.status(),
+                self.durability.unreconciled()
+            ));
+        }
+        if self.inner.get_kv(key).is_some() {
+            return Ok(false);
+        }
+        if let Ok(Some(existing)) = self.mirror.get_kv(key) {
+            self.inner.put_kv(key, existing);
+            return Ok(false);
+        }
+        match self.mirror.put_kv_if_absent(key, &value) {
+            Ok(true) => {
+                self.inner.put_kv(key, value);
+                Ok(true)
+            }
+            Ok(false) => {
+                if let Ok(Some(existing)) = self.mirror.get_kv(key) {
+                    self.inner.put_kv(key, existing);
+                } else {
+                    self.inner.put_kv(key, value);
+                }
+                Ok(false)
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn remove_kv(&mut self, key: &str) {
@@ -1274,7 +1355,10 @@ impl Store for FirestoreStore {
         after: Option<&str>,
         limit: usize,
     ) -> Vec<(String, Vec<u8>)> {
-        if prefix.starts_with(LAZY_KV_PREFIX) || is_billing_ledger_key(prefix) {
+        if prefix.starts_with(LAZY_KV_PREFIX)
+            || is_billing_ledger_key(prefix)
+            || prefix.starts_with(TELEMETRY_SEEN_PREFIX)
+        {
             return match self.mirror.list_kv_page(prefix, after, limit) {
                 Ok(page) => page,
                 Err(_) => {
@@ -1294,7 +1378,10 @@ impl Store for FirestoreStore {
         limit: usize,
         max_bytes: usize,
     ) -> std::result::Result<KvPage, String> {
-        if !prefix.starts_with(LAZY_KV_PREFIX) && !is_billing_ledger_key(prefix) {
+        if !prefix.starts_with(LAZY_KV_PREFIX)
+            && !is_billing_ledger_key(prefix)
+            && !prefix.starts_with(TELEMETRY_SEEN_PREFIX)
+        {
             return self
                 .inner
                 .list_kv_page_bounded(prefix, after, limit, max_bytes);
@@ -2242,6 +2329,134 @@ impl FirestoreClient {
         }
     }
 
+    fn get_kv(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let doc_id = bs58::encode(key.as_bytes()).into_string();
+        let url = format!("{}/{}", self.kv_url, doc_id);
+        let token = self.token()?;
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .map_err(|e| format!("kv read transport failed: {e}"))?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(format!("kv read returned {}", response.status()));
+        }
+        let doc = bounded_response_json(
+            response,
+            FIRESTORE_KV_MAX_PAGE_RESPONSE_BYTES,
+            "kv document read",
+        )?;
+        Ok(parse_kv_doc(&doc).map(|(_, v)| v))
+    }
+
+    fn put_kv_if_absent(&self, key: &str, value: &[u8]) -> Result<bool, MirrorBatchError> {
+        if self
+            .get_kv(key)
+            .map_err(MirrorBatchError::definitive)?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let mutations = [KvMutation::Put {
+            key: key.to_string(),
+            value: value.to_vec(),
+        }];
+        let serialized = serialize_critical_batch(&mutations)?;
+        let identity = critical_batch_identity(&mutations)?;
+        let operation_id = bs58::encode(identity).into_string();
+        let fence = self.active_operation_fence()?;
+        let pending = match self.lookup_journal(&operation_id, &identity, &serialized)? {
+            JournalLookup::Committed => return Ok(false),
+            JournalLookup::Pending(record) => record,
+            JournalLookup::Absent => {
+                match self.create_pending_journal(
+                    &operation_id,
+                    &identity,
+                    &serialized,
+                    mutations.len(),
+                    &fence,
+                )? {
+                    JournalLookup::Committed => return Ok(false),
+                    JournalLookup::Pending(record) => record,
+                    JournalLookup::Absent => {
+                        return Err(MirrorBatchError::unknown(
+                            "pending critical-operation journal was not confirmed",
+                        ))
+                    }
+                }
+            }
+        };
+        let doc_id = bs58::encode(key.as_bytes()).into_string();
+        let mut document = kv_doc_json(key, value);
+        document["name"] =
+            serde_json::Value::String(format!("{}/{doc_id}", self.kv_document_prefix));
+        let mut writes = vec![serde_json::json!({
+            "update": document,
+            "currentDocument": { "exists": false }
+        })];
+        let document_name = format!(
+            "{}/{}",
+            self.operation_document_prefix, pending.operation_id
+        );
+        let mut committed = operation_journal_json(
+            &pending.operation_id,
+            &pending.identity,
+            &pending.serialized,
+            pending.mutations.len(),
+            JournalState::Committed,
+            pending.created_at,
+            Some(epoch_ms()),
+        );
+        committed["name"] = serde_json::Value::String(document_name);
+        writes.push(serde_json::json!({
+            "update": committed,
+            "currentDocument": { "updateTime": pending.update_time }
+        }));
+        writes.push(serde_json::json!({
+            "verify": self.operation_fence_document,
+            "currentDocument": { "updateTime": fence.update_time }
+        }));
+
+        let token = self.token().map_err(|error| {
+            MirrorBatchError::unknown(format!(
+                "pending journal exists but commit token failed: {error}"
+            ))
+        })?;
+        let response = self
+            .http
+            .post(&self.commit_url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "writes": writes }))
+            .send();
+        match response {
+            Ok(resp) if resp.status().is_success() => Ok(true),
+            Ok(resp) if resp.status().as_u16() == 409 => Ok(false),
+            Ok(resp) => {
+                if self.get_kv(key).unwrap_or(None).is_some() {
+                    Ok(false)
+                } else {
+                    Err(MirrorBatchError::unknown(format!(
+                        "journaled put_if_absent commit returned {}",
+                        resp.status()
+                    )))
+                }
+            }
+            Err(e) => {
+                if self.get_kv(key).unwrap_or(None).is_some() {
+                    Ok(false)
+                } else {
+                    Err(MirrorBatchError::unknown(format!(
+                        "journaled put_if_absent commit transport failed: {e}"
+                    )))
+                }
+            }
+        }
+    }
+
     fn apply_kv_batch(&self, mutations: &[KvMutation]) -> Result<(), MirrorBatchError> {
         if mutations.is_empty() {
             return Ok(());
@@ -3073,7 +3288,7 @@ impl FirestoreClient {
             scanned_pages += page.scanned_pages;
             let first_range_complete = page.rows.len() < limit;
             rows.extend(page.rows);
-            rows.retain(|row| !is_billing_ledger_key(&row.key));
+            rows.retain(|row| !is_billing_ledger_key(&row.key) && !is_telemetry_seen_key(&row.key));
             if rows.len() == limit {
                 next = rows.last().map(|row| row.key.clone());
             } else if first_range_complete {
@@ -3094,7 +3309,7 @@ impl FirestoreClient {
             scanned_pages += page.scanned_pages;
             let second_range_complete = page.rows.len() < limit - rows.len();
             rows.extend(page.rows);
-            rows.retain(|row| !is_billing_ledger_key(&row.key));
+            rows.retain(|row| !is_billing_ledger_key(&row.key) && !is_telemetry_seen_key(&row.key));
             next = if rows.len() == limit {
                 rows.last().map(|row| row.key.clone())
             } else if second_range_complete {
@@ -4351,6 +4566,7 @@ mod tests {
                 .filter(|(key, _)| {
                     !key.starts_with(LAZY_KV_PREFIX)
                         && !is_billing_ledger_key(key)
+                        && !is_telemetry_seen_key(key)
                         && after.is_none_or(|cursor| key.as_str() > cursor)
                 })
                 .map(|(key, value)| (key.clone(), value.clone()))
@@ -4427,6 +4643,16 @@ mod tests {
                 limit: usize,
             ) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
                 self.inner.list_kv_page(prefix, after, limit)
+            }
+            fn get_kv(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+                self.inner.get_kv(key)
+            }
+            fn put_kv_if_absent(
+                &self,
+                key: &str,
+                value: &[u8],
+            ) -> std::result::Result<bool, MirrorBatchError> {
+                self.inner.put_kv_if_absent(key, value)
             }
         };
     }
@@ -4545,6 +4771,25 @@ mod tests {
                 .push(MirrorOp::KvDelete { key: key.into() });
             self.kv.lock().unwrap().remove(key);
             Ok(())
+        }
+        fn get_kv(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+            Ok(self.kv.lock().unwrap().get(key).cloned())
+        }
+        fn put_kv_if_absent(
+            &self,
+            key: &str,
+            value: &[u8],
+        ) -> std::result::Result<bool, MirrorBatchError> {
+            let mut kv = self.kv.lock().unwrap();
+            if kv.contains_key(key) {
+                return Ok(false);
+            }
+            self.ops
+                .lock()
+                .unwrap()
+                .push(MirrorOp::KvPut { key: key.into() });
+            kv.insert(key.to_string(), value.to_vec());
+            Ok(true)
         }
         fn apply_kv_batch(
             &self,
