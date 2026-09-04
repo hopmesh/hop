@@ -48,7 +48,7 @@
     "react-native": "*"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^26.4.1",
     "typescript": "^5.4.5"
   },
   "engines": {
