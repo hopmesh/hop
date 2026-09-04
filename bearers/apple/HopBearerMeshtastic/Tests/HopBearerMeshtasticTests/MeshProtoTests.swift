@@ -102,4 +102,15 @@ final class MeshProtoTests: XCTestCase {
         XCTAssertEqual(MeshFrame.data([9, 9]), [M_DATA, 9, 9])
         XCTAssertNil(MeshFrame.helloPeerId([M_HELLO, 1, 2]))   // too short
     }
+    func testAccessoryAuthorization() {
+        let idA = UUID()
+        let idB = UUID()
+        // No accessory configured (default) -> reject
+        XCTAssertFalse(meshShouldConnectAccessory(discoveredIdentifier: idA, trustedIdentifier: nil))
+        // Mismatched peripheral -> reject
+        XCTAssertFalse(meshShouldConnectAccessory(discoveredIdentifier: idA, trustedIdentifier: idB))
+        // Matching trusted peripheral -> accept
+        XCTAssertTrue(meshShouldConnectAccessory(discoveredIdentifier: idA, trustedIdentifier: idA))
+    }
+
 }

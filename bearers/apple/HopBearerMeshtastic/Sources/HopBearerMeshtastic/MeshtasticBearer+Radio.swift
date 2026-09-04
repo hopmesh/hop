@@ -65,6 +65,8 @@ final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
 
     private func scanIfPowered() {
         guard running, let central, central.state == .poweredOn, peripheral == nil else { return }
+        // PLAT-006: do not scan if no accessory peripheral is configured
+        guard trustedPeripheralIdentifier != nil else { return }
         central.scanForPeripherals(withServices: [Self.serviceUUID])
     }
 
@@ -85,7 +87,8 @@ extension CoreBluetoothMeshtasticRadio: CBCentralManagerDelegate, CBPeripheralDe
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard self.peripheral == nil else { return }
-        if let trusted = trustedPeripheralIdentifier, peripheral.identifier != trusted { return }
+        // PLAT-006: require explicitly authorized peripheral
+        guard meshShouldConnectAccessory(discoveredIdentifier: peripheral.identifier, trustedIdentifier: trustedPeripheralIdentifier) else { return }
         self.peripheral = peripheral
         peripheral.delegate = self
         central.stopScan()

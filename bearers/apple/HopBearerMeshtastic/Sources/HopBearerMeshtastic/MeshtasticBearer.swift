@@ -78,8 +78,11 @@ public final class MeshtasticBearer: Bearer {
     private var configNonce: UInt32 = 1
 
     /// Production entry point: talk to a real Meshtastic radio over CoreBluetooth.
-    public convenience init(myId: Data) {
-        self.init(myId: myId, radio: CoreBluetoothMeshtasticRadio())
+    /// `trustedPeripheralIdentifier` enforces explicit accessory authorization (default: nil / "no accessory").
+    public convenience init(myId: Data, trustedPeripheralIdentifier: UUID? = nil) {
+        let radio = CoreBluetoothMeshtasticRadio()
+        radio.trustedPeripheralIdentifier = trustedPeripheralIdentifier
+        self.init(myId: myId, radio: radio)
     }
 
     /// Test/injection entry point: drive the state machine against any `MeshtasticRadio`.

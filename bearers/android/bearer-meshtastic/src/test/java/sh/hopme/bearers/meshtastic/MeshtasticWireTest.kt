@@ -164,4 +164,16 @@ class MeshtasticWireTest {
         assertTrue(meshKeepGreaterLeg(true))
         assertFalse(meshKeepGreaterLeg(false))
     }
+    @Test fun rotatingSyntheticPeersBoundedGlobally() {
+        val rz = MeshReassembler()
+        val frags = meshFragment(ByteArray(300), 1)!!
+        // Rotate 200 synthetic peer IDs, emitting 1 partial fragment each
+        for (peer in 1L..200L) {
+            rz.accept(peer, frags[0], peer)
+        }
+        assertTrue("partial peer count must not exceed global partials cap (64), got ${rz.partialPeerCount}", rz.partialPeerCount <= 64)
+        assertTrue("totalPartials must be capped at 64", rz.totalPartials <= 64)
+        assertTrue("totalBytes must be capped at 64 KiB", rz.totalBytes <= 64 * 1024)
+    }
+
 }

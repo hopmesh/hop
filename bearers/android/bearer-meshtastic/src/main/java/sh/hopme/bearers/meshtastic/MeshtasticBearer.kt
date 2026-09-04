@@ -298,6 +298,7 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
     private var toRadio: BluetoothGattCharacteristic? = null
     private var fromRadio: BluetoothGattCharacteristic? = null
     var trustedAddress: String? = null
+    var requireBonded: Boolean = true
     private var consecutiveReads = 0
     private val maxConsecutiveFromRadioReads = 64
 
@@ -306,6 +307,10 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
     @SuppressLint("MissingPermission")
     override fun start() {
         running = true
+        if (trustedAddress == null && !requireBonded) {
+            // PLAT-006: Documented default / explicit "no accessory": do not scan
+            return
+        }
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
         adapter = mgr.adapter
         val scanner = adapter?.bluetoothLeScanner ?: return
@@ -334,12 +339,8 @@ internal class AndroidMeshtasticRadio(private val context: Context) : Meshtastic
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (gatt != null) return
             val addr = result.device.address
-            val trusted = trustedAddress
-            if (trusted != null && !addr.equals(trusted, ignoreCase = true)) return
-            if (trusted == null) {
-                val bonded = adapter?.bondedDevices
-                if (!bonded.isNullOrEmpty() && !bonded.any { it.address.equals(addr, ignoreCase = true) }) return
-            }
+            val bonded = adapter?.bondedDevices?.map { it.address }?.toSet()
+            if (!shouldConnectAccessory(addr, trustedAddress, requireBonded, bonded)) return
             adapter?.bluetoothLeScanner?.stopScan(this)
             gatt = result.device.connectGatt(context, false, gattCallback)
         }

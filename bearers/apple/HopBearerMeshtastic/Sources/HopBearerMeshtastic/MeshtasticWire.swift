@@ -368,6 +368,16 @@ public let MESH_MAX_LINKS = 32
 public let MESH_MAX_GLOBAL_PARTIALS = 64
 public let MESH_MAX_GLOBAL_PARTIAL_BYTES = 64 * 1024
 
+/// Pure accessory authorization gate (PLAT-006): require an explicitly configured trusted peripheral
+/// identifier. Returns false when no accessory is configured (default: nil) or when an untrusted peripheral is discovered.
+public func meshShouldConnectAccessory(
+    discoveredIdentifier: UUID,
+    trustedIdentifier: UUID?
+) -> Bool {
+    guard let trusted = trustedIdentifier else { return false }
+    return discoveredIdentifier == trusted
+}
+
 /// Per-peer reassembly of fragmented Hop frames. Keyed by (peer node num, msgId). A message completes when
 /// all `count` fragments have arrived; it is evicted if it goes stale (TTL) or the peer exceeds
 /// MESH_MAX_PARTIAL_PER_PEER concurrent partials (oldest dropped). Pure: the caller supplies `now` so it
