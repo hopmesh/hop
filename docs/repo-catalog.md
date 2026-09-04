@@ -51,16 +51,14 @@ it is not separately published. Only the standalone mirror repo went away.
 | `hop-driver-android` | `drivers/android/hop-driver` |
 | `hop-relayd` | `services/hop-relayd` |
 | `hop-endpoint` | `services/hop-endpoint` |
-| `hop-gateway` | `services/hop-gateway` |
-
+| `hop-gateway` | `services/hop-gateway` (now in hopmesh/platform) |
+Note: `services/hop-accountd` and `services/hop-billingd` have been moved to hopmesh/platform and are not part of this repo.
 Do not re-add one of these names to `components.json` expecting the repo to be there. Restoring a
 mirror means creating the repo again and seeding it with a fresh `init_history` export.
 
 ## Not extracted (stay in the monorepo)
 
-`sim/` + `core/hop-sim` (the swarm simulator, also the site's scenario player), `apps/*` (the demo
-apps), `assets/`, `learn/`, `mockups/`, `infra/`, `docs/`, `tools/`. These are the monorepo's own
-subsystems, not standalone deliverables.
+`sim/` + `core/hop-sim` (the swarm simulator, also the site's scenario player), `apps/*` (the demo apps), `assets/`, `learn/`, `mockups/` (now in hopmesh/internal), `infra/` (now in hopmesh/platform), `docs/`, `tools/`. These are the monorepo's own subsystems, not standalone deliverables.
 
 `sdk/react-native` also stays here. It is a real client SDK, but the cross-platform surface is being
 reworked, so it is deliberately not mirrored or published: no `components.json` entry, no Copybara
