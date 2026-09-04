@@ -46,6 +46,7 @@ env:
   # the version that produced the committed sdk/hop.h. When bumping, regenerate the header with the
   # same cbindgen version (core/hop/regen-header.sh) in the same PR so the drift check stays green.
   CBINDGEN_VERSION: "0.29.4"
+  CARGO_DENY_VERSION: "0.20.2"
 
 jobs:
   # Detect which product areas changed so the heavy jobs can skip on an unrelated PR (cost control).
@@ -91,18 +92,25 @@ jobs:
               - 'sdk/hop.h'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'deny.toml'
               - 'rust-toolchain*'
-              - '.github/workflows/ci.yml'
-              # tools/ EXCEPT tools/copybara/** (mirror machinery, affects no build). A `!` negation would
-              # not work here: dorny's default predicate-quantifier is `some`, under which "!tools/copybara/**"
-              # is true for every file NOT under copybara, matching almost everything. So enumerate instead:
-              # top-level tool files + the codegen subdir. Add any NEW tools/ subdir (besides copybara) here.
+              - '.github/**'
+              - '.agents/**'
+              - '.claude/**'
+              - '.vscode/**'
+              - 'cliff.toml'
+              - 'tarpaulin.toml'
+              - 'opencode.json'
+              - '.gitignore'
+              - '.gcloudignore'
               - 'tools/*'
               - 'tools/codegen/**'
               - 'tools/native-attestation/**'
               - 'tools/release/**'
             rust:
               - 'services/**'
+              - 'fuzz/**'
+              - 'fuzz/Cargo.toml'
               - '**/*.rs'
             kotlin:
               - 'sdk/android/**'
@@ -113,6 +121,7 @@ jobs:
               - 'drivers/android/**'
               - 'sdk/android/**'
               - 'apps/android/**'
+              - 'apps/ble-lab/**'
             apple:
               - 'bearers/apple/**'
               - 'drivers/apple/**'
@@ -141,8 +150,15 @@ jobs:
               - '**/.github/workflows/**'
               - 'docs/**'
               - 'learn/**'
+              - 'DESIGN.md'
+              - 'SECURITY.md'
+              - 'MECHANISMS.md'
               - 'README.md'
               - '**/README.md'
+              - 'CLAUDE.md'
+              - 'CONTRIBUTING.md'
+              - 'CHANGELOG.md'
+              - 'THIRD-PARTY-NOTICES.md'
               - 'LICENSE.md'
               - '**/LICENSE.md'
               - 'tools/copybara/**'
@@ -170,6 +186,7 @@ jobs:
               - 'sdk/flutter/**'
             sdk_react_native:
               - 'sdk/react-native/**'
+              - 'apps/react-native/HopDemo/**'
 
   rust:
     name: Rust (test · clippy · fmt)
@@ -328,6 +345,24 @@ jobs:
       # keeps it from silently resolving a different dep set than Cargo.lock pins.
       - name: Build minimal C-ABI (embedded feature, host smoke)
         run: cargo build -p hop --no-default-features --features minimal --locked
+
+  deny:
+    name: Cargo supply-chain deny (cargo-deny)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+      - name: Install cargo-deny (pinned)
+        run: |
+          command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
+      - name: Cargo supply-chain check (advisories · bans · licenses · sources)
+        run: cargo deny check
 
   kotlin-sdk:
     name: Kotlin SDK tests (BearerManager)
@@ -780,6 +815,8 @@ jobs:
       # can't ship a stale "your browser is running the real Hop protocol" artifact. check-pkg-fresh.sh
       # compares the deterministic wasm-bindgen interface (JS glue + typings), not the optimized .wasm
       # bytes (which vary by toolchain).
+      - name: Self-test sim pkg freshness guard
+        run: bash sim/check-pkg-fresh.test.sh
       - name: Guard sim/pkg against drift from core
         run: bash sim/check-pkg-fresh.sh
 
@@ -797,6 +834,8 @@ jobs:
       # observable effect for each (see wasm_glue.rs's header comment + sim/wasm-glue-check.mjs).
       - name: Sim wasm-glue check (direct WasmNode API coverage)
         run: node sim/wasm-glue-check.mjs
+      - name: Sim OPFS timeout check (PLAT-012)
+        run: node --test sim/opfs-timeout-check.mjs
 
       # Astro 7 requires Node >=22.12 (dropped Node 20 support).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -814,6 +853,8 @@ jobs:
         working-directory: apps/web/site
         run: npm run build
 
+      - name: Site consistency regression tests (CLAIM-012, BIZ-001..003, BIZ-005)
+        run: node --test apps/web/site/test/site-consistency.test.mjs
       # web-04: dead-internal-link gate over the built site (renamed page, typo'd asset, moved target).
       - name: Internal link check (apps/web/site/dist)
         run: node tools/check-web-links.mjs apps/web/site/dist
@@ -833,6 +874,8 @@ jobs:
           # and break (or mask) the drift check for every PR at once.
           cargo install cbindgen --locked --version "$CBINDGEN_VERSION"
 
+      - name: Self-test contract purity guard
+        run: bash tools/codegen/check-contract-purity.test.sh
       - name: Contract purity (no transport symbols in the SDK/contract)
         run: bash tools/codegen/check-contract-purity.sh
 
@@ -1024,6 +1067,22 @@ jobs:
           python3 .agents/skills/hop-adversarial-audit/scripts/validate_ledger.py \
             .agents/skills/hop-adversarial-audit/fixtures/sample-ledger.json
           bash tools/docs-token-guard.sh .agents/skills/hop-adversarial-audit
+      - name: Self-test identity secret guard
+        run: bash tools/identity-secret-guard.test.sh
+      - name: Identity secret guard
+        run: python3 tools/identity-secret-guard.py
+      - name: Self-test changelog generation
+        run: bash tools/gen-changelogs.test.sh
+      - name: Self-test CI path ownership guard
+        run: bash tools/ci-path-ownership-guard.test.sh
+      - name: CI path ownership guard
+        run: python3 tools/ci-path-ownership-guard.py
+      - name: Self-test Dependabot coverage guard
+        run: bash tools/dependabot-coverage-guard.test.sh
+      - name: Dependabot coverage guard
+        run: python3 tools/dependabot-coverage-guard.py
+      - name: Self-test Dependabot fix tag authorization
+        run: bash .github/scripts/dep-fix-tag.test.sh
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1056,6 +1115,10 @@ jobs:
       # and comments too, not just docs. See the `docs` path filter above.
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
+      - name: Self-test the documentation path guard
+        run: bash tools/doc-path-guard.test.sh
+      - name: Run documentation path guard
+        run: bash tools/doc-path-guard.sh
       # legal-01: fail if a critical tracked file (LICENSE, load-bearing docs, the C ABI header) is
       # empty, missing, truncated below a sane floor, stripped of its signature line, or (for the two
       # LICENSE copies) drifted apart. A 0-byte LICENSE.md shipped TWICE before (restored, then
@@ -1348,6 +1411,7 @@ jobs:
     if: always()
     needs:
       - rust
+      - deny
       - kotlin-sdk
       - compose-sdk
       - android

@@ -3,6 +3,7 @@
   "required_checks": [
     "Detect changed areas",
     "Rust (test · clippy · fmt)",
+    "Cargo supply-chain deny (cargo-deny)",
     "Kotlin SDK tests (BearerManager)",
     "Compose Multiplatform SDK tests",
     "Android bearers + driver (JVM unit tests)",
