@@ -17,6 +17,13 @@ docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity inc
                            RETIRED in the v13 to v14 bump (PROC-001), which also added U+2212 to the
                            banned set and put fuzz/ into the source pass (mockups/ and business/ were moved to hopmesh/internal).
                            Self-test: docs-token-guard.test.sh.
+commit-message-guard.sh      scans introduced commit messages for banned em/en/lookalike dashes across
+                           the revision range (default HEAD). Merge commits are scanned; history is not
+                           scanned (range-scoped by design, zero allowlist).
+                           Self-test: commit-message-guard.test.sh.
+commit-message-guard-range.sh computes the revision range to scan from GitHub event context (pull_request
+                           base..HEAD, push before..HEAD with zero-SHA and unreachable fallbacks to HEAD,
+                           workflow_dispatch HEAD). Self-test: commit-message-guard.test.sh.
 check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:` every other ci.yml
                            job, use `if: always()`, and fail on a failed/cancelled dep. Also fails on a
                            nameless job, an anchor/inline job, or a ${{ }}-templated name (any of which
@@ -99,24 +106,24 @@ The three build scripts `cd` to the repo root, so they operate on repo-relative 
 being invoked from `tools/`. They are the platform SDK-artifact builders (previously the only contents
 of the now-removed `apple/` and `android/` root stubs); `drivers/` and `sdk/` + CI reference them.
 
-## Known gap: nothing scans COMMIT MESSAGES
+## Commit message dash scan: range-scoped, zero allowlist (PROC-009)
 
-The dash law covers "code, comments, docs, commits, PRs", but every guard here reads FILES. No check
-reads a commit message, so the commits half of the law is enforced by attention alone. That is the
-same shape as the carve-out PROC-001 retired: a rule enforced where a human is likely to look and
-silently unenforced elsewhere.
+The dash law covers "code, comments, docs, commits, PRs", and `tools/commit-message-guard.sh`
+enforces the commit-message half in CI.
 
-It is not a hypothetical. The commit that BANNED U+2212 (`3ad6077`, "audit closure: retire the
-prose-named triggers this branch indicted") put a literal U+2212 into its own message, on the line
-listing the newly-banned encoded forms. It is still there. Removing it means rewriting a pushed
-commit, which needs the owner's go-ahead for the force-push, so it was left in place and recorded
-here rather than quietly ignored.
+The earlier premise that a single historical commit (`3ad6077`) was the only blocker turned out to
+be inaccurate for this repository: `3ad6077` (the U+2212 commit message) exists only in the retired
+private hopmesh/monorepo; hopmesh/hop's main does not contain it (Copybara exported PR #351 as
+squashed merge `67395734`). However, a full scan of hop's 840 main commits found 173 messages
+carrying banned dashes (170 U+2014, 3 U+2013, 1 U+2212 in `62b45a6a`, plus a few encoded entities).
+Rewriting history would alter roughly 20% of all commits, strip 184 valid signatures, and orphan the
+three Copybara mirrors' GitOrigin-RevId chains and every published source SHA.
 
-Read that as the reason the check is still missing, not as an argument against it: adding a
-commit-message scan today would redden CI on that exact commit, and the only ways to green it are a
-history rewrite or a baseline exemption, and a guard that starts life with an exemption for the
-violation that motivated it is worth very little. Clean the message first (one interactive rebase,
-one force-push, owner's call), THEN add the scan with no allowlist.
+The owner therefore chose the zero-rewrite design: scan only the commits a change INTRODUCES, with
+zero allowlist entries. In CI (`.github/workflows/ci.yml`), `tools/commit-message-guard-range.sh`
+computes the introduced commit range from GitHub event context (`pull_request` base..HEAD, `push`
+before..HEAD with zero-SHA / unreachable fallbacks to HEAD, or `workflow_dispatch` HEAD).
+No commit-message allowlist exists, and historical commits before the change base are not scanned.
 
 ## Rules
 

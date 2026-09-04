@@ -186,6 +186,7 @@ src_excludes=(
   # rule (no literal dash byte is ever typed into either file) and docs-token-guard.test.sh is
   # the regression net for both, so scanning them would only ever be a self-hit.
   --exclude='docs-token-guard.sh' --exclude='docs-token-guard.test.sh'
+  --exclude='commit-message-guard.sh' --exclude='commit-message-guard.test.sh'
 )
 
 # RETIRED EXCLUSION: core/hop-core/vectors/wire-source-manifest.txt (audit PROC-001).
