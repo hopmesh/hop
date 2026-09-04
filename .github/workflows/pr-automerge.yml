@@ -1,6 +1,10 @@
 # Enable auto-merge on a maintainer's or Dependabot's non-draft PR as it opens (or leaves draft), so
 # those PRs merge themselves ONCE the required CI gate passes. Branch protection still gates
-# everything: a red or stale branch never merges. See the author gate on the job below for why this
+# everything: a red or stale branch never merges. With strict: true now enforced on main (INFRA-011),
+# auto-merge requires the PR branch to be fully updated with main before the CI gate passes and
+# auto-merge executes. In addition, step inspection of PR title and body blocks auto-merging PRs with
+# review-intent or hold markers (such as 'do not merge', 'dnm', 'wip', 'rfc', 'research', 'hold', 'review-only'),
+# preventing accidental publishing of unreviewed work (PROC-002). See the author gate on the job below for why this
 # is not armed for every PR. This replaces dependabot-automerge.yml, which was broken in two ways:
 #   1. It requested SQUASH auto-merge, but this repo forbids squash merges, so every enablement
 #      failed and Dependabot PRs piled up unmerged.
@@ -48,7 +52,51 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
     runs-on: ubuntu-latest
     steps:
+      - name: Inspect PR title and body for review-intent and hold markers
+        id: review-intent
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+
+          title = os.environ.get("TITLE", "")
+          body = os.environ.get("BODY", "")
+
+          # Patterns that signal review intent, WIP, research, RFC, or do-not-merge (PROC-002)
+          patterns = [
+              r"\bdo\s+not\s+merge\b",
+              r"\bdnm\b",
+              r"\bwip\b",
+              r"\brfc\b",
+              r"\breview[- ]only\b",
+              r"\bhold\b",
+              r"\bresearch\b",
+              r"\bdraft\b",
+          ]
+
+          found = []
+          for p in patterns:
+              if re.search(p, title, re.IGNORECASE):
+                  found.append(f"title matched pattern '{p}'")
+              elif re.search(p, body, re.IGNORECASE):
+                  found.append(f"body matched pattern '{p}'")
+
+          if found:
+              reasons = "; ".join(found)
+              print(f"::notice title=Auto-merge refused::{reasons}. PR requires human review and must not auto-merge.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("arm_automerge=false\n")
+              sys.exit(0)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("arm_automerge=true\n")
+          PY
+
       - name: Enable merge-commit auto-merge
+        if: steps.review-intent.outputs.arm_automerge == 'true'
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
