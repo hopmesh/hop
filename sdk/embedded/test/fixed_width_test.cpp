@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 

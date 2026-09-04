@@ -1476,12 +1476,17 @@ jobs:
             | sha256sum -c -
           tar -xzf "$archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/uv-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
-      - name: Test Python SDK lowest supported bounds (uv lowest resolution)
+      # `--resolution lowest-direct` pins OUR declared floors (cryptography>=41) and lets transitive
+      # dependencies resolve normally: plain `lowest` also takes cryptography's own `cffi>=1.12`
+      # floor literally, and cffi 1.12.0 has no wheel for and does not compile on CPython 3.12, so
+      # the job could never test the floor this SDK actually declares.
+      - name: Test Python SDK lowest supported bounds (uv lowest-direct resolution)
         working-directory: sdk/python
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: |
-          uv pip install --system --resolution lowest ".[dev]"
+          uv pip install --system --resolution lowest-direct ".[dev]"
+          python -c 'import cryptography, cffi; print("cryptography", cryptography.__version__, "cffi", cffi.__version__)'
           python -m unittest discover -s tests
   # Aggregate gate: the single required check for branch protection. The runtime deploy it used to
   # trigger moved to hopmesh/platform with the infra tree, so nothing fires on success here.
