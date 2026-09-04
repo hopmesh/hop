@@ -52,48 +52,15 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect PR title and body for review-intent and hold markers
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Inspect PR title and body for review-intent and hold markers (PROC-002)
         id: review-intent
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os, re, sys
-
-          title = os.environ.get("TITLE", "")
-          body = os.environ.get("BODY", "")
-
-          # Patterns that signal review intent, WIP, research, RFC, or do-not-merge (PROC-002)
-          patterns = [
-              r"\bdo\s+not\s+merge\b",
-              r"\bdnm\b",
-              r"\bwip\b",
-              r"\brfc\b",
-              r"\breview[- ]only\b",
-              r"\bhold\b",
-              r"\bresearch\b",
-              r"\bdraft\b",
-          ]
-
-          found = []
-          for p in patterns:
-              if re.search(p, title, re.IGNORECASE):
-                  found.append(f"title matched pattern '{p}'")
-              elif re.search(p, body, re.IGNORECASE):
-                  found.append(f"body matched pattern '{p}'")
-
-          if found:
-              reasons = "; ".join(found)
-              print(f"::notice title=Auto-merge refused::{reasons}. PR requires human review and must not auto-merge.")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("arm_automerge=false\n")
-              sys.exit(0)
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("arm_automerge=true\n")
-          PY
+        run: python3 .github/scripts/check-pr-automerge-safety.py
 
       - name: Enable merge-commit auto-merge
         if: steps.review-intent.outputs.arm_automerge == 'true'

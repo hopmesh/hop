@@ -47,6 +47,7 @@ jobs:
   audit:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -99,9 +100,9 @@ jobs:
   # it without seeding the PAT is itself caught. To retire the job instead, delete it AND its manifest
   # entry, and run `python3 tools/release/check-mirror-secrets.py` by hand (docs/release-engineering.md).
   mirror-secrets:
-    name: Mirror release secrets are seeded
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Assert every publishing mirror has the secrets its release workflow references
@@ -131,8 +132,8 @@ jobs:
   # static guard's coverage rule still holds: every declared name is asserted by a job below.
   secret-presence:
     name: Declared org and repository secrets are set
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Assert the declared organization and repository secrets exist

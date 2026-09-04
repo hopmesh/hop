@@ -143,6 +143,16 @@ def check_static(root):
                     "step that names it",
                 )
         if not scope.startswith("environment:"):
+            # Any job reading a declared secret in a workflow with workflow_dispatch must
+            # declare an environment binding, so branch policy refuses non-main dispatch (INFRA-008).
+            for workflow, job_id, declared_environment in used[name]:
+                workflow_text = (Path(root) / ".github/workflows" / workflow).read_text(encoding="utf-8")
+                if "workflow_dispatch" in workflow_text:
+                    require(
+                        bool(declared_environment),
+                        f"{workflow} job `{job_id}` reads declared {scope} secret `{name}` in a workflow "
+                        f"with workflow_dispatch, but declares no environment binding (INFRA-008)",
+                    )
             continue
         environment = scope.split(":", 1)[1]
         for workflow, job_id, declared_environment in used[name]:

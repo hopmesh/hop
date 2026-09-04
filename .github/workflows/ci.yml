@@ -168,8 +168,9 @@ jobs:
               - 'bearers/**'
               - 'apps/**'
               - 'examples/**'
-              - 'testkit/**'
               - 'assets/**'
+            automation:
+              - 'testkit/**'
             sdk_node:
               - 'sdk/node/**'
             sdk_python:
@@ -527,6 +528,11 @@ jobs:
       - name: Test HopDemo app (+ non-UI 80% line-coverage gate)
         working-directory: apps/android/HopDemo
         run: ./gradlew :app:testDebugUnitTest :app:jacocoDemoReport :app:jacocoDemoCoverageVerification --no-daemon --stacktrace
+
+      # INFRA-012: Build and test apps/ble-lab/android
+      - name: Build and test apps/ble-lab/android
+        working-directory: apps/ble-lab/android
+        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon --stacktrace
 
   apple:
     name: Apple bearers + driver + app (build-only)
@@ -1083,6 +1089,17 @@ jobs:
         run: python3 tools/dependabot-coverage-guard.py
       - name: Self-test Dependabot fix tag authorization
         run: bash .github/scripts/dep-fix-tag.test.sh
+      - name: Self-test PR auto-merge safety check (PROC-002)
+        run: bash .github/scripts/check-pr-automerge-safety.test.sh
+      # INFRA-012: Syntax check testkit automation scripts (bash -n, node --check)
+      - name: Syntax check testkit automation scripts (bash -n, node --check)
+        run: |
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \)); do
+            bash -n "$f"
+          done
+          for f in $(find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \)); do
+            node --check "$f"
+          done
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1193,6 +1210,10 @@ jobs:
           python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
           python -m unittest discover -s tests
           python examples/discovery.py
+      # INFRA-013: Report resolved dependency graph
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/python
+        run: python -m pip freeze
 
   go-sdk:
     name: Go endpoint SDK (race)
@@ -1226,6 +1247,12 @@ jobs:
           test -z "$(gofmt -l . | grep -v _test || true)"
           go vet ./...
           go test -race ./...
+      # INFRA-013: Report resolved dependency graph
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/go
+        run: |
+          go list -m all
+          go mod graph
 
   ruby-sdk:
     name: Ruby endpoint SDK (proofs)
@@ -1255,6 +1282,10 @@ jobs:
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: ruby -Ilib test/test_hop.rb
+      # INFRA-013: Report resolved dependency graph
+      - name: Report resolved dependency graph (INFRA-013)
+        working-directory: sdk/ruby
+        run: gem dependency --list
 
   crystal-sdk:
     name: Crystal endpoint SDK (spec)
@@ -1330,6 +1361,7 @@ jobs:
         run: |
           mix local.hex 2.2.1 --force
           mix deps.get
+          mix deps.tree
           mix format --check-formatted
           mix test
       # The Elixir EXPORT validation lived here and is gone with the hop-sdk-elixir mirror (2026-08
@@ -1379,10 +1411,66 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
         run: |
           dart pub get
+          dart pub deps
           dart analyze
           dart format --output=none --set-exit-if-changed .
           dart test
 
+
+  lowest-supported-bounds:
+    name: Lowest supported dependency bounds (Python + Go)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_python == 'true' || needs.changes.outputs.sdk_go == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.22.12"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lowest-bounds-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-lowest-bounds-${{ runner.os }}-
+      - name: Build libhop
+        run: cargo build -p hop --locked
+      # Go: go.mod minimally requires gorilla/websocket v1.5.3 (its lowest bound); tidy with -compat pins the minimum version set
+      - name: Test Go SDK lowest supported bounds (go mod tidy -compat + go test)
+        working-directory: sdk/go
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          go mod tidy -compat=1.21
+          go test ./...
+      # Python: install uv pinned by sha256, then resolve lowest supported bounds for optional/dev dependencies
+      - name: Install uv (pinned by sha256)
+        run: |
+          ver="0.5.2"
+          archive="$RUNNER_TEMP/uv-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://github.com/astral-sh/uv/releases/download/${ver}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' d2d9d4b9ce536ab7ebb09d33629694385a3ebb72d156ae0b4dd28c9b6f6cbd13 "$archive" \
+            | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/uv-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+      - name: Test Python SDK lowest supported bounds (uv lowest resolution)
+        working-directory: sdk/python
+        env:
+          HOP_LIBDIR: ${{ github.workspace }}/target/debug
+        run: |
+          uv pip install --system --resolution lowest ".[dev]"
+          python -m unittest discover -s tests
   # Aggregate gate: the single required check for branch protection. The runtime deploy it used to
   # trigger moved to hopmesh/platform with the infra tree, so nothing fires on success here.
   # It `needs:` every other job and, via `if: always()`,
@@ -1404,6 +1492,13 @@ jobs:
       - uses: ./sdk/react-native/.github/actions/ci
         with:
           pkg-dir: sdk/react-native
+      # INFRA-012: Build and test apps/react-native/HopDemo (typecheck + tests)
+      - name: Build and test apps/react-native/HopDemo (typecheck + tests)
+        working-directory: apps/react-native/HopDemo
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
 
   gate:
     name: CI gate
@@ -1428,6 +1523,7 @@ jobs:
       - crystal-sdk
       - elixir-sdk
       - flutter-sdk
+      - lowest-supported-bounds
       - react-native-sdk
       - changes
     steps:
