@@ -195,7 +195,7 @@ the foreground-service `onResume`/`onPause`.
   backbone model rather than fighting it.
 - **`mesh_fanout = 0`** (handoff-only) stays, the relay-to-relay epidemic is the expensive
   egress + N² warm-link path (DESIGN.md §1434/§2008).
-- **Relay custody and priority:** priority is an unauthenticated QoS hint on the wire; cross-tenant custody is partitioned by fair share (`core/hop-core/src/node.rs:pick_evict_victim`), so high-priority traffic cannot starve co-tenants' undelivered messages.
+- **Relay custody and priority:** priority is an unauthenticated QoS hint on the wire; cross-tenant custody is partitioned by fair share (`core/hop-core/src/node.rs:pick_evict_victim`), so high-priority traffic cannot starve co-tenants' undelivered messages. Under Open policy, effective priority of unstamped or untenanted bundles is clamped to normal (4) so priority=255 from a free identity buys no eviction immunity. Note that an Open relay cannot be fair against pure Sybil volume because fresh sender identities cost nothing; only stamped tenants under Keyed policy receive a guaranteed custody share.
 
 ## 5. Tradeoffs
 

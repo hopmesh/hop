@@ -1922,7 +1922,11 @@ Everything below is built on plain datagrams; none of it requires a live end-to-
   opportunistic re-handoff. This stops a flood of big transfers from evicting legitimate
   not-yet-relayed messages, and turns a node's custody cap into a **sliding window** of
   concurrent in-flight bundles rather than a limit on transfer size. Cloud relays run a
-  large window (`set_max_relayed`).
+  large window (`set_max_relayed`) partitioned across tenants by fair share. Under Open
+  policy, effective priority for unstamped or untenanted bundles is clamped to normal (4)
+  so priority=255 from a free identity buys no eviction immunity; an Open relay cannot be
+  fair against pure Sybil volume because fresh identities cost nothing, so only stamped
+  tenants under Keyed policy receive a guaranteed custody share (SVC-007).
 - **Carrier transport (§20).** A bundle too large for one link record is transparently
   split into ordered `Payload::Carrier` chunks (each a sealed, ACK-tracked datagram) and
   reassembled into the original bundle at the destination, preserving id, request_ack,

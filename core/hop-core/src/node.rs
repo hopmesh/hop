@@ -5156,7 +5156,7 @@ impl<S: Store> Node<S> {
     /// Decline an invite (member side): drop it from the durable set so it doesn't reappear.
     pub fn hps_decline_invite(&mut self, host: PubKeyBytes, path: &str) {
         self.remove_hps_invite_item(host, path);
-        self.persist_invites();
+        let _ = self.persist_invites();
     }
 
     fn remove_hps_invite_item(&mut self, host: PubKeyBytes, path: &str) {
@@ -5540,7 +5540,7 @@ impl<S: Store> Node<S> {
             }
             None => {
                 // We're the host: a member posting is direct evidence of membership.
-                self.record_member(&path, bundle.inner.src);
+                let _ = self.record_member(&path, bundle.inner.src);
                 self.hps_reach
                     .entry(path)
                     .or_default()
@@ -5625,7 +5625,7 @@ impl<S: Store> Node<S> {
             topic_tag: self.app.topic_tag(path),
         };
         self.directory.subscribe(path.to_string());
-        self.persist_subscription(path, &sub);
+        let _ = self.persist_subscription(path, &sub);
         self.subscriptions.insert(path.to_string(), sub);
     }
 
@@ -9170,7 +9170,7 @@ impl<S: Store> Node<S> {
                                 );
                             if authorized {
                                 self.hps_reach.entry(path.clone()).or_default().insert(who);
-                                self.record_member(&path, who);
+                                let _ = self.record_member(&path, who);
                             }
                         }
                     }
@@ -9631,8 +9631,7 @@ impl<S: Store> Node<S> {
         }
         let num_owners = owner_counts
             .len()
-            .min(DEFAULT_MAX_RELAYED_DISTINCT_SENDERS)
-            .max(1);
+            .clamp(1, DEFAULT_MAX_RELAYED_DISTINCT_SENDERS);
         let fair_share = (self.max_relayed / num_owners).max(MIN_RELAYED_PER_TENANT_GUARANTEE);
         let max_owner_count = owner_counts.values().copied().max().unwrap_or(0);
 
@@ -10090,12 +10089,22 @@ impl<S: Store> Node<S> {
     /// It does not grant cross-tenant eviction privileges: cross-tenant custody is partitioned by
     /// fair share in `pick_evict_victim` so an unauthenticated priority=255 flood cannot displace
     /// undelivered messages from an honest tenant or sender within their fair share.
+    ///
+    /// Under Open policy (or for untenanted bundles), priority is clamped to the default normal
+    /// level (4) so an unauthenticated priority=255 from a free identity buys no eviction immunity.
     fn bundle_utility_of(&self, b: &Bundle, now: u64) -> f64 {
         let route = match b.inner.dst {
             Destination::Device(d) => self.routes.utility(&d, now),
             _ => 0.0,
         };
-        b.inner.priority as f64 * 100.0 + route
+        let effective_priority = if matches!(self.access_policy, AccessPolicy::Open)
+            || !self.metered_attribution.contains_key(&b.id())
+        {
+            b.inner.priority.min(4)
+        } else {
+            b.inner.priority
+        };
+        effective_priority as f64 * 100.0 + route
     }
 
     /// Offer stored bundles to one link, applying the epidemic forward policy (DESIGN.md §6).
@@ -23033,5 +23042,71 @@ mod access_gate_tests {
             node.store.contains(&b_id),
             "Sender B's normal-priority bundle was evicted by Sender A's priority=255 flood under Open policy"
         );
+    }
+
+    #[test]
+    fn open_policy_sybil_priority_flood_cannot_evict_legitimate_sender_bundles() {
+        // SVC-007 (Sybil churn): Under Open policy, an attacker generating fresh identities
+        // per bundle at priority=255 must not buy eviction immunity against legitimate
+        // normal-priority (4) bundles. The effective priority must be clamped to normal (4).
+        let mut node = Node::new(Identity::generate());
+        node.set_time(NOW);
+        let window = 10usize;
+        node.set_max_relayed(window);
+
+        // Attacker fills all 10 slots with fresh identities at priority=255.
+        for i in 0..10 {
+            let attacker = Identity::generate();
+            let b = Bundle::create(
+                &attacker,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-sybil-flood-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 255,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(1, b);
+            assert!(node.store.contains(&id));
+        }
+
+        // Now the custody window is 10/10.
+        // Legitimate sender B sends 4 normal-priority (4) bundles.
+        let sender_b = Identity::generate();
+        let mut b_ids = Vec::new();
+        for i in 0..4 {
+            let b = Bundle::create(
+                &sender_b,
+                Destination::Device(Identity::generate().address()),
+                &Identity::generate().address(),
+                &Payload::PeerMessage {
+                    content_type: "t".into(),
+                    body: format!("open-normal-b-{i}").into_bytes(),
+                },
+                BundleOpts {
+                    priority: 4,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = b.id();
+            node.on_bundle(2, b);
+            b_ids.push(id);
+        }
+
+        // With priority clamped under Open policy, priority=255 buys no eviction immunity;
+        // the legitimate sender's normal bundles evict older unsettled bundles and survive.
+        for (i, b_id) in b_ids.iter().enumerate() {
+            assert!(
+                node.store.contains(b_id),
+                "Sender B's normal-priority bundle {i} was evicted by Sybil priority=255 flood under Open policy"
+            );
+        }
     }
 }
