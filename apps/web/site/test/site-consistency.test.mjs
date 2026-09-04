@@ -123,3 +123,23 @@ test('BIZ-005: public safety and defense page must substantiate or properly qual
     'public-safety-defense.astro must qualify export-classification evaluation for prospective defense buyers'
   );
 });
+
+test('CLAIM-011: protocol.js must not claim demand-based regional routing or empty-region cost guarantees', () => {
+  const protocol = readSite('src/data/protocol.js');
+
+  assert.doesNotMatch(
+    protocol,
+    /never pay to flood empty ones/i,
+    'protocol.js must not claim unbacked demand-routing cost guarantee "never pay to flood empty ones"'
+  );
+  assert.doesNotMatch(
+    protocol,
+    /only fans to regions with live subscribers/i,
+    'protocol.js must not claim demand-based topic fan-out "only fans to regions with live subscribers"'
+  );
+  assert.doesNotMatch(
+    protocol,
+    /only ships to regions that actually have subscribers/i,
+    'protocol.js must not claim demand-based topic shipping to regions'
+  );
+});
