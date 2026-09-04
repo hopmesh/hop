@@ -1082,7 +1082,6 @@ impl Drop for FirestoreStore {
             }
         }
     }
-
 }
 
 impl Store for FirestoreStore {
@@ -8385,11 +8384,10 @@ mod tests {
         // Insert 10 carriage_usage keys, then 1 telemetry_usage key, then 1 usage key.
         for i in 0..10 {
             let key = format!("carriage_usage/1000/{:032x}/writerA", i);
-            mirror
-                .kv
-                .lock()
-                .unwrap()
-                .insert(key, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+            mirror.kv.lock().unwrap().insert(
+                key,
+                vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            );
         }
         let tel_key = "telemetry_usage/1000/00000000000000000000000000000001/writerB".to_string();
         mirror
@@ -8568,7 +8566,11 @@ mod tests {
 
         // Run maintenance probe: must complete with zero deletions
         let probe_res = store.probe_durability();
-        assert!(probe_res.is_ok(), "durability probe must succeed: {:?}", probe_res.err());
+        assert!(
+            probe_res.is_ok(),
+            "durability probe must succeed: {:?}",
+            probe_res.err()
+        );
 
         let deleted_keys: Vec<String> = mirror
             .ops

@@ -2699,8 +2699,11 @@ never counted twice:
 - **Mailbox**, a sampler walks held inbox bytes per interval and adds byte-hours; idempotent by
   `(tenant, period, sample-tick)` so a re-run of a tick can't double-add.
 
-Writes are small and sharded to avoid hot-doc contention; the ledger is the **authoritative** record,
-independent of whether reporting has happened yet.
+Writes use fallible critical KV mutations (`put_kv_critical` / `apply_kv_batch`) and are small and
+sharded to avoid hot-doc contention; in-memory drained counters are retained in retry buffers on
+failure, service `/healthz` reflects durable write health, and ledger prefixes are exempt from startup
+delete-on-overflow. The ledger is the **authoritative** record, independent of whether reporting has
+happened yet.
 
 ### Reconcile → Stripe meter events
 

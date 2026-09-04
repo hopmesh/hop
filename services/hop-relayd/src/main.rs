@@ -967,6 +967,13 @@ fn decode_usage(bytes: &[u8]) -> Usage {
     }
 }
 
+static RETRY_USAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_CARRIAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Read-modify-write the drained per-tenant usage into this writer's hour-bucketed ledger rows.
 /// Returns the number of rows touched. See [`merge_rows_into_store`] for the concurrency premise.
 fn merge_usage_into_store<S: Store>(
@@ -974,57 +981,58 @@ fn merge_usage_into_store<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store(store, drained, now_ms, usage_kv_key)
+    merge_rows_into_store_buffered(store, drained, now_ms, usage_kv_key, &RETRY_USAGE)
 }
 
 /// Read-modify-write the drained per-tenant CARRIAGE measurement into its own hour-bucketed rows.
-///
-/// This records real work the relay performed that the delivery-justified meter never charges for:
-/// bundles it accepted, stored, spooled, and forwarded which produced no delivery event (no
-/// returning ACK, no §39 vaccine), so `meter_delivered` never fired. §40 telemetry is the systematic
-/// case rather than an edge case: telemetry bundles set `request_ack: false`, the collector
-/// deliberately never responds, and they are `Destination::Device` so no vaccine fires, meaning NO
-/// telemetry bundle can ever produce a `hop_backbone_delivery`. The relay carries that traffic for
-/// free today.
-///
-/// This is MEASUREMENT ONLY. It is written to its own `carriage_usage/` prefix so it cannot disturb
-/// the live `usage/` reach ledger or its parser, it emits no Stripe event, and nothing bills off it.
-/// Whether any of this carriage should be priced (and on what unit) is the owner's decision; the
-/// point here is that the volume stops being invisible when someone goes to make it.
 fn merge_carriage_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store(store, drained, now_ms, carriage_kv_key)
+    merge_rows_into_store_buffered(store, drained, now_ms, carriage_kv_key, &RETRY_CARRIAGE)
 }
 
-/// The shared RMW body for both 16-byte ledger shapes.
-///
-/// The premise this depends on, stated exactly (services-r19-05 / SVC-005): the read half reads the
-/// process-LOCAL in-memory kv copy, not the durable row, so this merge is safe ONLY against a row no
-/// other process writes. It used to claim "only this node writes its own kv, so the RMW is
-/// race-free", which is false whenever two processes share a node address, and a Cloud Run revision
-/// rollout does exactly that. The row key now carries [`ledger_writer_id`], so the row this merge
-/// owns is private to THIS process and the premise holds structurally rather than by deployment
-/// convention. Concurrent writers compose because the reconciler sums the per-writer rows.
+/// Compatibility wrapper for existing callers and tests.
 fn merge_rows_into_store<S: Store>(
     store: &mut S,
     drained: &[(TenantId, Usage)],
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
 ) -> usize {
-    let hour = now_ms / 3_600_000;
+    merge_rows_into_store_buffered(store, drained, now_ms, key_for, &RETRY_USAGE)
+}
+
+/// The shared RMW body for both 16-byte ledger shapes, backed by an in-memory retry buffer.
+/// Failed writes are retained until confirmed committed (STORE-005).
+fn merge_rows_into_store_buffered<S: Store>(
+    store: &mut S,
+    drained: &[(TenantId, Usage)],
+    now_ms: u64,
+    key_for: impl Fn(u64, &TenantId) -> String,
+    retry_map: &std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>>,
+) -> usize {
+    let mut map = retry_map.lock().unwrap();
     for (tenant, usage) in drained {
+        map.entry(*tenant).or_default().add(usage);
+    }
+    let hour = now_ms / 3_600_000;
+    let mut committed = Vec::new();
+    for (tenant, usage) in map.iter() {
         let key = key_for(hour, tenant);
         let mut total = store
             .get_kv(&key)
             .map(|b| decode_usage(&b))
             .unwrap_or_default();
         total.add(usage);
-        store.put_kv(&key, encode_usage(&total));
+        if store.put_kv_critical(&key, encode_usage(&total)).is_ok() {
+            committed.push(*tenant);
+        }
     }
-    drained.len()
+    for tenant in &committed {
+        map.remove(tenant);
+    }
+    committed.len()
 }
 
 /// One storage-occupancy row key: per (hour bucket, tenant, writer). A SEPARATE prefix from `usage/`
@@ -1059,18 +1067,30 @@ fn merge_storage_into_store<S: Store>(
     accrued: &[(TenantId, u64)],
     now_ms: u64,
 ) -> usize {
-    let hour = now_ms / 3_600_000;
-    let mut rows = 0;
+    let mut map = RETRY_STORAGE.lock().unwrap();
     for (tenant, byte_ms) in accrued {
         if *byte_ms == 0 {
             continue;
         }
+        let current = map.entry(*tenant).or_default();
+        *current = current.saturating_add(*byte_ms);
+    }
+    let hour = now_ms / 3_600_000;
+    let mut committed = Vec::new();
+    for (tenant, byte_ms) in map.iter() {
         let key = storage_usage_kv_key(hour, tenant);
         let prev = store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0);
-        store.put_kv(&key, encode_storage(prev.saturating_add(*byte_ms)));
-        rows += 1;
+        if store
+            .put_kv_critical(&key, encode_storage(prev.saturating_add(*byte_ms)))
+            .is_ok()
+        {
+            committed.push(*tenant);
+        }
     }
-    rows
+    for tenant in &committed {
+        map.remove(tenant);
+    }
+    committed.len()
 }
 
 /// Drain the node's §35 meter + refusal counter into the ledger and the private log, now.
@@ -7283,5 +7303,67 @@ mod access_and_ledger_tests {
             );
             assert_eq!(key.split('/').count(), 4, "exactly four segments: {key}");
         }
+    }
+
+    // --- STORE-005 hostile regression tests --------------------------------------------------
+
+    #[test]
+    fn store_005_hostile_relay_flush_failure_retains_drained_atoms_in_retry_buffer() {
+        use hop_core::store::{KvMutation, MemoryStore};
+
+        struct FailingStore(MemoryStore);
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                _mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                Err("disk full / firestore unavailable".into())
+            }
+        }
+
+        RETRY_USAGE.lock().unwrap().clear();
+        let tenant: TenantId = [7u8; 16];
+        let drained = vec![(
+            tenant,
+            Usage {
+                bundles: 5,
+                payload_bytes: 1024,
+            },
+        )];
+
+        let mut store = FailingStore(MemoryStore::new());
+        let committed = merge_usage_into_store(&mut store, &drained, 3_600_000);
+
+        // On the unfixed tree, merge_usage_into_store uses void put_kv, claims all rows merged (committed == 1),
+        // and leaves no retry buffer, so the drained usage is lost forever.
+        assert_eq!(
+            committed, 0,
+            "STORE-005 failure: failed store write claimed success, reported {} committed",
+            committed
+        );
+        assert!(RETRY_USAGE.lock().unwrap().contains_key(&tenant));
+        RETRY_USAGE.lock().unwrap().clear();
     }
 }
