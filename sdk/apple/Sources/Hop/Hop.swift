@@ -428,6 +428,7 @@ public final class HopNode {
                                          args: alen == 0 ? Data() : Data(bytes: args!, count: Int(alen))))
                     return true
                 }, UnsafeMutableRawPointer(ctx))
+            }
         }
     }
 
