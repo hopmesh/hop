@@ -332,6 +332,18 @@ impl SqliteStore {
         Self::from_conn(Connection::open_in_memory()?)
     }
 
+    /// Injected fault helper for tests: installs an abort trigger on `kv` table for keys matching `pattern`.
+    pub fn inject_kv_failure(&self, pattern: &str) -> Result<(), String> {
+        let sql = format!(
+            "CREATE TRIGGER IF NOT EXISTS fail_kv_injected BEFORE INSERT ON kv
+             WHEN NEW.key LIKE '{pattern}'
+             BEGIN SELECT RAISE(ABORT, 'injected sqlite failure'); END;"
+        );
+        self.conn
+            .execute_batch(&sql)
+            .map_err(|e| format!("inject_kv_failure: {e}"))
+    }
+
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         Self::from_conn_with_locks(conn, None, None)
     }

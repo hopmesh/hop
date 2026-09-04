@@ -666,6 +666,39 @@ impl HopNode {
     pub fn cluster_quorum(&self, min_live_members: u32) {
         self.node().cluster_quorum(min_live_members as usize);
     }
+
+    /// Register a service topic, returning an error if durable persistence fails.
+    pub fn try_register_service(
+        &self,
+        path: String,
+        kind: HpsKind,
+        access: HpsAccess,
+        visibility: HpsVisibility,
+    ) -> std::result::Result<Vec<u8>, FfiError> {
+        let pk = self
+            .node()
+            .register_service(
+                &path,
+                kind_to_core(&kind),
+                access_to_core(&access),
+                vis_to_core(&visibility),
+            )
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
+        Ok(pk.map(|pk| pk.to_vec()).unwrap_or_default())
+    }
+
+    #[doc(hidden)]
+    pub fn inject_kv_failure(&self, pattern: &str) -> std::result::Result<(), String> {
+        #[cfg(feature = "full")]
+        {
+            self.node().store.inject_kv_failure(pattern)
+        }
+        #[cfg(not(feature = "full"))]
+        {
+            let _ = pattern;
+            Ok(())
+        }
+    }
 }
 
 /// A fresh EPHEMERAL store (core-ffi-03). The full build uses an in-memory SQLite; the embedded build
@@ -1233,14 +1266,7 @@ impl HopNode {
         access: HpsAccess,
         visibility: HpsVisibility,
     ) -> Vec<u8> {
-        self.node()
-            .register_service(
-                &path,
-                kind_to_core(&kind),
-                access_to_core(&access),
-                vis_to_core(&visibility),
-            )
-            .map(|pk| pk.to_vec())
+        self.try_register_service(path, kind, access, visibility)
             .unwrap_or_default()
     }
 
@@ -1332,7 +1358,9 @@ impl HopNode {
     /// Host: deny/drop a pending requester (no keys).
     pub fn hps_deny(&self, path: String, requester: Vec<u8>) -> std::result::Result<(), FfiError> {
         let requester = to32(&requester)?;
-        self.node().hps_deny(&path, requester);
+        self.node()
+            .hps_deny(&path, requester)
+            .map_err(|e| FfiError::Hop(e.to_string()))?;
         Ok(())
     }
 
