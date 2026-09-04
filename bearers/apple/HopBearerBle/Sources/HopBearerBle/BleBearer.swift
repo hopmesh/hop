@@ -50,7 +50,6 @@ let STABLE_UP_MS: UInt64 = 30_000
 let LOST_S: Double = 30.0
 public let BLE_MAX_LINKS = 32
 public let BLE_MAX_PREAUTH_LINKS = 16
-public let BLE_PREAUTH_DEADLINE_S: Double = 10.0
 
 // MARK: - Dial backoff schedule (shared with Android's DialBackoff.kt)
 //

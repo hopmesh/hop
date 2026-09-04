@@ -590,9 +590,10 @@ class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
     internal val retainedPreauthBytes: Int get() = LAN_ADMISSION.retainedBytes
     internal var preauthDeadlineMs = 10_000L
 
-    fun markSecured(linkId: Long) {
-        synchronized(lock) { allLinksByLinkId[linkId] }?.secured = true
+    override fun authenticated(link: Long) {
+        synchronized(lock) { allLinksByLinkId[link] }?.secured = true
     }
+    fun markSecured(linkId: Long) = authenticated(linkId)
     override fun close(link: Long) {
         synchronized(lock) { allLinksByLinkId[link] }?.close("preauth deadline")
     }
