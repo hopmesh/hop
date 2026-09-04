@@ -116,6 +116,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(false)
+        }
         // android-r2-02: persist this app's relay choice to the ONE shared pref BEFORE building the
         // config, so an OS-driven START_STICKY service restart (which builds HopConfig.default with no
         // activity) resolves the SAME value instead of falling back to a different literal. Both paths
@@ -124,19 +128,20 @@ class MainActivity : ComponentActivity() {
         HopConfig.persistRelaysEnabled(this, true)   // this build opts the relay ON
         // Configure the driver from the app's sources (identity, storage, backbone, presentation),
         // then hand off; the foreground service keeps the same shared instance running.
-        val config = HopConfig(
-            dbPath = java.io.File(filesDir, "hop.db").absolutePath,
-            identitySecret = HopBearer.deviceSeed(this),
-            appSecret = HopBearer.APP_SECRET,
-            deviceName = HopConfig.deviceName(this),
-            relayUrl = HopBearer.DEFAULT_RELAY,
-            relaysEnabled = HopConfig.relaysEnabled(this),   // single source of truth (android-r2-02)
-            notificationIcon = android.R.drawable.ic_dialog_email,
-            // android-01: MUST match the sticky-service path (HopConfig.default sets this too). Without
-            // it the activity opens hop.db PLAINTEXT while a START_STICKY service restart opens it keyed,
-            // which used to quarantine-wipe all node state; SQLCipher-at-rest (F-25) also stayed OFF.
-            dbKey = HopBearer.dbKey(this),
-        )
+        val config = if (HopBearer.peek() == null) {
+            HopConfig(
+                dbPath = java.io.File(filesDir, "hop.db").absolutePath,
+                identitySecret = HopBearer.deviceSeed(this),
+                appSecret = HopBearer.APP_SECRET,
+                deviceName = HopConfig.deviceName(this),
+                relayUrl = HopBearer.DEFAULT_RELAY,
+                relaysEnabled = HopConfig.relaysEnabled(this),   // single source of truth (android-r2-02)
+                notificationIcon = android.R.drawable.ic_dialog_email,
+                dbKey = HopBearer.dbKey(this),
+            )
+        } else {
+            HopConfig.default(this)
+        }
         bearer = HopBearer.shared(this, config)
         // Edge-to-edge so Compose actually receives IME (keyboard) insets: Compose does NOT reliably
         // react to windowSoftInputMode=adjustResize on its own, so screens apply imePadding/

@@ -6,6 +6,7 @@ import ReactAppDependencyProvider
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
   var window: UIWindow?
+  private var privacyOverlay: UIView?
 
   var reactNativeDelegate: ReactNativeDelegate?
   var reactNativeFactory: RCTReactNativeFactory?
@@ -30,6 +31,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     )
 
     return true
+  }
+
+  func applicationWillResignActive(_ application: UIApplication) {
+    showPrivacyOverlay()
+  }
+
+  func applicationDidEnterBackground(_ application: UIApplication) {
+    showPrivacyOverlay()
+  }
+
+  func applicationDidBecomeActive(_ application: UIApplication) {
+    hidePrivacyOverlay()
+  }
+
+  private func showPrivacyOverlay() {
+    guard let window = window, privacyOverlay == nil else { return }
+    let overlay = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    overlay.frame = window.bounds
+    overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    window.addSubview(overlay)
+    privacyOverlay = overlay
+  }
+
+  private func hidePrivacyOverlay() {
+    privacyOverlay?.removeFromSuperview()
+    privacyOverlay = nil
   }
 }
 
