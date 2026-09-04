@@ -1,10 +1,9 @@
 # Dependabot supply-chain updates for the Hop repo.
 #
-# Covers every dependency ecosystem the workspace actually uses: the Cargo
-# workspace (Rust), the Astro marketing site (npm), the Kotlin SDK wrapper +
-# Android modules (Gradle), and the GitHub Actions workflows themselves. Grouped
-# updates keep PR volume low; cargo-deny (deny.toml) is the gate that actually
-# blocks a bad advisory from merging.
+# Covers all supported package ecosystems across SDKs, applications, tooling,
+# and CI workflows. Grouped updates keep PR volume low. The `deny` CI job runs
+# cargo-deny (deny.toml) on Cargo dependencies to block Rust advisories, bans,
+# and license violations from merging.
 version: 2
 updates:
   # Rust workspace (single virtual manifest at the repo root).
@@ -17,6 +16,13 @@ updates:
       rust-dependencies:
         patterns:
           - "*"
+
+  # Fuzzing harnesses (separate Cargo workspace and lockfile).
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
 
   # Marketing site (Astro / npm).
   - package-ecosystem: npm
@@ -39,6 +45,27 @@ updates:
       node-sdk-dependencies:
         patterns:
           - "*"
+
+  # Native artifact provenance signer (@sigstore/sign).
+  - package-ecosystem: npm
+    directory: "/tools/native-attestation"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # React Native client SDK (npm).
+  - package-ecosystem: npm
+    directory: "/sdk/react-native"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # React Native demo app (npm).
+  - package-ecosystem: npm
+    directory: "/apps/react-native/HopDemo"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
 
   # Kotlin SDK wrapper (Gradle).
   #
@@ -68,6 +95,62 @@ updates:
   # Android demo app (Gradle).
   - package-ecosystem: gradle
     directory: "/apps/android/HopDemo"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Compose Multiplatform SDK (Gradle).
+  - package-ecosystem: gradle
+    directory: "/sdk/compose"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Android BLE Lab app (Gradle).
+  - package-ecosystem: gradle
+    directory: "/apps/ble-lab/android"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Go endpoint SDK (Go modules).
+  - package-ecosystem: gomod
+    directory: "/sdk/go"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Python endpoint SDK (pip / pyproject.toml).
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Ruby endpoint SDK (Bundler / Gemfile).
+  - package-ecosystem: bundler
+    directory: "/sdk/ruby"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Elixir endpoint SDK (Mix / mix.exs).
+  - package-ecosystem: mix
+    directory: "/sdk/elixir"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Flutter endpoint SDK (Pub / pubspec.yaml).
+  - package-ecosystem: pub
+    directory: "/sdk/flutter"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Apple SwiftPM SDK (SwiftPM / Package.swift).
+  - package-ecosystem: swift
+    directory: "/sdk/apple"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
