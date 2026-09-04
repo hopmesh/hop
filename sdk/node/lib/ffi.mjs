@@ -87,6 +87,10 @@ const rawHop = {
   node_open: lib.func(
     'void *hop_node_open(const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len)',
   ),
+  node_open_keyed: lib.func(
+    'void *hop_node_open_keyed(const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len, uint8_t *key, size_t key_len)',
+  ),
+  node_is_persistent: lib.func('bool hop_node_is_persistent(void *node)'),
   node_free: lib.func('void hop_node_free(void *node)'),
   node_is_encrypted: lib.func('bool hop_node_is_encrypted(void *node)'),
   node_address: lib.func('bool hop_node_address(void *node, uint8_t *out)'),
@@ -222,6 +226,7 @@ export const hop = {
       bodyLen,
     ),
   node_is_encrypted: (node) => rawHop.node_is_encrypted(node),
+  node_is_persistent: (node) => rawHop.node_is_persistent(node),
   accept_service_request: (node, reqId) => rawHop.accept_service_request(node, require32(reqId, 'request id')),
   reject_service_request: (node, reqId) => rawHop.reject_service_request(node, require32(reqId, 'request id')),
   address_to_base58: (address, out, outCap) =>
