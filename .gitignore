@@ -108,3 +108,7 @@ drivers/android/**/build/
 # toolchain, but CI rebuilds it from source and fails on drift (web-05 / simwasm-02; sim/check-pkg-fresh.sh).
 core/hop-wasm/pkg-node/
 erl_crash.dump
+
+# ---- testkit ----
+# on-device test run output (testkit/CLAUDE.md)
+testkit/results/
