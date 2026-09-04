@@ -6,7 +6,7 @@ require "hop/ffi"
 
 module Hop
   # An inbound service request. `from` is the cryptographically verified sender identity (base58).
-  Request = Struct.new(:from, :from_bytes, :service, :method, :args) do
+  Request = Struct.new(:from, :from_bytes, :service, :method, :args, :request_id) do
     def text = args
   end
 
@@ -156,6 +156,16 @@ module Hop
       block.call if run_now
     end
 
+    # Durably accept a service request by its 32-byte request id.
+    def accept_service_request(request_id)
+      with_node { |n| Hop::FFI.accept_service_request(n, request_id) }
+    end
+
+    # Reject a service request without ACK so it can be retried.
+    def reject_service_request(request_id)
+      with_node { |n| Hop::FFI.reject_service_request(n, request_id) }
+    end
+
     # ---- bearer seam (called from bearer threads) ----
     def register_link(link, role, send_fn)
       with_node do |n|
@@ -237,9 +247,14 @@ module Hop
         handler = @handlers[service]
         next unless handler
 
-        req = Request.new(Hop::FFI.to_b58(frm), frm, service, method, args)
+        req = Request.new(Hop::FFI.to_b58(frm), frm, service, method, args, rid)
         reply = ->(status, body = "") { with_node { |n| Hop::FFI.send_service_response(n, frm, rid, status, to_bytes(body)) } }
-        handler.call(req, reply)
+        begin
+          handler.call(req, reply)
+          with_node { |n| Hop::FFI.accept_service_request(n, rid) }
+        rescue StandardError
+          # handler threw: leave queued for redelivery
+        end
       end
       responses.each do |_frm, for_id, status, body|
         q = @mutex.synchronize { @pending.delete(for_id) }

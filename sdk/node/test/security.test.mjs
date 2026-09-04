@@ -397,7 +397,7 @@ test('every fixed-width raw FFI argument rejects 0, 1, 31, and 33 bytes', () => 
     raw.hps_leave(node, 'room', exact, [false])
     raw.hps_approve(node, 'room', exact, exact)
     raw.hps_deny(node, 'room', exact)
-    raw.hps_rekey(node, 'room', '', exact, 1, null, null)
+    assert.throws(() => raw.hps_rekey(node, 'room', '', exact, 1, null, null), /failed/)
   } finally {
     raw.node_free(node)
   }
@@ -496,4 +496,38 @@ test('message.accept performs the distinct exact-id acceptance after durable wor
   assert.equal(acceptanceResult, true)
   assert.equal(accepted.length, 1)
   assert.deepEqual(accepted[0], item.idBytes)
+})
+
+test('service request throwing handler leaves request queued for redelivery (ABI-002)', async () => {
+  const server = new HopEndpoint({ tickMs: 1 })
+  const client = new HopEndpoint({ tickMs: 1 })
+  connectInProcess(server, client)
+
+  let attempts = 0
+  let finishFirstAttempt
+  const firstAttemptDone = new Promise((resolve) => { finishFirstAttempt = resolve })
+
+  server.on('flaky', async (req, reply) => {
+    attempts += 1
+    if (attempts === 1) {
+      finishFirstAttempt()
+      throw new Error('handler failed on attempt 1')
+    }
+    reply(200, Buffer.from('recovered'))
+  })
+
+  server.addListener('error', () => {})
+
+  const reqPromise = client.request(server.addressBytes, 'flaky', 'call', Buffer.from('test'))
+
+  await firstAttemptDone
+  assert.equal(attempts, 1)
+
+  const res = await reqPromise
+  assert.equal(attempts, 2, 'request was redelivered to handler after first attempt threw')
+  assert.equal(res.status, 200)
+  assert.equal(res.body.toString(), 'recovered')
+
+  server.close()
+  client.close()
 })

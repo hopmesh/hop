@@ -288,6 +288,20 @@ export class HopEndpoint extends EventEmitter {
     return this.#native((node) => hop.accept_service_response(node, id))
   }
 
+  // Durably accept a service request after the application has completed processing.
+  acceptServiceRequest(requestId) {
+    const id = Buffer.from(require32(requestId, 'request id'))
+    if (this.#closed) return false
+    return this.#native((node) => hop.accept_service_request(node, id))
+  }
+
+  // Reject a service request without ACK so it remains queued for redelivery.
+  rejectServiceRequest(requestId) {
+    const id = Buffer.from(require32(requestId, 'request id'))
+    if (this.#closed) return false
+    return this.#native((node) => hop.reject_service_request(node, id))
+  }
+
   // Emit one already-decoded durable inbox item without accepting it. The optional callback is the
   // deterministic test seam for proving that only message.accept() crosses the acceptance boundary.
   _emitInbox(message, acceptInbox = (id) => this.acceptInbox(id)) {
@@ -325,12 +339,23 @@ export class HopEndpoint extends EventEmitter {
     // inbound service requests -> handlers
     this.#native((node) => hop.poll_service_requests(node, (_ctx, from, rid, service, method, argPtr, argLen) => {
       if (this.#closed) return false
-      const req = new HopRequest(addr(from), addr(rid), service, method, bytes(argPtr, Number(argLen)))
+      const requestId = addr(rid)
+      const req = new HopRequest(addr(from), requestId, service, method, bytes(argPtr, Number(argLen)))
+      req.accept = () => this.acceptServiceRequest(requestId)
+      req.reject = () => this.rejectServiceRequest(requestId)
       const handler = this.#handlers.get(service)
       const reply = this.#makeReply(req)
-      if (handler) Promise.resolve(handler(req, reply)).catch((e) => this.emit('error', e))
-      else this.emit('unhandled', req, reply)
-      return true
+      if (handler) {
+        Promise.resolve()
+          .then(() => handler(req, reply))
+          .then(() => {
+            this.acceptServiceRequest(requestId)
+          })
+          .catch((e) => this.emit('error', e))
+      } else {
+        this.emit('unhandled', req, reply)
+      }
+      return false
     }, null))
     if (this.#closed) return
     // inbound service responses -> resolve pending client requests

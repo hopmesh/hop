@@ -280,7 +280,7 @@ def take_service_requests(node) -> list[tuple[bytes, bytes, str, str, bytes]]:
                 C.string_at(args, arglen) if arglen else b"",
             )
         )
-        return True
+        return False
 
     _lib.hop_poll_service_requests(node, sink, None)
     return out

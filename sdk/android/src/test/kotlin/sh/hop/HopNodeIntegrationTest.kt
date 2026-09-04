@@ -711,4 +711,64 @@ class HopNodeIntegrationTest {
         assertEquals(0, HpsVisibility.PRIVATE.c)
         assertEquals(1, HpsVisibility.DISCOVERABLE.c)
     }
+
+    @Test
+    fun hpsRekeyFailureThrowsRatherThanEmptyList() {
+        assumeLibhop()
+        HopNode.ephemeral().use { n ->
+            assertFailsWith<IllegalStateException> {
+                n.hpsRekey("unknown_topic")
+            }
+        }
+    }
+
+    @Test
+    fun serviceRequestThrowingHandlerLeavesRequestQueued() {
+        assumeLibhop()
+        val appSecret = ByteArray(32) { 9 }
+        HopNode.open(":memory:", appSecret = appSecret)!!.use { host ->
+            HopNode.open(":memory:", appSecret = appSecret)!!.use { member ->
+                val hostLink = 11L
+                val memberLink = 22L
+                host.tick(1_700_000_000_000L)
+                member.tick(1_700_000_000_000L)
+                host.linkUp(hostLink, HopRole.DIALER)
+                member.linkUp(memberLink, HopRole.ACCEPTOR)
+                val pump = {
+                    for (i in 0 until 50) {
+                        var moved = false
+                        host.drainOutgoing { _, b -> moved = true; member.bytesReceived(memberLink, b) }
+                        member.drainOutgoing { _, b -> moved = true; host.bytesReceived(hostLink, b) }
+                        if (!moved) break
+                    }
+                }
+                pump()
+                val reqId = host.sendServiceRequest(member.address(), "svc", "m", byteArrayOf(1, 2))
+                assertNotNull(reqId)
+                pump()
+
+                var attempts = 0
+                assertFailsWith<IllegalStateException> {
+                    member.pollServiceRequests {
+                        attempts++
+                        error("handler failed")
+                    }
+                }
+                assertEquals(1, attempts)
+
+                var redelivered: HopServiceRequest? = null
+                member.pollServiceRequests { req ->
+                    redelivered = req
+                }
+                assertNotNull(redelivered, "request must be redelivered after throwing handler")
+                assertTrue(redelivered!!.requestId.contentEquals(reqId))
+
+                var afterAccept: HopServiceRequest? = null
+                member.pollServiceRequests { req ->
+                    afterAccept = req
+                }
+                assertNull(afterAccept, "request must be cleared after successful handler")
+            }
+        }
+    }
 }
