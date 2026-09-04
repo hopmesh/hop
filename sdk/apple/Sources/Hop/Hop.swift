@@ -43,6 +43,18 @@ public struct HopServiceResponse {
     public let body: Data
 }
 
+/// Errors produced across the C ABI wrapper boundary.
+public enum HopError: Error, LocalizedError, Equatable {
+    case hpsRekeyFailed(path: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .hpsRekeyFailed(let path):
+            return "hop_hps_rekey failed for path: \(path)"
+        }
+    }
+}
+
 // MARK: - hps:// pub/sub types (DESIGN.md section 32)
 //
 // A publication on a topic is ONE bundle: encrypted once to the topic's content key, signed by its
@@ -414,21 +426,47 @@ public final class HopNode {
         }
     }
 
-    /// Drain inbound hops:// requests addressed to this node (acting as a service).
-    public func pollServiceRequests(_ sink: (HopServiceRequest) -> Void) {
+    /// Poll inbound hops:// requests addressed to this node (acting as a service).
+    /// Runs the application handler; if it completes successfully, the request is accepted.
+    /// If the handler throws, the request is left queued for redelivery and the error is rethrown.
+    public func pollServiceRequests(_ sink: (HopServiceRequest) throws -> Void) rethrows {
+        try pollServiceRequestsAccepting { req in
+            try sink(req)
+            return true
+        }
+    }
+
+    /// Poll inbound hops:// requests, accepting each only when `sink(request)` returns true synchronously.
+    /// If `sink` throws, the request is left queued for redelivery and the error is rethrown.
+    public func pollServiceRequestsAccepting(_ sink: (HopServiceRequest) throws -> Bool) rethrows {
+        final class Context {
+            var callback: (HopServiceRequest) throws -> Bool
+            var caughtError: Error?
+            init(_ cb: @escaping (HopServiceRequest) throws -> Bool) { self.callback = cb }
+        }
+        var caught: Error?
         withoutActuallyEscaping(sink) { escaping in
-            var local = escaping
-            withUnsafeMutablePointer(to: &local) { ctx in
-                hop_poll_service_requests(raw, { rawCtx, from, reqId, service, method, args, alen in
-                    let cb = rawCtx!.assumingMemoryBound(to: ((HopServiceRequest) -> Void).self).pointee
-                    cb(HopServiceRequest(from: Data(bytes: from!, count: 32),
-                                         requestId: Data(bytes: reqId!, count: 32),
-                                         service: service != nil ? String(cString: service!) : "",
-                                         method: method != nil ? String(cString: method!) : "",
-                                         args: alen == 0 ? Data() : Data(bytes: args!, count: Int(alen))))
-                    return true
-                }, UnsafeMutableRawPointer(ctx))
-            }
+            let ctx = Context(escaping)
+            let unmanaged = Unmanaged.passUnretained(ctx)
+            hop_poll_service_requests(raw, { rawCtx, from, reqId, service, method, args, alen in
+                let c = Unmanaged<Context>.fromOpaque(rawCtx!).takeUnretainedValue()
+                let req = HopServiceRequest(from: Data(bytes: from!, count: 32),
+                                             requestId: Data(bytes: reqId!, count: 32),
+                                             service: service != nil ? String(cString: service!) : "",
+                                             method: method != nil ? String(cString: method!) : "",
+                                             args: alen == 0 ? Data() : Data(bytes: args!, count: Int(alen)))
+                do {
+                    return try c.callback(req)
+                } catch {
+                    c.caughtError = error
+                    return false
+                }
+            }, unmanaged.toOpaque())
+            caught = ctx.caughtError
+        }
+        if let err = caught {
+            func rethrower() throws { throw err }
+            try rethrower()
         }
     }
 
@@ -706,12 +744,9 @@ public final class HopNode {
     /// can still read the history it already holds and nothing published afterwards. An empty
     /// `newPath` keeps the path; a non-empty one moves the topic. Returns the rekey bundle ids.
     @discardableResult
-    public func hpsRekey(path: String, newPath: String = "", remove: [Data] = []) -> [Data] {
-        for addr in remove {
-            guard addr.count == 32 else { return [] }
-        }
+    public func hpsRekey(path: String, newPath: String = "", remove: [Data] = []) throws -> [Data] {
         var packed = Data()
-        for addr in remove { packed.append(addr) }
+        for addr in remove where addr.count == 32 { packed.append(addr) }
         var ids: [Data] = []
         var res: Int = -1
         withoutActuallyEscaping({ (id: Data) in ids.append(id) }) { escaping in
@@ -721,7 +756,7 @@ public final class HopNode {
                     newPath.withCString { np in
                         packed.withUnsafeBytes { r in
                             res = hop_hps_rekey(raw, p, np, r.bindMemory(to: UInt8.self).baseAddress,
-                                                UInt(r.count / 32), { rawCtx, id in
+                                                UInt(packed.count / 32), { rawCtx, id in
                                 guard let id else { return }
                                 rawCtx!.assumingMemoryBound(to: ((Data) -> Void).self)
                                     .pointee(Data(bytes: id, count: 32))
@@ -731,7 +766,9 @@ public final class HopNode {
                 }
             }
         }
-        if res < 0 { return [] }
+        if res < 0 {
+            throw HopError.hpsRekeyFailed(path: path)
+        }
         return ids
     }
 
