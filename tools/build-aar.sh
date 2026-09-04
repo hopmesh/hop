@@ -67,6 +67,7 @@ if [ ! -f THIRD-PARTY-NOTICES.md ]; then
 fi
 mkdir -p "$OUT"
 cp THIRD-PARTY-NOTICES.md "$OUT/THIRD-PARTY-NOTICES.md"
+cp LICENSE.md "$OUT/LICENSE.md"
 
 echo "✓ $OUT/jniLibs/<abi>/libhop.so"
 echo "✓ $OUT/kotlin/uniffi/hop/hop.kt"

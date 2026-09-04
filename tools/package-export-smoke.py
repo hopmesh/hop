@@ -70,6 +70,7 @@ SHARED_EXPORTS = {
     "tools/release-artifact.py": ".github/release-artifact.py",
     "tools/copybara/components.json": ".github/components.json",
     "tools/package-export-smoke.py": ".github/package-export-smoke.py",
+    "THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
 }
 NATIVE_EXPORTS = {
     "tools/native-artifacts.py": "native/native-artifacts.py",
@@ -405,6 +406,7 @@ def check_copybara_contract(root, components):
         'core.move(CRATES_PUBLISH_HELPER, ".github/crates-publish.py")',
         'core.move(EXPORT_SMOKE, ".github/package-export-smoke.py")',
         'core.move(NATIVE_HELPER, "native/native-artifacts.py")',
+        'core.move(THIRD_PARTY_NOTICES, "THIRD-PARTY-NOTICES.md")',
         'core.move(HOP_HEADER, "include/hop.h")',
         "_go_export_paths()",
         "_elixir_vendor_export()",
@@ -426,6 +428,8 @@ def static_check(root, output_root, selected):
         require("CLAUDE.md" not in tree, f"{component} leaked its monorepo CLAUDE.md")
         require(".github/release-provenance.py" in tree, f"{component} lacks release provenance")
         require(".github/package-export-smoke.py" in tree, f"{component} lacks export contract helper")
+        require("THIRD-PARTY-NOTICES.md" in tree, f"{component} lacks third-party notices")
+        require("LICENSE.md" in tree, f"{component} lacks first-party license")
         if component in RUST_MIRRORS and ".github/workflows/release.yml" in tree:
             require("Cargo.lock" in tree, f"{component} release has no standalone Cargo lock")
             verify_standalone_lock(root, component, destination)
@@ -605,7 +609,7 @@ def validate_go(export, work, bundle, target, public_key=None):
     archive = directory / artifact["filename"]
     with tarfile.open(archive, "r:gz") as source:
         release_names = {member.name for member in source.getmembers() if member.isfile()}
-    expected_release = {"include/hop.h", "lib/" + dynamic_library_name()}
+    expected_release = {"include/hop.h", "lib/" + dynamic_library_name(), "THIRD-PARTY-NOTICES.md", "LICENSE.md"}
     require(release_names == expected_release, f"Go release artifact contents differ: {sorted(release_names)}")
 
     consumer = work / "go-consumer"
@@ -672,6 +676,8 @@ def validate_go(export, work, bundle, target, public_key=None):
         require(library.is_file() and pkg_config.is_file(), "Go installer omitted libhop or hop.pc")
         require((install_root / "include/hop.h").read_bytes() == (export / "hop.h").read_bytes(), "installed header differs from module header")
         require(str(install_root) in pkg_config.read_text(encoding="utf-8"), "hop.pc does not declare the stable prefix")
+        require((install_root / "THIRD-PARTY-NOTICES.md").is_file(), "Go installer omitted THIRD-PARTY-NOTICES.md")
+        require((install_root / "LICENSE.md").is_file(), "Go installer omitted LICENSE.md")
 
         env["PKG_CONFIG_PATH"] = str(pkg_config.parent)
         loader = "DYLD_LIBRARY_PATH" if os.uname().sysname == "Darwin" else "LD_LIBRARY_PATH"
@@ -937,7 +943,12 @@ def validate_apple(export, work, bundle):
     archive = directory / artifact["filename"]
     require(package_checksum(archive) == expected_checksum, "Package.swift checksum does not match verified Apple artifact")
     slices = ("ios-arm64", "ios-arm64_x86_64-simulator", "macos-arm64_x86_64")
-    expected_files = {"libhop.xcframework/Info.plist", "libhop.xcframework/architecture-manifest.json"}
+    expected_files = {
+        "libhop.xcframework/Info.plist",
+        "libhop.xcframework/architecture-manifest.json",
+        "libhop.xcframework/THIRD-PARTY-NOTICES.md",
+        "libhop.xcframework/LICENSE.md",
+    }
     for slice_name in slices:
         expected_files.update(
             {

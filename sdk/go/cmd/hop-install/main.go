@@ -581,7 +581,12 @@ func verifyInstalledShape(root string) error {
 	if runtime.GOOS == "darwin" {
 		library = "libhop.dylib"
 	}
-	required := []string{filepath.Join(root, "include", "hop.h"), filepath.Join(root, "lib", library)}
+	required := []string{
+		filepath.Join(root, "include", "hop.h"),
+		filepath.Join(root, "lib", library),
+		filepath.Join(root, "THIRD-PARTY-NOTICES.md"),
+		filepath.Join(root, "LICENSE.md"),
+	}
 	for _, path := range required {
 		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("release archive is missing %s", filepath.Base(path))
@@ -593,16 +598,6 @@ func verifyInstalledShape(root string) error {
 	}
 	if !strings.Contains(string(header), "#define HOP_ABI_VERSION 7") {
 		return fmt.Errorf("release header does not declare the expected ABI version")
-	}
-	entries := 0
-	err = filepath.WalkDir(root, func(_ string, entry os.DirEntry, walkErr error) error {
-		if walkErr == nil && !entry.IsDir() {
-			entries++
-		}
-		return walkErr
-	})
-	if err != nil || entries != 2 {
-		return fmt.Errorf("release archive must contain exactly hop.h and one host library")
 	}
 	return nil
 }
