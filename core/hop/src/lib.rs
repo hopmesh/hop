@@ -484,12 +484,34 @@ pub struct HopNode {
 /// ephemeral forever with no signal to the host. (core-ffi-03: SQLite-only, so it is compiled only
 /// for the `full` build; the embedded build has no SQLite.)
 #[cfg(feature = "full")]
-fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenStoreError {
+    UnsupportedSchema { found: i64, supported: i64 },
+}
+
+#[cfg(feature = "full")]
+fn open_store_persistent(
+    db_path: &str,
+    key: &[u8],
+) -> std::result::Result<(HopStore, bool), OpenStoreError> {
     use hop_store_sqlite::SqliteStore;
     // F-25: an empty key opens plain; a 32-byte key opens SQLCipher-encrypted (under the store's
     // `sqlcipher` feature).
-    if let Ok(s) = SqliteStore::open_keyed(db_path, key) {
-        return (s, true);
+    match SqliteStore::open_keyed(db_path, key) {
+        Ok(s) => return Ok((s, true)),
+        Err(e) if SqliteStore::is_unsupported_schema(&e).is_some() => {
+            let found = SqliteStore::is_unsupported_schema(&e).unwrap();
+            eprintln!(
+                "hop: refusing to open database at {db_path} with unsupported schema v{found} \
+                 (supported is v{}); preserving file without modification",
+                SqliteStore::SCHEMA_VERSION
+            );
+            return Err(OpenStoreError::UnsupportedSchema {
+                found,
+                supported: SqliteStore::SCHEMA_VERSION,
+            });
+        }
+        Err(_) => {}
     }
 
     // stores-05 / android-01: a KEYED open of an EXISTING db failed. Never quarantine-wipe here, a
@@ -505,7 +527,14 @@ fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
                     eprintln!(
                         "hop: migrated plaintext db at {db_path} to SQLCipher (state preserved)"
                     );
-                    return (s, true);
+                    return Ok((s, true));
+                }
+                Err(e) if SqliteStore::is_unsupported_schema(&e).is_some() => {
+                    let found = SqliteStore::is_unsupported_schema(&e).unwrap();
+                    return Err(OpenStoreError::UnsupportedSchema {
+                        found,
+                        supported: SqliteStore::SCHEMA_VERSION,
+                    });
                 }
                 Err(e) => eprintln!("hop: WARNING plaintext->SQLCipher migration failed: {e}"),
             }
@@ -517,10 +546,10 @@ fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
             "hop: WARNING keyed open of existing db {db_path} failed (wrong key or corruption); \
              running EPHEMERAL this session and PRESERVING the file. is_persistent() is false."
         );
-        return (
+        return Ok((
             SqliteStore::open_in_memory().expect("in-memory sqlite"),
             false,
-        );
+        ));
     }
 
     // Empty-key (plain) path, or the file does not exist: a genuinely unusable/corrupt PLAIN db has no
@@ -532,17 +561,17 @@ fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
             eprintln!(
                 "hop: quarantined unusable db to {quarantine}; started a fresh persistent store"
             );
-            return (s, true);
+            return Ok((s, true));
         }
     }
     eprintln!(
         "hop: WARNING db path {db_path} is unusable even after quarantine; running EPHEMERAL \
          (state will NOT survive restart). is_persistent() is false."
     );
-    (
+    Ok((
         SqliteStore::open_in_memory().expect("in-memory sqlite"),
         false,
-    )
+    ))
 }
 
 /// Shared body of the `open` / `open_keyed` UniFFI constructors (F-25). A free function because UniFFI
@@ -550,7 +579,15 @@ fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
 /// compiled only for the full build.)
 #[cfg(feature = "full")]
 fn open_node_inner(db_path: &str, secret: &[u8], app_secret: &[u8], key: &[u8]) -> Arc<HopNode> {
-    let (store, persistent) = open_store_persistent(db_path, key);
+    let (store, persistent) = match open_store_persistent(db_path, key) {
+        Ok(res) => res,
+        Err(OpenStoreError::UnsupportedSchema { found, supported }) => {
+            panic!(
+                "hop: cannot open database at {db_path} with unsupported schema v{found} \
+                 (supported is v{supported}); downgrade refused to preserve user state"
+            );
+        }
+    };
     let mut node = Node::with_store(identity_from(secret), store);
     if let Ok(s) = <[u8; 32]>::try_from(app_secret) {
         node.set_app_keys(hop_core::app::AppKeys::from_secret(s));
@@ -708,6 +745,57 @@ impl HopNode {
                 persistent: false,
                 rehydrate_dropped: 0,
             })
+        }
+    }
+    /// Attempt to open a persistent node, returning an error if the database schema is unsupported.
+    #[cfg_attr(feature = "full", uniffi::constructor)]
+    pub fn try_open(
+        db_path: String,
+        secret: Vec<u8>,
+        app_secret: Vec<u8>,
+    ) -> std::result::Result<Arc<Self>, FfiError> {
+        Self::try_open_keyed(db_path, secret, app_secret, Vec::new())
+    }
+
+    /// Attempt to open an encrypted persistent node, returning an error if the database schema is unsupported.
+    #[cfg_attr(feature = "full", uniffi::constructor)]
+    pub fn try_open_keyed(
+        db_path: String,
+        secret: Vec<u8>,
+        app_secret: Vec<u8>,
+        key: Vec<u8>,
+    ) -> std::result::Result<Arc<Self>, FfiError> {
+        #[cfg(feature = "full")]
+        {
+            match open_store_persistent(&db_path, &key) {
+                Ok((store, persistent)) => {
+                    let mut node = Node::with_store(identity_from(&secret), store);
+                    if let Ok(s) = <[u8; 32]>::try_from(app_secret.as_slice()) {
+                        node.set_app_keys(hop_core::app::AppKeys::from_secret(s));
+                    }
+                    let report = node.take_rehydrate_report();
+                    if !report.is_empty() {
+                        eprintln!(
+                            "hop: rehydrate dropped {} persisted record(s) across an upgrade: {:?}",
+                            report.total(),
+                            report.dropped
+                        );
+                    }
+                    Ok(Arc::new(Self {
+                        inner: Mutex::new(Endpoint::new(node)),
+                        persistent,
+                        rehydrate_dropped: report.total(),
+                    }))
+                }
+                Err(OpenStoreError::UnsupportedSchema { found, supported }) => Err(FfiError::Hop(
+                    format!("unsupported schema version {found}; supported is {supported}"),
+                )),
+            }
+        }
+        #[cfg(not(feature = "full"))]
+        {
+            let _ = (&db_path, &key, &app_secret);
+            Ok(Self::with_secret(secret))
         }
     }
 
@@ -1601,11 +1689,12 @@ mod tests {
         // Open persistently WITH a key: the migration arm must fire - persistent stays true, the file is
         // encrypted in place, nothing is quarantined, and the key reopens it.
         let key = [7u8; 32];
-        let (_s, persistent) = open_store_persistent(&path, &key);
+        let (s, persistent) = open_store_persistent(&path, &key).expect("migration succeeds");
         assert!(
             persistent,
             "migration arm: is_persistent stays true (no false ephemeral)"
         );
+        drop(s);
         assert!(
             !SqliteStore::opens_as_plaintext(&path),
             "the db is now SQLCipher-encrypted"
@@ -1619,6 +1708,7 @@ mod tests {
             "reopens with the migration key"
         );
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 
     #[cfg(feature = "sqlcipher")]
@@ -1631,7 +1721,8 @@ mod tests {
         // Open with the WRONG key: the fail-closed arm must fire - ephemeral (is_persistent=false), the
         // encrypted file PRESERVED (not wiped, not quarantined), so the right key recovers it later.
         let key_b = [2u8; 32];
-        let (_s, persistent) = open_store_persistent(&path, &key_b);
+        let (_s, persistent) =
+            open_store_persistent(&path, &key_b).expect("fail-closed returns ephemeral");
         assert!(
             !persistent,
             "wrong key runs ephemeral (is_persistent=false), never churns state"
@@ -1649,6 +1740,7 @@ mod tests {
             "the correct key still recovers the db after a wrong-key session"
         );
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 
     #[test]
@@ -1660,7 +1752,8 @@ mod tests {
         std::fs::write(&path, b"this is not a sqlite database at all, just garbage").unwrap();
         // Empty-key path: the quarantine arm must fire - move the bad file aside and start FRESH
         // persistent (is_persistent=true), leaving a .corrupt copy for forensics.
-        let (_s, persistent) = open_store_persistent(&path, &[]);
+        let (_s, persistent) =
+            open_store_persistent(&path, &[]).expect("quarantine-then-fresh succeeds");
         assert!(
             persistent,
             "quarantine-then-fresh keeps persistence (is_persistent=true)"
@@ -1675,6 +1768,40 @@ mod tests {
         );
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&quar);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[test]
+    fn future_schema_version_refuses_open_and_preserves_database() {
+        let path = recovery_tmp("future_schema");
+        {
+            let mut s = hop_store_sqlite::SqliteStore::open_keyed(&path, &[]).expect("create db");
+            s.put_kv("session/alice", b"secret-ratchet".to_vec());
+        }
+        hop_store_sqlite::SqliteStore::set_user_version_for_test(&path, 3).unwrap();
+        // open_store_persistent must refuse with UnsupportedSchema error
+        let res = open_store_persistent(&path, &[]);
+        match res {
+            Err(OpenStoreError::UnsupportedSchema { found, supported }) => {
+                assert_eq!(found, 3);
+                assert_eq!(supported, 2);
+            }
+            Ok(_) => panic!("expected UnsupportedSchema error, got Ok"),
+        }
+        // Database file must not be quarantined or deleted
+        assert!(std::path::Path::new(&path).exists(), "db file preserved");
+        assert!(
+            !std::path::Path::new(&format!("{path}.corrupt")).exists(),
+            "no corrupt quarantine file created"
+        );
+        // try_open must also return an error
+        let try_res = HopNode::try_open(path.clone(), Vec::new(), Vec::new());
+        assert!(
+            try_res.is_err(),
+            "try_open returns error on unsupported schema"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 
     #[test]

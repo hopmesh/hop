@@ -16,6 +16,9 @@ rusqlite = { version = "0.40", default-features = false }
 # at-rest key does not linger in unzeroized heap allocations for the process lifetime.
 zeroize = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["bundled"]
 bundled = ["rusqlite/bundled"]
