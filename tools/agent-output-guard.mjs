@@ -91,6 +91,52 @@ function shellWords(command) {
   return words
 }
 
+function extractHeredocs(command) {
+  const heredocs = []
+  let delimiter
+  let currentBody = []
+  let executable = ""
+  for (const line of command.split("\n")) {
+    if (delimiter) {
+      if (line.trim() === delimiter) {
+        heredocs.push({ executable, body: currentBody.join("\n") })
+        currentBody = []
+        delimiter = undefined
+      } else {
+        currentBody.push(line)
+      }
+      continue
+    }
+    const match = line.match(/(?:^|\s)([a-zA-Z0-9_.-]+)\s+.*?<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+    if (match) {
+      executable = executableName(match[1])
+      delimiter = match[2]
+    }
+  }
+  return heredocs
+}
+
+function isHeredocDisclosure(exec, body) {
+  const isInterp = ["python", "python3", "node", "ruby", "bash", "sh", "zsh", "dash"].includes(exec)
+  if (!isInterp) return false
+  if (["python", "python3"].includes(exec)) {
+    if (/\bos\.environ\b/.test(body) && !/os\.environ(?:\.get)?\s*\(/.test(body)) return true
+    if (/\b(?:print|pprint|dump|dumps|items|values)\b.*?\bos\.environ\b/.test(body)) return true
+    if (/for\s+.*?\bin\s+os\.environ\b/.test(body)) return true
+  }
+  if (exec === "node") {
+    if (/\bprocess\.env\b/.test(body) && !/process\.env\.[A-Za-z0-9_]+\b/.test(body)) return true
+    if (/for\s*\(.*?\bprocess\.env\b/.test(body)) return true
+  }
+  if (exec === "ruby") {
+    if (/\bENV\.(?:each|inspect|to_h|values)\b/.test(body)) return true
+  }
+  if (["bash", "sh", "zsh", "dash"].includes(exec)) {
+    if (/(?:^|[;&|\n])\s*(?:env|printenv|export|declare\s+-p|set)\s*(?:$|[;&|\n])/.test(body)) return true
+  }
+  return false
+}
+
 function stripHeredocBodies(command) {
   const output = []
   let delimiter
@@ -346,26 +392,31 @@ function unsafeWords(input, depth) {
   if (["python", "python3"].includes(executable)) {
     const command = words.indexOf("-c")
     const code = words[command + 1] ?? ""
-    if (
-      command >= 0 &&
-      (/(?:print|pprint)\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
+    if (command >= 0) {
+      if (
+        /(?:print|pprint)\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
         /os\.environ\.(?:items|values)\s*\(/.test(code) ||
-        /json\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code))
-    )
-      return true
+        /json\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b/.test(code) ||
+        /for\s+.*?\bin\s+os\.environ\b/.test(code) ||
+        /\[.*?for\s+.*?\bin\s+os\.environ\b/.test(code)
+      )
+        return true
+    }
   }
 
   if (executable === "node") {
     const command = words.findIndex((word) => ["-e", "--eval", "-p", "--print"].includes(word))
     const code = words[command + 1] ?? ""
-    if (
-      command >= 0 &&
-      (/console\.(?:dir|log)\s*\(\s*process\.env\s*\)/.test(code) ||
+    if (command >= 0) {
+      if (
+        /console\.(?:dir|log)\s*\(\s*process\.env\s*\)/.test(code) ||
         /JSON\.stringify\s*\(\s*process\.env\b/.test(code) ||
-        /Object\.(?:entries|values)\s*\(\s*process\.env\s*\)/.test(code) ||
-        (["-p", "--print"].includes(words[command]) && /^process\.env$/.test(code.trim())))
-    )
-      return true
+        /Object\.(?:entries|values|keys)\s*\(\s*process\.env\s*\)/.test(code) ||
+        /for\s*\(.*?\bprocess\.env\b/.test(code) ||
+        (["-p", "--print"].includes(words[command]) && /^process\.env$/.test(code.trim()))
+      )
+        return true
+    }
   }
 
   if (executable === "ruby") {
@@ -385,7 +436,19 @@ function unsafeWords(input, depth) {
 export function isEnvironmentDisclosure(command, depth = 0) {
   if (typeof command !== "string" || depth > 4) return false
   if (/\/proc\/(?:self|\d+|\$\$)\/environ(?=["'\s]|$)/.test(command)) return true
+  const heredocs = extractHeredocs(command)
+  if (heredocs.some(({ executable, body }) => isHeredocDisclosure(executable, body))) return true
   return shellSegments(command).some((segment) => unsafeWords(shellWords(segment), depth))
+}
+
+export function redactCanaryOutput(text, canaryValues = []) {
+  if (typeof text !== "string") return text
+  for (const canary of canaryValues) {
+    if (canary && text.includes(canary)) {
+      throw new Error("Blocked environment-value output. Sensitive canary value leaked in tool output.")
+    }
+  }
+  return text
 }
 
 export function scrubSensitiveEnvironment(output, environment = process.env) {
