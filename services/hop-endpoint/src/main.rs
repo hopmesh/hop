@@ -14,7 +14,7 @@
 //!
 //! Usage:
 //!   hop-endpoint --listen 0.0.0.0:9444 --domain example.hopme.sh \
-//!                --origin http://localhost:8080 [--identity-file PATH] [--max-resp BYTES]
+//!                --origin http://localhost:8080 [--db PATH] [--identity-file PATH] [--max-resp BYTES]
 //!
 //! ## Protocol-level domain binding
 //!
@@ -41,11 +41,14 @@ use hop_core::admission::{
 use hop_core::prelude::*;
 use hop_endpoint_core::Endpoint;
 
-/// This origin endpoint runs on an in-memory node, wrapped as an [`Endpoint`] so multiple replicas
+/// This origin endpoint wraps a [`Node`], wrapped as an [`Endpoint`] so multiple replicas
 /// (same identity, no shared datastore) can cluster and reduce duplicate request processing through
 /// TTL-based membership and handled-message gossip. Clustering is off unless `HOP_CLUSTER_SECRET`
 /// is set; every replica shares that secret and sets a distinct, stable `HOP_CLUSTER_REPLICA_ID`.
-type Ep = Endpoint<hop_core::store::MemoryStore>;
+///
+/// When `--db <PATH>` is supplied, an [`hop_store_sqlite::SqliteStore`] is opened for restart
+/// durability (ABI-003). When omitted, an in-memory store is used (ephemeral).
+type Ep = Endpoint<Box<dyn hop_core::store::Store>>;
 use tungstenite::Message;
 
 static NEXT_LINK: AtomicU64 = AtomicU64::new(1);
@@ -84,7 +87,7 @@ fn well_known_body() -> &'static Mutex<Vec<u8>> {
 /// The `reach` field is the base64-std postcard record (drivers decode exactly this); `address` +
 /// `endpoint` are informational, matching the SDK discovery format. All three values are base58 /
 /// base64 / a bare wss URL, so the JSON is safe to build by hand (no embedded quotes to escape).
-fn sign_well_known(node: &Ep, public_url: &str) -> Vec<u8> {
+fn sign_well_known<S: hop_core::store::Store>(node: &Endpoint<S>, public_url: &str) -> Vec<u8> {
     let rec = node.sign_reach_record(public_url.to_string(), WELL_KNOWN_TTL_SECS);
     let reach = base64::engine::general_purpose::STANDARD.encode(rec.to_bytes());
     let address = bs58::encode(node.address()).into_string();
@@ -528,6 +531,8 @@ struct CliConfig {
     origin: Option<String>,
     domain: Option<String>,
     identity_file: Option<String>,
+    /// Optional path to SQLite database for restart durability (ABI-003).
+    db: Option<String>,
     max_resp: u32,
     print_address: bool,
     /// Dial a relay so the endpoint is reachable by its address on the mesh (can send/receive
@@ -545,6 +550,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
     let mut origin: Option<String> = None;
     let mut domain: Option<String> = None;
     let mut identity_file: Option<String> = None;
+    let mut db: Option<String> = None;
     let mut max_resp: u32 = 8 * 1024 * 1024; // 8 MiB cap on a translated response
     let mut print_address = false;
     let mut relay: Option<String> = Some("wss://relay.hopme.sh/".to_string());
@@ -556,6 +562,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
             "--origin" => origin = args.next(),
             "--domain" => domain = args.next(),
             "--identity-file" => identity_file = args.next(),
+            "--db" => db = args.next(),
             "--max-resp" => {
                 max_resp = args
                     .next()
@@ -583,6 +590,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> CliConfig {
         origin,
         domain,
         identity_file,
+        db,
         max_resp,
         print_address,
         relay,
@@ -596,6 +604,7 @@ fn main() {
         origin,
         domain,
         identity_file,
+        db,
         max_resp,
         print_address,
         mut relay,
@@ -653,7 +662,7 @@ fn main() {
     let identity = load_identity(&identity_file);
     // Normalize origin/domain and configure the leaf endpoint node bound to that domain (extracted
     // so the normalization + node setup is unit-testable; main keeps the socket/thread orchestration).
-    let (mut node, origin, domain) = build_endpoint(origin, domain, identity, &listen);
+    let (mut node, origin, domain) = build_endpoint(origin, domain, identity, &listen, db.as_deref());
 
     // Publish this endpoint's HNS reach record at /.well-known/hop (§30): a client resolves the domain
     // by fetching it (its TLS cert proves the domain; the signed record self-certifies the address).
@@ -740,11 +749,24 @@ fn main() {
 /// Split out of `main` so the normalization rules (strip a trailing `/` on the origin; lowercase and
 /// strip a trailing `.` on the domain) and the node configuration (Endpoint kind, name = domain, a
 /// leaf that relays nothing) are unit-testable without standing up sockets or the driver loop.
+fn build_store(db: Option<&str>) -> (Box<dyn hop_core::store::Store>, bool) {
+    if let Some(path) = db {
+        let s = hop_store_sqlite::SqliteStore::open(path)
+            .expect("hop-endpoint: failed to open sqlite database");
+        println!("hop-endpoint: store: sqlite ({path}) (restart durable)");
+        (Box::new(s), true)
+    } else {
+        println!("hop-endpoint: store: in-memory (ephemeral; state will not survive restart)");
+        (Box::new(hop_core::store::MemoryStore::new()), false)
+    }
+}
+
 fn build_endpoint(
     origin: String,
     domain: String,
     identity: Identity,
     listen: &str,
+    db: Option<&str>,
 ) -> (Ep, String, String) {
     // Bind to a single origin: scheme://host[:port], no trailing slash. Requests only ever get this
     // prefix + their path - never an arbitrary host (no open proxy).
@@ -753,7 +775,8 @@ fn build_endpoint(
     let domain = domain.trim_end_matches('.').to_ascii_lowercase();
 
     let addr = identity.address();
-    let mut node = Endpoint::new(Node::new(identity));
+    let (store, _durable) = build_store(db);
+    let mut node = Endpoint::new(Node::with_store(identity, store));
     // Answer hop.identify as the domain we back (DESIGN.md §29/§30), so a peer that resolves or
     // traces this address sees `example.hopme.sh`, not a bare short address.
     node.set_kind(NodeKind::Endpoint);
@@ -938,8 +961,8 @@ fn dial_relay(url: String, ev_tx: EventTx) {
 
 /// The driver: sole owner of the node. Routes outgoing bytes to per-link writers, and on a
 /// `hops` request spawns a worker to fetch the origin, replying when it returns.
-fn run(
-    mut node: Ep,
+fn run<S: hop_core::store::Store>(
+    mut node: Endpoint<S>,
     domain: String,
     origin: String,
     http: reqwest::blocking::Client,
@@ -995,8 +1018,8 @@ fn run(
     }
 }
 
-fn process_driver_events(
-    node: &mut Ep,
+fn process_driver_events<S: hop_core::store::Store>(
+    node: &mut Endpoint<S>,
     writers: &mut HashMap<u64, SyncSender<Vec<u8>>>,
     rx: &EventRx,
     next_tick: &mut Instant,
@@ -1030,7 +1053,7 @@ fn process_driver_events(
     true
 }
 
-fn apply_driver_event(node: &mut Ep, writers: &mut HashMap<u64, SyncSender<Vec<u8>>>, event: Ev) {
+fn apply_driver_event<S: hop_core::store::Store>(node: &mut Endpoint<S>, writers: &mut HashMap<u64, SyncSender<Vec<u8>>>, event: Ev) {
     match event {
         Ev::Up(link, role, out) => {
             writers.insert(link, out);
@@ -1063,7 +1086,7 @@ fn apply_driver_event(node: &mut Ep, writers: &mut HashMap<u64, SyncSender<Vec<u
     }
 }
 
-fn tick_if_due(node: &mut Ep, next_tick: &mut Instant, last_wk: &mut Instant, public_url: &str) {
+fn tick_if_due<S: hop_core::store::Store>(node: &mut Endpoint<S>, next_tick: &mut Instant, last_wk: &mut Instant, public_url: &str) {
     let monotonic_now = Instant::now();
     if monotonic_now < *next_tick {
         return;
@@ -2917,6 +2940,7 @@ mod tests {
         assert!(c.origin.is_none(), "origin defaults unset (required later)");
         assert!(c.domain.is_none(), "domain defaults unset (required later)");
         assert!(c.identity_file.is_none());
+        assert!(c.db.is_none(), "db defaults unset (ephemeral store)");
         assert_eq!(c.max_resp, 8 * 1024 * 1024);
         assert!(!c.print_address);
         assert_eq!(
@@ -2939,6 +2963,8 @@ mod tests {
             "Example.HopMe.sh.",
             "--identity-file",
             "/etc/hop/id.key",
+            "--db",
+            "/var/data/endpoint.db",
             "--max-resp",
             "4096",
             "--relay",
@@ -2951,6 +2977,7 @@ mod tests {
         // parse_args keeps the raw values; normalization (trim slash / lowercase) happens in main.
         assert_eq!(c.domain.as_deref(), Some("Example.HopMe.sh."));
         assert_eq!(c.identity_file.as_deref(), Some("/etc/hop/id.key"));
+        assert_eq!(c.db.as_deref(), Some("/var/data/endpoint.db"));
         assert_eq!(c.max_resp, 4096);
         assert!(c.print_address);
         assert_eq!(c.relay.as_deref(), Some("wss://eu.relay/"));
@@ -3699,6 +3726,7 @@ mod tests {
             "Example.HopMe.SH.".to_string(),
             identity,
             "0.0.0.0:9444",
+            None,
         );
         assert_eq!(
             origin, "http://backend:8080",
@@ -4094,5 +4122,90 @@ mod tests {
         let head = read_request_head(&mut reader).expect("a well-formed head parses");
         assert_eq!(head.raw_path, "/p");
         assert_eq!(head.xff, ForwardedFor::Value("1.1.1.1, 2.2.2.2".into()));
+    }
+
+    #[test]
+    fn endpoint_with_sqlite_db_persists_state_across_restart() {
+        // ABI-003: an endpoint backed by --db <path> must persist state (cluster handled set,
+        // ratchets, node store) across restarts with the same database file and identity.
+        let temp_dir = std::env::temp_dir();
+        let db_file = temp_dir.join(format!("hop-endpoint-abi003-{}.db", now_ms()));
+        let db_path = db_file.to_str().unwrap();
+
+        let identity = Identity::generate();
+        let domain = "durable.hopme.sh";
+        let from = [1u8; 32];
+        let req_id = [2u8; 32];
+
+        // Step 1: Open endpoint with SQLite database and persist a cluster join plus handled state.
+        {
+            let (mut ep, _, _) = build_endpoint(
+                "http://localhost:8080".to_string(),
+                domain.to_string(),
+                Identity::from_secret_bytes(&identity.to_secret_bytes()),
+                "127.0.0.1:9444",
+                Some(db_path),
+            );
+            assert!(ep.cluster_join_passphrase_for_replica(b"secret-shared", b"replica-1"));
+            ep.cluster_mark_done(&from, &req_id);
+            assert!(ep.cluster_would_drop(&from, &req_id));
+        }
+
+        // Step 2: Reopen endpoint with the same database and identity (simulating process restart).
+        {
+            let (mut ep, _, _) = build_endpoint(
+                "http://localhost:8080".to_string(),
+                domain.to_string(),
+                Identity::from_secret_bytes(&identity.to_secret_bytes()),
+                "127.0.0.1:9444",
+                Some(db_path),
+            );
+            // Re-join cluster: durable store must reload the persisted HANDLED set from storage.
+            assert!(ep.cluster_join_passphrase_for_replica(b"secret-shared", b"replica-1"));
+            assert!(
+                ep.cluster_would_drop(&from, &req_id),
+                "persisted handled claim was not recovered after restart"
+            );
+        }
+
+        let _ = std::fs::remove_file(&db_file);
+    }
+
+    #[test]
+    fn endpoint_without_db_is_ephemeral_and_loses_state_across_restart() {
+        let identity = Identity::generate();
+        let domain = "ephemeral.hopme.sh";
+        let from = [1u8; 32];
+        let req_id = [3u8; 32];
+
+        // Run 1: ephemeral in-memory endpoint
+        {
+            let (mut ep, _, _) = build_endpoint(
+                "http://localhost:8080".to_string(),
+                domain.to_string(),
+                Identity::from_secret_bytes(&identity.to_secret_bytes()),
+                "127.0.0.1:9444",
+                None,
+            );
+            assert!(ep.cluster_join_passphrase_for_replica(b"secret-shared", b"replica-1"));
+            ep.cluster_mark_done(&from, &req_id);
+            assert!(ep.cluster_would_drop(&from, &req_id));
+        }
+
+        // Run 2: new in-memory endpoint with same identity loses handled state
+        {
+            let (mut ep, _, _) = build_endpoint(
+                "http://localhost:8080".to_string(),
+                domain.to_string(),
+                Identity::from_secret_bytes(&identity.to_secret_bytes()),
+                "127.0.0.1:9444",
+                None,
+            );
+            assert!(ep.cluster_join_passphrase_for_replica(b"secret-shared", b"replica-1"));
+            assert!(
+                !ep.cluster_would_drop(&from, &req_id),
+                "ephemeral in-memory store unexpectedly retained state across restart"
+            );
+        }
     }
 }

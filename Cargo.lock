@@ -865,6 +865,7 @@ dependencies = [
  "hop-core",
  "hop-endpoint-core",
  "hop-gateway",
+ "hop-store-sqlite",
  "reqwest",
  "tungstenite",
 ]

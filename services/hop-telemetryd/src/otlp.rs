@@ -258,57 +258,10 @@ impl<T: OtlpTransport> OtlpSink<T> {
     }
 }
 
-/// SVC-002: is `ip` a target the collector must NEVER connect to? An exact twin of
-/// `hop_accountd::keys_api::ip_is_forbidden` and of `hop-gateway`'s `ip_is_forbidden`
-/// (services-r18-10). The v4 arm blocks every non-global range; the v6 arm is an ALLOWLIST (global
-/// unicast `2000::/3`), which is what refuses the IPv4-mapped/compatible/NAT64 spellings of an
-/// internal address, and the two translation ranges inside `2000::/3` (6to4, Teredo) are folded
-/// through the v4 arm on their embedded address. Three crates that share no dependency hold this
-/// function; a change to one belongs in all three.
+/// SVC-002, SVC-008: is `ip` a target the collector must NEVER connect to? Reuses
+/// `hop_gateway::ip_is_forbidden` as the single canonical implementation to prevent drift.
 #[cfg(feature = "live")]
-fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || o[0] == 0
-                || (o[0] == 100 && (o[1] & 0xc0) == 64)
-                || (o[0] == 198 && (o[1] & 0xfe) == 18)
-                || (o[0] & 0xf0) == 240
-        }
-        IpAddr::V6(v6) => {
-            let seg = v6.segments();
-            if (seg[0] & 0xe000) != 0x2000 {
-                return true;
-            }
-            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
-                return true;
-            }
-            let embedded = if seg[0] == 0x2002 {
-                Some(std::net::Ipv4Addr::from(
-                    ((seg[1] as u32) << 16) | seg[2] as u32,
-                ))
-            } else if seg[0] == 0x2001 && seg[1] == 0x0000 {
-                Some(std::net::Ipv4Addr::from(
-                    !(((seg[6] as u32) << 16) | seg[7] as u32),
-                ))
-            } else {
-                None
-            };
-            embedded
-                .map(IpAddr::V4)
-                .map(ip_is_forbidden)
-                .unwrap_or(false)
-        }
-    }
-}
+pub(crate) use hop_gateway::ip_is_forbidden;
 
 /// The reqwest OTLP transport (live only). A short client timeout so one slow tenant endpoint holds
 /// the export thread for seconds, not minutes; the queue is bounded, so backpressure drops rather than
@@ -391,6 +344,10 @@ impl ReqwestOtlpTransport {
     }
 }
 
+/// Maximum bytes read from an OTLP export response body (SVC-009).
+/// Bounds memory allocation in the shared, multi-tenant collector daemon.
+pub const MAX_OTLP_RESPONSE_BYTES: usize = 64 * 1024;
+
 #[cfg(feature = "live")]
 impl OtlpTransport for ReqwestOtlpTransport {
     fn post_json(
@@ -414,7 +371,23 @@ impl OtlpTransport for ReqwestOtlpTransport {
             .send()
             .map_err(|e| format!("otlp post: {}", e.without_url()))?;
         let status = resp.status().as_u16();
-        let text = resp.text().unwrap_or_default();
+        // SVC-009: cap the response body read using a chunked streaming read so a slow or hostile
+        // tenant-configured endpoint returning an unbounded response cannot exhaust memory in the
+        // shared, multi-tenant telemetryd collector.
+        use std::io::Read as _;
+        let mut reader = resp;
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while body.len() < MAX_OTLP_RESPONSE_BYTES {
+            let allowance = (MAX_OTLP_RESPONSE_BYTES - body.len()).min(chunk.len());
+            match reader.read(&mut chunk[..allowance]) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&body).into_owned();
         Ok((status, text))
     }
 }
@@ -657,6 +630,40 @@ mod tests {
         assert!(
             matches!(redirect_target.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "the redirect target must never be dialed"
+        );
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn otlp_transport_caps_large_response_body_to_prevent_unbounded_allocation() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let server_url = format!("http://{}/v1/metrics", server.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .expect("read line");
+            let large_body = vec![b'A'; 256 * 1024];
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                large_body.len()
+            )
+            .expect("write headers");
+            stream.write_all(&large_body).expect("write body");
+        });
+
+        let t = ReqwestOtlpTransport::new_allowing_private_egress();
+        let (status, text) = t.post_json(&server_url, "{}", None).expect("post");
+        assert_eq!(status, 200);
+        assert!(
+            text.len() <= 64 * 1024,
+            "response body was not capped: got {} bytes, expected <= 65536 bytes",
+            text.len()
         );
     }
 }

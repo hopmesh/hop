@@ -2421,14 +2421,33 @@ fn serve_ws(stream: TcpStream, kind: WsKind, ev_tx: &EventTx) {
 /// the registry (so a peer that went offline is never re-woken). Mirrors `serve_ws`'s
 /// single-thread read/drain interleave, as a non-blocking client (a TLS read timeout doesn't
 /// reliably surface as WouldBlock; non-blocking does, same fix as the endpoint dialer).
+/// Strip any userinfo component (`user:pass@` or `user@`) from a dial URL before logging.
+///
+/// SVC-010: Dial URLs must never carry credentials as the supported auth path. Noise handles
+/// peer authentication; this redaction is defense-in-depth against credential leaks into operator
+/// and public netlog streams if an operator inadvertently configures HTTP Basic Auth userinfo.
+fn redact_dial_url(raw: &str) -> String {
+    if let Some((scheme, rest)) = raw.split_once("://") {
+        let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..path_start];
+        let suffix = &rest[path_start..];
+        if let Some((_userinfo, host_port)) = authority.split_once('@') {
+            return format!("{scheme}://{host_port}{suffix}");
+        }
+    }
+    raw.to_string()
+}
+
 #[cfg(feature = "firestore")]
 fn dial_peer(url: &str, ev_tx: &EventTx) {
+    let log_url = redact_dial_url(url);
     use tungstenite::stream::MaybeTlsStream;
     let (mut ws, _resp) =
-        match tungstenite::client::connect_with_config(url, Some(ws_bearer_config()), 3) {
+        match tungstenite::client::connect_with_config(&log_url, Some(ws_bearer_config()), 3) {
             Ok(c) => c,
             Err(e) => {
-                netlog_event(format!("peer: {url} unreachable ({e})"));
+                let err_msg = redact_dial_url(&e.to_string());
+                netlog_event(format!("peer: {log_url} unreachable ({err_msg})"));
                 return;
             }
         };
@@ -2446,7 +2465,7 @@ fn dial_peer(url: &str, ev_tx: &EventTx) {
     if ev_tx.send(Ev::Up(link, Role::Initiator, out_tx)).is_err() {
         return;
     }
-    netlog_event(format!("peer: dialed {url} (link {link})"));
+    netlog_event(format!("peer: dialed {log_url} (link {link})"));
     'conn: loop {
         loop {
             match out_rx.try_recv() {
@@ -2491,7 +2510,32 @@ fn dial_peer(url: &str, ev_tx: &EventTx) {
         }
     }
     let _ = ev_tx.send(Ev::Down(link));
-    netlog_event(format!("peer: link {link} to {url} closed"));
+    netlog_event(format!("peer: link {link} to {log_url} closed"));
+}
+
+#[cfg(all(test, feature = "firestore"))]
+#[test]
+fn dial_peer_redacts_userinfo_from_logs() {
+    // SVC-010: dial URLs must never leak embedded credentials into netlog_event / public logs
+    std::env::set_var("HOP_PUBLIC_LOG_STREAM", "1");
+    let (_who, _backlog, rx) = log_hub().subscribe();
+    let (ev_tx, _rx) = event_channel();
+    dial_peer("wss://operator:secret_token_123@127.0.0.1:1/ws", &ev_tx);
+    let line = rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("log line emitted");
+    assert!(
+        !line.contains("secret_token_123"),
+        "log line leaked userinfo credential: {line}"
+    );
+    assert!(
+        !line.contains("operator@"),
+        "log line leaked userinfo username: {line}"
+    );
+    assert!(
+        line.contains("127.0.0.1:1/ws"),
+        "log line preserves destination host and path: {line}"
+    );
 }
 
 /// Pick the store backend: durable per-node Firestore (scale-to-zero) when built with
