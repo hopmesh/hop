@@ -1238,7 +1238,10 @@ pub unsafe extern "C" fn hop_hps_register(
         ) else {
             return false;
         };
-        let pk = node.register_service(path.to_string(), kind, access, visibility);
+        let pk = match node.try_register_service(path.to_string(), kind, access, visibility) {
+            Ok(pk) => pk,
+            Err(_) => return false,
+        };
         if !out_pubkey.is_null() {
             if pk.len() > out_pubkey_cap {
                 return false;
@@ -4122,6 +4125,41 @@ mod tests {
                 "an overflowing remove_count is refused, never dereferenced"
             );
             hop_node_free(node);
+        }
+
+        #[test]
+        fn cabi_hps_register_store_failure_returns_false_and_publishes_no_advert() {
+            unsafe {
+                let (a, b) = hps_pair(25);
+                let _ = connect(a, b);
+                let a_node = node_ref(a).unwrap();
+                a_node.inject_kv_failure("hps/svc/%").unwrap();
+                let path = cs("failed-topic");
+                let mut pk = [0u8; 32];
+                let mut pk_len = 0usize;
+                let ok = hop_hps_register(
+                    a,
+                    path.as_ptr(),
+                    HopHpsKind::Service as u32,
+                    HopHpsAccess::Open as u32,
+                    HopHpsVisibility::Discoverable as u32,
+                    pk.as_mut_ptr(),
+                    pk.len(),
+                    &mut pk_len,
+                );
+                assert!(!ok, "hop_hps_register must return false when durable persistence fails");
+                pump(a, 11, b, 22);
+                pump(a, 11, b, 22);
+                let mut seen = BrowseCollector { found: Vec::new() };
+                let n = hop_hps_browse(b, Some(browse_sink), &mut seen as *mut _ as *mut c_void);
+                assert_eq!(n, 0);
+                assert!(
+                    !seen.found.iter().any(|t| t.0 == "failed-topic"),
+                    "no advert must be published"
+                );
+                hop_node_free(a);
+                hop_node_free(b);
+            }
         }
     }
 }

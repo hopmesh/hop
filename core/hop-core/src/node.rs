@@ -4814,15 +4814,15 @@ impl<S: Store> Node<S> {
         kind: hps::ServiceKind,
         access: hps::AccessMode,
         visibility: hps::Visibility,
-    ) -> Option<[u8; 32]> {
+    ) -> Result<Option<[u8; 32]>> {
         let cfg = hps::ServiceConfig::new_with(kind, access, visibility);
         let pk = cfg.service_pubkey();
+        self.persist_service(path, &cfg)?;
         if visibility == hps::Visibility::Discoverable {
             self.publish_topic_advert(path, &cfg);
         }
-        self.persist_service(path, &cfg);
         self.services.insert(path.to_string(), cfg);
-        pk
+        Ok(pk)
     }
 
     /// Current join-proof time bucket (DESIGN.md §32 app isolation).
@@ -4980,7 +4980,10 @@ impl<S: Store> Node<S> {
         let proof = self.hps_proof(path, &self.identity.address());
         self.hps_invites_out
             .insert((path.to_string(), dest), self.now_ms);
-        self.persist_invites();
+        if let Err(e) = self.persist_invites() {
+            self.hps_invites_out.remove(&(path.to_string(), dest));
+            return Err(e);
+        }
         self.send_to_host(
             dest,
             Payload::HpsInvite {
@@ -4991,11 +4994,11 @@ impl<S: Store> Node<S> {
         )
     }
 
-    /// Member → host: accept an invite we received, which prompts the host to seal us the keys.
+    /// Member -> host: accept an invite we received, which prompts the host to seal us the keys.
     pub fn hps_accept_invite(&mut self, host: PubKeyBytes, path: &str) -> Result<BundleId> {
         self.expect_hps_keys(host, path)?;
         self.remove_hps_invite_item(host, path);
-        self.persist_invites();
+        self.persist_invites()?;
         let proof = self.hps_proof(path, &self.identity.address());
         self.send_to_host(
             host,
@@ -5113,17 +5116,17 @@ impl<S: Store> Node<S> {
         if let Some(q) = self.hps_pending.get_mut(path) {
             q.retain(|a| *a != requester);
         }
-        self.persist_pending(path);
-        self.record_member(path, requester);
+        self.persist_pending(path)?;
+        self.record_member(path, requester)?;
         self.send_keys(path, requester)
     }
 
     /// Host: deny/drop a pending requester (no keys).
-    pub fn hps_deny(&mut self, path: &str, requester: PubKeyBytes) {
+    pub fn hps_deny(&mut self, path: &str, requester: PubKeyBytes) -> Result<()> {
         if let Some(q) = self.hps_pending.get_mut(path) {
             q.retain(|a| *a != requester);
         }
-        self.persist_pending(path);
+        self.persist_pending(path)
     }
 
     /// Host: unique acking addresses for a topic (its reach / sense of delivery, DESIGN.md §32).
@@ -5587,15 +5590,21 @@ impl<S: Store> Node<S> {
     }
 
     /// Host: remember a member for reach/rekey.
-    fn record_member(&mut self, path: &str, who: PubKeyBytes) {
+    fn record_member(&mut self, path: &str, who: PubKeyBytes) -> Result<()> {
         let added = self
             .hps_members
             .entry(path.to_string())
             .or_default()
             .insert(who);
         if added {
-            self.persist_members(path);
+            if let Err(e) = self.persist_members(path) {
+                if let Some(set) = self.hps_members.get_mut(path) {
+                    set.remove(&who);
+                }
+                return Err(e);
+            }
         }
+        Ok(())
     }
 
     /// Store a subscription we've been handed (Open keys, invite/approve keys, or a rekey).
@@ -6027,61 +6036,75 @@ impl<S: Store> Node<S> {
         }
     }
 
-    fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) {
-        if let Ok(bytes) = postcard::to_allocvec(cfg) {
-            let _ = self.store.put_kv_critical(&Self::hps_svc_key(path), bytes);
-        }
+    fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) -> Result<()> {
+        let bytes = postcard::to_allocvec(cfg)
+            .map_err(|e| Error::Other(format!("service serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_svc_key(path), bytes)
+            .map_err(|e| Error::Other(format!("service persistence failed: {e}")))?;
+        Ok(())
     }
     #[cfg(test)]
-    fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) {
-        if let Ok(bytes) = postcard::to_allocvec(sub) {
-            let _ = self.store.put_kv_critical(&Self::hps_sub_key(path), bytes);
-        }
+    fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) -> Result<()> {
+        let bytes = postcard::to_allocvec(sub)
+            .map_err(|e| Error::Other(format!("subscription serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_sub_key(path), bytes)
+            .map_err(|e| Error::Other(format!("subscription persistence failed: {e}")))?;
+        Ok(())
     }
-    fn persist_pending(&mut self, path: &str) {
+    fn persist_pending(&mut self, path: &str) -> Result<()> {
         let q: Vec<PubKeyBytes> = self.hps_pending.get(path).cloned().unwrap_or_default();
-        if let Ok(bytes) = postcard::to_allocvec(&q) {
-            let _ = self
-                .store
-                .put_kv_critical(&Self::hps_pending_key(path), bytes);
-        }
+        let bytes = postcard::to_allocvec(&q)
+            .map_err(|e| Error::Other(format!("pending serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_pending_key(path), bytes)
+            .map_err(|e| Error::Other(format!("pending persistence failed: {e}")))?;
+        Ok(())
     }
-    fn persist_members(&mut self, path: &str) {
+    fn persist_members(&mut self, path: &str) -> Result<()> {
         let members = self.hps_members.get(path).cloned().unwrap_or_default();
-        self.persist_member_set(path, &members);
+        self.persist_member_set(path, &members)
     }
-    fn persist_member_set(&mut self, path: &str, members: &HashSet<PubKeyBytes>) {
+    fn persist_member_set(&mut self, path: &str, members: &HashSet<PubKeyBytes>) -> Result<()> {
         let m: Vec<PubKeyBytes> = members.iter().copied().collect();
-        if let Ok(bytes) = postcard::to_allocvec(&m) {
-            let _ = self
-                .store
-                .put_kv_critical(&Self::hps_members_key(path), bytes);
-        }
+        let bytes = postcard::to_allocvec(&m)
+            .map_err(|e| Error::Other(format!("members serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical(&Self::hps_members_key(path), bytes)
+            .map_err(|e| Error::Other(format!("members persistence failed: {e}")))?;
+        Ok(())
     }
 
     /// Persist the deferred-content queue (messages the user sent that are waiting on a prekey)
     /// so a restart before the prekey arrives doesn't silently drop them (DESIGN.md §25).
     fn persist_pending_content(&mut self, pending: &[PendingContent]) -> Result<()> {
-        let bytes = postcard::to_allocvec(&pending)?;
+        let bytes = postcard::to_allocvec(&pending)
+            .map_err(|e| Error::Other(format!("deferred content serialization failed: {e}")))?;
         self.store
             .put_kv_critical("pending_content", bytes)
             .map_err(|e| Error::Other(format!("deferred content persistence failed: {e}")))
     }
 
     /// Persist received + outstanding `hps://` invites so they survive a restart (§32).
-    fn persist_invites(&mut self) {
+    fn persist_invites(&mut self) -> Result<()> {
         let inc: Vec<(String, PubKeyBytes, bool)> = self
             .hps_invites_in
             .iter()
             .map(|i| (i.path.clone(), i.host, i.kind == hps::ServiceKind::Channel))
             .collect();
-        if let Ok(b) = postcard::to_allocvec(&inc) {
-            let _ = self.store.put_kv_critical("hps/invites_in", b);
-        }
+        let b = postcard::to_allocvec(&inc)
+            .map_err(|e| Error::Other(format!("invites serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical("hps/invites_in", b)
+            .map_err(|e| Error::Other(format!("invites persistence failed: {e}")))?;
         let out: Vec<(String, PubKeyBytes)> = self.hps_invites_out.keys().cloned().collect();
-        if let Ok(b) = postcard::to_allocvec(&out) {
-            let _ = self.store.put_kv_critical("hps/invites_out", b);
-        }
+        let b = postcard::to_allocvec(&out)
+            .map_err(|e| Error::Other(format!("invites serialization failed: {e}")))?;
+        self.store
+            .put_kv_critical("hps/invites_out", b)
+            .map_err(|e| Error::Other(format!("invites persistence failed: {e}")))?;
+        Ok(())
     }
 
     /// A diagnostic snapshot of the live HNS cache: `(domain, address?, remaining_ttl_ms)`
@@ -9053,14 +9076,14 @@ impl<S: Store> Node<S> {
                             let who = bundle.inner.src;
                             match self.services.get(&path).map(|c| c.access) {
                                 Some(hps::AccessMode::Open) => {
-                                    self.record_member(&path, who);
+                                    let _ = self.record_member(&path, who);
                                     let _ = self.send_keys(&path, who);
                                 }
                                 Some(hps::AccessMode::RequestToJoin) => {
                                     let q = self.hps_pending.entry(path.clone()).or_default();
                                     if !q.contains(&who) {
                                         q.push(who);
-                                        self.persist_pending(&path);
+                                        let _ = self.persist_pending(&path);
                                     }
                                 }
                                 _ => {} // Invite-only or unregistered → ignore
@@ -9089,18 +9112,18 @@ impl<S: Store> Node<S> {
                                 };
                                 self.hps_invites_in.push(HpsInviteItem { path, host, kind });
                                 self.hps_invite_charges.push(charge);
-                                self.persist_invites();
+                                let _ = self.persist_invites();
                             }
                         }
                     }
-                    // Destination → host: an invite was accepted; seal them the keys.
+                    // Destination -> host: an invite was accepted; seal them the keys.
                     Ok(Payload::HpsInviteAccept { path, proof }) => {
                         let who = bundle.inner.src;
                         if self.hps_authorized(&bundle, &path, &proof)
                             && self.hps_invites_out.remove(&(path.clone(), who)).is_some()
                         {
-                            self.persist_invites();
-                            self.record_member(&path, who);
+                            let _ = self.persist_invites();
+                            let _ = self.record_member(&path, who);
                             let _ = self.send_keys(&path, who);
                         }
                     }
@@ -20263,12 +20286,14 @@ mod tests {
         net.connect(&mut nodes, 0, 1, 1, 1);
 
         // Node 0 hosts a service at "news"; node 1 subscribes and is handed the keys.
-        let svc_pubkey = nodes[0].register_service(
-            "news",
-            crate::hps::ServiceKind::Service,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        let svc_pubkey = nodes[0]
+            .register_service(
+                "news",
+                crate::hps::ServiceKind::Service,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         assert!(svc_pubkey.is_some(), "a service mints a signing key");
         nodes[1].hps_subscribe(nodes[0].address(), "news").unwrap();
         net.pump(&mut nodes);
@@ -20310,6 +20335,7 @@ mod tests {
                     crate::hps::AccessMode::Open,
                     crate::hps::Visibility::Private
                 )
+                .unwrap()
                 .is_none(),
             "a channel has no service signing key"
         );
@@ -20342,12 +20368,14 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
 
@@ -20389,12 +20417,14 @@ mod tests {
         let mut nodes = [app_node(4), app_node(4)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
 
@@ -20414,12 +20444,14 @@ mod tests {
         let mut nodes = [app_node(5), app_node(5)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::RequestToJoin,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::RequestToJoin,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let requester = nodes[1].address();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
@@ -20452,12 +20484,14 @@ mod tests {
         let mut nodes = [app_node(6), app_node(6)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "vip",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Invite,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "vip",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Invite,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let dest = nodes[1].address();
 
         // Self-join is ignored for an Invite topic.
@@ -20495,12 +20529,14 @@ mod tests {
         let mut nodes = [app_node(1), app_node(2)];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "lobby",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "lobby",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         nodes[1].hps_subscribe(nodes[0].address(), "lobby").unwrap();
         net.pump(&mut nodes);
         nodes[0].hps_publish("lobby", b"members only").unwrap();
@@ -20524,12 +20560,14 @@ mod tests {
         net.connect(&mut nodes, 0, 1, 1, 1);
         net.connect(&mut nodes, 0, 2, 2, 2);
         net.connect(&mut nodes, 1, 3, 2, 3);
-        nodes[0].register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let m2 = nodes[2].address();
         nodes[1].hps_subscribe(nodes[0].address(), "room").unwrap();
         nodes[2].hps_subscribe(nodes[0].address(), "room").unwrap();
@@ -20697,7 +20735,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         let host_addr = host.address();
         let sub_secret = Identity::generate().to_secret_bytes();
@@ -20856,7 +20895,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         let tag = host.app.topic_tag("room");
         let member = Identity::generate();
@@ -20937,14 +20977,14 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::RequestToJoin,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let retained = Identity::generate().address();
         let removed = Identity::generate().address();
-        host.record_member("room", retained);
-        host.record_member("room", removed);
+        host.record_member("room", retained).unwrap();
+        host.record_member("room", removed).unwrap();
         host.hps_pending.insert("room".into(), vec![removed]);
-        host.persist_pending("room");
-
+        host.persist_pending("room").unwrap();
         host.hps_rekey("room", Some("room-v2"), &[removed]).unwrap();
         assert!(host.store.get_kv("hps/svc/room").is_none());
         assert!(host.store.get_kv("hps/members/room").is_none());
@@ -20975,16 +21015,18 @@ mod tests {
             FaultStore::default(),
             app.clone(),
         );
-        baseline.register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::RequestToJoin,
-            crate::hps::Visibility::Private,
-        );
-        baseline.record_member("room", retained);
-        baseline.record_member("room", removed);
+        baseline
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::RequestToJoin,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
+        baseline.record_member("room", retained).unwrap();
+        baseline.record_member("room", removed).unwrap();
         baseline.hps_pending.insert("room".into(), vec![removed]);
-        baseline.persist_pending("room");
+        baseline.persist_pending("room").unwrap();
         let old_cfg = baseline.services["room"].clone();
         let durable = baseline.store.inner.clone();
 
@@ -21103,12 +21145,14 @@ mod tests {
         ];
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
-        nodes[0].register_service(
-            "room",
-            crate::hps::ServiceKind::Channel,
-            crate::hps::AccessMode::Open,
-            crate::hps::Visibility::Private,
-        );
+        nodes[0]
+            .register_service(
+                "room",
+                crate::hps::ServiceKind::Channel,
+                crate::hps::AccessMode::Open,
+                crate::hps::Visibility::Private,
+            )
+            .unwrap();
         let member = nodes[1].address();
         let old_epoch = nodes[0].services["room"].epoch;
         nodes[1].hps_subscribe(nodes[0].address(), "room").unwrap();
@@ -21249,7 +21293,8 @@ mod tests {
             crate::hps::ServiceKind::Service,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["news"].clone();
         sub.install_subscription(
             "news",
@@ -21294,7 +21339,8 @@ mod tests {
             crate::hps::ServiceKind::Service,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["news"].clone();
         subscriber.install_subscription(
             "news",
@@ -21353,7 +21399,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         subscriber.install_subscription("room", host.address(), cfg.content_key, None, cfg.epoch);
         let outer_id = host.hps_publish("room", b"persist me").unwrap();
@@ -21516,7 +21563,8 @@ mod tests {
             crate::hps::ServiceKind::Channel,
             crate::hps::AccessMode::Open,
             crate::hps::Visibility::Private,
-        );
+        )
+        .unwrap();
         let cfg = host.services["room"].clone();
         subscriber.install_subscription("room", host.address(), cfg.content_key, None, cfg.epoch);
         let original_id = host.hps_publish("room", b"once").unwrap();
@@ -22207,6 +22255,34 @@ mod tests {
         assert!(
             !node.holds_prekey_secret(&intermediate),
             "an out-of-window past epoch secret is wiped"
+        );
+    }
+
+    #[test]
+    fn hps_register_service_store_failure_publishes_no_advert_and_returns_error() {
+        let app = crate::app::AppKeys::from_secret([21u8; 32]);
+        let mut node = Node::with_store_app(
+            Identity::generate(),
+            FaultStore {
+                fail_critical_put_prefix: Some("hps/svc/".into()),
+                ..Default::default()
+            },
+            app,
+        );
+        let res = node.register_service(
+            "news",
+            crate::hps::ServiceKind::Service,
+            crate::hps::AccessMode::Open,
+            crate::hps::Visibility::Discoverable,
+        );
+        assert!(res.is_err(), "register_service must return an error when durable persistence fails");
+        assert!(
+            !node.hps_adverts.contains_key("news"),
+            "no advert must be published when persistence fails"
+        );
+        assert!(
+            !node.services.contains_key("news"),
+            "service must not be registered when persistence fails"
         );
     }
 }
