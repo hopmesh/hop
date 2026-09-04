@@ -28,6 +28,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'hopmesh/hop' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,6 +138,7 @@ jobs:
           include-hidden-files: true
 
   deploy:
+    if: github.repository == 'hopmesh/hop' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:

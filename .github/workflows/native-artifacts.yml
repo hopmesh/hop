@@ -25,16 +25,19 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.repository == 'hopmesh/hop'
     runs-on: ubuntu-latest
+    environment: release
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
+      can_sign: ${{ steps.source.outputs.can_sign }}
     steps:
-      - name: Bind source identity
+      - name: Bind source identity and verify signing availability
         id: source
         env:
           SOURCE_SHA: ${{ github.sha }}
           EVENT_AFTER: ${{ github.event.after }}
           SOURCE_REF: ${{ github.ref }}
           SOURCE_REPOSITORY: ${{ github.repository }}
+          HAS_SIGNING_KEY: ${{ secrets.NATIVE_ARTIFACT_SIGNING_KEY != '' }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -42,10 +45,17 @@ jobs:
           test "$SOURCE_REF" = "refs/heads/main"
           test "$SOURCE_REPOSITORY" = "hopmesh/hop"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_SIGNING_KEY" = "true" ]; then
+            echo "can_sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_sign=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Native artifacts paused::NATIVE_ARTIFACT_SIGNING_KEY is not provisioned in environment release; skipping matrix builds cleanly until release signing key is seeded."
+          fi
 
   host-linux:
     name: Build Linux host artifact
     needs: authorize
+    if: needs.authorize.outputs.can_sign == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +95,7 @@ jobs:
   apple:
     name: Build Apple host and xcframework artifacts
     needs: authorize
+    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,6 +140,7 @@ jobs:
   android:
     name: Build Android ABI artifacts
     needs: authorize
+    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,6 +201,7 @@ jobs:
   embedded:
     name: Build exact ESP-IDF target artifacts
     needs: authorize
+    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -232,6 +245,7 @@ jobs:
   authorize-ci:
     name: Authorize successful canonical CI
     needs: [authorize, host-linux, apple, android, embedded]
+    if: needs.authorize.outputs.can_sign == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -250,6 +264,7 @@ jobs:
   attest:
     name: Sign and attest native release bundle
     needs: [authorize, host-linux, apple, android, embedded, authorize-ci]
+    if: needs.authorize.outputs.can_sign == 'true'
     environment: release
     runs-on: ubuntu-latest
     permissions:
