@@ -514,4 +514,44 @@ final class HopRuntimeTests: XCTestCase {
         guard let node = HopNode.ephemeral() else { return XCTFail("ephemeral nil") }
         XCTAssertThrowsError(try node.hpsRekey(path: "unknown_topic"))
     }
+
+    func testOpenKeyedWithSqlcipherIsEncryptedAndWrongKeyFails() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("hop-swift-keyed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let dbPath = tempDir.appendingPathComponent("node.db").path
+        let key = Data(repeating: 0x42, count: 32)
+
+        do {
+            guard let node = HopNode.openKeyed(dbPath: dbPath, key: key) else {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath),
+                               "plain build must not create a plaintext database when keyed open was requested")
+                return
+            }
+            XCTAssertTrue(node.isPersistent, "keyed node must be persistent")
+            XCTAssertTrue(node.isEncrypted, "sqlcipher keyed node must report isEncrypted == true")
+        }
+
+        // Reopening with wrong key fails to open the encrypted database while the file stays intact
+        let wrongKey = Data(repeating: 0x99, count: 32)
+        let badNode = HopNode.openKeyed(dbPath: dbPath, key: wrongKey)
+        let failedToDecrypt = (badNode == nil || badNode?.isPersistent == false || badNode?.isEncrypted == false)
+        XCTAssertTrue(failedToDecrypt, "reopening with wrong key must fail (returns nil or fails closed to non-persistent/unencrypted)")
+        if let bad = badNode {
+            XCTAssertFalse(bad.isPersistent, "wrong key must not yield a persistent store")
+            XCTAssertFalse(bad.isEncrypted, "wrong key must not yield an encrypted store")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dbPath), "database file must remain on disk after wrong-key open")
+        let attrs = try FileManager.default.attributesOfItem(atPath: dbPath)
+        let fileSize = attrs[.size] as? UInt64 ?? 0
+        XCTAssertGreaterThan(fileSize, 0, "database file must stay intact and non-empty")
+
+        // Reopening with correct key succeeds
+        guard let reopened = HopNode.openKeyed(dbPath: dbPath, key: key) else {
+            return XCTFail("reopening with original key must succeed")
+        }
+        XCTAssertTrue(reopened.isPersistent, "reopened node must be persistent")
+        XCTAssertTrue(reopened.isEncrypted, "reopened node must report isEncrypted == true")
+    }
 }
