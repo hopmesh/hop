@@ -482,7 +482,7 @@ class HopBearer internal constructor(
                 }
                 bearerMgr.checkPreauthDeadlines(nowMs().toLong())
                 val distinctPeers = pls.map { it.address.toList() }.distinct().size
-                if (pls.isNotEmpty()) android.util.Log.i("HOPLOG",
+                if (pls.isNotEmpty() && DriverFlags.verboseContentLogs) android.util.Log.i("HOPLOG",
                     "NODESTATE upLinks=${pls.size} peers=$distinctPeers pend=${runCatching { node.pendingCount() }.getOrDefault(0u)} " +
                     pls.joinToString(" ") { p -> "id${p.link}=${p.address.take(3).joinToString(""){ b -> "%02x".format(b) }}" +
                         "[sec=${runCatching { node.isSecured(p.address) }.getOrDefault(false)},rt=${runCatching { node.knowsRoute(p.address) }.getOrDefault(false)}]" })
@@ -1270,7 +1270,7 @@ class HopBearer internal constructor(
         pls.forEach { pl ->
             ltLocal[pl.address.toList()] = bearerMgr.transportNameOf(pl.link.toLong()) ?: "BT"
         }
-        if (pls.isNotEmpty() && pls.size != lastPeerLinkCount) {
+        if (pls.isNotEmpty() && pls.size != lastPeerLinkCount && DriverFlags.verboseContentLogs) {
             lastPeerLinkCount = pls.size
             android.util.Log.i("HOPLOG", "peerLinks=${pls.size}: " +
                 pls.joinToString { "${HopBearer.shortHex(it.address)}@${it.link}" })
@@ -1534,5 +1534,8 @@ class HopBearer internal constructor(
             }
             return s
         }
+
+        fun sanitizeRelayUrl(input: String): String =
+            input.trim().substringBefore('?').substringBefore('#')
     }
 }
