@@ -22,6 +22,38 @@ package sh.hopme.bearers.meshtastic
 /** Meshtastic PortNum for Hop traffic (inside the PRIVATE_APP 256..511 range). */
 internal const val MESH_HOP_PORTNUM = 260
 
+/** Meshtastic PortNum.ADMIN_APP. Channel get/set rides this, never the Hop port. */
+internal const val MESH_ADMIN_PORTNUM = 6
+
+/** Meshtastic PortNum.ROUTING_APP. Unicast fragments set want_ack; NONE on this port is the radio ACK. */
+internal const val MESH_ROUTING_PORTNUM = 5
+
+/** Spray unacked unicast DATA/HELLO: first retry, doubling, cap. Tick is the bearer work period. */
+internal const val MESH_SPRAY_INITIAL_MS = 2_000L
+internal const val MESH_SPRAY_MULTIPLIER = 2
+internal const val MESH_SPRAY_CAP_MS = 60_000L
+internal const val MESH_SPRAY_TICK_MS = 1_000L
+internal const val MESH_SPRAY_MAX_OUTSTANDING = 8
+
+/** SECONDARY slot name Hop writes. Primary (index 0) is left to Meshtastic.app. */
+internal const val MESH_HOP_CHANNEL_NAME = "Hop"
+
+/** AES-128 PSK, hex 686f702e6d6573682e70736b2e763121 ("hop.mesh.psk.v1!"). Shared by every Hop node. */
+internal const val MESH_HOP_CHANNEL_PSK_HEX = "686f702e6d6573682e70736b2e763121"
+internal val MESH_HOP_CHANNEL_PSK = byteArrayOf(
+    0x68, 0x6f, 0x70, 0x2e, 0x6d, 0x65, 0x73, 0x68,
+    0x2e, 0x70, 0x73, 0x6b, 0x2e, 0x76, 0x31, 0x21,
+)
+
+/** ChannelSettings.id; ASCII 'HOP1' as 0x484F5031. */
+internal const val MESH_HOP_CHANNEL_ID = 0x484F5031L
+
+internal const val MESH_CHANNEL_ROLE_DISABLED = 0
+internal const val MESH_CHANNEL_ROLE_SECONDARY = 2
+
+/** Meshtastic MAX_NUM_CHANNELS. Index 0 is PRIMARY; Hop probes 1..7. */
+internal const val MESH_MAX_CHANNELS = 8
+
 /** The Meshtastic broadcast node address. */
 internal const val MESH_BROADCAST_ADDR = 0xFFFFFFFFL
 
@@ -43,10 +75,11 @@ internal const val MESH_DEAD_MS = 180_000L
 internal const val MESH_REASSEMBLY_TTL_MS = 120_000L
 internal const val MESH_MAX_PARTIAL_PER_PEER = 8
 
-// Hop link-frame type tags (identical to :bearer-lan L_HELLO/L_PING/L_PONG/L_DATA).
+// Hop link-frame type tags (hello/ping/pong/data identical to :bearer-lan).
 internal const val M_HELLO = 0x01
 internal const val M_PING = 0x02
 internal const val M_PONG = 0x03
+internal const val M_ACK = 0x04
 internal const val M_DATA = 0x10
 
 // ---- Minimal protobuf codec (only the Meshtastic messages the bearer needs) ---------------------------
@@ -137,39 +170,106 @@ internal class ProtoReader(private val buf: ByteArray) {
 
 // ---- Meshtastic messages (the exact subset the bearer speaks) -----------------------------------------
 
-/** What the bearer acts on after decoding one FromRadio: our own node number, or a Hop-port data packet. */
+/** What the bearer acts on after decoding one FromRadio: our node number, a neighbor, Hop data, or admin. */
 internal sealed class MeshInbound {
     data class MyNodeNum(val num: Long) : MeshInbound()
+    data class SeenNode(val num: Long) : MeshInbound()
     data class HopData(val from: Long, val payload: ByteArray) : MeshInbound() {
         override fun equals(other: Any?): Boolean =
             other is HopData && other.from == from && other.payload.contentEquals(payload)
         override fun hashCode(): Int = 31 * from.hashCode() + payload.contentHashCode()
     }
+    data class Admin(val payload: ByteArray) : MeshInbound() {
+        override fun equals(other: Any?): Boolean =
+            other is Admin && other.payload.contentEquals(payload)
+        override fun hashCode(): Int = payload.contentHashCode()
+    }
+    data class Routing(val requestId: Long, val error: Int) : MeshInbound()
 }
+
+/** One Meshtastic Channel (index + settings + role) from a get_channel_response. */
+internal data class MeshChannel(
+    val index: Int,
+    val name: String,
+    val psk: ByteArray,
+    val role: Int,
+) {
+    val isHop: Boolean
+        get() = name == MESH_HOP_CHANNEL_NAME && psk.contentEquals(MESH_HOP_CHANNEL_PSK)
+    val isFree: Boolean
+        get() = role == MESH_CHANNEL_ROLE_DISABLED
+}
+
+/** Decoded AdminMessage: the session passkey plus an optional Channel from get_channel_response. */
+internal data class AdminInbound(val passkey: ByteArray, val channel: MeshChannel?)
 
 internal object MeshtasticProto {
     // Field numbers from the stable Meshtastic mesh.proto (wire types matter):
-    //   Data:       portnum=1 (varint), payload=2 (bytes)
-    //   MeshPacket: from=1 (fixed32), to=2 (fixed32), decoded=4 (Data), id=6 (fixed32), hop_limit=9 (varint)
-    //   ToRadio:    packet=1 (MeshPacket), want_config_id=3 (varint)
-    //   FromRadio:  packet=2 (MeshPacket), my_info=3 (MyNodeInfo)
-    //   MyNodeInfo: my_node_num=1 (varint)
+    //   Data:          portnum=1 (varint), payload=2 (bytes)
+    //   MeshPacket:    from=1 (fixed32), to=2 (fixed32), channel=3 (varint), decoded=4 (Data),
+    //                  id=6 (fixed32), hop_limit=9 (varint)
+    //   ToRadio:       packet=1 (MeshPacket), want_config_id=3 (varint)
+    //   FromRadio:     packet=2 (MeshPacket), my_info=3 (MyNodeInfo)
+    //   MyNodeInfo:    my_node_num=1 (varint)
+    //   Channel:       index=1 (varint), settings=2 (ChannelSettings), role=3 (varint)
+    //   ChannelSettings: psk=2 (bytes), name=3 (string), id=4 (fixed32)
+    //   AdminMessage:  get_channel_request=1 (uint32, index+1), get_channel_response=2 (Channel),
+    //                  set_channel=33 (Channel), session_passkey=101 (bytes)
 
-    fun encodeData(payload: ByteArray): ByteArray =
-        ProtoWriter().varintField(1, MESH_HOP_PORTNUM.toLong()).bytesField(2, payload).toBytes()
+    fun encodeData(payload: ByteArray, portnum: Long = MESH_HOP_PORTNUM.toLong()): ByteArray =
+        ProtoWriter().varintField(1, portnum).bytesField(2, payload).toBytes()
 
-    fun encodeToRadioPacket(from: Long, to: Long, id: Long, hopLimit: Int, fragment: ByteArray): ByteArray {
-        val pkt = ProtoWriter()
-            .fixed32Field(1, from)
-            .fixed32Field(2, to)
-            .bytesField(4, encodeData(fragment))
+    fun encodeToRadioPacket(
+        from: Long, to: Long, id: Long, hopLimit: Int, fragment: ByteArray,
+        portnum: Long = MESH_HOP_PORTNUM.toLong(),
+        channel: Int = 0,
+        wantAck: Boolean = false,
+    ): ByteArray {
+        val pkt = ProtoWriter().fixed32Field(1, from).fixed32Field(2, to)
+        if (channel != 0) pkt.varintField(3, channel.toLong())
+        val body = pkt.bytesField(4, encodeData(fragment, portnum))
             .fixed32Field(6, id)
             .varintField(9, hopLimit.toLong())
-            .toBytes()
-        return ProtoWriter().bytesField(1, pkt).toBytes()
+        if (wantAck) body.varintField(10, 1)
+        return ProtoWriter().bytesField(1, body.toBytes()).toBytes()
     }
 
     fun encodeWantConfig(nonce: Long): ByteArray = ProtoWriter().varintField(3, nonce).toBytes()
+
+    /** AdminMessage.get_channel_request. Firmware uses index+1 so 0 can mean "unset". */
+    fun encodeGetChannelRequest(index: Int): ByteArray =
+        ProtoWriter().varintField(1, (index + 1).toLong()).toBytes()
+
+    fun encodeChannel(index: Int, name: String, psk: ByteArray, role: Int): ByteArray {
+        val settings = ProtoWriter()
+            .bytesField(2, psk)
+            .bytesField(3, name.toByteArray(Charsets.UTF_8))
+            .fixed32Field(4, MESH_HOP_CHANNEL_ID)
+            .toBytes()
+        return ProtoWriter()
+            .varintField(1, index.toLong())
+            .bytesField(2, settings)
+            .varintField(3, role.toLong())
+            .toBytes()
+    }
+
+    /** AdminMessage.set_channel of Hop's SECONDARY, with the required session_passkey. */
+    fun encodeSetHopChannel(passkey: ByteArray, index: Int): ByteArray {
+        val channel = encodeChannel(index, MESH_HOP_CHANNEL_NAME, MESH_HOP_CHANNEL_PSK, MESH_CHANNEL_ROLE_SECONDARY)
+        val w = ProtoWriter().bytesField(33, channel)
+        if (passkey.isNotEmpty()) w.bytesField(101, passkey)
+        return w.toBytes()
+    }
+
+    /** AdminMessage.get_channel_response, for tests that drive the bearer without a radio. */
+    fun encodeGetChannelResponse(passkey: ByteArray, index: Int, name: String, psk: ByteArray, role: Int): ByteArray {
+        val w = ProtoWriter().bytesField(2, encodeChannel(index, name, psk, role))
+        if (passkey.isNotEmpty()) w.bytesField(101, passkey)
+        return w.toBytes()
+    }
+
+    fun encodeAdminToRadio(to: Long, id: Long, admin: ByteArray): ByteArray =
+        encodeToRadioPacket(0L, to, id, 0, admin, MESH_ADMIN_PORTNUM.toLong(), 0)
 
     fun decodeFromRadio(bytes: ByteArray): MeshInbound? {
         val r = ProtoReader(bytes)
@@ -183,6 +283,10 @@ internal object MeshtasticProto {
                 field == 3 && wire == 2 -> {
                     val sub = r.readBytes() ?: return null
                     decodeMyNodeNum(sub)?.let { return MeshInbound.MyNodeNum(it) }
+                }
+                field == 4 && wire == 2 -> {
+                    val sub = r.readBytes() ?: return null
+                    decodeMyNodeNum(sub)?.let { return MeshInbound.SeenNode(it) }
                 }
                 else -> if (!r.skip(wire)) return null
             }
@@ -202,12 +306,46 @@ internal object MeshtasticProto {
             }
         }
         val data = decoded ?: return null
-        val payload = decodeHopData(data) ?: return null
-        return MeshInbound.HopData(from, payload)
+        val (port, payload) = decodeData(data) ?: return null
+        return when (port) {
+            MESH_HOP_PORTNUM.toLong() -> MeshInbound.HopData(from, payload)
+            MESH_ADMIN_PORTNUM.toLong() -> MeshInbound.Admin(payload)
+            MESH_ROUTING_PORTNUM.toLong() -> decodeRouting(data)
+            else -> null
+        }
     }
 
-    /** The payload of a Data submessage IFF it is on the Hop port, else null. */
-    fun decodeHopData(bytes: ByteArray): ByteArray? {
+    /** Data.request_id is fixed32 field 6; Routing.error_reason is varint field 3 of Data.payload. */
+    fun decodeRouting(data: ByteArray): MeshInbound.Routing? {
+        val r = ProtoReader(data)
+        var port = -1L
+        var payload: ByteArray? = null
+        var requestId = 0L
+        while (true) {
+            val (field, wire) = r.readTag() ?: break
+            when {
+                field == 1 && wire == 0 -> port = r.readVarint() ?: return null
+                field == 2 && wire == 2 -> payload = r.readBytes() ?: return null
+                field == 6 && wire == 5 -> requestId = r.readFixed32() ?: return null
+                else -> if (!r.skip(wire)) return null
+            }
+        }
+        if (port != MESH_ROUTING_PORTNUM.toLong()) return null
+        var error = 0
+        if (payload != null) {
+            val p = ProtoReader(payload)
+            while (true) {
+                val (field, wire) = p.readTag() ?: break
+                when {
+                    field == 3 && wire == 0 -> error = (p.readVarint() ?: return null).toInt()
+                    else -> if (!p.skip(wire)) return null
+                }
+            }
+        }
+        return MeshInbound.Routing(requestId, error)
+    }
+
+    fun decodeData(bytes: ByteArray): Pair<Long, ByteArray>? {
         val r = ProtoReader(bytes)
         var portnum = -1L
         var payload: ByteArray? = null
@@ -219,8 +357,96 @@ internal object MeshtasticProto {
                 else -> if (!r.skip(wire)) return null
             }
         }
-        if (portnum != MESH_HOP_PORTNUM.toLong()) return null
-        return payload ?: ByteArray(0)
+        if (portnum < 0) return null
+        return Pair(portnum, payload ?: ByteArray(0))
+    }
+
+    /** The payload of a Data submessage IFF it is on the Hop port, else null. */
+    fun decodeHopData(bytes: ByteArray): ByteArray? {
+        val (port, payload) = decodeData(bytes) ?: return null
+        return if (port == MESH_HOP_PORTNUM.toLong()) payload else null
+    }
+
+    fun decodeChannel(bytes: ByteArray): MeshChannel? {
+        val r = ProtoReader(bytes)
+        var index = 0
+        var settings: ByteArray? = null
+        var role = 0
+        while (true) {
+            val (field, wire) = r.readTag() ?: break
+            when {
+                field == 1 && wire == 0 -> index = (r.readVarint() ?: return null).toInt()
+                field == 2 && wire == 2 -> settings = r.readBytes() ?: return null
+                field == 3 && wire == 0 -> role = (r.readVarint() ?: return null).toInt()
+                else -> if (!r.skip(wire)) return null
+            }
+        }
+        var name = ""
+        var psk = ByteArray(0)
+        if (settings != null) {
+            val s = ProtoReader(settings)
+            while (true) {
+                val (field, wire) = s.readTag() ?: break
+                when {
+                    field == 2 && wire == 2 -> psk = s.readBytes() ?: return null
+                    field == 3 && wire == 2 -> name = String(s.readBytes() ?: return null, Charsets.UTF_8)
+                    else -> if (!s.skip(wire)) return null
+                }
+            }
+        }
+        return MeshChannel(index, name, psk, role)
+    }
+
+    fun decodeAdminMessage(bytes: ByteArray): AdminInbound? {
+        val r = ProtoReader(bytes)
+        var passkey = ByteArray(0)
+        var channel: MeshChannel? = null
+        while (true) {
+            val (field, wire) = r.readTag() ?: break
+            when {
+                field == 2 && wire == 2 -> {
+                    val sub = r.readBytes() ?: return null
+                    channel = decodeChannel(sub) ?: return null
+                }
+                field == 101 && wire == 2 -> passkey = r.readBytes() ?: return null
+                else -> if (!r.skip(wire)) return null
+            }
+        }
+        return AdminInbound(passkey, channel)
+    }
+
+    /** from + portnum of a FromRadio packet, or null. Used to log why a frame is not Hop. */
+    fun peekPacketPort(bytes: ByteArray): Pair<Long, Long>? {
+        val r = ProtoReader(bytes)
+        while (true) {
+            val (field, wire) = r.readTag() ?: return null
+            if (field == 2 && wire == 2) {
+                val sub = r.readBytes() ?: return null
+                val p = ProtoReader(sub)
+                var from = 0L
+                var decoded: ByteArray? = null
+                while (true) {
+                    val (f, w) = p.readTag() ?: break
+                    when {
+                        f == 1 && w == 5 -> from = p.readFixed32() ?: return null
+                        f == 4 && w == 2 -> decoded = p.readBytes() ?: return null
+                        else -> if (!p.skip(w)) return null
+                    }
+                }
+                val data = decoded ?: return Pair(from, -1L)
+                val d = ProtoReader(data)
+                var portnum = -1L
+                while (true) {
+                    val (f, w) = d.readTag() ?: break
+                    when {
+                        f == 1 && w == 0 -> portnum = d.readVarint() ?: return Pair(from, -1L)
+                        else -> if (!d.skip(w)) return Pair(from, portnum)
+                    }
+                }
+                return Pair(from, portnum)
+            }
+            if (!r.skip(wire)) return null
+        }
     }
 
     fun decodeMyNodeNum(bytes: ByteArray): Long? {
@@ -245,6 +471,15 @@ internal object MeshFrame {
     fun pong(echo: ByteArray): ByteArray = byteArrayOf(M_PONG.toByte()) + echo
 
     fun data(payload: ByteArray): ByteArray = byteArrayOf(M_DATA.toByte()) + payload
+
+    fun ack(msgId: Int): ByteArray = byteArrayOf(
+        M_ACK.toByte(), ((msgId ushr 8) and 0xff).toByte(), (msgId and 0xff).toByte(),
+    )
+
+    fun ackMsgId(body: ByteArray): Int? {
+        if (body.size < 3 || (body[0].toInt() and 0xff) != M_ACK) return null
+        return ((body[1].toInt() and 0xff) shl 8) or (body[2].toInt() and 0xff)
+    }
 
     /** The 16-byte peerId a HELLO body carries, or null if too short. */
     fun helloPeerId(body: ByteArray): ByteArray? = if (body.size >= 17) body.copyOfRange(1, 17) else null
@@ -298,6 +533,9 @@ internal class MeshFragHeader private constructor(
     }
 }
 
+/** Completed reassembly: the Hop fragment msgId (needed for M_ACK) plus the frame body. */
+internal data class MeshComplete(val msgId: Int, val body: ByteArray)
+
 /** Per-peer reassembly of fragmented Hop frames, keyed by (peer node num, msgId). Pure: the caller supplies
  *  `nowMs` so it is deterministically testable with no clock. Not thread-safe; the bearer owns it on its
  *  single work thread (mirroring the Apple bearer's serial queue). */
@@ -309,14 +547,14 @@ internal class MeshReassembler {
     // node num -> msgId -> Partial
     private val partials = HashMap<Long, HashMap<Int, Partial>>()
 
-    fun accept(peer: Long, fragment: ByteArray, nowMs: Long): ByteArray? {
+    fun accept(peer: Long, fragment: ByteArray, nowMs: Long): MeshComplete? {
         val h = MeshFragHeader.parse(fragment) ?: return null
         evictStale(nowMs)
         val byId = partials.getOrPut(peer) { HashMap() }
 
         if (h.count == 1) {
             if (byId.isEmpty()) partials.remove(peer)
-            return h.chunk
+            return MeshComplete(h.msgId, h.chunk)
         }
 
         var p = byId[h.msgId]
@@ -333,7 +571,7 @@ internal class MeshReassembler {
         for (idx in 0 until p.count) p.chunks[idx]?.forEach { body.add(it) }
         byId.remove(h.msgId)
         if (byId.isEmpty()) partials.remove(peer)
-        return body.toByteArray()
+        return MeshComplete(h.msgId, body.toByteArray())
     }
 
     fun evictStale(nowMs: Long) {

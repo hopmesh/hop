@@ -64,6 +64,14 @@ final class CoreBluetoothMeshtasticRadio: NSObject, MeshtasticRadio {
 
     private func scanIfPowered() {
         guard running, let central, central.state == .poweredOn, peripheral == nil else { return }
+        // A radio the system already holds (Meshtastic.app just released it) will not re-advertise
+        // immediately. retrieveConnected picks it up without waiting on the service-UUID scan filter.
+        if let p = central.retrieveConnectedPeripherals(withServices: [Self.serviceUUID]).first {
+            peripheral = p
+            p.delegate = self
+            central.connect(p)
+            return
+        }
         central.scanForPeripherals(withServices: [Self.serviceUUID])
     }
 

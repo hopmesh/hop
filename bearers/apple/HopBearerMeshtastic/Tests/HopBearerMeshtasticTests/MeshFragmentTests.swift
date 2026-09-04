@@ -30,7 +30,8 @@ final class MeshFragmentTests: XCTestCase {
         let body: [UInt8] = [M_DATA, 1, 2, 3]
         let frags = meshFragment(body, msgId: 7)!
         XCTAssertEqual(frags.count, 1)
-        XCTAssertEqual(rz.accept(peer: 5, fragment: frags[0], nowS: 0), body)
+        XCTAssertEqual(rz.accept(peer: 5, fragment: frags[0], nowS: 0)?.body, body)
+        XCTAssertEqual(rz.accept(peer: 5, fragment: frags[0], nowS: 0)?.msgId, 7)
     }
 
     func testReassembleMultiFragmentInOrder() {
@@ -40,7 +41,7 @@ final class MeshFragmentTests: XCTestCase {
         XCTAssertEqual(frags.count, 3)
         XCTAssertNil(rz.accept(peer: 1, fragment: frags[0], nowS: 0))
         XCTAssertNil(rz.accept(peer: 1, fragment: frags[1], nowS: 0))
-        XCTAssertEqual(rz.accept(peer: 1, fragment: frags[2], nowS: 0), body)
+        XCTAssertEqual(rz.accept(peer: 1, fragment: frags[2], nowS: 0)?.body, body)
     }
 
     func testReassembleOutOfOrder() {
@@ -50,7 +51,7 @@ final class MeshFragmentTests: XCTestCase {
         XCTAssertEqual(frags.count, 3)
         XCTAssertNil(rz.accept(peer: 2, fragment: frags[2], nowS: 0))
         XCTAssertNil(rz.accept(peer: 2, fragment: frags[0], nowS: 0))
-        XCTAssertEqual(rz.accept(peer: 2, fragment: frags[1], nowS: 0), body)
+        XCTAssertEqual(rz.accept(peer: 2, fragment: frags[1], nowS: 0)?.body, body)
     }
 
     func testDuplicateFragmentDoesNotDoubleComplete() {
@@ -59,7 +60,7 @@ final class MeshFragmentTests: XCTestCase {
         let frags = meshFragment(body, msgId: 4)!   // 2 fragments
         XCTAssertNil(rz.accept(peer: 1, fragment: frags[0], nowS: 0))
         XCTAssertNil(rz.accept(peer: 1, fragment: frags[0], nowS: 0))   // dup of index 0
-        XCTAssertEqual(rz.accept(peer: 1, fragment: frags[1], nowS: 0), body)
+        XCTAssertEqual(rz.accept(peer: 1, fragment: frags[1], nowS: 0)?.body, body)
     }
 
     func testPeersDoNotCrossContaminate() {
@@ -69,7 +70,7 @@ final class MeshFragmentTests: XCTestCase {
         XCTAssertNil(rz.accept(peer: 10, fragment: frags[0], nowS: 0))
         // Same msgId, different peer, only its first fragment: must not complete peer 10's message.
         XCTAssertNil(rz.accept(peer: 11, fragment: frags[0], nowS: 0))
-        XCTAssertEqual(rz.accept(peer: 10, fragment: frags[1], nowS: 0), body)
+        XCTAssertEqual(rz.accept(peer: 10, fragment: frags[1], nowS: 0)?.body, body)
     }
 
     func testStaleEviction() {
@@ -112,5 +113,11 @@ final class MeshFragmentTests: XCTestCase {
         let small = Data([0x01, 0x00, 0x00])
         XCTAssertTrue(meshKeepGreaterLeg(myId: big, peer: small))
         XCTAssertFalse(meshKeepGreaterLeg(myId: small, peer: big))
+    }
+
+    func testAckFrameRoundTrip() {
+        let a = MeshFrame.ack(msgId: 0x1234)
+        XCTAssertEqual(a.first, M_ACK)
+        XCTAssertEqual(MeshFrame.ackMsgId(a), 0x1234)
     }
 }

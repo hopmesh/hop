@@ -73,7 +73,8 @@ enum RefreshMapper {
         // unknown-transport loop filters against it, so omitting it made Peer-to-Peer appear TWICE,
         // once under its display name and again under its raw tag.
         let shared: [(tag: String, name: String)] = [
-            ("BT", "Bluetooth"), ("P2P", "Peer-to-Peer"), ("LAN", "Local Net"), ("Relay", "Relay"),
+            ("BT", "Bluetooth"), ("P2P", "Peer-to-Peer"), ("LAN", "Local Net"),
+            ("Relay", "Relay"), ("LoRa", "LoRa"),
         ]
         var ts: [HopBearer.TransportStatus] = []
         func appendShared(_ tag: String, _ name: String) {
@@ -82,17 +83,13 @@ enum RefreshMapper {
             ts.append(HopBearer.TransportStatus(id: name, active: n > 0, links: n, tag: tag, enabled: on))
         }
         appendShared("BT", "Bluetooth")
-        // Peer-to-Peer IS a shared bearer now, so it carries a real toggle handle instead of `nil`.
-        // Until the extraction it was the one Apple transport with no switch, which meant a delivery
-        // on an Apple device could never be attributed to BLE with confidence. `p2pActive` still comes
-        // from the bearer's own blocked flag, because MultipeerConnectivity reports "cannot advertise"
-        // while the Local Network prompt is pending and that is not the same as having no links.
         if let on = states["P2P"] {
             ts.append(HopBearer.TransportStatus(id: "Peer-to-Peer", active: p2pActive && p2pLinks > 0,
                                                 links: p2pLinks, tag: "P2P", enabled: on))
         }
         appendShared("LAN", "Local Net")
         appendShared("Relay", "Relay")
+        appendShared("LoRa", "LoRa")
         // Any transport a host registered that this display does not know by name still has to be
         // listed, or it would be untoggleable.
         for (tag, on) in states.sorted(by: { $0.key < $1.key }) where !shared.contains(where: { $0.tag == tag }) {

@@ -76,6 +76,24 @@ public final class MeshtasticBearer: Bearer {
     private var maintenanceTimer: DispatchSourceTimer?
     private var lastBeaconMs: UInt64 = 0
     private var configNonce: UInt32 = 1
+    private var radioUp = false
+    private var hopChannel: UInt32?
+    private var sessionPasskey: [UInt8] = []
+    private var channelProbe = 1
+    private var sprays = [Spray]()
+    private var seenMsgIds = [UInt32: [UInt16]]()
+
+    private final class Spray {
+        let dest: UInt32
+        let msgId: UInt16
+        let frame: [UInt8]
+        var nextDueMs: UInt64
+        var intervalMs: UInt64
+        init(dest: UInt32, msgId: UInt16, frame: [UInt8], nextDueMs: UInt64, intervalMs: UInt64) {
+            self.dest = dest; self.msgId = msgId; self.frame = frame
+            self.nextDueMs = nextDueMs; self.intervalMs = intervalMs
+        }
+    }
 
     /// Production entry point: talk to a real Meshtastic radio over CoreBluetooth.
     public convenience init(myId: Data) {
@@ -126,15 +144,22 @@ public final class MeshtasticBearer: Bearer {
 
     private func onRadioConnected() {
         guard !stopped else { return }
+        radioUp = true
+        hopChannel = nil
+        channelProbe = 1
+        sessionPasskey = []
         log("STATE", "mesh radio-connected, requesting config")
         configNonce &+= 1
         radio.send(toRadio: MeshtasticProto.encodeWantConfig(configNonce))
-        // Beacon our presence right away so peers already on the mesh learn us without waiting a cycle.
-        broadcastHello()
+        requestHopChannel()
     }
 
     private func onRadioDisconnected() {
         log("STATE", "mesh radio-disconnected, tearing down \(linksByNode.count) link(s)")
+        radioUp = false
+        hopChannel = nil
+        channelProbe = 1
+        sessionPasskey = []
         for link in Array(linksByNode.values) { teardown(link, why: "radio down") }
         myNodeNum = nil
     }
@@ -146,29 +171,77 @@ public final class MeshtasticBearer: Bearer {
         case .myNodeNum(let num):
             if myNodeNum != num { log("STATE", "mesh my-node-num=\(num)") }
             myNodeNum = num
+            requestHopChannel()
+        case .admin(let payload):
+            onAdmin(payload)
+        case .routing(let requestId, let error):
+            log("STATE", "mesh routing id=\(requestId) error=\(error)")
         case .hopData(let from, let payload):
-            guard from != 0, from != myNodeNum else { return }   // ignore our own echoes
-            guard let body = reassembler.accept(peer: from, fragment: payload, nowS: nowS()) else { return }
-            handleFrame(from: from, body: body)
+            guard from != 0, from != myNodeNum else { return }
+            guard let done = reassembler.accept(peer: from, fragment: payload, nowS: nowS()) else { return }
+            handleFrame(from: from, msgId: done.msgId, body: done.body)
         }
+    }
+
+    private func requestHopChannel() {
+        guard radioUp, myNodeNum != nil, hopChannel == nil else { return }
+        sendAdmin(MeshtasticProto.encodeGetChannelRequest(index: channelProbe))
+    }
+
+    private func sendAdmin(_ admin: [UInt8]) {
+        guard let me = myNodeNum else { return }
+        let id = nextPktId; nextPktId = nextPktId &+ 1
+        radio.send(toRadio: MeshtasticProto.encodeAdminToRadio(to: me, id: id, admin: admin))
+    }
+
+    private func onAdmin(_ payload: [UInt8]) {
+        guard let inbound = MeshtasticProto.decodeAdminMessage(payload) else { return }
+        if !inbound.passkey.isEmpty { sessionPasskey = inbound.passkey }
+        guard let ch = inbound.channel, hopChannel == nil else { return }
+        if ch.isHop {
+            armHopChannel(ch.index)
+        } else if ch.isFree {
+            sendAdmin(MeshtasticProto.encodeSetHopChannel(passkey: sessionPasskey, index: ch.index))
+            armHopChannel(ch.index)
+        } else {
+            let next = ch.index + 1
+            if next < MESH_MAX_CHANNELS {
+                channelProbe = next
+                sendAdmin(MeshtasticProto.encodeGetChannelRequest(index: next))
+            } else {
+                log("WARN", "mesh no secondary slot for Hop")
+            }
+        }
+    }
+
+    private func armHopChannel(_ index: Int) {
+        hopChannel = UInt32(index)
+        log("STATE", "mesh hop-channel=\(index)")
+        broadcastHello()
     }
 
     // MARK: - Hop link-frame handling
 
-    private func handleFrame(from node: UInt32, body: [UInt8]) {
+    private func handleFrame(from node: UInt32, msgId: UInt16, body: [UInt8]) {
         guard let type = body.first else { return }
         if let l = linksByNode[node] { l.lastRxMs = nowMs() }
         switch type {
+        case M_ACK:
+            guard let id = MeshFrame.ackMsgId(body) else { return }
+            sprays.removeAll { $0.dest == node && $0.msgId == id }
         case M_HELLO:
+            sendAck(to: node, msgId: msgId)
+            if alreadySeen(peer: node, msgId: msgId) { return }
             guard let peerId = MeshFrame.helloPeerId(body) else { return }
             onHello(node: node, peerId: peerId)
         case M_PING:
-            // Echo the PING body prefix as a PONG, unicast back to the sender.
             let echo = Array(body[1..<min(17, body.count)])
             shipFrame(MeshFrame.pong(echo: echo), to: node)
         case M_PONG:
-            break   // liveness only; lastRxMs already bumped
+            break
         case M_DATA:
+            sendAck(to: node, msgId: msgId)
+            if alreadySeen(peer: node, msgId: msgId) { return }
             guard let l = linksByNode[node], l.up else { return }
             sink?.linkBytes(l.linkId, Data(body.dropFirst()))
         default:
@@ -176,8 +249,21 @@ public final class MeshtasticBearer: Bearer {
         }
     }
 
+    private func alreadySeen(peer: UInt32, msgId: UInt16) -> Bool {
+        var q = seenMsgIds[peer] ?? []
+        if q.contains(msgId) { return true }
+        q.append(msgId)
+        while q.count > 32 { q.removeFirst() }
+        seenMsgIds[peer] = q
+        return false
+    }
+
+    private func sendAck(to node: UInt32, msgId: UInt16) {
+        emitFrame(MeshFrame.ack(msgId: msgId), to: node, msgId: mintFragMsgId(), wantAck: false)
+    }
+
     private func onHello(node: UInt32, peerId: Data) {
-        if peerId == myId { return }   // our own HELLO reflected by the mesh
+        if peerId == myId { return }
         if let existing = linksByNode[node] {
             existing.peerId = peerId
             existing.lastRxMs = nowMs()
@@ -190,43 +276,60 @@ public final class MeshtasticBearer: Bearer {
         linksByLinkId[link.linkId] = link
         link.surfaced = true
         log("STATE", "mesh hello-recv peer=\(link.peerShort) node=\(node) greater=\(isGreater)")
-        // Answer with a unicast HELLO so the peer learns us even if it missed our broadcast beacon. The
-        // role byte carries OUR greater-ness (informational: the peer computes its own from the ids too).
         shipFrame(MeshFrame.hello(myId: myId, isGreater: isGreater), to: node)
         sink?.linkUp(link.linkId, role: link.role, peerId: peerId)
     }
 
     // MARK: - Outbound
 
-    /// Fragment one Hop link frame and ship every fragment to `dest` (a node num, or MESH_BROADCAST_ADDR).
-    /// `from` is left 0 until the radio reports our node num (the radio fills it in that case), so a HELLO
-    /// broadcast can go out before config completes.
+    private func mintFragMsgId() -> UInt16 {
+        let id = nextMsgId
+        nextMsgId = nextMsgId &+ 1
+        return id
+    }
+
     private func shipFrame(_ frame: [UInt8], to dest: UInt32) {
-        let msgId = nextMsgId; nextMsgId = nextMsgId &+ 1
+        let kind = frame.first ?? 0
+        let reliable = dest != MESH_BROADCAST_ADDR && (kind == M_DATA || kind == M_HELLO)
+        let msgId = mintFragMsgId()
+        emitFrame(frame, to: dest, msgId: msgId, wantAck: reliable)
+        if reliable { enqueueSpray(dest: dest, msgId: msgId, frame: frame, now: nowMs()) }
+    }
+
+    private func emitFrame(_ frame: [UInt8], to dest: UInt32, msgId: UInt16, wantAck: Bool) {
+        guard let ch = hopChannel else { return }
         guard let frags = meshFragment(frame, msgId: msgId) else {
             log("WARN", "mesh frame too large to fragment (\(frame.count) bytes)")
             return
         }
-        let from = myNodeNum ?? 0
         for frag in frags {
             let id = nextPktId; nextPktId = nextPktId &+ 1
             let radioFrame = MeshtasticProto.encodeToRadioPacket(
-                from: from, to: dest, id: id, hopLimit: 3, fragment: frag)
+                from: 0, to: dest, id: id, hopLimit: 3, fragment: frag, channel: ch, wantAck: wantAck)
             radio.send(toRadio: radioFrame)
         }
     }
 
+    private func enqueueSpray(dest: UInt32, msgId: UInt16, frame: [UInt8], now: UInt64) {
+        if sprays.filter({ $0.dest == dest }).count >= MESH_SPRAY_MAX_OUTSTANDING {
+            if let i = sprays.firstIndex(where: { $0.dest == dest }) { sprays.remove(at: i) }
+        }
+        let initial = UInt64(MESH_SPRAY_INITIAL_S * 1000)
+        sprays.append(Spray(dest: dest, msgId: msgId, frame: frame, nextDueMs: now + initial, intervalMs: initial))
+    }
+
     private func broadcastHello() {
+        guard hopChannel != nil else { return }
         shipFrame(MeshFrame.hello(myId: myId, isGreater: false), to: MESH_BROADCAST_ADDR)
         lastBeaconMs = nowMs()
     }
 
-    // MARK: - Maintenance (beacon, per-link keepalive, dead reap)
+    // MARK: - Maintenance (beacon, spray, per-link keepalive, dead reap)
 
     private func startMaintenance() {
         guard maintenanceTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: meshQueue)
-        timer.schedule(deadline: .now() + MESH_PING_S, repeating: MESH_PING_S)
+        timer.schedule(deadline: .now() + MESH_SPRAY_TICK_S, repeating: MESH_SPRAY_TICK_S)
         timer.setEventHandler { [weak self] in self?.runMaintenance(nowMs()) }
         maintenanceTimer = timer
         timer.resume()
@@ -235,8 +338,14 @@ public final class MeshtasticBearer: Bearer {
     private func runMaintenance(_ now: UInt64) {
         guard !stopped else { return }
         reassembler.evictStale(nowS: Double(now) / 1000)
-        // Rebroadcast our HELLO beacon so newly-arrived mesh peers discover us.
         if Double(now - lastBeaconMs) / 1000 >= MESH_PING_S { broadcastHello() }
+        let capMs = UInt64(MESH_SPRAY_CAP_S * 1000)
+        for s in sprays {
+            if now < s.nextDueMs { continue }
+            emitFrame(s.frame, to: s.dest, msgId: s.msgId, wantAck: true)
+            s.intervalMs = min(s.intervalMs &* UInt64(MESH_SPRAY_MULTIPLIER), capMs)
+            s.nextDueMs = now + s.intervalMs
+        }
         for link in Array(linksByNode.values) {
             if Double(now - link.lastRxMs) / 1000 > MESH_DEAD_S { teardown(link, why: "liveness DEAD"); continue }
             if Double(now - link.lastPingMs) / 1000 >= MESH_PING_S {
@@ -253,6 +362,8 @@ public final class MeshtasticBearer: Bearer {
         linksByNode.removeValue(forKey: link.nodeNum)
         linksByLinkId.removeValue(forKey: link.linkId)
         reassembler.forget(peer: link.nodeNum)
+        sprays.removeAll { $0.dest == link.nodeNum }
+        seenMsgIds.removeValue(forKey: link.nodeNum)
         log("STATE", "mesh link-down (\(why)) peer=\(link.peerShort) node=\(link.nodeNum)")
         if link.surfaced { sink?.linkDown(link.linkId) }
     }

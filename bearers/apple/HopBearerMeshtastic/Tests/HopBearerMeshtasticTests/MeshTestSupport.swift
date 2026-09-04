@@ -41,6 +41,24 @@ final class FakeRadio: MeshtasticRadio {
         deliver(fromRadio: w.bytes)
     }
 
+    /// Deliver a FromRadio carrying an ADMIN_APP MeshPacket (channel get/set).
+    func deliverAdmin(from node: UInt32, payload: [UInt8]) {
+        var pkt = ProtoWriter()
+        pkt.fixed32Field(1, node)
+        pkt.bytesField(4, MeshtasticProto.encodeData(payload: payload, portnum: MESH_ADMIN_PORTNUM))
+        var w = ProtoWriter()
+        w.bytesField(2, pkt.bytes)
+        deliver(fromRadio: w.bytes)
+    }
+
+    /// A get_channel_response for a DISABLED slot, so the bearer can arm Hop's SECONDARY.
+    func deliverFreeHopSlot(index: Int = 1, passkey: [UInt8] = [9, 9, 9, 9]) {
+        deliverAdmin(
+            from: 0,
+            payload: MeshtasticProto.encodeGetChannelResponse(
+                passkey: passkey, index: index, name: "", psk: [], role: MESH_CHANNEL_ROLE_DISABLED))
+    }
+
     /// Reset the recorded ToRadio log (so a test can assert only what happened after a point).
     func clearSent() { sent.removeAll() }
 }
@@ -60,6 +78,33 @@ final class RecordingSink: LinkSink {
 }
 
 enum MeshTestDecode {
+
+    /// Unwrap a ToRadio admin packet's AdminMessage payload, or nil if it is not ADMIN_APP.
+    static func toRadioAdmin(_ bytes: [UInt8]) -> [UInt8]? {
+        var r = ProtoReader(bytes)
+        guard let (field, wire) = r.readTag(), field == 1, wire == 2, let pkt = r.readBytes() else { return nil }
+        var pr = ProtoReader(pkt)
+        var data: [UInt8]?
+        while let (f, w) = pr.readTag() {
+            if f == 4, w == 2 { data = pr.readBytes() }
+            else { _ = pr.skip(w) }
+        }
+        guard let d = data, let (port, payload) = MeshtasticProto.decodeData(d),
+              port == MESH_ADMIN_PORTNUM else { return nil }
+        return payload
+    }
+
+    /// MeshPacket.channel on a ToRadio packet, 0 if omitted (PRIMARY).
+    static func packetChannel(_ bytes: [UInt8]) -> UInt32 {
+        var r = ProtoReader(bytes)
+        guard let (field, wire) = r.readTag(), field == 1, wire == 2, let pkt = r.readBytes() else { return 0 }
+        var pr = ProtoReader(pkt)
+        while let (f, w) = pr.readTag() {
+            if f == 3, w == 0 { return UInt32(truncatingIfNeeded: pr.readVarint() ?? 0) }
+            _ = pr.skip(w)
+        }
+        return 0
+    }
     /// Extract (to, fragment payload) from a ToRadio the bearer wrote, or nil if it is not a packet
     /// (e.g. a want_config ToRadio). Mirrors the encoder in MeshtasticProto.encodeToRadioPacket.
     static func toRadioFragment(_ bytes: [UInt8]) -> (to: UInt32, fragment: [UInt8])? {

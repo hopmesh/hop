@@ -120,6 +120,14 @@ final class RefreshMapperTests: XCTestCase {
         XCTAssertEqual(ts.first { $0.id == "Sat" }?.tag, "Sat")
     }
 
+    func testLoRaStaysAfterRelayInFixedOrder() {
+        let ts = RefreshMapper.transportStatuses(
+            active: ["LoRa": 0, "BT": 1, "Relay": 0, "LAN": 0],
+            states: ["LoRa": true, "BT": true, "Relay": false, "LAN": true],
+            p2pActive: false, p2pLinks: 0)
+        XCTAssertEqual(ts.map { $0.id }, ["Bluetooth", "Local Net", "Relay", "LoRa"])
+    }
+
     // MARK: mapQueue
 
     func testMapQueueRendersBroadcastForEmptyDestination() {

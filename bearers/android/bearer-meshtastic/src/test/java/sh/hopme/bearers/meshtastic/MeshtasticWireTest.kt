@@ -70,6 +70,54 @@ class MeshtasticWireTest {
         assertEquals(MeshInbound.HopData(10L, byteArrayOf(7, 8, 9)), MeshtasticProto.decodeMeshPacket(pkt))
     }
 
+    @Test fun hopPacketsCarrySecondaryChannel() {
+        val frame = MeshtasticProto.encodeToRadioPacket(0L, 1L, 2L, 3, byteArrayOf(1), channel = 1)
+        val r = ProtoReader(frame)
+        val (field, wire) = r.readTag()!!
+        assertEquals(1, field); assertEquals(2, wire)
+        val pr = ProtoReader(r.readBytes()!!)
+        var channel = 0L
+        while (true) {
+            val (f, w) = pr.readTag() ?: break
+            when {
+                f == 3 && w == 0 -> channel = pr.readVarint() ?: 0L
+                else -> if (!pr.skip(w)) break
+            }
+        }
+        assertEquals(1L, channel)
+    }
+
+    @Test fun getChannelRequestIsIndexPlusOne() {
+        val r = ProtoReader(MeshtasticProto.encodeGetChannelRequest(1))
+        val (field, wire) = r.readTag()!!
+        assertEquals(1, field); assertEquals(0, wire)
+        assertEquals(2L, r.readVarint())
+    }
+
+    @Test fun getChannelResponseRoundTrip() {
+        val passkey = byteArrayOf(9, 9, 9, 9)
+        val bytes = MeshtasticProto.encodeGetChannelResponse(
+            passkey, 1, MESH_HOP_CHANNEL_NAME, MESH_HOP_CHANNEL_PSK, MESH_CHANNEL_ROLE_SECONDARY,
+        )
+        val inbound = MeshtasticProto.decodeAdminMessage(bytes)!!
+        assertArrayEquals(passkey, inbound.passkey)
+        assertEquals(1, inbound.channel!!.index)
+        assertTrue(inbound.channel!!.isHop)
+    }
+
+    @Test fun decodeFromRadioAdminPacket() {
+        val admin = MeshtasticProto.encodeGetChannelResponse(
+            byteArrayOf(1), 1, "", byteArrayOf(), MESH_CHANNEL_ROLE_DISABLED,
+        )
+        val pkt = ProtoWriter()
+            .fixed32Field(1, 7L)
+            .bytesField(4, MeshtasticProto.encodeData(admin, MESH_ADMIN_PORTNUM.toLong()))
+        val inbound = MeshtasticProto.decodeFromRadio(ProtoWriter().bytesField(2, pkt.toBytes()).toBytes())
+        assertTrue(inbound is MeshInbound.Admin)
+        val decoded = MeshtasticProto.decodeAdminMessage((inbound as MeshInbound.Admin).payload)!!
+        assertTrue(decoded.channel!!.isFree)
+    }
+
     @Test fun wantConfigEncodes() {
         val r = ProtoReader(MeshtasticProto.encodeWantConfig(0xABCDL))
         val (field, wire) = r.readTag()!!
@@ -115,7 +163,8 @@ class MeshtasticWireTest {
         val body = byteArrayOf(M_DATA.toByte(), 1, 2, 3)
         val frags = meshFragment(body, 7)!!
         assertEquals(1, frags.size)
-        assertArrayEquals(body, rz.accept(5L, frags[0], 0L))
+        assertArrayEquals(body, rz.accept(5L, frags[0], 0L)!!.body)
+        assertEquals(7, rz.accept(5L, meshFragment(body, 7)!![0], 0L)!!.msgId)
     }
 
     @Test fun reassembleMultiFragmentOutOfOrder() {
@@ -125,7 +174,7 @@ class MeshtasticWireTest {
         assertEquals(3, frags.size)
         assertNull(rz.accept(2L, frags[2], 0L))
         assertNull(rz.accept(2L, frags[0], 0L))
-        assertArrayEquals(body, rz.accept(2L, frags[1], 0L))
+        assertArrayEquals(body, rz.accept(2L, frags[1], 0L)!!.body)
     }
 
     @Test fun peersDoNotCrossContaminate() {
@@ -134,7 +183,7 @@ class MeshtasticWireTest {
         val frags = meshFragment(body, 1)!!
         assertNull(rz.accept(10L, frags[0], 0L))
         assertNull(rz.accept(11L, frags[0], 0L))
-        assertArrayEquals(body, rz.accept(10L, frags[1], 0L))
+        assertArrayEquals(body, rz.accept(10L, frags[1], 0L)!!.body)
     }
 
     @Test fun staleEviction() {
@@ -163,5 +212,40 @@ class MeshtasticWireTest {
     @Test fun dedupKeepRule() {
         assertTrue(meshKeepGreaterLeg(true))
         assertFalse(meshKeepGreaterLeg(false))
+    }
+
+    @Test fun unicastSetsWantAckBroadcastDoesNot() {
+        val uni = MeshtasticProto.encodeToRadioPacket(0, 20, 1, 3, byteArrayOf(1), channel = 1, wantAck = true)
+        val bcast = MeshtasticProto.encodeToRadioPacket(0, MESH_BROADCAST_ADDR, 1, 3, byteArrayOf(1), channel = 1, wantAck = false)
+        fun wantAck(frame: ByteArray): Boolean {
+            val r = ProtoReader(frame)
+            val (f, w) = r.readTag()!!
+            if (f != 1 || w != 2) return false
+            val pr = ProtoReader(r.readBytes()!!)
+            while (true) {
+                val (ff, ww) = pr.readTag() ?: return false
+                if (ff == 10 && ww == 0) return (pr.readVarint() ?: 0L) != 0L
+                if (!pr.skip(ww)) return false
+            }
+        }
+        assertTrue(wantAck(uni))
+        assertFalse(wantAck(bcast))
+    }
+
+    @Test fun decodeRoutingNone() {
+        val routing = ProtoWriter().varintField(3, 0).toBytes()
+        val data = ProtoWriter()
+            .varintField(1, MESH_ROUTING_PORTNUM.toLong())
+            .bytesField(2, routing)
+            .fixed32Field(6, 99L)
+            .toBytes()
+        val pkt = ProtoWriter().fixed32Field(1, 7L).bytesField(4, data).toBytes()
+        assertEquals(MeshInbound.Routing(99L, 0), MeshtasticProto.decodeMeshPacket(pkt))
+    }
+
+    @Test fun ackFrameRoundTrip() {
+        val a = MeshFrame.ack(0x1234)
+        assertEquals(M_ACK, a[0].toInt() and 0xff)
+        assertEquals(0x1234, MeshFrame.ackMsgId(a))
     }
 }

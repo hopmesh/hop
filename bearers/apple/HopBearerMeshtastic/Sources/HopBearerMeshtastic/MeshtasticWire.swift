@@ -35,10 +35,41 @@ import HopContract   // the bearer contract (no libhop): log/hex/nodeIdGreater h
 // MARK: - Pinned cross-platform constants (see bearers/meshtastic-vectors.json) --------------------------
 
 /// Meshtastic `PortNum` for Hop traffic. PRIVATE_APP is 256; Hop rides a fixed offset inside the private
-/// range (256..511) so it never collides with a first-party Meshtastic app. Both ends must also share a
-/// Meshtastic channel (PSK) for the radios to exchange these packets; that is device configuration, not
-/// bearer code.
+/// range (256..511) so it never collides with a first-party Meshtastic app. Hop packets go on a
+/// SECONDARY channel the bearer writes (see MESH_HOP_CHANNEL_*), not on PRIMARY.
 let MESH_HOP_PORTNUM: UInt32 = 260
+
+/// Meshtastic `PortNum.ADMIN_APP`. Channel get/set rides this, never the Hop port.
+let MESH_ADMIN_PORTNUM: UInt32 = 6
+
+/// Meshtastic `PortNum.ROUTING_APP`. Unicast fragments set want_ack; NONE on this port is the radio ACK.
+let MESH_ROUTING_PORTNUM: UInt32 = 5
+
+/// Spray unacked unicast DATA/HELLO. Seconds on Apple, milliseconds on Android; parity scales.
+let MESH_SPRAY_INITIAL_S: Double = 2.0
+let MESH_SPRAY_MULTIPLIER = 2
+let MESH_SPRAY_CAP_S: Double = 60.0
+let MESH_SPRAY_TICK_S: Double = 1.0
+let MESH_SPRAY_MAX_OUTSTANDING = 8
+
+/// SECONDARY slot name Hop writes. Primary (index 0) is left to Meshtastic.app.
+let MESH_HOP_CHANNEL_NAME = "Hop"
+
+/// AES-128 PSK, hex 686f702e6d6573682e70736b2e763121 ("hop.mesh.psk.v1!"). Shared by every Hop node.
+let MESH_HOP_CHANNEL_PSK_HEX = "686f702e6d6573682e70736b2e763121"
+let MESH_HOP_CHANNEL_PSK: [UInt8] = [
+    0x68, 0x6f, 0x70, 0x2e, 0x6d, 0x65, 0x73, 0x68,
+    0x2e, 0x70, 0x73, 0x6b, 0x2e, 0x76, 0x31, 0x21,
+]
+
+/// ChannelSettings.id; ASCII 'HOP1' as 0x484F5031.
+let MESH_HOP_CHANNEL_ID: UInt32 = 0x484F5031
+
+let MESH_CHANNEL_ROLE_DISABLED = 0
+let MESH_CHANNEL_ROLE_SECONDARY = 2
+
+/// Meshtastic MAX_NUM_CHANNELS. Index 0 is PRIMARY; Hop probes 1..7.
+let MESH_MAX_CHANNELS = 8
 
 /// The Meshtastic broadcast node address (0xffffffff). HELLO and PING go to the broadcast address so a
 /// peer is discovered without knowing its node num first; DATA and PONG unicast back to the sender.
@@ -68,10 +99,11 @@ let MESH_DEAD_S: Double = 180.0
 let MESH_REASSEMBLY_TTL_S: Double = 120.0
 let MESH_MAX_PARTIAL_PER_PEER = 8
 
-// Hop link-frame type tags (identical to the LAN bearer's L_HELLO/L_PING/L_PONG/L_DATA).
+// Hop link-frame type tags (hello/ping/pong/data identical to LAN). ack is Meshtastic-bearer-only.
 let M_HELLO: UInt8 = 0x01
 let M_PING: UInt8 = 0x02
 let M_PONG: UInt8 = 0x03
+let M_ACK: UInt8 = 0x04
 let M_DATA: UInt8 = 0x10
 
 // MARK: - Minimal protobuf codec (only the Meshtastic messages the bearer needs) ------------------------
@@ -172,43 +204,66 @@ struct ProtoReader {
 
 // MARK: - Meshtastic messages (the exact subset the bearer speaks) --------------------------------------
 
-/// The inbound Meshtastic payload the bearer cares about after decoding one `FromRadio`: either the
-/// radio told us our own node number, or a data packet arrived on the Hop port from some peer node.
+/// The inbound Meshtastic payload the bearer cares about after decoding one `FromRadio`: our node
+/// number, a Hop-port data packet, or an ADMIN_APP payload (channel get/set).
 enum MeshInbound: Equatable {
     case myNodeNum(UInt32)
     case hopData(from: UInt32, payload: [UInt8])
+    case admin(payload: [UInt8])
+    case routing(requestId: UInt32, error: Int)
+}
+
+/// One Meshtastic Channel (index + settings + role) from a get_channel_response.
+struct MeshChannel: Equatable {
+    let index: Int
+    let name: String
+    let psk: [UInt8]
+    let role: Int
+    var isHop: Bool { name == MESH_HOP_CHANNEL_NAME && psk == MESH_HOP_CHANNEL_PSK }
+    var isFree: Bool { role == MESH_CHANNEL_ROLE_DISABLED }
+}
+
+/// Decoded AdminMessage: the session passkey plus an optional Channel from get_channel_response.
+struct AdminInbound: Equatable {
+    let passkey: [UInt8]
+    let channel: MeshChannel?
 }
 
 enum MeshtasticProto {
     // Field numbers from the stable Meshtastic mesh.proto. Wire types matter: from/to/id are `fixed32`,
     // portnum/channel/hop_limit are varints, decoded/payload are length-delimited.
-    //   Data:       portnum=1 (varint), payload=2 (bytes)
-    //   MeshPacket: from=1 (fixed32), to=2 (fixed32), channel=3 (varint), decoded=4 (Data),
-    //               id=6 (fixed32), hop_limit=9 (varint), want_ack=10 (varint/bool)
-    //   ToRadio:    packet=1 (MeshPacket), want_config_id=3 (varint)
-    //   FromRadio:  packet=2 (MeshPacket), my_info=3 (MyNodeInfo)
-    //   MyNodeInfo: my_node_num=1 (varint)
+    //   Data:          portnum=1 (varint), payload=2 (bytes)
+    //   MeshPacket:    from=1 (fixed32), to=2 (fixed32), channel=3 (varint), decoded=4 (Data),
+    //                  id=6 (fixed32), hop_limit=9 (varint), want_ack=10 (varint/bool)
+    //   ToRadio:       packet=1 (MeshPacket), want_config_id=3 (varint)
+    //   FromRadio:     packet=2 (MeshPacket), my_info=3 (MyNodeInfo)
+    //   MyNodeInfo:    my_node_num=1 (varint)
+    //   Channel:       index=1 (varint), settings=2 (ChannelSettings), role=3 (varint)
+    //   ChannelSettings: psk=2 (bytes), name=3 (string), id=4 (fixed32)
+    //   AdminMessage:  get_channel_request=1 (uint32, index+1), get_channel_response=2 (Channel),
+    //                  set_channel=33 (Channel), session_passkey=101 (bytes)
 
-    /// Encode a Meshtastic `Data` submessage carrying one Hop fragment on the Hop port.
-    static func encodeData(payload: [UInt8]) -> [UInt8] {
+    /// Encode a Meshtastic `Data` submessage. Defaults to the Hop port.
+    static func encodeData(payload: [UInt8], portnum: UInt32 = MESH_HOP_PORTNUM) -> [UInt8] {
         var w = ProtoWriter()
-        w.varintField(1, UInt64(MESH_HOP_PORTNUM))   // portnum
-        w.bytesField(2, payload)                      // payload
+        w.varintField(1, UInt64(portnum))
+        w.bytesField(2, payload)
         return w.bytes
     }
 
-    /// Encode a `ToRadio{ packet }` that ships one Hop fragment. `to` is the destination node num
-    /// (MESH_BROADCAST_ADDR for HELLO/PING). `id` is a fresh packet id; `hopLimit` bounds mesh relaying.
     static func encodeToRadioPacket(from: UInt32, to: UInt32, id: UInt32, hopLimit: UInt32,
-                                    fragment: [UInt8]) -> [UInt8] {
+                                    fragment: [UInt8], portnum: UInt32 = MESH_HOP_PORTNUM,
+                                    channel: UInt32 = 0, wantAck: Bool = false) -> [UInt8] {
         var pkt = ProtoWriter()
-        pkt.fixed32Field(1, from)                     // from
-        pkt.fixed32Field(2, to)                       // to
-        pkt.bytesField(4, encodeData(payload: fragment)) // decoded (Data)
-        pkt.fixed32Field(6, id)                       // id
-        pkt.varintField(9, UInt64(hopLimit))          // hop_limit
+        pkt.fixed32Field(1, from)
+        pkt.fixed32Field(2, to)
+        if channel != 0 { pkt.varintField(3, UInt64(channel)) }
+        pkt.bytesField(4, encodeData(payload: fragment, portnum: portnum))
+        pkt.fixed32Field(6, id)
+        pkt.varintField(9, UInt64(hopLimit))
+        if wantAck { pkt.varintField(10, 1) }
         var radio = ProtoWriter()
-        radio.bytesField(1, pkt.bytes)                // ToRadio.packet
+        radio.bytesField(1, pkt.bytes)
         return radio.bytes
     }
 
@@ -216,21 +271,63 @@ enum MeshtasticProto {
     /// config + node db + MyNodeInfo (the bearer only needs MyNodeInfo, for our own node num).
     static func encodeWantConfig(_ nonce: UInt32) -> [UInt8] {
         var w = ProtoWriter()
-        w.varintField(3, UInt64(nonce))               // want_config_id
+        w.varintField(3, UInt64(nonce))
         return w.bytes
     }
 
+    /// AdminMessage.get_channel_request. Firmware uses index+1 so 0 can mean "unset".
+    static func encodeGetChannelRequest(index: Int) -> [UInt8] {
+        var w = ProtoWriter()
+        w.varintField(1, UInt64(index + 1))
+        return w.bytes
+    }
+
+    static func encodeChannel(index: Int, name: String, psk: [UInt8], role: Int) -> [UInt8] {
+        var settings = ProtoWriter()
+        settings.bytesField(2, psk)
+        settings.bytesField(3, Array(name.utf8))
+        settings.fixed32Field(4, MESH_HOP_CHANNEL_ID)
+        var channel = ProtoWriter()
+        channel.varintField(1, UInt64(index))
+        channel.bytesField(2, settings.bytes)
+        channel.varintField(3, UInt64(role))
+        return channel.bytes
+    }
+
+    /// AdminMessage.set_channel of Hop's SECONDARY, with the required session_passkey.
+    static func encodeSetHopChannel(passkey: [UInt8], index: Int) -> [UInt8] {
+        let channel = encodeChannel(index: index, name: MESH_HOP_CHANNEL_NAME,
+                                    psk: MESH_HOP_CHANNEL_PSK, role: MESH_CHANNEL_ROLE_SECONDARY)
+        var w = ProtoWriter()
+        w.bytesField(33, channel)
+        if !passkey.isEmpty { w.bytesField(101, passkey) }
+        return w.bytes
+    }
+
+    /// AdminMessage.get_channel_response, for tests that drive the bearer without a radio.
+    static func encodeGetChannelResponse(passkey: [UInt8], index: Int, name: String,
+                                         psk: [UInt8], role: Int) -> [UInt8] {
+        var w = ProtoWriter()
+        w.bytesField(2, encodeChannel(index: index, name: name, psk: psk, role: role))
+        if !passkey.isEmpty { w.bytesField(101, passkey) }
+        return w.bytes
+    }
+
+    static func encodeAdminToRadio(to: UInt32, id: UInt32, admin: [UInt8]) -> [UInt8] {
+        encodeToRadioPacket(from: 0, to: to, id: id, hopLimit: 0, fragment: admin,
+                            portnum: MESH_ADMIN_PORTNUM, channel: 0)
+    }
+
     /// Decode one `FromRadio` frame into the one thing the bearer acts on, or nil if it is a message the
-    /// bearer ignores (config, node_info, log records, ...) or is malformed. Only Hop-port data packets
-    /// and MyNodeInfo are surfaced.
+    /// bearer ignores (config, node_info, log records, ...) or is malformed.
     static func decodeFromRadio(_ bytes: [UInt8]) -> MeshInbound? {
         var r = ProtoReader(bytes)
         while let (field, wire) = r.readTag() {
             switch (field, wire) {
-            case (2, 2):                              // packet = MeshPacket
+            case (2, 2):
                 guard let sub = r.readBytes() else { return nil }
                 if let inbound = decodeMeshPacket(sub) { return inbound }
-            case (3, 2):                              // my_info = MyNodeInfo
+            case (3, 2):
                 guard let sub = r.readBytes() else { return nil }
                 if let num = decodeMyNodeNum(sub) { return .myNodeNum(num) }
             default:
@@ -240,40 +337,128 @@ enum MeshtasticProto {
         return nil
     }
 
-    /// Decode a `MeshPacket`, returning a Hop-port data packet as `.hopData(from:payload:)` or nil for
-    /// anything else (a different port, an encrypted-only packet we cannot read, a malformed frame).
     static func decodeMeshPacket(_ bytes: [UInt8]) -> MeshInbound? {
         var r = ProtoReader(bytes)
         var from: UInt32 = 0
         var decoded: [UInt8]?
         while let (field, wire) = r.readTag() {
             switch (field, wire) {
-            case (1, 5): guard let v = r.readFixed32() else { return nil }; from = v      // from
-            case (4, 2): guard let v = r.readBytes() else { return nil }; decoded = v     // decoded (Data)
+            case (1, 5): guard let v = r.readFixed32() else { return nil }; from = v
+            case (4, 2): guard let v = r.readBytes() else { return nil }; decoded = v
             default: guard r.skip(wire) else { return nil }
             }
         }
-        guard let data = decoded, let payload = decodeHopData(data) else { return nil }
-        return .hopData(from: from, payload: payload)
+        guard let data = decoded, let (port, payload) = decodeData(data) else { return nil }
+        switch port {
+        case MESH_HOP_PORTNUM: return .hopData(from: from, payload: payload)
+        case MESH_ADMIN_PORTNUM: return .admin(payload: payload)
+        case MESH_ROUTING_PORTNUM: return decodeRouting(data)
+        default: return nil
+        }
     }
 
-    /// Decode a `Data` submessage, returning its payload IFF it is on the Hop port, else nil.
-    static func decodeHopData(_ bytes: [UInt8]) -> [UInt8]? {
+    static func decodeRouting(_ data: [UInt8]) -> MeshInbound? {
+        var r = ProtoReader(data)
+        var port: UInt32 = 0
+        var payload: [UInt8]?
+        var requestId: UInt32 = 0
+        while let (field, wire) = r.readTag() {
+            switch (field, wire) {
+            case (1, 0):
+                guard let v = r.readVarint() else { return nil }
+                port = UInt32(truncatingIfNeeded: v)
+            case (2, 2): guard let v = r.readBytes() else { return nil }; payload = v
+            case (6, 5): guard let v = r.readFixed32() else { return nil }; requestId = v
+            default: guard r.skip(wire) else { return nil }
+            }
+        }
+        guard port == MESH_ROUTING_PORTNUM else { return nil }
+        var error = 0
+        if let payload {
+            var p = ProtoReader(payload)
+            while let (field, wire) = p.readTag() {
+                switch (field, wire) {
+                case (3, 0):
+                    guard let v = p.readVarint() else { return nil }
+                    error = Int(v)
+                default: guard p.skip(wire) else { return nil }
+                }
+            }
+        }
+        return .routing(requestId: requestId, error: error)
+    }
+
+    static func decodeData(_ bytes: [UInt8]) -> (port: UInt32, payload: [UInt8])? {
         var r = ProtoReader(bytes)
         var portnum: UInt32 = 0
         var payload: [UInt8]?
+        var sawPort = false
         while let (field, wire) = r.readTag() {
             switch (field, wire) {
-            case (1, 0): guard let v = r.readVarint() else { return nil }; portnum = UInt32(truncatingIfNeeded: v)
+            case (1, 0):
+                guard let v = r.readVarint() else { return nil }
+                portnum = UInt32(truncatingIfNeeded: v)
+                sawPort = true
             case (2, 2): guard let v = r.readBytes() else { return nil }; payload = v
             default: guard r.skip(wire) else { return nil }
             }
         }
-        guard portnum == MESH_HOP_PORTNUM else { return nil }
-        return payload ?? []
+        guard sawPort else { return nil }
+        return (portnum, payload ?? [])
     }
 
-    /// Decode `MyNodeInfo.my_node_num` (field 1, varint), or nil.
+    /// Decode a `Data` submessage, returning its payload IFF it is on the Hop port, else nil.
+    static func decodeHopData(_ bytes: [UInt8]) -> [UInt8]? {
+        guard let (port, payload) = decodeData(bytes), port == MESH_HOP_PORTNUM else { return nil }
+        return payload
+    }
+
+    static func decodeChannel(_ bytes: [UInt8]) -> MeshChannel? {
+        var r = ProtoReader(bytes)
+        var index = 0
+        var settings: [UInt8]?
+        var role = 0
+        while let (field, wire) = r.readTag() {
+            switch (field, wire) {
+            case (1, 0): guard let v = r.readVarint() else { return nil }; index = Int(v)
+            case (2, 2): guard let v = r.readBytes() else { return nil }; settings = v
+            case (3, 0): guard let v = r.readVarint() else { return nil }; role = Int(v)
+            default: guard r.skip(wire) else { return nil }
+            }
+        }
+        var name = ""
+        var psk: [UInt8] = []
+        if let settings {
+            var s = ProtoReader(settings)
+            while let (field, wire) = s.readTag() {
+                switch (field, wire) {
+                case (2, 2): guard let v = s.readBytes() else { return nil }; psk = v
+                case (3, 2):
+                    guard let v = s.readBytes(), let n = String(bytes: v, encoding: .utf8) else { return nil }
+                    name = n
+                default: guard s.skip(wire) else { return nil }
+                }
+            }
+        }
+        return MeshChannel(index: index, name: name, psk: psk, role: role)
+    }
+
+    static func decodeAdminMessage(_ bytes: [UInt8]) -> AdminInbound? {
+        var r = ProtoReader(bytes)
+        var passkey: [UInt8] = []
+        var channel: MeshChannel?
+        while let (field, wire) = r.readTag() {
+            switch (field, wire) {
+            case (2, 2):
+                guard let sub = r.readBytes(), let ch = decodeChannel(sub) else { return nil }
+                channel = ch
+            case (101, 2): guard let v = r.readBytes() else { return nil }; passkey = v
+            default: guard r.skip(wire) else { return nil }
+            }
+        }
+        return AdminInbound(passkey: passkey, channel: channel)
+    }
+
     static func decodeMyNodeNum(_ bytes: [UInt8]) -> UInt32? {
         var r = ProtoReader(bytes)
         while let (field, wire) = r.readTag() {
@@ -305,6 +490,15 @@ enum MeshFrame {
     static func pong(echo: [UInt8]) -> [UInt8] { [M_PONG] + echo }
 
     static func data(_ payload: [UInt8]) -> [UInt8] { [M_DATA] + payload }
+
+    static func ack(msgId: UInt16) -> [UInt8] {
+        [M_ACK, UInt8(msgId >> 8), UInt8(msgId & 0xff)]
+    }
+
+    static func ackMsgId(_ body: [UInt8]) -> UInt16? {
+        guard body.count >= 3, body[0] == M_ACK else { return nil }
+        return UInt16(body[1]) << 8 | UInt16(body[2])
+    }
 
     /// The 16-byte peerId a HELLO body carries, or nil if the body is too short.
     static func helloPeerId(_ body: [UInt8]) -> Data? {
@@ -362,6 +556,11 @@ struct MeshFragHeader: Equatable {
     }
 }
 
+struct MeshComplete: Equatable {
+    let msgId: UInt16
+    let body: [UInt8]
+}
+
 /// Per-peer reassembly of fragmented Hop frames. Keyed by (peer node num, msgId). A message completes when
 /// all `count` fragments have arrived; it is evicted if it goes stale (TTL) or the peer exceeds
 /// MESH_MAX_PARTIAL_PER_PEER concurrent partials (oldest dropped). Pure: the caller supplies `now` so it
@@ -378,15 +577,14 @@ final class MeshReassembler {
 
     /// Feed one inbound fragment from `peer`. Returns the fully reassembled frame body when this fragment
     /// completes a message, else nil. `nowS` is the caller's clock (seconds).
-    func accept(peer: UInt32, fragment: [UInt8], nowS: Double) -> [UInt8]? {
+    func accept(peer: UInt32, fragment: [UInt8], nowS: Double) -> MeshComplete? {
         guard let h = MeshFragHeader(fragment) else { return nil }
         evictStale(nowS: nowS)
         var byId = partials[peer] ?? [:]
 
-        // Single-fragment fast path: no state needed. Do not leave an empty per-peer entry behind.
         if h.count == 1 {
             if byId.isEmpty { partials.removeValue(forKey: peer) } else { partials[peer] = byId }
-            return h.chunk
+            return MeshComplete(msgId: h.msgId, body: h.chunk)
         }
 
         var p = byId[h.msgId] ?? Partial(count: h.count, chunks: [:], firstSeenS: nowS)
@@ -409,7 +607,7 @@ final class MeshReassembler {
         for idx in 0..<p.count { body.append(contentsOf: p.chunks[idx] ?? []) }
         byId.removeValue(forKey: h.msgId)
         if byId.isEmpty { partials.removeValue(forKey: peer) } else { partials[peer] = byId }
-        return body
+        return MeshComplete(msgId: h.msgId, body: body)
     }
 
     /// Drop every peer's partials whose first fragment is older than the TTL.

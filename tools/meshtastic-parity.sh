@@ -60,6 +60,22 @@ int_consts = {
         r"^let MESH_HOP_PORTNUM: UInt32 = ([0-9]+)",
         r"^internal const val MESH_HOP_PORTNUM = ([0-9]+)",
     ),
+    "admin_portnum": (
+        r"^let MESH_ADMIN_PORTNUM: UInt32 = ([0-9]+)",
+        r"^internal const val MESH_ADMIN_PORTNUM = ([0-9]+)",
+    ),
+    "routing_portnum": (
+        r"^let MESH_ROUTING_PORTNUM: UInt32 = ([0-9]+)",
+        r"^internal const val MESH_ROUTING_PORTNUM = ([0-9]+)",
+    ),
+    "spray_max_outstanding": (
+        r"^let MESH_SPRAY_MAX_OUTSTANDING = ([0-9]+)",
+        r"^internal const val MESH_SPRAY_MAX_OUTSTANDING = ([0-9]+)",
+    ),
+    "spray_multiplier": (
+        r"^let MESH_SPRAY_MULTIPLIER = ([0-9]+)",
+        r"^internal const val MESH_SPRAY_MULTIPLIER = ([0-9]+)",
+    ),
     "max_chunk": (
         r"^let MESH_MAX_CHUNK = ([0-9]+)",
         r"^internal const val MESH_MAX_CHUNK = ([0-9]+)",
@@ -71,6 +87,14 @@ int_consts = {
     "max_frags": (
         r"^let MESH_MAX_FRAGS = ([0-9]+)",
         r"^internal const val MESH_MAX_FRAGS = ([0-9]+)",
+    ),
+    "hop_channel_role_secondary": (
+        r"^let MESH_CHANNEL_ROLE_SECONDARY = ([0-9]+)",
+        r"^internal const val MESH_CHANNEL_ROLE_SECONDARY = ([0-9]+)",
+    ),
+    "hop_max_channels": (
+        r"^let MESH_MAX_CHANNELS = ([0-9]+)",
+        r"^internal const val MESH_MAX_CHANNELS = ([0-9]+)",
     ),
 }
 for key, (swp, kop) in int_consts.items():
@@ -87,6 +111,7 @@ frame_consts = {
     "hello": (r"^let M_HELLO: UInt8 = 0x([0-9a-fA-F]+)", r"^internal const val M_HELLO = 0x([0-9a-fA-F]+)"),
     "ping": (r"^let M_PING: UInt8 = 0x([0-9a-fA-F]+)", r"^internal const val M_PING = 0x([0-9a-fA-F]+)"),
     "pong": (r"^let M_PONG: UInt8 = 0x([0-9a-fA-F]+)", r"^internal const val M_PONG = 0x([0-9a-fA-F]+)"),
+    "ack": (r"^let M_ACK: UInt8 = 0x([0-9a-fA-F]+)", r"^internal const val M_ACK = 0x([0-9a-fA-F]+)"),
     "data": (r"^let M_DATA: UInt8 = 0x([0-9a-fA-F]+)", r"^internal const val M_DATA = 0x([0-9a-fA-F]+)"),
 }
 for key, (swp, kop) in frame_consts.items():
@@ -104,6 +129,9 @@ for key, (swp, kop) in frame_consts.items():
 for key, swp, kop in (
     ("ping_ms", r"^let MESH_PING_S: Double = ([0-9.]+)", r"^internal const val MESH_PING_MS = ([0-9_]+)L"),
     ("dead_ms", r"^let MESH_DEAD_S: Double = ([0-9.]+)", r"^internal const val MESH_DEAD_MS = ([0-9_]+)L"),
+    ("spray_initial_ms", r"^let MESH_SPRAY_INITIAL_S: Double = ([0-9.]+)", r"^internal const val MESH_SPRAY_INITIAL_MS = ([0-9_]+)L"),
+    ("spray_cap_ms", r"^let MESH_SPRAY_CAP_S: Double = ([0-9.]+)", r"^internal const val MESH_SPRAY_CAP_MS = ([0-9_]+)L"),
+    ("spray_tick_ms", r"^let MESH_SPRAY_TICK_S: Double = ([0-9.]+)", r"^internal const val MESH_SPRAY_TICK_MS = ([0-9_]+)L"),
 ):
     want = spec[key]
     m = re.search(swp, swift, re.M)
@@ -116,6 +144,38 @@ for key, swp, kop in (
     kv = grab(kotlin, kop, key, kotlin_path)
     if kv is not None and kv != want:
         failures.append(f"{kotlin_path}: {key} is {kv}ms, canonical says {want}ms")
+
+# --- Hop SECONDARY channel identity (name, PSK hex, channel id) --------------------------------------
+for key, swp, kop in (
+    ("hop_channel_name", r'^let MESH_HOP_CHANNEL_NAME = "([^"]+)"',
+     r'^internal const val MESH_HOP_CHANNEL_NAME = "([^"]+)"'),
+    ("hop_channel_psk_hex", r'^let MESH_HOP_CHANNEL_PSK_HEX = "([0-9a-f]+)"',
+     r'^internal const val MESH_HOP_CHANNEL_PSK_HEX = "([0-9a-f]+)"'),
+):
+    want = spec[key]
+    for path, text, pat in ((swift_path, swift, swp), (kotlin_path, kotlin, kop)):
+        m = re.search(pat, text, re.M)
+        if not m:
+            failures.append(f"{path}: could not find {key} (pattern {pat!r})")
+        elif m.group(1) != want:
+            failures.append(f"{path}: {key} is {m.group(1)!r}, canonical says {want!r}")
+
+want_id = spec["hop_channel_id"]
+for path, text, pat in (
+    (swift_path, swift, r"^let MESH_HOP_CHANNEL_ID: UInt32 = 0x([0-9A-Fa-f]+)"),
+    (kotlin_path, kotlin, r"^internal const val MESH_HOP_CHANNEL_ID = 0x([0-9A-Fa-f]+)L"),
+):
+    m = re.search(pat, text, re.M)
+    if not m:
+        failures.append(f"{path}: could not find hop_channel_id (pattern {pat!r})")
+    elif int(m.group(1), 16) != want_id:
+        failures.append(f"{path}: hop_channel_id is 0x{m.group(1)}, canonical says {want_id}")
+
+# Hop must ride SECONDARY, never PRIMARY. Role 2 is the Meshtastic SECONDARY enum.
+if spec["hop_channel_role_secondary"] != 2:
+    failures.append(
+        f"{vectors_path}: hop_channel_role_secondary is {spec['hop_channel_role_secondary']}, must be 2 (SECONDARY)"
+    )
 
 # --- decision point 1: the Hop port must live in the Meshtastic PRIVATE_APP range (256..511) ---------
 # Pinning the number alone is not enough: a first-party Meshtastic PortNum (below 256) would collide with

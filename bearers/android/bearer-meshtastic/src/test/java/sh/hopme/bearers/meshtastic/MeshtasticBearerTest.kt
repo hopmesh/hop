@@ -22,6 +22,7 @@ class MeshtasticBearerTest {
     private val myId = byteArrayOf(0x80.toByte()) + ByteArray(15)
     private val peerId = byteArrayOf(0x01) + ByteArray(15)
     private val peerNode = 4242L
+    private var nextDeliverId = 1
 
     private class FakeRadio : MeshtasticRadio {
         override var onConnect: (() -> Unit)? = null
@@ -43,6 +44,20 @@ class MeshtasticBearerTest {
         fun deliverHopPacket(from: Long, payload: ByteArray) {
             val pkt = ProtoWriter().fixed32Field(1, from).bytesField(4, MeshtasticProto.encodeData(payload))
             onFromRadio?.invoke(ProtoWriter().bytesField(2, pkt.toBytes()).toBytes())
+        }
+        fun deliverAdmin(from: Long, payload: ByteArray) {
+            val pkt = ProtoWriter()
+                .fixed32Field(1, from)
+                .bytesField(4, MeshtasticProto.encodeData(payload, MESH_ADMIN_PORTNUM.toLong()))
+            onFromRadio?.invoke(ProtoWriter().bytesField(2, pkt.toBytes()).toBytes())
+        }
+        fun deliverFreeHopSlot(index: Int = 1, passkey: ByteArray = byteArrayOf(9, 9, 9, 9)) {
+            deliverAdmin(
+                0L,
+                MeshtasticProto.encodeGetChannelResponse(
+                    passkey, index, "", byteArrayOf(), MESH_CHANNEL_ROLE_DISABLED,
+                ),
+            )
         }
         fun clearSent() = sent.clear()
     }
@@ -80,6 +95,36 @@ class MeshtasticBearerTest {
         val d = data ?: return null
         val payload = MeshtasticProto.decodeHopData(d) ?: return null
         return to to payload
+    }
+
+    private fun toRadioAdmin(bytes: ByteArray): ByteArray? {
+        val r = ProtoReader(bytes)
+        val (field, wire) = r.readTag() ?: return null
+        if (field != 1 || wire != 2) return null
+        val pr = ProtoReader(r.readBytes() ?: return null)
+        var data: ByteArray? = null
+        while (true) {
+            val (f, w) = pr.readTag() ?: break
+            when {
+                f == 4 && w == 2 -> data = pr.readBytes()
+                else -> if (!pr.skip(w)) break
+            }
+        }
+        val d = data ?: return null
+        val (port, payload) = MeshtasticProto.decodeData(d) ?: return null
+        return if (port == MESH_ADMIN_PORTNUM.toLong()) payload else null
+    }
+
+    private fun packetChannel(bytes: ByteArray): Int {
+        val r = ProtoReader(bytes)
+        val (field, wire) = r.readTag() ?: return 0
+        if (field != 1 || wire != 2) return 0
+        val pr = ProtoReader(r.readBytes() ?: return 0)
+        while (true) {
+            val (f, w) = pr.readTag() ?: return 0
+            if (f == 3 && w == 0) return (pr.readVarint() ?: 0L).toInt()
+            if (!pr.skip(w)) return 0
+        }
     }
 
     private fun allFrames(sends: List<ByteArray>): List<Pair<Long, ByteArray>> {
@@ -121,10 +166,14 @@ class MeshtasticBearerTest {
         radio.fireConnect()
         radio.deliverMyNodeNum(7L)
         bearer.awaitIdle()
+        radio.deliverFreeHopSlot()
+        bearer.awaitIdle()
     }
 
     private fun deliverFrame(bearer: MeshtasticBearer, radio: FakeRadio, frame: ByteArray) {
-        for (frag in meshFragment(frame, 55)!!) radio.deliverHopPacket(peerNode, frag)
+        val id = nextDeliverId
+        nextDeliverId = (nextDeliverId + 1) and 0xffff
+        for (frag in meshFragment(frame, id)!!) radio.deliverHopPacket(peerNode, frag)
         bearer.awaitIdle()
     }
 
@@ -141,14 +190,25 @@ class MeshtasticBearerTest {
         assertTrue(radio.started)
     }
 
-    @Test fun connectRequestsConfigAndBeaconsHello() {
+    @Test fun connectRequestsConfigThenArmsSecondaryThenHellos() {
         val (bearer, radio, _) = makeBearer()
         radio.fireConnect()
         bearer.awaitIdle()
         assertTrue(radio.sent.any { toRadioFragment(it) == null && it.isNotEmpty() })  // want_config
+        assertNull(frameTo(MESH_BROADCAST_ADDR, radio.sent))
+
+        radio.deliverMyNodeNum(7L)
+        bearer.awaitIdle()
+        assertNull(frameTo(MESH_BROADCAST_ADDR, radio.sent))
+        assertTrue(radio.sent.any { toRadioAdmin(it) != null })
+
+        radio.deliverFreeHopSlot(1)
+        bearer.awaitIdle()
         val hello = frameTo(MESH_BROADCAST_ADDR, radio.sent)
         assertEquals(M_HELLO, hello!![0].toInt() and 0xff)
         assertArrayEquals(myId, MeshFrame.helloPeerId(hello))
+        val hopPkt = radio.sent.first { toRadioFragment(it) != null }
+        assertEquals(1, packetChannel(hopPkt))
     }
 
     @Test fun learnsMyNodeNum() {
@@ -164,8 +224,8 @@ class MeshtasticBearerTest {
         assertArrayEquals(peerId, sink.ups[0].peer)
         assertTrue(sink.ups[0].dialer)   // we are the greater id -> Noise initiator
         assertEquals(1, bearer.linkCountForTest())
-        val reply = frameTo(peerNode, radio.sent)
-        assertEquals(M_HELLO, reply!![0].toInt() and 0xff)
+        val reply = allFrames(radio.sent).first { it.first == peerNode && (it.second[0].toInt() and 0xff) == M_HELLO }.second
+        assertEquals(M_HELLO, reply[0].toInt() and 0xff)
         assertArrayEquals(myId, MeshFrame.helloPeerId(reply))
         assertEquals(1, reply[17].toInt())
     }
@@ -258,5 +318,34 @@ class MeshtasticBearerTest {
         deliverFrame(bearer, radio, MeshFrame.hello(myId, false))
         assertEquals(0, bearer.linkCountForTest())
         assertTrue(sink.ups.isEmpty())
+    }
+
+    @Test fun inboundDataEmitsAck() {
+        val (bearer, radio, _) = makeBearer()
+        bringLinkUp(bearer, radio)
+        radio.clearSent()
+        deliverFrame(bearer, radio, MeshFrame.data(byteArrayOf(9)))
+        assertTrue(allFrames(radio.sent).any { it.first == peerNode && (it.second[0].toInt() and 0xff) == M_ACK })
+    }
+
+    @Test fun dataSpraysUntilHopAck() {
+        val (bearer, radio, sink) = makeBearer()
+        bringLinkUp(bearer, radio)
+        val link = sink.ups[0].link
+        radio.clearSent()
+        bearer.send(byteArrayOf(9), link)
+        bearer.awaitIdle()
+        fun dataCount() = allFrames(radio.sent).count { it.first == peerNode && (it.second[0].toInt() and 0xff) == M_DATA }
+        assertEquals(1, dataCount())
+        val msgId = radio.sent.mapNotNull { toRadioFragment(it)?.second }
+            .mapNotNull { MeshFragHeader.parse(it) }
+            .first { it.chunk.isNotEmpty() && (it.chunk[0].toInt() and 0xff) == M_DATA }
+            .msgId
+        bearer.runMaintenanceForTest(System.currentTimeMillis() + MESH_SPRAY_INITIAL_MS + 50)
+        assertEquals(2, dataCount())
+        deliverFrame(bearer, radio, MeshFrame.ack(msgId))
+        radio.clearSent()
+        bearer.runMaintenanceForTest(System.currentTimeMillis() + MESH_SPRAY_CAP_MS)
+        assertEquals(0, dataCount())
     }
 }

@@ -639,6 +639,24 @@ final class HopDriverBridge: RCTEventEmitter {
     }
   }
 
+  /// Persist a hop-relayd URL. Empty string clears the pin. The shared RelayBearer is registered
+  /// at start(), so the pin is read on the next start, matching Android.
+  @objc(setPinnedRelay:resolver:rejecter:)
+  func setPinnedRelay(_ url: String, resolver resolve: RCTPromiseResolveBlock,
+                      rejecter reject: RCTPromiseRejectBlock) {
+    do {
+      try onMain {
+        let bearer = try liveBearer()
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        bearer.setPinnedRelay(trimmed.isEmpty ? nil : trimmed)
+        NSLog("HOPRELAY url=\(trimmed.isEmpty ? "default" : trimmed)")
+      }
+      resolve(nil)
+    } catch {
+      reject("hop_driver_error", "could not pin relay: \(error)", error)
+    }
+  }
+
   /// Ceiling on how long a toggle may take to settle before it is reported as failed. Matches Android.
   private static let transportSettleSeconds: TimeInterval = 5
 

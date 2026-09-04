@@ -12,7 +12,7 @@ final class MeshBearerTests: XCTestCase {
     let myId = Data([0x80] + [UInt8](repeating: 0, count: 15))
     let peerId = Data([0x01] + [UInt8](repeating: 0, count: 15))
     let peerNode: UInt32 = 4242
-
+    private var nextDeliverId: UInt16 = 1
     /// Build a bearer + fake radio, start it, and barrier so the async start setup completed.
     private func makeBearer() -> (MeshtasticBearer, FakeRadio, RecordingSink) {
         let radio = FakeRadio()
@@ -29,12 +29,15 @@ final class MeshBearerTests: XCTestCase {
     private func connect(_ bearer: MeshtasticBearer, _ radio: FakeRadio, myNode: UInt32 = 7) {
         radio.fireConnect()
         radio.deliverMyNodeNum(myNode)
+        radio.deliverFreeHopSlot()
         _ = bearer.testLinkCount   // barrier
     }
 
     /// Deliver a full Hop link frame from `peerNode` by fragmenting it exactly as a peer bearer would.
     private func deliverFrame(_ bearer: MeshtasticBearer, _ radio: FakeRadio, _ frame: [UInt8]) {
-        for frag in meshFragment(frame, msgId: 55)! {
+        let id = nextDeliverId
+        nextDeliverId &+= 1
+        for frag in meshFragment(frame, msgId: id)! {
             radio.deliverHopPacket(from: peerNode, payload: frag)
         }
         _ = bearer.testLinkCount   // barrier
@@ -51,17 +54,27 @@ final class MeshBearerTests: XCTestCase {
         XCTAssertTrue(radio.started)
     }
 
-    func testConnectRequestsConfigAndBeaconsHello() {
+    func testConnectRequestsConfigThenArmsSecondaryThenHellos() {
         let (bearer, radio, _) = makeBearer()
         radio.fireConnect()
-        _ = bearer.testLinkCount   // barrier
+        _ = bearer.testLinkCount
 
-        // A want_config ToRadio (field 3) and a broadcast HELLO were sent.
         let wantConfig = radio.sent.contains { MeshTestDecode.toRadioFragment($0) == nil && !$0.isEmpty }
         XCTAssertTrue(wantConfig, "expected a want_config ToRadio")
+        XCTAssertNil(MeshTestDecode.frame(to: MESH_BROADCAST_ADDR, in: radio.sent))
+
+        radio.deliverMyNodeNum(7)
+        _ = bearer.testLinkCount
+        XCTAssertNil(MeshTestDecode.frame(to: MESH_BROADCAST_ADDR, in: radio.sent))
+        XCTAssertTrue(radio.sent.contains { MeshTestDecode.toRadioAdmin($0) != nil })
+
+        radio.deliverFreeHopSlot()
+        _ = bearer.testLinkCount
         let helloBody = MeshTestDecode.frame(to: MESH_BROADCAST_ADDR, in: radio.sent)
         XCTAssertEqual(helloBody?.first, M_HELLO)
         XCTAssertEqual(MeshFrame.helloPeerId(helloBody ?? []), myId)
+        let hopPkt = radio.sent.first { MeshTestDecode.toRadioFragment($0) != nil }
+        XCTAssertEqual(MeshTestDecode.packetChannel(hopPkt ?? []), 1)
     }
 
     func testLearnsMyNodeNum() {
@@ -81,7 +94,7 @@ final class MeshBearerTests: XCTestCase {
         XCTAssertEqual(bearer.testLinkCount, 1)
 
         // We answered with a unicast HELLO to the peer node carrying OUR nodeId and OUR greater-ness (1).
-        let reply = MeshTestDecode.frame(to: peerNode, in: radio.sent)
+        let reply = MeshTestDecode.allFrames(radio.sent).first { $0.to == peerNode && $0.body.first == M_HELLO }?.body
         XCTAssertEqual(reply?.first, M_HELLO)
         XCTAssertEqual(MeshFrame.helloPeerId(reply ?? []), myId)
         XCTAssertEqual(reply?[17], 1)   // we are the greater id
@@ -178,9 +191,44 @@ final class MeshBearerTests: XCTestCase {
     func testSelfHelloEchoIgnored() {
         let (bearer, radio, sink) = makeBearer()
         connect(bearer, radio)
-        // The mesh reflects our own broadcast HELLO back to us; it must not create a link.
         deliverFrame(bearer, radio, MeshFrame.hello(myId: myId, isGreater: false))
         XCTAssertEqual(bearer.testLinkCount, 0)
         XCTAssertTrue(sink.ups.isEmpty)
+    }
+
+    func testInboundDataEmitsAck() {
+        let (bearer, radio, _) = makeBearer()
+        bringLinkUp(bearer, radio)
+        radio.clearSent()
+        deliverFrame(bearer, radio, MeshFrame.data([9]))
+        XCTAssertTrue(MeshTestDecode.allFrames(radio.sent).contains { $0.to == peerNode && $0.body.first == M_ACK })
+    }
+
+    func testDataSpraysUntilHopAck() {
+        let (bearer, radio, sink) = makeBearer()
+        bringLinkUp(bearer, radio)
+        guard let link = sink.ups.first?.link else { return XCTFail("no link") }
+        radio.clearSent()
+        bearer.send(Data([9]), on: link)
+        _ = bearer.testLinkCount
+
+        func dataCount() -> Int {
+            MeshTestDecode.allFrames(radio.sent).filter { $0.to == peerNode && $0.body.first == M_DATA }.count
+        }
+        XCTAssertEqual(dataCount(), 1)
+
+        let msgId = radio.sent.compactMap { MeshTestDecode.toRadioFragment($0)?.fragment }
+            .compactMap { MeshFragHeader($0) }
+            .first { !$0.chunk.isEmpty && $0.chunk[0] == M_DATA }?
+            .msgId
+        XCTAssertNotNil(msgId)
+
+        bearer.testRunMaintenance(atMs: nowMs() + UInt64(MESH_SPRAY_INITIAL_S * 1000) + 50)
+        XCTAssertEqual(dataCount(), 2)
+
+        deliverFrame(bearer, radio, MeshFrame.ack(msgId: msgId ?? 0))
+        radio.clearSent()
+        bearer.testRunMaintenance(atMs: nowMs() + UInt64(MESH_SPRAY_CAP_S * 1000))
+        XCTAssertEqual(dataCount(), 0)
     }
 }

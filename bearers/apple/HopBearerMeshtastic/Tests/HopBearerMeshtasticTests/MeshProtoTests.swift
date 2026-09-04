@@ -69,6 +69,53 @@ final class MeshProtoTests: XCTestCase {
         XCTAssertEqual(inbound, .hopData(from: 10, payload: [7, 8, 9]))
     }
 
+    func testHopPacketsCarrySecondaryChannel() {
+        let frame = MeshtasticProto.encodeToRadioPacket(
+            from: 0, to: 1, id: 2, hopLimit: 3, fragment: [1], channel: 1)
+        var r = ProtoReader(frame)
+        guard let (field, wire) = r.readTag(), field == 1, wire == 2, let pkt = r.readBytes() else {
+            return XCTFail("not a packet ToRadio")
+        }
+        var pr = ProtoReader(pkt)
+        var channel: UInt64 = 0
+        while let (f, w) = pr.readTag() {
+            if f == 3, w == 0 { channel = pr.readVarint() ?? 0 }
+            else { _ = pr.skip(w) }
+        }
+        XCTAssertEqual(channel, 1)
+    }
+
+    func testGetChannelRequestIsIndexPlusOne() {
+        var r = ProtoReader(MeshtasticProto.encodeGetChannelRequest(index: 1))
+        guard let (field, wire) = r.readTag() else { return XCTFail("no tag") }
+        XCTAssertEqual(field, 1); XCTAssertEqual(wire, 0)
+        XCTAssertEqual(r.readVarint(), 2)
+    }
+
+    func testGetChannelResponseRoundTrip() {
+        let passkey: [UInt8] = [9, 9, 9, 9]
+        let bytes = MeshtasticProto.encodeGetChannelResponse(
+            passkey: passkey, index: 1, name: MESH_HOP_CHANNEL_NAME,
+            psk: MESH_HOP_CHANNEL_PSK, role: MESH_CHANNEL_ROLE_SECONDARY)
+        let inbound = MeshtasticProto.decodeAdminMessage(bytes)
+        XCTAssertEqual(inbound?.passkey, passkey)
+        XCTAssertEqual(inbound?.channel?.index, 1)
+        XCTAssertEqual(inbound?.channel?.isHop, true)
+    }
+
+    func testDecodeFromRadioAdminPacket() {
+        let admin = MeshtasticProto.encodeGetChannelResponse(
+            passkey: [1], index: 1, name: "", psk: [], role: MESH_CHANNEL_ROLE_DISABLED)
+        var pkt = ProtoWriter()
+        pkt.fixed32Field(1, 7)
+        pkt.bytesField(4, MeshtasticProto.encodeData(payload: admin, portnum: MESH_ADMIN_PORTNUM))
+        var w = ProtoWriter(); w.bytesField(2, pkt.bytes)
+        guard case .admin(let payload) = MeshtasticProto.decodeFromRadio(w.bytes) else {
+            return XCTFail("expected admin inbound")
+        }
+        XCTAssertEqual(MeshtasticProto.decodeAdminMessage(payload)?.channel?.isFree, true)
+    }
+
     func testWantConfigEncodes() {
         let bytes = MeshtasticProto.encodeWantConfig(0xABCD)
         var r = ProtoReader(bytes)
@@ -101,5 +148,42 @@ final class MeshProtoTests: XCTestCase {
         XCTAssertEqual(MeshFrame.pong(echo: [1, 2, 3]), [M_PONG, 1, 2, 3])
         XCTAssertEqual(MeshFrame.data([9, 9]), [M_DATA, 9, 9])
         XCTAssertNil(MeshFrame.helloPeerId([M_HELLO, 1, 2]))   // too short
+    }
+
+    func testUnicastSetsWantAckBroadcastDoesNot() {
+        let uni = MeshtasticProto.encodeToRadioPacket(
+            from: 0, to: 20, id: 1, hopLimit: 3, fragment: [1], channel: 1, wantAck: true)
+        let bcast = MeshtasticProto.encodeToRadioPacket(
+            from: 0, to: MESH_BROADCAST_ADDR, id: 1, hopLimit: 3, fragment: [1], channel: 1, wantAck: false)
+        func wantAck(_ frame: [UInt8]) -> Bool {
+            var r = ProtoReader(frame)
+            guard let (f, w) = r.readTag(), f == 1, w == 2, let pkt = r.readBytes() else { return false }
+            var pr = ProtoReader(pkt)
+            while let (ff, ww) = pr.readTag() {
+                if ff == 10, ww == 0 { return (pr.readVarint() ?? 0) != 0 }
+                _ = pr.skip(ww)
+            }
+            return false
+        }
+        XCTAssertTrue(wantAck(uni))
+        XCTAssertFalse(wantAck(bcast))
+    }
+
+    func testDecodeRoutingNone() {
+        var routing = ProtoWriter(); routing.varintField(3, 0)
+        var data = ProtoWriter()
+        data.varintField(1, UInt64(MESH_ROUTING_PORTNUM))
+        data.bytesField(2, routing.bytes)
+        data.fixed32Field(6, 99)
+        var pkt = ProtoWriter()
+        pkt.fixed32Field(1, 7)
+        pkt.bytesField(4, data.bytes)
+        let inbound = MeshtasticProto.decodeMeshPacket(pkt.bytes)
+        if case .routing(let requestId, let error)? = inbound {
+            XCTAssertEqual(requestId, 99)
+            XCTAssertEqual(error, 0)
+        } else {
+            XCTFail("expected routing inbound")
+        }
     }
 }

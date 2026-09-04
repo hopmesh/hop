@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -14,6 +15,8 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import sh.hop.Bearer
 import sh.hop.HopRole
@@ -21,6 +24,7 @@ import sh.hop.LinkId
 import sh.hop.LinkSink
 import sh.hop.TAG
 import sh.hop.nodeIdGreater
+import java.util.ArrayDeque
 import sh.hop.toHex
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -96,6 +100,20 @@ class MeshtasticBearer internal constructor(
     private var stopped = false
     private var lastBeaconMs = 0L
     private var configNonce = 1L
+    private var radioUp = false
+    private var hopChannel: Int? = null
+    private var sessionPasskey = ByteArray(0)
+    private var channelProbe = 1
+    private val sprays = ArrayList<Spray>()
+    private val seenMsgIds = HashMap<Long, ArrayDeque<Int>>()
+
+    private class Spray(
+        val dest: Long,
+        val msgId: Int,
+        val frame: ByteArray,
+        var nextDueMs: Long,
+        var intervalMs: Long,
+    )
 
     override fun start() {
         if (work.isShutdown) work = Executors.newSingleThreadScheduledExecutor()
@@ -109,7 +127,7 @@ class MeshtasticBearer internal constructor(
         try {
             work.scheduleAtFixedRate(
                 { runCatching { runMaintenance(System.currentTimeMillis()) } },
-                MESH_PING_MS, MESH_PING_MS, TimeUnit.MILLISECONDS,
+                MESH_SPRAY_TICK_MS, MESH_SPRAY_TICK_MS, TimeUnit.MILLISECONDS,
             )
         } catch (_: RejectedExecutionException) {
             stopped = true
@@ -137,13 +155,21 @@ class MeshtasticBearer internal constructor(
 
     private fun onRadioConnected() {
         if (stopped) return
+        radioUp = true
+        hopChannel = null
+        channelProbe = 1
+        sessionPasskey = ByteArray(0)
         Log.i(TAG, "mesh radio-connected, requesting config")
         configNonce += 1
         radio.sendToRadio(MeshtasticProto.encodeWantConfig(configNonce))
-        broadcastHello()
+        requestHopChannel()
     }
 
     private fun onRadioDisconnected() {
+        radioUp = false
+        hopChannel = null
+        channelProbe = 1
+        sessionPasskey = ByteArray(0)
         for (link in ArrayList(linksByNode.values)) teardown(link, "radio down")
         myNodeNum = null
     }
@@ -154,30 +180,95 @@ class MeshtasticBearer internal constructor(
             is MeshInbound.MyNodeNum -> {
                 if (myNodeNum != inbound.num) Log.i(TAG, "mesh my-node-num=${inbound.num}")
                 myNodeNum = inbound.num
+                requestHopChannel()
             }
+            is MeshInbound.SeenNode -> Log.i(TAG, "mesh node-info num=${inbound.num}")
+            is MeshInbound.Admin -> onAdmin(inbound.payload)
+            is MeshInbound.Routing -> Log.i(TAG, "mesh routing id=${inbound.requestId} error=${inbound.error}")
             is MeshInbound.HopData -> {
-                if (inbound.from == 0L || inbound.from == myNodeNum) return  // ignore our own echoes
-                val body = reassembler.accept(inbound.from, inbound.payload, System.currentTimeMillis())
+                if (inbound.from == 0L || inbound.from == myNodeNum) {
+                    Log.i(TAG, "mesh hop echo from=${inbound.from} me=$myNodeNum")
+                    return
+                }
+                val done = reassembler.accept(inbound.from, inbound.payload, System.currentTimeMillis())
                     ?: return
-                handleFrame(inbound.from, body)
+                handleFrame(inbound.from, done.msgId, done.body)
             }
-            null -> {}
+            null -> {
+                val peek = MeshtasticProto.peekPacketPort(bytes)
+                val fields = ArrayList<Int>()
+                val pr = ProtoReader(bytes)
+                while (true) {
+                    val tag = pr.readTag() ?: break
+                    fields.add(tag.first)
+                    if (!pr.skip(tag.second)) break
+                }
+                Log.i(TAG, "mesh fromRadio drop len=${bytes.size} b0=${bytes.first().toInt() and 0xff} from=${peek?.first} port=${peek?.second} fields=$fields")
+            }
         }
     }
 
-    // ---- Hop link-frame handling ----------------------------------------------------------------------
+    private fun requestHopChannel() {
+        if (!radioUp || myNodeNum == null || hopChannel != null) return
+        sendAdmin(MeshtasticProto.encodeGetChannelRequest(channelProbe))
+    }
 
-    private fun handleFrame(node: Long, body: ByteArray) {
+    private fun sendAdmin(admin: ByteArray) {
+        val me = myNodeNum ?: return
+        val id = nextPktId; nextPktId = (nextPktId + 1) and 0xffffffffL
+        radio.sendToRadio(MeshtasticProto.encodeAdminToRadio(me, id, admin))
+    }
+
+    private fun onAdmin(payload: ByteArray) {
+        val inbound = MeshtasticProto.decodeAdminMessage(payload) ?: return
+        if (inbound.passkey.isNotEmpty()) sessionPasskey = inbound.passkey
+        val ch = inbound.channel ?: return
+        if (hopChannel != null) return
+        when {
+            ch.isHop -> armHopChannel(ch.index)
+            ch.isFree -> {
+                sendAdmin(MeshtasticProto.encodeSetHopChannel(sessionPasskey, ch.index))
+                armHopChannel(ch.index)
+            }
+            else -> {
+                val next = ch.index + 1
+                if (next < MESH_MAX_CHANNELS) {
+                    channelProbe = next
+                    sendAdmin(MeshtasticProto.encodeGetChannelRequest(next))
+                } else {
+                    Log.w(TAG, "mesh no secondary slot for Hop")
+                }
+            }
+        }
+    }
+
+    private fun armHopChannel(index: Int) {
+        hopChannel = index
+        Log.i(TAG, "mesh hop-channel=$index")
+        broadcastHello()
+    }
+
+    private fun handleFrame(node: Long, msgId: Int, body: ByteArray) {
         if (body.isEmpty()) return
         linksByNode[node]?.let { it.lastRxMs = System.currentTimeMillis() }
         when (body[0].toInt() and 0xff) {
-            M_HELLO -> MeshFrame.helloPeerId(body)?.let { onHello(node, it) }
+            M_ACK -> {
+                val id = MeshFrame.ackMsgId(body) ?: return
+                sprays.removeAll { it.dest == node && it.msgId == id }
+            }
+            M_HELLO -> {
+                sendAck(node, msgId)
+                if (alreadySeen(node, msgId)) return
+                MeshFrame.helloPeerId(body)?.let { onHello(node, it) }
+            }
             M_PING -> {
                 val echo = body.copyOfRange(1, minOf(17, body.size))
                 shipFrame(MeshFrame.pong(echo), node)
             }
             M_PONG -> { /* liveness only */ }
             M_DATA -> {
+                sendAck(node, msgId)
+                if (alreadySeen(node, msgId)) return
                 val l = linksByNode[node] ?: return
                 if (l.up) sink?.linkBytes(l.linkId, body.copyOfRange(1, body.size))
             }
@@ -185,8 +276,20 @@ class MeshtasticBearer internal constructor(
         }
     }
 
+    private fun alreadySeen(peer: Long, msgId: Int): Boolean {
+        val q = seenMsgIds.getOrPut(peer) { ArrayDeque() }
+        if (q.contains(msgId)) return true
+        q.addLast(msgId)
+        while (q.size > 32) q.removeFirst()
+        return false
+    }
+
+    private fun sendAck(node: Long, msgId: Int) {
+        emitFrame(MeshFrame.ack(msgId), node, mintFragMsgId(), wantAck = false)
+    }
+
     private fun onHello(node: Long, peerId: ByteArray) {
-        if (peerId.contentEquals(myId)) return   // our own HELLO reflected by the mesh
+        if (peerId.contentEquals(myId)) return
         linksByNode[node]?.let { it.peerId = peerId; it.lastRxMs = System.currentTimeMillis(); return }
         val isGreater = meshKeepGreaterLeg(nodeIdGreater(myId, peerId))
         val link = MeshLink(mint(), node, peerId, isGreater, System.currentTimeMillis())
@@ -195,36 +298,60 @@ class MeshtasticBearer internal constructor(
         linksByNode[node] = link
         linksByLinkId[link.linkId] = link
         Log.i(TAG, "mesh hello-recv peer=${link.peerShort} node=$node greater=$isGreater")
-        // Answer with a unicast HELLO so the peer learns us even if it missed our broadcast beacon.
         shipFrame(MeshFrame.hello(myId, isGreater), node)
         sink?.linkUp(link.linkId, link.role, peerId)
     }
 
-    // ---- Outbound -------------------------------------------------------------------------------------
+    private fun mintFragMsgId(): Int {
+        val id = nextMsgId
+        nextMsgId = (nextMsgId + 1) and 0xffff
+        return id
+    }
 
     private fun shipFrame(frame: ByteArray, dest: Long) {
-        val msgId = nextMsgId; nextMsgId = (nextMsgId + 1) and 0xffff
+        val kind = if (frame.isEmpty()) 0 else frame[0].toInt() and 0xff
+        val reliable = dest != MESH_BROADCAST_ADDR && (kind == M_DATA || kind == M_HELLO)
+        val msgId = mintFragMsgId()
+        emitFrame(frame, dest, msgId, wantAck = reliable)
+        if (reliable) enqueueSpray(dest, msgId, frame, System.currentTimeMillis())
+    }
+
+    private fun emitFrame(frame: ByteArray, dest: Long, msgId: Int, wantAck: Boolean) {
+        val ch = hopChannel ?: return
         val frags = meshFragment(frame, msgId) ?: run {
             Log.w(TAG, "mesh frame too large to fragment (${frame.size} bytes)"); return
         }
-        val from = myNodeNum ?: 0L
         for (frag in frags) {
             val id = nextPktId; nextPktId = (nextPktId + 1) and 0xffffffffL
-            radio.sendToRadio(MeshtasticProto.encodeToRadioPacket(from, dest, id, 3, frag))
+            radio.sendToRadio(
+                MeshtasticProto.encodeToRadioPacket(0L, dest, id, 3, frag, channel = ch, wantAck = wantAck),
+            )
         }
     }
 
+    private fun enqueueSpray(dest: Long, msgId: Int, frame: ByteArray, now: Long) {
+        if (sprays.count { it.dest == dest } >= MESH_SPRAY_MAX_OUTSTANDING) {
+            sprays.indexOfFirst { it.dest == dest }.takeIf { it >= 0 }?.let { sprays.removeAt(it) }
+        }
+        sprays.add(Spray(dest, msgId, frame, now + MESH_SPRAY_INITIAL_MS, MESH_SPRAY_INITIAL_MS))
+    }
+
     private fun broadcastHello() {
+        if (hopChannel == null) return
         shipFrame(MeshFrame.hello(myId, false), MESH_BROADCAST_ADDR)
         lastBeaconMs = System.currentTimeMillis()
     }
-
-    // ---- Maintenance (beacon, per-link keepalive, dead reap) ------------------------------------------
 
     private fun runMaintenance(now: Long) {
         if (stopped) return
         reassembler.evictStale(now)
         if (now - lastBeaconMs >= MESH_PING_MS) broadcastHello()
+        for (s in ArrayList(sprays)) {
+            if (now < s.nextDueMs) continue
+            emitFrame(s.frame, s.dest, s.msgId, wantAck = true)
+            s.intervalMs = minOf(s.intervalMs * MESH_SPRAY_MULTIPLIER, MESH_SPRAY_CAP_MS)
+            s.nextDueMs = now + s.intervalMs
+        }
         for (link in ArrayList(linksByNode.values)) {
             if (now - link.lastRxMs > MESH_DEAD_MS) { teardown(link, "liveness DEAD"); continue }
             if (now - link.lastPingMs >= MESH_PING_MS) {
@@ -235,12 +362,12 @@ class MeshtasticBearer internal constructor(
         }
     }
 
-    // ---- Teardown -------------------------------------------------------------------------------------
-
     private fun teardown(link: MeshLink, why: String) {
         linksByNode.remove(link.nodeNum)
         linksByLinkId.remove(link.linkId)
         reassembler.forget(link.nodeNum)
+        sprays.removeAll { it.dest == link.nodeNum }
+        seenMsgIds.remove(link.nodeNum)
         Log.i(TAG, "mesh link-down ($why) peer=${link.peerShort} node=${link.nodeNum}")
         if (link.surfaced) sink?.linkDown(link.linkId)
     }
@@ -265,130 +392,4 @@ class MeshtasticBearer internal constructor(
     internal fun runMaintenanceForTest(nowMs: Long) { submit { runMaintenance(nowMs) }; awaitIdle() }
     internal fun linkCountForTest(): Int { awaitIdle(); return linksByNode.size }
     internal fun myNodeNumForTest(): Long? { awaitIdle(); return myNodeNum }
-}
-
-/** The REAL Meshtastic device connection: a BluetoothGatt client that scans for a Meshtastic radio,
- *  connects over its GATT service, and moves ToRadio/FromRadio protobuf frames. DEVICE-BOUND and excluded
- *  from the coverage denominator (Robolectric cannot drive a real GATT peer); exercised on device only.
- *
- *  Meshtastic BLE protocol:
- *    Service          6ba1b218-15a8-461f-9fa8-5dcae273eafd
- *    ToRadio  (write) f75c76d2-129e-4dad-a1dd-7866124401e7
- *    FromRadio (read) 2c55e69e-4993-11ed-b878-0242ac120002   each read returns one FromRadio, empty = drained
- *    FromNum (notify) ed9da18c-a800-4f66-a670-aa7547e34453   notifies when new FromRadio frames are queued
- */
-internal class AndroidMeshtasticRadio(private val context: Context) : MeshtasticRadio {
-    override var onConnect: (() -> Unit)? = null
-    override var onDisconnect: (() -> Unit)? = null
-    override var onFromRadio: ((ByteArray) -> Unit)? = null
-
-    private val serviceUuid = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273eafd")
-    private val toRadioUuid = UUID.fromString("f75c76d2-129e-4dad-a1dd-7866124401e7")
-    private val fromRadioUuid = UUID.fromString("2c55e69e-4993-11ed-b878-0242ac120002")
-    private val fromNumUuid = UUID.fromString("ed9da18c-a800-4f66-a670-aa7547e34453")
-
-    private var adapter: BluetoothAdapter? = null
-    private var gatt: BluetoothGatt? = null
-    private var toRadio: BluetoothGattCharacteristic? = null
-    private var fromRadio: BluetoothGattCharacteristic? = null
-    private var running = false
-
-    @SuppressLint("MissingPermission")
-    override fun start() {
-        running = true
-        val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
-        adapter = mgr.adapter
-        val scanner = adapter?.bluetoothLeScanner ?: return
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
-    }
-
-    @SuppressLint("MissingPermission")
-    override fun stop() {
-        running = false
-        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
-        runCatching { gatt?.disconnect(); gatt?.close() }
-        gatt = null; toRadio = null; fromRadio = null
-    }
-
-    @SuppressLint("MissingPermission")
-    override fun sendToRadio(bytes: ByteArray) {
-        val g = gatt ?: return
-        val ch = toRadio ?: return
-        @Suppress("DEPRECATION")
-        run { ch.value = bytes; g.writeCharacteristic(ch) }
-    }
-
-    private val scanCallback = object : ScanCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (gatt != null) return
-            adapter?.bluetoothLeScanner?.stopScan(this)
-            gatt = result.device.connectGatt(context, false, gattCallback)
-        }
-    }
-
-    private val gattCallback = object : BluetoothGattCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> g.discoverServices()
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    toRadio = null; fromRadio = null; gatt = null
-                    onDisconnect?.invoke()
-                }
-            }
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val svc = g.getService(serviceUuid) ?: return
-            toRadio = svc.getCharacteristic(toRadioUuid)
-            fromRadio = svc.getCharacteristic(fromRadioUuid)
-            svc.getCharacteristic(fromNumUuid)?.let { g.setCharacteristicNotification(it, true) }
-            if (toRadio != null && fromRadio != null) {
-                onConnect?.invoke()
-                fromRadio?.let { g.readCharacteristic(it) }   // drain whatever is already queued
-            }
-        }
-
-        // A FromNum notify means new FromRadio frames are queued; kick off a read to drain them. Both the
-        // legacy (< API 33) and the value-carrying (API 33+) callbacks are overridden so this works on
-        // every Android version the module supports.
-        @SuppressLint("MissingPermission")
-        private fun onFromNum(g: BluetoothGatt, uuid: UUID) {
-            if (uuid == fromNumUuid) fromRadio?.let { g.readCharacteristic(it) }
-        }
-
-        // Each FromRadio read yields one protobuf frame; an empty value means the radio's queue is drained.
-        @SuppressLint("MissingPermission")
-        private fun onFromRadioValue(g: BluetoothGatt, uuid: UUID, value: ByteArray?) {
-            if (uuid != fromRadioUuid) return
-            if (value != null && value.isNotEmpty()) {
-                onFromRadio?.invoke(value)
-                fromRadio?.let { g.readCharacteristic(it) }   // keep reading until an empty value drains it
-            }
-        }
-
-        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) =
-            onFromNum(g, ch.uuid)
-
-        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) =
-            onFromNum(g, ch.uuid)
-
-        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-        override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
-            @Suppress("DEPRECATION")
-            onFromRadioValue(g, ch.uuid, ch.value)
-        }
-
-        override fun onCharacteristicRead(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
-            value: ByteArray,
-            status: Int,
-        ) = onFromRadioValue(g, ch.uuid, value)
-    }
 }

@@ -52,6 +52,7 @@ export interface HopDriverNativeModule {
   selfAddress(): Promise<string>;
   transports(): Promise<DriverTransports>;
   setTransportEnabled(transport: string, enabled: boolean): Promise<void>;
+  setPinnedRelay(url: string | null): Promise<void>;
   launchURL(): Promise<string | null>;
   addListener(eventType: string): void;
   removeListeners(count: number): void;
@@ -166,6 +167,11 @@ export const HopDriver = {
 
   setTransportEnabled(transport: string, enabled: boolean): Promise<void> {
     return nativeDriver().setTransportEnabled(transport, enabled);
+  },
+
+  /** Persist a hop-relayd URL (or clear the pin). Takes effect on the next HopDriver.start. */
+  setPinnedRelay(url: string | null): Promise<void> {
+    return nativeDriver().setPinnedRelay(url);
   },
 
   /**

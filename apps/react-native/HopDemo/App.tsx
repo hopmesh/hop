@@ -78,6 +78,35 @@ function latestMineStatus(messages: DriverMessage[]): string | null {
   return latest?.status ?? null;
 }
 
+// Display order for Status toggles. Native dictionaries do not keep insertion order, so
+// Object.entries would shuffle the rows on every poll and the switch you aimed at would move.
+const TRANSPORT_ORDER = ['Bluetooth', 'Peer-to-Peer', 'Local Net', 'Relay', 'LoRa'];
+
+function orderedTransportEntries(
+  transports: DriverTransports,
+): Array<[string, DriverTransports[string]]> {
+  return Object.keys(transports)
+    .sort((a, b) => {
+      const ia = TRANSPORT_ORDER.indexOf(a);
+      const ib = TRANSPORT_ORDER.indexOf(b);
+      const ra = ia === -1 ? TRANSPORT_ORDER.length : ia;
+      const rb = ib === -1 ? TRANSPORT_ORDER.length : ib;
+      if (ra !== rb) {
+        return ra - rb;
+      }
+      return a.localeCompare(b);
+    })
+    .map(name => [name, transports[name]]);
+}
+
+function transportsJson(transports: DriverTransports): string {
+  const ordered: DriverTransports = {};
+  for (const [name, state] of orderedTransportEntries(transports)) {
+    ordered[name] = state;
+  }
+  return JSON.stringify(ordered);
+}
+
 export default function App(): React.JSX.Element {
   const [phase, setPhase] = useState<AppPhase>('checking-permissions');
   const [missingPermissions, setMissingPermissions] = useState<string[]>([]);
@@ -170,7 +199,10 @@ export default function App(): React.JSX.Element {
   const runAutomationURL = useCallback(async (url: string) => {
     console.log('HOPURL', url);
     const parsed = parseAutomationURL(url);
-    if (parsed == null || (parsed.command !== 'send' && parsed.command !== 'bearer')) {
+    if (
+      parsed == null ||
+      (parsed.command !== 'send' && parsed.command !== 'bearer' && parsed.command !== 'relay')
+    ) {
       return;
     }
     if (!startedRef.current) {
@@ -195,6 +227,20 @@ export default function App(): React.JSX.Element {
       return;
     }
 
+    if (parsed.command === 'relay') {
+      const relayUrl = parsed.params.url?.trim() ?? '';
+      try {
+        await HopDriver.setPinnedRelay(relayUrl.length === 0 ? null : relayUrl);
+        console.log('HOPRELAY', JSON.stringify({url: relayUrl, result: {ok: true}}));
+      } catch (cause) {
+        console.log(
+          'HOPRELAY',
+          JSON.stringify({url: relayUrl, result: {ok: false, detail: String(cause)}}),
+        );
+      }
+      return;
+    }
+
     const transport = parsed.params.name?.trim() ?? '';
     const enabledValue = parsed.params.enabled;
     if (transport.length === 0 || (enabledValue !== 'true' && enabledValue !== 'false')) {
@@ -204,7 +250,7 @@ export default function App(): React.JSX.Element {
     try {
       await HopDriver.setTransportEnabled(transport, enabledValue === 'true');
       const nextTransports = await HopDriver.transports();
-      lastTransportsJsonRef.current = JSON.stringify(nextTransports);
+      lastTransportsJsonRef.current = transportsJson(nextTransports);
       console.log('HOPXPORT', lastTransportsJsonRef.current);
       setTransports(nextTransports);
     } catch (cause) {
@@ -300,7 +346,7 @@ export default function App(): React.JSX.Element {
         }),
         HopDriver.onMessages(event => applyMessages(event.peer, event.messages, true)),
         HopDriver.onTransports(nextTransports => {
-          console.log('HOPXPORT', JSON.stringify(nextTransports));
+          console.log('HOPXPORT', transportsJson(nextTransports));
           setTransports(nextTransports);
         }),
       ];
@@ -381,10 +427,10 @@ export default function App(): React.JSX.Element {
         }
         setPeers(nextPeers);
         setTransports(nextTransports);
-        const transportsJson = JSON.stringify(nextTransports);
-        if (transportsJson !== lastTransportsJsonRef.current) {
-          lastTransportsJsonRef.current = transportsJson;
-          console.log('HOPXPORT', transportsJson);
+        const transportsJsonText = transportsJson(nextTransports);
+        if (transportsJsonText !== lastTransportsJsonRef.current) {
+          lastTransportsJsonRef.current = transportsJsonText;
+          console.log('HOPXPORT', transportsJsonText);
         }
         if (ticks++ % 10 === 0) {
           console.log(
@@ -968,7 +1014,7 @@ function SendingIndicator({elapsed}: {elapsed: number}) {
 }
 
 function RelaysTab({transports}: {transports: DriverTransports}) {
-  const relayEntries = Object.entries(transports).filter(([name]) =>
+  const relayEntries = orderedTransportEntries(transports).filter(([name]) =>
     name.toLowerCase().includes('relay'),
   );
   const relay = relayEntries[0] ?? null;
@@ -1032,7 +1078,7 @@ function StatusTab({
   togglingTransport: string | null;
   onToggleTransport: (transport: string, enabled: boolean) => void;
 }) {
-  const entries = Object.entries(transports);
+  const entries = orderedTransportEntries(transports);
 
   return (
     <View>
@@ -1051,19 +1097,19 @@ function StatusTab({
 
       <Text style={styles.h2}>Transports</Text>
       {entries.length === 0 ? <Text style={styles.dim}>starting…</Text> : null}
-      {entries.map(([name, state], index) => (
+      {entries.map(([name, state]) => (
         <View style={styles.transportRow} key={name}>
           <Switch
-            testID={`transport-toggle-${index}`}
+            testID={`transport-toggle-${name}`}
             value={state !== 'off'}
             disabled={togglingTransport != null}
             onValueChange={enabled => onToggleTransport(name, enabled)}
           />
           <View style={styles.transportText}>
-            <Text style={styles.body} testID={`transport-name-${index}`}>
+            <Text style={styles.body} testID={`transport-name-${name}`}>
               {name}
             </Text>
-            <Text style={styles.dim} testID={`transport-status-${index}`}>
+            <Text style={styles.dim} testID={`transport-status-${name}`}>
               {state === 'off' ? 'disabled' : state === 'idle' ? 'no links' : 'active'}
             </Text>
           </View>

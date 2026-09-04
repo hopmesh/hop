@@ -417,6 +417,17 @@ class HopDriverModule(private val reactContext: ReactApplicationContext) :
       awaitTransportState(b, tag, enabled, promise, TRANSPORT_SETTLE_TRIES)
     }
 
+  /** Persist a hop-relayd URL (empty/null clears). Takes effect on the next start(). */
+  @ReactMethod
+  fun setPinnedRelay(url: String?, promise: Promise) = onMain(promise, E_ARGUMENT) {
+    val b = requireBearer(promise) ?: return@onMain
+    if (!b.setPinnedRelay(url)) {
+      promise.reject(E_ARGUMENT, "setPinnedRelay rejected the url")
+      return@onMain
+    }
+    promise.resolve(null)
+  }
+
   private fun transportLabels(b: HopBearer): String =
     transportRows(b).joinToString(", ") { it.first }.ifEmpty { "none yet" }
 

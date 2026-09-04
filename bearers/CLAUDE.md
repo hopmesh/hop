@@ -20,12 +20,23 @@ into `MESH_MAX_CHUNK`-sized pieces, each shipped as one Meshtastic `MeshPacket` 
 (`MESH_HOP_PORTNUM`, in the PRIVATE_APP 256..511 range), and REASSEMBLED on the far side keyed by
 (sender node, message id). It reuses the SAME Hop link-frame grammar (HELLO/PING/PONG/DATA) as the LAN
 bearer, so the consumer sees identical linkUp/linkBytes/linkDown. LoRa is slow and duty-cycle limited,
-so the keepalive is lazy (30 s ping, 180 s dead); Hop's delay-tolerant design suits it. Two Hop phones
-interoperate only if their radios share a Meshtastic channel (PSK); that is device config, not bearer
-code. The protobuf codec, fragmentation, and reassembly are pure and unit-tested (the state machine runs
-against a fake radio); only the CoreBluetooth / Android-GATT connection to the radio is device-bound and
-excluded from coverage. Its cross-platform wire contract is pinned in `bearers/meshtastic-vectors.json`
-and enforced by `tools/meshtastic-parity.sh` (see below).
+so the keepalive is lazy (30 s ping, 180 s dead); Hop's delay-tolerant design suits it.
+
+Hop does not ride PRIMARY. On connect the bearer asks for a channel via `AdminMessage.get_channel`
+(ADMIN_APP port 6, with `session_passkey` on any set), takes the first free SECONDARY slot (or an
+existing slot already named Hop), writes a Hop-owned PSK/name, and puts every port-260 packet on that
+index. PRIMARY stays whatever Meshtastic.app configured. Two Hop phones interoperate because they share
+that PSK, not because the user scanned a QR.
+
+Meshtastic does not store-and-forward by default, so fire-and-forget LoRa cannot carry Hop. Unicast
+DATA and unicast HELLO set MeshPacket.want_ack (firmware may ACK/NAK on ROUTING_APP port 5). That ACK
+is per MeshPacket fragment. The bearer also sprays the whole Hop frame with exponential backoff
+(2s, doubling, cap 60s, never gives up while the link is up) until the peer sends Hop M_ACK (0x04)
+carrying the frame msgId. Broadcast HELLO, PING/PONG, and M_ACK itself are not sprayed. The protobuf
+codec, fragmentation, reassembly, and the spray state machine are pure and unit-tested against a fake
+radio; only the CoreBluetooth / Android-GATT connection is device-bound and excluded from coverage.
+The cross-platform wire contract is pinned in `bearers/meshtastic-vectors.json` and enforced by
+`tools/meshtastic-parity.sh` (see below).
 
 ## Publishing (both platforms, and the switch that decides it)
 

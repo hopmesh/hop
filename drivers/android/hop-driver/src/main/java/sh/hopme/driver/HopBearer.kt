@@ -245,7 +245,12 @@ class HopBearer internal constructor(
     private val bearerMgr = sh.hop.BearerManager(baseLinkId = 1_000_000L)
 
     /** Fixed display order, so toggling never makes rows jump around. */
-    private val TRANSPORT_DISPLAY = listOf("BT" to "Bluetooth", "LAN" to "Local Net", "Relay" to "Relay")
+    private val TRANSPORT_DISPLAY = listOf(
+        "BT" to "Bluetooth",
+        "LAN" to "Local Net",
+        "Relay" to "Relay",
+        "LoRa" to "LoRa",
+    )
 
     /** Serial executor for transport enable/disable. Deliberately NOT the core thread: a bearer's
      *  start/stop touches radios and can block, and the core thread owns all node state, so blocking
