@@ -26,6 +26,10 @@ DEPLOYMENT_TARGET_MACOS="13.0"
 export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_IOS"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_MACOS"
 
+# REL-009: vendored OpenSSL stamps cversion.c with the build clock unless SOURCE_DATE_EPOCH is set
+# (util/mkbuildinf.pl); pin it so identical inputs give byte-identical libraries and archives.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+
 if [ -d "$HOME/.cargo/bin" ]; then
   export PATH="$HOME/.cargo/bin:$PATH"
 fi
