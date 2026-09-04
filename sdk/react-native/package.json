@@ -1,6 +1,6 @@
 {
   "name": "@hop-mesh/react-native",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Run a Hop mesh node in a React Native app: one TypeScript API over the native iOS (sdk/apple) and Android (sdk/android) client SDKs.",
   "repository": {

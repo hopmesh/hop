@@ -50,9 +50,9 @@ level, all in the same change. Run the guard locally; it names every location.
 
 ## Git tag scheme
 
-- Tag each product release `vMAJOR.MINOR.PATCH` (e.g. `v0.0.2`), matching the root
+- Tag each product release `vMAJOR.MINOR.PATCH` (e.g. `v0.0.3`), matching the root
   `Cargo.toml` version exactly.
-- Annotated tags only (`git tag -a v0.0.2 -m "..."`), so the tag carries the
+- Annotated tags only (`git tag -a v0.0.3 -m "..."`), so the tag carries the
   release notes summary and the tagger identity.
 - Tags are cut from `main` after CI is green. The tag SHA is the release SHA and is
   what every published artifact is built from.

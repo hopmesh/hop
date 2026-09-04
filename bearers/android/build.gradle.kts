@@ -13,7 +13,7 @@ plugins {
 // tools/version-align-guard.sh keeps it within major/minor of the Rust workspace anchor. This tree no
 // longer has a release.yml, so plan.py skips it and nothing here is published today; the line still has
 // to be right for the day it is.
-version = "0.0.2"
+version = "0.0.3"
 // The bearers get their OWN namespace under the SDK's, so a transport is obviously a transport in a
 // dependency list rather than sitting flat beside `sh.hop:hop`. Maven Central verifies namespaces per
 // ROOT, and a subgroup of a verified namespace is covered by that verification, so `sh.hop.bearers`
