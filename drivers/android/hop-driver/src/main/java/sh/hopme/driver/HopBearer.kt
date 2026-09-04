@@ -475,6 +475,12 @@ class HopBearer internal constructor(
                 // so a link that is UP but stuck (no peerLinks) shows the Noise handshake never
                 // completed. The BearerManager owns the transports now, so this reads node state only.
                 val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
+                for (p in pls) {
+                    if (runCatching { node.isSecured(p.address) }.getOrDefault(false)) {
+                        bearerMgr.markSecured(p.link.toLong())
+                    }
+                }
+                bearerMgr.checkPreauthDeadlines(nowMs().toLong())
                 val distinctPeers = pls.map { it.address.toList() }.distinct().size
                 if (pls.isNotEmpty()) android.util.Log.i("HOPLOG",
                     "NODESTATE upLinks=${pls.size} peers=$distinctPeers pend=${runCatching { node.pendingCount() }.getOrDefault(0u)} " +

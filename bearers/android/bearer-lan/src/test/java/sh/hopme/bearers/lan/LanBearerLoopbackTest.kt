@@ -5,6 +5,7 @@ import android.net.nsd.NsdServiceInfo
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -426,5 +427,46 @@ class LanBearerLoopbackTest {
         assertTrue("lesser-id dialer still forms the link", waitUntil { recA.upCount() == 1 })
         assertTrue("greater-id acceptor still comes up", waitUntil { recB.upCount() == 1 })
         assertEquals(HopRole.DIALER, recA.ups.first().second)
+    }
+
+    @Test fun unauthenticatedClaimantCannotEvictSecuredPeer() {
+        val rec = Rec()
+        val bearer = startedBearer(fill(0xF0), rec)
+
+        val peerA = RawPeer(bearer.boundPort)
+        val victimId = fill(0x02)
+        peerA.sendHello(victimId, dialer = true)
+        assertTrue("peerA linkUp", waitUntil { rec.upCount() == 1 })
+        val linkA = rec.ups.first().first
+
+        bearer.markSecured(linkA)
+
+        val attackerB = RawPeer(bearer.boundPort)
+        attackerB.sendHello(victimId, dialer = true)
+        assertTrue("attackerB linkUp", waitUntil { rec.upCount() == 2 })
+        assertTrue("dedup triggered", waitUntil { rec.downCount() >= 1 })
+        assertFalse("authenticated linkA must NOT be dropped by unauthenticated attackerB", rec.downs.contains(linkA))
+    }
+
+    @Test fun unauthenticatedPeerWithValidHelloAndPingIsClosedAfterPreauthDeadline() {
+        val rec = Rec()
+        val bearer = startedBearer(fill(0x01), rec)
+        bearer.preauthDeadlineMs = 200L
+
+        val raw = RawPeer(bearer.boundPort)
+        raw.sendHello(fill(0x02), dialer = true)
+        assertTrue("link reached transport up", waitUntil { rec.upCount() == 1 })
+        val link = rec.ups.first().first
+
+        val end = System.currentTimeMillis() + 2500L
+        while (System.currentTimeMillis() < end) {
+            val ping = ByteArray(9)
+            ping[0] = L_PING.toByte()
+            raw.sendFrame(ping)
+            Thread.sleep(100)
+            if (rec.downCount() > 0) break
+        }
+
+        assertTrue("unauthenticated link must be closed after preauth deadline despite active PINGs", waitUntil(4000) { rec.downs.contains(link) })
     }
 }
