@@ -3,8 +3,10 @@
 or private key is committable to this repository under an arbitrary filename.
 
 Scans tracked files or explicit file paths for:
-1. Raw 32-byte binary seeds with high Shannon entropy (> 4.5 bits/byte).
+1. Raw 32-byte binary seeds with high Shannon entropy (> 4.5 bits/byte), including
+   33-byte blobs with a trailing newline and inside files with safe extensions (PROC-008).
 2. Private key markers and credential patterns.
+3. Contributor local absolute paths (/Users/<name>/ and /home/<name>/) in tracked text files (CLAIM-016).
 """
 import math
 import os
@@ -29,6 +31,11 @@ EXCLUDED_PATHS = {
     "tools/identity-secret-guard.test.sh",
 }
 
+ABSOLUTE_PATH_PATTERN = re.compile(rb"/(?:Users|home)/[a-zA-Z0-9_.-]+/")
+PATH_ALLOWLIST = {
+    b"/home/web_user/",
+}
+
 def shannon_entropy(data: bytes) -> float:
     if not data:
         return 0.0
@@ -42,20 +49,28 @@ def shannon_entropy(data: bytes) -> float:
         entropy -= p * math.log2(p)
     return entropy
 
-def is_binary(data: bytes) -> bool:
+def is_binary_seed(data: bytes) -> bool:
     if not data:
         return False
     return any((b < 32 and b not in (9, 10, 13)) or b > 126 for b in data)
+
+def is_binary_file(data: bytes) -> bool:
+    if not data:
+        return False
+    if b"\x00" in data:
+        return True
+    try:
+        text = data.decode("utf-8")
+        control_chars = sum(1 for c in text if ord(c) < 32 and c not in "\t\n\r")
+        return control_chars > 0.05 * len(text)
+    except UnicodeDecodeError:
+        return True
 
 def check_file(path: str) -> list[str]:
     violations = []
     # Skip excluded tool files
     rel_path = os.path.relpath(path, os.getcwd()).replace("\\", "/")
     if rel_path in EXCLUDED_PATHS or os.path.basename(rel_path).startswith(".git"):
-        return violations
-
-    _, ext = os.path.splitext(path.lower())
-    if ext in SAFE_BINARY_EXTENSIONS:
         return violations
 
     try:
@@ -65,18 +80,36 @@ def check_file(path: str) -> list[str]:
         return violations
 
     # 1. Exact 32-byte raw binary seed check (the relay/telemetryd identity format)
-    if len(data) == 32 and is_binary(data):
-        entropy = shannon_entropy(data)
+    # PROC-008: Check before SAFE_BINARY_EXTENSIONS so a 32-byte secret named .png or .wasm
+    # is not exempted, and strip trailing newlines so a 33-byte file is caught.
+    seed = data.rstrip(b"\r\n")
+    if len(seed) == 32 and is_binary_seed(seed):
+        entropy = shannon_entropy(seed)
         if entropy > 4.5:
             violations.append(
                 f"raw 32-byte high-entropy identity seed detected (entropy {entropy:.2f} bits/byte)"
             )
             return violations
+
+    _, ext = os.path.splitext(path.lower())
+    if ext in SAFE_BINARY_EXTENSIONS:
+        return violations
+
     # 2. Private key markers
     for pattern in PRIVATE_KEY_PATTERNS:
         if pattern.search(data):
             violations.append("private key or sensitive credential pattern detected")
             return violations
+
+    # 3. Contributor local absolute paths in tracked text files (CLAIM-016)
+    if not is_binary_file(data):
+        for m in ABSOLUTE_PATH_PATTERN.finditer(data):
+            matched_prefix = m.group(0)
+            if matched_prefix not in PATH_ALLOWLIST:
+                violations.append(
+                    f"contributor local absolute path detected: {matched_prefix.decode('utf-8', errors='replace')}"
+                )
+                break
 
     return violations
 
