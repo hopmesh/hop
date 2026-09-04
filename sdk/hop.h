@@ -44,7 +44,10 @@
 // `hop_hps_members`, `hop_hps_my_topics` and `hop_hps_browse`. Additive, so a v5 caller still
 // links; the bump is what stops a wrapper that binds them being paired with a v5 library that does
 // not export them, and what holds every wrapper to binding the whole surface (PLAT-003).
-#define HOP_ABI_VERSION 6
+//
+// v6 -> v7: added explicit service-request acceptance (`hop_accept_service_request`,
+// `hop_reject_service_request`) and storage encryption inspection (`hop_node_is_encrypted`).
+#define HOP_ABI_VERSION 7
 
 // Which side opened a bearer link (the Noise role). Mirrors hop-core's internal `Role`.
 typedef enum HopLinkRole {
@@ -147,6 +150,9 @@ const struct HopNode *hop_node_with_secret(const uint8_t *secret, uintptr_t secr
 // node is running ephemerally (state will not survive a restart); the host should surface this
 // rather than treat the database as ground truth (F-26). NULL handle ⇒ false.
 bool hop_node_is_persistent(const struct HopNode *node);
+
+// True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). NULL handle returns false.
+bool hop_node_is_encrypted(const struct HopNode *node);
 
 // How many persisted records failed to decode on startup (F-03). Non-zero ⇒ an upgrade changed
 // a struct's on-disk layout and dropped that state; surface it to the user. NULL handle ⇒ 0.
@@ -330,10 +336,12 @@ uint32_t hop_cluster_members(const struct HopNode *node);
 void hop_cluster_set_quorum(const struct HopNode *node,
                             uint32_t min_live_members);
 
-// Drain hops:// service requests addressed to this node (host side). Invokes
+// Poll hops:// service requests addressed to this node (host side) without consuming them. Invokes
 // `sink(ctx, from32, request_id32, service_cstr, method_cstr, args_ptr, args_len)` per request.
+// Returning true is synchronous host acceptance. Returning false leaves the request queued for
+// redelivery until [`hop_accept_service_request`] or [`hop_reject_service_request`] succeeds.
 void hop_poll_service_requests(const struct HopNode *node,
-                               void (*sink)(void *ctx,
+                               bool (*sink)(void *ctx,
                                             const uint8_t *from,
                                             const uint8_t *request_id,
                                             const char *service,
@@ -341,6 +349,15 @@ void hop_poll_service_requests(const struct HopNode *node,
                                             const uint8_t *args,
                                             uintptr_t args_len),
                                void *ctx);
+
+// Durably accept one request previously returned by [`hop_poll_service_requests`].
+// `request_id` points to exactly 32 bytes. Returns false for NULL, an unknown/already-accepted
+// request id, or a persistence failure.
+bool hop_accept_service_request(const struct HopNode *node, const uint8_t *request_id);
+
+// Reject one request previously returned by [`hop_poll_service_requests`] without ACK or dedup
+// consumption so a retransmission can retry. Returns false for NULL or an unknown request id.
+bool hop_reject_service_request(const struct HopNode *node, const uint8_t *request_id);
 
 // Poll hops:// service responses sealed back to this node (caller side). Invokes
 // `sink(ctx, from32, for_request_id32, status, body_ptr, body_len)` per response. Returning true is
@@ -475,13 +492,13 @@ bool hop_hps_deny(const struct HopNode *node, const char *path, const uint8_t *r
 // empty (or NULL) keeps the same path; a non-empty one moves the topic. Invokes `sink(ctx, id32)`
 // once per rekey bundle (may be NULL) and returns the count, or 0 on NULL args, an over-long
 // `remove` array, or a core error.
-uintptr_t hop_hps_rekey(const struct HopNode *node,
-                        const char *path,
-                        const char *new_path,
-                        const uint8_t *remove,
-                        uintptr_t remove_count,
-                        void (*sink)(void *ctx, const uint8_t *id),
-                        void *ctx);
+intptr_t hop_hps_rekey(const struct HopNode *node,
+                       const char *path,
+                       const char *new_path,
+                       const uint8_t *remove,
+                       uintptr_t remove_count,
+                       void (*sink)(void *ctx, const uint8_t *id),
+                       void *ctx);
 
 // Host: a topic's reach, the number of distinct addresses that have acked a publication on it. This
 // is the delivery sense for a flood: there is no per-recipient receipt, so reach is what a UI can

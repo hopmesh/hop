@@ -475,6 +475,8 @@ pub struct HopNode {
     /// How many persisted records failed to decode on startup (F-03); non-zero means an
     /// upgrade changed a struct layout and dropped state; the host should surface it.
     rehydrate_dropped: u32,
+    /// True only when the store is SQLCipher-keyed (F-25, ABI-001).
+    encrypted: bool,
 }
 
 /// Open the persistent store, or if the file is unusable, quarantine it and retry once so a
@@ -550,6 +552,10 @@ fn open_store_persistent(db_path: &str, key: &[u8]) -> (HopStore, bool) {
 /// compiled only for the full build.)
 #[cfg(feature = "full")]
 fn open_node_inner(db_path: &str, secret: &[u8], app_secret: &[u8], key: &[u8]) -> Arc<HopNode> {
+    assert!(
+        app_secret.is_empty() || app_secret.len() == 32,
+        "app_secret must be empty (0 bytes) or exactly 32 bytes"
+    );
     let (store, persistent) = open_store_persistent(db_path, key);
     let mut node = Node::with_store(identity_from(secret), store);
     if let Ok(s) = <[u8; 32]>::try_from(app_secret) {
@@ -564,10 +570,12 @@ fn open_node_inner(db_path: &str, secret: &[u8], app_secret: &[u8], key: &[u8]) 
             report.dropped
         );
     }
+    let encrypted = cfg!(feature = "sqlcipher") && persistent && !key.is_empty();
     Arc::new(HopNode {
         inner: Mutex::new(Endpoint::new(node)),
         persistent,
         rehydrate_dropped: report.total(),
+        encrypted,
     })
 }
 
@@ -648,6 +656,7 @@ impl HopNode {
             ))),
             persistent: false,
             rehydrate_dropped: 0,
+            encrypted: false,
         })
     }
 
@@ -662,6 +671,7 @@ impl HopNode {
             ))),
             persistent: false,
             rehydrate_dropped: 0,
+            encrypted: false,
         })
     }
 
@@ -698,6 +708,10 @@ impl HopNode {
         }
         #[cfg(not(feature = "full"))]
         {
+            assert!(
+                app_secret.is_empty() || app_secret.len() == 32,
+                "app_secret must be empty (0 bytes) or exactly 32 bytes"
+            );
             let _ = (&db_path, &key); // no persistence on a constrained target, run ephemeral
             let mut node = Node::with_store(identity_from(&secret), fresh_ephemeral_store());
             if let Ok(s) = <[u8; 32]>::try_from(app_secret.as_slice()) {
@@ -707,6 +721,7 @@ impl HopNode {
                 inner: Mutex::new(Endpoint::new(node)),
                 persistent: false,
                 rehydrate_dropped: 0,
+                encrypted: false,
             })
         }
     }
@@ -723,6 +738,11 @@ impl HopNode {
     /// (e.g. queued sends or sessions were lost) instead of it vanishing silently.
     pub fn rehydrate_dropped(&self) -> u32 {
         self.rehydrate_dropped
+    }
+
+    /// True only when the store is SQLCipher-keyed at rest (F-25, ABI-001).
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     // Note: there is intentionally no `set_app` here. End-user devices must NOT stamp
@@ -1528,6 +1548,16 @@ impl HopNode {
         self.node()
             .accept_service_response(&id)
             .map_err(|e| FfiError::Hop(e.to_string()))
+    }
+
+    pub fn accept_service_request(&self, id: Vec<u8>) -> std::result::Result<bool, FfiError> {
+        let id = to32(&id)?;
+        Ok(self.node().accept_service_request(&id))
+    }
+
+    pub fn reject_service_request(&self, id: Vec<u8>) -> std::result::Result<bool, FfiError> {
+        let id = to32(&id)?;
+        Ok(self.node().reject_service_request(&id))
     }
 }
 

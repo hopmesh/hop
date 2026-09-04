@@ -727,6 +727,7 @@ pub struct HttpRespItem {
 
 /// A service request addressed to this node that the embedding app should fulfill
 /// (built-in `hop.` services are answered by the node and never surface here).
+#[derive(Clone)]
 pub struct ServiceReqItem {
     pub from: PubKeyBytes,
     /// The request bundle's id. Pass it to [`Node::send_service_response`] to reply.
@@ -6488,19 +6489,38 @@ impl<S: Store> Node<S> {
         Ok(id)
     }
 
-    /// Drain custom service requests addressed to us (built-in `hop.` services are
-    /// answered by the node and never appear here).
-    pub fn take_service_requests(&mut self) -> Vec<ServiceReqItem> {
-        let pending = self.take_service_requests_deferred();
-        let mut accepted = Vec::with_capacity(pending.len());
-        for item in pending {
-            if self.complete_app_delivery(&item.id) {
-                accepted.push(item);
-            } else {
-                self.service_requests.push(item);
+    /// Poll custom service requests addressed to us without consuming them (built-in `hop.` services
+    /// are answered by the node and never appear here). Use [`Self::accept_service_request`] or
+    /// [`Self::reject_service_request`] for explicit lifecycle decisions.
+    pub fn take_service_requests(&self) -> Vec<ServiceReqItem> {
+        self.service_requests.clone()
+    }
+
+    /// Durably accept one service request previously returned by [`Self::take_service_requests`].
+    /// Commits the seen dedup row and ACK only after successful storage admission.
+    pub fn accept_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.complete_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
             }
+            true
+        } else {
+            false
         }
-        accepted
+    }
+
+    /// Reject one service request without ACK or dedup consumption so a retransmission can retry.
+    pub fn reject_service_request(&mut self, id: &BundleId) -> bool {
+        let pos = self.service_requests.iter().position(|r| &r.id == id);
+        if self.reject_app_delivery(id) {
+            if let Some(idx) = pos {
+                self.service_requests.remove(idx);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Move service requests into a higher-level admission gate without ACKing or consuming dedup.
