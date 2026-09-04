@@ -41,6 +41,7 @@ class HopRequest:
     service: str
     method: str
     args: bytes
+    request_id: bytes = b""
 
     @property
     def text(self) -> str:
@@ -263,6 +264,14 @@ class HopEndpoint:
         dial(self, info["wss_url"], _ssl_context(insecure_tls))
         return info["address"]
 
+    def accept_service_request(self, request_id: bytes) -> bool:
+        """Durably accept a service request by its 32-byte request id."""
+        return bool(self._with_node(lambda n: ffi.accept_service_request(n, request_id)))
+
+    def reject_service_request(self, request_id: bytes) -> bool:
+        """Reject a service request without ACK so it can be retried."""
+        return bool(self._with_node(lambda n: ffi.reject_service_request(n, request_id)))
+
     # ---- bearer seam (used by tcp_bearer) ----
     def _register_link(self, link: int, role: str, send_fn: Callable[[bytes], None]) -> None:
         def register(node):
@@ -311,9 +320,14 @@ class HopEndpoint:
         for frm, rid, service, method, args in reqs:
             handler = self._handlers.get(service)
             if handler:
-                req = HopRequest(ffi.to_b58(frm), frm, service, method, args)
+                req = HopRequest(ffi.to_b58(frm), frm, service, method, args, rid)
                 reply = _Reply(self, frm, rid)
-                handler(req, reply)
+                try:
+                    handler(req, reply)
+                    self._try_with_node(lambda n: ffi.accept_service_request(n, rid))
+                except Exception:
+                    # handler threw: leave request queued for redelivery
+                    pass
         resps = self._try_with_node(ffi.take_service_responses)
         if resps is None:
             return

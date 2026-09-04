@@ -223,6 +223,39 @@ class RoundTrip(unittest.TestCase):
             server.close()
             client.close()
 
+    def test_service_request_throwing_handler_leaves_request_queued(self):
+        server, client = HopEndpoint(), HopEndpoint()
+        attempts = []
+        first_attempt_done = threading.Event()
+
+        def handler(req, reply):
+            attempts.append(req.service)
+            if len(attempts) == 1:
+                first_attempt_done.set()
+                raise RuntimeError("handler failed attempt 1")
+            reply(200, b"recovered")
+        server.on("flaky", handler)
+        connect_in_process(server, client)
+        try:
+            res = {}
+            def do_req():
+                try:
+                    res["result"] = client.request(server.address_bytes, "flaky", "call", b"test", timeout=5.0)
+                except Exception as e:
+                    res["error"] = e
+
+            req_thread = threading.Thread(target=do_req)
+            req_thread.start()
+            self.assertTrue(first_attempt_done.wait(5))
+            self.assertEqual(len(attempts), 1)
+            req_thread.join(5)
+            self.assertEqual(len(attempts), 2, "request was redelivered after throwing handler")
+            resp = res.get("result")
+            self.assertEqual((resp.status, resp.body), (200, b"recovered"))
+        finally:
+            server.close()
+            client.close()
+
     def test_tcp_bearer(self):
         server = HopEndpoint()
         server.on("acme/orders", lambda req, reply: reply(201, req.args))
