@@ -142,6 +142,7 @@ internal interface CHop : Library {
     // D-wrappers: full hop.h parity - identity/status + the hops:// request/response surface.
     fun hop_abi_version(): Int
     fun hop_node_is_persistent(node: Pointer?): Byte
+    fun hop_node_is_encrypted(node: Pointer?): Byte
     fun hop_node_rehydrate_dropped(node: Pointer?): Int
     fun hop_node_secret(node: Pointer?, out: ByteArray): NativeLong
     fun hop_node_set_name(node: Pointer?, name: String)
@@ -158,6 +159,8 @@ internal interface CHop : Library {
     fun hop_relay_report(node: Pointer?, url: String, ok: Boolean)
     fun hop_relay_pool_size(node: Pointer?, outAvailable: NativeLongByReference?): NativeLong
     fun hop_poll_service_requests(node: Pointer?, sink: ServiceReqSink, ctx: Pointer?)
+    fun hop_accept_service_request(node: Pointer?, requestId: ByteArray): Byte
+    fun hop_reject_service_request(node: Pointer?, requestId: ByteArray): Byte
     fun hop_poll_service_responses(node: Pointer?, sink: ServiceRespSink, ctx: Pointer?)
     fun hop_accept_service_response(node: Pointer?, requestId: ByteArray): Byte
     // ---- section 32 hps:// pub/sub ------------------------------------------------------------
@@ -210,11 +213,11 @@ private fun require32(bytes: ByteArray, name: String): ByteArray {
 
 /// Expected libhop ABI version (mirrors HOP_ABI_VERSION in hop.h). Asserted at load so a wrapper
 /// built against a newer header fails loudly instead of drifting (F-28).
-const val HOP_ABI_VERSION = 6
+const val HOP_ABI_VERSION = 7
 
 /** hops:// request callback (D-wrappers), one per queued inbound request during pollServiceRequests. */
 internal fun interface ServiceReqSink : Callback {
-    fun invoke(ctx: Pointer?, from: Pointer?, requestId: Pointer?, service: String?, method: String?, args: Pointer?, argsLen: NativeLong)
+    fun invoke(ctx: Pointer?, from: Pointer?, requestId: Pointer?, service: String?, method: String?, args: Pointer?, argsLen: NativeLong): Byte
 }
 
 /** hops:// response callback (D-wrappers), one per queued inbound response during pollServiceResponses. */
@@ -518,15 +521,19 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
 
         /** Open with persistent storage at [dbPath], a saved 32-byte [secret] (empty = fresh), and an
          *  [appSecret] (empty = open fabric). Null only on a NULL/invalid path. */
-        fun open(dbPath: String, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
-            C.hop_node_open(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()))
+        fun open(dbPath: String, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? {
+            if (appSecret.isNotEmpty() && appSecret.size != 32) return null
+            return C.hop_node_open(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()))
                 ?.let { HopNode(it) }
+        }
 
         /** Open with SQLCipher encryption at rest, keyed by a raw [key] from the Keystore (F-25). */
-        fun openKeyed(dbPath: String, key: ByteArray, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? =
-            C.hop_node_open_keyed(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()),
+        fun openKeyed(dbPath: String, key: ByteArray, secret: ByteArray = ByteArray(0), appSecret: ByteArray = ByteArray(0)): HopNode? {
+            if (appSecret.isNotEmpty() && appSecret.size != 32) return null
+            return C.hop_node_open_keyed(dbPath, secret, NativeLong(secret.size.toLong()), appSecret, NativeLong(appSecret.size.toLong()),
                                   key, NativeLong(key.size.toLong()))
                 ?.let { HopNode(it) }
+        }
     }
 
     fun address(): ByteArray = native { handle -> ByteArray(32).also { C.hop_node_address(handle, it) } }
@@ -643,6 +650,9 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Whether this node has durable storage (false ⇒ ephemeral fallback; F-26). */
     fun isPersistent(): Boolean = native { handle -> C.hop_node_is_persistent(handle).toBool() }
 
+    /** True only when the store is SQLCipher-keyed at rest (F-25, ABI-001). */
+    fun isEncrypted(): Boolean = native { handle -> C.hop_node_is_encrypted(handle).toBool() }
+
     /** How many persisted records failed to decode on startup (F-03); non-zero ⇒ state lost on upgrade. */
     fun rehydrateDropped(): Int = native { handle -> C.hop_node_rehydrate_dropped(handle) }
 
@@ -696,6 +706,7 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
                     requestId = reqId?.getByteArray(0, 32) ?: ByteArray(32),
                     service = service ?: "", method = method ?: "",
                     args = args?.getByteArray(0, alen.toInt()) ?: ByteArray(0)))
+                1.toByte()
             }, null)
         }
     }
@@ -725,6 +736,16 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
     /** Durably accept a previously-polled response by its 32-byte correlation request id. */
     fun acceptServiceResponse(forRequestId: ByteArray): Boolean = native { handle ->
         C.hop_accept_service_response(handle, require32(forRequestId, "request id")).toBool()
+    }
+
+    /** Durably accept a previously-polled request by its 32-byte request id. */
+    fun acceptServiceRequest(requestId: ByteArray): Boolean = native { handle ->
+        C.hop_accept_service_request(handle, require32(requestId, "request id")).toBool()
+    }
+
+    /** Reject a previously-polled request without ACK so a retransmission can retry. */
+    fun rejectServiceRequest(requestId: ByteArray): Boolean = native { handle ->
+        C.hop_reject_service_request(handle, require32(requestId, "request id")).toBool()
     }
 
     // ---- §32 hps:// pub/sub (services and channels) -------------------------------------------
@@ -909,10 +930,11 @@ class HopNode private constructor(rawPtr: Pointer) : AutoCloseable {
             require32(addr, "remove[$i]").copyInto(packed, i * HopAddress.ADDRESS_LEN)
         }
         val ids = ArrayList<ByteArray>()
-        native { handle ->
+        val count = native { handle ->
             C.hop_hps_rekey(handle, path, newPath, packed, NativeLong(remove.size.toLong()),
                 HpsIdSink { _, id -> ids.add(id?.getByteArray(0, 32) ?: ByteArray(32)) }, null)
         }
+        if (count.toLong() < 0) return emptyList()
         return ids
     }
 
