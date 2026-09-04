@@ -6015,19 +6015,21 @@ impl<S: Store> Node<S> {
 
     fn persist_service(&mut self, path: &str, cfg: &hps::ServiceConfig) {
         if let Ok(bytes) = postcard::to_allocvec(cfg) {
-            self.store.put_kv(&Self::hps_svc_key(path), bytes);
+            let _ = self.store.put_kv_critical(&Self::hps_svc_key(path), bytes);
         }
     }
     #[cfg(test)]
     fn persist_subscription(&mut self, path: &str, sub: &HpsSubscription) {
         if let Ok(bytes) = postcard::to_allocvec(sub) {
-            self.store.put_kv(&Self::hps_sub_key(path), bytes);
+            let _ = self.store.put_kv_critical(&Self::hps_sub_key(path), bytes);
         }
     }
     fn persist_pending(&mut self, path: &str) {
         let q: Vec<PubKeyBytes> = self.hps_pending.get(path).cloned().unwrap_or_default();
         if let Ok(bytes) = postcard::to_allocvec(&q) {
-            self.store.put_kv(&Self::hps_pending_key(path), bytes);
+            let _ = self
+                .store
+                .put_kv_critical(&Self::hps_pending_key(path), bytes);
         }
     }
     fn persist_members(&mut self, path: &str) {
@@ -6037,7 +6039,9 @@ impl<S: Store> Node<S> {
     fn persist_member_set(&mut self, path: &str, members: &HashSet<PubKeyBytes>) {
         let m: Vec<PubKeyBytes> = members.iter().copied().collect();
         if let Ok(bytes) = postcard::to_allocvec(&m) {
-            self.store.put_kv(&Self::hps_members_key(path), bytes);
+            let _ = self
+                .store
+                .put_kv_critical(&Self::hps_members_key(path), bytes);
         }
     }
 
@@ -6058,11 +6062,11 @@ impl<S: Store> Node<S> {
             .map(|i| (i.path.clone(), i.host, i.kind == hps::ServiceKind::Channel))
             .collect();
         if let Ok(b) = postcard::to_allocvec(&inc) {
-            self.store.put_kv("hps/invites_in", b);
+            let _ = self.store.put_kv_critical("hps/invites_in", b);
         }
         let out: Vec<(String, PubKeyBytes)> = self.hps_invites_out.keys().cloned().collect();
         if let Ok(b) = postcard::to_allocvec(&out) {
-            self.store.put_kv("hps/invites_out", b);
+            let _ = self.store.put_kv_critical("hps/invites_out", b);
         }
     }
 
@@ -8958,6 +8962,11 @@ impl<S: Store> Node<S> {
                             // offline overnight still attributes, which is the delay tolerance §40
                             // actually needs; the unbounded `attribute` stays for the durable
                             // re-ingest path, which was already admitted once against a fresh stamp.
+                            let dedup_key =
+                                format!("telemetry_seen/{}", bs58::encode(id).into_string());
+                            if self.store.get_kv(&dedup_key).is_some() {
+                                return false;
+                            }
                             if let Some(batch) = TelemetryBatch::from_bytes(&args) {
                                 if !self.app_payload_policy.supports(AppQueueKind::Telemetry) {
                                     return false;
@@ -8973,6 +8982,9 @@ impl<S: Store> Node<S> {
                                 ) else {
                                     return false;
                                 };
+                                let _ = self
+                                    .store
+                                    .put_kv_critical(&dedup_key, now.to_le_bytes().to_vec());
                                 self.telemetry_in.push(TelemetryIn {
                                     from,
                                     batch,
