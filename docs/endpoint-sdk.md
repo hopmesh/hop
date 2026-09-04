@@ -56,10 +56,12 @@ request/response:
 
 - Inbound is a **durable, store-and-forward consume**, like a webhook receiver or a queue consumer,
   not a served request. It fires when a message arrives, which may be long after it was sent.
+  By default, endpoint constructors run an in-memory node whose state is ephemeral to the process;
+  restart durability requires configuring a persistent database path (`db_path`/`dbPath`).
 - A **reply is a new addressed message** back to the sender, sealed over the ratchet. It can be
-  immediate or deferred, even across a process restart, because the sender address and ratchet state
-  persist.
-- Delivery should be **ack based**: the mailbox holds a message until the handler acks it, so a crash
+  immediate or deferred, even across a process restart when backed by persistent storage and an identity key,
+  because the sender address and ratchet state persist on disk.
+- Delivery is **ack based**: the mailbox holds a message until the handler acks it, so a crash
   mid-handle redelivers. That yields at-least-once delivery and crash safety (strictly better than an
   HTTP webhook, which drops when your box is down) and natural backpressure.
 - **Auth is cryptographic and free.** `req.from` is the ratchet-verified sender identity, not a
