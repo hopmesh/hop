@@ -148,6 +148,8 @@ internal class Link(
     )
 
     override val peerId: ByteArray? get() = proto.peerId
+    override val isSecured: Boolean get() = proto.secured
+    override fun markSecured() { proto.secured = true }
     val up: Boolean get() = proto.up
 
     // §6: a link is "stable" once it has stayed UP for >= 30 s.
@@ -869,12 +871,28 @@ class BleBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
     /// PLAT-001: called by the radio planes the instant a link's socket is up, BEFORE HELLO. Returns
     /// false if the bearer is stopped, in which case the caller closes the link instead of starting it.
     /// Registering here is what lets [closeAll] reach a link that never completes its handshake.
+    internal var maxPreauthLinks = 16
+    internal var maxLinks = 32
+
     internal fun adopt(link: BleLink): Boolean {
         synchronized(lock) {
             if (stopped) return false
+            val preauth = allLinks.values.count { !it.isSecured }
+            if (preauth >= maxPreauthLinks || allLinks.size >= maxLinks) return false
             allLinks[link.linkId] = link
         }
         return true
+    }
+
+    override fun close(link: Long) {
+        val l = synchronized(lock) { allLinks[link] }
+        l?.close("preauth-deadline")
+    }
+
+    override fun authenticated(link: Long) {
+        synchronized(lock) {
+            allLinks[link]?.markSecured()
+        }
     }
 
     internal fun isStopped(): Boolean = stopped

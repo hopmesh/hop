@@ -3,6 +3,7 @@ package sh.hopme.bearers.meshtastic
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -277,4 +278,30 @@ class MeshtasticBearerTest {
         assertTrue("links must be capped at MESH_MAX_LINKS (32)", bearer.linkCountForTest() <= 32)
         assertTrue("sink ups must be capped at MESH_MAX_LINKS (32)", sink.ups.size <= 32)
     }
+    @Test fun accessoryAuthorizationRejectsUntrustedPeripherals() {
+        // Default "no accessory" policy: never connect
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = false, bondedAddresses = null))
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = false, bondedAddresses = setOf("11:22:33:44:55:66")))
+
+        // "Bonded only" policy with no bonded devices: never connect
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = true, bondedAddresses = emptySet()))
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = true, bondedAddresses = null))
+
+        // "Bonded only" policy with different bonded device: never connect to unbonded rogue peripheral
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = true, bondedAddresses = setOf("99:88:77:66:55:44")))
+
+        // Explicit trusted address: reject mismatching peripheral even if bonded
+        assertFalse(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = "AA:BB:CC:DD:EE:FF", requireBonded = true, bondedAddresses = setOf("11:22:33:44:55:66")))
+    }
+
+    @Test fun accessoryAuthorizationAcceptsConfiguredOrBonded() {
+        // "Bonded only" policy connects to bonded device
+        assertTrue(shouldConnectAccessory("11:22:33:44:55:66", trustedAddress = null, requireBonded = true, bondedAddresses = setOf("11:22:33:44:55:66")))
+        // Case-insensitive match on bonded device
+        assertTrue(shouldConnectAccessory("11:22:33:aa:bb:cc", trustedAddress = null, requireBonded = true, bondedAddresses = setOf("11:22:33:AA:BB:CC")))
+
+        // Explicit trusted address connects matching device
+        assertTrue(shouldConnectAccessory("AA:BB:CC:DD:EE:FF", trustedAddress = "aa:bb:cc:dd:ee:ff", requireBonded = false, bondedAddresses = null))
+    }
+
 }

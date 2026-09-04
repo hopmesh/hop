@@ -25,6 +25,7 @@ interface Bearer {
     fun stop()
     fun send(bytes: ByteArray, link: Long)
     fun close(link: Long) {}
+    fun authenticated(link: Long) {}
 }
 
 /** Registry + multiplexer. Mints a process-global LinkId per link and translates each bearer's local
@@ -193,10 +194,12 @@ class BearerManager(baseLinkId: Long = 1) : Bearer {
     }
 
     fun markSecured(globalLinkId: Long) {
-        synchronized(lock) {
+        val route = synchronized(lock) {
             pendingOpenedMs.remove(globalLinkId)
-            pendingLinks.remove(globalLinkId)
+            val r = pendingLinks.remove(globalLinkId) ?: fromGlobal[globalLinkId]
+            r
         }
+        route?.let { (bearer, local) -> bearer.authenticated(local) }
     }
 
     fun checkPreauthDeadlines(nowMs: Long = System.currentTimeMillis(), deadlineMs: Long = PREAUTH_DEADLINE_MS) {

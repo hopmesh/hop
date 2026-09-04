@@ -41,6 +41,9 @@ internal class LinkProtocol(
     var up = false
 
     @Volatile
+    var secured = false
+
+    @Volatile
     private var becameUpMs = 0L
 
     @Volatile
@@ -98,6 +101,10 @@ internal class LinkProtocol(
         val now = clock()
         if (!up && now - openedMs > REAP_MS) {
             close("no-HELLO reap")
+            return
+        }
+        if (up && !secured && now - openedMs > 10_000L) {
+            close("preauth deadline")
             return
         }
         if (up && now - lastRxMs > deadLimit()) {

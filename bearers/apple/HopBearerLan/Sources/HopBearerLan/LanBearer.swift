@@ -628,6 +628,10 @@ public final class LanBearer: Bearer {
             link.markAuthenticated()
         }
     }
+
+    public func authenticated(_ linkId: LinkId) {
+        setAuthenticated(linkId: linkId)
+    }
 }
 
 #if DEBUG
