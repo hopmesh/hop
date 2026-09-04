@@ -88,7 +88,7 @@ storage mirror when the repository plan supports it, not the sole copy of proven
 
 Verifying provenance means reading the CANONICAL repository from a PUBLIC mirror: every mirror's
 `release.yml` mints a GitHub App token and `release-provenance.py` follows the `GitOrigin-RevId` label
-on the mirror commit back to the monorepo SHA, then checks that SHA's CI. That needs two secrets to
+on the mirror commit back to the canonical repository SHA, then checks that SHA's CI. That needs two secrets to
 resolve inside the mirror's `release` environment:
 
 | Secret | Value |
@@ -115,7 +115,7 @@ To arm publishing:
 
 1. Create a GitHub App (org `hopmesh`), e.g. `hop-source-read`, with repository permissions
    **`actions: read`, `checks: read`, `contents: read` and nothing else**. Install it on
-   **`hopmesh/monorepo` only**: the mirrors hold the key to mint the token, they are not its target.
+   **`hopmesh/hop` only**: the mirrors hold the key to mint the token, they are not its target.
 2. Seed both values ONCE as organization secrets scoped to the publishing mirrors, rather than
    fifteen times (the release workflows read them through the `release` environment):
 
@@ -137,7 +137,7 @@ say which piece is missing. Read the error rather than re-seeding:
 | Mint step error | Meaning |
 | --- | --- |
 | `'client-id' ... must be set to a non-empty string` | the secrets do not resolve in this repo (unset, or scoped to the wrong repositories). Run the checker. |
-| `Failed to create token for "hopmesh/monorepo": Not Found` (404, `get-a-repository-installation-for-the-authenticated-app`) | the App id and key are a valid pair, but the App is **not installed** on the org with `monorepo` selected. Install it; `gh api orgs/hopmesh/installations` should list it. |
+| `Failed to create token for "hopmesh/hop": Not Found` (404, `get-a-repository-installation-for-the-authenticated-app`) | the App id and key are a valid pair, but the App is **not installed** on the org with `hop` selected. Install it; `gh api orgs/hopmesh/installations` should list it. |
 | a 401, or `integration not found` | the id and the private key are not from the same App. |
 | a permissions error naming actions/checks/contents | installed, but that permission was added after installation and the pending request was never approved. |
 
