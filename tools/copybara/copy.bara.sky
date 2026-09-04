@@ -26,6 +26,7 @@ EXPORT_SMOKE = "tools/package-export-smoke.py"
 NATIVE_HELPER = "tools/native-artifacts.py"
 NATIVE_SCHEMA = "tools/native-artifacts.schema.json"
 NATIVE_PUBLIC_KEY = "tools/native-artifacts-public.pem"
+THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.md"
 HOP_HEADER = "sdk/hop.h"
 ELIXIR_WORKSPACE = "tools/copybara/elixir-native-Cargo.toml"
 ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"
@@ -82,7 +83,9 @@ RUST_MIRRORS = [
 # package differs. Map: mirror -> (monorepo [package] name, crates.io name). Crates not listed keep their
 # name (hop-wasm publishes to npm; the services are binaries, not crates.io crates).
 CRATE_RENAMES = {
-    # Empty for the same reason as RUST_MIRRORS: no Rust crate mirrors survive.
+    "hop-core": ("hop-core", "hop-mesh-core"),
+    "hop-store-sqlite": ("hop-store-sqlite", "hop-mesh-store-sqlite"),
+    "hop-store-firestore": ("hop-store-firestore", "hop-mesh-store-firestore"),
 }
 
 # Native wrappers receive the same verifier, schema, and public signing key. Release jobs download the
@@ -263,6 +266,7 @@ def _register(prefix, name):
         core.move(RELEASE_ARTIFACT_HELPER, ".github/release-artifact.py"),
         core.move(COMPONENT_MAP, ".github/components.json"),
         core.move(EXPORT_SMOKE, ".github/package-export-smoke.py"),
+        core.move(THIRD_PARTY_NOTICES, "THIRD-PARTY-NOTICES.md"),
     ]
     if is_native:
         export_transforms.extend([
@@ -334,6 +338,7 @@ def _register(prefix, name):
         ".github/release-artifact.py",
         ".github/components.json",
         ".github/package-export-smoke.py",
+        "THIRD-PARTY-NOTICES.md",
     ]
     if is_native:
         import_excludes.extend([

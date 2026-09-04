@@ -260,9 +260,11 @@ not "fix" the README back to URLs on the strength of a 200 response.
 - Each workspace crate carries its OWN crate-local `LICENSE.md`. Crates under
   `services/` use FSL-1.1-ALv2 (and point at it via `license-file = "LICENSE.md"`
   in their `[package]`, since FSL is not an SPDX id). Crates under `core/` use
-  Apache-2.0. So a crate cut from the release tag with `cargo publish` ships
-  its matching terms with no extra step.
-
+  Apache-2.0.
+- The three published public crates (`hop-mesh-core`, `hop-mesh-store-sqlite`, and
+  `hop-mesh-store-firestore`) are published from the monorepo using `tools/crates-publish.py`
+  via `.github/workflows/crates-publish.yml`, mapping the local crate names to their
+  crates.io package identities and resolving sibling dependencies to versioned requirements.
 ## License note (per-component)
 
 There is no repo-wide root license. Each component carries its own `LICENSE.md` so its
