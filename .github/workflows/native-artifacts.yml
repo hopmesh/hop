@@ -186,9 +186,14 @@ jobs:
           persist-credentials: false
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      # REL-005: with SQLCipher on (ABI-001) openssl-src builds vendored OpenSSL, and OpenSSL 3.6's
+      # x86_64 SM3/SM4 assembly uses mnemonics (vsm3msg1, vsm4key4, ...) that NDK 26's LLVM 17
+      # integrated assembler rejects. NDK 27 ships LLVM 18, which accepts them; all four ABIs were
+      # proven locally on 27.1.12297006 before this pin moved. Keep it in step with
+      # apps/react-native/HopDemo/android/build.gradle's ndkVersion.
       - name: Install exact NDK and Rust builders
         run: |
-          sdkmanager "ndk;26.3.11579264"
+          sdkmanager "ndk;27.1.12297006"
           rustup toolchain install 1.97.0 --profile minimal
           rustup target add aarch64-linux-android armv7-linux-androideabi \
             i686-linux-android x86_64-linux-android --toolchain 1.97.0
@@ -198,7 +203,7 @@ jobs:
           HOP_ANDROID_OUT: ${{ runner.temp }}/android-generated
           HOP_SQLCIPHER: '1'
         run: |
-          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006"
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
           bash tools/build-aar.sh
       - name: Package each exact Android target
