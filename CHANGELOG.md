@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- raise HopDemo app JVM target to 11 for compose BOM 2026.08.00 (961f755)
 - ship our own UTF-8 codec, since Hermes has no TextDecoder (e0a545a)
 - describe ABI levels in words so the version sweep stays honest (bbcae1c)
 - pin ABI 6, and close the guard hole that hid the drift (5e530fd)
@@ -71,6 +72,12 @@ git-cliff. Do not edit by hand.
 - commit Cargo.lock + GitOps build trigger (1st-gen GitHub) (a823481)
 
 ### Chore
+- bump com.android.application in /apps/android/HopDemo (44fdab9)
+- bump com.android.library in /bearers/android (5818ddb)
+- bump com.android.library in /apps/android/HopDemo (5945dda)
+- bump actions/deploy-pages in the github-actions group (196fd77)
+- bump the web-dependencies group (2ce3ade)
+- Bump androidx.compose:compose-bom in /apps/android/HopDemo (ba5e062)
 - bump the rust-dependencies group across 1 directory with 4 updates (#26) (ebaece7)
 - bump com.android.application in /apps/android/HopDemo (5afada6)
 - bump com.android.library in /apps/android/HopDemo (ba08def)
@@ -118,6 +125,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (ce99725)
 - regenerate from conventional commits (0ba8f06)
 - regenerate from conventional commits (288fb51)
 - regenerate from conventional commits (f880b09)
