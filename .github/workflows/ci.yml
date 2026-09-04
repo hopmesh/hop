@@ -1289,10 +1289,15 @@ jobs:
         env:
           HOP_LIBDIR: ${{ github.workspace }}/target/debug
         run: ruby -Ilib test/test_hop.rb
-      # INFRA-013: Report resolved dependency graph
+      # INFRA-013: Report resolved dependency graph. The gem has no runtime dependencies beyond
+      # Ruby's stdlib (fiddle binds libhop directly), so the report is the gemspec's own declared
+      # graph plus the interpreter that resolved it; `gem dependency` has no --list flag.
       - name: Report resolved dependency graph (INFRA-013)
         working-directory: sdk/ruby
-        run: gem dependency --list
+        run: |
+          ruby -v
+          ruby -e 'spec = Gem::Specification.load("hop-endpoint.gemspec") or abort("gemspec failed to load"); puts "#{spec.name} #{spec.version}"; puts "runtime dependencies: #{spec.runtime_dependencies.map(&:to_s).inspect}"; puts "development dependencies: #{spec.development_dependencies.map(&:to_s).inspect}"'
+          gem dependency --local
 
   crystal-sdk:
     name: Crystal endpoint SDK (spec)
