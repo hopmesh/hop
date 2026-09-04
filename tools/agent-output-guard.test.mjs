@@ -71,6 +71,9 @@ test("blocks direct, remote, wrapped, and scripted environment disclosure", () =
     "ruby -e 'p ENV'",
     "tr '\\0' '\\n' < /proc/self/environ",
     "cat \"/proc/self/environ\"",
+    "python3 - <<'PY'\nimport os\nprint(dict(os.environ))\nPY",
+    "node -e 'for (let k in process.env) console.log(k, process.env[k])'",
+    "python3 -c 'for k, v in os.environ.items(): print(k, v)'",
   ]
 
   for (const command of blocked) assert.equal(isEnvironmentDisclosure(command), true, command)
@@ -159,6 +162,19 @@ test("plugin blocks before execution and scrubs the child environment", async ()
   await hooks["shell.env"]({}, output)
   assert.deepEqual(output.env, { EXPLICIT_SETTING: "kept", HOP_TEST_API_TOKEN: "" })
 })
+test("plugin redacts leaked canary values in tool output", async () => {
+  const canary = "hop-secret-canary-789"
+  const environment = { HOP_TEST_CANARY: canary }
+  const hooks = await AgentOutputGuard({}, { environment, canaries: [canary] })
+  await assert.rejects(
+    hooks["tool.execute.after"]({ tool: "bash" }, { result: `Output contained ${canary}` }),
+    /Sensitive canary value leaked in tool output/,
+  )
+  await assert.doesNotThrow(async () => {
+    await hooks["tool.execute.after"]({ tool: "bash" }, { result: "NAME=set" })
+  })
+})
+
 
 test("checked-in OpenCode policy loads the plugin and denies direct probes", () => {
   assert.doesNotThrow(() => checkProjectPolicy(root))

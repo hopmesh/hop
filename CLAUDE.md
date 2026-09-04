@@ -42,7 +42,7 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 - Kotlin/Android: `gradle test` (SDK), the Android JVM unit tests (see `apps/android/CLAUDE.md`).
 - Apple: `swift test` per package (bearers, driver, HopDemoKit); the app is build-only in CI.
 - Web/sim: `sim/build-wasm.sh` then `sim/check-pkg-fresh.sh`; `node sim/scenario-check.mjs`.
-- CI (`.github/workflows/ci.yml`) is the gate: 18 jobs. Most are path-filtered off `changes`, so a job that skips still has to report. The aggregate `CI gate` depends on the other 17 and is the ONE required context on `main` (branch-protected); `tools/check-required-checks.sh` keeps that list honest. Adding a job means updating both the `changes` outputs and `gate.needs`.
+- CI (`.github/workflows/ci.yml`) is the gate: 20 jobs. Most are path-filtered off `changes`, so a job that skips still has to report. The aggregate `CI gate` depends on the other 19 and is the ONE required context on `main` (branch-protected); `tools/check-required-checks.sh` keeps that list honest. Adding a job means updating both the `changes` outputs and `gate.needs`.
 
 ## Repo-specific laws
 

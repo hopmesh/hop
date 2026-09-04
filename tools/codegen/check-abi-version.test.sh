@@ -51,7 +51,7 @@ lay_down() {
     > "$d/sdk/apple/Sources/Hop/Hop.swift"
   printf 'const val HOP_ABI_VERSION = %s\nfun hop_relay_next(node: Pointer?)\n' "$ABI" \
     > "$d/sdk/android/src/main/kotlin/sh/hop/Hop.kt"
-  printf '#define HOP_EMBEDDED_ABI_VERSION %s\n// calls hop_relay_next\n' "$ABI" \
+  printf '#define HOP_EMBEDDED_ABI_VERSION %s\nuintptr_t hop_relay_next(const struct HopNode *node, char *out, uintptr_t out_cap);\n' "$ABI" \
     > "$d/sdk/embedded/src/Hop.h"
   printf 'const abiExpected = %s\nC.hop_relay_next(n.p)\n' "$ABI" > "$d/sdk/go/hop.go"
   printf 'const int hopAbiVersion = %s;\nlate final _relayNext = lookup(_hop_relay_next);\n' "$ABI" \
@@ -152,6 +152,11 @@ printf 'pub const HOP_ABI_VERSION: u32 = %s;\n' "$ABI" > "$work/no-decls/core/ho
 rm -rf "$work/no-decls/sdk" "$work/no-decls/core/hop/include"
 expect "$work/no-decls" fail "known sites missing entirely" "not found"
 
+# (k) ABI-009: A wrapper that mentions the symbol only in a comment must fail.
+lay_down "$work/comment-only"
+printf '#define HOP_EMBEDDED_ABI_VERSION %s\n// calls hop_relay_next in comment only\n' "$ABI" \
+  > "$work/comment-only/sdk/embedded/src/Hop.h"
+expect "$work/comment-only" fail "wrapper mentions call only in comment" "references: hop_relay_next"
 echo
 echo "check-abi-version self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

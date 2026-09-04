@@ -53,6 +53,11 @@ mailbox-prefix-doc-guard.sh fails when the DOCUMENTED mailbox routing-prefix wid
                            mailbox-prefix-doc-guard.test.sh.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
+codegen/check-contract-purity.sh asserts sdk/hop.h and all SDK language faces contain no transport-specific
+                           symbols (BLE/Wi-Fi/socket identifiers). Discovers all SDK subtrees and checks
+                           target existence and non-emptiness. Self-test: codegen/check-contract-purity.test.sh.
+identity-secret-guard.py    scans tracked files for raw 32-byte high-entropy binary identity seeds and
+                           private key markers. Self-test: identity-secret-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
 release/                    plan.py resolves each publishing component's declared version from its own
                             manifest (Cargo/package.json/pyproject/shard/mix/gemspec, else the workspace
