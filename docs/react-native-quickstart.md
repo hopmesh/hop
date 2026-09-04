@@ -96,7 +96,7 @@ The Apple SDK arrives as three pods, declared in the app's Podfile: `CHop` (the 
 
 The pod is `HopSDK` rather than `Hop` because a pod named `Hop` builds `libHop.a`, which collides with the core's `libhop.a` on a case-insensitive filesystem and makes the linker pick the wrong archive.
 
-**Note on the podspec's `s.source`:** The podspec references git tag `v0.0.2`, but this repository carries no tags. This only affects remote pod consumption (e.g., `pod 'HopMesh', :git => '...'`). A development pod by local path (the default when you use `pod install` in an app inside this repository) is unaffected.
+**Note on the podspec's `s.source`:** The podspec references git tag `v0.0.3`, but this repository carries no tags. This only affects remote pod consumption (e.g., `pod 'HopMesh', :git => '...'`). A development pod by local path (the default when you use `pod install` in an app inside this repository) is unaffected.
 
 ## Android: wire the repository
 

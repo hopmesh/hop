@@ -35,7 +35,7 @@ def download(url, destination):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", default="v0.0.1")
+    parser.add_argument("--version", default="v0.0.3")
     parser.add_argument("--bundle")
     args = parser.parse_args()
     if not TAG_RE.fullmatch(args.version):

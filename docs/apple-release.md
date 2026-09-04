@@ -3,13 +3,12 @@
 `sdk/apple/Package.swift` is the published SwiftPM manifest. It resolves `CHop` from
 
 ```
-https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.1/libhop.xcframework.zip
+https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.3/libhop.xcframework.zip
 ```
 
-That URL currently 404s. `hopmesh/hop-sdk-apple` has the tag `v0.0.1` and zero releases, so the
-package does not resolve for anyone outside this repo, and every in-tree Apple build has to swap
-`Package.local.swift` over `Package.swift` first. That swap is the mechanism that has twice put the
-wrong manifest into a commit.
+hopmesh/hop-sdk-apple has a v0.0.2 release, which published an ABI-5 binary while Swift sources
+require ABI 7 (finding ABI-008). Until the v0.0.3 release is cut and published, in-tree Apple builds
+swap `Package.local.swift` over `Package.swift` when compiling against local core changes.
 
 This runbook is the ordered procedure a human follows to make that URL real. Every step below is
 grounded in a workflow or helper in this repo; the file that decides each behavior is named inline.
@@ -59,7 +58,7 @@ Compare that SHA against the one you are about to tag before you do anything els
 
 Everything here was checked against the live repositories and is a real blocker, not a hypothetical.
 
-### 1. The mirror has no source-read credentials
+### 1. Mirror source-read credentials and signing keys
 
 `release.yml`'s `prepare` job mints a token with:
 
@@ -80,18 +79,13 @@ Keep it that way when adding a mirror. (An earlier revision of this document ass
 workflows still said `repositories: monorepo`. That was wrong when it shipped and is recorded here so
 nobody goes looking for a defect that is not in the tree.)
 
-`hopmesh/hop-sdk-apple` has no repository secrets, no `release` environment secrets, and the only
-organization secret exposed to it is `HOP_SYNC_TOKEN`. Neither `HOP_SOURCE_APP_ID` nor
-`HOP_SOURCE_APP_PRIVATE_KEY` exists anywhere the workflow can read, so `prepare` fails at its second
-step.
+The organization secrets `HOP_SOURCE_APP_ID` and `HOP_SOURCE_APP_PRIVATE_KEY` are scoped to
+`hop-sdk-apple`, `hop-sdk-crystal`, and `hop-sdk-go`. The `hop-source` GitHub App holds
+`actions:read`, `checks:read`, and `contents:read` on `hopmesh/hop`.
 
-The organization does have a GitHub App, `hop-component-sync` (app id 4371945), installed on all
-repositories with `contents: write`, `metadata: read`, `pull_requests: write`, `workflows: write`. It
-is missing `actions: read` and `checks: read`, and `create-github-app-token` fails when it is asked
-for a permission the installation does not hold. So either grant that app those two read permissions
-and reuse it, or register a separate read-only source app. Then set its id and private key as
-secrets on the `release` environment of `hop-sdk-apple` (and of every other mirror whose release
-workflow verifies canonical provenance).
+Additionally, `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` are seeded in the `component-sync`
+environment. `NATIVE_ARTIFACT_SIGNING_KEY` was rotated on 2026-09-04 (private half held by the owner;
+public half is checked in at `tools/native-artifacts-public.pem`).
 
 ### 2. The `release` environment gates on a human
 
@@ -102,7 +96,7 @@ a `cancelled` conclusion, which is what a job blocked on the environment gate lo
 deployment when the run appears, or it will sit there. Three jobs request the environment (`prepare`,
 `publish`, `publish-pods`), so expect three approvals.
 
-### 3. The existing `v0.0.1` tag cannot be reused where it stands
+### 3. Tag state and version alignment
 
 `tools/release-provenance.py:validate_tag_state` rejects a release unless the push event is a newly
 created ref (`before` is forty zeros, not deleted, not forced) **and**:
@@ -112,23 +106,10 @@ if tag_commit != main_commit:
     raise ProvenanceError("tagged commit is not exactly the current mirror main commit")
 ```
 
-Today `hop-sdk-apple` main is `c4acc9bb3975d87766cd2d62f87e86b546c31c10` and `v0.0.1` points at
-`3e5240f910fb2461be7bc33a06df70f6cea3de50`. The tag is behind main, so re-running it fails that
-check, and moving a tag is rejected as a forced update. `.github/workflows/release-tags.yml` will not
-help: it creates tags through the git refs API, which never overwrites an existing ref, so it skips a
-version that is already tagged.
-
-Two ways out:
-
-- **Delete `v0.0.1` on the mirror and create it again at mirror main.** A delete followed by a create
-  is a fresh `created` push event, which is what `validate_tag_state` wants. This keeps `v0.0.1`
-  valid everywhere it is hardcoded (`tools/package-export-smoke.py`, its self-test,
-  `sdk/apple/install-local-xcframework.py`'s `--version` default, `sdk/apple/README.md`).
-- **Release `v0.0.2` instead.** `tools/release/plan.py` falls back to the Rust workspace version for
-  SwiftPM (tag-driven ecosystem, no in-repo manifest version), so bumping `[workspace.package]
-  version` in the root `Cargo.toml` makes `release-tags.yml` create a fresh tag on the next successful
-  sync. This costs more: the four `v0.0.1` hardcodes above all have to move in the same change, and
-  `tools/package-export-smoke.py` is a CI guard, so missing one reddens the build.
+The mirror previously had `v0.0.1` and `v0.0.2` tags. For `v0.0.3`, `tools/release/plan.py` falls
+back to the Rust workspace version for SwiftPM (tag-driven ecosystem, no in-repo manifest version).
+Bumping `[workspace.package] version` in the root `Cargo.toml` makes `release-tags.yml` create the
+`v0.0.3` tag on the mirror on the next successful sync.
 
 ### 4. CocoaPods trunk has no credential, and no one but Jason can create it
 
@@ -188,7 +169,7 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
      --public-key tools/native-artifacts-public.pem \
      --directory /tmp/hop-native \
      --provenance-bundle /tmp/hop-native/native-artifacts.provenance.sigstore.json \
-     --source-sha <S> --tag v0.0.1 --run-id <run-id> --run-attempt <attempt>
+     --source-sha <S> --tag v0.0.3 --run-id <run-id> --run-attempt <attempt>
    shasum -a 256 /tmp/hop-native/libhop.xcframework.zip
    ```
 
@@ -208,13 +189,11 @@ Do these in order. Nothing here is optional, and step 5 is the one people will w
    gh api repos/hopmesh/hop-sdk-apple/commits/main --jq '.sha, .commit.message'
    ```
 
-7. **Create the tag on the MIRROR, at mirror main.** Not in `hopmesh/hop`. If reusing `v0.0.1`, delete
-   it first.
+7. **Create the tag on the MIRROR, at mirror main.** Not in `hopmesh/hop`.
 
    ```bash
-   gh api -X DELETE repos/hopmesh/hop-sdk-apple/git/refs/tags/v0.0.1     # only if reusing v0.0.1
    gh api -X POST repos/hopmesh/hop-sdk-apple/git/refs \
-     -f ref=refs/tags/v0.0.1 -f sha=<mirror main sha>
+     -f ref=refs/tags/v0.0.3 -f sha=<mirror main sha>
    ```
 
 8. **Approve the `release` environment** when the run shows up under Actions on `hop-sdk-apple`.

@@ -33,7 +33,7 @@ links for iOS devices and macOS with no manual `-L`/`-l` flags.
 Add the package in Xcode (File > Add Package Dependencies) or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/hopmesh/hop-sdk-apple.git", from: "0.0.1")
+.package(url: "https://github.com/hopmesh/hop-sdk-apple.git", from: "0.0.3")
 ```
 
 Then depend on the `Hop` product:
@@ -42,13 +42,13 @@ Then depend on the `Hop` product:
 .target(name: "MyApp", dependencies: [.product(name: "Hop", package: "hop-sdk-apple")])
 ```
 
-The published manifest uses the immutable `v0.0.1/libhop.xcframework.zip` release URL and its SwiftPM
+The published manifest uses the immutable `v0.0.3/libhop.xcframework.zip` release URL and its SwiftPM
 checksum. That archive is produced by the protected canonical native-artifact workflow, carries an
 architecture manifest with per-slice SHA-256 values, and is verified again before the SDK release is
 created.
 
 For local development in the standalone package, run
-`python3 install-local-xcframework.py --version v0.0.1`, then temporarily use `Package.local.swift` as
+`python3 install-local-xcframework.py --version v0.0.3`, then temporarily use `Package.local.swift` as
 `Package.swift` while building. The installer applies the same signature, digest, checksum, and slice
 checks as the release job. In the monorepo, `./build-xcframework.sh` remains the source-build path.
 The published manifest never consults environment variables or silently selects local files.
