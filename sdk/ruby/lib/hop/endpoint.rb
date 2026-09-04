@@ -23,12 +23,25 @@ module Hop
     # waiting out its full timeout. A unique object, never equal to a real [status, body] response.
     CLOSED = Object.new
 
-    def initialize(key: nil, tick_ms: 50, cluster: nil, quorum: nil)
+    def initialize(key: nil, db_path: nil, db_key: nil, app_secret: nil, tick_ms: 50, cluster: nil, quorum: nil)
       Hop::FFI.assert_abi!
       if key && key.bytesize != 32
         raise ArgumentError, "identity key must be exactly 32 bytes, got #{key.bytesize}"
       end
-      @node = key ? Hop::FFI.node_with_secret(key) : Hop::FFI.node_new
+      if app_secret && app_secret.bytesize != 32
+        raise ArgumentError, "app_secret must be exactly 32 bytes, got #{app_secret.bytesize}"
+      end
+      @node = if db_path
+                if db_key
+                  Hop::FFI.node_open_keyed(db_path, key, app_secret, db_key)
+                else
+                  Hop::FFI.node_open(db_path, key, app_secret)
+                end
+              elsif key
+                Hop::FFI.node_with_secret(key)
+              else
+                Hop::FFI.node_new
+              end
       Hop::FFI.tick(@node, now_ms)
       Hop::FFI.publish_prekey(@node)
       @handlers = {}
@@ -69,6 +82,17 @@ module Hop
     def cluster_quorum(min)
       with_node { |n| Hop::FFI.cluster_set_quorum(n, min) }
       self
+    end
+
+    def persistent? = with_node { |n| Hop::FFI.node_is_persistent(n) } || false
+    def encrypted? = with_node { |n| Hop::FFI.node_is_encrypted(n) } || false
+
+    def cluster_mark_done(from, request_id)
+      with_node { |n| Hop::FFI.cluster_mark_done(n, from, request_id) }
+    end
+
+    def cluster_would_drop(from, request_id)
+      with_node { |n| Hop::FFI.cluster_would_drop(n, from, request_id) } || false
     end
 
     # ---- §19 relay pool ------------------------------------------------------------------------

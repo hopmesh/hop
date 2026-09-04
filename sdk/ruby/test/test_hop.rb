@@ -237,6 +237,33 @@ class TestHop < Minitest::Test
     client&.close
   end
 
+  def test_endpoint_persists_state_across_restart
+    require "tmpdir"
+    Dir.mktmpdir do |tmpdir|
+      db_path = File.join(tmpdir, "test-restart.db")
+      secret = (1..32).to_a.pack("C*")
+
+      e1 = Hop::Endpoint.new(key: secret, db_path: db_path, cluster: "shared-cluster-passphrase")
+      assert e1.persistent?
+      refute e1.encrypted?
+
+      from = ("\xAA" * 32).b
+      req_id = ("\xBB" * 32).b
+
+      e1.cluster_mark_done(from, req_id)
+      assert e1.cluster_would_drop(from, req_id)
+      e1.close
+
+      e2 = Hop::Endpoint.new(key: secret, db_path: db_path, cluster: "shared-cluster-passphrase")
+      begin
+        assert e2.persistent?
+        assert e2.cluster_would_drop(from, req_id)
+      ensure
+        e2.close
+      end
+    end
+  end
+
   private
 
   def ws_header(final, opcode, len)

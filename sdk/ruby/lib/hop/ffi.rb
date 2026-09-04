@@ -40,6 +40,9 @@ module Hop
     ABI_VERSION            = fn("hop_abi_version", [], I)
     NODE_NEW               = fn("hop_node_new", [], P)
     NODE_WITH_SECRET       = fn("hop_node_with_secret", [P, SZ], P)
+    NODE_OPEN              = fn("hop_node_open", [P, P, SZ, P, SZ], P)
+    NODE_OPEN_KEYED        = fn("hop_node_open_keyed", [P, P, SZ, P, SZ, P, SZ], P)
+    NODE_IS_PERSISTENT     = fn("hop_node_is_persistent", [P], CH)
     NODE_FREE              = fn("hop_node_free", [P], V)
     NODE_ADDRESS           = fn("hop_node_address", [P, P], CH)
     NODE_TICK              = fn("hop_node_tick", [P, LL], V)
@@ -73,6 +76,8 @@ module Hop
     CLUSTER_JOIN_PASSPHRASE = fn("hop_cluster_join_passphrase", [P, P, SZ], V)
     CLUSTER_MEMBERS         = fn("hop_cluster_members", [P], I)
     CLUSTER_SET_QUORUM      = fn("hop_cluster_set_quorum", [P, I], V)
+    CLUSTER_MARK_DONE       = fn("hop_cluster_mark_done", [P, P, P], V)
+    CLUSTER_WOULD_DROP      = fn("hop_cluster_would_drop", [P, P, P], CH)
     # §32 hps:// pub/sub: services and channels, i.e. group chat. The eighteen exports the v5 -> v6 ABI
     # bump added, which the C ABI had none of before, so no wrapper sitting on it could reach channels
     # however completely the Rust core implemented them. Declared here because a Fiddle::Function
@@ -142,6 +147,40 @@ module Hop
     # ---- thin wrappers ----
     def self.node_new = NODE_NEW.call
     def self.node_with_secret(secret) = NODE_WITH_SECRET.call(secret, secret.bytesize)
+    def self.node_open(db_path, secret = nil, app_secret = nil)
+      sec_ptr = secret ? require_32(secret, "secret") : nil
+      sec_len = secret ? secret.bytesize : 0
+      app_ptr = app_secret ? require_32(app_secret, "app secret") : nil
+      app_len = app_secret ? app_secret.bytesize : 0
+      ptr = NODE_OPEN.call(db_path, sec_ptr, sec_len, app_ptr, app_len)
+      raise "hop_node_open returned NULL" if ptr.to_i.zero?
+
+      ptr
+    end
+
+    def self.node_open_keyed(db_path, secret = nil, app_secret = nil, key = nil)
+      sec_ptr = secret ? require_32(secret, "secret") : nil
+      sec_len = secret ? secret.bytesize : 0
+      app_ptr = app_secret ? require_32(app_secret, "app secret") : nil
+      app_len = app_secret ? app_secret.bytesize : 0
+      key_ptr = key ? key : nil
+      key_len = key ? key.bytesize : 0
+      ptr = NODE_OPEN_KEYED.call(db_path, sec_ptr, sec_len, app_ptr, app_len, key_ptr, key_len)
+      raise "hop_node_open_keyed returned NULL" if ptr.to_i.zero?
+
+      ptr
+    end
+
+    def self.node_is_persistent(node) = NODE_IS_PERSISTENT.call(node) != 0
+    def self.node_is_encrypted(node) = NODE_IS_ENCRYPTED.call(node) != 0
+
+    def self.cluster_mark_done(node, from, request_id)
+      CLUSTER_MARK_DONE.call(node, require_32(from, "from"), require_32(request_id, "request id"))
+    end
+
+    def self.cluster_would_drop(node, from, request_id)
+      CLUSTER_WOULD_DROP.call(node, require_32(from, "from"), require_32(request_id, "request id")) != 0
+    end
     def self.node_free(node) = NODE_FREE.call(node)
     def self.tick(node, now_ms) = NODE_TICK.call(node, now_ms)
     def self.connected(node, link, initiator) = LINK_UP.call(node, link, initiator ? 0 : 1)
