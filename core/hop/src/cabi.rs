@@ -1974,8 +1974,14 @@ mod tests {
 
             #[cfg(feature = "sqlcipher")]
             {
-                assert!(!node.is_null(), "sqlcipher build must succeed on keyed open");
-                assert!(hop_node_is_encrypted(node), "sqlcipher node must report is_encrypted=true");
+                assert!(
+                    !node.is_null(),
+                    "sqlcipher build must succeed on keyed open"
+                );
+                assert!(
+                    hop_node_is_encrypted(node),
+                    "sqlcipher node must report is_encrypted=true"
+                );
                 hop_node_free(node);
 
                 // Reopen with wrong key
@@ -1990,7 +1996,9 @@ mod tests {
                     32,
                 );
                 assert!(
-                    node_bad.is_null() || !hop_node_is_encrypted(node_bad) || !hop_node_is_persistent(node_bad),
+                    node_bad.is_null()
+                        || !hop_node_is_encrypted(node_bad)
+                        || !hop_node_is_persistent(node_bad),
                     "wrong key must not decrypt database"
                 );
                 if !node_bad.is_null() {
@@ -2405,6 +2413,10 @@ mod tests {
         }
     }
 
+    // ABI-001: a keyed open on a build without the sqlcipher feature now fails closed (see
+    // hostile_repro_abi_001_plain_build_fails_closed_on_keyed_open), so the at-rest round trip is only
+    // meaningful, and only runs, when the cipher is compiled in.
+    #[cfg(feature = "sqlcipher")]
     #[test]
     fn node_open_keyed_encrypts_at_rest_and_still_round_trips_identity() {
         // hop_node_open_keyed is the SQLCipher-at-rest ctor (F-25): same identity guarantees as
