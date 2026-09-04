@@ -205,6 +205,38 @@ class TestHop < Minitest::Test
     e&.close
   end
 
+  def test_service_request_throwing_handler_leaves_request_queued
+    server = Hop::Endpoint.new(tick_ms: 10)
+    client = Hop::Endpoint.new(tick_ms: 10)
+    attempts = []
+    first_attempt_done = Queue.new
+
+    server.on("flaky") do |req, reply|
+      attempts << req.service
+      if attempts.length == 1
+        first_attempt_done.push(true)
+        raise "handler failed attempt 1"
+      end
+      reply.call(200, "recovered")
+    end
+
+    Hop.connect_in_process(server, client)
+    res = nil
+    req_thread = Thread.new do
+      res = client.request(server.address_bytes, "flaky", "call", "test", timeout: 3)
+    end
+
+    assert first_attempt_done.pop
+    assert_equal 1, attempts.length
+
+    req_thread.join(3)
+    assert_equal 2, attempts.length, "request was redelivered after throwing handler"
+    assert_equal [200, "recovered"], res
+  ensure
+    server&.close
+    client&.close
+  end
+
   private
 
   def ws_header(final, opcode, len)

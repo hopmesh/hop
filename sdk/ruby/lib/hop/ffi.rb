@@ -203,7 +203,7 @@ module Hop
       out = []
       sink = Closure.new(CH, [P, P, P, P, P, P, SZ]) do |_ctx, frm, rid, service, method, args, arglen|
         out << [read_bytes(frm, 32), read_bytes(rid, 32), read_cstr(service), read_cstr(method), read_bytes(args, arglen)]
-        1
+        0
       end
       POLL_SERVICE_REQUESTS.call(node, sink, nil)
       out
