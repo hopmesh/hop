@@ -274,6 +274,29 @@ FSL-1.1-ALv2; `core/`, SDKs, bearers, drivers, and apps use Apache-2.0. The
 missing, truncated, or cross-tier copies. The Font Awesome asset license remains
 separate from these code licenses.
 
+## Dependency resolution and lowest-supported-bound policy (INFRA-013)
+
+Hop ships client endpoint SDKs across several library ecosystems. Unlike standalone
+applications that ship a checked-in lockfile, published libraries resolve dependencies
+against consumer environments. To prevent unannounced breakage:
+
+1. Resolved graph reporting: every unpinned SDK job in CI reports its resolved dependency
+   graph (`pip freeze` for Python, `go list -m all` + `go mod graph` for Go,
+   `gem dependency --list` for Ruby, `mix deps.tree` for Elixir, `dart pub deps` for
+   Flutter/Dart). This makes the exact resolved set visible in every CI run.
+
+2. Lowest-supported-bound verification: ecosystems with native or standard lowest-bound
+   resolution tooling test the minimal declared dependency bounds in CI (`lowest-supported-bounds` job).
+   - Go: `go.mod` specifies minimal dependency versions, and `go mod tidy -compat=1.21`
+     plus `go test` exercises the lowest bound.
+   - Python: `uv pip install --resolution lowest` resolves and installs the minimum
+     permissible dependency versions for test suites.
+
+3. Principled residual: ecosystems lacking standard lowest-bound resolution tools
+   (Ruby Bundler lacks a native lowest-resolution resolver; Elixir Hex/Mix resolves
+   latest compatible; Dart/Flutter pub resolves highest compatible without manual constraint
+   downgrades) are audited manually during release review.
+
 ## Pre-release checklist
 
 1. CI green on the release SHA (tests, clippy, fmt, contract purity, header drift).

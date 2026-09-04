@@ -20,6 +20,7 @@
     "Crystal endpoint SDK (spec)",
     "Elixir endpoint SDK (mix test)",
     "Flutter endpoint SDK (proofs)",
+    "Lowest supported dependency bounds (Python + Go)",
     "React Native SDK (typecheck + tests)",
     "CI gate"
   ]
