@@ -56,6 +56,11 @@ version-align-guard.sh     fails if an SDK's declared version drifts in major/mi
 codegen/check-contract-purity.sh asserts sdk/hop.h and all SDK language faces contain no transport-specific
                            symbols (BLE/Wi-Fi/socket identifiers). Discovers all SDK subtrees and checks
                            target existence and non-emptiness. Self-test: codegen/check-contract-purity.test.sh.
+codegen/check-abi-version.sh asserts HOP_ABI_VERSION agreement across cabi.rs, headers, wrappers, and docs,
+                           verifies canonical tools/codegen/abi-manifest.json matches sdk/hop.h via
+                           generate-abi-manifest.py --check, and proves every wrapper's FFI declarations
+                           match manifest signatures via verify-abi-signatures.py. Self-test:
+                           codegen/check-abi-version.test.sh.
 identity-secret-guard.py    scans tracked files for raw 32-byte high-entropy binary identity seeds and
                            private key markers. Self-test: identity-secret-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.

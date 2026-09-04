@@ -4,7 +4,7 @@
 > as an architectural design note illustrating the integration of Hop's delay-tolerant transport into
 > mobile workforce platforms and background SDKs. Tactical company-specific targets have been generalized
 > to preserve commercial neutrality and avoid publishing private partner-targeting strategies in the open tree.
-> Companion to internal strategy notes (`hopmesh/internal/docs/positioning.md`).
+> Companion to public positioning statement (`docs/positioning.md`) and internal strategy notes (`hopmesh/internal/docs/positioning.md`).
 
 ## The one line
 
@@ -124,7 +124,7 @@ Two honest caveats. First, as the founder notes, this only covers the location p
 
 | ID | Source | State | Limitation |
 |---|---|---|---|
-| H-POS | `hopmesh/internal/docs/positioning.md` | `live` | Internal strategy note (private repo) |
+| H-POS | `docs/positioning.md` | `live` | Public positioning statement and commercial limits (companion to private `hopmesh/internal/docs/positioning.md`) |
 | H-DES | `DESIGN.md`, Use Case A and B, non-goals | `live` | Design, not a production SLA. Real-time and exactly-once are explicit non-goals |
 | H-MEC | `MECHANISMS.md`, shared fabric and app isolation | `live` | Living catalog, wire versions change |
 | H-HOPS | [hops:// protocol](https://hopme.sh/protocol/hops/) | `live` | Whitepaper still forthcoming |

@@ -127,6 +127,7 @@ SITES=(
   "ruby|sdk/ruby/lib/hop/ffi.rb|wrapper|sdk/ruby/lib"
   "crystal|sdk/crystal/src/hop/ffi.cr|wrapper|sdk/crystal/src"
   "go-install|sdk/go/cmd/hop-install/main.go|validator"
+  "go-install-test|sdk/go/cmd/hop-install/builder_test.go|validator"
   "flutter|sdk/flutter/lib/src/ffi.dart|wrapper|sdk/flutter/lib"
 )
 
@@ -177,12 +178,25 @@ for entry in "${SITES[@]}"; do
   done
   [ "$hit" -eq 1 ] || err "ABI guard: $path ($label) no longer declares an ABI version; the constant was renamed or removed, so its load-time assertion is checking nothing"
 done
-
-# ---- check 4: the ABI surface the current bump note names ---------------------------------------
+# ---- check 4: the ABI surface and signatures against canonical manifest (ABI-009) ---------------
 #
 # Read the bump note for the CURRENT version out of the generated header and collect the `hop_*`
 # functions it names. Deriving the list from the note rather than hard-coding it means the next bump is
 # covered by writing its note, and a note naming functions no wrapper binds cannot ship.
+MANIFEST="tools/codegen/abi-manifest.json"
+if [ ! -f "$MANIFEST" ]; then
+  if [ -f "sdk/hop.h" ]; then
+    python3 tools/codegen/generate-abi-manifest.py sdk/hop.h "$MANIFEST"
+  fi
+fi
+
+if [ -f "$MANIFEST" ] && [ -f "sdk/hop.h" ]; then
+  if ! manifest_check="$(python3 tools/codegen/generate-abi-manifest.py --check sdk/hop.h "$MANIFEST" 2>&1)"; then
+    err "ABI manifest drift: $MANIFEST does not match sdk/hop.h (ABI-009). Re-run tools/codegen/generate-abi-manifest.py to update it."
+    printf '%s\n' "$manifest_check" | sed 's/^/    /'
+  fi
+fi
+
 note_symbols=""
 if [ -f "sdk/hop.h" ]; then
   note_symbols="$(awk -v ver="$REF" '
@@ -210,44 +224,21 @@ else
     missing=""
     while IFS= read -r sym; do
       [ -n "$sym" ] || continue
-      if ! python3 -c '
-import sys, os, re
-surface, sym = sys.argv[1], sys.argv[2]
-found = False
-for root, dirs, files in os.walk(surface):
-    dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("target", "build", "node_modules")]
-    for f in files:
-        if f.startswith("."): continue
-        p = os.path.join(root, f)
-        try:
-            text = open(p, errors="ignore").read()
-        except Exception:
-            continue
-        if f.endswith(".go"):
-            cgo_match = re.search(r"/\*(.*?)\*/\s*import\s+\"C\"", text, flags=re.S)
-            if cgo_match:
-                cgo_code = cgo_match.group(1)
-                cgo_clean = "\n".join(line.split("//", 1)[0] for line in cgo_code.splitlines())
-                text = text[:cgo_match.start()] + "\n" + cgo_clean + "\n" + text[cgo_match.end()-len("import \"C\""):]
-        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-        for line in text.splitlines():
-            code = line.split("//", 1)[0].split("#", 1)[0].strip()
-            if re.search(r"(?<![a-zA-Z0-9_])_?" + re.escape(sym) + r"(?![a-zA-Z0-9_])", code):
-                found = True
-                break
-        if found:
-            break
-    if found:
-        break
-sys.exit(0 if found else 1)
-' "$surface" "$sym" 2>/dev/null; then
+      sym_err=""
+      if ! sym_err="$(python3 tools/codegen/verify-abi-signatures.py "$MANIFEST" "$surface" "$sym" 2>&1)"; then
         missing="$missing $sym"
+        [ -n "$sym_err" ] && printf '%s\n' "$sym_err"
       fi
     done <<< "$note_symbols"
     if [ -n "$missing" ]; then
-      err "ABI guard: wrapper $label pins ABI $REF but nothing under $surface references:$missing. Either bind them, or the header's v$REF note is claiming a capability this wrapper does not expose (PLAT-003)."
+      err "ABI guard: wrapper $label pins ABI $REF but does not correctly bind:$missing. Either bind them, or the header's v$REF note is claiming a capability this wrapper does not expose (PLAT-003, ABI-009)."
     else
-      printf '  %-12s binds the whole v%s surface (%s)\n' "$label" "$REF" "$surface"
+      # Check all bound symbols under surface against the manifest
+      sig_errs="$(python3 tools/codegen/verify-abi-signatures.py "$MANIFEST" "$surface" 2>&1)" || {
+        err "ABI guard: wrapper $label has signature mismatches against $MANIFEST:"
+        printf '%s\n' "$sig_errs" | sed 's/^/    /'
+      }
+      printf '  %-12s binds the whole v%s surface with verified signatures (%s)\n' "$label" "$REF" "$surface"
     fi
   done
 fi

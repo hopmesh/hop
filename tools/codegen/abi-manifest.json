@@ -1,0 +1,2798 @@
+{
+  "version": 7,
+  "source": "sdk/hop.h",
+  "enums": {
+    "HopLinkRole": {
+      "HopLinkRole_Dialer": 0,
+      "HopLinkRole_Acceptor": 1
+    },
+    "HopHpsKind": {
+      "HopHpsKind_Channel": 0,
+      "HopHpsKind_Service": 1
+    },
+    "HopHpsAccess": {
+      "HopHpsAccess_Open": 0,
+      "HopHpsAccess_RequestToJoin": 1,
+      "HopHpsAccess_Invite": 2
+    },
+    "HopHpsVisibility": {
+      "HopHpsVisibility_Private": 0,
+      "HopHpsVisibility_Discoverable": 1
+    }
+  },
+  "callbacks": {
+    "hop_drain_outgoing_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, uint64_t link, const uint8_t *bytes, uintptr_t len"
+    },
+    "hop_poll_inbox_sink": {
+      "return_type": "bool",
+      "arguments": "void *ctx, const uint8_t *inbox_id, const uint8_t *from, const char *content_type, const uint8_t *body, uintptr_t body_len, uint8_t hops, uint64_t created_at"
+    },
+    "hop_poll_service_requests_sink": {
+      "return_type": "bool",
+      "arguments": "void *ctx, const uint8_t *from, const uint8_t *request_id, const char *service, const char *method, const uint8_t *args, uintptr_t args_len"
+    },
+    "hop_poll_service_responses_sink": {
+      "return_type": "bool",
+      "arguments": "void *ctx, const uint8_t *from, const uint8_t *for_request_id, uint16_t status, const uint8_t *body, uintptr_t body_len"
+    },
+    "hop_poll_hps_messages_sink": {
+      "return_type": "bool",
+      "arguments": "void *ctx, const uint8_t *id, const char *path, const uint8_t *sender, const uint8_t *body, uintptr_t body_len"
+    },
+    "hop_poll_hps_invites_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *host, const char *path, uint32_t kind"
+    },
+    "hop_hps_pending_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *addr"
+    },
+    "hop_hps_rekey_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *id"
+    },
+    "hop_hps_members_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *addr"
+    },
+    "hop_hps_my_topics_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *host, const char *path, uint32_t kind, bool hosting, uint32_t access"
+    },
+    "hop_hps_browse_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *host, const char *path, uint32_t kind, const char *title, const char *summary, uint32_t access"
+    },
+    "hop_sign_reach_record_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *bytes, uintptr_t len"
+    },
+    "hop_verify_reach_record_sink": {
+      "return_type": "void",
+      "arguments": "void *ctx, const uint8_t *address, const char *endpoint, uint64_t issued_at, uint32_t ttl_secs"
+    }
+  },
+  "functions": {
+    "hop_abi_version": {
+      "name": "hop_abi_version",
+      "return_type": {
+        "raw": "uint32_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 32,
+        "signed": false
+      },
+      "parameter_count": 0,
+      "parameters": []
+    },
+    "hop_validate_wire_bundle": {
+      "name": "hop_validate_wire_bundle",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "bytes",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "len",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_metadata",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "out_metadata_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_open": {
+      "name": "hop_node_open",
+      "return_type": {
+        "raw": "const struct HopNode *",
+        "is_pointer": true,
+        "is_const": true,
+        "width_bits": 64,
+        "signed": false
+      },
+      "parameter_count": 5,
+      "parameters": [
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "db_path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "secret",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "secret_len",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "app_secret",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "app_secret_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_open_keyed": {
+      "name": "hop_node_open_keyed",
+      "return_type": {
+        "raw": "const struct HopNode *",
+        "is_pointer": true,
+        "is_const": true,
+        "width_bits": 64,
+        "signed": false
+      },
+      "parameter_count": 7,
+      "parameters": [
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "db_path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "secret",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "secret_len",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "app_secret",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "app_secret_len",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "key",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "key_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_new": {
+      "name": "hop_node_new",
+      "return_type": {
+        "raw": "const struct HopNode *",
+        "is_pointer": true,
+        "is_const": true,
+        "width_bits": 64,
+        "signed": false
+      },
+      "parameter_count": 0,
+      "parameters": []
+    },
+    "hop_node_with_secret": {
+      "name": "hop_node_with_secret",
+      "return_type": {
+        "raw": "const struct HopNode *",
+        "is_pointer": true,
+        "is_const": true,
+        "width_bits": 64,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "secret",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "secret_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_is_persistent": {
+      "name": "hop_node_is_persistent",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_is_encrypted": {
+      "name": "hop_node_is_encrypted",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_rehydrate_dropped": {
+      "name": "hop_node_rehydrate_dropped",
+      "return_type": {
+        "raw": "uint32_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 32,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_free": {
+      "name": "hop_node_free",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_address": {
+      "name": "hop_node_address",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_secret": {
+      "name": "hop_node_secret",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_set_name": {
+      "name": "hop_node_set_name",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "name",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_relay_add": {
+      "name": "hop_relay_add",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "url",
+          "is_callback": false
+        },
+        {
+          "raw": "bool",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 8,
+          "signed": false,
+          "name": "configured",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_relay_next": {
+      "name": "hop_relay_next",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "char *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "out_cap",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_relay_report": {
+      "name": "hop_relay_report",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "url",
+          "is_callback": false
+        },
+        {
+          "raw": "bool",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 8,
+          "signed": false,
+          "name": "ok",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_relay_pool_size": {
+      "name": "hop_relay_pool_size",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_available",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_node_tick": {
+      "name": "hop_node_tick",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint64_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "now_ms",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_link_up": {
+      "name": "hop_link_up",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint64_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "link",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "role",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_bytes_received": {
+      "name": "hop_bytes_received",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint64_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "link",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "data",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_link_down": {
+      "name": "hop_link_down",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint64_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "link",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_drain_outgoing": {
+      "name": "hop_drain_outgoing",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, uint64_t link, const uint8_t *bytes, uintptr_t len)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_drain_outgoing_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_subscribe": {
+      "name": "hop_subscribe",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "topic",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_publish_prekey": {
+      "name": "hop_publish_prekey",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_poll_inbox": {
+      "name": "hop_poll_inbox",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "bool (*sink)(void *ctx, const uint8_t *inbox_id, const uint8_t *from, const char *content_type, const uint8_t *body, uintptr_t body_len, uint8_t hops, uint64_t created_at)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_poll_inbox_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_accept_inbox": {
+      "name": "hop_accept_inbox",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "inbox_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_send_to": {
+      "name": "hop_send_to",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 7,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "dst",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "content_type",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "body",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "body_len",
+          "is_callback": false
+        },
+        {
+          "raw": "bool",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 8,
+          "signed": false,
+          "name": "request_ack",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_message_status": {
+      "name": "hop_message_status",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 6,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "id",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_relayed",
+          "is_callback": false
+        },
+        {
+          "raw": "bool *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_delivered",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_hops",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_ms",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_is_secured": {
+      "name": "hop_is_secured",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "addr",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_send_service_request": {
+      "name": "hop_send_service_request",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 7,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "dst",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "service",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "method",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "args",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "args_len",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_send_service_response": {
+      "name": "hop_send_service_response",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 6,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "to",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "for_request_id",
+          "is_callback": false
+        },
+        {
+          "raw": "uint16_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 16,
+          "signed": false,
+          "name": "status",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "body",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "body_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_join": {
+      "name": "hop_cluster_join",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "secret",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_join_passphrase": {
+      "name": "hop_cluster_join_passphrase",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "pass",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "pass_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_mark_done": {
+      "name": "hop_cluster_mark_done",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "from",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "request_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_would_drop": {
+      "name": "hop_cluster_would_drop",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "from",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "request_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_members": {
+      "name": "hop_cluster_members",
+      "return_type": {
+        "raw": "uint32_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 32,
+        "signed": false
+      },
+      "parameter_count": 1,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_cluster_set_quorum": {
+      "name": "hop_cluster_set_quorum",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "min_live_members",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_poll_service_requests": {
+      "name": "hop_poll_service_requests",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "bool (*sink)(void *ctx, const uint8_t *from, const uint8_t *request_id, const char *service, const char *method, const uint8_t *args, uintptr_t args_len)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_poll_service_requests_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_accept_service_request": {
+      "name": "hop_accept_service_request",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "request_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_reject_service_request": {
+      "name": "hop_reject_service_request",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "request_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_poll_service_responses": {
+      "name": "hop_poll_service_responses",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "bool (*sink)(void *ctx, const uint8_t *from, const uint8_t *for_request_id, uint16_t status, const uint8_t *body, uintptr_t body_len)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_poll_service_responses_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_accept_service_response": {
+      "name": "hop_accept_service_response",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "request_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_register": {
+      "name": "hop_hps_register",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 8,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "kind",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "access",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "visibility",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_pubkey",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "out_pubkey_cap",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_pubkey_len",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_subscribe": {
+      "name": "hop_hps_subscribe",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "host",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_publish": {
+      "name": "hop_hps_publish",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 5,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "body",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "body_len",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_poll_hps_messages": {
+      "name": "hop_poll_hps_messages",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "bool (*sink)(void *ctx, const uint8_t *id, const char *path, const uint8_t *sender, const uint8_t *body, uintptr_t body_len)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_poll_hps_messages_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_accept_hps_message": {
+      "name": "hop_accept_hps_message",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_invite": {
+      "name": "hop_hps_invite",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "dest",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_accept_invite": {
+      "name": "hop_hps_accept_invite",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "host",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_decline_invite": {
+      "name": "hop_hps_decline_invite",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "host",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_poll_hps_invites": {
+      "name": "hop_poll_hps_invites",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *host, const char *path, uint32_t kind)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_poll_hps_invites_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_leave": {
+      "name": "hop_hps_leave",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        },
+        {
+          "raw": "bool *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_has_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_pending": {
+      "name": "hop_hps_pending",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *addr)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_hps_pending_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_approve": {
+      "name": "hop_hps_approve",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "requester",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_deny": {
+      "name": "hop_hps_deny",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "requester",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_rekey": {
+      "name": "hop_hps_rekey",
+      "return_type": {
+        "raw": "intptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 7,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "new_path",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "remove",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "remove_count",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *id)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_hps_rekey_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_reach": {
+      "name": "hop_hps_reach",
+      "return_type": {
+        "raw": "uint32_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 32,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_members": {
+      "name": "hop_hps_members",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 4,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "path",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *addr)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_hps_members_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_my_topics": {
+      "name": "hop_hps_my_topics",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *host, const char *path, uint32_t kind, bool hosting, uint32_t access)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_hps_my_topics_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_hps_browse": {
+      "name": "hop_hps_browse",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *host, const char *path, uint32_t kind, const char *title, const char *summary, uint32_t access)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_hps_browse_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_address_to_base58": {
+      "name": "hop_address_to_base58",
+      "return_type": {
+        "raw": "uintptr_t",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 64,
+        "signed": true
+      },
+      "parameter_count": 3,
+      "parameters": [
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "addr",
+          "is_callback": false
+        },
+        {
+          "raw": "char *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "out_cap",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_address_from_base58": {
+      "name": "hop_address_from_base58",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 2,
+      "parameters": [
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "text",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out32",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_send_message": {
+      "name": "hop_send_message",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 7,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "dst",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "content_type",
+          "is_callback": false
+        },
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "body",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "body_len",
+          "is_callback": false
+        },
+        {
+          "raw": "bool",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 8,
+          "signed": false,
+          "name": "request_ack",
+          "is_callback": false
+        },
+        {
+          "raw": "uint8_t *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "out_id",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_sign_reach_record": {
+      "name": "hop_sign_reach_record",
+      "return_type": {
+        "raw": "void",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 0,
+        "signed": false
+      },
+      "parameter_count": 5,
+      "parameters": [
+        {
+          "raw": "const struct HopNode *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "node",
+          "is_callback": false
+        },
+        {
+          "raw": "const char *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "endpoint",
+          "is_callback": false
+        },
+        {
+          "raw": "uint32_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 32,
+          "signed": false,
+          "name": "ttl_secs",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *bytes, uintptr_t len)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_sign_reach_record_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    },
+    "hop_verify_reach_record": {
+      "name": "hop_verify_reach_record",
+      "return_type": {
+        "raw": "bool",
+        "is_pointer": false,
+        "is_const": false,
+        "width_bits": 8,
+        "signed": false
+      },
+      "parameter_count": 5,
+      "parameters": [
+        {
+          "raw": "const uint8_t *",
+          "is_pointer": true,
+          "is_const": true,
+          "width_bits": 64,
+          "signed": false,
+          "name": "bytes",
+          "is_callback": false
+        },
+        {
+          "raw": "uintptr_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": true,
+          "name": "len",
+          "is_callback": false
+        },
+        {
+          "raw": "uint64_t",
+          "is_pointer": false,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "now_secs",
+          "is_callback": false
+        },
+        {
+          "name": "sink",
+          "raw": "void (*sink)(void *ctx, const uint8_t *address, const char *endpoint, uint64_t issued_at, uint32_t ttl_secs)",
+          "is_callback": true,
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "callback_id": "hop_verify_reach_record_sink"
+        },
+        {
+          "raw": "void *",
+          "is_pointer": true,
+          "is_const": false,
+          "width_bits": 64,
+          "signed": false,
+          "name": "ctx",
+          "is_callback": false
+        }
+      ]
+    }
+  }
+}

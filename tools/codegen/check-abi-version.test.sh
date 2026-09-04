@@ -30,7 +30,8 @@ lay_down() {
            "$d/sdk/python/hop_endpoint" "$d/sdk/ruby/lib/hop" "$d/sdk/crystal/src/hop" \
            "$d/sdk/flutter/lib/src"
   cp "$GUARD" "$d/tools/codegen/check-abi-version.sh"
-
+  cp "$HERE/generate-abi-manifest.py" "$d/tools/codegen/generate-abi-manifest.py"
+  cp "$HERE/verify-abi-signatures.py" "$d/tools/codegen/verify-abi-signatures.py"
   printf 'pub const HOP_ABI_VERSION: u32 = %s;\n' "$ABI" > "$d/core/hop/src/cabi.rs"
 
   # Both headers carry the bump note. hop_relay_next is the call the note names, so every wrapper has
@@ -46,26 +47,31 @@ lay_down() {
     printf 'uintptr_t hop_relay_next(const struct HopNode *node, char *out, uintptr_t out_cap);\n'
   } > "$header"
   cp "$header" "$d/core/hop/include/hop.h"
-
+  python3 "$HERE/generate-abi-manifest.py" "$header" "$d/tools/codegen/abi-manifest.json"
   printf 'public static let expectedABIVersion: UInt32 = %s\nhop_relay_next(raw, &buf, 0)\n' "$ABI" \
     > "$d/sdk/apple/Sources/Hop/Hop.swift"
-  printf 'const val HOP_ABI_VERSION = %s\nfun hop_relay_next(node: Pointer?)\n' "$ABI" \
+  printf 'const val HOP_ABI_VERSION = %s\nfun hop_relay_next(node: Pointer?, out: Pointer?, cap: Long)\n' "$ABI" \
     > "$d/sdk/android/src/main/kotlin/sh/hop/Hop.kt"
   printf '#define HOP_EMBEDDED_ABI_VERSION %s\nuintptr_t hop_relay_next(const struct HopNode *node, char *out, uintptr_t out_cap);\n' "$ABI" \
     > "$d/sdk/embedded/src/Hop.h"
-  printf 'const abiExpected = %s\nC.hop_relay_next(n.p)\n' "$ABI" > "$d/sdk/go/hop.go"
-  printf 'const int hopAbiVersion = %s;\nlate final _relayNext = lookup(_hop_relay_next);\n' "$ABI" \
-    > "$d/sdk/flutter/lib/src/ffi.dart"
-  printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node)")\n' "$ABI" \
+  printf 'const abiExpected = %s\nC.hop_relay_next(n.node, outBuf, outCap)\n' "$ABI" > "$d/sdk/go/hop.go"
+  cat << EOF > "$d/sdk/flutter/lib/src/ffi.dart"
+const int hopAbiVersion = $ABI;
+typedef _RelayNextC = IntPtr Function(Pointer<Void>, Pointer<Utf8>, IntPtr);
+late final _relayNext = _lib.lookupFunction<_RelayNextC, _RelayNextC>('hop_relay_next');
+EOF
+  printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node, char *out, size_t out_cap)")\n' "$ABI" \
     > "$d/sdk/node/lib/ffi.mjs"
-  printf '_ABI_EXPECTED = %s\n_lib.hop_relay_next.restype = c_size_t\n' "$ABI" \
+  printf '_ABI_EXPECTED = %s\n_lib.hop_relay_next.argtypes = [c_void_p, c_char_p, c_size_t]\n' "$ABI" \
     > "$d/sdk/python/hop_endpoint/_ffi.py"
-  printf 'ABI_EXPECTED = %s\nRELAY_NEXT = fn("hop_relay_next", [], I)\n' "$ABI" \
+  printf 'ABI_EXPECTED = %s\nRELAY_NEXT = fn("hop_relay_next", [P, P, SZ], SZ)\n' "$ABI" \
     > "$d/sdk/ruby/lib/hop/ffi.rb"
-  printf 'ABI_EXPECTED = %s_u32\nfun relay_next = hop_relay_next(node : Void*)\n' "$ABI" \
+  printf 'ABI_EXPECTED = %s_u32\nfun relay_next = hop_relay_next(node : Void*, out : LibC::Char*, out_cap : LibC::SizeT)\n' "$ABI" \
     > "$d/sdk/crystal/src/hop/ffi.cr"
   printf 'if !strings.Contains(string(header), "#define HOP_ABI_VERSION %s") {\n' "$ABI" \
     > "$d/sdk/go/cmd/hop-install/main.go"
+  printf 'os.WriteFile("hop.h", []byte("#define HOP_ABI_VERSION %s\\n"), 0644)\n' "$ABI" \
+    > "$d/sdk/go/cmd/hop-install/builder_test.go"
 }
 
 # expect DIR WANT(pass|fail) LABEL [grep-for]
@@ -156,7 +162,24 @@ expect "$work/no-decls" fail "known sites missing entirely" "not found"
 lay_down "$work/comment-only"
 printf '#define HOP_EMBEDDED_ABI_VERSION %s\n// calls hop_relay_next in comment only\n' "$ABI" \
   > "$work/comment-only/sdk/embedded/src/Hop.h"
-expect "$work/comment-only" fail "wrapper mentions call only in comment" "references: hop_relay_next"
-echo
+expect "$work/comment-only" fail "wrapper mentions call only in comment" "hop_relay_next"
+
+# (l) ABI-009: A wrapper that mentions the symbol only in a string literal must fail.
+lay_down "$work/string-literal"
+printf 'const ABI_EXPECTED = %s\nconst fn = "hop_relay_next";\n' "$ABI" \
+  > "$work/string-literal/sdk/node/lib/ffi.mjs"
+expect "$work/string-literal" fail "wrapper mentions call only in string literal" "hop_relay_next"
+
+# (m) ABI-009: A wrapper with wrong arity (1 param instead of 3 for hop_relay_next) must fail.
+lay_down "$work/wrong-arity"
+printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node)")\n' "$ABI" \
+  > "$work/wrong-arity/sdk/node/lib/ffi.mjs"
+expect "$work/wrong-arity" fail "wrapper binds symbol with wrong parameter arity" "arity mismatch"
+
+# (n) ABI-009: A header change that is not reflected in the manifest must fail.
+lay_down "$work/manifest-drift"
+printf 'uintptr_t hop_unmanifested_call(void);\n' >> "$work/manifest-drift/sdk/hop.h"
+expect "$work/manifest-drift" fail "header change not reflected in manifest" "ABI manifest drift"
+
 echo "check-abi-version self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

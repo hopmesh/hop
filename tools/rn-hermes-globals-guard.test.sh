@@ -147,4 +147,40 @@ export const errMsg = "TextDecoder is not available in Hermes";
 TS
 run_case strings-and-comments pass "" "$work"
 
+# 16. ABI-010: self.TextDecoder property access must fail
+work="$(sandbox self-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new self.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case self-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 17. ABI-010: self["TextDecoder"] bracket access must fail
+work="$(sandbox self-bracket)"
+printf 'export function d(b: Uint8Array): unknown {\n  const TD = self["TextDecoder"];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case self-bracket fail "TextDecoder is not safe on Hermes" "$work"
+
+# 18. ABI-010: Template literal computed access must fail
+work="$(sandbox template-literal)"
+printf 'export function d(b: Uint8Array): unknown {\n  const TD = globalThis[`TextDecoder`];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case template-literal fail "TextDecoder is not safe on Hermes" "$work"
+
+# 19. ABI-010: frames.TextDecoder must fail
+work="$(sandbox frames-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new frames.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case frames-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 20. ABI-010: top.TextDecoder must fail
+work="$(sandbox top-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new top.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case top-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 21. ABI-010: parent.TextDecoder must fail
+work="$(sandbox parent-property)"
+printf 'export function d(b: Uint8Array): unknown {\n  return new parent.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case parent-property fail "TextDecoder is not safe on Hermes" "$work"
+
 echo "rn hermes globals guard tests passed"
