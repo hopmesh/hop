@@ -1098,15 +1098,15 @@ jobs:
         run: bash .github/scripts/dep-fix-tag.test.sh
       - name: Self-test PR auto-merge safety check (PROC-002)
         run: bash .github/scripts/check-pr-automerge-safety.test.sh
+      - name: Self-test native-artifacts path guard (PROC-005)
+        run: bash tools/native-artifacts-path-guard.test.sh
+      - name: Enforce native-artifacts path filter
+        run: python3 tools/native-artifacts-path-guard.py
       # INFRA-012: Syntax check testkit automation scripts (bash -n, node --check)
       - name: Syntax check testkit automation scripts (bash -n, node --check)
         run: |
-          for f in $(find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \)); do
-            bash -n "$f"
-          done
-          for f in $(find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \)); do
-            node --check "$f"
-          done
+          find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \) -exec bash -n {} +
+          find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} +
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1172,6 +1172,12 @@ jobs:
         run: bash tools/workflow-if-guard.test.sh
       - name: Workflow if guard (no newline inside an expression)
         run: python3 tools/workflow-if-guard.py
+      # Shell syntax errors in workflow run: blocks (such as a missing done in a loop, REL-006)
+      # can sit undetected when runs are gated off. Validate all run: blocks with bash -n.
+      - name: Self-test the workflow run syntax guard
+        run: bash tools/workflow-run-syntax-guard.test.sh
+      - name: Workflow run syntax guard (bash -n over run blocks)
+        run: python3 tools/workflow-run-syntax-guard.py
       # Every published package tracks the protocol's major.minor (the Rust workspace version is the
       # anchor); patch may differ per package, but a major/minor bump must move them all together.
       - name: Self-test the version-alignment guard
