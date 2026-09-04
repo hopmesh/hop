@@ -15,7 +15,7 @@ docs-token-guard.sh        bans em/en/lookalike dashes (literal, HTML-entity inc
                            NOT scanned. "The source pass reported OK" is therefore not the same claim as
                            "no file in the repo has a dash". The wire-source-manifest exclusion was
                            RETIRED in the v13 to v14 bump (PROC-001), which also added U+2212 to the
-                           banned set and put fuzz/, mockups/, and business/ into the source pass.
+                           banned set and put fuzz/ into the source pass (mockups/ and business/ were moved to hopmesh/internal).
                            Self-test: docs-token-guard.test.sh.
 check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:` every other ci.yml
                            job, use `if: always()`, and fail on a failed/cancelled dep. Also fails on a
@@ -53,6 +53,11 @@ mailbox-prefix-doc-guard.sh fails when the DOCUMENTED mailbox routing-prefix wid
                            mailbox-prefix-doc-guard.test.sh.
 version-align-guard.sh     fails if an SDK's declared version drifts in major/minor from the anchor (the
                            Rust workspace version); patch may differ. Self-test: version-align-guard.test.sh.
+codegen/check-contract-purity.sh asserts sdk/hop.h and all SDK language faces contain no transport-specific
+                           symbols (BLE/Wi-Fi/socket identifiers). Discovers all SDK subtrees and checks
+                           target existence and non-emptiness. Self-test: codegen/check-contract-purity.test.sh.
+identity-secret-guard.py    scans tracked files for raw 32-byte high-entropy binary identity seeds and
+                           private key markers. Self-test: identity-secret-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
 release/                    plan.py resolves each publishing component's declared version from its own
                             manifest (Cargo/package.json/pyproject/shard/mix/gemspec, else the workspace

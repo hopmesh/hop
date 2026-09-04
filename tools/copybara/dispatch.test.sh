@@ -72,6 +72,76 @@ for marker in (
 ):
     if export_helper.count(marker) != 1:
         raise SystemExit(f"exact export Elixir dependency transform drifted: {marker}")
+
+# REL-001: Functional simulation test of _elixir_vendor_export() transforms
+import tempfile, shutil
+
+def test_elixir_vendor_export_simulation():
+    tmp = tempfile.mkdtemp(prefix="elixir-export-sim-")
+    try:
+        tpath = Path(tmp)
+        # 1. Set up synthetic source tree
+        (tpath / "tools/copybara").mkdir(parents=True)
+        (tpath / "core/hop-core").mkdir(parents=True)
+        (tpath / "core/hop-endpoint").mkdir(parents=True)
+        (tpath / "core/stores/hop-store-sqlite").mkdir(parents=True)
+        (tpath / "core/hop").mkdir(parents=True)
+        (tpath / "native/hop_endpoint").mkdir(parents=True)
+
+        shutil.copyfile(root / "tools/copybara/elixir-native-Cargo.toml", tpath / "tools/copybara/elixir-native-Cargo.toml")
+        shutil.copyfile(root / "tools/copybara/elixir-native-Cargo.lock", tpath / "tools/copybara/elixir-native-Cargo.lock")
+        (tpath / "core/hop-core/Cargo.toml").write_text("[package]\nname = \"hop-core\"\n")
+        (tpath / "core/hop-endpoint/Cargo.toml").write_text("[package]\nname = \"hop-endpoint\"\n")
+        (tpath / "core/stores/hop-store-sqlite/Cargo.toml").write_text("[package]\nname = \"hop-store-sqlite\"\n")
+        (tpath / "core/hop/Cargo.toml").write_text("[package]\nname = \"hop\"\n")
+
+        hop_endpoint_cargo = (
+            '[package]\nname = "hop_endpoint"\n\n'
+            '[dependencies]\n'
+            'hop = { path = "../../../../core/hop" }\n\n'
+            '[workspace]\n'
+        )
+        (tpath / "native/hop_endpoint/Cargo.toml").write_text(hop_endpoint_cargo)
+
+        # 2. Simulate the transforms in _elixir_vendor_export()
+        shutil.move(str(tpath / "tools/copybara/elixir-native-Cargo.toml"), str(tpath / "native/Cargo.toml"))
+        (tpath / "native/vendor").mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tpath / "core/hop-core"), str(tpath / "native/vendor/hop-core"))
+        shutil.move(str(tpath / "core/hop-endpoint"), str(tpath / "native/vendor/hop-endpoint-core"))
+        shutil.move(str(tpath / "core/stores/hop-store-sqlite"), str(tpath / "native/vendor/hop-store-sqlite"))
+        shutil.move(str(tpath / "core/hop"), str(tpath / "native/vendor/libhop"))
+        shutil.move(str(tpath / "tools/copybara/elixir-native-Cargo.lock"), str(tpath / "native/Cargo.lock"))
+
+        content = (tpath / "native/hop_endpoint/Cargo.toml").read_text()
+        elixir_hop_path_dep = 'hop = { path = "../../../../core/hop" }\n\n[workspace]\n'
+        elixir_hop_vendor_dep = 'hop = { workspace = true }\n'
+        if elixir_hop_path_dep not in content:
+            raise SystemExit("Simulation failure: ELIXIR_HOP_PATH_DEP pattern not found in native/hop_endpoint/Cargo.toml")
+        content = content.replace(elixir_hop_path_dep, elixir_hop_vendor_dep)
+        (tpath / "native/hop_endpoint/Cargo.toml").write_text(content)
+
+        # 3. Assert resulting structure matches what cargo build in Hex package requires
+        if not (tpath / "native/Cargo.toml").is_file():
+            raise SystemExit("Simulation assertion failed: native/Cargo.toml missing")
+        cargo_toml = (tpath / "native/Cargo.toml").read_text()
+        for member in ["hop_endpoint", "vendor/hop-core", "vendor/hop-endpoint-core", "vendor/hop-store-sqlite", "vendor/libhop"]:
+            if f'"{member}"' not in cargo_toml:
+                raise SystemExit(f"Simulation assertion failed: member {member} missing from native/Cargo.toml")
+
+        for vendored in ["hop-core", "hop-endpoint-core", "hop-store-sqlite", "libhop"]:
+            if not (tpath / f"native/vendor/{vendored}/Cargo.toml").is_file():
+                raise SystemExit(f"Simulation assertion failed: native/vendor/{vendored}/Cargo.toml missing")
+
+        if not (tpath / "native/Cargo.lock").is_file():
+            raise SystemExit("Simulation assertion failed: native/Cargo.lock missing")
+
+        final_endpoint = (tpath / "native/hop_endpoint/Cargo.toml").read_text()
+        if 'hop = { workspace = true }' not in final_endpoint or '../../../../core/hop' in final_endpoint:
+            raise SystemExit("Simulation assertion failed: native/hop_endpoint/Cargo.toml did not rewrite path dependency")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+test_elixir_vendor_export_simulation()
 PY
 
 while IFS= read -r component; do

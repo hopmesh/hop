@@ -97,12 +97,15 @@ function socketConstructor(): RelaySocketCtor {
  */
 function frameBytes(data: unknown): Uint8Array | null {
   if (data instanceof ArrayBuffer) {
+    if (data.byteLength > 65536) return null;
     return new Uint8Array(data);
   }
   if (data instanceof Uint8Array) {
+    if (data.byteLength > 65536) return null;
     return data;
   }
   if (ArrayBuffer.isView(data)) {
+    if (data.byteLength > 65536) return null;
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   return null;
@@ -134,6 +137,8 @@ export async function connectRelay(
   let carrying = false;
   let dropped = 0;
   const inbound: Uint8Array[] = [];
+  let inboundQueuedBytes = 0;
+  const MAX_INBOUND_QUEUED_BYTES = 256 * 1024;
 
   const report = (next: RelayState, detail?: string): void => {
     if (state === next && detail === undefined) {
@@ -174,6 +179,8 @@ export async function connectRelay(
     } catch {
       // Already gone. Closing a dead socket is not a failure worth surfacing.
     }
+    inbound.length = 0;
+    inboundQueuedBytes = 0;
     report('down', detail);
     // A no-op once `opened` has settled, which is exactly right: a drop after open is a state
     // transition, a drop before open is the reason connectRelay rejects.
@@ -196,6 +203,7 @@ export async function connectRelay(
       });
     }
     inbound.length = 0;
+    inboundQueuedBytes = 0;
   }
 
   ws.onopen = () => {
@@ -214,9 +222,15 @@ export async function connectRelay(
   ws.onmessage = (event) => {
     const bytes = frameBytes(event?.data);
     if (bytes == null) {
-      report(state, `ignored a non-binary frame from ${url}`);
+      report(state, `rejected non-binary or oversized frame from ${url}`);
+      void teardown('protocol violation: non-binary or oversized frame');
       return;
     }
+    if (inboundQueuedBytes + bytes.byteLength > MAX_INBOUND_QUEUED_BYTES) {
+      void teardown('inbound queue overflow');
+      return;
+    }
+    inboundQueuedBytes += bytes.byteLength;
     inbound.push(bytes);
     drain();
   };

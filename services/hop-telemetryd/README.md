@@ -39,10 +39,12 @@ never per-record or per-device (services-03).
 
 The ledger has to outlive the process for the reconciler to bill it, so the collector runs on a real
 store: local **SQLite** by default (`--db`), or **Firestore** on the cloud deploy
-(`--firestore <project>`, needs `--features firestore`), the same split as the relay. On SIGTERM it
-drains the meter into the ledger and flushes the store before exiting, so a Cloud Run reap does not
-lose the window's billable usage.
-
+(`--firestore <project>`, needs `--features firestore`), the same split as the relay. Writes use
+`put_kv_critical`, and uncommitted counts are retained in retry buffers on store write failure.
+The `/healthz` probe reflects both key-server attribution readiness and durable ledger write health,
+so a degraded store alerts instead of silently losing billable telemetry. On SIGTERM it drains the
+meter into the ledger and flushes the store before exiting, so a Cloud Run reap does not lose the
+window's billable usage.
 Remaining follow-up: a raw-event BigQuery forwarder for the observability dashboard, and the
 reconciler's live read path over these rows.
 

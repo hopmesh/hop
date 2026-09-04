@@ -42,6 +42,8 @@ import java.util.concurrent.TimeUnit
 // THREADING: OkHttp delivers WebSocketListener callbacks from its own dispatcher threads; we hop each
 // onto a single-thread executor so all bearer state lives on one thread (no locks). OkHttp's send is
 // itself thread-safe, so send() may be called from any thread.
+internal const val MAX_LINK_PACKET_BYTES = 65_536
+
 
 // The backoff constants + the pure reconnect-schedule arithmetic live in RelayBackoff.kt (Android-free
 // so they're unit-testable). RELAY_BACKOFF_MIN_MS / _MAX_MS / _STABLE_MS / _DEAD_AFTER / _DEAD_MS are
@@ -308,10 +310,18 @@ class RelayBearer(
                 }
             }
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) = run {
+                if (bytes.size > MAX_LINK_PACKET_BYTES) {
+                    Log.w(TAG, "relay rejected oversized message (${bytes.size} bytes > $MAX_LINK_PACKET_BYTES)")
+                    webSocket.close(1009, "message too large")
+                    postTo(dialExec) { down() }
+                    return@run
+                }
                 postTo(dialExec) { sink?.linkBytes(linkId, bytes.toByteArray()) }
             }
             override fun onMessage(webSocket: WebSocket, text: String) = run {
-                postTo(dialExec) { sink?.linkBytes(linkId, text.toByteArray()) }
+                Log.w(TAG, "relay rejected text frame; protocol requires binary")
+                webSocket.close(1003, "text frames disallowed")
+                postTo(dialExec) { down() }
             }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = run {
                 postTo(dialExec) { Log.i(TAG, "relay closing: $code $reason"); down() }

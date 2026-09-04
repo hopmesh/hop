@@ -712,12 +712,22 @@ impl<S: Store> Endpoint<S> {
     fn mark_handled(&mut self, from: &PubKeyBytes, id: &BundleId) {
         let key = claim_key(from, id);
         let now_ms = self.node.now_ms();
-        let newly = match &mut self.cluster {
-            Some(c) => c.mark_handled(key, now_ms),
-            None => false,
-        };
-        if newly {
-            self.persist_handled(key, now_ms.saturating_add(HANDLED_TTL_MS));
+        if self
+            .cluster
+            .as_ref()
+            .map(|c| c.is_handled(&key))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if self
+            .persist_handled(key, now_ms.saturating_add(HANDLED_TTL_MS))
+            .is_err()
+        {
+            return;
+        }
+        if let Some(c) = &mut self.cluster {
+            c.mark_handled(key, now_ms);
         }
         self.delete_removed_handled();
     }
@@ -761,7 +771,7 @@ impl<S: Store> Endpoint<S> {
             }
         }
         for k in learned {
-            self.persist_handled(k, now_ms.saturating_add(HANDLED_TTL_MS));
+            let _ = self.persist_handled(k, now_ms.saturating_add(HANDLED_TTL_MS));
         }
         self.delete_removed_handled();
         for cm in outbound {
@@ -771,10 +781,14 @@ impl<S: Store> Endpoint<S> {
         }
     }
 
-    fn persist_handled(&mut self, key: ClaimKey, expires_at_ms: u64) {
-        if let Ok(value) = postcard::to_allocvec(&PersistedHandled { key, expires_at_ms }) {
-            self.node.store.put_kv(&handled_kv(&key), value);
-        }
+    fn persist_handled(
+        &mut self,
+        key: ClaimKey,
+        expires_at_ms: u64,
+    ) -> std::result::Result<(), String> {
+        let value = postcard::to_allocvec(&PersistedHandled { key, expires_at_ms })
+            .map_err(|e| e.to_string())?;
+        self.node.store.put_kv_critical(&handled_kv(&key), value)
     }
 
     fn maintain_handled_history(&mut self, now_ms: u64) {
@@ -1543,5 +1557,72 @@ mod tests {
         assert_eq!(reqs[0].id, req_id);
         assert_eq!(eps[1].cluster_members(), 1, "solo when unclustered");
         assert!(!eps[1].cluster_would_drop(&reqs[0].from, &reqs[0].id));
+    }
+
+    // --- STORE-005 hostile regression tests --------------------------------------------------
+
+    #[test]
+    fn store_005_hostile_endpoint_handled_persistence_failure_does_not_mark_or_gossip() {
+        use hop_core::bundle::Bundle;
+        use hop_core::store::KvMutation;
+
+        struct FailingStore(MemoryStore);
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                for m in mutations {
+                    if let KvMutation::Put { key, .. } = m {
+                        if key.starts_with(HANDLED_PREFIX) {
+                            return Err("disk full / store unavailable".into());
+                        }
+                    }
+                }
+                self.0.apply_kv_batch(mutations)
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.0.get_kv(key)
+            }
+        }
+
+        let store = FailingStore(MemoryStore::new());
+        let node = Node::with_store(Identity::generate(), store);
+        let mut endpoint = Endpoint::new(node);
+        endpoint.cluster_join([7u8; 32]);
+
+        let from = [1u8; 32];
+        let id = [2u8; 32];
+
+        endpoint.cluster_mark_done(&from, &id);
+
+        // On the unfixed tree, persist_handled uses void put_kv (which discards error),
+        // and mark_handled marked it handled in cluster and queued gossip before persisting!
+        assert!(
+            !endpoint.cluster_would_drop(&from, &id),
+            "STORE-005 failure: endpoint marked request handled despite persistence failure"
+        );
     }
 }

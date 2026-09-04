@@ -304,11 +304,8 @@ final class RelayIntegrationTests: XCTestCase {
         XCTAssertTrue(spinWait { sink.bytes.contains { $0.0 == linkId && Array($0.1) == [0x01, 0x02, 0x03] } },
                       "an inbound binary WS frame surfaces as linkBytes")
 
-        // 3) a server text frame -> receiveLoop .string -> linkBytes(utf8).
-        server.pushText("hi")
-        XCTAssertTrue(spinWait { sink.bytes.contains { Array($0.1) == Array("hi".utf8) } },
-                      "an inbound text WS frame surfaces as its utf8 bytes")
-
+        // 3) Note: protocol-disallowed text frames are refused and close the transport (PLAT-007),
+        // tested in testOversizedWebSocketMessageRejectedAndTextRefused below.
         // 4) bearer.send -> a client WS frame the server receives.
         bearer.send(Data([0xAA, 0xBB, 0xCC]), on: linkId)
         XCTAssertTrue(spinWait { cfLock.withLock { clientFrames.contains { $0.1 == [0xAA, 0xBB, 0xCC] } } },
@@ -577,6 +574,179 @@ final class RelayIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(sink.ups.count, 1, "a redundant start() must not open a second link")
         bearer.send(Data([0x00]), on: 999)   // unknown link id -> ignored, no crash
+    }
+
+    // MARK: - PLAT-010 hostile repro: old generation callbacks must not affect new generation
+
+    func testOldGenerationReceiveFailureDoesNotTearDownNewGeneration() {
+        let lock = NSLock()
+        var tasks: [ControllableWebSocketTask] = []
+        var outcomes: [(String, Bool)] = []
+        var currentTarget = "ws://relay-a.example.com"
+
+        let bearer = RelayBearer(
+            seedURL: "ws://relay-a.example.com",
+            resolveURL: { lock.withLock { currentTarget } },
+            reportOutcome: { url, ok in lock.withLock { outcomes.append((url, ok)) } },
+            taskFactory: { url, cfg, delegate in
+                let t = ControllableWebSocketTask()
+                lock.withLock { tasks.append(t) }
+                return (nil, t)
+            }
+        )
+        let sink = RecSink()
+        bearer.sink = sink
+        bearer.start()
+
+        XCTAssertTrue(spinWait { lock.withLock { tasks.count == 1 } })
+        let task1 = lock.withLock { tasks[0] }
+        bearer.delegateDidOpen(task1)
+        XCTAssertTrue(spinWait { !sink.ups.isEmpty })
+        XCTAssertTrue(spinWait { task1.pendingReceive != nil })
+
+        // Stop bearer and restart pointing to relay-b.
+        lock.withLock { currentTarget = "ws://relay-b.example.com" }
+        bearer.stop()
+        bearer.start()
+
+        XCTAssertTrue(spinWait { lock.withLock { tasks.count == 2 } })
+        let task2 = lock.withLock { tasks[1] }
+        bearer.delegateDidOpen(task2)
+        XCTAssertTrue(spinWait { sink.ups.count == 2 })
+        let linkId2 = sink.ups[1].0
+
+        // Now fire task1's pending receive with failure!
+        struct DummyError: Error {}
+        let downsBefore = sink.downs.count
+        task1.pendingReceive?(.failure(DummyError()))
+
+        // Wait briefly for queue to process.
+        Thread.sleep(forTimeInterval: 0.1)
+
+        let relayBOutcomes = lock.withLock { outcomes.filter { $0.0 == "ws://relay-b.example.com" } }
+        XCTAssertFalse(relayBOutcomes.contains { !$0.1 }, "task1 failure must not report failure for relay-b")
+        XCTAssertEqual(sink.downs.count, downsBefore, "task1 failure must not tear down task2 link")
+    }
+    func testOldGenerationReceiveSuccessDoesNotForwardBytesOnNewGeneration() {
+        let lock = NSLock()
+        var tasks: [ControllableWebSocketTask] = []
+        var currentTarget = "ws://relay-a.example.com"
+
+        let bearer = RelayBearer(
+            seedURL: "ws://relay-a.example.com",
+            resolveURL: { lock.withLock { currentTarget } },
+            reportOutcome: { _, _ in },
+            taskFactory: { url, cfg, delegate in
+                let t = ControllableWebSocketTask()
+                lock.withLock { tasks.append(t) }
+                return (nil, t)
+            }
+        )
+        let sink = RecSink()
+        bearer.sink = sink
+        bearer.start()
+
+        XCTAssertTrue(spinWait { lock.withLock { tasks.count == 1 } })
+        let task1 = lock.withLock { tasks[0] }
+        bearer.delegateDidOpen(task1)
+        XCTAssertTrue(spinWait { !sink.ups.isEmpty })
+        XCTAssertTrue(spinWait { task1.pendingReceive != nil })
+
+        // Restart pointing to relay-b.
+        lock.withLock { currentTarget = "ws://relay-b.example.com" }
+        bearer.stop()
+        bearer.start()
+
+        XCTAssertTrue(spinWait { lock.withLock { tasks.count == 2 } })
+        let task2 = lock.withLock { tasks[1] }
+        bearer.delegateDidOpen(task2)
+        XCTAssertTrue(spinWait { sink.ups.count == 2 })
+        let linkId2 = sink.ups[1].0
+
+        // Now fire task1's pending receive with success!
+        let oldBytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        task1.pendingReceive?(.success(.data(oldBytes)))
+
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // On unfixed tree: sink.bytes contains oldBytes forwarded on linkId2!
+        XCTAssertFalse(sink.bytes.contains { $0.0 == linkId2 && $0.1 == oldBytes },
+                       "task1 success must not forward bytes on task2 link")
+    }
+
+    // MARK: - PLAT-007 hostile repro: 65,536 accepted, 65,537 rejected, text refused
+
+    func testOversizedWebSocketMessageRejectedAndTextRefused() {
+        let lock = NSLock()
+        var tasks: [ControllableWebSocketTask] = []
+
+        let bearer = RelayBearer(
+            seedURL: "ws://relay.example.com",
+            resolveURL: { "ws://relay.example.com" },
+            reportOutcome: { _, _ in },
+            taskFactory: { url, cfg, delegate in
+                let t = ControllableWebSocketTask()
+                lock.withLock { tasks.append(t) }
+                return (nil, t)
+            }
+        )
+        let sink = RecSink()
+        bearer.sink = sink
+        bearer.start()
+
+        XCTAssertTrue(spinWait { lock.withLock { tasks.count == 1 } })
+        let task = lock.withLock { tasks[0] }
+        bearer.delegateDidOpen(task)
+        XCTAssertTrue(spinWait { !sink.ups.isEmpty })
+        XCTAssertTrue(spinWait { task.pendingReceive != nil })
+        let linkId = sink.ups[0].0
+
+        // 1) 65,536 bytes (cap) MUST be accepted and forwarded to sink
+        let atCap = Data(repeating: 0x42, count: 65536)
+        let recv1 = task.pendingReceive
+        task.pendingReceive = nil
+        recv1?(.success(.data(atCap)))
+        XCTAssertTrue(spinWait { sink.bytes.contains { $0.0 == linkId && $0.1 == atCap } },
+                      "65536 bytes at cap must reach sink")
+        XCTAssertTrue(spinWait { task.pendingReceive != nil })
+
+        // 2) 65,537 bytes (cap + 1) MUST be rejected without reaching sink, and link torn down
+        let overCap = Data(repeating: 0x43, count: 65537)
+        let recv2 = task.pendingReceive
+        task.pendingReceive = nil
+        recv2?(.success(.data(overCap)))
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertFalse(sink.bytes.contains { $0.1 == overCap },
+                       "65537 bytes must be rejected without reaching sink")
+        XCTAssertTrue(sink.downs.contains(linkId),
+                      "cap violation must close offending transport")
+
+        // 3) Text message MUST be refused/closed, not reinterpreted as Data
+        let textTask = ControllableWebSocketTask()
+        bearer.delegateDidOpen(textTask)
+        let recv3 = textTask.pendingReceive
+        textTask.pendingReceive = nil
+        recv3?(.success(.string("hello attacker")))
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertFalse(sink.bytes.contains { String(data: $0.1, encoding: .utf8) == "hello attacker" },
+                       "protocol-disallowed text must not be reinterpreted as bytes")
+    }
+}
+
+final class ControllableWebSocketTask: RelayWebSocketTask {
+    var maximumMessageSize: Int = 0
+    var isResumed = false
+    var isCancelled = false
+    var pendingReceive: ((Result<URLSessionWebSocketTask.Message, Error>) -> Void)?
+    var pendingSend: ((Error?) -> Void)?
+
+    func resume() { isResumed = true }
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) { isCancelled = true }
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping (Error?) -> Void) {
+        pendingSend = completionHandler
+    }
+    func receive(completionHandler: @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void) {
+        pendingReceive = completionHandler
     }
 }
 

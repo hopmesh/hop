@@ -412,6 +412,84 @@ final class LanIntegrationTests: XCTestCase {
         XCTAssertTrue(spinWait(6.0) { if let p = bearer.testListenerPort, p != before { return true }; return false },
                       "the listener rebuilds on a fresh port after a forced restart")
     }
+
+    // MARK: - PLAT-005 hostile repro: HELLO + PING without Noise must be reaped at preauth deadline
+
+    func testUnauthenticatedHelloAndPingReapedAtPreauthDeadline() {
+        XCTAssertTrue(spinWait { LAN_ADMISSION.linkCount == 0 })
+        let bearer = LanBearer(myId: randId())
+        let sink = RecSink(); bearer.sink = sink
+        bearer.testStartListenerOnly()
+        XCTAssertTrue(spinWait { bearer.testListenerPort != nil })
+        let port = bearer.testListenerPort!
+        defer {
+            bearer.stop()
+            _ = spinWait { LAN_ADMISSION.linkCount == 0 }
+        }
+
+        let hostileId = randId()
+        let peer = RawPeer(
+            host: "127.0.0.1", port: port,
+            onReady: { p in
+                p.send(helloBody(hostileId, dialer: true))
+            },
+            onBody: { _ in }
+        )
+        defer { peer.cancel() }
+        peer.start()
+
+        // Wait for linkUp
+        XCTAssertTrue(spinWait { sink.ups.contains { $0.2 == hostileId } })
+        let linkId = sink.ups.first { $0.2 == hostileId }!.0
+
+        // Peer sends periodic PING
+        peer.send(pingBody())
+
+        // Jump clock past PREAUTH_DEADLINE_S (10s) and run maintenance
+        bearer.testRunMaintenance(atMs: nowMs() + 11_000)
+
+        // On unfixed tree: link is NOT closed because PING refreshed lastRxMs and up is true!
+        // On fixed tree: link is closed ("preauth deadline") because Noise never completed!
+        XCTAssertTrue(spinWait { sink.downs.contains(linkId) },
+                      "unauthenticated peer sending HELLO+PING must be reaped at PREAUTH_DEADLINE")
+    }
+
+    func testAuthenticatedPeerCannotBeShadowedByUnauthenticatedNewLeg() {
+        XCTAssertTrue(spinWait { LAN_ADMISSION.linkCount == 0 })
+        let myId = Data(repeating: 0xFF, count: 16)
+        let peerId = Data(repeating: 0x01, count: 16)
+        let bearer = LanBearer(myId: myId)
+        let sink = RecSink(); bearer.sink = sink
+        bearer.testStartListenerOnly()
+        defer {
+            bearer.stop()
+            _ = spinWait { LAN_ADMISSION.linkCount == 0 }
+        }
+        XCTAssertTrue(spinWait { bearer.testListenerPort != nil })
+        let port = bearer.testListenerPort!
+
+        let peer1 = RawPeer(host: "127.0.0.1", port: port, onReady: { $0.send(helloBody(peerId, dialer: true)) }, onBody: { _ in })
+        defer { peer1.cancel() }
+        peer1.start()
+        XCTAssertTrue(spinWait { sink.ups.count == 1 })
+        let firstLink = sink.ups[0].0
+
+        // Authenticate peer1
+        bearer.setAuthenticated(linkId: firstLink)
+
+        // Now peer2 (attacker) connects claiming the same peerId
+        let peer2 = RawPeer(host: "127.0.0.1", port: port, onReady: { $0.send(helloBody(peerId, dialer: true)) }, onBody: { _ in })
+        defer { peer2.cancel() }
+        peer2.start()
+
+        // Wait for processing
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Attacker must NOT evict or shadow peer1!
+        // sink.downs must not contain firstLink, and sink.ups must still have count 1
+        XCTAssertFalse(sink.downs.contains(firstLink), "authenticated link must not be evicted by unauthenticated shadow")
+        XCTAssertEqual(sink.ups.count, 1, "unauthenticated shadow must not surface as linkUp")
+    }
 }
 
 private extension NSLock {

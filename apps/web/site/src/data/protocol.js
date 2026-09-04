@@ -281,7 +281,7 @@ export const layers = [
       "Any two devices on the backbone are ~1 hop apart; a bundle exits at the relay the recipient is currently attached to, and a topic only fans to regions with live subscribers.",
     ],
     dev: "No special handling, when connectivity exists, the backbone extends reach automatically. The mailbox is an untrusted store of sealed ciphertext, so adding capacity is just adding nodes.",
-    biz: "Local meshes anywhere on Earth reach each other and your services the moment any node gets online, region-aware, so you never pay to flood empty regions.",
+    biz: "Local meshes anywhere on Earth reach each other and your services the moment any node gets online, with regional presence tracking so traffic routes to where recipients are active.",
     viz: {
       vb: '0 0 700 300',
       caption: "When any device touches the internet it joins the cloud relay; one anycast address finds the nearest region, and relays peer over the web to bridge far-apart peer-to-peer islands.",

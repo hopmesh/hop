@@ -20,8 +20,9 @@ extern bool goSvcRespSink(uintptr_t ctx, uint8_t *from, uint8_t *forid, uint16_t
 static void drain_tramp(void *ctx, uint64_t link, const uint8_t *b, size_t n) {
     goDrainSink((uintptr_t)ctx, link, (uint8_t *)b, n);
 }
-static void svcreq_tramp(void *ctx, const uint8_t *f, const uint8_t *r, const char *s, const char *m, const uint8_t *a, size_t n) {
+static bool svcreq_tramp(void *ctx, const uint8_t *f, const uint8_t *r, const char *s, const char *m, const uint8_t *a, uintptr_t n) {
     goSvcReqSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, (char *)s, (char *)m, (uint8_t *)a, n);
+    return true;
 }
 static bool svcresp_tramp(void *ctx, const uint8_t *f, const uint8_t *r, uint16_t st, const uint8_t *b, size_t n) {
     return goSvcRespSink((uintptr_t)ctx, (uint8_t *)f, (uint8_t *)r, st, (uint8_t *)b, n);
@@ -78,8 +79,8 @@ static uintptr_t call_hps_pending(const HopNode *node, const char *path, uintptr
 static uintptr_t call_hps_members(const HopNode *node, const char *path, uintptr_t ctx) {
     return hop_hps_members(node, path, hpsaddr_tramp, (void *)ctx);
 }
-static uintptr_t call_hps_rekey(const HopNode *node, const char *path, const char *new_path,
-                                const uint8_t *remove, uintptr_t remove_count, uintptr_t ctx) {
+static intptr_t call_hps_rekey(const HopNode *node, const char *path, const char *new_path,
+                               const uint8_t *remove, uintptr_t remove_count, uintptr_t ctx) {
     return hop_hps_rekey(node, path, new_path, remove, remove_count, hpsaddr_tramp, (void *)ctx);
 }
 static uintptr_t call_hps_my_topics(const HopNode *node, uintptr_t ctx) { return hop_hps_my_topics(node, hpstopic_tramp, (void *)ctx); }
@@ -94,7 +95,7 @@ import (
 	"unsafe"
 )
 
-const abiExpected = 6
+const abiExpected = 7
 
 // OutPacket is one drained outbound frame for a link.
 type OutPacket struct {
@@ -301,6 +302,28 @@ func (n *node) acceptServiceResponse(requestID []byte) (bool, error) {
 	id := C.CBytes(requestID)
 	defer C.free(id)
 	return bool(C.hop_accept_service_response(n.p, (*C.uint8_t)(id))), nil
+}
+
+func (n *node) isEncrypted() bool {
+	return bool(C.hop_node_is_encrypted(n.p))
+}
+
+func (n *node) acceptServiceRequest(requestID []byte) (bool, error) {
+	if err := require32(requestID, "request id"); err != nil {
+		return false, err
+	}
+	id := C.CBytes(requestID)
+	defer C.free(id)
+	return bool(C.hop_accept_service_request(n.p, (*C.uint8_t)(id))), nil
+}
+
+func (n *node) rejectServiceRequest(requestID []byte) (bool, error) {
+	if err := require32(requestID, "request id"); err != nil {
+		return false, err
+	}
+	id := C.CBytes(requestID)
+	defer C.free(id)
+	return bool(C.hop_reject_service_request(n.p, (*C.uint8_t)(id))), nil
 }
 
 // §32 hps:// pub/sub, the surface the v5 -> v6 ABI bump added: the C ABI had no hps exports at all,
@@ -590,8 +613,11 @@ func (n *node) hpsRekey(path, newPath string, remove [][]byte) ([][]byte, error)
 	var out [][]byte
 	h := cgo.NewHandle(&out)
 	defer h.Delete()
-	C.call_hps_rekey(n.p, cp, cn, removed, C.uintptr_t(len(remove)), C.uintptr_t(h))
+	res := C.call_hps_rekey(n.p, cp, cn, removed, C.uintptr_t(len(remove)), C.uintptr_t(h))
 	runtime.KeepAlive(packed)
+	if res < 0 {
+		return nil, fmt.Errorf("hop_hps_rekey(%q) failed", path)
+	}
 	return out, nil
 }
 

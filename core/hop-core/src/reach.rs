@@ -23,70 +23,32 @@
 //! its own address until the address is abandoned), exactly as a stolen TLS key can, and is handled at
 //! the identity layer, not here.
 
-use crate::crypto::{self, Identity, PubKeyBytes};
-use serde::{Deserialize, Serialize};
+use crate::crypto;
+pub use crate::wire_reach::{signing_bytes, ReachClaim, ReachRecord, REACH_CONTEXT};
 
-/// Domain separator so a reach-record signature can never be confused with any other signed blob
-/// this identity produces (prekeys, bundles, hps records).
-const REACH_CONTEXT: &[u8] = b"hop/reach-record/v1\0";
+/// Maximum wire bytes accepted by [`ReachRecord::verify`].
+/// Checked before postcard deserialization to bound attacker-controlled allocation.
+pub const MAX_REACH_RECORD_BYTES: usize = 64 * 1024;
 
-/// The signed content: who is reachable where, when, and for how long.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct ReachClaim {
-    /// The signer's Hop address (Ed25519 public key). The record self-certifies against this.
-    pub address: PubKeyBytes,
-    /// Opaque endpoint spec the app interprets, e.g. `wss://myaddress.com/_hop` or `1.2.3.4:9944`.
-    pub endpoint: String,
-    /// Unix seconds when signed. A newer record supersedes an older one for the same address.
-    pub issued_at: u64,
-    /// Seconds the record stays valid from `issued_at`.
-    pub ttl_secs: u32,
-}
-
-/// A signed reachability record: the claim plus an Ed25519 signature by `claim.address`.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct ReachRecord {
-    pub claim: ReachClaim,
-    /// Ed25519 signature over the domain-separated, postcard-encoded claim (64 bytes).
-    pub sig: Vec<u8>,
-}
-
-/// The exact bytes signed/verified: a domain prefix + the deterministic postcard encoding of the
-/// claim. Single-purpose by the prefix; stable by postcard's determinism.
-fn signing_bytes(claim: &ReachClaim) -> Vec<u8> {
-    let mut v = Vec::from(REACH_CONTEXT);
-    v.extend_from_slice(&postcard::to_allocvec(claim).unwrap_or_default());
-    v
-}
+/// Maximum length of an endpoint string in a reach claim.
+/// Checked before signature verification to bound dial string size.
+pub const MAX_REACH_ENDPOINT_BYTES: usize = 2 * 1024;
 
 impl ReachRecord {
-    /// Sign a reachability claim with `id`'s identity key. `now_secs` stamps `issued_at`.
-    pub fn sign(
-        id: &Identity,
-        endpoint: impl Into<String>,
-        ttl_secs: u32,
-        now_secs: u64,
-    ) -> ReachRecord {
-        let claim = ReachClaim {
-            address: id.address(),
-            endpoint: endpoint.into(),
-            issued_at: now_secs,
-            ttl_secs,
-        };
-        let sig = id.sign(&signing_bytes(&claim)).to_vec();
-        ReachRecord { claim, sig }
-    }
-
-    /// Serialize for a well-known body, gossip, or cache.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).unwrap_or_default()
-    }
-
     /// Parse and VERIFY. The signature must be by `claim.address`; when `now_secs` is supplied the
     /// record must be unexpired. Returns the verified record, or `None` on malformed / bad-signature /
     /// expired. Self-certifying: no external key or anchor is consulted.
     pub fn verify(bytes: &[u8], now_secs: Option<u64>) -> Option<ReachRecord> {
+        if bytes.len() > MAX_REACH_RECORD_BYTES {
+            return None;
+        }
         let rec: ReachRecord = postcard::from_bytes(bytes).ok()?;
+        if rec.sig.len() != 64 {
+            return None;
+        }
+        if rec.claim.endpoint.len() > MAX_REACH_ENDPOINT_BYTES {
+            return None;
+        }
         if !crypto::verify(&rec.claim.address, &signing_bytes(&rec.claim), &rec.sig) {
             return None;
         }
@@ -106,6 +68,7 @@ impl ReachRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::Identity;
 
     #[test]
     fn signs_and_verifies_round_trip() {
@@ -145,6 +108,34 @@ mod tests {
         assert!(
             ReachRecord::verify(&rec.to_bytes(), Some(2_000)).is_none(),
             "past issued_at + ttl"
+        );
+    }
+
+    #[test]
+    fn oversized_reach_record_is_rejected_before_postcard_allocation() {
+        let id = Identity::generate();
+        let big_endpoint = "w".repeat(65_536);
+        let rec = ReachRecord::sign(&id, big_endpoint, 3600, 1_000);
+        let bytes = rec.to_bytes();
+        assert!(
+            bytes.len() > 64 * 1024,
+            "precondition: serialized bytes exceed 64 KiB ceiling"
+        );
+        assert!(
+            ReachRecord::verify(&bytes, Some(1_000)).is_none(),
+            "ReachRecord::verify must reject records exceeding MAX_REACH_RECORD_BYTES"
+        );
+    }
+
+    #[test]
+    fn oversized_endpoint_is_rejected_before_signature_verification() {
+        let id = Identity::generate();
+        let big_endpoint = "w".repeat(2_049);
+        let rec = ReachRecord::sign(&id, big_endpoint, 3600, 1_000);
+        let bytes = rec.to_bytes();
+        assert!(
+            ReachRecord::verify(&bytes, Some(1_000)).is_none(),
+            "ReachRecord::verify must reject claims with endpoint exceeding MAX_REACH_ENDPOINT_BYTES"
         );
     }
 }

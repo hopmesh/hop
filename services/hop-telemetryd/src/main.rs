@@ -133,6 +133,13 @@ fn ingest_ready() -> &'static std::sync::atomic::AtomicBool {
     &READY
 }
 
+/// Whether durable store writes are succeeding. Degraded store sets this to false so /healthz
+/// reflects store write failures and Cloud Run can alert (STORE-005 / CAND-NET-01).
+fn store_healthy() -> &'static std::sync::atomic::AtomicBool {
+    static HEALTHY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    &HEALTHY
+}
+
 /// Sign this collector's reach record for `public_url` and render the `/.well-known/hop` JSON body.
 /// The `reach` field is the base64-std postcard record (SDKs decode exactly this); `address` +
 /// `endpoint` are informational. All three are base58 / base64 / a bare wss URL, so the JSON is safe
@@ -304,17 +311,36 @@ impl TelemetryMeter {
             return;
         }
         let hour = now_ms / 3_600_000;
-        for (tenant, counts) in self.counts.drain() {
-            if counts == TelemetryCounts::default() {
+        let mut committed = Vec::new();
+        let mut failed = false;
+        for (tenant, counts) in &self.counts {
+            if *counts == TelemetryCounts::default() {
+                committed.push(*tenant);
                 continue;
             }
-            let key = key_for(hour, &tenant);
+            let key = key_for(hour, tenant);
             let mut total = store
                 .get_kv(&key)
                 .map(|b| decode_counts(&b))
                 .unwrap_or_default();
-            total.add(&counts);
-            store.put_kv(&key, encode_counts(&total));
+            total.add(counts);
+            match store.put_kv_critical(&key, encode_counts(&total)) {
+                Ok(()) => {
+                    committed.push(*tenant);
+                }
+                Err(e) => {
+                    failed = true;
+                    eprintln!("hop-telemetryd: telemetry_usage write failed for {key}: {e}");
+                }
+            }
+        }
+        for tenant in committed {
+            self.counts.remove(&tenant);
+        }
+        if failed {
+            store_healthy().store(false, Ordering::SeqCst);
+        } else {
+            store_healthy().store(true, Ordering::SeqCst);
         }
     }
 
@@ -1186,43 +1212,50 @@ fn serve_http_min(mut stream: TcpStream) {
     let target = parts.next().unwrap_or("");
     let path = target.split(['?', '#']).next().unwrap_or("");
 
-    let (code, ctype, body): (&str, &str, Vec<u8>) =
-        if method.eq_ignore_ascii_case("GET") && path == "/healthz" {
-            // A collector that cannot attribute anything is refusing every batch, so it is NOT
-            // healthy even though the process is up. Report that, or the misconfiguration hides
-            // behind a green probe until someone notices the telemetry never arrived.
-            if ingest_ready().load(Ordering::SeqCst) {
-                ("200 OK", "text/plain", b"ok".to_vec())
-            } else {
-                (
-                    "503 Service Unavailable",
-                    "text/plain",
-                    b"hop-telemetryd: no tenant key server; every batch is refused (fail closed). \
+    let (code, ctype, body): (&str, &str, Vec<u8>) = if method.eq_ignore_ascii_case("GET")
+        && path == "/healthz"
+    {
+        // A collector that cannot attribute anything is refusing every batch, so it is NOT
+        // healthy even though the process is up. Report that, or the misconfiguration hides
+        // behind a green probe until someone notices the telemetry never arrived.
+        if !ingest_ready().load(Ordering::SeqCst) {
+            (
+                "503 Service Unavailable",
+                "text/plain",
+                b"hop-telemetryd: no tenant key server; every batch is refused (fail closed). \
                       Configure --key-server, or pass --allow-unattributed for local/dev."
-                        .to_vec(),
-                )
-            }
-        } else if method.eq_ignore_ascii_case("GET") && path == "/.well-known/hop" {
-            let record = well_known_body()
-                .lock()
-                .map(|b| b.clone())
-                .unwrap_or_default();
-            if record.is_empty() {
-                (
-                    "404 Not Found",
-                    "text/plain",
-                    b"hop-telemetryd: reach record not ready".to_vec(),
-                )
-            } else {
-                ("200 OK", "application/json", record)
-            }
+                    .to_vec(),
+            )
+        } else if !store_healthy().load(Ordering::SeqCst) {
+            (
+                "503 Service Unavailable",
+                "text/plain",
+                b"hop-telemetryd: degraded store; durable telemetry_usage write failed\n".to_vec(),
+            )
         } else {
+            ("200 OK", "text/plain", b"ok\n".to_vec())
+        }
+    } else if method.eq_ignore_ascii_case("GET") && path == "/.well-known/hop" {
+        let record = well_known_body()
+            .lock()
+            .map(|b| b.clone())
+            .unwrap_or_default();
+        if record.is_empty() {
             (
                 "404 Not Found",
                 "text/plain",
-                b"hop-telemetryd: not found".to_vec(),
+                b"hop-telemetryd: reach record not ready".to_vec(),
             )
-        };
+        } else {
+            ("200 OK", "application/json", record)
+        }
+    } else {
+        (
+            "404 Not Found",
+            "text/plain",
+            b"hop-telemetryd: not found".to_vec(),
+        )
+    };
 
     let header = format!(
         "HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1998,6 +2031,7 @@ mod tests {
         }
 
         // Misconfigured: no key server and no explicit opt-in, so every batch is refused.
+        store_healthy().store(true, Ordering::SeqCst);
         ingest_ready().store(false, Ordering::SeqCst);
         let refused = probe();
         assert!(
@@ -2015,6 +2049,197 @@ mod tests {
         assert!(
             ok.starts_with("HTTP/1.1 200"),
             "a working collector must pass its probe, got: {ok}"
+        );
+    }
+
+    // --- STORE-005 hostile regression tests --------------------------------------------------
+
+    #[test]
+    fn store_005_hostile_telemetry_flush_failure_discards_drained_meter_counts_and_hides_from_healthz(
+    ) {
+        use hop_core::store::{KvMutation, Store};
+
+        struct FailingStore(hop_core::store::MemoryStore);
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                _mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                Err("disk full / firestore unavailable".into())
+            }
+        }
+
+        let mut meter = TelemetryMeter::default();
+        let tenant: TenantId = [42u8; 16];
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 100,
+                payload_bytes: 4096,
+            },
+        );
+
+        assert_eq!(meter.counts.len(), 1);
+
+        let mut store = FailingStore(hop_core::store::MemoryStore::new());
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        // On the unfixed tree:
+        // 1. meter.counts was drained unconditionally by self.counts.drain(), so meter.counts is EMPTY!
+        // 2. store_healthy() was not tracked or /healthz was not set to unhealthy!
+        assert!(
+            !meter.counts.is_empty(),
+            "STORE-005 failure: drained meter counts were lost after store write failure"
+        );
+        assert_eq!(
+            meter.counts.get(&tenant).copied(),
+            Some(TelemetryCounts {
+                events: 100,
+                payload_bytes: 4096,
+            }),
+            "unwritten tenant counts must be retained in retry buffer"
+        );
+        assert!(!store_healthy().load(Ordering::SeqCst));
+        store_healthy().store(true, Ordering::SeqCst);
+    }
+
+    // --- SVC-006 regression tests -----------------------------------------------------------
+
+    #[test]
+    fn svc_006_telemetry_replay_after_restart_does_not_double_meter() {
+        let collector_id = Identity::generate();
+        let sender_id = Identity::generate();
+
+        // Build a shared persistent KV mirror for the collector
+        let kv_state: std::sync::Arc<
+            std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+        struct SharedKvStore(
+            hop_core::store::MemoryStore,
+            std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+        );
+        impl Store for SharedKvStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), value.clone());
+                self.0.put_kv(key, value);
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), value.clone());
+                self.0.put_kv_critical(key, value)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                for m in mutations {
+                    if let hop_core::store::KvMutation::Put { key, value } = m {
+                        self.1.lock().unwrap().insert(key.clone(), value.clone());
+                    }
+                }
+                self.0.apply_kv_batch(mutations)
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.1.lock().unwrap().get(key).cloned()
+            }
+        }
+        let now = 1_000_000u64;
+        let collector_seed = collector_id.to_secret_bytes();
+        let mut device = Node::new(Identity::generate());
+        device.set_time(now);
+
+        let mut collector = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SharedKvStore(hop_core::store::MemoryStore::new(), kv_state.clone()),
+        );
+        collector.set_time(now);
+        configure_collector_node(&mut collector, None, None);
+        let batch = TelemetryBatch::new().counter("test.events", 5, now);
+        let bundle = Bundle::create(
+            &Identity::generate(),
+            Destination::Device(collector_id.address()),
+            &collector_id.address(),
+            &Payload::ServiceRequest {
+                service: hop_core::node::SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        collector.ingest(bundle.clone());
+        let received = collector.take_telemetry();
+        assert_eq!(received.len(), 1, "first delivery must yield batch");
+
+        // Simulate restart: new collector node over the SAME durable store
+        let mut restarted = Node::with_store(
+            Identity::from_secret_bytes(&collector_seed),
+            SharedKvStore(hop_core::store::MemoryStore::new(), kv_state.clone()),
+        );
+        restarted.set_time(now + 1000);
+        configure_collector_node(&mut restarted, None, None);
+
+        // Replay the exact same bundle to restarted collector
+        restarted.ingest(bundle);
+
+        let replayed = restarted.take_telemetry();
+        assert!(
+            replayed.is_empty(),
+            "SVC-006 failure: replayed telemetry bundle was processed again after restart!"
         );
     }
 }

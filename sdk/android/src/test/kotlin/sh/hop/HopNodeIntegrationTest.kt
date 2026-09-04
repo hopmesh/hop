@@ -250,7 +250,7 @@ class HopNodeIntegrationTest {
 
     /**
      * sdk/hop.h justified the v4 -> v5 ABI bump with the §19 relay-pool calls, and the wrapper that
-     * now pins ABI 6 asserted its level at load while binding none of them, so a host built on the
+     * now pins ABI 7 asserted its level at load while binding none of them, so a host built on the
      * published SDK could not fail over: the only reachable behavior was retrying one configured URL
      * forever. Drives the failover the header describes on ONE node that is never recreated.
      */

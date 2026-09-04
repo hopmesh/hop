@@ -25,12 +25,12 @@ import 'library.dart';
 /// The ABI version this wrapper was written against (`HOP_ABI_VERSION` in
 /// `sdk/hop.h`). Asserted at construction so a wrapper built against a newer
 /// header fails loudly instead of drifting silently (F-28).
-const int hopAbiVersion = 6;
+const int hopAbiVersion = 7;
 
 // ---- native callback signatures (invoked synchronously during poll/drain) ----
 typedef _DrainSinkC = Void Function(
     Pointer<Void>, Uint64, Pointer<Uint8>, Size);
-typedef _SvcReqSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
+typedef _SvcReqSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Uint8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Size);
 typedef _SvcRespSinkC = Bool Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Uint8>, Uint16, Pointer<Uint8>, Size);
@@ -46,6 +46,12 @@ typedef _HpsTopicSinkC = Void Function(
     Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Uint32, Bool, Uint32);
 typedef _HpsBrowseSinkC = Void Function(Pointer<Void>, Pointer<Uint8>,
     Pointer<Utf8>, Uint32, Pointer<Utf8>, Pointer<Utf8>, Uint32);
+typedef _NodeIsEncryptedC = Bool Function(Pointer<Void>);
+typedef _NodeIsEncryptedDart = bool Function(Pointer<Void>);
+typedef _AcceptSvcReqC = Bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _AcceptSvcReqDart = bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _RejectSvcReqC = Bool Function(Pointer<Void>, Pointer<Uint8>);
+typedef _RejectSvcReqDart = bool Function(Pointer<Void>, Pointer<Uint8>);
 
 // ---- native function signatures ----
 typedef _AbiVersionC = Uint32 Function();
@@ -179,7 +185,7 @@ typedef _HpsApproveDart = bool Function(
 typedef _HpsDenyC = Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
 typedef _HpsDenyDart = bool Function(
     Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>);
-typedef _HpsRekeyC = Size Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>,
+typedef _HpsRekeyC = IntPtr Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>,
     Pointer<Uint8>, Size, Pointer<NativeFunction<_Addr32SinkC>>, Pointer<Void>);
 typedef _HpsRekeyDart = int Function(
     Pointer<Void>,
@@ -313,6 +319,9 @@ class HopFfi {
       _lib.lookupFunction<_NodeFreeC, _NodeFreeDart>('hop_node_free');
   late final _nodeAddress =
       _lib.lookupFunction<_NodeAddressC, _NodeAddressDart>('hop_node_address');
+  late final _nodeIsEncrypted =
+      _lib.lookupFunction<_NodeIsEncryptedC, _NodeIsEncryptedDart>(
+          'hop_node_is_encrypted');
   late final _tick = _lib.lookupFunction<_TickC, _TickDart>('hop_node_tick');
   late final _linkUp =
       _lib.lookupFunction<_LinkUpC, _LinkUpDart>('hop_link_up');
@@ -343,6 +352,12 @@ class HopFfi {
   late final _acceptSvcResp =
       _lib.lookupFunction<_AcceptSvcRespC, _AcceptSvcRespDart>(
           'hop_accept_service_response');
+  late final _acceptSvcReq =
+      _lib.lookupFunction<_AcceptSvcReqC, _AcceptSvcReqDart>(
+          'hop_accept_service_request');
+  late final _rejectSvcReq =
+      _lib.lookupFunction<_RejectSvcReqC, _RejectSvcReqDart>(
+          'hop_reject_service_request');
   late final _toB58 =
       _lib.lookupFunction<_ToB58C, _ToB58Dart>('hop_address_to_base58');
   late final _fromB58 =
@@ -628,10 +643,13 @@ class HopFfi {
       },
     );
     try {
-      _withBytes(
+      final res = _withBytes(
           remove,
           (rPtr, rLen) => _hpsRekey(
               node, p, np, rPtr, rLen ~/ 32, cb.nativeFunction, nullptr));
+      if (res < 0) {
+        throw StateError('hop_hps_rekey failed');
+      }
     } finally {
       cb.close();
       calloc.free(p);
@@ -739,6 +757,8 @@ class HopFfi {
       _withBytes(secret, (ptr, len) => _nodeWithSecret(ptr, len));
 
   void nodeFree(Pointer<Void> node) => _nodeFree(node);
+  bool nodeIsEncrypted(Pointer<Void> node) => _nodeIsEncrypted(node);
+
 
   Uint8List address(Pointer<Void> node) {
     final out = calloc<Uint8>(32);
@@ -828,6 +848,14 @@ class HopFfi {
       _withBytes(_require32(requestId, 'request id'),
           (ptr, _) => _acceptSvcResp(node, ptr));
 
+  bool acceptServiceRequest(Pointer<Void> node, Uint8List requestId) =>
+      _withBytes(_require32(requestId, 'request id'),
+          (ptr, _) => _acceptSvcReq(node, ptr));
+
+  bool rejectServiceRequest(Pointer<Void> node, Uint8List requestId) =>
+      _withBytes(_require32(requestId, 'request id'),
+          (ptr, _) => _rejectSvcReq(node, ptr));
+
   List<ServiceRequestRow> takeServiceRequests(Pointer<Void> node) {
     final out = <ServiceRequestRow>[];
     final cb = NativeCallable<_SvcReqSinkC>.isolateLocal(
@@ -845,7 +873,9 @@ class HopFfi {
           method.toDartString(),
           _copy(args, argsLen),
         ));
+        return true;
       },
+      exceptionalReturn: false,
     );
     try {
       _pollSvcReq(node, cb.nativeFunction, nullptr);

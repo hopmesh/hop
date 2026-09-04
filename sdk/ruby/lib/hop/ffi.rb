@@ -10,10 +10,11 @@ module Hop
     I  = Fiddle::TYPE_INT
     LL = Fiddle::TYPE_LONG_LONG
     SZ = Fiddle::TYPE_SIZE_T
+    SSZ = Fiddle::TYPE_INTPTR_T
     CH = Fiddle::TYPE_CHAR
     V  = Fiddle::TYPE_VOID
 
-    ABI_EXPECTED = 6
+    ABI_EXPECTED = 7
 
     def self.lib_path
       ext = case RbConfig::CONFIG["host_os"]
@@ -48,12 +49,15 @@ module Hop
     DRAIN_OUTGOING         = fn("hop_drain_outgoing", [P, P, P], V)
     SUBSCRIBE              = fn("hop_subscribe", [P, P], V)
     PUBLISH_PREKEY         = fn("hop_publish_prekey", [P], CH)
+    NODE_IS_ENCRYPTED      = fn("hop_node_is_encrypted", [P], CH)
     ACCEPT_INBOX           = fn("hop_accept_inbox", [P, P], CH)
     SEND_SERVICE_REQUEST   = fn("hop_send_service_request", [P, P, P, P, P, SZ, P], CH)
     SEND_SERVICE_RESPONSE  = fn("hop_send_service_response", [P, P, P, I, P, SZ], CH)
     POLL_SERVICE_REQUESTS  = fn("hop_poll_service_requests", [P, P, P], V)
     POLL_SERVICE_RESPONSES = fn("hop_poll_service_responses", [P, P, P], V)
     ACCEPT_SERVICE_RESPONSE = fn("hop_accept_service_response", [P, P], CH)
+    ACCEPT_SERVICE_REQUEST = fn("hop_accept_service_request", [P, P], CH)
+    REJECT_SERVICE_REQUEST = fn("hop_reject_service_request", [P, P], CH)
     ADDRESS_TO_BASE58      = fn("hop_address_to_base58", [P, P, SZ], SZ)
     ADDRESS_FROM_BASE58    = fn("hop_address_from_base58", [P, P], CH)
     SIGN_REACH_RECORD      = fn("hop_sign_reach_record", [P, P, I, P, P], V)
@@ -102,7 +106,7 @@ module Hop
     HPS_PENDING             = fn("hop_hps_pending", [P, P, P, P], SZ)
     HPS_APPROVE             = fn("hop_hps_approve", [P, P, P, P], CH)
     HPS_DENY                = fn("hop_hps_deny", [P, P, P], CH)
-    HPS_REKEY               = fn("hop_hps_rekey", [P, P, P, P, SZ, P, P], SZ)
+    HPS_REKEY               = fn("hop_hps_rekey", [P, P, P, P, SZ, P, P], SSZ)
     HPS_REACH               = fn("hop_hps_reach", [P, P], I)
     HPS_MEMBERS             = fn("hop_hps_members", [P, P, P, P], SZ)
     HPS_MY_TOPICS           = fn("hop_hps_my_topics", [P, P, P], SZ)
@@ -183,10 +187,23 @@ module Hop
       ACCEPT_SERVICE_RESPONSE.call(node, require_32(request_id, "request id")) != 0
     end
 
+    def self.node_is_encrypted(node)
+      NODE_IS_ENCRYPTED.call(node) != 0
+    end
+
+    def self.accept_service_request(node, request_id)
+      ACCEPT_SERVICE_REQUEST.call(node, require_32(request_id, "request id")) != 0
+    end
+
+    def self.reject_service_request(node, request_id)
+      REJECT_SERVICE_REQUEST.call(node, require_32(request_id, "request id")) != 0
+    end
+
     def self.take_service_requests(node)
       out = []
-      sink = Closure.new(V, [P, P, P, P, P, P, SZ]) do |_ctx, frm, rid, service, method, args, arglen|
+      sink = Closure.new(CH, [P, P, P, P, P, P, SZ]) do |_ctx, frm, rid, service, method, args, arglen|
         out << [read_bytes(frm, 32), read_bytes(rid, 32), read_cstr(service), read_cstr(method), read_bytes(args, arglen)]
+        1
       end
       POLL_SERVICE_REQUESTS.call(node, sink, nil)
       out

@@ -46,6 +46,10 @@ Please include:
 - An initial assessment (confirmed / needs-info / not-a-vuln) once we reproduce.
 - Coordinated disclosure: we will agree a disclosure date with you, ship the fix
   on `main` (and a tag), then publish an advisory. We credit reporters who want it.
+- Public advisories (GHSAs) are published for externally-reported vulnerabilities
+  undergoing coordinated disclosure. Internal audit findings, dogfooding fixes, and
+  pre-release hardening items are tracked in CHANGELOG.md with finding identifiers
+  (see `docs/audit-history.md`).
 
 We ask that you give us a reasonable window to remediate before public disclosure,
 and that testing does not exfiltrate other users' data, degrade the live relay
@@ -106,7 +110,7 @@ If you find something outside this list, we want to hear about it.
 
 ## Wire vectors and adversarial-input testing
 
-The committed `core/hop-core/vectors/bundle-v9.json` corpus locks complete encoded bytes for every
+The committed `core/hop-core/vectors/bundle-v16.json` corpus (tracked per BUNDLE_VERSION as `bundle-v<N>.json`) locks complete encoded bytes for every
 current bundle destination and payload variant, plus stamped and unstamped carriage access, signed
 adverts, reach records, private envelopes, ratchet layouts, stream layouts, HPS reach-ACK MACs and
 publication signatures, and ID derivations. Fixed keys and nonces in that corpus are test data only.

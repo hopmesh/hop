@@ -58,8 +58,27 @@ in_git=0
 git -C "$here" rev-parse --is-inside-work-tree >/dev/null 2>&1 && in_git=1
 
 if [ "$committed_only" -eq 0 ]; then
-  command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (run core/hop-wasm/install-wasm-pack.sh)"; exit 1; }
-  wasm-pack build "$crate" --mode no-install --target web --out-dir "$tmp" >/dev/null 2>&1
+  command -v wasm-pack >/dev/null || { echo "error: wasm-pack not found (run core/hop-wasm/install-wasm-pack.sh)" >&2; exit 2; }
+  # Verify the active rustc has the wasm32-unknown-unknown target installed
+  if command -v rustc >/dev/null 2>&1; then
+    sysroot="$(rustc --print sysroot 2>/dev/null || true)"
+    if [ -n "$sysroot" ] && [ ! -d "$sysroot/lib/rustlib/wasm32-unknown-unknown" ]; then
+      echo "error: active rustc ($sysroot) lacks wasm32-unknown-unknown target (ensure rustup toolchain is on PATH: export PATH=\"\$HOME/.cargo/bin:\$PATH\")" >&2
+      exit 2
+    fi
+  fi
+  build_output="$tmp/wasm-pack-build.log"
+  if ! wasm-pack build "$crate" --mode no-install --target web --out-dir "$tmp" >"$build_output" 2>&1; then
+    echo "error: could not build core/hop-wasm (wasm-pack failed)" >&2
+    cat "$build_output" >&2
+    exit 2
+  fi
+  for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do
+    if [ ! -f "$tmp/$f" ]; then
+      echo "error: could not build core/hop-wasm (missing generated file $f)" >&2
+      exit 2
+    fi
+  done
 fi
 if [ "$committed_only" -eq 0 ]; then
   for f in hop_wasm.d.ts hop_wasm.js hop_wasm_bg.wasm.d.ts; do

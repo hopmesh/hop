@@ -12,14 +12,22 @@ drivers/apple/HopDriver/.build-staging/
 /fuzz/artifacts
 /fuzz/coverage
 **/*.rs.bk
+/tarpaulin-report.html
 # Python verification helpers
 __pycache__/
 *.py[cod]
 # Node dependency trees
 node_modules/
-# relay identity seeds + on-disk stores (never commit secrets/state)
+# relay identity seeds, private keys, and local secrets (never commit secrets/state)
 *.db
 *.db.key
+*.key
+*.secret
+*.identity
+identity.bin
+identity.seed
+local/
+.secrets/
 
 # ---- OpenTofu / Terraform ----
 # State lives in GCS (the `backend "gcs"` blocks in infra/versions.tf, infra/billing/providers.tf,
@@ -107,3 +115,7 @@ drivers/android/**/build/
 # toolchain, but CI rebuilds it from source and fails on drift (web-05 / simwasm-02; sim/check-pkg-fresh.sh).
 core/hop-wasm/pkg-node/
 erl_crash.dump
+
+# ---- testkit ----
+# on-device test run output (testkit/CLAUDE.md)
+testkit/results/

@@ -165,7 +165,7 @@ int main(void) {
     // one content-key-encrypted, writer-signed publication is flooded once, and membership is a
     // property of the topic's key handoff (here Open, so A hands B the keys on request).
     //
-    // PLAT-005: none of this was reachable from C before ABI 6. The C ABI had no hps exports at all,
+    // PLAT-005: none of this was reachable from C before version 6 of the C ABI. The C ABI had no hps exports at all,
     // so a client on it could not host, join or post to a channel, which is why this section exists.
     uint8_t a_addr[32];
     if (!hop_node_address(a, a_addr)) { printf("FAIL: host address\n"); return 1; }

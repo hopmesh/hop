@@ -31,6 +31,8 @@ pub mod util;
 pub mod wire_emit;
 /// Wire-byte determination for the `Wire::Have` custody beacon. Hashed by the wire-version guard.
 pub mod wire_have;
+/// Wire-byte determination for self-certifying reach records. Hashed by the wire-version guard.
+pub mod wire_reach;
 /// Wire-byte determination for §35 carriage stamps. Hashed by the wire-version guard.
 pub mod wire_stamp;
 

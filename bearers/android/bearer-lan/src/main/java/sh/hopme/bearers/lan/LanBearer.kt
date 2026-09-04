@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 // guarded by `lock` (the same discipline BleBearer/BearerManager use).
 
 internal const val LAN_SERVICE_TYPE = "_hoplan._tcp"
+internal const val PREAUTH_DEADLINE_MS = 10_000L
 
 private const val LAN_PING_MS = 1000L     // 1 Hz keepalive
 private const val LAN_DEAD_MS = 15_000L   // TCP is reliable; a generous liveness deadline
@@ -75,6 +76,7 @@ internal class LanLink(
     private val admission: LanAdmission.Lease,
     private val readExecutor: ExecutorService,
     private val scheduler: ScheduledExecutorService,
+    private val preauthDeadlineMs: Long = PREAUTH_DEADLINE_MS,
 ) {
     @Volatile
     var peerId: ByteArray? = null
@@ -82,6 +84,8 @@ internal class LanLink(
     @Volatile
     var up = false
 
+    @Volatile
+    var secured = false
     @Volatile
     private var lastRxMs = System.currentTimeMillis()
     private val openedMs = System.currentTimeMillis()
@@ -119,6 +123,7 @@ internal class LanLink(
     private fun tick() {
         val now = System.currentTimeMillis()
         if (!up && now - openedMs > LAN_REAP_MS) { close("no-HELLO reap"); return }
+        if (up && !secured && now - openedMs > preauthDeadlineMs) { close("preauth deadline"); return }
         if (up && now - lastRxMs > LAN_DEAD_MS) { close("liveness DEAD (silent ${now - lastRxMs}ms)"); return }
         txSeq++
         sendFrame(LanWire.ping(txSeq, now))
@@ -364,6 +369,7 @@ class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
                 lease,
                 readExec,
                 linkScheduler,
+                preauthDeadlineMs,
             )
         } catch (_: IOException) {
             lease.close()
@@ -537,9 +543,13 @@ class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
             } else {
                 // Pure keep-rule (LanDedup): keep MY dialed channel iff I'm the greater id, else keep
                 // MY accepted channel, so both ends independently agree on the same survivor.
-                val keep = when (LanDedup.decide(nodeIdGreater(myId, peer), existing.isDialer, link.isDialer)) {
-                    DedupKeep.EXISTING -> existing
-                    DedupKeep.INCOMING -> link
+                val keep = when {
+                    existing.secured && !link.secured -> existing
+                    !existing.secured && link.secured -> link
+                    else -> when (LanDedup.decide(nodeIdGreater(myId, peer), existing.isDialer, link.isDialer)) {
+                        DedupKeep.EXISTING -> existing
+                        DedupKeep.INCOMING -> link
+                    }
                 }
                 drop = if (keep === link) existing else link
                 linksByPeerId[key] = keep // set survivor BEFORE closing the dropped channel
@@ -578,6 +588,15 @@ class LanBearer(private val ctx: Context, private val myId: ByteArray) : Bearer 
 
     internal val pendingLinkCount: Int get() = LAN_ADMISSION.linkCount
     internal val retainedPreauthBytes: Int get() = LAN_ADMISSION.retainedBytes
+    internal var preauthDeadlineMs = 10_000L
+
+    fun markSecured(linkId: Long) {
+        synchronized(lock) { allLinksByLinkId[linkId] }?.secured = true
+    }
+    override fun close(link: Long) {
+        synchronized(lock) { allLinksByLinkId[link] }?.close("preauth deadline")
+    }
+
 
     /// Drive the discovery gate (skip-self, remember-for-rescan, greater-id-dials, in-flight dedup) with a
     /// fabricated NsdServiceInfo, exactly as onServiceFound would.

@@ -379,4 +379,42 @@ final class BearerManagerTests: XCTestCase {
         XCTAssertEqual(sink.ups.map(\.link), [1_300])
         XCTAssertEqual(mgr.activeTransports(), ["Relay": 1])
     }
+
+    // MARK: - PLAT-008: release diagnostics privacy gate & URL redaction
+
+    func testReleaseDiagnosticsPrivacyAndURLRedaction() {
+        // 1) URL component redaction strips query, userinfo, fragment, path
+        let sensitiveURL = "wss://user:pass@relay.example.com:8443/secret/path?credential=token123#frag"
+        let cleanURL = redactURL(sensitiveURL)
+        XCTAssertEqual(cleanURL, "wss://relay.example.com:8443")
+        XCTAssertFalse(cleanURL.contains("user"))
+        XCTAssertFalse(cleanURL.contains("pass"))
+        XCTAssertFalse(cleanURL.contains("secret"))
+        XCTAssertFalse(cleanURL.contains("token123"))
+        XCTAssertFalse(cleanURL.contains("frag"))
+
+        // Plain host/port URL remains well-formed
+        XCTAssertEqual(redactURL("ws://127.0.0.1:9050/"), "ws://127.0.0.1:9050")
+
+        // 2) Logging gate
+        let originalGate = diagnosticsLoggingEnabled
+        defer {
+            diagnosticsLoggingEnabled = originalGate
+            logOutputSinkForTesting = nil
+        }
+
+        var capturedLogs: [(String, String)] = []
+        logOutputSinkForTesting = { cat, msg in capturedLogs.append((cat, msg)) }
+
+        // When diagnostics are disabled (release default), nothing is emitted
+        diagnosticsLoggingEnabled = false
+        log("STATE", "sentinel_secret_address_12345")
+        XCTAssertTrue(capturedLogs.isEmpty, "disabled diagnostics must emit zero logs")
+
+        // When diagnostics are explicitly enabled, output sink receives lines
+        diagnosticsLoggingEnabled = true
+        log("STATE", "permitted_debug_message")
+        XCTAssertEqual(capturedLogs.count, 1)
+        XCTAssertEqual(capturedLogs[0].1, "permitted_debug_message")
+    }
 }

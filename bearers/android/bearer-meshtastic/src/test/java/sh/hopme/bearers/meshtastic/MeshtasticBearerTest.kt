@@ -259,4 +259,22 @@ class MeshtasticBearerTest {
         assertEquals(0, bearer.linkCountForTest())
         assertTrue(sink.ups.isEmpty())
     }
+
+    @Test fun roguePeripheralCannotCreateUnboundedSyntheticPeers() {
+        val (bearer, radio, sink) = makeBearer()
+        connect(bearer, radio)
+
+        for (i in 1..50) {
+            val syntheticNode = 10000L + i
+            val peer = ByteArray(16) { i.toByte() }
+            val hello = MeshFrame.hello(peer, false)
+            val frags = meshFragment(hello, i)!!
+            assertEquals(1, frags.size)
+            radio.deliverHopPacket(syntheticNode, frags[0])
+        }
+        bearer.awaitIdle()
+
+        assertTrue("links must be capped at MESH_MAX_LINKS (32)", bearer.linkCountForTest() <= 32)
+        assertTrue("sink ups must be capped at MESH_MAX_LINKS (32)", sink.ups.size <= 32)
+    }
 }

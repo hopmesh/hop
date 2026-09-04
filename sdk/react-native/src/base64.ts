@@ -28,14 +28,18 @@ export function toBase64(bytes: Uint8Array): string {
   return out;
 }
 
-/** Decode a base64 string back to raw bytes. Rejects characters outside the alphabet. */
-export function fromBase64(text: string): Uint8Array {
+/** Decode a base64 string back to raw bytes. Rejects characters outside the alphabet. Enforces maxBytes (default 65536). */
+export function fromBase64(text: string, maxBytes: number = 65536): Uint8Array {
   const clean = text.replace(/[\r\n\s]/g, "");
   if (clean.length % 4 !== 0) {
     throw new Error("invalid base64: length is not a multiple of 4");
   }
   const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
-  const out = new Uint8Array((clean.length / 4) * 3 - padding);
+  const decodedLen = (clean.length / 4) * 3 - padding;
+  if (decodedLen > maxBytes) {
+    throw new Error(`base64 payload exceeds maximum envelope (${decodedLen} > ${maxBytes})`);
+  }
+  const out = new Uint8Array(decodedLen);
   let o = 0;
   for (let i = 0; i < clean.length; i += 4) {
     const c0 = LOOKUP[clean.charCodeAt(i)];

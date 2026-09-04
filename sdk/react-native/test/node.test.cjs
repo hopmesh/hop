@@ -486,3 +486,24 @@ test("onHpsInvite decodes its payload and is node-scoped", async () => {
   assert.equal(invites.length, 1);
   assert.deepEqual(invites[0], { host: "z6MkHost", path: "town/square", kind: "channel" });
 });
+
+test("hostile repro audit-013: node rejects invalid link, tick, and status numbers", async () => {
+  const native = makeNative();
+  const node = new HopNode(native, makeEmitter(), 7);
+
+  await assert.rejects(() => node.linkUp(NaN, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(Infinity, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(-1, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(1.5, "dialer"), RangeError);
+  await assert.rejects(() => node.linkUp(Number.MAX_SAFE_INTEGER + 100, "dialer"), RangeError);
+
+  await assert.rejects(() => node.tick(NaN), RangeError);
+  await assert.rejects(() => node.tick(-1), RangeError);
+
+  await assert.rejects(() => node.sendServiceResponse({
+    to: "z6Mkmz...",
+    forRequestId: new Uint8Array(32),
+    status: 65536,
+    body: "test",
+  }), RangeError);
+});

@@ -129,6 +129,18 @@ function decodeHpsTopicInfo(t: NativeHpsTopicInfo): HopHpsTopicInfo {
   };
 }
 
+function assertSafeInteger(val: number, name: string): void {
+  if (typeof val !== "number" || !Number.isSafeInteger(val) || val < 0) {
+    throw new RangeError(`${name} must be a safe non-negative integer, got ${val}`);
+  }
+}
+
+function assertStatus(val: number): void {
+  if (typeof val !== "number" || !Number.isInteger(val) || val < 0 || val > 65535) {
+    throw new RangeError(`status must be an integer between 0 and 65535, got ${val}`);
+  }
+}
+
 /**
  * A running Hop node. Owns a native `HopNode` handle; call `close()` when done.
  *
@@ -175,7 +187,8 @@ export class HopNode {
   }
 
   /** Advance the node clock. The pump calls this for you; only needed for manual driving. */
-  tick(nowMs: number = Date.now()): Promise<void> {
+  async tick(nowMs: number = Date.now()): Promise<void> {
+    assertSafeInteger(nowMs, "nowMs");
     return this.native.tick(this.handle, nowMs);
   }
 
@@ -184,6 +197,10 @@ export class HopNode {
     return this.native.isPersistent(this.handle);
   }
 
+  /** True only when the store is SQLCipher-keyed at rest (F-25, audit-001). */
+  isEncrypted(): Promise<boolean> {
+    return this.native.isEncrypted(this.handle);
+  }
   /** How many persisted records failed to decode on startup; non-zero means state lost on upgrade. */
   rehydrateDropped(): Promise<number> {
     return this.native.rehydrateDropped(this.handle);
@@ -250,12 +267,13 @@ export class HopNode {
   }
 
   /** Reply to an hops:// service request. */
-  sendServiceResponse(args: {
+  async sendServiceResponse(args: {
     to: string;
     forRequestId: Uint8Array;
     status: number;
     body: Uint8Array | string;
   }): Promise<boolean> {
+    assertStatus(args.status);
     return this.native.sendServiceResponse(
       this.handle,
       args.to,
@@ -270,23 +288,32 @@ export class HopNode {
     return this.native.acceptServiceResponse(this.handle, toBase64(forRequestId));
   }
 
+  /** Durably accept a previously-polled request by its 32-byte request id. */
+  acceptServiceRequest(requestId: Uint8Array): Promise<boolean> {
+    return this.native.acceptServiceRequest(this.handle, toBase64(requestId));
+  }
+
+  /** Reject a previously-polled request without ACK so a retransmission can retry. */
+  rejectServiceRequest(requestId: Uint8Array): Promise<boolean> {
+    return this.native.rejectServiceRequest(this.handle, toBase64(requestId));
+  }
   // ---- bearer seam (drive a transport from JS) ----
 
   /** Bring a bearer link up. `link` is any app-chosen id; `role` is who dialed. */
-  linkUp(link: number, role: HopRole): Promise<void> {
+  async linkUp(link: number, role: HopRole): Promise<void> {
+    assertSafeInteger(link, "link");
     return this.native.linkUp(this.handle, link, role);
   }
 
-  /** Bring a bearer link down. */
-  linkDown(link: number): Promise<void> {
+  async linkDown(link: number): Promise<void> {
+    assertSafeInteger(link, "link");
     return this.native.linkDown(this.handle, link);
   }
 
-  /** Feed inbound bytes received on `link` from the transport into the core. */
-  bytesReceived(link: number, bytes: Uint8Array): Promise<void> {
+  async bytesReceived(link: number, bytes: Uint8Array): Promise<void> {
+    assertSafeInteger(link, "link");
     return this.native.bytesReceived(this.handle, link, toBase64(bytes));
   }
-
   // ---- section 19 relay pool ----
   //
   // Without these an app is stuck on one hardcoded relay URL, which is the single point of failure

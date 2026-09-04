@@ -26,3 +26,14 @@ route it and coordinate the fix and disclosure across components as needed.
 
 Hop is pre-1.0. The supported line is the latest tagged release plus the current `main`; older tags are
 not patched, so upgrade to receive fixes.
+
+## Concurrency and Durability Guarantees
+
+- **Single-writer lease**: For any given database path, at most one live writer may derive and
+  commit state. An advisory file lock (`{path}.lock`) and an in-process path registry enforce this:
+  a second opener for an active database fails immediately with an exclusive lease error.
+- **Power-loss durability**: Critical mutations (cryptographic ratchet states, prekeys, queued sends)
+  are committed under `PRAGMA synchronous=FULL` in WAL mode, ensuring WAL frames are synchronized
+  to non-volatile storage at transaction commit before any outbound ciphertext is emitted.
+- **Schema protection**: An unsupported or future schema version refuses to open, leaving all
+  tables, files, and sidecars byte-preserved without modifying irreplaceable KV security state.

@@ -92,6 +92,21 @@ const LAZY_KV_PREFIX: &str = "strm/";
 const LAZY_KV_PREFIX_END: &str = "strm0";
 const FIRESTORE_KV_PAGE_SIZE: usize = 300;
 
+/// Billing-ledger prefixes are exempt from eager-KV delete-on-overflow (STORE-003 / CAND-NET-02).
+/// They represent financial ledger state and have independent retention from session/inbox keys.
+pub const BILLING_LEDGER_PREFIXES: &[&str] = &[
+    "usage/",
+    "carriage_usage/",
+    "storage_usage/",
+    "telemetry_usage/",
+];
+
+pub fn is_billing_ledger_key(key: &str) -> bool {
+    BILLING_LEDGER_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 /// Cold-open limits match relayd's 8,192-bundle custody ceiling and keep the complete durable hot
 /// snapshot within the 2 GiB Cloud Run instance. Bundles and eager KV share one byte ceiling, so a
 /// large security-state namespace cannot consume a second unaccounted pool beside bundle custody.
@@ -477,6 +492,7 @@ pub struct FirestoreStore {
     startup_cleanup_pending: Arc<AtomicU64>,
     startup_maintenance: Option<StartupMaintenance>,
     startup_limits: StartupLimits,
+    held_bytes: usize,
     /// stores-r2-05: the background writer's join handle. Drop signals `closed` then best-effort
     /// joins (bounded wait) so ops enqueued-but-not-yet-flushed on an UNCLEAN teardown (panic, early
     /// return, a drop not preceded by `flush()`) still get drained rather than silently lost. `Option`
@@ -800,8 +816,20 @@ impl FirestoreStore {
             startup_cleanup_pending,
             startup_maintenance: (!startup_complete).then_some(startup_maintenance),
             startup_limits: limits,
+            held_bytes: startup_usage.bytes,
             writer: Some(writer),
         })
+    }
+    fn recompute_held_bytes(&mut self) {
+        self.held_bytes = self
+            .inner
+            .have()
+            .ids
+            .into_iter()
+            .filter_map(|id| self.inner.get(&id))
+            .filter_map(|b| b.to_bytes().ok())
+            .map(|b| b.len())
+            .sum();
     }
 }
 
@@ -878,12 +906,18 @@ fn run_startup_maintenance_round(
                         continue;
                     };
                     let id = bundle.id();
-                    if row.document_id != bs58::encode(id).into_string()
-                        || inner.seen(&id)
-                        || usage.bundles >= limits.max_bundles
+                    if row.document_id != bs58::encode(id).into_string() {
+                        reject(maintenance, row.document_id);
+                        continue;
+                    }
+                    if inner.seen(&id) {
+                        // Duplicate bundle in remote listing; do not delete valid custody.
+                        continue;
+                    }
+                    if usage.bundles >= limits.max_bundles
                         || usage.bytes.saturating_add(data.len()) > limits.max_bytes
                     {
-                        reject(maintenance, row.document_id);
+                        // Startup custody budget reached; retain valid remote bundle without deletion.
                         continue;
                     }
                     let expires = stored_expires
@@ -891,8 +925,6 @@ fn run_startup_maintenance_round(
                     if inner.put_with_expiry(bundle, expires) {
                         usage.bundles += 1;
                         usage.bytes += data.len();
-                    } else {
-                        reject(maintenance, row.document_id);
                     }
                 }
                 advance_startup_phase(
@@ -926,16 +958,31 @@ fn run_startup_maintenance_round(
                             .push_back(StartupCleanupOp::Kv(row.document_id));
                         continue;
                     };
-                    let bytes = row.key.len().saturating_add(value.len());
-                    if row.key.starts_with(LAZY_KV_PREFIX)
-                        || row.document_id != expected_document
-                        || inner.get_kv(&row.key).is_some()
-                        || usage.eager_kv_rows >= limits.max_eager_kv_rows
-                        || usage.bytes.saturating_add(bytes) > limits.max_bytes
-                    {
+                    if row.document_id != expected_document || row.key.starts_with(LAZY_KV_PREFIX) {
                         maintenance
                             .cleanup
                             .push_back(StartupCleanupOp::Kv(row.document_id));
+                        continue;
+                    }
+                    let bytes = row.key.len().saturating_add(value.len());
+                    if inner.get_kv(&row.key).is_some() {
+                        // Already loaded into memory; do not delete from remote store.
+                        continue;
+                    }
+                    if is_billing_ledger_key(&row.key) {
+                        // Billing-ledger prefixes (usage/, carriage_usage/, storage_usage/,
+                        // telemetry_usage/) are exempt from eager-KV row caps and delete-on-overflow
+                        // (STORE-003 / CAND-NET-02). They do not compete with ratchets or inboxes.
+                        if usage.bytes.saturating_add(bytes) <= limits.max_bytes {
+                            inner.put_kv(&row.key, value);
+                            usage.bytes += bytes;
+                        }
+                        continue;
+                    }
+                    if usage.eager_kv_rows >= limits.max_eager_kv_rows
+                        || usage.bytes.saturating_add(bytes) > limits.max_bytes
+                    {
+                        // Eager KV capacity reached; do not delete valid remote document.
                         continue;
                     }
                     inner.put_kv(&row.key, value);
@@ -1052,10 +1099,16 @@ impl Store for FirestoreStore {
             Ok(d) => d,
             Err(_) => return false,
         };
+        if self.inner.have().ids.len() >= self.startup_limits.max_bundles
+            || self.held_bytes.saturating_add(data.len()) > self.startup_limits.max_bytes
+        {
+            return false;
+        }
         let mut candidate = self.inner.clone();
         if !candidate.put(bundle, now_ms) || !candidate.contains(&id) {
             return false;
         }
+        let data_len = data.len();
         if self
             .commit_op(|ack| Op::Write {
                 id,
@@ -1068,6 +1121,7 @@ impl Store for FirestoreStore {
             return false;
         }
         self.inner = candidate;
+        self.held_bytes = self.held_bytes.saturating_add(data_len);
         true
     }
 
@@ -1081,8 +1135,14 @@ impl Store for FirestoreStore {
             Ok(d) => d,
             Err(_) => return false,
         };
+        if self.inner.have().ids.len() >= self.startup_limits.max_bundles
+            || self.held_bytes.saturating_add(data.len()) > self.startup_limits.max_bytes
+        {
+            return false;
+        }
         let mut candidate = self.inner.clone();
         let held = candidate.rehydrate(bundle, now_ms) && candidate.contains(&id);
+        let data_len = data.len();
         if held
             && self
                 .commit_op(|ack| Op::Write {
@@ -1094,6 +1154,7 @@ impl Store for FirestoreStore {
                 .is_ok()
         {
             self.inner = candidate;
+            self.held_bytes = self.held_bytes.saturating_add(data_len);
             true
         } else {
             false
@@ -1108,6 +1169,8 @@ impl Store for FirestoreStore {
         let removed = self.inner.get(id)?;
         self.commit_op(|ack| Op::Delete { id: *id, ack }).ok()?;
         self.inner.remove(id);
+        let removed_len = removed.to_bytes().map(|b| b.len()).unwrap_or(0);
+        self.held_bytes = self.held_bytes.saturating_sub(removed_len);
         Some(removed)
     }
 
@@ -1124,9 +1187,8 @@ impl Store for FirestoreStore {
     }
 
     fn prune(&mut self, now_ms: u64) {
-        // In-memory only; the durable copies are reaped by a Firestore TTL policy on
-        // the `expireAt` timestamp (one-time setup), keeping prune off the network.
         self.inner.prune(now_ms);
+        self.recompute_held_bytes();
     }
 
     fn seen_expiry(&self, id: &BundleId) -> Option<u64> {
@@ -1212,7 +1274,7 @@ impl Store for FirestoreStore {
         after: Option<&str>,
         limit: usize,
     ) -> Vec<(String, Vec<u8>)> {
-        if prefix.starts_with(LAZY_KV_PREFIX) {
+        if prefix.starts_with(LAZY_KV_PREFIX) || is_billing_ledger_key(prefix) {
             return match self.mirror.list_kv_page(prefix, after, limit) {
                 Ok(page) => page,
                 Err(_) => {
@@ -1232,7 +1294,7 @@ impl Store for FirestoreStore {
         limit: usize,
         max_bytes: usize,
     ) -> std::result::Result<KvPage, String> {
-        if !prefix.starts_with(LAZY_KV_PREFIX) {
+        if !prefix.starts_with(LAZY_KV_PREFIX) && !is_billing_ledger_key(prefix) {
             return self
                 .inner
                 .list_kv_page_bounded(prefix, after, limit, max_bytes);
@@ -1393,8 +1455,8 @@ const CRITICAL_BATCH_MAX_MUTATIONS: usize = 400;
 const CRITICAL_BATCH_MAX_BYTES: usize = 512 * 1024;
 const CRITICAL_BATCH_MAX_KEY_BYTES: usize = 1024;
 const OPERATION_JOURNAL_PAGE_SIZE: usize = 32;
-const OPERATION_JOURNAL_MAX_RECORDS: usize = 10_000;
-const OPERATION_JOURNAL_MAX_PAGES: usize = 313;
+const OPERATION_JOURNAL_MAX_RECORDS: usize = 100_000;
+const OPERATION_JOURNAL_MAX_PAGES: usize = 3_125;
 const OPERATION_JOURNAL_MAX_SCAN_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 const OPERATION_JOURNAL_MAX_PENDING: usize = 128;
 const OPERATION_JOURNAL_MAX_SCAN_MUTATIONS: usize = 1_000_000;
@@ -2708,13 +2770,17 @@ impl FirestoreClient {
                 Some(_) => {
                     return Err("critical-operation journal page cursor did not advance".into())
                 }
-                None => break,
+                None => {
+                    cursor = None;
+                    break;
+                }
             }
         }
 
-        if record_count == limits.max_records
-            || page_count == limits.max_pages
-            || response_bytes == limits.max_response_bytes
+        if cursor.is_some()
+            && (record_count >= limits.max_records
+                || page_count >= limits.max_pages
+                || response_bytes >= limits.max_response_bytes)
         {
             return Err(
                 "critical-operation journal reached a scan budget before reconciliation".into(),
@@ -3007,6 +3073,7 @@ impl FirestoreClient {
             scanned_pages += page.scanned_pages;
             let first_range_complete = page.rows.len() < limit;
             rows.extend(page.rows);
+            rows.retain(|row| !is_billing_ledger_key(&row.key));
             if rows.len() == limit {
                 next = rows.last().map(|row| row.key.clone());
             } else if first_range_complete {
@@ -3027,6 +3094,7 @@ impl FirestoreClient {
             scanned_pages += page.scanned_pages;
             let second_range_complete = page.rows.len() < limit - rows.len();
             rows.extend(page.rows);
+            rows.retain(|row| !is_billing_ledger_key(&row.key));
             next = if rows.len() == limit {
                 rows.last().map(|row| row.key.clone())
             } else if second_range_complete {
@@ -4282,6 +4350,7 @@ mod tests {
                 .iter()
                 .filter(|(key, _)| {
                     !key.starts_with(LAZY_KV_PREFIX)
+                        && !is_billing_ledger_key(key)
                         && after.is_none_or(|cursor| key.as_str() > cursor)
                 })
                 .map(|(key, value)| (key.clone(), value.clone()))
@@ -8231,5 +8300,303 @@ mod tests {
             .ends_with("/projects/proj-y/databases/(default)/documents/presence"));
         assert_eq!(presence.base, "https://firestore.googleapis.com/v1");
         assert_eq!(presence.project, "proj-y");
+    }
+
+    // --- STORE-003 hostile regression tests --------------------------------------------------
+
+    fn sample_body(body_len: usize) -> Bundle {
+        let from = Identity::generate();
+        let to = Identity::generate();
+        Bundle::create(
+            &from,
+            Destination::Device(to.address()),
+            &to.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: vec![0xaa; body_len],
+            },
+            BundleOpts::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn store_003_hostile_bundle_bytes_overflow_deletes_valid_custody_bundles() {
+        let bundle_a = sample_body(300);
+        let id_a = bundle_a.id();
+        let data_a = bundle_a.to_bytes().unwrap();
+
+        let bundle_b = sample_body(300);
+        let id_b = bundle_b.id();
+        let data_b = bundle_b.to_bytes().unwrap();
+
+        let mirror = FakeMirror {
+            listing: vec![
+                (data_a.clone(), epoch_ms() + 100_000),
+                (data_b, epoch_ms() + 100_000),
+            ],
+            ..Default::default()
+        };
+
+        let limits = StartupLimits {
+            max_bytes: data_a.len() + 50, // fits bundle_a but NOT bundle_a + bundle_b
+            page_size: 10,
+            max_bundles: 10,
+            max_eager_kv_rows: 10,
+            max_scanned_rows: 10,
+            max_scanned_bytes: 100_000,
+            max_pages: 10,
+            max_cleanup_operations: 10,
+        };
+
+        let mut store = FirestoreStore::open_with_mirror_limits(mirror.clone(), limits)
+            .expect("open must succeed");
+
+        assert!(store.get(&id_a).is_some(), "bundle_a must be loaded");
+
+        // Run maintenance probe to execute queued cleanup operations
+        let _ = store.probe_durability();
+
+        // On the unfixed tree, bundle_b is deleted because usage.bytes exceeded max_bytes!
+        // The cleanup operations executed mirror.delete_bundle_document(id_b).
+        let deleted_bundles: Vec<BundleId> = mirror
+            .ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|op| match op {
+                MirrorOp::Delete { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !deleted_bundles.contains(&id_b),
+            "STORE-003 failure: valid bundle {:?} was deleted during startup because byte limit was exceeded",
+            id_b
+        );
+    }
+
+    #[test]
+    fn store_003_hostile_eager_kv_rows_overflow_deletes_valid_ledger_rows() {
+        let mirror = FakeMirror::default();
+
+        // Insert 10 carriage_usage keys, then 1 telemetry_usage key, then 1 usage key.
+        for i in 0..10 {
+            let key = format!("carriage_usage/1000/{:032x}/writerA", i);
+            mirror.kv.lock().unwrap().insert(
+                key,
+                vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            );
+        }
+        let tel_key = "telemetry_usage/1000/00000000000000000000000000000001/writerB".to_string();
+        mirror
+            .kv
+            .lock()
+            .unwrap()
+            .insert(tel_key.clone(), vec![1; 16]);
+
+        let usage_key = "usage/1000/00000000000000000000000000000002/writerC".to_string();
+        mirror
+            .kv
+            .lock()
+            .unwrap()
+            .insert(usage_key.clone(), vec![2; 16]);
+
+        let limits = StartupLimits {
+            max_eager_kv_rows: 5, // less than the 12 keys
+            max_bytes: 100_000,
+            page_size: 20,
+            max_bundles: 10,
+            max_scanned_rows: 100,
+            max_scanned_bytes: 100_000,
+            max_pages: 10,
+            max_cleanup_operations: 20,
+        };
+
+        let mut store = FirestoreStore::open_with_mirror_limits(mirror.clone(), limits)
+            .expect("open must succeed");
+
+        // Run maintenance probe to execute queued cleanup operations
+        let _ = store.probe_durability();
+
+        let deleted_keys: Vec<String> = mirror
+            .ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|op| match op {
+                MirrorOp::KvDelete { key } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !deleted_keys.contains(&tel_key),
+            "STORE-003 failure: valid telemetry_usage row was deleted during startup due to eager KV overflow: deleted {:?}",
+            deleted_keys
+        );
+        assert!(
+            !deleted_keys.contains(&usage_key),
+            "STORE-003 failure: valid usage row was deleted during startup due to eager KV overflow: deleted {:?}",
+            deleted_keys
+        );
+    }
+
+    #[test]
+    fn store_003_hostile_journal_recovery_refuses_readiness_at_max_records() {
+        let committed = |index: usize| {
+            journal_document(
+                &[KvMutation::Remove {
+                    key: format!("session/peer-{index}"),
+                }],
+                JournalState::Committed,
+                &format!("committed-{index}"),
+            )
+        };
+        let page_one = serde_json::json!({
+            "documents": [committed(0), committed(1)],
+            "nextPageToken": "PAGE2"
+        })
+        .to_string();
+        let page_two = serde_json::json!({
+            "documents": [committed(2), committed(3)],
+        })
+        .to_string();
+
+        let old_fence = fence_document([9; 32], "fence-update-time");
+        let new_fence = fence_document([3; 32], "new-fence-update");
+        let server = spawn_mock(vec![
+            (200, old_fence.to_string()),
+            (200, "{}".into()),
+            (200, new_fence.to_string()),
+            (200, page_one),
+            (200, page_two),
+            (200, new_fence.to_string()),
+        ]);
+
+        let limits = OperationRecoveryLimits {
+            page_size: 2,
+            max_records: 4, // exactly 4 records in the 24h history
+            max_pages: 8,
+            max_response_bytes: 1024 * 1024,
+        };
+
+        let result = firestore_client_at(&server.base)
+            .recover_critical_operations_with_generation_and_limits([3; 32], limits);
+
+        assert!(
+            result.is_ok(),
+            "STORE-003 failure: journal recovery refused readiness when valid history reached max_records: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn store_003_production_cardinality_retains_all_billing_ledger_rows() {
+        let mirror = FakeMirror::default();
+
+        // Insert a session ratchet key that must survive startup and not be crowded out
+        mirror
+            .kv
+            .lock()
+            .unwrap()
+            .insert("session/critical_peer".into(), b"ratchet_state".to_vec());
+
+        // Insert 33,000 real ledger rows (> 32,768 default eager KV cap) spanning
+        // multiple hours, tenants, and writers across all four billing prefixes.
+        let mut sample_keys = Vec::new();
+        {
+            let mut kv = mirror.kv.lock().unwrap();
+            // 10,000 carriage_usage rows
+            for i in 0..10_000 {
+                let hour = 100 + (i % 24);
+                let tenant = format!("{:032x}", i % 50);
+                let writer = format!("{:016x}", i / 50);
+                let key = format!("carriage_usage/{hour}/{tenant}/{writer}");
+                if i == 0 || i == 9_999 {
+                    sample_keys.push(key.clone());
+                }
+                kv.insert(key, vec![1; 16]);
+            }
+            // 10,000 storage_usage rows
+            for i in 0..10_000 {
+                let hour = 100 + (i % 24);
+                let tenant = format!("{:032x}", i % 50);
+                let writer = format!("{:016x}", i / 50);
+                let key = format!("storage_usage/{hour}/{tenant}/{writer}");
+                if i == 0 || i == 9_999 {
+                    sample_keys.push(key.clone());
+                }
+                kv.insert(key, vec![2; 8]);
+            }
+            // 10,000 telemetry_usage rows
+            for i in 0..10_000 {
+                let hour = 100 + (i % 24);
+                let tenant = format!("{:032x}", i % 50);
+                let writer = format!("{:016x}", i / 50);
+                let key = format!("telemetry_usage/{hour}/{tenant}/{writer}");
+                if i == 0 || i == 9_999 {
+                    sample_keys.push(key.clone());
+                }
+                kv.insert(key, vec![3; 16]);
+            }
+            // 3,000 usage rows
+            for i in 0..3_000 {
+                let hour = 100 + (i % 24);
+                let tenant = format!("{:032x}", i % 50);
+                let writer = format!("{:016x}", i / 50);
+                let key = format!("usage/{hour}/{tenant}/{writer}");
+                if i == 0 || i == 2_999 {
+                    sample_keys.push(key.clone());
+                }
+                kv.insert(key, vec![4; 16]);
+            }
+        }
+
+        let mut store = FirestoreStore::open_with_mirror(mirror.clone())
+            .expect("open at production cardinality must succeed");
+
+        // Session key must be rehydrated and accessible in memory
+        assert_eq!(
+            store.get_kv("session/critical_peer"),
+            Some(b"ratchet_state".to_vec()),
+            "ratchet session state must be loaded into memory and not crowded out"
+        );
+
+        // Run maintenance probe: must complete with zero deletions
+        let probe_res = store.probe_durability();
+        assert!(
+            probe_res.is_ok(),
+            "durability probe must succeed: {:?}",
+            probe_res.err()
+        );
+
+        let deleted_keys: Vec<String> = mirror
+            .ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|op| match op {
+                MirrorOp::KvDelete { key } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            deleted_keys.is_empty(),
+            "no valid billing ledger rows may be deleted on startup: deleted {} keys",
+            deleted_keys.len()
+        );
+
+        // All sample keys across all prefixes must still exist in remote mirror
+        let kv = mirror.kv.lock().unwrap();
+        for key in &sample_keys {
+            assert!(
+                kv.contains_key(key),
+                "sample key {} must survive cold start without deletion",
+                key
+            );
+        }
     }
 }

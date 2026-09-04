@@ -257,16 +257,17 @@ not "fix" the README back to URLs on the strength of a 200 response.
 
 ### Rust crates
 
-- Each workspace crate carries its OWN crate-local `LICENSE.md` (FSL-1.1-ALv2) and
-  points at it via `license-file = "LICENSE.md"` in its `[package]` (FSL is not an
-  SPDX id, so it is a `license-file`, not a `license` field). So a crate cut from
-  the release tag with `cargo publish` ships its FSL terms with no extra step.
+- Each workspace crate carries its OWN crate-local `LICENSE.md`. Crates under
+  `services/` use FSL-1.1-ALv2 (and point at it via `license-file = "LICENSE.md"`
+  in their `[package]`, since FSL is not an SPDX id). Crates under `core/` use
+  Apache-2.0. So a crate cut from the release tag with `cargo publish` ships
+  its matching terms with no extra step.
 
 ## License note (per-component)
 
 There is no repo-wide root license. Each component carries its own `LICENSE.md` so its
-terms travel with any package or split repository. Components under `core/` use
-FSL-1.1-ALv2; SDKs, services, bearers, drivers, and apps use Apache-2.0. The
+terms travel with any package or split repository. Components under `services/` use
+FSL-1.1-ALv2; `core/`, SDKs, bearers, drivers, and apps use Apache-2.0. The
 `tools/repo-integrity-guard.sh` check enforces the exact text for each tier and rejects
 missing, truncated, or cross-tier copies. The Font Awesome asset license remains
 separate from these code licenses.

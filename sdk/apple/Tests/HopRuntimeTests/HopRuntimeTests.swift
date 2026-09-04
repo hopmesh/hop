@@ -229,7 +229,7 @@ final class HopRuntimeTests: XCTestCase {
     /// asserted that level on first use while binding none of them, so an SDK-only integrator could
     /// not fail over: with no relay call on HopNode, the only usable RelayBearer constructor is the
     /// fixed-URL one, and one dead endpoint ended internet reach until the app restarted. The
-    /// wrapper now pins ABI 6 and binds the relay pool, and this test is what makes the binding
+    /// wrapper now pins ABI 7 and binds the relay pool, and this test is what makes the binding
     /// load-bearing rather than merely present.
     ///
     /// This drives the failover through the SAME closure shape RelayBearer's pooled constructor takes

@@ -302,7 +302,7 @@ internal class Peripheral(
                 ch: BluetoothGattCharacteristic,
             ) {
                 val v = byteArrayOf((psm ushr 8).toByte(), psm.toByte()) + myId // [2B PSM][16B id]
-                Log.i(TAG, "GATT read → returning psm=$psm to ${d.address}")
+                Log.d(TAG, "GATT read -> returning psm=$psm to ${d.address}")
                 gattServer?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, 0, v)
             }
         })
@@ -498,7 +498,7 @@ internal class Central(
                 main.postDelayed({
                     synchronized(dial) { dialState.removeWait(dev.address) }
                     if (pre != null && haveLinkToPrefix(pre)) return@postDelayed // R4: gate on link map
-                    Log.i(TAG, "WAIT-TIMEOUT fired → dialing ${dev.address}")
+                    Log.d(TAG, "WAIT-TIMEOUT fired -> dialing ${dev.address}")
                     tryDial(dev, pre)
                 }, 4000L + (0..1000L).random())
             }
@@ -525,7 +525,7 @@ internal class Central(
             // android-04: decide + claim the dial slot atomically under `dial` (DialState.tryClaim: free
             // slot, not in flight, not already linked to this MAC's peer, past any R2 backoff window).
             if (!dialState.tryClaim(addr, bkey, System.currentTimeMillis(), haveLinkTo)) return
-            Log.i(TAG, "DIALING addr=$addr prefix=${pre?.toHex()} inFlight=${dialState.inFlightCount()}")
+            Log.d(TAG, "DIALING addr=$addr prefix=${pre?.toHex()} inFlight=${dialState.inFlightCount()}")
             // connectGatt must run on the caller (main) thread; it returns synchronously, so it is safe
             // to hold `dial` across it (no reentrant GATT callback fires before we return here).
             val gatt = dev.connectGatt(ctx, false, gattCb, BluetoothDevice.TRANSPORT_LE) // autoConnect=false
@@ -579,11 +579,11 @@ internal class Central(
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             val addr = g.device.address
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                Log.i(TAG, "GATT connected addr=$addr → discoverServices")
+                Log.d(TAG, "GATT connected addr=$addr -> discoverServices")
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 g.discoverServices()
             } else {
-                Log.i(TAG, "GATT state addr=$addr status=$status newState=$newState → close()")
+                Log.d(TAG, "GATT state addr=$addr status=$status newState=$newState -> close()")
                 clearDialTimeout(addr)
                 g.close(); forgetGatt(addr, g); fail(addr) // ALWAYS close (§7.2)
             }
@@ -592,7 +592,7 @@ internal class Central(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             val ch = g.getService(SERVICE_UUID.uuid)?.getCharacteristic(ENDPOINT_CHAR)
             if (ch != null) {
-                Log.i(TAG, "GATT services discovered addr=${g.device.address} → readCharacteristic")
+                Log.d(TAG, "GATT services discovered addr=${g.device.address} -> readCharacteristic")
                 g.readCharacteristic(ch)
             } else {
                 val addr = g.device.address
@@ -634,19 +634,19 @@ internal class Central(
         // 6-byte nodeId prefix (R2).
         synchronized(dial) { dialState.promote(addr, peerId) }
         if (haveLinkTo(peerId)) { // R4: already linked → no redundant CoC
-            Log.i(TAG, "GATT read: already linked to ${peerId.toHex().take(8)} → cancel dial")
+            Log.d(TAG, "GATT read: already linked to ${peerId.toHex().take(8)} -> cancel dial")
             synchronized(dial) { dialState.succeededForAddr(addr) } // reached the peer → clear backoff/failCount
             clearDialTimeout(addr)
             g.close(); forgetGatt(addr, g); synchronized(dial) { dialState.release(addr) }; return
         }
         val psm = ((value[0].toInt() and 0xff) shl 8) or (value[1].toInt() and 0xff)
-        Log.i(TAG, "READ psm=$psm peer=${peerId.toHex().take(8)} addr=$addr → openL2CAP")
+        Log.d(TAG, "READ psm=$psm peer=${peerId.toHex().take(8)} addr=$addr -> openL2CAP")
         val dev = g.device
         thread(name = "l2cap-dial") {
             try {
                 val sock = dev.createInsecureL2capChannel(psm)
                 sock.connect()
-                Log.i(TAG, "L2CAP dialed psm=$psm addr=$addr - wrapping link")
+                Log.d(TAG, "L2CAP dialed psm=$psm addr=$addr - wrapping link")
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
                 // android-05/06: the socket is connected but the link is not yet UP (no HELLO). Cancel the
                 // dial timeout (this dial reached L2CAP), free inFlight, but DO NOT declare success here.

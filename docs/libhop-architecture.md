@@ -7,7 +7,7 @@ Apple Multipeer / Wi-Fi P2P is a live transport but stays in-driver, not an extr
 apps now run the north-star `drivers/` packages (the legacy in-driver transports were pruned and the
 iOS facade `CLLocationManager` monitor was deleted, emission moved into the shared BLE bearer). The
 only thing left is **on-device Stage-D verification** (iOS Xcode app build + real BLE link-formation
-and beacon wake on the fleet). Per-finding remediation status lives in `docs/audits/index.html`
+and beacon wake on the fleet). Per-finding remediation status lives in `hopmesh/internal/docs/audits/index.html`
 (F-33, F-40 both Fixed).
 
 ## The locked decisions
@@ -24,7 +24,7 @@ and beacon wake on the fleet). Per-finding remediation status lives in `docs/aud
   Those are additive header extensions (bump `HOP_ABI_VERSION` when they land), tracked under
   "Deferred by design" below. So "universal floor" means the seam, messaging, and pub/sub every
   target needs, not yet every UniFFI method.
-- **`hps://` pub/sub is on the floor as of ABI 6.** It was the largest hole and it was load-bearing:
+- **`hps://` pub/sub is on the floor as of version 6 of the C ABI.** It was the largest hole and it was load-bearing:
   group chat and channels are §32, so a client that binds the C ABI rather than UniFFI could not host
   a channel, join one, or post to one, while the two native UniFFI drivers had shipped the feature for
   as long as it had existed. The header now carries the whole surface the UniFFI layer has: register,
@@ -51,7 +51,7 @@ services/  hop-relay/relayd/gateway/endpoint     tools/  testkit/codegen     web
 ```
 (This layout is LIVE: the `git mv` migration off `crates/` shipped (commit 1fb6bf0), and the old Apple
 `HopBearers` package was removed (2ae1d75). Both shipping apps now run the north-star `drivers/`
-packages; the cutover is complete. See `docs/audits/index.html` F-33/F-40.)
+packages; the cutover is complete. See `hopmesh/internal/docs/audits/index.html` F-33/F-40.)
 
 ## What's BUILT and VERIFIED
 
@@ -59,7 +59,7 @@ The whole spine is proven end to end, **four languages against one generated hea
 
 | Layer | Where | Proof |
 |---|---|---|
-| C ABI | `core/hop/src/cabi.rs` → `sdk/hop.h` | `examples/smoke.c`: real §39 send→deliver+ACK, base58, **hops:// round-trip** |
+| C ABI | `core/hop/src/cabi.rs` → `sdk/hop.h` | `core/hop/examples/smoke.c`: real §39 send→deliver+ACK, base58, **hops:// round-trip** |
 | Swift SDK | `sdk/apple` (`Hop`) | `HopSmoke` (wrapper) + `RuntimeSmoke` (HopRuntime + a Bearer drive the node) |
 | Kotlin SDK | `sdk/android` (`sh.hop`, JNA) | `Smoke.kt`: §39 send→deliver+ACK + base58 on the JVM |
 | ESP32 client | `apps/esp32/hop-sensor` | pure-C full client POSTs weather to a `hops://` service, reads the ack |
@@ -97,7 +97,7 @@ Both shipping apps now drive the node via UniFFI **through the new isolated bear
   `:hop-sdk` (`sh.hop`) instead of the ble-lab modules; `:app` + `:hop-driver` `compileDebugKotlin`
   clean. (No double-core: JNA loads libhop.so lazily and the app never makes a `sh.hop.HopNode`.)
 
-Bounded-cutover cleanup is DONE (see `docs/audits/index.html` F-40): the dormant legacy
+Bounded-cutover cleanup is DONE (see `hopmesh/internal/docs/audits/index.html` F-40): the dormant legacy
 `!useSharedBearers` paths and the redundant iOS facade beacon monitor were deleted, and both apps
 now run the north-star `drivers/` packages. The `F0900BEA` beacon UUID drift was fixed (one
 cross-platform source) and the old `apple/HopBearers` package was removed (commit 2ae1d75). What
@@ -111,7 +111,7 @@ remains is the on-device Stage-D fleet run.
   queue introspection (`queue`/`clear_queue`/`pending_count`), `name`, `send_message_traced`, and the
   §27 trace fields on `poll_inbox`. Each is an additive `sdk/hop.h` extension; bump
   `HOP_ABI_VERSION` when it lands. Pattern is set; add along the way.
-- ~~`hps://` register/subscribe/publish/invites/rekey~~ → **done at ABI 6**: the whole §32 surface is
+- ~~`hps://` register/subscribe/publish/invites/rekey~~ → **done at version 6 of the C ABI**: the whole §32 surface is
   on the C ABI. It was the one deferred item that was not optional, because it is what group chat and
   channels are, so leaving it off the floor meant every SDK-based client was locked out of a shipped
   protocol feature. Deferring a capability is only honest while nothing needs it.

@@ -7,7 +7,7 @@
 
 import initWasm, { WasmNode } from './pkg/hop_wasm.js';
 import { makeMesh } from './mesh.js';
-import { makeMapBridge, makeSqliteBridge } from './store-bridge.js';
+import { makeMapBridge, makeSqliteBridge, createOpfsBridgeFactory, closeSimStorage, getSimDb } from './store-bridge.js';
 // RANGE/SOAK/RELAY_ID + hav are the SINGLE source of truth in sim-constants.js, the headless
 // validator (scenario-check.mjs) imports the same module, so the two can't drift.
 import { RANGE, SOAK, RELAY_ID, hav } from './sim-constants.js';
@@ -51,35 +51,15 @@ function seedFor(i) { const s = new Uint8Array(32); s[0] = (i + 1) & 0xff; s[1] 
 // many-node tab stops OOMing). Falls back to an in-memory Map if OPFS/sqlite-wasm isn't available, so
 // the sim always runs. Each node gets its own DB file in the pool.
 async function makeBridgeFactory() {
-  try {
-    // Race OPFS setup against a timeout: the SAHPool VFS takes an EXCLUSIVE lock, so another (stale) tab
-    // holding it makes installOpfsSAHPoolVfs block forever, which would hang "booting real nodes". If it
-    // doesn't come up quickly, fall back to in-memory so the sim always boots.
-    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('OPFS init timed out, another tab may hold the store; close extra tabs')), 4000));
-    const setup = (async () => {
-      const { default: sqlite3InitModule } = await import('./sqlite-wasm/sqlite3.mjs');
-      const sqlite3 = await sqlite3InitModule(); sqliteMod = sqlite3;
-      // ONE db for the whole mesh → ONE OPFS sync-access handle. Fresh pool name so we don't reuse an
-      // old, larger pool (initialCapacity is a minimum, not a cap). Memory journal keeps files minimal.
-      const pool = await sqlite3.installOpfsSAHPoolVfs({ name: 'hop-sim-1', initialCapacity: 8 });
-      const db = new pool.OpfsSAHPoolDb('/hop-sim.sqlite');
-      db.exec(`PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;
-               DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS bundles; DROP TABLE IF EXISTS kv;`);  // fresh session
-      simDb = db;
-      return (id) => makeSqliteBridge(db, id);
-    })();
-    const bridgeFor = await Promise.race([setup, timeout]);
-    postMessage({ type: 'storage', backend: 'opfs-sqlite' });
-    return bridgeFor;
-  } catch (err) {
-    postMessage({ type: 'storage', backend: 'memory', error: String((err && err.message) || err) });
-    return () => makeMapBridge();
-  }
+  return createOpfsBridgeFactory({
+    onStorage: (info) => postMessage({ type: 'storage', ...info }),
+  });
 }
 
 onmessage = async (e) => {
   const m = e.data;
   if (m.type === 'init') {
+    closeSimStorage();
     congested = !!m.congested;
     const out = await initWasm(); wasmMem = out && out.memory;   // hop-core nodes' wasm linear memory
     // Storage: in-memory by default (reliable, and a valid host Store just like MemoryStore). OPFS/SQLite
@@ -136,5 +116,8 @@ onmessage = async (e) => {
     focusRecip = m.recip; gradientCache = (mesh && focusRecip) ? mesh.gradientTo(focusRecip) : [];   // recompute the tree now
   } else if (m.type === 'caps') {
     if (caps[m.id]) caps[m.id][m.field] = m.value;
+  } else if (m.type === 'close') {
+    closeSimStorage();
+    if (mesh) mesh = null;
   }
 };

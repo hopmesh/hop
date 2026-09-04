@@ -158,7 +158,7 @@ extension MultipeerBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate,
     public func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         queue.async { [weak self] in
             guard let self, let link = self.linkId(forPeer: peerID.displayName) else { return }
-            self.sink?.linkBytes(link, data)
+            _ = self.acceptInboundData(data, for: link, peerName: peerID.displayName)
         }
     }
 

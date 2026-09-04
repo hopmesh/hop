@@ -150,4 +150,17 @@ public final class MultipeerBearer: NSObject, Bearer {
     }
 
     func linkId(forPeer name: String) -> LinkId? { linkByPeer[name] }
+
+    /// Inbound message gate (PLAT-007): reject any message that exceeds the core's 64 KiB
+    /// (65,536 bytes) packet envelope without passing it to the core, and tear down the link.
+    func acceptInboundData(_ data: Data, for link: LinkId, peerName: String) -> Bool {
+        guard data.count <= 65536 else {
+            if let l = noteDisconnected(peerName: peerName) {
+                sink?.linkDown(l)
+            }
+            return false
+        }
+        sink?.linkBytes(link, data)
+        return true
+    }
 }

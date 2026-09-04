@@ -14,8 +14,8 @@ libhop C-ABI contract, `docs/libhop-architecture.md`.
 - `bearers/` - per-transport packages (BLE, LAN, relay), one isolated
   package per bearer. Apple Multipeer (Wi-Fi P2P) is a live transport but stays in-driver, not a package.
 - `drivers/` - the per-platform host layer.
-- `services/` - the relay (`hop-relayd`), gateway, endpoint, and example origin.
-- `infra/` - OpenTofu for the cloud relay fleet (see `docs/runbooks/`).
+- `services/` - the relay (`hop-relayd`), gateway, endpoint, and telemetry daemon. (Non-mesh services `hop-accountd` and `hop-billingd` live in `hopmesh/platform`; see `docs/repo-catalog.md`).
+- `infra/` - OpenTofu for the cloud relay fleet lives in `hopmesh/platform/infra/` (see `docs/repo-catalog.md` and `docs/runbooks/`).
 - `apps/` - every app: `apps/apple/HopDemo`, `apps/android/HopDemo`, `apps/web/site`, `apps/ble-lab`, `apps/esp32`.
 - `sim/` - the browser swarm sim (real `hop-core` compiled to wasm) plus the scenario checks.
 

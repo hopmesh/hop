@@ -1,7 +1,9 @@
-import { isEnvironmentDisclosure, scrubSensitiveEnvironment } from "./agent-output-guard.mjs"
+import { isEnvironmentDisclosure, redactCanaryOutput, scrubSensitiveEnvironment } from "./agent-output-guard.mjs"
 
 export const AgentOutputGuard = async (_input, options = {}) => {
   const environment = options.environment ?? process.env
+  const canaries = options.canaries ?? Object.values(environment).filter((v) => typeof v === "string" && v.length > 8)
+
   return {
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
@@ -11,6 +13,11 @@ export const AgentOutputGuard = async (_input, options = {}) => {
     },
     "shell.env": async (_input, output) => {
       scrubSensitiveEnvironment(output.env, environment)
+    },
+    "tool.execute.after": async (input, output) => {
+      if (input.tool !== "bash") return
+      const text = typeof output?.result === "string" ? output.result : typeof output?.output === "string" ? output.output : ""
+      redactCanaryOutput(text, canaries)
     },
   }
 }

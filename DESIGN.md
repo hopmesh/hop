@@ -660,10 +660,9 @@ moment you meet *any* node carrying it, that is the product's transitivity rule:
 **Marketplace flow (User A sells a bike → User B finds it):** A publishes a
 `Service{service:"market", title:"Bike for sale", …}` advert → it gossips A→R→…→B
 hop by hop → B, having met any node that saw it, finds it in B's directory →
-B reads A's keys from the advert → B sends a sealed `PeerMessage` bundle to A to
-inquire. B and A never had to meet directly. (`discover::Directory`,
+B reads A's keys from the advert → B initiates a forward-secret session to A (via
+A's published prekey) to inquire. B and A never had to meet directly. (`discover::Directory`,
 test `relayed_discovery_then_contact`.)
-
 Adverts are **public** to the mesh, correct for a public board/marketplace.
 Private peer discovery (rendezvous via a shared secret, no cleartext metadata) is
 future work (§10).
@@ -935,8 +934,8 @@ back *out* to every region costs backbone bandwidth and wakes downstream devices
 the backbone must route **intelligently**, and the rule you called out is the core of
 it: *don't ship a topic to a region that has no subscribers.*
 
-The backbone tracks two recency-decayed signals (`hop-relay::region::RegionRouter`,
-implemented & tested), the §18 demand idea lifted from peers to **regions**:
+The backbone design separates two regional signals (lifting the §18 demand idea
+from peers to **regions**):
 - **presence**, which region a device address was last reachable through, so an
   *addressed* bundle goes to **one** region (the destination's) instead of flooding
   all of them. Unknown/stale ⇒ fall back to a broadcast.
@@ -974,9 +973,9 @@ always use the lowest-latency entrance and exit.
   refinement.
 - **Exit (backbone → device): the destination's current relay.** A bundle for B must
   leave the backbone at the relay **B is currently attached to**, which is the
-  closest exit by definition. `RegionRouter` tracks each address's current region from
-  presence, so the backbone files the bundle and points the fetch at B's region instead
-  of flooding every region. Delay-tolerant: if B is offline, the mailbox holds it
+  closest exit by definition. Regional presence tracking in `hop-store-firestore` tracks
+  each address's current region, so the backbone files the bundle and points the fetch at B's
+  region instead of flooding every region. Delay-tolerant: if B is offline, the mailbox holds it
   until B's region reappears.
 - **Relay ↔ relay discovery across regions.** Relays form a backbone mesh via a
   **membership layer**, a seed list / registry plus gossip (SWIM-style) so the set
@@ -989,9 +988,10 @@ always use the lowest-latency entrance and exit.
   untrusted store of sealed ciphertext (§19), so adding capacity is just adding nodes.
 
 **Status.** Implemented: `hop-relayd` (node + TCP bearer), the iOS relay bearer,
-`RegionRouter` (presence/demand). To build: GeoDNS/anycast fronting, client-side RTT
-race over resolved endpoints, relay membership/gossip + inter-relay RTT-aware routing,
-and wiring `RegionRouter` presence to pick the exit relay.
+and regional presence tracking in `hop-store-firestore`. Not implemented / roadmap: per-region
+demand-based topic routing (`RegionRouter` is removed / not implemented), GeoDNS/anycast fronting,
+client-side RTT race over resolved endpoints, relay membership/gossip + inter-relay RTT-aware routing,
+and wiring presence to pick the exit relay.
 
 ## 22. Background operation & beaconing
 
@@ -1578,7 +1578,7 @@ a device *can't* leak its app even by mistake; the relay daemon sets it explicit
 ### Status
 
 Design only. Building blocks exist: epidemic + vaccine (`routing`/`node`), §18
-reliability-weighted relay, §21 `RegionRouter`. To build: a **trace** field on the
+reliability-weighted relay, §21 regional presence tracking (per-region demand routing is not implemented). To build: a **trace** field on the
 bundle header; ACK/trace correlation → a per-node **route table** with decay;
 utility-ranked transmit/evict ordering; tier-aware table sizing; and **per-region relay
 identities** (replacing the single shared Cloud Run seed).
@@ -1765,8 +1765,10 @@ that user messages use. This is a considered decision, not an oversight:
 - **The forward-secrecy law is about user CONTENT, not RPC.** The repo law "device-to-device
   content is always forward-secret" (see `CLAUDE.md` / §25) scopes to **`PeerMessage` user
   content**, which is exactly the traffic that carries private conversation and is always
-  ratcheted or deferred, never static-sealed. Services are a separate class, like adverts,
-  HNS answers, vaccines, and egress requests, all sealed end-to-end but not ratcheted.
+  ratcheted or deferred, never static-sealed. Symmetrically across both the private and traced
+  receive paths, any bare `PeerMessage` payload without a session ratchet is rejected on receive
+  (PROTO-007). Services are a separate class, like adverts, HNS answers, vaccines, and egress
+  requests, all sealed end-to-end but not ratcheted.
 - **Consequence, stated plainly.** An adversary who records a node's service traffic and *later*
   compromises the recipient's identity key can decrypt those past service payloads (no
   recipient-compromise forward secrecy for the RPC class). An app that needs to move sensitive
@@ -2280,22 +2282,26 @@ inbox **migrates**:
 
 Migration is a damped, occasional relocation of the primary, never a per-message decision.
 
-### Channels & services (`hps://`, §32)
+### Channels & services (historical design note; not live §32 spec)
 
-Two shapes, handled differently:
+> **Note:** This subsection records an earlier proposal for topic placement under the superseded
+> home-store architecture. Live channels and services are specified in §32; per-region demand-based
+> topic routing (`RegionRouter`) is not implemented.
 
-- **The subscribe handshake is unicast**, `HpsSubscribe`→host and `HpsKeys`→subscriber are
+Two shapes, handled differently in this earlier model:
+
+- **The subscribe handshake is unicast**, `HpsSubscribe`->host and `HpsKeys`->subscriber are
   `Device`-addressed, so they ride device inboxes with no special casing.
 - **Publishes are broadcasts**, one writer, many readers, *no subscriber registry* by design, so
-  they don't belong to any one inbox. They get a parallel **topic inbox** `topic/{path}/bundles`,
-  placed by **demand** (§21 `RegionRouter`): a relay holding a broadcast for topic `T` writes it
-  into `topic/{T}` only in **stores that have live subscriber demand** for `T`, a store with
-  nobody listening never receives it. A subscriber drains `topic/{T}` on check-in from a
+  they don't belong to any one inbox. In this earlier proposal, they received a parallel **topic inbox**
+  `topic/{path}/bundles`, which was planned to be placed by regional demand (§21, not implemented):
+  a relay holding a broadcast for topic `T` would write it into `topic/{T}` only in stores that have
+  live subscriber demand for `T`. In the live system, topic broadcasts flood to available stores and are
+  TTL-evicted. A subscriber drains `topic/{T}` on check-in from a
   **per-subscriber read cursor** (so each member gets each message once without a registry),
   decrypts with the content key, and verifies the sender (§32). **ACK-based reach** still works:
   the ACK to the host is `Device`-addressed, so it rides the host's inbox back. Topic inboxes are
   **TTL-evicted** (no per-member purge, since there's no membership list).
-
 ### Invariants & consolidation
 
 - **Nodes never wake nodes.** Every inbox / locator / topic-inbox operation is a passive Firestore
@@ -2699,8 +2705,11 @@ never counted twice:
 - **Mailbox**, a sampler walks held inbox bytes per interval and adds byte-hours; idempotent by
   `(tenant, period, sample-tick)` so a re-run of a tick can't double-add.
 
-Writes are small and sharded to avoid hot-doc contention; the ledger is the **authoritative** record,
-independent of whether reporting has happened yet.
+Writes use fallible critical KV mutations (`put_kv_critical` / `apply_kv_batch`) and are small and
+sharded to avoid hot-doc contention; in-memory drained counters are retained in retry buffers on
+failure, service `/healthz` reflects durable write health, and ledger prefixes are exempt from startup
+delete-on-overflow. The ledger is the **authoritative** record, independent of whether reporting has
+happened yet.
 
 ### Reconcile → Stripe meter events
 

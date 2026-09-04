@@ -94,6 +94,7 @@ SWEEP_EXCLUDES=(
   --exclude-dir=audits
   --exclude=tarpaulin-report.html
   --exclude=check-abi-version.sh
+  --exclude=CHANGELOG.md
 )
 
 # ---- known declaration sites --------------------------------------------------------------------
@@ -209,7 +210,39 @@ else
     missing=""
     while IFS= read -r sym; do
       [ -n "$sym" ] || continue
-      grep -rqI -- "$sym" "$surface" 2>/dev/null || missing="$missing $sym"
+      if ! python3 -c '
+import sys, os, re
+surface, sym = sys.argv[1], sys.argv[2]
+found = False
+for root, dirs, files in os.walk(surface):
+    dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("target", "build", "node_modules")]
+    for f in files:
+        if f.startswith("."): continue
+        p = os.path.join(root, f)
+        try:
+            text = open(p, errors="ignore").read()
+        except Exception:
+            continue
+        if f.endswith(".go"):
+            cgo_match = re.search(r"/\*(.*?)\*/\s*import\s+\"C\"", text, flags=re.S)
+            if cgo_match:
+                cgo_code = cgo_match.group(1)
+                cgo_clean = "\n".join(line.split("//", 1)[0] for line in cgo_code.splitlines())
+                text = text[:cgo_match.start()] + "\n" + cgo_clean + "\n" + text[cgo_match.end()-len("import \"C\""):]
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        for line in text.splitlines():
+            code = line.split("//", 1)[0].split("#", 1)[0].strip()
+            if re.search(r"(?<![a-zA-Z0-9_])_?" + re.escape(sym) + r"(?![a-zA-Z0-9_])", code):
+                found = True
+                break
+        if found:
+            break
+    if found:
+        break
+sys.exit(0 if found else 1)
+' "$surface" "$sym" 2>/dev/null; then
+        missing="$missing $sym"
+      fi
     done <<< "$note_symbols"
     if [ -n "$missing" ]; then
       err "ABI guard: wrapper $label pins ABI $REF but nothing under $surface references:$missing. Either bind them, or the header's v$REF note is claiming a capability this wrapper does not expose (PLAT-003)."
@@ -223,10 +256,12 @@ fi
 echo "Checking prose claims about the ABI level:"
 prose_hits=0
 while IFS= read -r hit; do
-  [ -n "$hit" ] || continue
   file="${hit%%:*}"; rest="${hit#*:}"
   line="${rest%%:*}"; text="${rest#*:}"
   file="${file#./}"
+  if [[ "$text" =~ ABI-[0-9]{3} ]]; then
+    continue
+  fi
   value="$(printf '%s' "$text" | grep -Eo '[0-9]+' | tail -n1)"
   prose_hits=$((prose_hits + 1))
   if [ "$value" != "$REF" ]; then

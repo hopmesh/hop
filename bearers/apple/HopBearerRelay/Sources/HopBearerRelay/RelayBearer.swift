@@ -97,6 +97,16 @@ public enum SocksProxySetting: Equatable, Sendable {
     }
 }
 
+public protocol RelayWebSocketTask: AnyObject {
+    var maximumMessageSize: Int { get set }
+    func resume()
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @Sendable @escaping (Error?) -> Void)
+    func receive(completionHandler: @Sendable @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+}
+
+extension URLSessionWebSocketTask: RelayWebSocketTask {}
+
 public final class RelayBearer: NSObject, Bearer {
     public weak var sink: LinkSink?
     /// Short transport tag for the consumer's UI (Bearer contract). The cloud relay link surfaces as "Relay".
@@ -130,11 +140,15 @@ public final class RelayBearer: NSObject, Bearer {
     /// Serial home for all bearer state + delegate/receive callbacks (which hop here), so it is single-
     /// threaded end to end and needs no locks.
     private let queue = DispatchQueue(label: "hop.relay.bearer")
+    typealias TaskFactory = (URL, URLSessionConfiguration, URLSessionWebSocketDelegate) -> (URLSession?, RelayWebSocketTask)
+    private let taskFactory: TaskFactory
     private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
+    private var task: RelayWebSocketTask?
     private var started = false
     private var up = false
+    private var generation: UInt64 = 0
     private var reconnectScheduled = false
+    private var reconnectWork: DispatchWorkItem?
     private var backoff = RELAY_BACKOFF_MIN_S
     private var stableWork: DispatchWorkItem?      // F-13: fires after RELAY_STABLE_S to reset backoff
     private var retryAfter: Double?                // F-13: server-driven backoff from a 429 Retry-After
@@ -148,6 +162,10 @@ public final class RelayBearer: NSObject, Bearer {
         self.reportOutcome = { _, _ in }
         self.peerId = RelayBearer.stablePeerId(forURL: relayURL)
         self.socks = SocksProxySetting(spec: socksProxy)
+        self.taskFactory = { url, cfg, delegate in
+            let s = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+            return (s, s.webSocketTask(with: url))
+        }
         super.init()
     }
 
@@ -165,6 +183,25 @@ public final class RelayBearer: NSObject, Bearer {
         self.reportOutcome = reportOutcome
         self.peerId = RelayBearer.stablePeerId(forURL: seedURL)
         self.socks = SocksProxySetting(spec: socksProxy)
+        self.taskFactory = { url, cfg, delegate in
+            let s = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+            return (s, s.webSocketTask(with: url))
+        }
+        super.init()
+    }
+
+    init(
+        seedURL: String,
+        resolveURL: @escaping () -> String?,
+        reportOutcome: @escaping (String, Bool) -> Void,
+        socksProxy: String? = nil,
+        taskFactory: @escaping TaskFactory
+    ) {
+        self.resolveURL = resolveURL
+        self.reportOutcome = reportOutcome
+        self.peerId = RelayBearer.stablePeerId(forURL: seedURL)
+        self.socks = SocksProxySetting(spec: socksProxy)
+        self.taskFactory = taskFactory
         super.init()
     }
 
@@ -183,6 +220,12 @@ public final class RelayBearer: NSObject, Bearer {
         queue.async { [weak self] in
             guard let self else { return }
             self.started = false
+            self.generation &+= 1
+            self.reconnectWork?.cancel()
+            self.reconnectWork = nil
+            self.reconnectScheduled = false
+            self.stableWork?.cancel()
+            self.stableWork = nil
             self.task?.cancel(with: .goingAway, reason: nil)
             self.task = nil
             self.session?.invalidateAndCancel()
@@ -193,8 +236,15 @@ public final class RelayBearer: NSObject, Bearer {
 
     public func send(_ bytes: Data, on link: LinkId) {
         queue.async { [weak self] in
-            guard let self, link == self.linkId, let task = self.task else { return }
-            task.send(.data(bytes)) { _ in }   // one node packet = one WS binary frame
+            guard let self, self.started, link == self.linkId, let task = self.task else { return }
+            let gen = self.generation
+            task.send(.data(bytes)) { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.started, self.generation == gen, task === self.task else { return }
+                    if error != nil { self.handleDown(generation: gen) }
+                }
+            }
         }
     }
 
@@ -221,37 +271,50 @@ public final class RelayBearer: NSObject, Bearer {
             // a pool that looks healthy while nothing ever connects. It also puts the retry on the
             // normal backoff rather than a hot loop.
             log("STATE", "relay dial refused: SOCKS proxy configured but unusable (endpoint or OS)")
-            handleDown()
+            handleDown(generation: generation)
             return
         }
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        generation &+= 1
+        let gen = generation
+        let (session, task) = taskFactory(url, configuration, self)
         self.session = session
-        let task = session.webSocketTask(with: url)
         self.task = task
+        task.maximumMessageSize = 65536
         task.resume()   // sink.linkUp fires in didOpenWithProtocol (we're the initiator)
     }
 
-    private func receiveLoop() {
-        task?.receive { [weak self] result in
+    private func receiveLoop(for task: RelayWebSocketTask, generation gen: UInt64) {
+        task.receive { [weak self] result in
             guard let self else { return }
             self.queue.async {
+                guard self.started, self.generation == gen, task === self.task else { return }
                 switch result {
                 case .success(let message):
                     switch message {
-                    case .data(let d):   self.sink?.linkBytes(self.linkId, d)
-                    case .string(let s): self.sink?.linkBytes(self.linkId, Data(s.utf8))
-                    @unknown default:    break
+                    case .data(let d):
+                        guard d.count <= 65536 else {
+                            self.handleDown(generation: gen)
+                            return
+                        }
+                        self.sink?.linkBytes(self.linkId, d)
+                        self.receiveLoop(for: task, generation: gen)
+                    case .string:
+                        // PLAT-007: protocol-disallowed text must close/refuse rather than be reinterpreted
+                        self.handleDown(generation: gen)
+                    @unknown default:
+                        break
                     }
-                    self.receiveLoop()
                 case .failure:
-                    self.handleDown()
+                    self.handleDown(generation: gen)
                 }
             }
         }
     }
 
     /// Tear the current socket down (idempotent), surface linkDown once, then schedule a reconnect.
-    private func handleDown() {
+    private func handleDown(generation gen: UInt64) {
+        guard self.generation == gen else { return }
+        self.generation &+= 1
         stableWork?.cancel(); stableWork = nil       // F-13: the link didn't stay stable
         // Report BEFORE scheduling the next attempt, so the pool has already scored this endpoint
         // down by the time `dial()` asks it where to go. Reporting after would re-pick the corpse.
@@ -278,11 +341,15 @@ public final class RelayBearer: NSObject, Bearer {
         } else {
             backoff = RelayBearer.nextBackoff(backoff)
         }
-        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+        let gen = self.generation
+        let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.reconnectScheduled = false
-            if self.started && self.task == nil { self.dial() }
+            guard self.started, self.generation == gen, self.task == nil else { return }
+            self.dial()
         }
+        self.reconnectWork = work
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 }
 
@@ -291,19 +358,36 @@ public final class RelayBearer: NSObject, Bearer {
 extension RelayBearer: URLSessionWebSocketDelegate {
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                            didOpenWithProtocol protocol: String?) {
+        delegateDidOpen(webSocketTask)
+    }
+
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        delegateDidClose(webSocketTask)
+    }
+
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let http = task.response as? HTTPURLResponse
+        let retry = RelayBearer.retryAfterSeconds(statusCode: http?.statusCode ?? 0,
+                                                  retryAfterHeader: http?.value(forHTTPHeaderField: "Retry-After"))
+        delegateDidFail(task, retry: retry)
+    }
+
+    func delegateDidOpen(_ task: RelayWebSocketTask) {
         queue.async { [weak self] in
-            guard let self, webSocketTask === self.task else { return }
+            guard let self, self.started, task === self.task else { return }
+            let gen = self.generation
             self.up = true
             // Score the endpoint that actually answered, not whatever the pool would return now.
             if let url = self.currentURL { self.reportOutcome(url, true) }
             log("STATE", "relay link-up peer=\(shortHex(self.peerId))")
             self.sink?.linkUp(self.linkId, role: .dialer, peerId: self.peerId)   // dialer = Noise initiator
-            self.receiveLoop()
+            self.receiveLoop(for: task, generation: gen)
             // F-13: reset backoff only after the link has been stable for a while, not on open, a
             // relay that accepts then immediately drops (overloaded / scale-capped) would otherwise be
             // re-dialed at the 1s floor forever.
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.up else { return }
+                guard let self, self.started, self.generation == gen, self.up else { return }
                 self.backoff = RELAY_BACKOFF_MIN_S
             }
             self.stableWork = work
@@ -311,26 +395,18 @@ extension RelayBearer: URLSessionWebSocketDelegate {
         }
     }
 
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+    func delegateDidClose(_ task: RelayWebSocketTask) {
         queue.async { [weak self] in
-            guard let self, webSocketTask === self.task else { return }
-            self.handleDown()
+            guard let self, self.started, task === self.task else { return }
+            self.handleDown(generation: self.generation)
         }
     }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        // F-13: if the WS upgrade was rejected with 429, honor the server's Retry-After instead of
-        // hammering it on the normal backoff schedule. Read the response off the task before hopping
-        // queues (it's the HTTP upgrade response for a failed handshake); the parse is the pure
-        // `retryAfterSeconds` below (only 429 backs off this way).
-        let http = task.response as? HTTPURLResponse
-        let retry = RelayBearer.retryAfterSeconds(statusCode: http?.statusCode ?? 0,
-                                                  retryAfterHeader: http?.value(forHTTPHeaderField: "Retry-After"))
+    func delegateDidFail(_ task: AnyObject, retry: Double?) {
         queue.async { [weak self] in
-            guard let self, task === self.task else { return }
+            guard let self, self.started, task === self.task else { return }
             if let retry { self.retryAfter = retry; log("STATE", "relay 429 rate-limited; backing off \(retry)s") }
-            self.handleDown()
+            self.handleDown(generation: self.generation)
         }
     }
 }

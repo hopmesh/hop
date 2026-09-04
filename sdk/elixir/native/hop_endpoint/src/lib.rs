@@ -180,6 +180,21 @@ fn accept_service_response(node: ResourceArc<NodeRes>, for_request_id: Binary) -
 }
 
 #[rustler::nif]
+fn accept_service_request(node: ResourceArc<NodeRes>, request_id: Binary) -> bool {
+    node.0.accept_service_request(request_id.as_slice().to_vec()).unwrap_or(false)
+}
+
+#[rustler::nif]
+fn reject_service_request(node: ResourceArc<NodeRes>, request_id: Binary) -> bool {
+    node.0.reject_service_request(request_id.as_slice().to_vec()).unwrap_or(false)
+}
+
+#[rustler::nif]
+fn is_encrypted(node: ResourceArc<NodeRes>) -> bool {
+    node.0.is_encrypted()
+}
+
+#[rustler::nif]
 fn to_b58(addr: Binary) -> String {
     hop::address_base58(addr.as_slice().to_vec())
 }
