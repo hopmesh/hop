@@ -101,6 +101,33 @@ rejects(
     },
     "but the job declares no environment",
 )
+# A workflow_dispatch workflow reading an organization or repository secret from a job with no environment (INFRA-008).
+DISPATCH_WORKFLOW = """\\
+name: example-dispatch
+on:
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "syncing"
+        env:
+          TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+"""
+
+rejects(
+    "workflow_dispatch job reading secret with no environment (INFRA-008)",
+    DISPATCH_WORKFLOW,
+    lambda secrets: {
+        "HOP_SYNC_TOKEN": {
+            "scope": "organization",
+            "purpose": "sync",
+            "blocked_on": "owner PAT",
+        }
+    },
+    "reads declared organization secret `HOP_SYNC_TOKEN` in a workflow with workflow_dispatch, but declares no environment binding (INFRA-008)",
+)
+
 
 # A manifest entry no workflow reads is stale and must be reported, so the file stays a real inventory.
 rejects(
