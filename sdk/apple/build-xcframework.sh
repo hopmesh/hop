@@ -11,6 +11,21 @@ CRATE=hop
 LIB=libhop.a
 T=target
 
+# REL-004: Pin deployment targets matching sdk/apple/Package.swift platforms (.macOS(.v13), .iOS(.v16)).
+# Exporting both variables ensures that rustc (linking libhop.dylib/staticlib) and cc-rs / openssl-src
+# (compiling C objects for SQLCipher and vendored OpenSSL) target the exact same OS baseline.
+# Without explicit deployment targets, cc-rs queries the Xcode SDK version (e.g. 18.2) while rustc
+# defaults to iOS 10.0, producing object version mismatch warnings and undefined symbols
+# (such as ___chkstk_darwin from compiler-rt).
+DEPLOYMENT_TARGET_IOS="16.0"
+DEPLOYMENT_TARGET_MACOS="13.0"
+export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_IOS"
+export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_MACOS"
+
+if [ -d "$HOME/.cargo/bin" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 echo "▸ ensuring Apple Rust targets"
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
                   aarch64-apple-darwin x86_64-apple-darwin >/dev/null
