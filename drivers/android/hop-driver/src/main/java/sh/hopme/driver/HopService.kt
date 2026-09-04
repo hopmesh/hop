@@ -29,6 +29,13 @@ class HopService : Service() {
         return START_STICKY
     }
 
+    override fun onDestroy() {
+        HopBearer.teardownShared()
+        @Suppress("DEPRECATION")
+        stopForeground(true)
+        super.onDestroy()
+    }
+
     private fun ongoingNotification(): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(

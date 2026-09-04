@@ -61,4 +61,8 @@ class RelayUrlTest {
         assertNull("port > 65535 is invalid", HopBearer.validateRelayUrl("wss://relay.example.com:70000"))
         assertNull("non-numeric port", HopBearer.validateRelayUrl("wss://relay.example.com:abc"))
     }
+
+    @Test fun sanitizeRelayUrlStripsQueryAndFragment() {
+        assertEquals("wss://relay.example.com/hop", HopBearer.sanitizeRelayUrl("wss://relay.example.com/hop?credential=secret#token"))
+    }
 }

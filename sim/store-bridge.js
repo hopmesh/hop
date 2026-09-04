@@ -187,3 +187,133 @@ export function makeSqliteBridge(db, ns) {
     },
   };
 }
+
+let activeSimDb = null;
+let activeSimPool = null;
+
+export function getSimDb() {
+  return activeSimDb;
+}
+
+export function getSimPool() {
+  return activeSimPool;
+}
+
+export function closeSimStorage() {
+  if (activeSimDb) {
+    try { if (typeof activeSimDb.close === 'function') activeSimDb.close(); } catch (_) {}
+    activeSimDb = null;
+  }
+  if (activeSimPool) {
+    try { if (typeof activeSimPool.close === 'function') activeSimPool.close(); } catch (_) {}
+    activeSimPool = null;
+  }
+}
+
+/**
+ * Creates an OPFS SQLite bridge factory with robust timeout and cancellation handling (PLAT-012).
+ * If the OPFS acquisition times out or is abandoned, any late-resolving pool or database handle
+ * is closed immediately to prevent stranding the exclusive SAHPool lock.
+ */
+export async function createOpfsBridgeFactory(options = {}) {
+  const {
+    timeoutMs = 4000,
+    importSqlite = async () => {
+      const { default: sqlite3InitModule } = await import('./sqlite-wasm/sqlite3.mjs');
+      return sqlite3InitModule();
+    },
+    poolName = 'hop-sim-1',
+    initialCapacity = 8,
+    onStorage = null,
+  } = options;
+
+  let abandoned = false;
+  let timer = null;
+
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      abandoned = true;
+      reject(new Error('OPFS init timed out, another tab may hold the store; close extra tabs'));
+    }, timeoutMs);
+  });
+
+  const setup = (async () => {
+    let pool = null;
+    let db = null;
+    try {
+      const sqlite3 = await importSqlite();
+      if (abandoned) return null;
+
+      pool = await sqlite3.installOpfsSAHPoolVfs({ name: poolName, initialCapacity });
+      if (abandoned) {
+        if (pool && typeof pool.close === 'function') {
+          try { pool.close(); } catch (_) {}
+        }
+        return null;
+      }
+
+      db = new pool.OpfsSAHPoolDb('/hop-sim.sqlite');
+      if (abandoned) {
+        if (db && typeof db.close === 'function') {
+          try { db.close(); } catch (_) {}
+        }
+        if (pool && typeof pool.close === 'function') {
+          try { pool.close(); } catch (_) {}
+        }
+        return null;
+      }
+
+      db.exec(`PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;
+               DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS bundles; DROP TABLE IF EXISTS kv;`);
+
+      if (abandoned) {
+        if (db && typeof db.close === 'function') {
+          try { db.close(); } catch (_) {}
+        }
+        if (pool && typeof pool.close === 'function') {
+          try { pool.close(); } catch (_) {}
+        }
+        return null;
+      }
+
+      return { pool, db, bridgeFor: (id) => makeSqliteBridge(db, id) };
+    } catch (err) {
+      if (db && typeof db.close === 'function') {
+        try { db.close(); } catch (_) {}
+      }
+      if (pool && typeof pool.close === 'function') {
+        try { pool.close(); } catch (_) {}
+      }
+      throw err;
+    }
+  })();
+
+  try {
+    const res = await Promise.race([setup, timeout]);
+    clearTimeout(timer);
+    if (!res || abandoned) {
+      if (onStorage) onStorage({ backend: 'memory' });
+      return () => makeMapBridge();
+    }
+    activeSimPool = res.pool;
+    activeSimDb = res.db;
+    if (onStorage) onStorage({ backend: 'opfs-sqlite' });
+    return res.bridgeFor;
+  } catch (err) {
+    clearTimeout(timer);
+    abandoned = true;
+    setup.then((res) => {
+      if (res) {
+        if (res.db && typeof res.db.close === 'function') {
+          try { res.db.close(); } catch (_) {}
+        }
+        if (res.pool && typeof res.pool.close === 'function') {
+          try { res.pool.close(); } catch (_) {}
+        }
+      }
+    }).catch(() => {});
+
+    if (onStorage) onStorage({ backend: 'memory', error: String((err && err.message) || err) });
+    return () => makeMapBridge();
+  }
+}
