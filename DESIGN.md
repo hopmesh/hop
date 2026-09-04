@@ -660,10 +660,9 @@ moment you meet *any* node carrying it, that is the product's transitivity rule:
 **Marketplace flow (User A sells a bike → User B finds it):** A publishes a
 `Service{service:"market", title:"Bike for sale", …}` advert → it gossips A→R→…→B
 hop by hop → B, having met any node that saw it, finds it in B's directory →
-B reads A's keys from the advert → B sends a sealed `PeerMessage` bundle to A to
-inquire. B and A never had to meet directly. (`discover::Directory`,
+B reads A's keys from the advert → B initiates a forward-secret session to A (via
+A's published prekey) to inquire. B and A never had to meet directly. (`discover::Directory`,
 test `relayed_discovery_then_contact`.)
-
 Adverts are **public** to the mesh, correct for a public board/marketplace.
 Private peer discovery (rendezvous via a shared secret, no cleartext metadata) is
 future work (§10).
@@ -1765,8 +1764,10 @@ that user messages use. This is a considered decision, not an oversight:
 - **The forward-secrecy law is about user CONTENT, not RPC.** The repo law "device-to-device
   content is always forward-secret" (see `CLAUDE.md` / §25) scopes to **`PeerMessage` user
   content**, which is exactly the traffic that carries private conversation and is always
-  ratcheted or deferred, never static-sealed. Services are a separate class, like adverts,
-  HNS answers, vaccines, and egress requests, all sealed end-to-end but not ratcheted.
+  ratcheted or deferred, never static-sealed. Symmetrically across both the private and traced
+  receive paths, any bare `PeerMessage` payload without a session ratchet is rejected on receive
+  (PROTO-007). Services are a separate class, like adverts, HNS answers, vaccines, and egress
+  requests, all sealed end-to-end but not ratcheted.
 - **Consequence, stated plainly.** An adversary who records a node's service traffic and *later*
   compromises the recipient's identity key can decrypt those past service payloads (no
   recipient-compromise forward secrecy for the RPC class). An app that needs to move sensitive

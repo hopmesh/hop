@@ -4093,25 +4093,12 @@ impl<S: Store> Node<S> {
         authenticated: bool,
     ) -> Result<PreparedInbound> {
         match payload {
-            Payload::PeerMessage { content_type, body } => {
-                if !authenticated {
-                    // A bare PeerMessage inside an unsigned Private seal: anyone knowing the
-                    // recipient's public address + published prekey could forge this "from
-                    // <victim>". Device-to-device content is always forward-secret (a send
-                    // without a ratchet is an error), so a private static PeerMessage is never
-                    // legitimate; drop it rather than attribute it.
-                    return Ok(PreparedInbound {
-                        message: None,
-                        session: None,
-                        flush_pending: false,
-                    });
-                }
+            Payload::PeerMessage { .. } => {
+                // PROTO-007: Device-to-device user content is always forward-secret (Double
+                // Ratchet). A bare PeerMessage carries no session ratchet and is never legitimate
+                // on either the private or traced receive path; drop it rather than attribute it.
                 Ok(PreparedInbound {
-                    message: Some(ReadMessage {
-                        from,
-                        content_type,
-                        body,
-                    }),
+                    message: None,
                     session: None,
                     flush_pending: false,
                 })
@@ -8627,8 +8614,13 @@ impl<S: Store> Node<S> {
                 // Route by payload. User content decrypts and commits its durable inbox state here;
                 // every other addressed protocol payload keeps its existing immediate processing.
                 match bundle.open(&self.identity) {
-                    Ok(payload @ Payload::PeerMessage { .. })
-                    | Ok(payload @ Payload::SessionInit { .. })
+                    Ok(Payload::PeerMessage { .. }) => {
+                        // PROTO-007: Device-to-device user content is always forward-secret (Double
+                        // Ratchet). A bare PeerMessage send without a session ratchet is a protocol
+                        // violation; drop it without delivering to inbox or emitting an ACK.
+                        return false;
+                    }
+                    Ok(payload @ Payload::SessionInit { .. })
                     | Ok(payload @ Payload::SessionMessage { .. }) => {
                         if !self.app_payload_policy.supports(AppQueueKind::PeerInbox) {
                             return false;
@@ -10262,6 +10254,44 @@ mod tests {
                 body: body.to_vec(),
             },
             BundleOpts::default(),
+        )
+        .unwrap()
+    }
+
+    fn ratcheted_msg<S: Store>(
+        from: &Identity,
+        to: &Node<S>,
+        content_type: &str,
+        body: &[u8],
+        request_ack: bool,
+    ) -> Bundle {
+        let pkb = to.prekey_bundle();
+        let spk_pub = pkb.spk_pub;
+        let (ek_pub, root) = crate::crypto::x3dh_initiate(from, &pkb, None).unwrap();
+        let mut session = crate::session::Session::init_initiator(root, spk_pub);
+        let inner = postcard::to_allocvec(&SessionInner {
+            content_type: content_type.into(),
+            body: body.to_vec(),
+        })
+        .unwrap();
+        let msg = session.encrypt(&inner).unwrap();
+        Bundle::create(
+            from,
+            Destination::Device(to.address()),
+            &to.address(),
+            &Payload::SessionInit {
+                ek_pub,
+                spk_pub,
+                opk_id: None,
+                msg,
+            },
+            BundleOpts {
+                flags: BundleFlags {
+                    request_ack,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         )
         .unwrap()
     }
@@ -13168,23 +13198,13 @@ mod tests {
             Identity::from_secret_bytes(&recipient_secret),
             FaultStore::default(),
         );
-        let original = Bundle::create(
+        let original = ratcheted_msg(
             &sender,
-            Destination::Device(recipient.address()),
-            &recipient.address(),
-            &Payload::PeerMessage {
-                content_type: "application/test".into(),
-                body: vec![7u8; 512],
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
+            &recipient,
+            "application/test",
+            &vec![7u8; 512],
+            true,
+        );
         let original_id = original.id();
         let bytes = original.to_bytes().unwrap();
         let split = bytes.len() / 2;
@@ -13235,17 +13255,13 @@ mod tests {
     fn final_carrier_waits_for_queue_capacity_then_retries_without_losing_spool() {
         let sender = Identity::generate();
         let mut recipient = Node::new(Identity::generate());
-        let original = Bundle::create(
+        let original = ratcheted_msg(
             &sender,
-            Destination::Device(recipient.address()),
-            &recipient.address(),
-            &Payload::PeerMessage {
-                content_type: "text/plain".into(),
-                body: b"retry after pressure".to_vec(),
-            },
-            BundleOpts::default(),
-        )
-        .unwrap();
+            &recipient,
+            "text/plain",
+            b"retry after pressure",
+            false,
+        );
         let stream_id = [0x32; 16];
         let final_chunk = carrier(
             &sender,
@@ -13943,23 +13959,7 @@ mod tests {
         let alice = Identity::generate();
         let bob = Node::new(Identity::generate());
 
-        let b = Bundle::create(
-            &alice,
-            Destination::Device(bob.address()),
-            &bob.address(),
-            &Payload::PeerMessage {
-                content_type: "t".into(),
-                body: b"hi".to_vec(),
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let b = ratcheted_msg(&alice, &bob, "t", b"hi", true);
         let id = b.id();
         relay.ingest(b);
         assert!(relay.store.contains(&id));
@@ -14480,6 +14480,58 @@ mod tests {
         assert!(
             bob.read_message(&bundle).unwrap().is_none(),
             "a bare PeerMessage inside an unsigned Private seal must not be attributed to the claimed sender"
+        );
+    }
+
+    #[test]
+    fn a_traced_bare_peer_message_is_rejected_on_receive_and_not_inboxed() {
+        // PROTO-007: Device-to-device user content is always forward-secret (Double Ratchet).
+        // A correspondent or adversary holding a valid Hop identity must not be able to bypass
+        // the Double Ratchet by sending an Ed25519-signed bare PeerMessage on the traced path.
+        // The receive path must reject it symmetrically with the private path: it must not be
+        // surfaced by read_message, delivered to the inbox, or acknowledged.
+        let attacker = Identity::generate();
+        let victim_id = Identity::generate();
+        let victim_addr = victim_id.address();
+
+        let bundle = Bundle::create(
+            &attacker,
+            Destination::Device(victim_addr),
+            &victim_addr,
+            &Payload::PeerMessage {
+                content_type: "text/plain".into(),
+                body: b"statically sealed content without forward secrecy".to_vec(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+
+        assert!(bundle.verify().is_ok(), "attacker bundle is validly signed");
+
+        let mut victim = Node::new(victim_id);
+
+        // 1. Direct decrypt seam (read_message) must reject bare PeerMessage.
+        assert!(
+            victim.read_message(&bundle).unwrap().is_none(),
+            "read_message must reject a bare PeerMessage on the traced path"
+        );
+
+        // 2. Live network ingress (on_bundle pipeline) must reject bare PeerMessage.
+        let attacker_node = Node::new(attacker);
+        let mut nodes = [attacker_node, victim];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        nodes[0].submit(bundle);
+        net.pump(&mut nodes);
+
+        assert!(
+            nodes[1].take_inbox().is_empty(),
+            "on_bundle must drop bare PeerMessage without delivering to inbox"
+        );
+        assert!(
+            !nodes[1].has_session(&nodes[0].address()),
+            "no session established from bare PeerMessage"
         );
     }
 
@@ -18496,12 +18548,12 @@ mod tests {
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
-        let inbox = nodes[1].take_inbox();
-        assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[1].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"hello neighbor"),
-            _ => panic!("wrong payload"),
-        }
+        // PROTO-007: a bare PeerMessage without a session ratchet is rejected on receive:
+        // device-to-device content is always forward-secret.
+        assert!(
+            nodes[1].take_inbox().is_empty(),
+            "bare PeerMessage must be rejected on the traced receive path"
+        );
     }
 
     #[test]
@@ -18522,7 +18574,7 @@ mod tests {
 
         // Drive a message and pump with a byte/round budget. A loop manifests as either hitting
         // the round cap (never quiescent) or an explosive byte count.
-        let b = msg(&nodes[0], &nodes[1], b"hi");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", b"hi", false);
         nodes[0].submit(b);
 
         let mut total_bytes = 0usize;
@@ -19275,7 +19327,7 @@ mod tests {
         net.connect(&mut nodes, 0, 10, 1, 11);
         net.connect(&mut nodes, 1, 12, 2, 13);
 
-        let b = msg(&nodes[0], &nodes[2], b"relay me");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[2], "t", b"relay me", false);
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
@@ -19285,10 +19337,11 @@ mod tests {
         );
         let inbox = nodes[2].take_inbox();
         assert_eq!(inbox.len(), 1);
-        match inbox[0].open(&nodes[2].identity).unwrap() {
-            Payload::PeerMessage { body, .. } => assert_eq!(body, b"relay me"),
-            _ => panic!("wrong payload"),
-        }
+        let read = nodes[2]
+            .read_message(&inbox[0])
+            .unwrap()
+            .expect("valid ratcheted message");
+        assert_eq!(read.body, b"relay me");
     }
 
     #[test]
@@ -19383,7 +19436,7 @@ mod tests {
         let s0 = short_addr(&nodes[0].address());
         let s1 = short_addr(&nodes[1].address());
 
-        let b = msg(&nodes[0], &nodes[2], b"trace me");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[2], "t", b"trace me", false);
         nodes[0].submit(b);
         net.pump(&mut nodes);
 
@@ -19478,7 +19531,7 @@ mod tests {
         }
 
         let secret = b"top secret payload bytes";
-        let bundle = msg(&nodes[0], &nodes[1], secret);
+        let bundle = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", secret, false);
         nodes[0].submit(bundle);
         for (_, b) in nodes[0].drain_outgoing() {
             captured.extend_from_slice(&b);
@@ -19492,26 +19545,6 @@ mod tests {
         );
     }
 
-    fn msg_ack(from: &Node, to: &Node, body: &[u8]) -> Bundle {
-        Bundle::create(
-            &from.identity,
-            Destination::Device(to.address()),
-            &to.identity.address(),
-            &Payload::PeerMessage {
-                content_type: "t".into(),
-                body: body.to_vec(),
-            },
-            BundleOpts {
-                flags: BundleFlags {
-                    request_ack: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    }
-
     #[test]
     fn ack_returns_and_clears_sender_pending() {
         let mut nodes = [
@@ -19521,7 +19554,7 @@ mod tests {
         let mut net = Wire2::new();
         net.connect(&mut nodes, 0, 1, 1, 1);
 
-        let b = msg_ack(&nodes[0], &nodes[1], b"please confirm");
+        let b = ratcheted_msg(&nodes[0].identity, &nodes[1], "t", b"please confirm", true);
         nodes[0].submit(b);
         assert_eq!(
             nodes[0].pending_count(),
