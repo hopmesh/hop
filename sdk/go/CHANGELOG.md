@@ -5,16 +5,22 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- close the round-2 closure-audit reopens (ABI-009, CLAIM-015, CLAIM-016, PROC-002, INFRA-015) (190f4c9)
+- handle service request acceptance and add persistent node constructor (ABI-002, ABI-003) (187c46a)
+- bundle third-party notices and licenses across packages and targets (ABI-011) (a9ca30f)
+- bind C ABI 7 surface and propagate rekey and request errors (ABI-002, ABI-004) (0a5d553)
 - format main.go, and drop a rebar3 pin upstream can no longer resolve (137ad19)
 - repoint the build identity and published metadata at hopmesh/hop (b2e6203)
 - use-after-free-safe teardown across go/python/node (+ elixir safety test) (#134) (42020e3)
 
 ### Chore
+- rotate native artifact signing public key (ABI-008) (cb04197)
 - bind the v6 hps surface in the C ABI wrappers the guard enumerates (d33eb3e)
 - ignore the hop-install build output (1b89726)
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)
 - regenerate from conventional commits (0ba8f06)
 - regenerate from conventional commits (288fb51)
