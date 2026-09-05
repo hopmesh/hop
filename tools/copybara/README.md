@@ -270,8 +270,13 @@ This repo is itself the product of a one-time Copybara migration, not an ongoing
 estate (`services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, `infra/`) into
 `hopmesh/platform` and the audit/business/mockups trees (`docs/audits`, `business/`, `mockups/`) into
 `hopmesh/internal`, and `public_export`, which seeded this repo with everything else, the private
-paths excluded from history entirely (which is why no history rewrite was needed). Both migrations ran,
-the private trees were deleted from the source, and the old monorepo was archived. Those workflows and
+paths excluded from history entirely (which is why no history rewrite was needed). Both migrations ran
+and the private trees were deleted from the source, but `hopmesh/monorepo` is private and NOT archived;
+it kept running its own automation after this repository became canonical (Copybara export to the three
+mirrors, Pages for hopme.sh, native artifacts, release tags, dependabot self-merge, changelog regeneration)
+with a tree frozen at 2026-08-19 (two C ABI levels behind this repository); on 2026-09-04 its mirror-writing workflows
+(sync-components.yml, release-tags.yml) and pages.yml were disabled and the hopme.sh Pages site was
+moved to this repository; archiving the repository itself remains an owner action. Those workflows and
 their `PRIVATE_TREES` boundary list were removed from the config when this repo became canonical; there
-is no public/private split left to maintain here. The audit-corpus cross-references (`F-xx`,
+is no public/private split left to maintain here.
 `SVC-xxx`, `PROC-xxx`) and the root licence question were settled as part of that handover.
