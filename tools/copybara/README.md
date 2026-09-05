@@ -274,7 +274,7 @@ paths excluded from history entirely (which is why no history rewrite was needed
 and the private trees were deleted from the source, but `hopmesh/monorepo` is private and NOT archived;
 it kept running its own automation after this repository became canonical (Copybara export to the three
 mirrors, Pages for hopme.sh, native artifacts, release tags, dependabot self-merge, changelog regeneration)
-with a tree frozen at 2026-08-19 and C ABI 5; on 2026-09-04 its mirror-writing workflows
+with a tree frozen at 2026-08-19 (two C ABI levels behind this repository); on 2026-09-04 its mirror-writing workflows
 (sync-components.yml, release-tags.yml) and pages.yml were disabled and the hopme.sh Pages site was
 moved to this repository; archiving the repository itself remains an owner action. Those workflows and
 their `PRIVATE_TREES` boundary list were removed from the config when this repo became canonical; there
