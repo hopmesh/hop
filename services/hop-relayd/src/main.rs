@@ -7112,6 +7112,18 @@ mod access_and_ledger_tests {
     use super::*;
     use hop_core::store::MemoryStore;
 
+    /// The usage and carriage retry buffers are process-global statics (STORE-005), so every test that
+    /// flushes through them shares state with every other such test running on a sibling thread of
+    /// the parallel harness: one test's leftover tenant lands in another test's MemoryStore and a
+    /// `clear()` races an assertion (CI run 33927228249 failed exactly that way). Take the driver
+    /// statics lock for the test's whole body and start from empty buffers.
+    fn lock_retry_buffers() -> std::sync::MutexGuard<'static, ()> {
+        let guard = lock_driver_statics();
+        RETRY_USAGE.lock().unwrap().clear();
+        RETRY_CARRIAGE.lock().unwrap().clear();
+        guard
+    }
+
     #[test]
     fn hex_parsing_is_exact_and_rejects_malformation() {
         assert_eq!(parse_hex_bytes::<2>("beef"), Some([0xbe, 0xef]));
@@ -7227,6 +7239,7 @@ mod access_and_ledger_tests {
 
     #[test]
     fn carriage_measurement_writes_its_own_prefix_and_never_the_reach_ledger() {
+        let _buffers = lock_retry_buffers();
         // Unbilled carriage is measured on a SEPARATE key prefix. The live `usage/` reach ledger
         // (which really bills) must be untouched by it, and both share the 16-byte value shape.
         let tenant: TenantId = [3u8; 16];
@@ -7270,6 +7283,7 @@ mod access_and_ledger_tests {
 
     #[test]
     fn telemetry_style_carriage_is_measured_but_never_billed() {
+        let _buffers = lock_retry_buffers();
         // End to end through the node: a stamped bundle the relay carries and releases without any
         // delivery event (exactly what a §40 telemetry bundle does, since it sets request_ack:false,
         // gets no response, and fires no vaccine) lands in carriage_usage and NOT in usage.
@@ -7330,6 +7344,7 @@ mod access_and_ledger_tests {
 
     #[test]
     fn merges_accumulate_within_an_hour_and_split_across_hours_and_tenants() {
+        let _buffers = lock_retry_buffers();
         let mut store = MemoryStore::new();
         let t1: TenantId = [1u8; 16];
         let t2: TenantId = [2u8; 16];
@@ -7543,6 +7558,7 @@ mod access_and_ledger_tests {
 
     #[test]
     fn two_processes_sharing_one_partition_compose_instead_of_clobbering() {
+        let _buffers = lock_retry_buffers();
         // SVC-005: a Cloud Run revision rollout runs the old and new hop-relayd for a region at the
         // same time. Both mount the same identity secret and take the same --region, so both derive
         // the same node address and open the SAME Firestore partition. Drive two independent store
@@ -7630,6 +7646,7 @@ mod access_and_ledger_tests {
 
     #[test]
     fn store_005_hostile_relay_flush_failure_retains_drained_atoms_in_retry_buffer() {
+        let _buffers = lock_retry_buffers();
         use hop_core::store::{KvMutation, MemoryStore};
 
         struct FailingStore(MemoryStore);
@@ -7664,7 +7681,6 @@ mod access_and_ledger_tests {
             }
         }
 
-        RETRY_USAGE.lock().unwrap().clear();
         let tenant: TenantId = [7u8; 16];
         let drained = vec![(
             tenant,
