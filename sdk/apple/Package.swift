@@ -47,7 +47,8 @@ let package = Package(
         // 33923564859 (attempt 1) for source cd1289256f23354042ba2b1107cb26c5ad53cbaa: the first bundle this
         // repository signed and attested, verified with `native-artifacts.py verify-provenance` against
         // the rotated tools/native-artifacts-public.pem before the value below was committed (ABI-008).
-        // Its header declares HOP_ABI_VERSION 7. To move the pin again, follow docs/apple-release.md.
+        // Its hop.h carries the current C ABI level, the one Sources/Hop/Hop.swift asserts (the pin
+        // guard proves this on every run). To move the pin again, follow docs/apple-release.md.
         // tools/apple-pin-guard.py enforces compatibility and catches header/source drift.
         .binaryTarget(
             name: "CHop",
