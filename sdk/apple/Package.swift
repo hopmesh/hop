@@ -47,16 +47,16 @@ let package = Package(
         // change must bump the workspace version and update whatever depends on it.
         //
         // Measured, not inferred, from the native-release bundle of the `Native artifacts` run
-        // 33923564859 (attempt 1) for source cd1289256f23354042ba2b1107cb26c5ad53cbaa: the first bundle this
-        // repository signed and attested, verified with `native-artifacts.py verify-provenance` against
-        // the rotated tools/native-artifacts-public.pem before the value below was committed (ABI-008).
+        // 33942180382 for source 37a620b432a1a1968ec1bbb503c5f1b02ca3083f, attempts 1 AND 2 of which produced
+        // byte-identical archives (REL-009 proof), verified with `native-artifacts.py verify-provenance`
+        // against the rotated tools/native-artifacts-public.pem before this value was committed (ABI-008).
         // Its hop.h carries the current C ABI level, the one Sources/Hop/Hop.swift asserts (the pin
         // guard proves this on every run). To move the pin again, follow docs/apple-release.md.
         // tools/apple-pin-guard.py enforces compatibility and catches header/source drift.
         .binaryTarget(
             name: "CHop",
             url: "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.3/libhop.xcframework.zip",
-            checksum: "1102f6632813e0de621a0fec0c7ebd9eb692a9cf2043016278944779bf75f9f7"
+            checksum: "79f63ccb805b6bb407beaa98d35488e58c0245479aa58d41827309e836311571"
         ),
         .target(name: "Hop", dependencies: ["CHop", "HopContract"]),
         .executableTarget(name: "HopSmoke", dependencies: ["Hop"]),
