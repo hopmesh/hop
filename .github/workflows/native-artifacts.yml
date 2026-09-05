@@ -251,7 +251,12 @@ jobs:
         with:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
+      # espup resolves the ESP toolchain through the GitHub releases API; unauthenticated calls share
+      # the runner's rate limit and the run 33926164732 embedded job died on a 403 (REL-008). espup
+      # reads GITHUB_TOKEN for those calls, and the default token has no other use in this job.
       - name: Install pinned ESP Rust toolchain manager and linker proxy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cargo install espup --version 0.17.1 --locked
           cargo install ldproxy --version 0.3.5 --locked
