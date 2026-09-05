@@ -19,6 +19,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# REL-009: vendored OpenSSL stamps cversion.c with the build clock unless SOURCE_DATE_EPOCH is set
+# (util/mkbuildinf.pl); pin it so identical inputs give byte-identical libraries and archives.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+
 CRATE=hop
 OUT="${HOP_ANDROID_OUT:-apps/android/HopDemo/generated}" # gradle sourceSets read ../generated from :app
 T=target

@@ -39,7 +39,10 @@ let package = Package(
         // only source of variance (extracting two differing artifacts showed every compiled library
         // byte-identical). Do not remove that sort, or this pin silently becomes unmaintainable again.
         //
-        // With that in place the value is stable until core's COMPILED output changes. That is the
+        // The second source of variance arrived with SQLCipher (ABI-001): vendored OpenSSL stamps
+        // cversion.c with the build clock, so two CI builds of identical inputs differed in exactly
+        // one object (REL-009). sdk/apple/build-xcframework.sh pins SOURCE_DATE_EPOCH for that reason.
+        // With both in place the value is stable until core's COMPILED output changes. That is the
         // maintenance rule: a change to core/ (or sdk/hop.h) invalidates this checksum, and the same
         // change must bump the workspace version and update whatever depends on it.
         //

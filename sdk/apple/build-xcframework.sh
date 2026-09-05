@@ -22,6 +22,13 @@ DEPLOYMENT_TARGET_MACOS="13.0"
 export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_IOS"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET_MACOS"
 
+# REL-009: the archive checksum committed in Package.swift is only maintainable if two builds of the
+# same source produce the same bytes. With SQLCipher on, openssl-src compiles OpenSSL's cversion.c,
+# whose `built on:` string is the build time unless SOURCE_DATE_EPOCH is set (util/mkbuildinf.pl);
+# that one object made the v0.0.3 checksum differ between two CI builds of identical inputs.
+# Pin the epoch (any fixed value; OpenSSL prints it in place of the clock) unless the caller set one.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+
 if [ -d "$HOME/.cargo/bin" ]; then
   export PATH="$HOME/.cargo/bin:$PATH"
 fi
