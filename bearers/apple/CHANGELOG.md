@@ -5,6 +5,13 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- override authenticated on LanBearer and drop dead BLE constant (PLAT-005) (d9e29b5)
+- wire authentication feedback and enforce preauth deadline across bearers (PLAT-005) (c51d33d)
+- enforce accessory authorization and bounded reassembly for Meshtastic (PLAT-006) (8e5f47b)
+- bound Meshtastic link cardinality and reassembly state (PLAT-006) (2ed7139)
+- enforce preauth deadline and protect authenticated dedup on LAN (PLAT-005) (59c36d4)
+- enforce 64 KiB envelope and reject text frames on message bearers (PLAT-007) (d3ffc53)
+- bind WebSocket receive callbacks to connection generation (PLAT-010) (6db9582)
 - give the release the fleet chain of custody (7f1d882)
 
 ### Chore
@@ -12,6 +19,7 @@ git-cliff. Do not edit by hand.
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (a0550d7)
 
 ### Documentation
+- regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)
 - regenerate from conventional commits (0ba8f06)
 - regenerate from conventional commits (288fb51)
@@ -40,6 +48,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- cover the Multipeer preauth cap, authentication feedback and close (PLAT-005) (5ad8dfe)
 - seam refactor takes BleBearer 7% → 97% (CB-free cores), replace shadow tests (#69) (a20143b)
 - real loopback integration tests for LAN + Relay bearers to >=80% coverage, CI gating, compile-bug root cause (#63) (dadfe5a)
 

@@ -4,7 +4,15 @@ Notable changes, generated from [conventional commits](https://www.conventionalc
 git-cliff. Do not edit by hand.
 ## Unreleased
 
+### Bug Fixes
+- atomic cross-instance dedup and bounded retention sweep (SVC-006) (1489b7d)
+- wire cargo-deny gate, enforce path ownership, and wire lane guards (PROC-003, INFRA-012) (037da99)
+- cap OTLP export response body read (SVC-009) (c0db30f)
+- reject NAT64 and IPv4-compatible internal addresses (SVC-008) (075ddde)
+- use fallible critical KV writes and prevent telemetry replay across restart (STORE-005, SVC-006) (63cbcf0)
+
 ### Documentation
+- regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)
 - regenerate from conventional commits (0ba8f06)
 - regenerate from conventional commits (288fb51)
