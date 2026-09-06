@@ -216,7 +216,10 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     )
     (apple_export / "Package.local.swift").write_text("// local swift\n")
     (apple_export / "Sources/Hop").mkdir(parents=True)
-    (apple_export / "Sources/Hop/Hop.swift").write_text("let expectedABIVersion: UInt32 = 7\n")
+    # The fixture pins whatever level sdk/hop.h declares, read at test time, so this file never carries
+    # a literal ABI declaration for tools/codegen/check-abi-version.sh to classify.
+    abi_level = re.search(r"#define HOP_ABI_VERSION (\d+)", (root / "sdk/hop.h").read_text()).group(1)
+    (apple_export / "Sources/Hop/Hop.swift").write_text(f"let expectedABIVersion: UInt32 = {abi_level}\n")
     (apple_export / "native").mkdir()
     (apple_export / "native/native-artifacts.py").write_text("#!/usr/bin/env python3\n")
     (apple_export / "native/native-artifacts-public.pem").write_text("PEM\n")
@@ -230,7 +233,7 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         zf.writestr("libhop.xcframework/THIRD-PARTY-NOTICES.md", "notices")
         zf.writestr("libhop.xcframework/LICENSE.md", "license")
         for sl in apple_slices:
-            zf.writestr(f"libhop.xcframework/{sl}/Headers/hop.h", "#define HOP_ABI_VERSION 7\n")
+            zf.writestr(f"libhop.xcframework/{sl}/Headers/hop.h", f"#define HOP_ABI_VERSION {abi_level}\n")
             zf.writestr(f"libhop.xcframework/{sl}/Headers/module.modulemap", "module CHop { header \"hop.h\" }\n")
             zf.writestr(f"libhop.xcframework/{sl}/libhop.a", "archive")
 
