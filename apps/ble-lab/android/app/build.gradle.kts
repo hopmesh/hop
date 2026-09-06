@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,8 +21,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
-    kotlinOptions { jvmTarget = "1.8" }
 }
+kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_1_8) } }
 
 dependencies {
     // The bearer layer as a core lib + one lib per transport (NO master lib), mirroring apple/HopBearers:
