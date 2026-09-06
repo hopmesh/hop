@@ -262,6 +262,7 @@ impl TelemetryCounts {
 #[derive(Default)]
 struct TelemetryMeter {
     counts: HashMap<TenantId, TelemetryCounts>,
+    bases: HashMap<TenantId, TelemetryCounts>,
     /// Events accepted WITHOUT a tenant, which is only reachable with `--allow-unattributed`.
     unattributed: u64,
     /// Events REFUSED because they could not be attributed and the collector is fail-closed.
@@ -322,10 +323,13 @@ impl TelemetryMeter {
                 continue;
             }
             let key = key_for(hour, tenant);
-            let mut total = store
-                .get_kv(&key)
-                .map(|b| decode_counts(&b))
-                .unwrap_or_default();
+            let base = self.bases.entry(*tenant).or_insert_with(|| {
+                store
+                    .get_kv(&key)
+                    .map(|b| decode_counts(&b))
+                    .unwrap_or_default()
+            });
+            let mut total = *base;
             total.add(counts);
             match store.put_kv_critical(&key, encode_counts(&total)) {
                 Ok(()) => {
@@ -339,6 +343,7 @@ impl TelemetryMeter {
         }
         for tenant in committed {
             self.counts.remove(&tenant);
+            self.bases.remove(&tenant);
         }
         if failed {
             store_healthy().store(false, Ordering::SeqCst);
@@ -2135,6 +2140,13 @@ mod tests {
             ) -> std::result::Result<(), String> {
                 Err("disk full / firestore unavailable".into())
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Err("disk full / firestore unavailable".into())
+            }
         }
 
         let mut meter = TelemetryMeter::default();
@@ -2169,6 +2181,121 @@ mod tests {
         );
         assert!(!store_healthy().load(Ordering::SeqCst));
         store_healthy().store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn svc_011_hostile_ambiguous_commit_retry_does_not_double_count_telemetry() {
+        use hop_core::store::{KvMutation, MemoryStore};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct AmbiguousStore {
+            inner: MemoryStore,
+            fail_commit: AtomicBool,
+        }
+        impl Store for AmbiguousStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                self.inner.put_kv(key, value);
+                if self.fail_commit.load(Ordering::SeqCst) {
+                    Err("network partition: commit timed out on response".into())
+                } else {
+                    Ok(())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let tenant: TenantId = [8u8; 16];
+        let mut meter = TelemetryMeter::default();
+        let mut store = AmbiguousStore {
+            inner: MemoryStore::new(),
+            fail_commit: AtomicBool::new(true),
+        };
+
+        // Cycle 1: add 50 events / 5000 bytes
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            },
+        );
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        let key = telemetry_usage_key(1, &tenant);
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_counts(&b)),
+            Some(TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            }),
+            "store committed 50 events before returning ambiguous error"
+        );
+        assert!(meter.counts.contains_key(&tenant));
+
+        // Cycle 2: 10 new events arrive; commit succeeds
+        store.fail_commit.store(false, Ordering::SeqCst);
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 10,
+                payload_bytes: 1000,
+            },
+        );
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        let final_counts = store.get_kv(&key).map(|b| decode_counts(&b)).unwrap();
+        assert_eq!(
+            final_counts,
+            TelemetryCounts {
+                events: 60,
+                payload_bytes: 6000,
+            },
+            "ambiguous retry must NOT double-count previous 50 events"
+        );
+        assert!(!meter.counts.contains_key(&tenant));
     }
 
     // --- SVC-006 regression tests -----------------------------------------------------------

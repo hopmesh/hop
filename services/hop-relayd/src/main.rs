@@ -969,11 +969,16 @@ fn decode_usage(bytes: &[u8]) -> Usage {
 
 static RETRY_USAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_USAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 static RETRY_CARRIAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_CARRIAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
-
+static RETRY_STORAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 /// Read-modify-write the drained per-tenant usage into this writer's hour-bucketed ledger rows.
 /// Returns the number of rows touched. See [`merge_rows_into_store_buffered`] for the concurrency premise.
 fn merge_usage_into_store<S: Store>(
@@ -981,7 +986,14 @@ fn merge_usage_into_store<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, usage_kv_key, &RETRY_USAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        usage_kv_key,
+        &RETRY_USAGE,
+        &RETRY_USAGE_BASE,
+    )
 }
 
 /// Read-modify-write the drained per-tenant CARRIAGE measurement into its own hour-bucketed rows.
@@ -990,7 +1002,14 @@ fn merge_carriage_into_store<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, carriage_kv_key, &RETRY_CARRIAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        carriage_kv_key,
+        &RETRY_CARRIAGE,
+        &RETRY_CARRIAGE_BASE,
+    )
 }
 
 /// Test-only wrapper over the usage retry buffer for the ledger unit tests.
@@ -1001,7 +1020,14 @@ fn merge_rows_into_store<S: Store>(
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, key_for, &RETRY_USAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        key_for,
+        &RETRY_USAGE,
+        &RETRY_USAGE_BASE,
+    )
 }
 
 /// The shared RMW body for both 16-byte ledger shapes, backed by an in-memory retry buffer.
@@ -1012,8 +1038,10 @@ fn merge_rows_into_store_buffered<S: Store>(
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
     retry_map: &std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>>,
+    base_map: &std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>>,
 ) -> usize {
     let mut map = retry_map.lock().unwrap();
+    let mut bases = base_map.lock().unwrap();
     for (tenant, usage) in drained {
         map.entry(*tenant).or_default().add(usage);
     }
@@ -1021,10 +1049,13 @@ fn merge_rows_into_store_buffered<S: Store>(
     let mut committed = Vec::new();
     for (tenant, usage) in map.iter() {
         let key = key_for(hour, tenant);
-        let mut total = store
-            .get_kv(&key)
-            .map(|b| decode_usage(&b))
-            .unwrap_or_default();
+        let base = bases.entry(*tenant).or_insert_with(|| {
+            store
+                .get_kv(&key)
+                .map(|b| decode_usage(&b))
+                .unwrap_or_default()
+        });
+        let mut total = *base;
         total.add(usage);
         if store.put_kv_critical(&key, encode_usage(&total)).is_ok() {
             committed.push(*tenant);
@@ -1032,6 +1063,7 @@ fn merge_rows_into_store_buffered<S: Store>(
     }
     for tenant in &committed {
         map.remove(tenant);
+        bases.remove(tenant);
     }
     committed.len()
 }
@@ -1069,6 +1101,7 @@ fn merge_storage_into_store<S: Store>(
     now_ms: u64,
 ) -> usize {
     let mut map = RETRY_STORAGE.lock().unwrap();
+    let mut bases = RETRY_STORAGE_BASE.lock().unwrap();
     for (tenant, byte_ms) in accrued {
         if *byte_ms == 0 {
             continue;
@@ -1080,16 +1113,17 @@ fn merge_storage_into_store<S: Store>(
     let mut committed = Vec::new();
     for (tenant, byte_ms) in map.iter() {
         let key = storage_usage_kv_key(hour, tenant);
-        let prev = store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0);
-        if store
-            .put_kv_critical(&key, encode_storage(prev.saturating_add(*byte_ms)))
-            .is_ok()
-        {
+        let base = bases
+            .entry(*tenant)
+            .or_insert_with(|| store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0));
+        let target = base.saturating_add(*byte_ms);
+        if store.put_kv_critical(&key, encode_storage(target)).is_ok() {
             committed.push(*tenant);
         }
     }
     for tenant in &committed {
         map.remove(tenant);
+        bases.remove(tenant);
     }
     committed.len()
 }
@@ -5258,6 +5292,13 @@ mod driver_tests {
         fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
             self.0.remove_kv_critical(key)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.0.put_kv_if_absent_critical(key, value)
+        }
     }
 
     struct ReadinessStore {
@@ -5337,6 +5378,13 @@ mod driver_tests {
                 return Err("unreconciled mutation remains".into());
             }
             Ok(())
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
         }
     }
 
@@ -7120,7 +7168,11 @@ mod access_and_ledger_tests {
     fn lock_retry_buffers() -> std::sync::MutexGuard<'static, ()> {
         let guard = lock_driver_statics();
         RETRY_USAGE.lock().unwrap().clear();
+        RETRY_USAGE_BASE.lock().unwrap().clear();
         RETRY_CARRIAGE.lock().unwrap().clear();
+        RETRY_CARRIAGE_BASE.lock().unwrap().clear();
+        RETRY_STORAGE.lock().unwrap().clear();
+        RETRY_STORAGE_BASE.lock().unwrap().clear();
         guard
     }
 
@@ -7537,6 +7589,19 @@ mod access_and_ledger_tests {
             // Deliberately the PROCESS-LOCAL copy, never the durable row.
             self.local.get_kv(key)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            let mut guard = self.durable.lock().unwrap();
+            if guard.contains_key(key) {
+                return Ok(false);
+            }
+            guard.insert(key.to_string(), value.clone());
+            self.local.put_kv(key, value);
+            Ok(true)
+        }
     }
 
     /// Sum every `usage/` row in the durable partition the way hop-billingd's reconciler does
@@ -7679,6 +7744,13 @@ mod access_and_ledger_tests {
             ) -> std::result::Result<(), String> {
                 Err("disk full / firestore unavailable".into())
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Err("disk full / firestore unavailable".into())
+            }
         }
 
         let tenant: TenantId = [7u8; 16];
@@ -7702,5 +7774,121 @@ mod access_and_ledger_tests {
         );
         assert!(RETRY_USAGE.lock().unwrap().contains_key(&tenant));
         RETRY_USAGE.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn svc_011_hostile_ambiguous_commit_retry_does_not_double_count_usage() {
+        let _buffers = lock_retry_buffers();
+        use hop_core::store::{KvMutation, MemoryStore};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct AmbiguousStore {
+            inner: MemoryStore,
+            fail_commit: AtomicBool,
+        }
+        impl Store for AmbiguousStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                // Ambiguous commit: write succeeds in datastore, but network timeout returns Err
+                self.inner.put_kv(key, value);
+                if self.fail_commit.load(Ordering::SeqCst) {
+                    Err("network partition: commit timed out on response".into())
+                } else {
+                    Ok(())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let tenant: TenantId = [9u8; 16];
+        let mut store = AmbiguousStore {
+            inner: MemoryStore::new(),
+            fail_commit: AtomicBool::new(true),
+        };
+
+        // Cycle 1: 50 bundles / 5000 bytes drained
+        let drained1 = vec![(
+            tenant,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            },
+        )];
+        let committed1 = merge_usage_into_store(&mut store, &drained1, 3_600_000);
+        assert_eq!(committed1, 0, "ambiguous failure must report 0 committed");
+        let key = usage_kv_key(1, &tenant);
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_usage(&b)),
+            Some(Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            }),
+            "store committed the 50 units before returning ambiguous error"
+        );
+
+        // Cycle 2: 10 new bundles arrive; commit now succeeds
+        store.fail_commit.store(false, Ordering::SeqCst);
+        let drained2 = vec![(
+            tenant,
+            Usage {
+                bundles: 10,
+                payload_bytes: 1000,
+            },
+        )];
+        let committed2 = merge_usage_into_store(&mut store, &drained2, 3_600_000);
+        assert_eq!(committed2, 1, "retry must report 1 committed");
+
+        // The final total must be 60 (50 + 10), NEVER 110 (50 committed + (50+10) retry)!
+        let final_usage = store.get_kv(&key).map(|b| decode_usage(&b)).unwrap();
+        assert_eq!(
+            final_usage,
+            Usage {
+                bundles: 60,
+                payload_bytes: 6000,
+            },
+            "ambiguous retry must NOT double-count the previous 50 units"
+        );
     }
 }
