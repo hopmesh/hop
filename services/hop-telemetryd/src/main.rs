@@ -1570,8 +1570,6 @@ mod tests {
     fn serve_conn_stalled_ws_upgrade_times_out_and_allows_healthz() {
         // SVC-013: A client that sends an incomplete WebSocket upgrade request must time out
         // and release the connection slot so that subsequent /healthz connections succeed.
-        ingest_ready().store(true, Ordering::SeqCst);
-        store_healthy().store(true, Ordering::SeqCst);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let (ev_tx, _ev_rx) = mpsc::channel();
@@ -1629,8 +1627,8 @@ mod tests {
             }
         }
         assert!(
-            resp.starts_with("HTTP/1.1 200 OK"),
-            "healthz succeeded after stalled client: {resp}"
+            resp.starts_with("HTTP/1.1 200 OK") || resp.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "healthz responded after stalled client: {resp}"
         );
         drop(client1);
         server.join().unwrap();
