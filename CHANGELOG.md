@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- pin CHop to the reproducible v0.0.3 bundle built at 37a620b432a1a1968ec1bbb503c5f1b02ca3083f (ABI-008) (9532aa8)
 - skip components whose mirror repository does not exist in the auto-export plan (REL-007) (2e61ecc)
 - authenticate espup's GitHub API calls in the embedded native build (REL-008) (eab22a2)
 - stop the ledger retry-buffer tests racing and unclassify the Apple pin comment (REL-010) (82b5bfe)
@@ -247,6 +248,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (a202908)
 - describe the monorepo's staleness without naming a superseded ABI level (CLAIM-017) (75b7889)
 - record that the private monorepo was live, not archived, until 2026-09-04 (CLAIM-017) (e16baf4)
 - state the current ABI level rather than the superseded one (ABI-008) (89e8546)
