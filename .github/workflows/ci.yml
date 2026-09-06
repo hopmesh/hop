@@ -425,7 +425,7 @@ jobs:
       # No gradle wrapper is committed for this module (same as sdk/android), so pin gradle here.
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          gradle-version: "9.5.1"
+          gradle-version: "9.7.1"
       # commonTest folded into the desktop JVM target: the reactive client, the pure state reducer, and
       # the value types verified against the in-memory FakeHopEngine. Depends only on public artifacts
       # (Compose Multiplatform + coroutines); the engine bindings stay behind the app-supplied seam, so
