@@ -184,23 +184,58 @@ finally:
 
 def fake_prot_partial(path):
     if "branches/main/protection" in path:
-        return {"required_status_checks": None, "enforce_admins": {"enabled": False}}
+        return {
+            "enforce_admins": {"enabled": False},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
     if "environments/release" in path:
         return {"protection_rules": [], "deployment_branch_policy": None}
     return None
 
 mod.gh_json = fake_prot_partial
 try:
-    assert "lacks required status checks" in mod.mirror_branch_protection("hop-sdk-crystal")
+    assert "does not enforce admin parity" in mod.mirror_branch_protection("hop-sdk-crystal")
     assert "lacks required reviewer 'jwaldrip'" in mod.mirror_environment_protection("hop-sdk-crystal", "release")
+finally:
+    mod.gh_json = original
+
+def fake_prot_allow_force(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": True},
+            "allow_deletions": {"enabled": False},
+        }
+    return None
+
+mod.gh_json = fake_prot_allow_force
+try:
+    assert "does not block force pushes" in mod.mirror_branch_protection("hop-sdk-crystal")
+finally:
+    mod.gh_json = original
+
+def fake_prot_allow_del(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": True},
+        }
+    return None
+
+mod.gh_json = fake_prot_allow_del
+try:
+    assert "does not block deletions" in mod.mirror_branch_protection("hop-sdk-crystal")
 finally:
     mod.gh_json = original
 
 def fake_prot_healthy(path):
     if "branches/main/protection" in path:
         return {
-            "required_status_checks": {"strict": True, "checks": [{"context": "CI gate"}]},
             "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
         }
     if "environments/release" in path:
         return {

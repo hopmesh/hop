@@ -65,20 +65,25 @@ jobs:
 
       # Then: assert the LIVE branch protection on main requires exactly the ci.yml job names. This
       # needs a real admin-read PAT (BRANCH_PROTECTION_TOKEN); the default GITHUB_TOKEN 403s on the
-      # protection API. A MISSING secret fails this step. The whole point of this job is to detect
-      # drift in a configuration no repo file can hold, so "I could not read it" must never be
-      # reported as "it is correct".
+      # protection API. The DECLARED state in tools/workflow-secrets.json decides:
+      #   provisioned false + token absent  -> declared-disarmed. Warns, exits 0.
+      #   provisioned true  + token absent  -> FAIL (armed but unseeded).
+      #   token present                     -> runs the live check.
       - name: Assert main branch protection requires the CI checks
         env:
           BP_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if [ -z "${BP_TOKEN:-}" ]; then
-            echo "::error title=branch-protection audit disarmed::BRANCH_PROTECTION_TOKEN is not set, so the live protection rule on main could not be read and this audit proves nothing (the default GITHUB_TOKEN lacks administration:read). Add a fine-grained PAT with 'administration: read' on this repo as the BRANCH_PROTECTION_TOKEN secret to re-arm the drift-detector."
+          declared="$(python3 -c "import json;print(str(json.load(open('tools/workflow-secrets.json'))['secrets']['BRANCH_PROTECTION_TOKEN'].get('provisioned', True)).lower())")"
+          if [ -z "${BP_TOKEN:-}" ] && [ "$declared" = "true" ]; then
+            echo "::error title=branch-protection audit is armed but unseeded::tools/workflow-secrets.json declares BRANCH_PROTECTION_TOKEN provisioned, but the secret is empty here, so the live protection rule on main could not be read and this audit proves nothing (the default GITHUB_TOKEN lacks administration:read). Add a fine-grained PAT with 'administration: read' on this repo as the BRANCH_PROTECTION_TOKEN secret to re-arm the drift-detector, or set provisioned back to false with a blocked_on reason."
             exit 1
           fi
+          if [ -z "${BP_TOKEN:-}" ]; then
+            echo "::warning title=branch-protection audit declared-disarmed::BRANCH_PROTECTION_TOKEN is declared unprovisioned in tools/workflow-secrets.json. Run tools/check-branch-protection.sh manually. Running in degraded mode."
+            exit 0
+          fi
           GH_TOKEN="$BP_TOKEN" bash tools/check-branch-protection.sh
-
   # Same shape, for the OTHER live-config drift that went unnoticed far longer: every mirror's
   # release.yml references HOP_SOURCE_APP_ID / HOP_SOURCE_APP_PRIVATE_KEY, and because GitHub resolves
   # an unset secret to the empty string the only symptom was a third-party action erroring on an empty

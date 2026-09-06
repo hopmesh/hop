@@ -99,11 +99,10 @@ CASE_PAGES_BODY='{"cname":"hopme.sh","protected_domain_state":"unverified"}' run
 CASE_PAGES_BODY='{"cname":"hopme.sh","protected_domain_state":"verified"}'   run_case pages-verified   pass "$good"
 CASE_PAGES_CODE=404 CASE_PAGES_BODY='{}'                                     run_case pages-404-ok     pass "$good"
 CASE_PAGES_CODE=500 CASE_PAGES_BODY='{}'                                     run_case pages-api-error  fail "$good"
-# The workflow WRAPPER, not just the script. This audit is the only live assertion that main still
-# requires the CI gate, and it used to `exit 0` when BRANCH_PROTECTION_TOKEN was absent: deleting one
-# secret disarmed the detector and every subsequent run reported green. Inability to read the live rule
-# is an unknown, never a pass, so the missing-credential branch must fail. Run the actual step body
-# extracted from the workflow with an empty token, and require a non-zero exit.
+# The workflow WRAPPER, not just the script. INFRA-020 declared-disarmed pattern:
+# When BRANCH_PROTECTION_TOKEN is unprovisioned (declared provisioned: false in tools/workflow-secrets.json),
+# the step warns that it is running in degraded mode and exits 0.
+# When declared provisioned: true but the token is absent/empty, the step fails closed with exit 1.
 workflow="$root/.github/workflows/branch-protection-audit.yml"
 step="$(python3 - "$workflow" <<'PY'
 import re
@@ -119,12 +118,38 @@ if match is None:
 print("\n".join(line[10:] for line in match.group(1).splitlines()))
 PY
 )"
-case "$step" in
-  *"exit 0"*) echo "branch-protection audit still exits 0 on a missing token" >&2; exit 1 ;;
-esac
-if (cd "$root" && BP_TOKEN="" bash -c "$step") >/dev/null 2>&1; then
-  echo "branch-protection audit PASSED with no token: the drift-detector can be disarmed" >&2
+
+# Case 1: unprovisioned declared in manifest -> warns as declared-disarmed, exits 0
+res_out="$(cd "$root" && BP_TOKEN="" bash -c "$step" 2>&1 || true)"
+if ! (cd "$root" && BP_TOKEN="" bash -c "$step") >/dev/null 2>&1; then
+  echo "branch-protection audit step failed when declared disarmed" >&2
   exit 1
 fi
+if [[ "$res_out" != *"branch-protection audit declared-disarmed"* ]]; then
+  echo "branch-protection audit step did not warn declared-disarmed" >&2
+  exit 1
+fi
+
+# Case 2: manifest claims provisioned: true but token is empty -> fails closed with exit 1
+python3 - "$root" "$step" <<'PY'
+import sys, os, json, tempfile, subprocess
+
+root = sys.argv[1]
+step = sys.argv[2]
+step_armed = step.replace("tools/workflow-secrets.json", "$ARMED_MANIFEST")
+with tempfile.NamedTemporaryFile("w", suffix=".json") as tf:
+    manifest = json.loads(open(os.path.join(root, "tools/workflow-secrets.json"), encoding="utf-8").read())
+    manifest["secrets"]["BRANCH_PROTECTION_TOKEN"]["provisioned"] = True
+    json.dump(manifest, tf)
+    tf.flush()
+    res = subprocess.run(
+        ["bash", "-c", f"ARMED_MANIFEST={tf.name} BP_TOKEN='' {step_armed}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode != 0, f"branch-protection audit must fail when armed but unseeded, got {res.returncode}"
+    assert "branch-protection audit is armed but unseeded" in res.stdout or "branch-protection audit is armed but unseeded" in res.stderr
+PY
 
 echo "branch protection guard tests passed"

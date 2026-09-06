@@ -161,8 +161,11 @@ even once the credential exists.
 
 Every publishing mirror (`hop-sdk-apple`, `hop-sdk-go`, `hop-sdk-crystal`) must enforce:
 
-1. **Default branch protection:** `main` must be protected, requiring status checks and enforcing
-   admin parity (`enforce_admins: true`).
+1. **Default branch protection:** `main` must be protected, enforcing admin parity (`enforce_admins: true`),
+   blocking force pushes (`allow_force_pushes: false`), and blocking deletions (`allow_deletions: false`).
+   Status checks and pull request reviews are deliberately not required on mirror `main` because the
+   mirrors receive direct fast-forward pushes from the Copybara export (`sync-components.yml`, `hop-sync`
+   App token), and required status checks would block every export.
 2. **Release environment protection:** The `release` environment must configure `required_reviewers`
    including `jwaldrip` and a `deployment_branch_policy` restricted to tag pattern `v*`.
 

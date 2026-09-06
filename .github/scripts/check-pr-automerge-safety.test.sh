@@ -11,6 +11,41 @@ script="$root/.github/scripts/check-pr-automerge-safety.py"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+mkdir -p "$tmp/bin"
+cat <<'SH' > "$tmp/bin/gh"
+#!/usr/bin/env bash
+if [ -n "${MOCK_GH_FAIL:-}" ]; then
+  echo "gh: network timeout or API failure" >&2
+  exit 1
+fi
+if [ -n "${MOCK_GH_EMPTY:-}" ]; then
+  exit 0
+fi
+if [ -n "${MOCK_GH_INVALID_JSON:-}" ]; then
+  echo "not json"
+  exit 0
+fi
+if [ -n "${MOCK_GH_EMPTY_FILES:-}" ]; then
+  echo '{"files":[],"reviews":[],"commits":[]}'
+  exit 0
+fi
+if [ -n "${MOCK_GH_SENSITIVE_NO_REVIEW:-}" ]; then
+  echo '{"files":[{"path":".github/workflows/release.yml"}],"reviews":[],"commits":[]}'
+  exit 0
+fi
+if [ -n "${MOCK_GH_SENSITIVE_APPROVED:-}" ]; then
+  echo '{"files":[{"path":".github/workflows/release.yml"}],"reviews":[{"state":"APPROVED"}],"commits":[]}'
+  exit 0
+fi
+if [ -n "${MOCK_GH_CLEAN:-}" ]; then
+  echo '{"files":[{"path":"core/hop/src/lib.rs"}],"reviews":[],"commits":[]}'
+  exit 0
+fi
+exec /opt/homebrew/bin/gh "$@" 2>/dev/null || exec gh "$@"
+SH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+
 test_case() {
   label="$1"
   title="$2"
@@ -293,4 +328,70 @@ if ! grep -q "gh pr merge --disable-auto" "$workflow"; then
   exit 1
 fi
 
+# 33. _fetch_pr_data fail-closed on gh CLI error (PROC-012)
+test_case_env "fetch_pr_data_cli_error" \
+  "fix: clean title" \
+  "Clean body" \
+  "false" \
+  PR_NUMBER="999" \
+  MOCK_GH_FAIL="1"
+
+# 34. _fetch_pr_data fail-closed on gh empty stdout (PROC-012)
+test_case_env "fetch_pr_data_empty_stdout" \
+  "fix: clean title" \
+  "Clean body" \
+  "false" \
+  PR_NUMBER="999" \
+  MOCK_GH_EMPTY="1"
+
+# 35. _fetch_pr_data fail-closed on gh invalid JSON (PROC-012)
+test_case_env "fetch_pr_data_invalid_json" \
+  "fix: clean title" \
+  "Clean body" \
+  "false" \
+  PR_NUMBER="999" \
+  MOCK_GH_INVALID_JSON="1"
+
+# 36. _fetch_pr_data fail-closed on empty changed files list (PROC-012)
+test_case_env "fetch_pr_data_empty_files" \
+  "fix: clean title" \
+  "Clean body" \
+  "false" \
+  PR_NUMBER="999" \
+  MOCK_GH_EMPTY_FILES="1"
+
+# 37. _fetch_pr_data sensitive file without approved review (PROC-012)
+test_case_env "fetch_pr_data_sensitive_no_review" \
+  "fix: clean title" \
+  "Clean body" \
+  "false" \
+  PR_NUMBER="999" \
+  MOCK_GH_SENSITIVE_NO_REVIEW="1"
+
+# 38. _fetch_pr_data sensitive file WITH approved review (PROC-012)
+test_case_env "fetch_pr_data_sensitive_approved" \
+  "fix: clean title" \
+  "Clean body" \
+  "true" \
+  PR_NUMBER="999" \
+  MOCK_GH_SENSITIVE_APPROVED="1"
+
+# 39. _fetch_pr_data clean files allowed (PROC-012)
+test_case_env "fetch_pr_data_clean_allowed" \
+  "fix: clean title" \
+  "Clean body" \
+  "true" \
+  PR_NUMBER="999" \
+  MOCK_GH_CLEAN="1"
+
+# 40. Verify notice output on fail-closed CLI error
+notice_out="$(env TITLE="clean" BODY="clean" PR_NUMBER="999" MOCK_GH_FAIL="1" python3 "$script" 2>&1 || true)"
+if [[ "$notice_out" != *"::notice title=Auto-merge refused::"* ]]; then
+  echo "FAIL: expected ::notice title=Auto-merge refused:: on gh CLI failure" >&2
+  exit 1
+fi
+if [[ "$notice_out" != *"GitHub CLI metadata query failed or returned empty data"* ]]; then
+  echo "FAIL: expected notice to mention GitHub CLI query failure" >&2
+  exit 1
+fi
 echo "PR auto-merge safety tests passed"

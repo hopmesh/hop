@@ -191,8 +191,14 @@ def check_sensitive_files(files: list[str], reviews: list[dict]) -> list[str]:
     return []
 
 
-def _fetch_pr_data(pr_number: str, gh_token: str | None) -> tuple[list[str], list[dict], list[str]]:
-    """Fetch changed files, reviews, and commit messages for PR via GitHub CLI."""
+def _fetch_pr_data(
+    pr_number: str, gh_token: str | None
+) -> tuple[list[str], list[dict], list[str], str | None]:
+    """Fetch changed files, reviews, and commit messages for PR via GitHub CLI.
+
+    Fails CLOSED (PROC-012): returns an explicit error string on any failure,
+    timeout, invalid JSON, or empty output from the GitHub CLI.
+    """
     files: list[str] = []
     reviews: list[dict] = []
     commits: list[str] = []
@@ -202,28 +208,60 @@ def _fetch_pr_data(pr_number: str, gh_token: str | None) -> tuple[list[str], lis
         env["GH_TOKEN"] = gh_token
 
     cmd = [
-        "gh", "pr", "view", pr_number,
-        "--json", "files,reviews,commits",
+        "gh",
+        "pr",
+        "view",
+        pr_number,
+        "--json",
+        "files,reviews,commits",
     ]
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
-        if proc.returncode == 0 and proc.stdout:
-            data = json.loads(proc.stdout)
-            for f in data.get("files", []):
-                if isinstance(f, dict) and "path" in f:
-                    files.append(f["path"])
-            for r in data.get("reviews", []):
-                if isinstance(r, dict):
-                    reviews.append(r)
-            for c in data.get("commits", []):
-                if isinstance(c, dict):
-                    headline = c.get("messageHeadline", "")
-                    body = c.get("messageBody", "")
-                    commits.append(f"{headline}\n{body}".strip())
-    except Exception:
-        pass
+        proc = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, check=False, timeout=30
+        )
+    except FileNotFoundError:
+        return files, reviews, commits, "gh CLI not found in PATH"
+    except subprocess.TimeoutExpired:
+        return files, reviews, commits, f"gh pr view {pr_number} timed out after 30s"
+    except Exception as e:
+        return files, reviews, commits, f"gh pr view {pr_number} execution failed: {e}"
 
-    return files, reviews, commits
+    if proc.returncode != 0:
+        err = proc.stderr.strip() if proc.stderr else f"exit code {proc.returncode}"
+        return files, reviews, commits, f"gh pr view {pr_number} failed: {err}"
+
+    if not proc.stdout or not proc.stdout.strip():
+        return files, reviews, commits, f"gh pr view {pr_number} returned empty output"
+
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as e:
+        return files, reviews, commits, f"gh pr view {pr_number} returned invalid JSON: {e}"
+
+    if not isinstance(data, dict):
+        return files, reviews, commits, f"gh pr view {pr_number} returned non-dict JSON"
+
+    raw_files = data.get("files")
+    if raw_files is None:
+        return files, reviews, commits, f"gh pr view {pr_number} response missing 'files' field"
+    for f in raw_files:
+        if isinstance(f, dict) and "path" in f:
+            files.append(f["path"])
+
+    raw_reviews = data.get("reviews")
+    if raw_reviews is None:
+        return files, reviews, commits, f"gh pr view {pr_number} response missing 'reviews' field"
+    for r in raw_reviews:
+        if isinstance(r, dict):
+            reviews.append(r)
+
+    for c in data.get("commits", []):
+        if isinstance(c, dict):
+            headline = c.get("messageHeadline", "")
+            body = c.get("messageBody", "")
+            commits.append(f"{headline}\n{body}".strip())
+
+    return files, reviews, commits, None
 
 
 def main() -> int:
@@ -267,21 +305,34 @@ def main() -> int:
 
     pr_number = os.environ.get("PR_NUMBER")
     gh_token = os.environ.get("GH_TOKEN")
+    fetch_error = None
     if pr_number and (files_raw is None or reviews_raw is None or commits_raw is None):
-        fetched_files, fetched_reviews, fetched_commits = _fetch_pr_data(pr_number, gh_token)
-        if files_raw is None:
-            files = fetched_files
-        if reviews_raw is None:
-            reviews = fetched_reviews
-        if commits_raw is None:
-            commits = fetched_commits
+        fetched_files, fetched_reviews, fetched_commits, fetch_err = _fetch_pr_data(
+            pr_number, gh_token
+        )
+        if fetch_err:
+            fetch_error = fetch_err
+        else:
+            if files_raw is None:
+                if not fetched_files:
+                    fetch_error = f"gh pr view {pr_number} returned empty changed files list"
+                else:
+                    files = fetched_files
+            if reviews_raw is None:
+                reviews = fetched_reviews
+            if commits_raw is None:
+                commits = fetched_commits
 
     reasons: list[str] = []
     reasons.extend(check_review_intent(title, body))
     reasons.extend(check_commit_messages(commits))
     reasons.extend(check_stale_approval(body, current_date))
-    reasons.extend(check_sensitive_files(files, reviews))
-
+    if fetch_error:
+        reasons.append(
+            f"GitHub CLI metadata query failed or returned empty data ({fetch_error}); refusing auto-merge (PROC-012)"
+        )
+    else:
+        reasons.extend(check_sensitive_files(files, reviews))
     output_path = os.environ.get("GITHUB_OUTPUT")
 
     if reasons:

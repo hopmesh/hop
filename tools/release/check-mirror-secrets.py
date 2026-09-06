@@ -96,16 +96,25 @@ def org_secret_names_for(repo, cache={}):
     return names
 
 def mirror_branch_protection(repo):
-    """Audit default branch protection on the mirror repository (INFRA-019)."""
+    """Audit default branch protection on the mirror repository (INFRA-019).
+
+    Mirrors receive direct fast-forward pushes from the Copybara export (sync-components.yml,
+    hop-sync App token), so required status checks and PR reviews are deliberately not required
+    on mirror main. Protection requires: enforce_admins true, allow_force_pushes false,
+    allow_deletions false.
+    """
     data = gh_json(f"repos/{OWNER}/{repo}/branches/main/protection")
     if not data:
         return "main branch is not protected"
-    rsc = data.get("required_status_checks")
-    if not rsc:
-        return "main branch lacks required status checks"
     admins = data.get("enforce_admins", {}).get("enabled")
     if admins is not True:
         return "main branch does not enforce admin parity (enforce_admins is not true)"
+    force_pushes = data.get("allow_force_pushes", {}).get("enabled")
+    if force_pushes is not False:
+        return "main branch does not block force pushes (allow_force_pushes is not false)"
+    deletions = data.get("allow_deletions", {}).get("enabled")
+    if deletions is not False:
+        return "main branch does not block deletions (allow_deletions is not false)"
     return None
 
 

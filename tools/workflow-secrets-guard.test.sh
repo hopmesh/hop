@@ -265,21 +265,27 @@ def presence(label, environ, scopes, expect_error):
 # demands names the manifest declares, so a fixture keyed to an undeclared name is accepted and the
 # assertion tests nothing.
 live = {
-    "BRANCH_PROTECTION_TOKEN": "true",
+    "BRANCH_PROTECTION_TOKEN": "false",
     "MIRROR_SECRET_AUDIT_TOKEN": "false",
     "HOP_SYNC_TOKEN": "true",
 }
 presence("the live inventory as it stands", live, ["organization", "repository"], None)
-# INFRA-007's disarm path: deleting the audit's own token must be a non-green run, not a quiet skip.
+# Deleting a provisioned secret must be a non-green run, not a quiet skip.
 presence(
-    "deleted BRANCH_PROTECTION_TOKEN",
-    {**live, "BRANCH_PROTECTION_TOKEN": "false"},
+    "deleted HOP_SYNC_TOKEN",
+    {**live, "HOP_SYNC_TOKEN": "false"},
     ["organization", "repository"],
-    "BRANCH_PROTECTION_TOKEN is declared provisioned in repository but is NOT set there",
+    "HOP_SYNC_TOKEN is declared provisioned in organization but is NOT set there",
 )
 # A provisioned:false to-do that has since been satisfied must force the manifest to be updated.
 presence(
     "provisioned:false name that is now set",
+    {**live, "BRANCH_PROTECTION_TOKEN": "true"},
+    ["organization", "repository"],
+    "clear provisioned:false",
+)
+presence(
+    "provisioned:false mirror secret that is now set",
     {**live, "MIRROR_SECRET_AUDIT_TOKEN": "true"},
     ["organization", "repository"],
     "clear provisioned:false",
