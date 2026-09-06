@@ -29,6 +29,26 @@ test_case() {
     exit 1
   fi
 }
+test_case_env() {
+  label="$1"
+  title="$2"
+  body="$3"
+  expected_arm="$4"
+  shift 4
+
+  output_file="$tmp/output"
+  rm -f "$output_file"
+  touch "$output_file"
+
+  env GITHUB_OUTPUT="$output_file" TITLE="$title" BODY="$body" "$@" python3 "$script" >/dev/null 2>&1
+
+  actual_arm="$(grep '^arm_automerge=' "$output_file" | cut -d= -f2)"
+  if [ "$actual_arm" != "$expected_arm" ]; then
+    echo "FAIL [$label]: expected arm_automerge=$expected_arm, got $actual_arm" >&2
+    exit 1
+  fi
+}
+
 
 # 1. Historical PR #71 scenario: research doc with 'do not merge' in title
 test_case "pr_71_reconstruction" \
@@ -158,5 +178,119 @@ test_case "zero_width_in_clean_title" \
   "feat(core): tighten"$'\u200B'" bundle parsing" \
   "Adds the size ceiling." \
   "true"
+
+# 19. Bidi override character in title (INFRA-018)
+test_case "bidi_override_title" \
+  "do"$'\u202E'"not merge" \
+  "Clean description" \
+  "false"
+
+# 20. Bidi override character in body (INFRA-018)
+test_case "bidi_override_body" \
+  "feat(core): update timeout" \
+  "do"$'\u202E'"not merge" \
+  "false"
+
+# 21. Cyrillic homoglyphs in title (INFRA-018)
+test_case "cyrillic_homoglyph_wip" \
+  "Fix issue [W"$'\u0456'"P]" \
+  "Fixing bug" \
+  "false"
+
+test_case "cyrillic_homoglyph_do_not_merge" \
+  "d"$'\u043E'" not merge" \
+  "Experimental" \
+  "false"
+
+# 22. Review phrases: review required and awaiting review (INFRA-018)
+test_case "review_required" \
+  "docs: update API reference" \
+  "review required before landing" \
+  "false"
+
+test_case "awaiting_review" \
+  "feat: add capability" \
+  "awaiting review from lead" \
+  "false"
+
+# 23. PR modifying workflow file without approved review (PROC-012)
+test_case_env "workflow_file_no_review" \
+  "feat: update release workflow" \
+  "Routine update" \
+  "false" \
+  CHANGED_FILES=".github/workflows/release.yml"
+
+# 24. PR modifying workflow file WITH approved review (PROC-012)
+test_case_env "workflow_file_with_review" \
+  "feat: update release workflow" \
+  "Approved by lead" \
+  "true" \
+  CHANGED_FILES=".github/workflows/release.yml" \
+  PR_REVIEWS='[{"state":"APPROVED"}]'
+
+# 25. PR modifying export tooling without approved review (PROC-012)
+test_case_env "export_tooling_no_review" \
+  "fix(copybara): update export spec" \
+  "Fixes export" \
+  "false" \
+  CHANGED_FILES="tools/copybara/copy.bara.sky"
+
+# 26. PR modifying security-sensitive path without approved review (PROC-012)
+test_case_env "workflow_secrets_no_review" \
+  "chore: add secret" \
+  "New secret" \
+  "false" \
+  CHANGED_FILES="tools/workflow-secrets.json"
+
+# 27. Stale approval date in PR body (PROC-012)
+test_case_env "stale_approval_date" \
+  "fix(core): connection fix" \
+  "Owner approval of 2026-09-04 covers this follow-up; auto-merge arms on the maintainer path" \
+  "false" \
+  CURRENT_DATE="2026-09-05"
+
+# 28. Fresh approval date on non-sensitive PR
+test_case_env "fresh_approval_date" \
+  "fix(core): connection fix" \
+  "Owner approval of 2026-09-05 covers this follow-up" \
+  "true" \
+  CURRENT_DATE="2026-09-05"
+
+# 29. Blanket verbal approval claim in PR body (PROC-012)
+test_case "blanket_approval_claim" \
+  "fix: quick fix" \
+  "move forward anyway, you have my approval" \
+  "false"
+
+# 30. Commit message with WIP or hold (PROC-012)
+test_case_env "commit_message_wip" \
+  "fix(core): clean title" \
+  "Clean body" \
+  "false" \
+  COMMIT_MESSAGES="WIP: storage refactor"
+
+test_case_env "commit_message_dnm" \
+  "fix(core): clean title" \
+  "Clean body" \
+  "false" \
+  COMMIT_MESSAGES="feat: experimental (do not merge)"
+
+# 31. Clean commit messages allowed
+test_case_env "clean_commit_messages" \
+  "fix(core): clean title" \
+  "Clean body" \
+  "true" \
+  COMMIT_MESSAGES="feat: real feature"$'\n'"fix: real fix"
+
+# 32. Verify pr-automerge.yml configures 'edited' trigger and disarms auto-merge on failure (INFRA-018)
+workflow="$root/.github/workflows/pr-automerge.yml"
+if ! grep -q "edited" "$workflow"; then
+  echo "FAIL: pr-automerge.yml does not configure 'edited' event trigger (INFRA-018)" >&2
+  exit 1
+fi
+if ! grep -q "gh pr merge --disable-auto" "$workflow"; then
+  echo "FAIL: pr-automerge.yml does not disarm auto-merge on safety check failure (INFRA-018)" >&2
+  exit 1
+fi
 
 echo "PR auto-merge safety tests passed"

@@ -18,7 +18,7 @@ name: PR auto-merge
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, edited]
 
 permissions: {}
 
@@ -55,12 +55,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Inspect PR title and body for review-intent and hold markers (PROC-002)
+      - name: Inspect PR title, body, commits, and changed files for auto-merge safety (PROC-002, INFRA-018, PROC-012)
         id: review-intent
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
         run: python3 .github/scripts/check-pr-automerge-safety.py
+
+      - name: Disable auto-merge on hold, review intent, or failed safety check (INFRA-018)
+        if: steps.review-intent.outputs.arm_automerge != 'true'
+        run: gh pr merge --disable-auto "$PR_URL" || true
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
 
       - name: Enable merge-commit auto-merge
         if: steps.review-intent.outputs.arm_automerge == 'true'
