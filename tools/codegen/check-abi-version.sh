@@ -191,6 +191,7 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 if [ -f "$MANIFEST" ] && [ -f "sdk/hop.h" ]; then
+  python3 tools/codegen/generate-abi-manifest.py --self-test >/dev/null 2>&1 || err "ABI generator self-test failed"
   if ! manifest_check="$(python3 tools/codegen/generate-abi-manifest.py --check sdk/hop.h "$MANIFEST" 2>&1)"; then
     err "ABI manifest drift: $MANIFEST does not match sdk/hop.h (ABI-009). Re-run tools/codegen/generate-abi-manifest.py to update it."
     printf '%s\n' "$manifest_check" | sed 's/^/    /'

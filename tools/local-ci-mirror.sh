@@ -206,6 +206,8 @@ step "mailbox-prefix-doc guard"       bash tools/mailbox-prefix-doc-guard.sh
 step "store-data-map self-test"       bash tools/store-data-map-guard.test.sh
 step "store-data-map guard"           python3 tools/store-data-map-guard.py
 step "abi-version guard self-test"    bash tools/codegen/check-abi-version.test.sh
+step "abi-manifest generator self-test" bash tools/codegen/generate-abi-manifest.test.sh
+step "abi-signatures verifier self-test" bash tools/codegen/verify-abi-signatures.test.sh
 step "abi-version guard"              bash tools/codegen/check-abi-version.sh
 # Only the self-test: the live pin check downloads the pinned xcframework, and a pre-push script that
 # reaches the network gets switched off. apple-pin-guard.yml runs the live half.
