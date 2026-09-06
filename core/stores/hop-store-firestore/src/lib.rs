@@ -2202,10 +2202,13 @@ impl FirestoreClient {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     fn with_base_url_for_test(base: &str, project: &str, node_addr: &[u8]) -> Self {
         let client = Self::new_with_base(base, project, node_addr);
         *client.token.lock().unwrap() = Some(("mock-test-token".to_string(), Instant::now()));
+        *client.operation_fence.lock().unwrap() = Some(OperationFence {
+            generation: [9; 32],
+            update_time: "fence-update-time".into(),
+        });
         client
     }
 
@@ -8876,5 +8879,170 @@ mod tests {
                 key
             );
         }
+    }
+
+    #[test]
+    fn store_011_http_409_handling_for_existing_and_fence_mismatch() {
+        let node_addr = [1u8; 32];
+        let node = bs58::encode(&node_addr).into_string();
+        let mutations = vec![KvMutation::Put {
+            key: "test_key".to_string(),
+            value: b"val".to_vec(),
+        }];
+        let serialized = serialize_critical_batch(&mutations).unwrap();
+        let identity = critical_batch_identity(&mutations).unwrap();
+        let operation_id = bs58::encode(identity).into_string();
+        let name = format!(
+            "projects/test-project/databases/(default)/documents/relays/{node}/operations/{operation_id}"
+        );
+        let created_at = epoch_ms();
+        let mut pending = operation_journal_json(
+            &operation_id,
+            &identity,
+            &serialized,
+            mutations.len(),
+            JournalState::Pending,
+            created_at,
+            None,
+        );
+        pending["name"] = serde_json::Value::String(name);
+        pending["updateTime"] = serde_json::Value::String("pending-update".to_string());
+        let doc_json = kv_doc_json("test_key", b"val").to_string();
+
+        let server_exists = spawn_mock(vec![
+            (404, String::new()),
+            (200, pending.to_string()),
+            (409, String::new()),
+            (200, doc_json),
+        ]);
+        let client_exists = FirestoreClient::with_base_url_for_test(
+            &server_exists.base,
+            "test-project",
+            &node_addr,
+        );
+        let res_exists = client_exists.put_kv_if_absent("test_key", b"val");
+        assert_eq!(res_exists, Ok(false), "409 when doc exists must return Ok(false)");
+
+        let server_absent = spawn_mock(vec![
+            (404, String::new()),
+            (200, pending.to_string()),
+            (409, String::new()),
+            (404, String::new()),
+        ]);
+        let client_absent = FirestoreClient::with_base_url_for_test(
+            &server_absent.base,
+            "test-project",
+            &node_addr,
+        );
+        let res_absent = client_absent.put_kv_if_absent("test_key", b"val");
+        assert!(
+            res_absent.is_err(),
+            "409 when doc is absent (fence mismatch) must return Err"
+        );
+        let err = res_absent.err().unwrap();
+        assert!(
+            matches!(err, MirrorBatchError::Definitive(_)),
+            "fence mismatch must be a definitive error: {err:?}"
+        );
+    }
+    #[test]
+    fn store_011_put_kv_if_absent_critical_quarantines_on_unknown_error() {
+        #[derive(Clone, Default)]
+        struct UnknownErrorMirror {
+            inner: FakeMirror,
+        }
+        impl BundleMirror for UnknownErrorMirror {
+            fn list_bundle_page(
+                &self,
+                cursor: Option<&str>,
+                limit: usize,
+                max_bytes: usize,
+            ) -> std::result::Result<MirrorPage<BundleMirrorRow>, String> {
+                self.inner.list_bundle_page(cursor, limit, max_bytes)
+            }
+            fn list_eager_kv_page(
+                &self,
+                after: Option<&str>,
+                limit: usize,
+                max_bytes: usize,
+                max_pages: usize,
+            ) -> std::result::Result<MirrorPage<KvMirrorRow>, String> {
+                self.inner
+                    .list_eager_kv_page(after, limit, max_bytes, max_pages)
+            }
+            fn list_kv_page(
+                &self,
+                prefix: &str,
+                after: Option<&str>,
+                limit: usize,
+            ) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+                self.inner.list_kv_page(prefix, after, limit)
+            }
+            fn get_kv(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+                self.inner.get_kv(key)
+            }
+            fn put_bundle(
+                &self,
+                id: &BundleId,
+                data: &[u8],
+                expires_at: u64,
+            ) -> std::result::Result<(), String> {
+                self.inner.put_bundle(id, data, expires_at)
+            }
+            fn delete_bundle(&self, id: &BundleId) -> std::result::Result<(), String> {
+                self.inner.delete_bundle(id)
+            }
+            fn list_kv(&self) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+                self.inner.list_kv()
+            }
+            fn put_kv(&self, key: &str, value: &[u8]) -> std::result::Result<(), String> {
+                self.inner.put_kv(key, value)
+            }
+            fn delete_kv(&self, key: &str) -> std::result::Result<(), String> {
+                self.inner.delete_kv(key)
+            }
+            fn put_kv_if_absent(
+                &self,
+                _key: &str,
+                _value: &[u8],
+            ) -> std::result::Result<bool, MirrorBatchError> {
+                Err(MirrorBatchError::unknown("network partition during commit"))
+            }
+        }
+
+        let mut store = FirestoreStore::open_with_mirror(UnknownErrorMirror::default()).unwrap();
+        assert_eq!(store.durability_status(), DurabilityReadiness::Ready);
+        let res = store.put_kv_if_absent_critical("test_key", vec![1, 2, 3]);
+        assert!(res.is_err());
+        assert_eq!(store.durability_status(), DurabilityReadiness::Quarantined);
+    }
+
+    #[test]
+    fn store_012_cold_start_unloaded_billing_key_retrieved_via_get_kv() {
+        let mirror = FakeMirror::default();
+        let billing_key = "usage/100/00000000000000000000000000000001/0000000000000001";
+        let expected_val = vec![42u8; 16];
+        mirror.kv.lock().unwrap().insert(billing_key.to_string(), expected_val.clone());
+
+        let store = FirestoreStore::open_with_mirror_limits(
+            mirror,
+            StartupLimits {
+                max_bytes: 0,
+                ..StartupLimits::default()
+            },
+        )
+        .expect("open must succeed even with 0 byte limit");
+
+        assert_eq!(
+            store.inner.get_kv(billing_key),
+            None,
+            "billing key must not be loaded into inner when byte limit is reached"
+        );
+
+        assert_eq!(
+            store.get_kv(billing_key),
+            Some(expected_val),
+            "store.get_kv must retrieve unloaded billing ledger key from remote mirror"
+        );
     }
 }
