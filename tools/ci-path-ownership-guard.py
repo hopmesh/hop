@@ -24,8 +24,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print("ci-path-ownership-guard: SKIP (pyyaml unavailable)", file=sys.stderr)
-    sys.exit(0)
+    print("ci-path-ownership-guard: FAIL (pyyaml unavailable)", file=sys.stderr)
+    sys.exit(1)
 
 
 def glob_to_regex(pat: str) -> re.Pattern:

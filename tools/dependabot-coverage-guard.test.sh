@@ -4,7 +4,8 @@
 #   (a) a valid configuration with complete ecosystem coverage passes,
 #   (b) an uncovered executable package root fails,
 #   (c) an allowlist entry with a reason under 20 characters fails,
-#   (d) an invalid or empty dependabot configuration fails.
+#   (d) an invalid or empty dependabot configuration fails,
+#   (e) missing pyyaml dependency fails closed (PROC-017).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -99,6 +100,20 @@ EOF
 
 run_case "invalid_config_fails" 1 "$TMP/dependabot_invalid.yml" "$TMP/manifests_valid.txt"
 
+# 5. missing pyyaml dependency fails closed (PROC-017)
+mkdir -p "$TMP/empty_pythonpath"
+set +e
+output="$(PYTHONPATH="$TMP/empty_pythonpath" python3 -c 'import sys, runpy; sys.modules["yaml"] = None; runpy.run_path("'"$GUARD"'")' 2>&1)"
+got_exit=$?
+set -e
+if [ "$got_exit" -ne 0 ]; then
+  echo "  PASS missing_pyyaml_fails_closed (exit $got_exit as expected)"
+  pass=$((pass + 1))
+else
+  echo "  FAIL missing_pyyaml_fails_closed (expected non-zero exit, got 0)"
+  printf '    %s\n' "$output"
+  fail=$((fail + 1))
+fi
 echo
 if [ "$fail" -eq 0 ]; then
   echo "dependabot-coverage-guard.test.sh: all $pass tests passed"
