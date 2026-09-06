@@ -47,8 +47,8 @@ use crate::{short_app, AppId, ShortApp, FABRIC_APP};
 // `hop_core::node::` paths (the prelude, `core/hop`, `wire_vectors`) keep resolving.
 use crate::wire_emit::{
     advert_record_exceeds_limit, carrier_chunk_payloads, decode_link_packet, derive_stream_id,
-    encode_link_auth, encode_packet, fragment_bounds_ok, frame_record, have_record_exceeds_limit,
-    SessionInner, MAX_HAVE_RECORD_FRAGMENTS, SESSION_ESTABLISH_CT, STREAM_CHUNK,
+    encode_link_auth, encode_packet, fragment_bounds_ok, frame_record, SessionInner,
+    MAX_RECORD_PLAINTEXT, SESSION_ESTABLISH_CT, STREAM_CHUNK,
 };
 #[cfg(feature = "fuzzing")]
 pub use crate::wire_emit::{fuzz_link_packet, fuzz_record_framing};
@@ -357,7 +357,21 @@ const MAX_METERED_ATTRIBUTION: usize = 16_384;
 /// §35 custody beacon: cap on ids advertised in one `Wire::Have`, and on ids remembered per peer.
 /// Bounds the beacon's link bandwidth (a full held set can be large) and the per-link `peer_has`
 /// memory; a relay that holds more than this simply advertises its most-recent slice.
-const MAX_HAVE_ADVERTISE: usize = crate::wire_emit::MAX_HAVE_ADVERTISE;
+const MAX_HAVE_ADVERTISE: usize = 4_096;
+/// PROTO-010: the largest plaintext a well-formed `Wire::Have` can occupy: `MAX_HAVE_ADVERTISE`
+/// 32-byte ids plus postcard's discriminant and length prefix (32 bytes of headroom is generous).
+/// Lives here rather than in `wire_emit.rs` because it is a receive-side policy, not wire layout:
+/// the declared wire sources stay byte-identical unless `BUNDLE_VERSION` moves.
+const MAX_HAVE_LINK_BYTES: usize = MAX_HAVE_ADVERTISE * 32 + 32;
+/// PROTO-010: the most record fragments a well-formed `Wire::Have` can legitimately need.
+const MAX_HAVE_RECORD_FRAGMENTS: usize = MAX_HAVE_LINK_BYTES.div_ceil(MAX_RECORD_PLAINTEXT);
+
+/// PROTO-010: reject an oversized `Wire::Have` record from its postcard discriminant (`Have = 2`,
+/// pinned against the real serializer by `have_discriminant_matches_the_serializer`) before
+/// deserializing an attacker-sized id vector.
+fn have_record_exceeds_limit(plaintext: &[u8]) -> bool {
+    plaintext.first() == Some(&2) && plaintext.len() > MAX_HAVE_LINK_BYTES
+}
 const ADVERT_VERIFY_WINDOW_MS: u64 = 1_000;
 const MAX_ADVERTS_PER_LINK_WINDOW: u32 = 64;
 const MAX_ADVERTS_GLOBAL_WINDOW: u32 = 512;
@@ -19747,8 +19761,6 @@ mod tests {
     fn have_wire_size_is_rejected_from_the_discriminant_before_decode() {
         // PROTO-010: Wire::Have == 2, so a record whose first byte is 2 exceeding
         // MAX_HAVE_LINK_BYTES must be rejected prior to postcard deserialization.
-        use crate::wire_emit::MAX_HAVE_LINK_BYTES;
-
         let mut oversized = vec![0u8; MAX_HAVE_LINK_BYTES + 1];
         oversized[0] = 2;
         assert!(have_record_exceeds_limit(&oversized));
@@ -19759,6 +19771,37 @@ mod tests {
         let mut exact = vec![0u8; MAX_HAVE_LINK_BYTES];
         exact[0] = 2;
         assert!(!have_record_exceeds_limit(&exact));
+    }
+
+    #[test]
+    fn have_discriminant_matches_the_serializer_and_a_full_set_fits_the_limit() {
+        // The pre-decode check keys on the postcard discriminant of Wire::Have and on the size of
+        // the largest legitimate beacon; both are assumptions about the serializer, so pin them.
+        let full = Wire::Have(crate::store::HaveSet {
+            ids: (0..MAX_HAVE_ADVERTISE)
+                .map(|i| {
+                    let mut id = [0u8; 32];
+                    id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    id
+                })
+                .collect(),
+        });
+        let bytes = postcard::to_allocvec(&full).unwrap();
+        assert_eq!(
+            bytes.first(),
+            Some(&2),
+            "Wire::Have must serialize with discriminant 2"
+        );
+        assert!(
+            bytes.len() <= MAX_HAVE_LINK_BYTES,
+            "a full Have beacon ({} bytes) must not exceed MAX_HAVE_LINK_BYTES ({MAX_HAVE_LINK_BYTES})",
+            bytes.len()
+        );
+        assert!(!have_record_exceeds_limit(&bytes));
+        assert!(
+            MAX_HAVE_LINK_BYTES.div_ceil(MAX_RECORD_PLAINTEXT) == MAX_HAVE_RECORD_FRAGMENTS
+                && MAX_HAVE_RECORD_FRAGMENTS >= 1
+        );
     }
 
     #[test]

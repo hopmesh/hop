@@ -114,26 +114,13 @@ pub(crate) enum Wire {
     },
 }
 
-/// Maximum IDs advertised in one Wire::Have beacon (and remembered per peer).
-pub const MAX_HAVE_ADVERTISE: usize = 4_096;
-/// Maximum plaintext bytes for a Wire::Have record: MAX_HAVE_ADVERTISE * 32 + 32 bytes headroom (PROTO-010).
-pub(crate) const MAX_HAVE_LINK_BYTES: usize = MAX_HAVE_ADVERTISE * 32 + 32;
-/// Maximum record fragments legitimately required for a Wire::Have record.
-pub(crate) const MAX_HAVE_RECORD_FRAGMENTS: usize =
-    MAX_HAVE_LINK_BYTES.div_ceil(MAX_RECORD_PLAINTEXT);
-
-/// Postcard encodes this enum with a one-byte discriminant (`Bundle = 0`, `Advert = 1`, `Have = 2`, `RecvBeacon = 3`).
+/// Postcard encodes this two-variant enum with a one-byte discriminant (`Bundle = 0`, `Advert = 1`).
 /// Pinning that below lets us reject an oversized advert before deserializing attacker-sized strings
 /// and vectors. A unit test asserts the discriminant assumption against the actual serializer.
 pub(crate) fn advert_record_exceeds_limit(plaintext: &[u8]) -> bool {
     plaintext.first() == Some(&1) && plaintext.len() > MAX_ADVERT_LINK_BYTES
 }
 
-/// PROTO-010: Pre-decoding length check for Wire::Have records (discriminant 2) rejecting plaintexts
-/// exceeding MAX_HAVE_LINK_BYTES prior to postcard deserialization.
-pub(crate) fn have_record_exceeds_limit(plaintext: &[u8]) -> bool {
-    plaintext.first() == Some(&2) && plaintext.len() > MAX_HAVE_LINK_BYTES
-}
 /// Encode one link packet into the bytes handed to a bearer. `None` on an encoding failure.
 pub(crate) fn encode_packet(packet: &LinkPacket) -> Option<Vec<u8>> {
     postcard::to_allocvec(packet).ok()
