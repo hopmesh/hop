@@ -47,8 +47,8 @@ use crate::{short_app, AppId, ShortApp, FABRIC_APP};
 // `hop_core::node::` paths (the prelude, `core/hop`, `wire_vectors`) keep resolving.
 use crate::wire_emit::{
     advert_record_exceeds_limit, carrier_chunk_payloads, decode_link_packet, derive_stream_id,
-    encode_link_auth, encode_packet, fragment_bounds_ok, frame_record, SessionInner,
-    SESSION_ESTABLISH_CT, STREAM_CHUNK,
+    encode_link_auth, encode_packet, fragment_bounds_ok, frame_record, have_record_exceeds_limit,
+    SessionInner, MAX_HAVE_RECORD_FRAGMENTS, SESSION_ESTABLISH_CT, STREAM_CHUNK,
 };
 #[cfg(feature = "fuzzing")]
 pub use crate::wire_emit::{fuzz_link_packet, fuzz_record_framing};
@@ -357,7 +357,7 @@ const MAX_METERED_ATTRIBUTION: usize = 16_384;
 /// §35 custody beacon: cap on ids advertised in one `Wire::Have`, and on ids remembered per peer.
 /// Bounds the beacon's link bandwidth (a full held set can be large) and the per-link `peer_has`
 /// memory; a relay that holds more than this simply advertises its most-recent slice.
-const MAX_HAVE_ADVERTISE: usize = 4_096;
+const MAX_HAVE_ADVERTISE: usize = crate::wire_emit::MAX_HAVE_ADVERTISE;
 const ADVERT_VERIFY_WINDOW_MS: u64 = 1_000;
 const MAX_ADVERTS_PER_LINK_WINDOW: u32 = 64;
 const MAX_ADVERTS_GLOBAL_WINDOW: u32 = 512;
@@ -8577,7 +8577,7 @@ impl<S: Store> Node<S> {
             return;
         };
         let peer = est.peer;
-        if advert_record_exceeds_limit(&plaintext) {
+        if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
             return;
         }
         match postcard::from_bytes::<Wire>(&plaintext) {
@@ -8604,9 +8604,16 @@ impl<S: Store> Node<S> {
             let Ok(piece) = est.session.decrypt(ct) else {
                 return;
             };
-            // A valid advert is at most 8 KiB and therefore never needs record fragmentation. Reject
-            // its discriminant on the first fragment before accumulating a large attacker record.
-            if piece.is_empty() || (idx == 0 && piece.first() == Some(&1)) {
+            // A valid advert is at most 8 KiB and therefore never needs record fragmentation.
+            // A valid Have set is at most MAX_HAVE_ADVERTISE IDs and requires at most
+            // MAX_HAVE_RECORD_FRAGMENTS pieces. Reject on the first fragment before accumulating
+            // a large attacker record (PROTO-010).
+            if piece.is_empty()
+                || (idx == 0
+                    && (piece.first() == Some(&1)
+                        || (piece.first() == Some(&2)
+                            && usize::from(cnt) > MAX_HAVE_RECORD_FRAGMENTS)))
+            {
                 est.frag_buf.clear();
                 est.frag_next = 0;
                 return;
@@ -8635,7 +8642,7 @@ impl<S: Store> Node<S> {
             }
         };
         if let Some((plaintext, peer)) = ready {
-            if advert_record_exceeds_limit(&plaintext) {
+            if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
                 return;
             }
             match postcard::from_bytes::<Wire>(&plaintext) {
@@ -19526,6 +19533,57 @@ mod tests {
             1;
             MAX_ADVERT_LINK_BYTES
         ]));
+    }
+
+    #[test]
+    fn have_wire_size_is_rejected_from_the_discriminant_before_decode() {
+        // PROTO-010: Wire::Have == 2, so a record whose first byte is 2 exceeding
+        // MAX_HAVE_LINK_BYTES must be rejected prior to postcard deserialization.
+        use crate::wire_emit::MAX_HAVE_LINK_BYTES;
+
+        let mut oversized = vec![0u8; MAX_HAVE_LINK_BYTES + 1];
+        oversized[0] = 2;
+        assert!(have_record_exceeds_limit(&oversized));
+
+        oversized[0] = 0;
+        assert!(!have_record_exceeds_limit(&oversized));
+
+        let mut exact = vec![0u8; MAX_HAVE_LINK_BYTES];
+        exact[0] = 2;
+        assert!(!have_record_exceeds_limit(&exact));
+    }
+
+    #[test]
+    fn fragmented_have_with_oversized_fragment_count_is_rejected_on_first_fragment() {
+        // PROTO-010: Wire::Have requires at most MAX_HAVE_RECORD_FRAGMENTS (3) fragments.
+        // Any announced fragment count > MAX_HAVE_RECORD_FRAGMENTS must be rejected on
+        // the very first fragment without accumulating buffer.
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        let mut have_piece = vec![0u8; MAX_RECORD_PLAINTEXT - 1];
+        have_piece[0] = 2; // Wire::Have discriminant
+        let ct = match nodes[0].links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&have_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+
+        // Try sending fragment 0 with count = 4 (> MAX_HAVE_RECORD_FRAGMENTS)
+        nodes[1].on_record_frag(10, 0, 4, &ct);
+
+        match nodes[1].links.get(&10) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "frag buffer must be cleared immediately"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link remains established"),
+        }
     }
 
     #[test]
