@@ -11,6 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.36"
-hop = { path = "../../../../core/hop" }
+hop = { path = "../../../../core/hop", features = ["sqlcipher"] }
 
 [workspace]

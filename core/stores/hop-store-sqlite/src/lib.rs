@@ -15,6 +15,7 @@
 //! queued message bodies), so a plain-feature build must still rely on iOS file protection + the app
 //! sandbox. Build with `--features sqlcipher` (SQLite + SQLCipher, vendored OpenSSL) and open the store
 //! with a 32-byte key from the platform Keychain/Keystore to encrypt every page at rest (DESIGN.md §13.2).
+//! When built without `sqlcipher`, `open_keyed` refuses any non-empty key and fails closed (ABI-014).
 
 use hop_core::bundle::{Bundle, BundleId};
 use hop_core::store::{HaveSet, KvMutation, Store};
@@ -189,6 +190,7 @@ pub struct SqliteStore {
     seen_rows: std::cell::Cell<i64>,
     _file_lock: Option<FileLock>,
     _process_lease: Option<ProcessPathLease>,
+    encrypted: bool,
 }
 
 impl SqliteStore {
@@ -221,9 +223,18 @@ impl SqliteStore {
     /// Open an ENCRYPTED store at `path`, keyed by a raw 32-byte `key` (F-25). The key is used
     /// directly (no passphrase KDF); the host derives + stores it in the platform Keychain/Keystore.
     /// Under the `sqlcipher` cargo feature this encrypts every page at rest (SQLCipher). Without that
-    /// feature the `PRAGMA key` is silently ignored by plain SQLite, so build with `--features
-    /// sqlcipher` for real at-rest encryption. An empty key opens unencrypted (same as `open`).
+    /// feature, passing a non-empty key returns an error and fails closed (ABI-014), refusing to
+    /// silently write plaintext. An empty key opens unencrypted (same as `open`).
     pub fn open_keyed(path: &str, key: &[u8]) -> rusqlite::Result<Self> {
+        if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+                Some(
+                    "sqlcipher feature not enabled for keyed open; refusing plaintext fallback"
+                        .into(),
+                ),
+            ));
+        }
         let is_in_memory = path == ":memory:" || path.is_empty();
         let (process_lease, file_lock) = if is_in_memory {
             (None, None)
@@ -244,7 +255,24 @@ impl SqliteStore {
             pragma.zeroize();
             res?;
         }
-        Self::from_conn_with_locks(conn, process_lease, file_lock)
+        let is_encrypted = !key.is_empty() && cfg!(feature = "sqlcipher");
+        Self::from_conn_with_locks(conn, process_lease, file_lock, is_encrypted)
+    }
+
+    /// True only when this store is SQLCipher-encrypted at rest.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// Checks if a rusqlite error indicates database busy / lock contention (STORE-009).
+    pub fn is_busy(err: &rusqlite::Error) -> bool {
+        match err {
+            rusqlite::Error::SqliteFailure(ffi_err, _) => {
+                ffi_err.extended_code == rusqlite::ffi::SQLITE_BUSY
+                    || ffi_err.code == rusqlite::ErrorCode::DatabaseBusy
+            }
+            _ => false,
+        }
     }
 
     /// True iff the file at `path` opens as an UNENCRYPTED SQLite database (its header reads as a
@@ -324,7 +352,7 @@ impl SqliteStore {
         let res = conn.execute_batch(&pragma);
         pragma.zeroize();
         res?;
-        Self::from_conn_with_locks(conn, Some(process_lease), Some(file_lock))
+        Self::from_conn_with_locks(conn, Some(process_lease), Some(file_lock), true)
     }
 
     /// Open an ephemeral in-memory store (for tests).
@@ -345,13 +373,14 @@ impl SqliteStore {
     }
 
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
-        Self::from_conn_with_locks(conn, None, None)
+        Self::from_conn_with_locks(conn, None, None, false)
     }
 
     fn from_conn_with_locks(
         conn: Connection,
         process_lease: Option<ProcessPathLease>,
         file_lock: Option<FileLock>,
+        encrypted: bool,
     ) -> rusqlite::Result<Self> {
         // D7: schema/format version, tracked in SQLite's built-in `user_version`. Bump on any
         // incompatible on-disk change (table shape OR row encoding). A fresh db (user_version 0)
@@ -425,6 +454,7 @@ impl SqliteStore {
             seen_rows: std::cell::Cell::new(seen_rows),
             _file_lock: file_lock,
             _process_lease: process_lease,
+            encrypted,
         })
     }
 
@@ -1994,5 +2024,26 @@ mod tests {
             node.store.contains(&bid),
             "submitted bundle is in the sqlite store"
         );
+    }
+
+    #[cfg(not(feature = "sqlcipher"))]
+    #[test]
+    fn keyed_open_without_sqlcipher_fails_closed_and_produces_no_file() {
+        let path = format!(
+            "{}/hop-test-no-sqlcipher-{}.db",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+        let key = [7u8; 32];
+        let res = SqliteStore::open_keyed(&path, &key);
+        assert!(res.is_err(), "keyed open without sqlcipher must fail");
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "keyed open without sqlcipher must produce no on-disk file"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 }

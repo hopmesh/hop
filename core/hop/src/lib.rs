@@ -489,6 +489,9 @@ pub struct HopNode {
 #[derive(Debug, PartialEq, Eq)]
 pub enum OpenStoreError {
     UnsupportedSchema { found: i64, supported: i64 },
+    Busy,
+    EncryptionUnavailable,
+    UnusableDatabase,
 }
 
 #[cfg(feature = "full")]
@@ -497,10 +500,24 @@ fn open_store_persistent(
     key: &[u8],
 ) -> std::result::Result<(HopStore, bool), OpenStoreError> {
     use hop_store_sqlite::SqliteStore;
+    if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+        eprintln!(
+            "hop: refusing to open keyed database at {db_path} without sqlcipher feature enabled; \
+             refusing plaintext fallback"
+        );
+        return Err(OpenStoreError::EncryptionUnavailable);
+    }
+
     // F-25: an empty key opens plain; a 32-byte key opens SQLCipher-encrypted (under the store's
     // `sqlcipher` feature).
     match SqliteStore::open_keyed(db_path, key) {
         Ok(s) => return Ok((s, true)),
+        Err(e) if SqliteStore::is_busy(&e) => {
+            eprintln!(
+                "hop: refusing to open database at {db_path}; database is locked by another process"
+            );
+            return Err(OpenStoreError::Busy);
+        }
         Err(e) if SqliteStore::is_unsupported_schema(&e).is_some() => {
             let found = SqliteStore::is_unsupported_schema(&e).unwrap();
             eprintln!(
@@ -531,6 +548,9 @@ fn open_store_persistent(
                     );
                     return Ok((s, true));
                 }
+                Err(e) if SqliteStore::is_busy(&e) => {
+                    return Err(OpenStoreError::Busy);
+                }
                 Err(e) if SqliteStore::is_unsupported_schema(&e).is_some() => {
                     let found = SqliteStore::is_unsupported_schema(&e).unwrap();
                     return Err(OpenStoreError::UnsupportedSchema {
@@ -554,8 +574,23 @@ fn open_store_persistent(
         ));
     }
 
-    // Empty-key (plain) path, or the file does not exist: a genuinely unusable/corrupt PLAIN db has no
-    // key ambiguity, so quarantine it aside and start fresh (F-26). No secret state is encrypted here.
+    // STORE-010: Unkeyed open on an existing non-empty file failed to open as plain SQLite.
+    // It could be an encrypted SQLCipher database or a corrupted database. Fail closed and preserve
+    // the file intact; NEVER automatically quarantine or overwrite with a fresh plaintext db.
+    if std::path::Path::new(db_path).exists()
+        && std::fs::metadata(db_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+    {
+        eprintln!(
+            "hop: refusing to open database at {db_path}; existing non-empty file failed to open \
+             as SQLite (possibly encrypted or corrupted); refusing destructive quarantine without \
+             explicit operator recovery"
+        );
+        return Err(OpenStoreError::UnusableDatabase);
+    }
+
+    // Empty-key (plain) path for a new or 0-byte file that could not be created/opened:
     let quarantine = format!("{db_path}.corrupt");
     let _ = std::fs::remove_file(&quarantine);
     if std::fs::rename(db_path, &quarantine).is_ok() {
@@ -585,12 +620,34 @@ fn open_node_inner(db_path: &str, secret: &[u8], app_secret: &[u8], key: &[u8]) 
         app_secret.is_empty() || app_secret.len() == 32,
         "app_secret must be empty (0 bytes) or exactly 32 bytes"
     );
+    if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+        panic!(
+            "hop: cannot open keyed database at {db_path} without sqlcipher feature enabled; \
+             refusing to write plaintext database"
+        );
+    }
     let (store, persistent) = match open_store_persistent(db_path, key) {
         Ok(res) => res,
         Err(OpenStoreError::UnsupportedSchema { found, supported }) => {
             panic!(
                 "hop: cannot open database at {db_path} with unsupported schema v{found} \
                  (supported is v{supported}); downgrade refused to preserve user state"
+            );
+        }
+        Err(OpenStoreError::Busy) => {
+            panic!("hop: cannot open database at {db_path}; database is locked by another process");
+        }
+        Err(OpenStoreError::EncryptionUnavailable) => {
+            panic!(
+                "hop: cannot open keyed database at {db_path} without sqlcipher feature enabled; \
+                 refusing to write plaintext database"
+            );
+        }
+        Err(OpenStoreError::UnusableDatabase) => {
+            panic!(
+                "hop: cannot open database at {db_path}; existing non-empty file failed to open \
+                 as SQLite (possibly encrypted or corrupted); refusing destructive quarantine without \
+                 explicit operator recovery"
             );
         }
     };
@@ -759,8 +816,8 @@ impl HopNode {
 
     /// Like [`HopNode::open`], but ENCRYPTS the store at rest with a raw 32-byte `key` the host derives
     /// and stores in the platform Keychain/Keystore (F-25). Real encryption requires the store's
-    /// `sqlcipher` cargo feature; without it the key is accepted but the db stays plain. An empty key
-    /// behaves exactly like `open`.
+    /// `sqlcipher` cargo feature; without it a non-empty key fails closed (ABI-014), refusing to
+    /// silently write plaintext. An empty key behaves exactly like `open`.
     ///
     /// core-ffi-03: on the `minimal` embedded build there is no SQLite, so `db_path`/`key` are accepted
     /// for ABI compatibility but the node runs EPHEMERAL (in-memory); `is_persistent()` reports false so
@@ -782,6 +839,9 @@ impl HopNode {
                 app_secret.is_empty() || app_secret.len() == 32,
                 "app_secret must be empty (0 bytes) or exactly 32 bytes"
             );
+            if !key.is_empty() {
+                panic!("hop: cannot open keyed database without sqlcipher feature enabled; refusing to write plaintext database");
+            }
             let _ = (&db_path, &key); // no persistence on a constrained target, run ephemeral
             let mut node = Node::with_store(identity_from(&secret), fresh_ephemeral_store());
             if let Ok(s) = <[u8; 32]>::try_from(app_secret.as_slice()) {
@@ -819,6 +879,11 @@ impl HopNode {
                 app_secret.is_empty() || app_secret.len() == 32,
                 "app_secret must be empty (0 bytes) or exactly 32 bytes"
             );
+            if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+                return Err(FfiError::Hop(
+                    "cannot open keyed database without sqlcipher feature enabled; refusing to write plaintext database".to_string(),
+                ));
+            }
             match open_store_persistent(&db_path, &key) {
                 Ok((store, persistent)) => {
                     let mut node = Node::with_store(identity_from(&secret), store);
@@ -844,11 +909,25 @@ impl HopNode {
                 Err(OpenStoreError::UnsupportedSchema { found, supported }) => Err(FfiError::Hop(
                     format!("unsupported schema version {found}; supported is {supported}"),
                 )),
+                Err(OpenStoreError::Busy) => Err(FfiError::Hop(
+                    format!("database at {db_path} is locked by another process"),
+                )),
+                Err(OpenStoreError::EncryptionUnavailable) => Err(FfiError::Hop(
+                    "cannot open keyed database without sqlcipher feature enabled; refusing to write plaintext database".to_string(),
+                )),
+                Err(OpenStoreError::UnusableDatabase) => Err(FfiError::Hop(
+                    format!("database at {db_path} is unusable (possibly encrypted or corrupted); refusing destructive quarantine"),
+                )),
             }
         }
         #[cfg(not(feature = "full"))]
         {
             let _ = (&db_path, &key, &app_secret);
+            if !key.is_empty() {
+                return Err(FfiError::Hop(
+                    "cannot open keyed database without sqlcipher feature enabled; refusing to write plaintext database".to_string(),
+                ));
+            }
             Ok(Self::with_secret(secret))
         }
     }
@@ -1808,31 +1887,192 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_plain_db_is_quarantined_and_a_fresh_store_starts() {
-        use hop_store_sqlite::SqliteStore;
-        let path = recovery_tmp("quarantine");
+    fn unkeyed_open_on_non_empty_non_sqlite_file_fails_closed_without_renaming() {
+        let path = recovery_tmp("unkeyed_encrypted_or_corrupt");
         let quar = format!("{path}.corrupt");
-        // A genuinely unusable PLAIN db (garbage bytes, no key ambiguity).
-        std::fs::write(&path, b"this is not a sqlite database at all, just garbage").unwrap();
-        // Empty-key path: the quarantine arm must fire - move the bad file aside and start FRESH
-        // persistent (is_persistent=true), leaving a .corrupt copy for forensics.
-        let (_s, persistent) =
-            open_store_persistent(&path, &[]).expect("quarantine-then-fresh succeeds");
+        // Simulate an encrypted SQLCipher database or non-SQLite file (non-empty)
+        let ciphertext = vec![0x42u8; 4096];
+        std::fs::write(&path, &ciphertext).unwrap();
+
+        // 1. open_store_persistent must fail closed
+        let res = open_store_persistent(&path, &[]);
         assert!(
-            persistent,
-            "quarantine-then-fresh keeps persistence (is_persistent=true)"
+            matches!(res, Err(OpenStoreError::UnusableDatabase)),
+            "open_store_persistent must return UnusableDatabase on non-empty non-sqlite file"
         );
+
+        // 2. HopNode::open must fail (panic)
+        let panic_res = std::panic::catch_unwind(|| {
+            HopNode::open(path.clone(), vec![], vec![]);
+        });
         assert!(
-            std::path::Path::new(&quar).exists(),
-            "the corrupt db was quarantined to .corrupt"
+            panic_res.is_err(),
+            "HopNode::open must panic on non-empty non-sqlite file"
         );
+
+        // 3. HopNode::try_open must return Err
+        let try_res = HopNode::try_open(path.clone(), vec![], vec![]);
+        assert!(try_res.is_err(), "HopNode::try_open must return Err");
+
+        // 4. The original file must be completely preserved and untouched
         assert!(
-            SqliteStore::opens_as_plaintext(&path),
-            "a fresh usable plain db now lives at the path"
+            std::path::Path::new(&path).exists(),
+            "original file must exist"
         );
+        let read_back = std::fs::read(&path).unwrap();
+        assert_eq!(
+            read_back, ciphertext,
+            "original ciphertext bytes must be intact"
+        );
+
+        // 5. No .corrupt file must be created
+        assert!(
+            !std::path::Path::new(&quar).exists(),
+            "must NOT rename or quarantine existing file"
+        );
+
+        // 6. C ABI hop_node_open must return NULL and preserve the file
+        #[cfg(feature = "full")]
+        {
+            let c_path = std::ffi::CString::new(path.clone()).unwrap();
+            let node = unsafe {
+                cabi::hop_node_open(c_path.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0)
+            };
+            assert!(node.is_null(), "cabi hop_node_open must return NULL");
+            assert_eq!(std::fs::read(&path).unwrap(), ciphertext, "file preserved");
+            assert!(!std::path::Path::new(&quar).exists(), "no quarantine");
+        }
+
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&quar);
         let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[test]
+    fn concurrent_opener_fails_immediately_and_preserves_database() {
+        let path = recovery_tmp("concurrent_open");
+        let node1 = HopNode::open(path.clone(), vec![], vec![]);
+        assert!(node1.is_persistent(), "node1 is persistent");
+        assert!(std::path::Path::new(&path).exists(), "db file exists");
+
+        // 1. HopNode::open must fail (panic)
+        let panic_res = std::panic::catch_unwind(|| {
+            HopNode::open(path.clone(), vec![], vec![]);
+        });
+        assert!(
+            panic_res.is_err(),
+            "HopNode::open must panic on busy database"
+        );
+
+        // 2. HopNode::try_open must return an Err
+        let try_res = HopNode::try_open(path.clone(), vec![], vec![]);
+        assert!(
+            try_res.is_err(),
+            "HopNode::try_open must return Err on busy database"
+        );
+
+        // 3. Database file must remain untouched, and NO .corrupt file may exist
+        assert!(
+            std::path::Path::new(&path).exists(),
+            "original db must still exist"
+        );
+        assert!(
+            !std::path::Path::new(&format!("{path}.corrupt")).exists(),
+            "database must NOT be renamed to .corrupt"
+        );
+
+        // 4. In keyed open case, must also fail immediately, not fall back to in-memory
+        let panic_keyed = std::panic::catch_unwind(|| {
+            HopNode::open_keyed(path.clone(), vec![], vec![], vec![1u8; 32]);
+        });
+        assert!(
+            panic_keyed.is_err(),
+            "open_keyed on locked db must fail, never in-memory fallback"
+        );
+
+        let try_keyed = HopNode::try_open_keyed(path.clone(), vec![], vec![], vec![1u8; 32]);
+        assert!(
+            try_keyed.is_err(),
+            "try_open_keyed on locked db must return Err"
+        );
+
+        assert!(
+            !std::path::Path::new(&format!("{path}.corrupt")).exists(),
+            "database must NOT be renamed to .corrupt"
+        );
+
+        // 5. C ABI hop_node_open must return NULL
+        #[cfg(feature = "full")]
+        {
+            let c_path = std::ffi::CString::new(path.clone()).unwrap();
+            let node = unsafe {
+                cabi::hop_node_open(c_path.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0)
+            };
+            assert!(
+                node.is_null(),
+                "cabi hop_node_open must return NULL on busy db"
+            );
+            assert!(
+                !std::path::Path::new(&format!("{path}.corrupt")).exists(),
+                "database must NOT be renamed to .corrupt by cabi"
+            );
+        }
+
+        drop(node1);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[cfg(not(feature = "sqlcipher"))]
+    #[test]
+    fn keyed_open_without_sqlcipher_fails_closed_and_produces_no_file() {
+        let path = recovery_tmp("no_sqlcipher_node");
+        let key = vec![7u8; 32];
+        let panic_res = std::panic::catch_unwind(|| {
+            HopNode::open_keyed(path.clone(), vec![], vec![], key.clone());
+        });
+        assert!(
+            panic_res.is_err(),
+            "open_keyed without sqlcipher must panic"
+        );
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "open_keyed must not create on-disk file"
+        );
+
+        let try_res = HopNode::try_open_keyed(path.clone(), vec![], vec![], key.clone());
+        assert!(
+            try_res.is_err(),
+            "try_open_keyed without sqlcipher must return Err"
+        );
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "try_open_keyed must not create on-disk file"
+        );
+
+        #[cfg(feature = "full")]
+        {
+            let c_path = std::ffi::CString::new(path.clone()).unwrap();
+            let node = unsafe {
+                cabi::hop_node_open_keyed(
+                    c_path.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    key.as_ptr(),
+                    key.len(),
+                )
+            };
+            assert!(
+                node.is_null(),
+                "cabi hop_node_open_keyed must return NULL without sqlcipher"
+            );
+            assert!(
+                !std::path::Path::new(&path).exists(),
+                "cabi must not create on-disk file"
+            );
+        }
     }
 
     #[test]
@@ -1851,6 +2091,7 @@ mod tests {
                 assert_eq!(supported, 2);
             }
             Ok(_) => panic!("expected UnsupportedSchema error, got Ok"),
+            Err(e) => panic!("expected UnsupportedSchema error, got Err({e:?})"),
         }
         // Database file must not be quarantined or deleted
         assert!(std::path::Path::new(&path).exists(), "db file preserved");
