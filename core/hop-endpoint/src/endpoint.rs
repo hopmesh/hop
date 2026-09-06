@@ -1606,6 +1606,16 @@ mod tests {
             fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
                 self.0.get_kv(key)
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                if key.starts_with(HANDLED_PREFIX) {
+                    return Err("disk full / store unavailable".into());
+                }
+                self.0.put_kv_if_absent_critical(key, value)
+            }
         }
 
         let store = FailingStore(MemoryStore::new());
