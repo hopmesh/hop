@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -191,23 +192,30 @@ test('BIZ-011: terms, dpa, and privacy must explicitly identify Hop Mesh, LLC an
   const dpa = readSite('src/pages/dpa.astro');
   const privacy = readSite('src/pages/privacy.astro');
 
-  // Must identify Hop Mesh, LLC, a Delaware limited liability company
-  assert.match(terms, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'terms.astro must identify Hop Mesh, LLC as Delaware LLC');
-  assert.match(dpa, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'dpa.astro must identify Hop Mesh, LLC as Delaware LLC');
-  assert.match(privacy, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'privacy.astro must identify Hop Mesh, LLC as Delaware LLC');
+  // Must identify Hop Mesh, LLC exactly without unverified state of organization
+  assert.match(terms, /Hop Mesh, LLC/i, 'terms.astro must identify Hop Mesh, LLC');
+  assert.doesNotMatch(terms, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'terms.astro must not assert unverified state of organization');
+  assert.match(dpa, /Hop Mesh, LLC/i, 'dpa.astro must identify Hop Mesh, LLC');
+  assert.doesNotMatch(dpa, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'dpa.astro must not assert unverified state of organization');
+  assert.match(privacy, /Hop Mesh, LLC/i, 'privacy.astro must identify Hop Mesh, LLC');
+  assert.doesNotMatch(privacy, /Hop Mesh, LLC,\s+a Delaware limited liability company/i, 'privacy.astro must not assert unverified state of organization');
 
-  // terms.astro must include official company legal notice address
-  assert.match(terms, /1309 Coffeen Avenue|legal notice address|registered agent/i, 'terms.astro must include physical legal notice address');
+  // terms.astro must include legal notice channel and counsel placeholder, without ungrounded address
+  assert.match(terms, /legal@hopme\.sh/i, 'terms.astro must include legal notice email');
+  assert.match(terms, /Counsel placeholder/i, 'terms.astro must include counsel placeholder for registered office');
+  assert.doesNotMatch(terms, /1309 Coffeen Avenue/i, 'terms.astro must not assert ungrounded physical address');
 });
 
 test('BIZ-012: acceptable-use must publish DMCA notice procedure and terms must mandate binding individual arbitration with class waiver', () => {
   const aup = readSite('src/pages/acceptable-use.astro');
   const terms = readSite('src/pages/terms.astro');
 
-  // acceptable-use.astro must publish DMCA safe harbor agent and notice requirements
+  // acceptable-use.astro must publish DMCA notice procedure directed to copyright team
   assert.match(aup, /Digital Millennium Copyright Act|DMCA/i, 'acceptable-use.astro must publish DMCA policy');
-  assert.match(aup, /dmca@hopme\.sh/i, 'acceptable-use.astro must designate dmca@hopme.sh agent');
+  assert.match(aup, /dmca@hopme\.sh/i, 'acceptable-use.astro must designate dmca@hopme.sh for notices');
+  assert.match(aup, /DMCA notices should be sent to/i, 'acceptable-use.astro must state DMCA notices should be sent to copyright team');
   assert.match(aup, /counter-notice/i, 'acceptable-use.astro must publish DMCA counter-notification procedure');
+  assert.doesNotMatch(aup, /1309 Coffeen Avenue/i, 'acceptable-use.astro must not assert ungrounded physical address');
 
   // terms.astro Section 10 must mandate binding individual arbitration, class action waiver, and jury waiver
   assert.match(terms, /binding (?:individual )?arbitration/i, 'terms.astro must mandate binding arbitration');
@@ -234,17 +242,27 @@ test('BIZ-013: DESIGN.md Section 37 must align billing meters with pricing.astro
   assert.match(costModel, /\$0\.002 per backbone delivery/i, 'pricing-cost-model.md must match Reach delivery price');
 });
 
-test('BIZ-014: early-access and business pages must reflect developer preview / testnet status', () => {
+test('BIZ-014: early-access, business, index, and quickstart pages must reflect developer preview / testnet status without dead status links or auto-redirect', () => {
   const earlyAccess = readSite('src/pages/early-access.astro');
   const business = readSite('src/pages/business.astro');
+  const index = readSite('src/pages/index.astro');
+  const quickstart = readSite('src/pages/docs/quickstart.astro');
 
-  // early-access must NOT claim "Early access is over" or unrestricted production readiness
+  // early-access must NOT claim "Early access is over", must not auto-redirect, and must not link to status.hopme.sh
   assert.doesNotMatch(earlyAccess, /Early access is over/i, 'early-access.astro must not claim early access is over');
+  assert.doesNotMatch(earlyAccess, /window\.location\.replace/i, 'early-access.astro must not auto-redirect');
+  assert.doesNotMatch(earlyAccess, /status\.hopme\.sh/i, 'early-access.astro must not link to non-resolving status.hopme.sh');
   assert.match(earlyAccess, /developer preview|testnet/i, 'early-access.astro must describe developer preview / testnet status');
-  assert.match(earlyAccess, /status\.hopme\.sh|operational status/i, 'early-access.astro must link or reference operational status');
 
-  // business.astro must describe preview / testnet status for managed backbone
+  // business.astro must describe preview / testnet status and not link to status.hopme.sh
   assert.match(business, /developer preview|testnet/i, 'business.astro must describe preview / testnet status');
+  assert.doesNotMatch(business, /status\.hopme\.sh/i, 'business.astro must not link to non-resolving status.hopme.sh');
+
+  // index.astro and quickstart.astro must qualify hosted fleet access as preview and not link to status.hopme.sh
+  assert.match(index, /developer preview|preview/i, 'index.astro must qualify hosted backbone with preview');
+  assert.match(quickstart, /developer preview|preview/i, 'quickstart.astro must describe developer preview');
+  assert.doesNotMatch(index, /status\.hopme\.sh/i, 'index.astro must not link to status.hopme.sh');
+  assert.doesNotMatch(quickstart, /status\.hopme\.sh/i, 'quickstart.astro must not link to status.hopme.sh');
 });
 
 test('BIZ-015: CLA templates must not contain generic template disclaimers, CONTRIBUTING.md must document CLA, and DCO workflow must exist', () => {
@@ -252,8 +270,35 @@ test('BIZ-015: CLA templates must not contain generic template disclaimers, CONT
   assert.match(contributing, /Contributor License Agreement|CLA/i, 'CONTRIBUTING.md must document CLA requirement');
   assert.match(contributing, /Developer Certificate of Origin|DCO/i, 'CONTRIBUTING.md must document DCO / sign-off');
 
-  // .github/workflows/dco.yml must exist
+  // .github/workflows/dco.yml must exist, gate only external contributors, and exempt maintainers / bots
   assert.equal(existsSync(resolve(repoRoot, '.github/workflows/dco.yml')), true, '.github/workflows/dco.yml must exist');
+  const dcoWorkflow = readRepo('.github/workflows/dco.yml');
+  assert.doesNotMatch(dcoWorkflow, /pull_request_target/i, 'dco.yml must never use pull_request_target');
+  assert.match(dcoWorkflow, /OWNER/i, 'dco.yml must reference OWNER author_association');
+  assert.match(dcoWorkflow, /MEMBER/i, 'dco.yml must reference MEMBER author_association');
+  assert.match(dcoWorkflow, /COLLABORATOR/i, 'dco.yml must reference COLLABORATOR author_association');
+  assert.match(dcoWorkflow, /dependabot\[bot\]/i, 'dco.yml must explicitly exempt dependabot[bot]');
+  assert.match(dcoWorkflow, /hop-sync/i, 'dco.yml must explicitly exempt hop-sync');
+
+  // Self-test of DCO shell logic: maintainers and bots must exit 0, external contributors must be validated
+  const dcoRunScript = dcoWorkflow.match(/run:\s*\|\n([\s\S]*?)(?=\n\s*\w+:|$)/)[1];
+  const resOwner = spawnSync('bash', ['-c', dcoRunScript], {
+    env: { ...process.env, AUTHOR_ASSOCIATION: 'OWNER' }
+  });
+  assert.equal(resOwner.status, 0, 'DCO script must exit 0 for OWNER');
+  assert.match(resOwner.stdout.toString(), /Exempting repository maintainer \(OWNER\)/);
+
+  const resBot = spawnSync('bash', ['-c', dcoRunScript], {
+    env: { ...process.env, ACTOR: 'dependabot[bot]' }
+  });
+  assert.equal(resBot.status, 0, 'DCO script must exit 0 for dependabot[bot]');
+  assert.match(resBot.stdout.toString(), /Exempting automated actor \(dependabot\[bot\]\)/);
+
+  const resSync = spawnSync('bash', ['-c', dcoRunScript], {
+    env: { ...process.env, PR_USER: 'hop-sync' }
+  });
+  assert.equal(resSync.status, 0, 'DCO script must exit 0 for hop-sync');
+  assert.match(resSync.stdout.toString(), /Exempting automated PR author \(hop-sync\)/);
 
   // All 22 CLA.md files must NOT have "This is a template"
   const claPaths = [
@@ -287,11 +332,15 @@ test('BIZ-015: CLA templates must not contain generic template disclaimers, CONT
   }
 });
 
-test('BIZ-016: EU SCC package and TIA documentation must exist and be referenced in dpa.astro', () => {
+test('BIZ-016: EU SCC package and TIA documentation must exist, render as site pages, and be referenced in dpa.astro as template', () => {
   assert.equal(existsSync(resolve(repoRoot, 'docs/legal/eu-scc-package.md')), true, 'docs/legal/eu-scc-package.md must exist');
   assert.equal(existsSync(resolve(repoRoot, 'docs/legal/transfer-impact-assessment.md')), true, 'docs/legal/transfer-impact-assessment.md must exist');
+  assert.equal(existsSync(resolve(repoRoot, 'apps/web/site/src/pages/legal/eu-scc-package.astro')), true, 'eu-scc-package.astro must exist');
+  assert.equal(existsSync(resolve(repoRoot, 'apps/web/site/src/pages/legal/transfer-impact-assessment.astro')), true, 'transfer-impact-assessment.astro must exist');
 
   const scc = readRepo('docs/legal/eu-scc-package.md');
+  assert.match(scc, /template/i, 'SCC package must describe itself as a template to be executed upon request');
+  assert.match(scc, /never pre-executed/i, 'SCC package must state it is never pre-executed');
   assert.match(scc, /Module 2.*Controller-to-Processor/i, 'SCC package must include Module 2');
   assert.match(scc, /Module 3.*Processor-to-Processor/i, 'SCC package must include Module 3');
   assert.match(scc, /ANNEX I/i, 'SCC package must include Annex I');
@@ -302,7 +351,8 @@ test('BIZ-016: EU SCC package and TIA documentation must exist and be referenced
   assert.match(tia, /FISA 702|Schrems II/i, 'TIA must address US legal regime');
 
   const dpa = readSite('src/pages/dpa.astro');
-  assert.match(dpa, /docs\/legal\/eu-scc-package|Standard Contractual Clauses \(SCCs\)/i, 'dpa.astro must reference SCC package');
+  assert.match(dpa, /\/legal\/eu-scc-package\//i, 'dpa.astro must reference /legal/eu-scc-package/');
+  assert.match(dpa, /\/legal\/transfer-impact-assessment\//i, 'dpa.astro must reference /legal/transfer-impact-assessment/');
 });
 
 test('BIZ-017: terms and privacy must enforce minimum age floor and privacy must disclose third-party icon script', () => {
@@ -340,4 +390,16 @@ test('CLAIM-020: privacy.astro and dpa.astro must accurately describe persistent
 
   // dpa.astro must disclose persistent relay KV storage
   assert.match(dpa, /relays\/\{node\}\/kv|device public keys and timestamps|session.*metadata/i, 'dpa.astro must disclose persistent session and device metadata in relay KV');
+});
+
+test('CLAIM-018: index.astro must describe universal C ABI and HopContract bindings rather than UniFFI', () => {
+  const index = readSite('src/pages/index.astro');
+  assert.doesNotMatch(index, /native bindings via UniFFI/i, 'index.astro must not claim native bindings via UniFFI');
+  assert.match(index, /universal C ABI|HopContract/i, 'index.astro must describe universal C ABI and HopContract bindings');
+});
+
+test('CLAIM-017: sdk/elixir/mix.exs must reflect Apache-2.0 license for vendored protocol crates', () => {
+  const mix = readRepo('sdk/elixir/mix.exs');
+  assert.doesNotMatch(mix, /crates retain FSL/i, 'mix.exs must not claim vendored protocol crates retain FSL');
+  assert.match(mix, /vendored protocol crates are Apache-2\.0/i, 'mix.exs must document vendored protocol crates as Apache-2.0');
 });

@@ -2,7 +2,7 @@
 
 **Document Version:** 1.0  
 **Effective Date:** September 4, 2026  
-**Entity:** Hop Mesh, LLC, a Delaware limited liability company  
+**Entity:** Hop Mesh, LLC  
 **Scope:** Transfers of personal data from the European Economic Area (EEA), United Kingdom, and Switzerland to the United States in connection with the Hop Hosted Services.
 
 ---

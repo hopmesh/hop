@@ -2,7 +2,7 @@
 
 **Document Version:** 1.0  
 **Effective Date:** September 4, 2026  
-**Entity:** Hop Mesh, LLC, a Delaware limited liability company  
+**Entity:** Hop Mesh, LLC  
 **Classification Scope:** Hop cryptographic protocol software, client SDKs, hosted backbone services, and commercial defense / public safety licensing.
 
 ---

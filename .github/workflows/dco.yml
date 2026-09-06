@@ -6,11 +6,11 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   dco-check:
     name: Verify DCO and CLA
+    if: ${{ !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && !contains(fromJSON('["dependabot[bot]","hop-sync"]'), github.actor) && !contains(fromJSON('["dependabot[bot]","hop-sync"]'), github.event.pull_request.user.login) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -23,7 +23,29 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          ACTOR: ${{ github.actor }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
         run: |
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Exempting repository maintainer ($AUTHOR_ASSOCIATION) from DCO check."
+              exit 0
+              ;;
+          esac
+          case "$ACTOR" in
+            "dependabot[bot]"|"hop-sync")
+              echo "Exempting automated actor ($ACTOR) from DCO check."
+              exit 0
+              ;;
+          esac
+          case "$PR_USER" in
+            "dependabot[bot]"|"hop-sync")
+              echo "Exempting automated PR author ($PR_USER) from DCO check."
+              exit 0
+              ;;
+          esac
+
           echo "Checking commits between $BASE_SHA and $HEAD_SHA for DCO sign-off..."
           failed=0
           while IFS= read -r sha; do

@@ -1,10 +1,6 @@
 ---
-// Retired. Signup is self-serve now, so this URL forwards to the console instead of gating on a lead
-// form. Kept as a real page rather than an astro.config redirect for two reasons: the static build
-// emits config redirects as same-origin paths, and this destination is a different host; and inbound
-// links (old emails, the deck, anything already shared) still point here, so the URL has to resolve.
-// The redirect is a script rather than a meta refresh because Base.astro exposes no head slot. The
-// visible content below is the no-JS fallback, and it is a working CTA in its own right.
+// Developer preview onboarding page. Explains testnet and developer preview status
+// before directing users to the dashboard.
 import Base from '../layouts/Base.astro';
 
 const CONSOLE = 'https://dashboard.hopme.sh/';
@@ -18,18 +14,14 @@ const CONSOLE = 'https://dashboard.hopme.sh/';
     <div class="wrap">
       <div class="eyebrow">Developer preview</div>
       <h1>Testnet &amp; developer <span style="color:var(--accent)">preview.</span></h1>
-      <p class="lede">Hop is open for developer preview and testnet evaluation. Client SDKs and peer-to-peer protocols are fully operational, while the managed cloud relay fleet is undergoing staged bring-up. Create a developer account, test integrations, and monitor live fleet availability at <a href="https://status.hopme.sh">status.hopme.sh</a>.</p>
+      <p class="lede">Hop is open for developer preview and testnet evaluation. Client SDKs and peer-to-peer protocols are fully operational, while the managed cloud relay fleet is undergoing staged bring-up. Create a developer account and test integrations across local and hosted transports.</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href={CONSOLE}>Start free →</a>
         <a class="btn btn-ghost" href="/docs/quickstart/">Read the quickstart</a>
       </div>
-      <p class="note mt-m">Taking you to the console now. If nothing happens,
-         <a href={CONSOLE}>open it here</a>. For operational fleet status, visit <a href="https://status.hopme.sh">status.hopme.sh</a>. Building something unusual, or need a private fleet or a
+      <p class="note mt-m">Access the developer console at <a href={CONSOLE}>dashboard.hopme.sh</a> to manage your keys and view usage. Building something unusual, or need a private fleet or a
          commercial license? Write <a href="mailto:hello@hopme.sh">hello@hopme.sh</a>.</p>
     </div>
   </section>
 </Base>
 
-<script is:inline>
-  window.location.replace('https://dashboard.hopme.sh/');
-</script>

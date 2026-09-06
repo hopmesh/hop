@@ -1,8 +1,8 @@
-# Hop Mesh EU Standard Contractual Clauses (SCC) Execution Package
+# Hop Mesh EU Standard Contractual Clauses (SCC) Template Package
 
-This document constitutes the standard EU Standard Contractual Clauses (SCCs) execution package
-incorporated by reference into the Hop Data Processing Addendum (DPA) between Customer and
-Hop Mesh, LLC, a Delaware limited liability company ("Hop").
+This document constitutes a template EU Standard Contractual Clauses (SCCs) package available to be
+formally executed between Customer and Hop Mesh, LLC ("Hop") [Counsel placeholder: state of organization
+to be inserted upon confirmation of corporate filings] for cross-border transfers of personal data under GDPR Chapter V.
 
 These Clauses comply with European Commission Implementing Decision (EU) 2021/914 of 4 June 2021
 on standard contractual clauses for the transfer of personal data to third countries pursuant to
@@ -18,10 +18,9 @@ Depending on Customer's regulatory role:
 
 ## Execution and Parties
 
-The parties agree that execution of the Hop Terms of Service, DPA, or an enterprise Master Services
-Agreement incorporates these Clauses by reference. Where a formal bilateral countersignature is
-required by Customer's compliance policies, executed counterparts may be returned to
-privacy@hopme.sh.
+This package is a template to be executed upon request with the customer, never pre-executed. Where
+international data transfers require formal bilateral execution of these Clauses, customers may request,
+complete, and execute a countersigned package by contacting privacy@hopme.sh.
 
 ---
 
@@ -135,9 +134,9 @@ The Parties agree to submit to the jurisdiction of the courts of Dublin, Ireland
 - **Data Exporter:** Customer utilizing the Hop Hosted Services.
   - Role: Data Controller (Module 2) or Data Processor (Module 3).
   - Address and Contact: As designated in Customer's account profile or enterprise order form.
-- **Data Importer:** Hop Mesh, LLC, a Delaware limited liability company.
+- **Data Importer:** Hop Mesh, LLC.
   - Role: Data Processor (Module 2) or Subprocessor (Module 3).
-  - Address: 1309 Coffeen Avenue STE 1200, Sheridan, WY 82801, USA.
+  - Address: [Counsel placeholder: registered office street address to be inserted upon confirmation of corporate filings].
   - Contact: privacy@hopme.sh.
 
 ### B. Description of Transfer
