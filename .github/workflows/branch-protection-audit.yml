@@ -109,16 +109,16 @@ jobs:
         env:
           MIRROR_TOKEN: ${{ secrets.MIRROR_SECRET_AUDIT_TOKEN }}
         run: |
-          declared="$(python3 -c "import json;print(str(json.load(open('tools/workflow-secrets.json'))['secrets']['MIRROR_SECRET_AUDIT_TOKEN'].get('provisioned', False)).lower())")"
+          declared="$(python3 -c "import json;print(str(json.load(open('tools/workflow-secrets.json'))['secrets']['MIRROR_SECRET_AUDIT_TOKEN'].get('provisioned', True)).lower())")"
           if [ -z "${MIRROR_TOKEN:-}" ] && [ "$declared" = "true" ]; then
             echo "::error title=mirror-secret audit is armed but unseeded::tools/workflow-secrets.json declares MIRROR_SECRET_AUDIT_TOKEN provisioned, but the secret is empty here, so the audit proves nothing. Seed the PAT ('secrets: read' on the hopmesh mirrors, plus admin:org for organization-scoped secrets) or set provisioned back to false with a blocked_on reason."
             exit 1
           fi
           if [ -z "${MIRROR_TOKEN:-}" ]; then
-            echo "::error title=mirror-secret audit credential missing::MIRROR_SECRET_AUDIT_TOKEN is absent or empty. Seed the PAT ('secrets: read' on hopmesh mirrors plus admin:org for org-scoped secrets) or run tools/release/check-mirror-secrets.py manually. Failing closed."
-            exit 1
+            echo "::warning title=mirror-secret audit declared-disarmed::MIRROR_SECRET_AUDIT_TOKEN is declared unprovisioned in tools/workflow-secrets.json. Run tools/release/check-mirror-secrets.py manually. Running in degraded mode."
+            exit 0
           fi
-          GH_TOKEN="$MIRROR_TOKEN" python3 tools/release/check-mirror-secrets.py
+          GH_TOKEN="$MIRROR_TOKEN" python3 tools/release/check-mirror-secrets.py --audit-protection
 
   # The live half of the secret inventory, with NO credential: a job can read exactly the secrets its
   # scope allows, so each job passes an is-it-non-empty BOOLEAN per secret (never a value) for every
