@@ -2416,23 +2416,131 @@ fn serve_ws(stream: TcpStream, kind: WsKind, ev_tx: &EventTx) {
     let _ = ev_tx.send(Ev::Down(link));
 }
 
-/// Strip any userinfo component (`user:pass@` or `user@`) from a dial URL before logging.
+/// Strip any userinfo component (`user:pass@` or `user@`) and sanitize query parameters
+/// (`?key=value`) from a dial URL or error string before logging.
 ///
-/// SVC-010: Dial URLs must never carry credentials as the supported auth path. Noise handles
+/// SVC-010, SVC-015: Dial URLs must never carry credentials as the supported auth path. Noise handles
 /// peer authentication; this redaction is defense-in-depth against credential leaks into operator
-/// and public netlog streams if an operator inadvertently configures HTTP Basic Auth userinfo.
+/// and public netlog streams if an operator inadvertently configures HTTP Basic Auth userinfo or
+/// authentication tokens in URL query strings (e.g. ?token=secret).
 /// Only the peer dialer logs a URL, so the helper is compiled with it.
 #[cfg(feature = "firestore")]
-fn redact_dial_url(raw: &str) -> String {
-    if let Some((scheme, rest)) = raw.split_once("://") {
+fn redact_url_part(url_str: &str) -> String {
+    if let Some((scheme, rest)) = url_str.split_once("://") {
         let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let authority = &rest[..path_start];
-        let suffix = &rest[path_start..];
-        if let Some((_userinfo, host_port)) = authority.split_once('@') {
-            return format!("{scheme}://{host_port}{suffix}");
-        }
+        let remainder = &rest[path_start..];
+
+        let host_port = if let Some((_userinfo, hp)) = authority.split_once('@') {
+            hp
+        } else {
+            authority
+        };
+
+        let query_start = remainder.find('?');
+        let frag_start = remainder.find('#');
+
+        let path = match (query_start, frag_start) {
+            (Some(q), _) => &remainder[..q],
+            (None, Some(f)) => &remainder[..f],
+            (None, None) => remainder,
+        };
+
+        let query_part = match (query_start, frag_start) {
+            (Some(q), Some(f)) if q < f => Some(&remainder[q + 1..f]),
+            (Some(q), None) => Some(&remainder[q + 1..]),
+            _ => None,
+        };
+
+        let frag_part = match frag_start {
+            Some(f) => Some(&remainder[f..]),
+            None => None,
+        };
+
+        let sanitized_query = if let Some(query) = query_part {
+            let mut params = Vec::new();
+            for param in query.split('&') {
+                if param.is_empty() {
+                    continue;
+                }
+                if let Some((k, _v)) = param.split_once('=') {
+                    params.push(format!("{k}=<redacted>"));
+                } else {
+                    params.push("<redacted>".to_string());
+                }
+            }
+            format!("?{}", params.join("&"))
+        } else {
+            String::new()
+        };
+
+        let frag = frag_part.unwrap_or("");
+        format!("{scheme}://{host_port}{path}{sanitized_query}{frag}")
+    } else {
+        url_str.to_string()
     }
-    raw.to_string()
+}
+
+#[cfg(feature = "firestore")]
+fn redact_dial_url(raw: &str) -> String {
+    if let Some(scheme_idx) = raw.find("://") {
+        let prefix = &raw[..scheme_idx];
+        let scheme_start = prefix
+            .rfind(|c: char| !c.is_alphanumeric() && c != '+' && c != '-' && c != '.')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let before_url = &raw[..scheme_start];
+        let from_url = &raw[scheme_start..];
+
+        let mut url_len = from_url
+            .find(|c: char| c.is_whitespace() || c == ')' || c == '"' || c == '\'')
+            .unwrap_or(from_url.len());
+        while url_len > 0 {
+            let last_ch = from_url[..url_len].chars().last().unwrap();
+            if last_ch == ':' || last_ch == ',' || last_ch == '.' || last_ch == ';' {
+                url_len -= last_ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let url_part = &from_url[..url_len];
+        let after_url = &from_url[url_len..];
+
+        let redacted_url = redact_url_part(url_part);
+        format!("{}{}{}", before_url, redacted_url, redact_dial_url(after_url))
+    } else if let Some(q_idx) = raw.find('?') {
+        let before_q = &raw[..q_idx];
+        let from_q = &raw[q_idx + 1..];
+        let mut end_q = from_q
+            .find(|c: char| c.is_whitespace() || c == ')' || c == '"' || c == '\'' || c == '#')
+            .unwrap_or(from_q.len());
+        while end_q > 0 {
+            let last_ch = from_q[..end_q].chars().last().unwrap();
+            if last_ch == ':' || last_ch == ',' || last_ch == '.' || last_ch == ';' {
+                end_q -= last_ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let q_part = &from_q[..end_q];
+        let after_q = &from_q[end_q..];
+
+        let mut params = Vec::new();
+        for param in q_part.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            if let Some((k, _v)) = param.split_once('=') {
+                params.push(format!("{k}=<redacted>"));
+            } else {
+                params.push("<redacted>".to_string());
+            }
+        }
+        let sanitized = format!("?{}", params.join("&"));
+        format!("{}{}{}", before_q, sanitized, redact_dial_url(after_q))
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Dial one **currently-online** peer relay over TLS WebSocket and bridge it to the driver as
@@ -2539,6 +2647,73 @@ fn dial_peer_redacts_userinfo_from_logs() {
     assert!(
         line.contains("127.0.0.1:1/ws"),
         "log line preserves destination host and path: {line}"
+    );
+}
+
+#[cfg(all(test, feature = "firestore"))]
+#[test]
+fn dial_peer_redacts_query_parameters_from_logs() {
+    // SVC-015: dial URLs carrying query parameters must sanitize them before logging
+    std::env::set_var("HOP_PUBLIC_LOG_STREAM", "1");
+    let (_who, _backlog, rx) = log_hub().subscribe();
+    let (ev_tx, _rx) = event_channel();
+    dial_peer(
+        "wss://operator:secret_token_123@127.0.0.1:1/ws?token=SUPER_SECRET_TOKEN_456&key=HIDDEN_KEY_789#section",
+        &ev_tx,
+    );
+    let line = loop {
+        let l = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("log line emitted");
+        if l.contains("SUPER_SECRET_TOKEN_456") || l.contains("token=<redacted>") {
+            break l;
+        }
+    };
+    assert!(
+        !line.contains("SUPER_SECRET_TOKEN_456"),
+        "log line leaked token query param: {line}"
+    );
+    assert!(
+        !line.contains("HIDDEN_KEY_789"),
+        "log line leaked key query param: {line}"
+    );
+    assert!(
+        line.contains("token=<redacted>"),
+        "log line must indicate token was redacted: {line}"
+    );
+    assert!(
+        line.contains("key=<redacted>"),
+        "log line must indicate key was redacted: {line}"
+    );
+    assert!(
+        line.contains("127.0.0.1:1/ws"),
+        "log line preserves destination host and path: {line}"
+    );
+}
+
+#[cfg(all(test, feature = "firestore"))]
+#[test]
+fn test_redact_dial_url_queries_and_errors() {
+    // SVC-015: redact_dial_url must sanitize query parameters and error strings
+    assert_eq!(
+        redact_dial_url("wss://operator:secret@127.0.0.1:1/ws"),
+        "wss://127.0.0.1:1/ws"
+    );
+    assert_eq!(
+        redact_dial_url("wss://operator:secret@127.0.0.1:1/ws?token=SECRET_123"),
+        "wss://127.0.0.1:1/ws?token=<redacted>"
+    );
+    assert_eq!(
+        redact_dial_url("wss://127.0.0.1:1/ws?token=SECRET_123&region=us-west#frag"),
+        "wss://127.0.0.1:1/ws?token=<redacted>&region=<redacted>#frag"
+    );
+    assert_eq!(
+        redact_dial_url("failed to connect to wss://operator:secret@127.0.0.1:1/ws?token=SECRET: 403 Forbidden"),
+        "failed to connect to wss://127.0.0.1:1/ws?token=<redacted>: 403 Forbidden"
+    );
+    assert_eq!(
+        redact_dial_url("HTTP 403 Forbidden for /ws?token=SECRET"),
+        "HTTP 403 Forbidden for /ws?token=<redacted>"
     );
 }
 
