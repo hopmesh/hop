@@ -1540,7 +1540,7 @@ mod tests {
         // SVC-014: corrupt non-32-byte identity files must panic immediately
         let dir = std::env::temp_dir();
         let path = dir.join(format!("test_telemetryd_short_{}.key", std::process::id()));
-        std::fs::write(&path, &[1u8; 31]).unwrap();
+        std::fs::write(&path, [1u8; 31]).unwrap();
         let _guard = DeferRemove(path.clone());
         load_identity(&Some(path.to_str().unwrap().to_string()));
     }
@@ -1551,7 +1551,7 @@ mod tests {
         // SVC-014: corrupt non-32-byte identity files must panic immediately
         let dir = std::env::temp_dir();
         let path = dir.join(format!("test_telemetryd_long_{}.key", std::process::id()));
-        std::fs::write(&path, &[1u8; 33]).unwrap();
+        std::fs::write(&path, [1u8; 33]).unwrap();
         let _guard = DeferRemove(path.clone());
         load_identity(&Some(path.to_str().unwrap().to_string()));
     }
@@ -1559,7 +1559,10 @@ mod tests {
     #[test]
     fn load_identity_generates_and_persists_then_reloads_stable() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("test_telemetryd_persist_{}.key", std::process::id()));
+        let path = dir.join(format!(
+            "test_telemetryd_persist_{}.key",
+            std::process::id()
+        ));
         let _guard = DeferRemove(path.clone());
         let id1 = load_identity(&Some(path.to_str().unwrap().to_string()));
         let id2 = load_identity(&Some(path.to_str().unwrap().to_string()));
@@ -1598,7 +1601,9 @@ mod tests {
         // Client 1: sends partial WS upgrade and stalls without completing headers
         let mut client1 = TcpStream::connect(addr).unwrap();
         client1
-            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n")
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+            )
             .unwrap();
 
         // Wait for server to time out client 1 and drop ConnGuard
@@ -1627,7 +1632,8 @@ mod tests {
             }
         }
         assert!(
-            resp.starts_with("HTTP/1.1 200 OK") || resp.starts_with("HTTP/1.1 503 Service Unavailable"),
+            resp.starts_with("HTTP/1.1 200 OK")
+                || resp.starts_with("HTTP/1.1 503 Service Unavailable"),
             "healthz responded after stalled client: {resp}"
         );
         drop(client1);
@@ -1651,9 +1657,15 @@ mod tests {
 
         let deleted = sweep_expired_telemetry_markers(&mut store, now_ms);
         assert_eq!(deleted, 2, "both expired and future markers pruned");
-        assert!(store.get_kv(&format!("telemetry_seen/{expired_epoch}/id1")).is_none());
-        assert!(store.get_kv(&format!("telemetry_seen/{valid_epoch}/id2")).is_some());
-        assert!(store.get_kv(&format!("telemetry_seen/{future_epoch}/id3")).is_none());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{expired_epoch}/id1"))
+            .is_none());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{valid_epoch}/id2"))
+            .is_some());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{future_epoch}/id3"))
+            .is_none());
     }
 
     #[test]

@@ -3991,7 +3991,14 @@ mod tests {
                 let dt = done_tx.clone();
                 std::thread::spawn(move || {
                     let _guard = ConnGuard;
-                    serve_conn(sock, &tx, "http://127.0.0.1:1", &h, 1024, TrustedProxy::None);
+                    serve_conn(
+                        sock,
+                        &tx,
+                        "http://127.0.0.1:1",
+                        &h,
+                        1024,
+                        TrustedProxy::None,
+                    );
                     let _ = dt.send(());
                 });
             }
@@ -4000,7 +4007,9 @@ mod tests {
         // Client 1: sends partial WS upgrade and stalls without completing headers
         let mut client1 = TcpStream::connect(addr).unwrap();
         client1
-            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n")
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+            )
             .unwrap();
 
         // Wait for server to time out client 1 and drop ConnGuard

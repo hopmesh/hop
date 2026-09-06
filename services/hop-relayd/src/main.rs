@@ -2507,7 +2507,12 @@ fn redact_dial_url(raw: &str) -> String {
         let after_url = &from_url[url_len..];
 
         let redacted_url = redact_url_part(url_part);
-        format!("{}{}{}", before_url, redacted_url, redact_dial_url(after_url))
+        format!(
+            "{}{}{}",
+            before_url,
+            redacted_url,
+            redact_dial_url(after_url)
+        )
     } else if let Some(q_idx) = raw.find('?') {
         let before_q = &raw[..q_idx];
         let from_q = &raw[q_idx + 1..];
@@ -2708,7 +2713,9 @@ fn test_redact_dial_url_queries_and_errors() {
         "wss://127.0.0.1:1/ws?token=<redacted>&region=<redacted>#frag"
     );
     assert_eq!(
-        redact_dial_url("failed to connect to wss://operator:secret@127.0.0.1:1/ws?token=SECRET: 403 Forbidden"),
+        redact_dial_url(
+            "failed to connect to wss://operator:secret@127.0.0.1:1/ws?token=SECRET: 403 Forbidden"
+        ),
         "failed to connect to wss://127.0.0.1:1/ws?token=<redacted>: 403 Forbidden"
     );
     assert_eq!(

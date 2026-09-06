@@ -903,7 +903,7 @@ mod tests {
         // SVC-014: corrupt non-32-byte identity files must panic immediately
         let dir = std::env::temp_dir();
         let path = dir.join(format!("test_gw_short_{}.key", std::process::id()));
-        std::fs::write(&path, &[1u8; 31]).unwrap();
+        std::fs::write(&path, [1u8; 31]).unwrap();
         let _guard = DeferRemove(path.clone());
         load_identity(&Some(path.to_str().unwrap().to_string()));
     }
@@ -914,7 +914,7 @@ mod tests {
         // SVC-014: corrupt non-32-byte identity files must panic immediately
         let dir = std::env::temp_dir();
         let path = dir.join(format!("test_gw_long_{}.key", std::process::id()));
-        std::fs::write(&path, &[1u8; 33]).unwrap();
+        std::fs::write(&path, [1u8; 33]).unwrap();
         let _guard = DeferRemove(path.clone());
         load_identity(&Some(path.to_str().unwrap().to_string()));
     }
