@@ -37,6 +37,9 @@ check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the single
                            `CI gate` context (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
                            Defaults to hopmesh/hop; override with GH_REPO for a fork or staging repo.
+check-worktree-checkpoints.sh asserts that all active worktrees have clean working trees and that their
+                           HEAD commits are reachable from a named branch before pruning (PROC-014).
+                           Self-test: check-worktree-checkpoints.test.sh.
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
                            empty, truncated, or drifted. TWO-TIER licenses: services/* byte-identical
                            FSL-1.1-ALv2, every other component (core, sdk, bearers, drivers, examples)
