@@ -192,6 +192,11 @@ test('CLAIM-021: drivers.js must accurately describe ESP32 C ABI consumption ins
     /no-std/i,
     'drivers.js line 54 must not claim ESP32 runs in a no-std embedded context'
   );
+  assert.doesNotMatch(
+    drivers,
+    /bare-metal/i,
+    'drivers.js line 51 must not claim ESP32 is a bare-metal host'
+  );
   assert.match(
     drivers,
     /ESP-IDF/i,

@@ -48,7 +48,7 @@ export const drivers = [
     id: 'esp32', name: 'ESP32', icon: '<i class="fa-duotone fa-solid fa-microchip"></i>',
     status: 'In development', tagline: 'Embedded host for the long-range bridge',
     summary:
-      'A bare-metal host that runs hop-core on an ESP32 and drives BLE on one side and a long-range 900 MHz radio on the other, the Hop Bridge.',
+      'An embedded host running ESP-IDF that embeds hop-core via the C ABI on an ESP32 and drives BLE on one side and a long-range 900 MHz radio on the other, the Hop Bridge.',
     bearers: ['BLE', '900 MHz, LoRa + other sub-GHz firmware'],
     notes: [
       'Runs the core compiled against ESP-IDF and FreeRTOS using the C ABI (sdk/hop.h), driving a sub-GHz radio module.',
