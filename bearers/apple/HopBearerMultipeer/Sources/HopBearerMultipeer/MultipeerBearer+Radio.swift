@@ -32,6 +32,7 @@ extension MultipeerBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate,
             self.linkByPeer.removeAll()
             self.peerNameByLink.removeAll()
             for id in orphans { self.sink?.linkDown(id) }
+            self.deadPeerNames.removeAll()
         }
     }
 
@@ -91,6 +92,15 @@ extension MultipeerBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate,
         peerID = nil
     }
 
+    func cycleStack() {
+        guard !stopped else { return }
+        let hadStack = (session != nil || advertiser != nil || browser != nil)
+        guard hadStack else { return }
+        tearDownStack()
+        buildStack()
+        NSLog("HOPLOG p2p cycle session: stack rebuilt to evict dead peers")
+    }
+
     func sendToPeer(named name: String, _ bytes: Data) {
         guard let s = session, let peer = s.connectedPeers.first(where: { $0.displayName == name }) else { return }
         try? s.send(bytes, toPeers: [peer], with: .reliable)
@@ -145,6 +155,7 @@ extension MultipeerBearer: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate,
                 let pid = MultipeerBearer.peerId(fromDisplayName: name) ?? Data()
                 self.sink?.linkUp(link, role: role, peerId: pid)
             case .notConnected:
+                self.deadPeerNames.remove(name)
                 guard let link = self.noteDisconnected(peerName: name) else { return }
                 self.sink?.linkDown(link)
             case .connecting:

@@ -87,6 +87,8 @@ UniFFI bindings from the APP's generated dir, so publishing it would need that r
   Advert-only / zero-GATT L2CAP is not accepted by Android. Prototype BLE changes in `apps/ble-lab` on
   fresh hardware first.
 - Dedup routes through the pure keep-rule cores; the tiebreaker is an unbiased random id, never a MAC.
+  When neither leg matches the keep-dialed rule (e.g. duplicate incoming acceptors), the existing leg
+  survives to protect in-flight handshakes from incoming rogue HELLO eviction (PLAT-014).
 
 ## The parity problem (bearers have no shared core)
 
@@ -129,6 +131,10 @@ lesson applied up front.
 ## Bearer pre-authentication deadline (Contract 4, PLAT-005)
 
 A link that is not authenticated (Noise handshake complete) within `PREAUTH_DEADLINE` (10 seconds: `PREAUTH_DEADLINE_S = 10.0` on Apple, `PREAUTH_DEADLINE_MS = 10_000L` on Android) is closed and its admission lease released, independent of transport liveness. Message-oriented transports cap a single inbound message at the core's `MAX_LINK_PACKET_BYTES` (64 KiB) before materialising it.
+
+On Apple Multipeer (`HopBearerMultipeer`), because `MCSession` lacks an individual peer disconnect API, closed and reaped unauthenticated peers are tracked as dead peers; the bearer cycles the `MCSession` upon unauthenticated peer exhaustion (approaching the 8-peer OS ceiling or becoming idle with dead peers lingering) to prevent permanent slot starvation (PLAT-015).
+
+Relay dial logging redacts RFC 3986 userinfo credentials (username:password@) in addition to query parameters and fragments before emitting dial logs (PLAT-016).
 
 ## The Apple BLE radio lifecycle is guarded structurally, because it cannot be tested
 
