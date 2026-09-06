@@ -46,12 +46,12 @@ def parse_type(t_str: str) -> dict:
     elif "int64_t" in t_str:
         width = 64
         signed = True
-    elif "intptr_t" in t_str:
-        width = 64
-        signed = True
     elif "uintptr_t" in t_str or "size_t" in t_str:
         width = 64
         signed = False
+    elif "intptr_t" in t_str:
+        width = 64
+        signed = True
     elif "char" in t_str:
         width = 8
         signed = True
@@ -275,6 +275,20 @@ def check_manifest(header_path: str, manifest_path: str) -> list[str]:
 
     return errors
 
+def run_self_test() -> int:
+    """Self-test for generate-abi-manifest.py (ABI-016)."""
+    t_uintptr = parse_type("uintptr_t")
+    t_intptr = parse_type("intptr_t")
+    t_size = parse_type("size_t")
+    assert t_uintptr["signed"] is False, f"uintptr_t signed must be False, got {t_uintptr['signed']}"
+    assert t_uintptr["width_bits"] == 64, f"uintptr_t width must be 64, got {t_uintptr['width_bits']}"
+    assert t_intptr["signed"] is True, f"intptr_t signed must be True, got {t_intptr['signed']}"
+    assert t_intptr["width_bits"] == 64, f"intptr_t width must be 64, got {t_intptr['width_bits']}"
+    assert t_size["signed"] is False, f"size_t signed must be False, got {t_size['signed']}"
+    assert t_size["width_bits"] == 64, f"size_t width must be 64, got {t_size['width_bits']}"
+    print("generate-abi-manifest self-test: OK (uintptr_t signed:false, intptr_t signed:true)")
+    return 0
+
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -282,13 +296,15 @@ def main():
     out_path = os.path.join(root, "tools", "codegen", "abi-manifest.json")
     check_mode = False
 
+    if "--self-test" in sys.argv or "--test" in sys.argv:
+        sys.exit(run_self_test())
+
     args = []
     for arg in sys.argv[1:]:
         if arg == "--check":
             check_mode = True
         else:
             args.append(arg)
-
     if len(args) > 0:
         header_path = args[0]
     if len(args) > 1:
