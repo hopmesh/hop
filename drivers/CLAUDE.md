@@ -29,3 +29,12 @@ excluded from the denominator and covered by the on-device workflow.
 `drivers/android/hop-driver` reads its UniFFI bindings + native libs from the APP's generated dir
 (`../../../apps/android/HopDemo/generated`), produced by CI. That is a deliberate back-reference; keep
 the path in sync if either side moves.
+
+## Transport link authentication vs message sessions (PLAT-013)
+
+A transport link is authenticated as soon as its Noise XX handshake completes, reported by the node via
+`peerLinks()`. The driver marks these links secured in `BearerManager` (`bearerMgr.markSecured(link)`),
+exempting them from the 10-second pre-authentication deadline reaper (`checkPreauthDeadlines`). This is
+distinct from `node.isSecured(address)`, which checks whether an application-level Double Ratchet forward-secret
+user messaging session exists; newly discovered neighbours and cloud relay links complete Noise XX without having
+an application-level ratchet session.

@@ -7,7 +7,7 @@ import kotlin.test.assertTrue
 /**
  * PLAT-005: ensures no Bearer implementation in the repo can omit `override fun authenticated(link: Long)`.
  *
- * When a bearer enforces a preauth deadline, the driver polls node.isSecured and routes through
+ * When a bearer enforces a preauth deadline, the driver polls node.peerLinks() and routes through
  * BearerManager.markSecured to bearer.authenticated(local). An empty default in interface Bearer
  * allows an implementation to silently drop authentication signals, leading to legitimate peers being
  * reaped at the preauth deadline.

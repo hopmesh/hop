@@ -578,9 +578,7 @@ public final class HopBearer: NSObject, ObservableObject {
             self.node.tick(nowMs: now)
             let peerLinks = self.node.peerLinks()
             for pl in peerLinks {
-                if self.node.isSecured(address: pl.address) {
-                    self.bearerMgr.markSecured(pl.link)
-                }
+                self.bearerMgr.markSecured(pl.link)
             }
             self.bearerMgr.checkPreauthDeadlines(now)
             // Re-publish our prekey periodically so a neighbour whose cached copy lapsed (or who
@@ -1074,9 +1072,7 @@ public final class HopBearer: NSObject, ObservableObject {
                 .filter { $0.publisher != mine }
             let peerLinks = self.node.peerLinks()
             for pl in peerLinks {
-                if self.node.isSecured(address: pl.address) {
-                    self.bearerMgr.markSecured(pl.link)
-                }
+                self.bearerMgr.markSecured(pl.link)
             }
             self.bearerMgr.checkPreauthDeadlines(HopBearer.nowMs())
             let secured = Set(contactKeys.filter { self.node.isSecured(address: $0) })
