@@ -183,4 +183,34 @@ printf 'export function d(b: Uint8Array): unknown {\n  return new parent.TextDec
   > "$work/$src/scratch.ts"
 run_case parent-property fail "TextDecoder is not safe on Hermes" "$work"
 
+# 22. ABI-018: Multiline aliased destructuring from globalThis must fail
+work="$(sandbox multiline-aliased-destructure)"
+printf 'const {\n  TextDecoder: myDecoder,\n} = globalThis;\nexport function d(b: Uint8Array): unknown {\n  return new myDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case multiline-aliased-destructure fail "TextDecoder is not safe on Hermes" "$work"
+
+# 23. ABI-018: Multiline unaliased destructuring from globalThis must fail
+work="$(sandbox multiline-unaliased-destructure)"
+printf 'const {\n  TextDecoder,\n} = globalThis;\nexport function d(b: Uint8Array): unknown {\n  return new TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case multiline-unaliased-destructure fail "TextDecoder is not safe on Hermes" "$work"
+
+# 24. ABI-018: Local variable aliasing globalThis must fail on property access
+work="$(sandbox alias-globalthis-property)"
+printf 'const g = globalThis;\nexport function d(b: Uint8Array): unknown {\n  return new g.TextDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case alias-globalthis-property fail "TextDecoder is not safe on Hermes" "$work"
+
+# 25. ABI-018: Local variable aliasing globalThis with multiline destructuring must fail
+work="$(sandbox alias-globalthis-destructure)"
+printf 'const g = globalThis;\nconst {\n  TextDecoder: myDecoder,\n} = g;\nexport function d(b: Uint8Array): unknown {\n  return new myDecoder().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case alias-globalthis-destructure fail "TextDecoder is not safe on Hermes" "$work"
+
+# 26. ABI-018: Local variable aliasing window with bracket access must fail
+work="$(sandbox alias-window-bracket)"
+printf 'const w = window;\nexport function d(b: Uint8Array): unknown {\n  const TD = w["TextDecoder"];\n  return new TD().decode(b);\n}\n' \
+  > "$work/$src/scratch.ts"
+run_case alias-window-bracket fail "TextDecoder is not safe on Hermes" "$work"
+
 echo "rn hermes globals guard tests passed"

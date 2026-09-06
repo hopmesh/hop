@@ -72,8 +72,9 @@ export const cases = [
     description:
       'Push a sealed alert or announcement to everyone in an area or topic, it floods the mesh device to device and reaches every subscriber in range, with no cell broadcast or server required.',
     body: [
-      "Send once, reach many. A sealed message published to a topic, or simply sprayed across an area, fans out device to device until it reaches everyone who's subscribed, even when no tower or server is in the picture. Emergency alerts, evacuation notices, event announcements, crew-wide broadcasts.",
+      "Send once, reach many. A sealed message published to a topic, or simply sprayed across an area, fans out device to device until it reaches everyone who's subscribed, even when no tower or server is in the picture. Tactical coordination, event announcements, crew-wide broadcasts.",
       "Topic-based pub/sub over <code>hps://</code> fans a broadcast only to the people who care; members decrypt it, non-members carry it blind, and reach is acknowledged back across the mesh, so a one-to-many push is as reliable as a one-to-one message.",
+      "Notice: Hop provides best-effort delay-tolerant mesh messaging and is not a certified emergency alert system or a replacement for official public safety evacuation and dispatch channels.",
     ],
     uses: [['hps://', '/protocol/hps/'], ['epidemic forwarding', '/protocol/hdp/'], ['hdp://', '/protocol/hdp/']],
     scenarios: ['blackout', 'disaster', 'p2p'],

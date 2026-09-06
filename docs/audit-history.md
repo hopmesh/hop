@@ -43,10 +43,12 @@ Fixed vulnerabilities are worth publishing, and silence is a worse signal than d
 Advisory publication follows a clear division of responsibility:
 
 - **Externally-reported vulnerabilities:** For vulnerabilities reported through coordinated disclosure
-  channels (see `SECURITY.md`), GitHub Security Advisories (GHSAs) are published against this repository
-  upon remediation, naming the affected versions, remediation commits, and crediting reporters.
+  channels (see `SECURITY.md`), GitHub Security Advisories (GHSAs) are reserved for future post-1.0
+  production releases and will be published against this repository upon remediation, naming the affected
+  versions, remediation commits, and crediting reporters. During pre-1.0 development, security fixes
+  are documented in `CHANGELOG.md` and accompanied by regression tests and wire vectors.
 - **Internal dogfooding and adversarial audit findings:** Severity-labeled findings originating from
   internal audit rounds (such as F-xx, SVC-xxx, PROC-xxx, or pre-release items such as the pass-5 DNSSEC
-  name-hijack fix #138 and Node reply UAF #138) are resolved pre-release and tracked directly in
-  `CHANGELOG.md` and repository test vectors rather than as retrospective GHSAs. Where an advisory
+  name-hijack fix and Node reply UAF in commit `ace223bc`, originally hopmesh/monorepo#138) are resolved pre-release
+  and tracked directly in `CHANGELOG.md` and repository test vectors rather than as retrospective GHSAs. Where an advisory
   corresponds to a corpus identifier, it cites it, so the two reconcile without the raw notes being public.

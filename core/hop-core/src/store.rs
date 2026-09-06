@@ -267,17 +267,14 @@ pub trait Store {
     }
     /// Atomically persist `value` under `key` only if `key` does not already exist.
     /// Returns `Ok(true)` if inserted, `Ok(false)` if already present, or `Err(err)` on failure.
+    ///
+    /// Every store backend must explicitly implement this method to guarantee its documented
+    /// atomicity semantics. There is intentionally no default implementation (PROTO-009).
     fn put_kv_if_absent_critical(
         &mut self,
         key: &str,
         value: Vec<u8>,
-    ) -> std::result::Result<bool, String> {
-        if self.get_kv(key).is_some() {
-            return Ok(false);
-        }
-        self.put_kv_critical(key, value)?;
-        Ok(true)
-    }
+    ) -> std::result::Result<bool, String>;
     /// Fetch a persisted value by exact key. Default: `None`.
     fn get_kv(&self, _key: &str) -> Option<Vec<u8>> {
         None
@@ -663,6 +660,23 @@ impl Store for MemoryStore {
         *self = candidate;
         Ok(())
     }
+    /// Atomically persist `value` under `key` only if `key` does not already exist.
+    ///
+    /// Single-threaded atomicity is guaranteed by the exclusive `&mut self` borrow:
+    /// no concurrent reader or writer can interleave between existence check and insertion.
+    /// For cross-thread concurrency, callers must wrap `MemoryStore` in an external synchronization
+    /// primitive (such as `Arc<Mutex<MemoryStore>>`).
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        if self.kv.contains_key(key) {
+            return Ok(false);
+        }
+        self.kv.insert(key.to_string(), value);
+        Ok(true)
+    }
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         self.kv.get(key).cloned()
     }
@@ -841,6 +855,13 @@ mod tests {
                 HaveSet::default()
             }
             fn prune(&mut self, _n: u64) {}
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Ok(false)
+            }
             fn apply_kv_batch(
                 &mut self,
                 _mutations: &[KvMutation],
@@ -924,6 +945,17 @@ mod tests {
             .expect("apply_kv_batch forwards");
         assert_eq!(boxed.get_kv("a"), Some(vec![1]));
         assert_eq!(boxed.get_kv("b"), Some(vec![2]));
+        assert_eq!(
+            boxed.put_kv_if_absent_critical("dedup/1", vec![7]),
+            Ok(true),
+            "put_kv_if_absent_critical forwards"
+        );
+        assert_eq!(
+            boxed.put_kv_if_absent_critical("dedup/1", vec![8]),
+            Ok(false),
+            "put_kv_if_absent_critical forwards duplicate check"
+        );
+        assert_eq!(boxed.get_kv("dedup/1"), Some(vec![7]));
 
         boxed.prune(u64::MAX);
         assert!(!boxed.contains(&b.id()), "prune forwards");
@@ -975,6 +1007,13 @@ mod tests {
             ) -> std::result::Result<(), String> {
                 Err("critical kv persistence unsupported".into())
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Ok(false)
+            }
         }
 
         let b = bundle(1_000);
@@ -1006,6 +1045,53 @@ mod tests {
         assert!(
             store.flush(std::time::Duration::from_millis(1)),
             "default flush reports done immediately, nothing is buffered"
+        );
+    }
+
+    #[test]
+    fn proto_009_memory_store_put_kv_if_absent_critical_concurrency() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let store = Arc::new(Mutex::new(MemoryStore::new()));
+        let barrier = Arc::new(std::sync::Barrier::new(10));
+        let success_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failure_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let s = Arc::clone(&store);
+            let b = Arc::clone(&barrier);
+            let sc = Arc::clone(&success_count);
+            let fc = Arc::clone(&failure_count);
+            handles.push(thread::spawn(move || {
+                b.wait();
+                let mut guard = s.lock().unwrap();
+                match guard.put_kv_if_absent_critical("race_key", vec![i as u8]) {
+                    Ok(true) => {
+                        sc.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(false) => {
+                        fc.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(e) => panic!("unexpected error: {e}"),
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::SeqCst),
+            1,
+            "exactly one thread must succeed in put_kv_if_absent_critical"
+        );
+        assert_eq!(
+            failure_count.load(Ordering::SeqCst),
+            9,
+            "all other 9 threads must observe already-present (Ok(false))"
         );
     }
 

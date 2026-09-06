@@ -157,6 +157,29 @@ installation lookup rather than telling you anything about the credential.
 The `release` environment on each mirror is an approval gate, so a release still waits for a human
 even once the credential exists.
 
+#### Mirror branch and environment protection rules (INFRA-019)
+
+Every publishing mirror (`hop-sdk-apple`, `hop-sdk-go`, `hop-sdk-crystal`) must enforce:
+
+1. **Default branch protection:** `main` must be protected, enforcing admin parity (`enforce_admins: true`),
+   blocking force pushes (`allow_force_pushes: false`), and blocking deletions (`allow_deletions: false`).
+   Status checks and pull request reviews are deliberately not required on mirror `main` because the
+   mirrors receive direct fast-forward pushes from the Copybara export (`sync-components.yml`, `hop-sync`
+   App token), and required status checks would block every export.
+2. **Release environment protection:** The `release` environment must configure `required_reviewers`
+   including `jwaldrip` and a `deployment_branch_policy` restricted to tag pattern `v*`.
+
+`tools/release/check-mirror-secrets.py --audit-protection` audits these rules across all mirrors.
+
+#### Canonical app installation and sync-back credentials (INFRA-023)
+
+The `hop-source` GitHub App must be installed on the canonical `hopmesh/hop` repository with
+`actions: read`, `checks: read`, and `contents: read` permissions. Mirror release workflows mint tokens
+via this App to verify canonical-source provenance.
+
+Mirror `sync-back.yml` workflows reference `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` in the
+`component-sync` environment. On mirrors where these are not provisioned, sync-back runs as
+manual-dispatch only.
 ### ESP32 prebuilt archives: the download path is RETIRED
 
 `libhop-esp-release.yml` used to build two ESP32 `libhop.a` archives plus `sdk/hop.h` and publish them

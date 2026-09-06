@@ -116,6 +116,23 @@ impl<B: Bridge> Store for JsStore<B> {
         self.bridge.kv_put(key, &value)
     }
 
+    /// Atomically persist `value` under `key` only if `key` does not already exist.
+    ///
+    /// In the single-threaded WebAssembly / JS Worker environment, execution is synchronous and
+    /// run-to-completion. Check-and-set via the synchronous bridge is atomic with respect to other
+    /// wasm tasks because no interleaved execution can occur between `kv_get` and `kv_put`.
+    fn put_kv_if_absent_critical(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        if self.bridge.kv_get(key).is_some() {
+            return Ok(false);
+        }
+        self.bridge.kv_put(key, &value)?;
+        Ok(true)
+    }
+
     fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
         self.bridge.kv_get(key)
     }
@@ -365,6 +382,33 @@ mod tests {
         s.remove_kv("session/alice");
         assert_eq!(s.get_kv("session/alice"), None);
         assert_eq!(s.list_kv("session/").len(), 1);
+    }
+
+    #[test]
+    fn proto_009_js_store_put_kv_if_absent_critical_semantics() {
+        let mut s = store();
+        assert_eq!(
+            s.put_kv_if_absent_critical("telemetry_seen/1", vec![1, 2, 3]),
+            Ok(true)
+        );
+        assert_eq!(s.get_kv("telemetry_seen/1"), Some(vec![1, 2, 3]));
+
+        // Second attempt on the same key returns Ok(false) and preserves original value
+        assert_eq!(
+            s.put_kv_if_absent_critical("telemetry_seen/1", vec![4, 5, 6]),
+            Ok(false)
+        );
+        assert_eq!(s.get_kv("telemetry_seen/1"), Some(vec![1, 2, 3]));
+
+        // Bridge failure propagates Err
+        let mut failing_store = JsStore::new(FakeBridge {
+            inner: Rc::new(RefCell::new(Fake::default())),
+            fail_kv: true,
+            fail_kv_batch_at: None,
+        });
+        assert!(failing_store
+            .put_kv_if_absent_critical("telemetry_seen/2", vec![1])
+            .is_err());
     }
 
     #[test]

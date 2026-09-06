@@ -61,7 +61,7 @@ export async function GET() {
     ''
   );
   L.push(
-    'Hop ships as a pure-Rust SDK (`hop-core`) with native iOS and Android bindings via UniFFI, plus an optional hosted cloud backbone. The SDK is free and runs fully peer-to-peer on its own; the managed backbone is usage-based and bridges messages across the world whenever any node touches the internet. You can also run a private backbone.',
+    'Hop ships as a pure-Rust protocol core bound across languages via a stable C ABI (sdk/hop.h) and HopContract for native iOS and Android drivers, plus an optional hosted cloud backbone. The SDK is free and runs fully peer-to-peer on its own; the managed backbone is usage-based and bridges messages across the world whenever any node touches the internet. You can also run a private backbone.',
     ''
   );
   L.push('Key design points:');
@@ -109,7 +109,7 @@ export async function GET() {
 
   L.push('## Facts');
   L.push('- Licensing: two-tier and per-component. The hosted services (services/*: relay, endpoint, gateway, telemetry, account, billing) are source-available under FSL-1.1-ALv2 and convert to Apache-2.0 after two years; the protocol core, the SDKs, the bearers and the drivers are Apache-2.0. The protocol itself is never monetized; revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.');
-  L.push('- Platforms: pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.');
+  L.push('- Platforms: pure-Rust core (deterministic, testable without a radio) bound via C ABI (sdk/hop.h) and HopContract for iOS and Android.');
   L.push('- Billing meters counts and bytes on the sealed envelope, never content.');
   L.push('- Contact: hello@hopme.sh');
 

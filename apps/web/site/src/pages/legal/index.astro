@@ -1,0 +1,47 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base
+  title="Legal & Compliance"
+  description="Terms, privacy policy, data processing addendum, and compliance documentation for Hop."
+  path="/legal"
+>
+  <section class="hero" style="padding-bottom:16px;">
+    <div class="wrap">
+      <div class="eyebrow">Governance</div>
+      <h1>Legal &amp; <span style="color:var(--accent)">Compliance.</span></h1>
+      <p class="lede">Terms of service, privacy practices, and regulatory transfer frameworks governing the Hop Hosted Services.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:24px;">
+    <div class="wrap prose">
+      <div class="grid-2" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:20px;">
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/terms/">Terms of Service</a></h3>
+          <p>Commercial agreement, license grants, emergency services disclaimer, and binding arbitration.</p>
+        </div>
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/privacy/">Privacy Policy</a></h3>
+          <p>Zero-knowledge message transit, pseudonymous key routing, and data subject rights.</p>
+        </div>
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/dpa/">Data Processing Addendum</a></h3>
+          <p>GDPR Article 28 processor commitments, subprocessor notices, and international data transfers.</p>
+        </div>
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/acceptable-use/">Acceptable Use Policy</a></h3>
+          <p>Network abuse boundaries, relay rate limiting, and DMCA notice procedures.</p>
+        </div>
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/legal/eu-scc-package/">EU SCC Template Package</a></h3>
+          <p>Standard Contractual Clauses (Module 2 and Module 3) template for international data transfers.</p>
+        </div>
+        <div class="card" style="padding:24px; border:1px solid var(--border); border-radius:8px;">
+          <h3><a href="/legal/transfer-impact-assessment/">Transfer Impact Assessment</a></h3>
+          <p>Evaluation of US statutory authorities (FISA 702, EO 14086) and cryptographic safeguards.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</Base>

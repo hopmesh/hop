@@ -41,10 +41,11 @@ class LanFrameDedupTest {
         assertEquals(DedupKeep.EXISTING, LanDedup.decide(amGreater = false, existingIsDialer = false, incomingIsDialer = false))
     }
 
-    @Test fun neitherLinkMatchesTheKeptRoleFallsBackToIncoming() {
-        // amGreater => keepDialed=true; if NEITHER is a dialer, fall back to incoming (matches onUp's ?: link).
-        assertEquals(DedupKeep.INCOMING, LanDedup.decide(amGreater = true, existingIsDialer = false, incomingIsDialer = false))
-        // amGreater=false => keepDialed=false; if NEITHER is an acceptor (both dialers), fall back to incoming.
-        assertEquals(DedupKeep.INCOMING, LanDedup.decide(amGreater = false, existingIsDialer = true, incomingIsDialer = true))
+    @Test fun neitherLinkMatchesTheKeptRolePrioritizesExisting() {
+        // PLAT-014: Prioritize established in-flight handshakes over incoming duplicate claims.
+        // amGreater => keepDialed=true; if NEITHER is a dialer (both are acceptors), keep existing.
+        assertEquals(DedupKeep.EXISTING, LanDedup.decide(amGreater = true, existingIsDialer = false, incomingIsDialer = false))
+        // amGreater=false => keepDialed=false; if NEITHER is an acceptor (both dialers), keep existing.
+        assertEquals(DedupKeep.EXISTING, LanDedup.decide(amGreater = false, existingIsDialer = true, incomingIsDialer = true))
     }
 }

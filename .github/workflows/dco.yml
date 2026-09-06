@@ -1,0 +1,69 @@
+name: DCO & CLA Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco-check:
+    name: Verify DCO and CLA
+    # author_association is computed lazily by GitHub: the pull_request payload for the repository
+    # owner's own PR #131 said CONTRIBUTOR while the REST API said MEMBER, so the association alone
+    # cannot carry the maintainer exemption. The login list is the same allowlist pr-automerge.yml
+    # trusts, so the two workflows agree on who the maintainers are.
+    if: ${{ !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && !contains(fromJSON('["jwaldrip","dependabot[bot]","hop-sync"]'), github.actor) && !contains(fromJSON('["jwaldrip","dependabot[bot]","hop-sync"]'), github.event.pull_request.user.login) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Signed-off-by trailer on PR commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          ACTOR: ${{ github.actor }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+        run: |
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Exempting repository maintainer ($AUTHOR_ASSOCIATION) from DCO check."
+              exit 0
+              ;;
+          esac
+          case "$ACTOR" in
+            "jwaldrip"|"dependabot[bot]"|"hop-sync")
+              echo "Exempting maintainer or automated actor ($ACTOR) from DCO check."
+              exit 0
+              ;;
+          esac
+          case "$PR_USER" in
+            "jwaldrip"|"dependabot[bot]"|"hop-sync")
+              echo "Exempting maintainer or automated PR author ($PR_USER) from DCO check."
+              exit 0
+              ;;
+          esac
+
+          echo "Checking commits between $BASE_SHA and $HEAD_SHA for DCO sign-off..."
+          failed=0
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            subject=$(git log -1 --format='%s' "$sha")
+            body=$(git log -1 --format='%B' "$sha")
+            if ! echo "$body" | grep -E -q '^Signed-off-by: .+ <.+@.+>'; then
+              echo "::error file=CONTRIBUTING.md::Commit $sha (\"$subject\") lacks a valid 'Signed-off-by: Name <email>' DCO trailer. Run 'git commit --amend -s' to add it."
+              failed=1
+            fi
+          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
+
+          if [ "$failed" -ne 0 ]; then
+            echo "DCO and CLA verification failed. All commits must include a valid Signed-off-by trailer."
+            exit 1
+          fi
+          echo "DCO and CLA verification successful."

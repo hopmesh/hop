@@ -35,6 +35,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   private class Entry(val node: HopNode) {
     @Volatile var pump: ScheduledFuture<*>? = null
+    val inFlight = ConcurrentHashMap.newKeySet<String>()
   }
 
   private val nodes = ConcurrentHashMap<Int, Entry>()
@@ -155,6 +156,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun closeNode(handle: Int, promise: Promise) {
     nodes.remove(handle)?.let { e ->
       e.pump?.cancel(false)
+      e.inFlight.clear()
       e.node.close()
     }
     promise.resolve(null)
@@ -268,6 +270,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun acceptInbox(handle: Int, idB64: String, promise: Promise) {
     val e = entry(handle, promise) ?: return
+    e.inFlight.remove(idB64)
     promise.resolve(e.node.acceptInbox(dec(idB64)))
   }
 
@@ -295,18 +298,21 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun acceptServiceResponse(handle: Int, reqB64: String, promise: Promise) {
     val e = entry(handle, promise) ?: return
+    e.inFlight.remove(reqB64)
     promise.resolve(e.node.acceptServiceResponse(dec(reqB64)))
   }
 
   @ReactMethod
   fun acceptServiceRequest(handle: Int, reqB64: String, promise: Promise) {
     val e = entry(handle, promise) ?: return
+    e.inFlight.remove(reqB64)
     promise.resolve(e.node.acceptServiceRequest(dec(reqB64)))
   }
 
   @ReactMethod
   fun rejectServiceRequest(handle: Int, reqB64: String, promise: Promise) {
     val e = entry(handle, promise) ?: return
+    e.inFlight.remove(reqB64)
     promise.resolve(e.node.rejectServiceRequest(dec(reqB64)))
   }
 
@@ -404,6 +410,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun acceptHpsMessage(handle: Int, idB64: String, promise: Promise) {
     val e = entry(handle, promise) ?: return
+    e.inFlight.remove(idB64)
     promise.resolve(e.node.acceptHpsMessage(dec(idB64)))
   }
 
@@ -555,48 +562,59 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       emit("HopMesh:outgoing", m)
     }
     node.pollInbox { msg ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putString("id", enc(msg.id))
-      m.putString("from", HopAddress.base58(msg.from))
-      m.putString("contentType", msg.contentType)
-      m.putString("body", enc(msg.body))
-      m.putInt("hops", msg.hops.toInt())
-      m.putDouble("createdAt", msg.createdAt.toDouble())
-      emit("HopMesh:message", m)
+      val idB64 = enc(msg.id)
+      if (e.inFlight.add(idB64)) {
+        val m = Arguments.createMap()
+        m.putInt("node", handle)
+        m.putString("id", idB64)
+        m.putString("from", HopAddress.base58(msg.from))
+        m.putString("contentType", msg.contentType)
+        m.putString("body", enc(msg.body))
+        m.putInt("hops", msg.hops.toInt())
+        m.putDouble("createdAt", msg.createdAt.toDouble())
+        emit("HopMesh:message", m)
+      }
     }
     node.pollServiceRequestsAccepting { req ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putString("from", HopAddress.base58(req.from))
-      m.putString("requestId", enc(req.requestId))
-      m.putString("service", req.service)
-      m.putString("method", req.method)
-      m.putString("args", enc(req.args))
-      emit("HopMesh:serviceRequest", m)
+      val ridB64 = enc(req.requestId)
+      if (e.inFlight.add(ridB64)) {
+        val m = Arguments.createMap()
+        m.putInt("node", handle)
+        m.putString("from", HopAddress.base58(req.from))
+        m.putString("requestId", ridB64)
+        m.putString("service", req.service)
+        m.putString("method", req.method)
+        m.putString("args", enc(req.args))
+        emit("HopMesh:serviceRequest", m)
+      }
       false
     }
     node.pollServiceResponses { resp ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putString("from", HopAddress.base58(resp.from))
-      m.putString("forRequestId", enc(resp.forRequestId))
-      m.putInt("status", resp.status)
-      m.putString("body", enc(resp.body))
-      emit("HopMesh:serviceResponse", m)
+      val ridB64 = enc(resp.forRequestId)
+      if (e.inFlight.add(ridB64)) {
+        val m = Arguments.createMap()
+        m.putInt("node", handle)
+        m.putString("from", HopAddress.base58(resp.from))
+        m.putString("forRequestId", ridB64)
+        m.putInt("status", resp.status)
+        m.putString("body", enc(resp.body))
+        emit("HopMesh:serviceResponse", m)
+      }
     }
     // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
     // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
     node.pollHpsMessages { msg ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putString("id", enc(msg.id))
-      m.putString("path", msg.path)
-      m.putString("sender", HopAddress.base58(msg.sender))
-      m.putString("body", enc(msg.body))
-      emit("HopMesh:hpsMessage", m)
+      val idB64 = enc(msg.id)
+      if (e.inFlight.add(idB64)) {
+        val m = Arguments.createMap()
+        m.putInt("node", handle)
+        m.putString("id", idB64)
+        m.putString("path", msg.path)
+        m.putString("sender", HopAddress.base58(msg.sender))
+        m.putString("body", enc(msg.body))
+        emit("HopMesh:hpsMessage", m)
+      }
     }
-    // Take-and-clear, not accept-to-remove: a drained invite is gone, so the JS side must persist what
     // this hands it.
     node.pollHpsInvites { inv ->
       val m = Arguments.createMap()

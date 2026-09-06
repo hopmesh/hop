@@ -15,6 +15,7 @@
 //! queued message bodies), so a plain-feature build must still rely on iOS file protection + the app
 //! sandbox. Build with `--features sqlcipher` (SQLite + SQLCipher, vendored OpenSSL) and open the store
 //! with a 32-byte key from the platform Keychain/Keystore to encrypt every page at rest (DESIGN.md §13.2).
+//! When built without `sqlcipher`, `open_keyed` refuses any non-empty key and fails closed (ABI-014).
 
 use hop_core::bundle::{Bundle, BundleId};
 use hop_core::store::{HaveSet, KvMutation, Store};
@@ -189,6 +190,7 @@ pub struct SqliteStore {
     seen_rows: std::cell::Cell<i64>,
     _file_lock: Option<FileLock>,
     _process_lease: Option<ProcessPathLease>,
+    encrypted: bool,
 }
 
 impl SqliteStore {
@@ -221,9 +223,18 @@ impl SqliteStore {
     /// Open an ENCRYPTED store at `path`, keyed by a raw 32-byte `key` (F-25). The key is used
     /// directly (no passphrase KDF); the host derives + stores it in the platform Keychain/Keystore.
     /// Under the `sqlcipher` cargo feature this encrypts every page at rest (SQLCipher). Without that
-    /// feature the `PRAGMA key` is silently ignored by plain SQLite, so build with `--features
-    /// sqlcipher` for real at-rest encryption. An empty key opens unencrypted (same as `open`).
+    /// feature, passing a non-empty key returns an error and fails closed (ABI-014), refusing to
+    /// silently write plaintext. An empty key opens unencrypted (same as `open`).
     pub fn open_keyed(path: &str, key: &[u8]) -> rusqlite::Result<Self> {
+        if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+                Some(
+                    "sqlcipher feature not enabled for keyed open; refusing plaintext fallback"
+                        .into(),
+                ),
+            ));
+        }
         let is_in_memory = path == ":memory:" || path.is_empty();
         let (process_lease, file_lock) = if is_in_memory {
             (None, None)
@@ -244,7 +255,24 @@ impl SqliteStore {
             pragma.zeroize();
             res?;
         }
-        Self::from_conn_with_locks(conn, process_lease, file_lock)
+        let is_encrypted = !key.is_empty() && cfg!(feature = "sqlcipher");
+        Self::from_conn_with_locks(conn, process_lease, file_lock, is_encrypted)
+    }
+
+    /// True only when this store is SQLCipher-encrypted at rest.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// Checks if a rusqlite error indicates database busy / lock contention (STORE-009).
+    pub fn is_busy(err: &rusqlite::Error) -> bool {
+        match err {
+            rusqlite::Error::SqliteFailure(ffi_err, _) => {
+                ffi_err.extended_code == rusqlite::ffi::SQLITE_BUSY
+                    || ffi_err.code == rusqlite::ErrorCode::DatabaseBusy
+            }
+            _ => false,
+        }
     }
 
     /// True iff the file at `path` opens as an UNENCRYPTED SQLite database (its header reads as a
@@ -324,7 +352,7 @@ impl SqliteStore {
         let res = conn.execute_batch(&pragma);
         pragma.zeroize();
         res?;
-        Self::from_conn_with_locks(conn, Some(process_lease), Some(file_lock))
+        Self::from_conn_with_locks(conn, Some(process_lease), Some(file_lock), true)
     }
 
     /// Open an ephemeral in-memory store (for tests).
@@ -345,13 +373,14 @@ impl SqliteStore {
     }
 
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
-        Self::from_conn_with_locks(conn, None, None)
+        Self::from_conn_with_locks(conn, None, None, false)
     }
 
     fn from_conn_with_locks(
         conn: Connection,
         process_lease: Option<ProcessPathLease>,
         file_lock: Option<FileLock>,
+        encrypted: bool,
     ) -> rusqlite::Result<Self> {
         // D7: schema/format version, tracked in SQLite's built-in `user_version`. Bump on any
         // incompatible on-disk change (table shape OR row encoding). A fresh db (user_version 0)
@@ -425,6 +454,7 @@ impl SqliteStore {
             seen_rows: std::cell::Cell::new(seen_rows),
             _file_lock: file_lock,
             _process_lease: process_lease,
+            encrypted,
         })
     }
 
@@ -712,11 +742,40 @@ impl Store for SqliteStore {
         }])
     }
 
-    fn flush(&self, _timeout: std::time::Duration) -> bool {
-        // STORE-001: Checkpoint WAL frames back to the database file and fsync.
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
-            .is_ok()
+    fn flush(&self, timeout: std::time::Duration) -> bool {
+        // STORE-001 / STORE-013: Checkpoint WAL frames back to the database file and fsync.
+        // Inspect (busy, log, checkpointed) columns:
+        // * busy: 0 if checkpoint ran without lock conflicts, 1 if blocked by readers/writers.
+        // * log: number of frames in WAL (-1 if not in WAL mode).
+        // * checkpointed: number of frames successfully checkpointed to database.
+        // A flush is durable only when busy == 0 and all logged frames are checkpointed (checkpointed >= log).
+        let start = std::time::Instant::now();
+        loop {
+            let res = self
+                .conn
+                .query_row("PRAGMA wal_checkpoint(PASSIVE);", [], |row| {
+                    let busy: i32 = row.get(0)?;
+                    let log: i32 = row.get(1)?;
+                    let checkpointed: i32 = row.get(2)?;
+                    Ok((busy, log, checkpointed))
+                });
+
+            match res {
+                Ok((busy, log, checkpointed)) => {
+                    if busy == 0 && (log <= 0 || checkpointed >= log) {
+                        return true;
+                    }
+                }
+                Err(_) => return false,
+            }
+
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            std::thread::sleep(
+                std::time::Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())),
+            );
+        }
     }
 
     fn list_kv_page(
@@ -1274,6 +1333,80 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}-wal"));
         let _ = std::fs::remove_file(format!("{path}-shm"));
         let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[test]
+    fn store_013_sqlite_flush_under_reader_contention_fails_or_waits() {
+        // STORE-013: PRAGMA wal_checkpoint(PASSIVE) without column inspection returns success
+        // even when reader contention leaves WAL frames uncheckpointed. Flush must inspect
+        // (busy, log, checkpointed) and fail (or wait) when checkpoint cannot complete.
+        let path = format!(
+            "{}/hop-sqlite-store-013-contention-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // Construct a SqliteStore with WAL mode without locking_mode=EXCLUSIVE so concurrent
+        // reader transactions can simulate lock contention against wal_checkpoint.
+        let conn = rusqlite::Connection::open(&path).expect("open connection");
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
+        )
+        .unwrap();
+        let mut store = SqliteStore {
+            conn,
+            seen_rows: std::cell::Cell::new(0),
+            _file_lock: None,
+            _process_lease: None,
+            encrypted: false,
+        };
+
+        store
+            .put_kv_critical("key1", b"val1".to_vec())
+            .expect("put key1");
+        // Flush initial frames to establish baseline
+        assert!(store.flush(std::time::Duration::from_millis(500)));
+
+        // Open a secondary reader connection to hold a read transaction on the baseline frame.
+        let reader = rusqlite::Connection::open(&path).expect("reader open succeeds");
+        reader
+            .execute_batch("BEGIN DEFERRED; SELECT count(*) FROM kv;")
+            .expect("begin read transaction");
+
+        // Write new critical KV through store, appending frames to WAL after the reader's mark.
+        store
+            .put_kv_critical("key2", b"val2".to_vec())
+            .expect("put key2");
+
+        // Attempting to flush while reader holds the read transaction must FAIL within timeout
+        // because uncheckpointed frames cannot be checkpointed past the reader's lock.
+        let flushed_under_contention = store.flush(std::time::Duration::from_millis(50));
+        assert!(
+            !flushed_under_contention,
+            "flush must report false when reader contention prevents complete WAL checkpointing"
+        );
+
+        // Release the reader lock.
+        reader
+            .execute_batch("COMMIT;")
+            .expect("commit read transaction");
+        drop(reader);
+
+        // Now flush must succeed completely once the reader lock is released.
+        assert!(
+            store.flush(std::time::Duration::from_secs(1)),
+            "flush must succeed once reader contention is released"
+        );
+
+        drop(store);
+        cleanup(&path);
     }
 
     #[test]
@@ -1994,5 +2127,26 @@ mod tests {
             node.store.contains(&bid),
             "submitted bundle is in the sqlite store"
         );
+    }
+
+    #[cfg(not(feature = "sqlcipher"))]
+    #[test]
+    fn keyed_open_without_sqlcipher_fails_closed_and_produces_no_file() {
+        let path = format!(
+            "{}/hop-test-no-sqlcipher-{}.db",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
+        let key = [7u8; 32];
+        let res = SqliteStore::open_keyed(&path, &key);
+        assert!(res.is_err(), "keyed open without sqlcipher must fail");
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "keyed open without sqlcipher must produce no on-disk file"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.lock"));
     }
 }

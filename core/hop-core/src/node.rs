@@ -48,7 +48,7 @@ use crate::{short_app, AppId, ShortApp, FABRIC_APP};
 use crate::wire_emit::{
     advert_record_exceeds_limit, carrier_chunk_payloads, decode_link_packet, derive_stream_id,
     encode_link_auth, encode_packet, fragment_bounds_ok, frame_record, SessionInner,
-    SESSION_ESTABLISH_CT, STREAM_CHUNK,
+    MAX_RECORD_PLAINTEXT, SESSION_ESTABLISH_CT, STREAM_CHUNK,
 };
 #[cfg(feature = "fuzzing")]
 pub use crate::wire_emit::{fuzz_link_packet, fuzz_record_framing};
@@ -358,6 +358,20 @@ const MAX_METERED_ATTRIBUTION: usize = 16_384;
 /// Bounds the beacon's link bandwidth (a full held set can be large) and the per-link `peer_has`
 /// memory; a relay that holds more than this simply advertises its most-recent slice.
 const MAX_HAVE_ADVERTISE: usize = 4_096;
+/// PROTO-010: the largest plaintext a well-formed `Wire::Have` can occupy: `MAX_HAVE_ADVERTISE`
+/// 32-byte ids plus postcard's discriminant and length prefix (32 bytes of headroom is generous).
+/// Lives here rather than in `wire_emit.rs` because it is a receive-side policy, not wire layout:
+/// the declared wire sources stay byte-identical unless `BUNDLE_VERSION` moves.
+const MAX_HAVE_LINK_BYTES: usize = MAX_HAVE_ADVERTISE * 32 + 32;
+/// PROTO-010: the most record fragments a well-formed `Wire::Have` can legitimately need.
+const MAX_HAVE_RECORD_FRAGMENTS: usize = MAX_HAVE_LINK_BYTES.div_ceil(MAX_RECORD_PLAINTEXT);
+
+/// PROTO-010: reject an oversized `Wire::Have` record from its postcard discriminant (`Have = 2`,
+/// pinned against the real serializer by `have_discriminant_matches_the_serializer`) before
+/// deserializing an attacker-sized id vector.
+fn have_record_exceeds_limit(plaintext: &[u8]) -> bool {
+    plaintext.first() == Some(&2) && plaintext.len() > MAX_HAVE_LINK_BYTES
+}
 const ADVERT_VERIFY_WINDOW_MS: u64 = 1_000;
 const MAX_ADVERTS_PER_LINK_WINDOW: u32 = 64;
 const MAX_ADVERTS_GLOBAL_WINDOW: u32 = 512;
@@ -8577,7 +8591,7 @@ impl<S: Store> Node<S> {
             return;
         };
         let peer = est.peer;
-        if advert_record_exceeds_limit(&plaintext) {
+        if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
             return;
         }
         match postcard::from_bytes::<Wire>(&plaintext) {
@@ -8604,9 +8618,16 @@ impl<S: Store> Node<S> {
             let Ok(piece) = est.session.decrypt(ct) else {
                 return;
             };
-            // A valid advert is at most 8 KiB and therefore never needs record fragmentation. Reject
-            // its discriminant on the first fragment before accumulating a large attacker record.
-            if piece.is_empty() || (idx == 0 && piece.first() == Some(&1)) {
+            // A valid advert is at most 8 KiB and therefore never needs record fragmentation.
+            // A valid Have set is at most MAX_HAVE_ADVERTISE IDs and requires at most
+            // MAX_HAVE_RECORD_FRAGMENTS pieces. Reject on the first fragment before accumulating
+            // a large attacker record (PROTO-010).
+            if piece.is_empty()
+                || (idx == 0
+                    && (piece.first() == Some(&1)
+                        || (piece.first() == Some(&2)
+                            && usize::from(cnt) > MAX_HAVE_RECORD_FRAGMENTS)))
+            {
                 est.frag_buf.clear();
                 est.frag_next = 0;
                 return;
@@ -8635,7 +8656,7 @@ impl<S: Store> Node<S> {
             }
         };
         if let Some((plaintext, peer)) = ready {
-            if advert_record_exceeds_limit(&plaintext) {
+            if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
                 return;
             }
             match postcard::from_bytes::<Wire>(&plaintext) {
@@ -9017,12 +9038,41 @@ impl<S: Store> Node<S> {
                                 return false;
                             }
                             let now = self.now_ms;
-                            let epoch_hour = bundle
-                                .env
-                                .access
-                                .as_deref()
-                                .map(|s| s.epoch)
-                                .unwrap_or(now / 3_600_000);
+                            let now_epoch = now / 3_600_000;
+
+                            // SVC-012: Validate carriage stamp epoch and verify signature via attribute_fresh
+                            // BEFORE writing any deduplication key to durable storage. Unauthenticated
+                            // bundles with invalid signatures or future epoch values must be rejected immediately
+                            // without invoking put_kv_if_absent_critical (zero rows written).
+                            let tenant = match (&self.access_policy, bundle.env.access.as_deref()) {
+                                (AccessPolicy::Keyed(_), None) => {
+                                    // Keyed policy requires an authenticated carriage stamp
+                                    return false;
+                                }
+                                (_, Some(stamp)) => {
+                                    if stamp.epoch > now_epoch
+                                        || now_epoch.saturating_sub(stamp.epoch)
+                                            > crate::access::MAX_ATTRIBUTION_AGE_EPOCHS
+                                    {
+                                        // Future or expired stamp epoch: reject immediately
+                                        return false;
+                                    }
+                                    let attributed =
+                                        self.access_policy.attribute_fresh(stamp, &id, now);
+                                    if matches!(self.access_policy, AccessPolicy::Keyed(_))
+                                        && attributed.is_none()
+                                    {
+                                        // Keyed policy requires a valid verified signature
+                                        return false;
+                                    }
+                                    attributed
+                                }
+                                (AccessPolicy::Open, None) => None,
+                            };
+
+                            // Deduplication key must always derive epoch_hour from local verified time (now / 3_600_000)
+                            // or from a stamp verified by attribute_fresh, never from unverified input.
+                            let epoch_hour = now_epoch;
                             let dedup_key = format!(
                                 "telemetry_seen/{}/{}",
                                 epoch_hour,
@@ -9034,7 +9084,7 @@ impl<S: Store> Node<S> {
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    // Duplicate telemetry batch already processed (SVC-006)
+                                    // Duplicate telemetry batch already processed (SVC-006, SVC-012)
                                     return false;
                                 }
                                 Err(_) => {
@@ -9042,9 +9092,6 @@ impl<S: Store> Node<S> {
                                     return false;
                                 }
                             }
-                            let tenant = bundle.env.access.as_deref().and_then(|stamp| {
-                                self.access_policy.attribute_fresh(stamp, &id, now)
-                            });
                             let Some(charge) = self.reserve_app_queue(
                                 AppQueueKind::Telemetry,
                                 Some(from),
@@ -10834,6 +10881,13 @@ mod tests {
         ) -> Vec<(String, Vec<u8>)> {
             self.inner.list_kv_page(prefix, after, limit)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
+        }
     }
 
     #[derive(Clone, Default)]
@@ -11016,6 +11070,13 @@ mod tests {
             }
             self.inner
                 .list_kv_page_bounded(prefix, after, limit, max_bytes)
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
         }
     }
 
@@ -11774,8 +11835,7 @@ mod tests {
             nodes[0].send_telemetry(nodes[1].address(), &batch).unwrap();
             net.pump(&mut nodes);
             let got = nodes[1].take_telemetry();
-            assert_eq!(got.len(), 1, "the batch itself still arrives");
-            got[0].tenant
+            got.first().and_then(|t| t.tenant)
         };
 
         // Well inside the window (a device offline for hours still bills correctly).
@@ -11840,6 +11900,175 @@ mod tests {
             Some(TENANT),
             "attributed to the tenant via the carriage stamp"
         );
+    }
+
+    #[test]
+    fn svc_012_telemetry_bundle_with_invalid_signature_or_future_epoch_writes_zero_store_rows() {
+        // SVC-012: telemetry bundles with invalid signature or future stamp epoch must be rejected
+        // and write ZERO rows to the underlying store.
+        use crate::access::CarriageStamp;
+        use crate::bundle::{Bundle, BundleOpts, Destination, Payload};
+        const TENANT: crate::access::TenantId = [7u8; 16];
+        let now = 100 * crate::access::CARRIAGE_EPOCH_MS + 5;
+        let now_epoch = now / crate::access::CARRIAGE_EPOCH_MS;
+        let stamper_key = Identity::generate();
+
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        nodes[0].set_time(now);
+        nodes[1].set_time(now);
+        nodes[1].set_kind(NodeKind::Endpoint);
+        nodes[1].set_telemetry_ingest(true);
+
+        let mut server = crate::access::KeyServer::new();
+        server.insert(TENANT, stamper_key.address());
+        nodes[1].set_access_policy(AccessPolicy::Keyed(crate::access::KeyedAccess::new(
+            server,
+            std::collections::HashSet::new(),
+        )));
+        nodes[1].refresh_access();
+
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Test 1: Future epoch with fake signature
+        let batch = crate::telemetry::TelemetryBatch::new().counter("hop.test", 1, now);
+        let mut bundle = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        bundle.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch + 1000,
+            hint: [0u8; 4],
+            sig: vec![0u8; 64],
+        }));
+
+        nodes[1].on_bundle(1, bundle);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            0,
+            "zero rows must be written to store on future epoch"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
+
+        // Test 2: Current epoch with invalid signature
+        let mut bundle2 = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        bundle2.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch,
+            hint: [0u8; 4],
+            sig: vec![0xba; 64],
+        }));
+
+        nodes[1].on_bundle(1, bundle2);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            0,
+            "zero rows must be written to store on invalid signature"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
+    }
+
+    #[test]
+    fn svc_012_replaying_telemetry_bundle_with_mutated_stamp_epoch_is_rejected() {
+        // SVC-012: replaying a telemetry bundle with mutated stamp.epoch must be rejected
+        // and cannot bypass deduplication or write a new marker.
+        use crate::access::CarriageStamp;
+        use crate::bundle::{Bundle, BundleOpts, Destination, Payload};
+        const TENANT: crate::access::TenantId = [7u8; 16];
+        let now = 100 * crate::access::CARRIAGE_EPOCH_MS + 5;
+        let now_epoch = now / crate::access::CARRIAGE_EPOCH_MS;
+        let stamper_key = Identity::generate();
+
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        nodes[0].set_time(now);
+        nodes[1].set_time(now);
+        nodes[0].set_stamper(Some(Stamper::new(
+            TENANT,
+            Identity::from_secret_bytes(&stamper_key.to_secret_bytes()),
+        )));
+        nodes[1].set_kind(NodeKind::Endpoint);
+        nodes[1].set_telemetry_ingest(true);
+
+        let mut server = crate::access::KeyServer::new();
+        server.insert(TENANT, stamper_key.address());
+        nodes[1].set_access_policy(AccessPolicy::Keyed(crate::access::KeyedAccess::new(
+            server,
+            std::collections::HashSet::new(),
+        )));
+        nodes[1].refresh_access();
+
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        let batch = crate::telemetry::TelemetryBatch::new().counter("hop.test", 1, now);
+        nodes[0].send_telemetry(nodes[1].address(), &batch).unwrap();
+        net.pump(&mut nodes);
+
+        let got = nodes[1].take_telemetry();
+        assert_eq!(got.len(), 1, "original stamped telemetry arrives");
+        let initial_rows = nodes[1].store.list_kv("telemetry_seen/").len();
+        assert_eq!(initial_rows, 1, "exactly one dedup row written");
+
+        // Now attempt replay with mutated stamp epoch
+        let mut replayed = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Mutate the epoch
+        replayed.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch.saturating_sub(1),
+            hint: [0u8; 4],
+            sig: vec![0u8; 64],
+        }));
+
+        nodes[1].on_bundle(1, replayed);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            initial_rows,
+            "no extra row written on mutated replay"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
     }
 
     #[test]
@@ -19529,6 +19758,86 @@ mod tests {
     }
 
     #[test]
+    fn have_wire_size_is_rejected_from_the_discriminant_before_decode() {
+        // PROTO-010: Wire::Have == 2, so a record whose first byte is 2 exceeding
+        // MAX_HAVE_LINK_BYTES must be rejected prior to postcard deserialization.
+        let mut oversized = vec![0u8; MAX_HAVE_LINK_BYTES + 1];
+        oversized[0] = 2;
+        assert!(have_record_exceeds_limit(&oversized));
+
+        oversized[0] = 0;
+        assert!(!have_record_exceeds_limit(&oversized));
+
+        let mut exact = vec![0u8; MAX_HAVE_LINK_BYTES];
+        exact[0] = 2;
+        assert!(!have_record_exceeds_limit(&exact));
+    }
+
+    #[test]
+    fn have_discriminant_matches_the_serializer_and_a_full_set_fits_the_limit() {
+        // The pre-decode check keys on the postcard discriminant of Wire::Have and on the size of
+        // the largest legitimate beacon; both are assumptions about the serializer, so pin them.
+        let full = Wire::Have(crate::store::HaveSet {
+            ids: (0..MAX_HAVE_ADVERTISE)
+                .map(|i| {
+                    let mut id = [0u8; 32];
+                    id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    id
+                })
+                .collect(),
+        });
+        let bytes = postcard::to_allocvec(&full).unwrap();
+        assert_eq!(
+            bytes.first(),
+            Some(&2),
+            "Wire::Have must serialize with discriminant 2"
+        );
+        assert!(
+            bytes.len() <= MAX_HAVE_LINK_BYTES,
+            "a full Have beacon ({} bytes) must not exceed MAX_HAVE_LINK_BYTES ({MAX_HAVE_LINK_BYTES})",
+            bytes.len()
+        );
+        assert!(!have_record_exceeds_limit(&bytes));
+        assert!(
+            MAX_HAVE_LINK_BYTES.div_ceil(MAX_RECORD_PLAINTEXT) == MAX_HAVE_RECORD_FRAGMENTS
+                && MAX_HAVE_RECORD_FRAGMENTS >= 1
+        );
+    }
+
+    #[test]
+    fn fragmented_have_with_oversized_fragment_count_is_rejected_on_first_fragment() {
+        // PROTO-010: Wire::Have requires at most MAX_HAVE_RECORD_FRAGMENTS (3) fragments.
+        // Any announced fragment count > MAX_HAVE_RECORD_FRAGMENTS must be rejected on
+        // the very first fragment without accumulating buffer.
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        let mut have_piece = vec![0u8; MAX_RECORD_PLAINTEXT - 1];
+        have_piece[0] = 2; // Wire::Have discriminant
+        let ct = match nodes[0].links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&have_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+
+        // Try sending fragment 0 with count = 4 (> MAX_HAVE_RECORD_FRAGMENTS)
+        nodes[1].on_record_frag(10, 0, 4, &ct);
+
+        match nodes[1].links.get(&10) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "frag buffer must be cleared immediately"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link remains established"),
+        }
+    }
+
+    #[test]
     fn invalid_reserved_advert_flood_is_bounded_per_link_and_globally() {
         let publisher = Identity::generate();
         let valid = Advert::publish(
@@ -22003,6 +22312,16 @@ mod tests {
         fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
             self.inner.list_kv(prefix)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            if key == self.panic_key {
+                panic!("PanicOnPutKv: simulated fallible-write panic on {key}");
+            }
+            self.inner.put_kv_if_absent_critical(key, value)
+        }
     }
 
     #[test]
@@ -22136,6 +22455,13 @@ mod tests {
             }
             fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
                 self.inner.remove_kv_critical(key)
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
             }
         }
 

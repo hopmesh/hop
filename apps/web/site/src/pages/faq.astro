@@ -44,7 +44,7 @@ const faqs = [
   },
   {
     q: "What platforms does it run on?",
-    a: "A pure-Rust core (deterministic, fully testable without a radio) with native iOS and Android bindings via UniFFI. The bearer is pluggable, BLE and Wi-Fi/LAN today, with room for Wi-Fi Aware, MultipeerConnectivity, long-range sub-GHz radios, and others.",
+    a: "A pure-Rust core (deterministic, fully testable without a radio) bound across platforms through the C ABI (sdk/hop.h) and HopContract for iOS and Android. The bearer is pluggable, BLE and Wi-Fi/LAN today, with room for Wi-Fi Aware, MultipeerConnectivity, long-range sub-GHz radios, and others.",
   },
   {
     q: "Is it open source? How do you make money?",

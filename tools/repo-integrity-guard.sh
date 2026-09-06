@@ -101,6 +101,25 @@ if [ "$lic_count" -eq 0 ]; then
   echo "repo-integrity-guard: MISSING no component LICENSE.md found at all" >&2
   fail=1
 fi
+# CLAIM-017: No SDK README may claim hop-core is FSL-1.1-ALv2.
+sdk_readme_count=0
+while IFS= read -r readme; do
+  case "$readme" in
+    ./sdk/*|sdk/*)
+      sdk_readme_count=$((sdk_readme_count + 1))
+      if grep -qiF "FSL-1.1-ALv2" "$readme"; then
+        echo "repo-integrity-guard: CONTENT $readme claims FSL-1.1-ALv2 (SDKs and hop-core are Apache-2.0)" >&2
+        fail=1
+      fi
+      ;;
+  esac
+done < <(find . -name README.md \
+  -not -path '*/node_modules/*' -not -path '*/target/*' -not -path '*/.git/*' \
+  -not -path '*/.claude/*' -not -path '*/.build*' -not -path '*/vendor/*' 2>/dev/null | sort)
+if [ "$sdk_readme_count" -eq 0 ]; then
+  echo "repo-integrity-guard: MISSING no SDK README.md found" >&2
+  fail=1
+fi
 for spec in "${CRITICAL[@]}"; do
   f="${spec%%|*}"
   rest="${spec#*|}"

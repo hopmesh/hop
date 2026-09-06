@@ -141,17 +141,133 @@ try:
     assert len(broken) == 0, f"audit must pass when all secrets are seeded, got {broken}"
 finally:
     mod.gh_json = original
-# Verify workflow wrapper fails closed when MIRROR_TOKEN is absent (INFRA-016)
-import subprocess
+# Verify workflow wrapper declared-disarmed pattern (INFRA-020)
+import subprocess, tempfile
 workflow = root / ".github/workflows/branch-protection-audit.yml"
 import re
 text = workflow.read_text(encoding="utf-8")
 match = re.search(r"mirror-secrets:.*?steps:.*?run: \|\n(.*?)(?=^\s+[A-Za-z0-9_-]+:|\Z)", text, re.S)
 assert match, "mirror-secrets step not found"
 step = "\n".join(line[10:] for line in match.group(1).splitlines())
-res = subprocess.run(["bash", "-c", step], capture_output=True, text=True)
-assert res.returncode != 0, f"mirror-secrets step must fail when MIRROR_TOKEN is absent, got {res.returncode}"
-assert "MIRROR_SECRET_AUDIT_TOKEN is absent or empty" in res.stdout or "MIRROR_SECRET_AUDIT_TOKEN is absent or empty" in res.stderr
 
+# Case 1: unprovisioned declared in manifest -> warns as declared-disarmed, exits 0
+res = subprocess.run(["bash", "-c", step], cwd=str(root), capture_output=True, text=True)
+assert res.returncode == 0, f"mirror-secrets step must exit 0 when declared unprovisioned, got {res.returncode}: {res.stderr}"
+assert "mirror-secret audit declared-disarmed" in res.stdout or "mirror-secret audit declared-disarmed" in res.stderr
+
+# Case 2: manifest claims provisioned: true but secret is empty -> fails closed with exit 1
+step_armed = step.replace("tools/workflow-secrets.json", "$ARMED_MANIFEST")
+with tempfile.NamedTemporaryFile("w", suffix=".json") as tf:
+    manifest = json.loads((root / "tools/workflow-secrets.json").read_text())
+    manifest["secrets"]["MIRROR_SECRET_AUDIT_TOKEN"]["provisioned"] = True
+    json.dump(manifest, tf)
+    tf.flush()
+    res_armed = subprocess.run(
+        ["bash", "-c", f"ARMED_MANIFEST={tf.name} {step_armed}"],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    assert res_armed.returncode != 0, f"mirror-secrets step must fail when armed but unseeded, got {res_armed.returncode}"
+    assert "mirror-secret audit is armed but unseeded" in res_armed.stdout or "mirror-secret audit is armed but unseeded" in res_armed.stderr
+
+# --- mirror protection tests (INFRA-019) -----------------------------------------------------------
+def fake_prot_unprotected(path):
+    return None
+
+mod.gh_json = fake_prot_unprotected
+try:
+    assert mod.mirror_branch_protection("hop-sdk-crystal") == "main branch is not protected"
+    assert mod.mirror_environment_protection("hop-sdk-crystal", "release") == "environment 'release' is not configured"
+finally:
+    mod.gh_json = original
+
+def fake_prot_partial(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": False},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+    if "environments/release" in path:
+        return {"protection_rules": [], "deployment_branch_policy": None}
+    return None
+
+mod.gh_json = fake_prot_partial
+try:
+    assert "does not enforce admin parity" in mod.mirror_branch_protection("hop-sdk-crystal")
+    assert "lacks required reviewer 'jwaldrip'" in mod.mirror_environment_protection("hop-sdk-crystal", "release")
+finally:
+    mod.gh_json = original
+
+def fake_prot_allow_force(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": True},
+            "allow_deletions": {"enabled": False},
+        }
+    return None
+
+mod.gh_json = fake_prot_allow_force
+try:
+    assert "does not block force pushes" in mod.mirror_branch_protection("hop-sdk-crystal")
+finally:
+    mod.gh_json = original
+
+def fake_prot_allow_del(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": True},
+        }
+    return None
+
+mod.gh_json = fake_prot_allow_del
+try:
+    assert "does not block deletions" in mod.mirror_branch_protection("hop-sdk-crystal")
+finally:
+    mod.gh_json = original
+
+def fake_prot_healthy(path):
+    if "branches/main/protection" in path:
+        return {
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+    if "environments/release" in path:
+        return {
+            "protection_rules": [{"type": "required_reviewers", "reviewers": [{"reviewer": {"login": "jwaldrip"}}]}],
+            "deployment_branch_policy": {"custom_branch_policies": True},
+        }
+    return None
+
+mod.gh_json = fake_prot_healthy
+try:
+    assert mod.mirror_branch_protection("hop-sdk-crystal") is None
+    assert mod.mirror_environment_protection("hop-sdk-crystal", "release") is None
+finally:
+    mod.gh_json = original
+
+# --- canonical app installation tests (INFRA-023) --------------------------------------------------
+mod.gh_json = lambda path: None
+try:
+    assert "not installed" in mod.canonical_app_installation()
+finally:
+    mod.gh_json = original
+
+mod.gh_json = lambda path: {"id": 1, "permissions": {"actions": "read", "checks": "read"}}
+try:
+    assert "missing permissions: contents:read" in mod.canonical_app_installation()
+finally:
+    mod.gh_json = original
+
+mod.gh_json = lambda path: {"id": 1, "permissions": {"actions": "read", "checks": "read", "contents": "read"}}
+try:
+    assert mod.canonical_app_installation() is None
+finally:
+    mod.gh_json = original
 print("mirror secret checker tests passed")
 PY

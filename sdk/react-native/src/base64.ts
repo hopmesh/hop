@@ -35,6 +35,12 @@ export function fromBase64(text: string, maxBytes: number = 65536): Uint8Array {
     throw new Error("invalid base64: length is not a multiple of 4");
   }
   const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  if (clean.includes("=")) {
+    const firstEq = clean.indexOf("=");
+    if (padding === 0 || firstEq < clean.length - padding) {
+      throw new Error("invalid base64: character outside the alphabet");
+    }
+  }
   const decodedLen = (clean.length / 4) * 3 - padding;
   if (decodedLen > maxBytes) {
     throw new Error(`base64 payload exceeds maximum envelope (${decodedLen} > ${maxBytes})`);
@@ -42,11 +48,18 @@ export function fromBase64(text: string, maxBytes: number = 65536): Uint8Array {
   const out = new Uint8Array(decodedLen);
   let o = 0;
   for (let i = 0; i < clean.length; i += 4) {
-    const c0 = LOOKUP[clean.charCodeAt(i)];
-    const c1 = LOOKUP[clean.charCodeAt(i + 1)];
-    const c2 = LOOKUP[clean.charCodeAt(i + 2)];
-    const c3 = LOOKUP[clean.charCodeAt(i + 3)];
-    if (c0 < 0 || c1 < 0 || c2 < 0 || c3 < 0) {
+    const code0 = clean.charCodeAt(i);
+    const code1 = clean.charCodeAt(i + 1);
+    const code2 = clean.charCodeAt(i + 2);
+    const code3 = clean.charCodeAt(i + 3);
+    if (code0 > 255 || code1 > 255 || code2 > 255 || code3 > 255) {
+      throw new Error("invalid base64: character outside the alphabet");
+    }
+    const c0 = LOOKUP[code0];
+    const c1 = LOOKUP[code1];
+    const c2 = LOOKUP[code2];
+    const c3 = LOOKUP[code3];
+    if (c0 === undefined || c0 < 0 || c1 === undefined || c1 < 0 || c2 === undefined || c2 < 0 || c3 === undefined || c3 < 0) {
       throw new Error("invalid base64: character outside the alphabet");
     }
     const triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;

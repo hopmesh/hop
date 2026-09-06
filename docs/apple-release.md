@@ -81,13 +81,18 @@ workflows still said `repositories: monorepo`. That was wrong when it shipped an
 nobody goes looking for a defect that is not in the tree.)
 
 The organization secrets `HOP_SOURCE_APP_ID` and `HOP_SOURCE_APP_PRIVATE_KEY` are scoped to
-`hop-sdk-apple`, `hop-sdk-crystal`, and `hop-sdk-go`. The `hop-source` GitHub App holds
-`actions:read`, `checks:read`, and `contents:read` on `hopmesh/hop`.
+`hop-sdk-apple`, `hop-sdk-crystal`, and `hop-sdk-go`. The `hop-source` GitHub App is installed on
+canonical `hopmesh/hop` holding `actions:read`, `checks:read`, and `contents:read` permissions (INFRA-023).
+
+Mirror repositories enforce `main` branch protection with `enforce_admins: true`, force pushes blocked,
+and deletions blocked (INFRA-019). Required status checks and PR reviews are deliberately not required
+on mirror `main` because the mirror receives direct fast-forward pushes from the Copybara export
+(`sync-components.yml` via the `hop-sync` App token), and required status checks would block every export.
 
 Additionally, `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` are seeded in the `component-sync`
-environment. `NATIVE_ARTIFACT_SIGNING_KEY` was rotated on 2026-09-04 (private half held by the owner;
-public half is checked in at `tools/native-artifacts-public.pem`).
-
+environment on mirrors where automated sync-back is active; mirrors without these credentials treat
+sync-back as manual-dispatch only. `NATIVE_ARTIFACT_SIGNING_KEY` was rotated on 2026-09-04 (private half
+held by the owner; public half is checked in at `tools/native-artifacts-public.pem`).
 ### 2. The `release` environment gates on a human
 
 `hop-sdk-apple`'s `release` environment has two protection rules: required reviewers (`jwaldrip`) and

@@ -57,6 +57,8 @@ lay_down() {
   local lf
   for lf in "${FSL_LICENSES[@]}"; do printf '%s\n' "$FSL_BODY" > "$d/$lf"; done
   for lf in "${APACHE_LICENSES[@]}"; do printf '%s\n' "$APACHE_BODY" > "$d/$lf"; done
+  echo "# SDK Node" > "$d/sdk/node/README.md"
+  echo "# SDK Go" > "$d/sdk/go/README.md"
   python3 - "$d/README.md" <<'PY'
 import sys; open(sys.argv[1],"w").write("# Hop\n" + "A delay-tolerant mesh. "*30 + "\n")
 PY
@@ -114,6 +116,11 @@ lay_down "$TMP/corewrongtier"; printf '%s\n' "$FSL_BODY" > "$TMP/corewrongtier/$
 expect "$TMP/corewrongtier" fail "core_wears_fsl_reverted_inversion"
 lay_down "$TMP/nolicense";  find "$TMP/nolicense" -name LICENSE.md -delete
 expect "$TMP/nolicense" fail "no_license_at_all"
+# CLAIM-017: SDK README claiming hop-core is FSL-1.1-ALv2 must fail.
+lay_down "$TMP/sdkrdfsl"; echo "The protocol core (hop-core) is FSL-1.1-ALv2" >> "$TMP/sdkrdfsl/sdk/node/README.md"
+expect "$TMP/sdkrdfsl" fail "sdk_readme_claims_fsl"
+lay_down "$TMP/nosdkreadme"; rm -f "$TMP/nosdkreadme/sdk/node/README.md" "$TMP/nosdkreadme/sdk/go/README.md"
+expect "$TMP/nosdkreadme" fail "no_sdk_readme_at_all"
 
 echo
 if [ "$fail" -eq 0 ]; then

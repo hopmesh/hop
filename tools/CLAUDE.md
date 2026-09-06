@@ -37,6 +37,9 @@ check-required-checks.sh   keeps the aggregate `CI gate` honest: it must `needs:
 check-branch-protection.sh asserts the live branch-protection rule on main requires exactly the single
                            `CI gate` context (needs an admin-read PAT: BRANCH_PROTECTION_TOKEN).
                            Defaults to hopmesh/hop; override with GH_REPO for a fork or staging repo.
+check-worktree-checkpoints.sh asserts that all active worktrees have clean working trees and that their
+                           HEAD commits are reachable from a named branch before pruning (PROC-014).
+                           Self-test: check-worktree-checkpoints.test.sh.
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
                            empty, truncated, or drifted. TWO-TIER licenses: services/* byte-identical
                            FSL-1.1-ALv2, every other component (core, sdk, bearers, drivers, examples)
@@ -79,8 +82,9 @@ codegen/check-contract-purity.sh asserts sdk/hop.h and all SDK language faces co
 codegen/check-abi-version.sh asserts HOP_ABI_VERSION agreement across cabi.rs, headers, wrappers, and docs,
                            verifies canonical tools/codegen/abi-manifest.json matches sdk/hop.h via
                            generate-abi-manifest.py --check, and proves every wrapper's FFI declarations
-                           match manifest signatures via verify-abi-signatures.py. Self-test:
-                           codegen/check-abi-version.test.sh.
+                           match manifest signatures (width, signedness, callbacks) via
+                           verify-abi-signatures.py. Self-tests: codegen/check-abi-version.test.sh,
+                           codegen/generate-abi-manifest.test.sh, codegen/verify-abi-signatures.test.sh.
 identity-secret-guard.py    scans tracked files for raw 32-byte high-entropy binary identity seeds and
                            private key markers. Self-test: identity-secret-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.
@@ -91,12 +95,12 @@ release/                    plan.py resolves each publishing component's declare
                             mirror's main already declares the version (the mirror asserts tag ==
                             manifest). Driven by release-tags.yml after a successful export.
                             Self-test: release/release.test.sh (pins the tag/skip policy AND the token scope).
-                            release/check-mirror-secrets.py compares the secrets each mirror's release.yml
-                            REFERENCES against what is seeded at repo + environment + org scope. It exists
-                            because HOP_SOURCE_APP_ID/_PRIVATE_KEY were never seeded on any mirror, and an
-                            unset secret resolves to "" rather than erroring, so nothing ever published and
-                            the only symptom was an action complaining about an empty input. Needs a
-                            secrets-read token; the weekly branch-protection-audit runs it when armed.
+release/check-mirror-secrets.py compares the secrets each mirror's release.yml
+                            REFERENCES against what is seeded at repo + environment + org scope.
+                            With --audit-protection, it also audits mirror main branch protection
+                            and release environment rules (INFRA-019), and verifies canonical
+                            hop-source App installation on hopmesh/hop (INFRA-023).
+                            Needs a secrets-read token; branch-protection-audit runs it when armed.
                             Self-test: release/check-mirror-secrets.test.sh.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical on Apple and Android
@@ -133,9 +137,10 @@ Rewriting history would alter roughly 20% of all commits, strip 184 valid signat
 three Copybara mirrors' GitOrigin-RevId chains and every published source SHA.
 
 The owner therefore chose the zero-rewrite design: scan only the commits a change INTRODUCES, with
-zero allowlist entries. In CI (`.github/workflows/ci.yml`), `tools/commit-message-guard-range.sh`
-computes the introduced commit range from GitHub event context (`pull_request` base..HEAD, `push`
-before..HEAD with zero-SHA / unreachable fallbacks to HEAD, or `workflow_dispatch` HEAD).
+zero allowlist entries. In CI (`.github/workflows/ci.yml`), `tools/commit-message-guard.sh --github-event`
+runs unconditionally in the `automation` job on every PR and push without path filters (PROC-016).
+Range is computed via `tools/commit-message-guard-range.sh` from GitHub event context (`pull_request`
+base..HEAD, `push` before..HEAD with zero-SHA / unreachable fallbacks to HEAD, or `workflow_dispatch` HEAD).
 No commit-message allowlist exists, and historical commits before the change base are not scanned.
 
 ## Rules

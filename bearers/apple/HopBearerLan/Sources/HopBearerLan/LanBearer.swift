@@ -142,15 +142,16 @@ func lanKeepDialed(myId: Data, peer: Data) -> Bool { nodeIdGreater(myId, peer) }
 
 /// Given a duplicate pair (the already-registered `existingIsDialer` and the just-arrived `newIsDialer`)
 /// to `peer`, return true iff the NEW leg is the survivor. This IS onUp's survivor pick (onUp calls it):
-/// keep the leg whose isDialer matches `lanKeepDialed`, falling back to the new leg if neither matches
-/// (defensive; in practice a real duplicate always has one dialer + one acceptor). Pure (no link objects,
-/// no I/O), so the unit test pins the exact production keep-rule, not a copy.
+/// keep the leg whose isDialer matches `lanKeepDialed`, falling back to the existing leg if both or neither
+/// matches (PLAT-014: to prioritize established in-flight handshakes over incoming unauthenticated duplicate claims).
+/// Pure (no link objects, no I/O), so the unit test pins the exact production keep-rule, not a copy.
 func lanNewLegSurvives(myId: Data, peer: Data, existingIsDialer: Bool, newIsDialer: Bool) -> Bool {
     let keepDialed = lanKeepDialed(myId: myId, peer: peer)
-    // The survivor is the first of [existing, new] whose isDialer == keepDialed, else the new leg.
-    if existingIsDialer == keepDialed { return false }   // existing is the survivor
-    if newIsDialer == keepDialed { return true }         // new is the survivor
-    return true                                          // neither matched -> new leg (defensive)
+    // The survivor is the leg whose isDialer matches keepDialed. If both or neither match
+    // (e.g. both are incoming acceptors), the existing leg survives to protect in-flight handshakes.
+    if existingIsDialer == keepDialed { return false }   // existing matches (or both match) -> existing survives
+    if newIsDialer == keepDialed { return true }         // only new matches -> new survives
+    return false                                         // neither matched -> existing leg survives (PLAT-014)
 }
 
 // MARK: - Pure deframer (extracted from LanLink so the wire format is unit-testable without a socket) --

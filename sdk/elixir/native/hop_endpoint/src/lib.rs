@@ -58,17 +58,16 @@ fn open_keyed(
     secret: Option<Binary>,
     app_secret: Option<Binary>,
     key: Binary,
-) -> ResourceArc<NodeRes> {
+) -> NifResult<ResourceArc<NodeRes>> {
     let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
     let app_sec = app_secret
         .map(|s| s.as_slice().to_vec())
         .unwrap_or_default();
-    ResourceArc::new(NodeRes(HopNode::open_keyed(
-        db_path,
-        sec,
-        app_sec,
-        key.as_slice().to_vec(),
-    )))
+    let node = HopNode::open_keyed(db_path, sec, app_sec, key.as_slice().to_vec());
+    if !key.as_slice().is_empty() && !node.is_encrypted() {
+        return Err(rustler::Error::Term(Box::new("encryption_unavailable")));
+    }
+    Ok(ResourceArc::new(NodeRes(node)))
 }
 
 #[rustler::nif]
@@ -77,17 +76,16 @@ fn open_persistent_keyed(
     secret: Option<Binary>,
     app_secret: Option<Binary>,
     key: Binary,
-) -> ResourceArc<NodeRes> {
+) -> NifResult<ResourceArc<NodeRes>> {
     let sec = secret.map(|s| s.as_slice().to_vec()).unwrap_or_default();
     let app_sec = app_secret
         .map(|s| s.as_slice().to_vec())
         .unwrap_or_default();
-    ResourceArc::new(NodeRes(HopNode::open_keyed(
-        db_path,
-        sec,
-        app_sec,
-        key.as_slice().to_vec(),
-    )))
+    let node = HopNode::open_keyed(db_path, sec, app_sec, key.as_slice().to_vec());
+    if !key.as_slice().is_empty() && !node.is_encrypted() {
+        return Err(rustler::Error::Term(Box::new("encryption_unavailable")));
+    }
+    Ok(ResourceArc::new(NodeRes(node)))
 }
 
 #[rustler::nif]

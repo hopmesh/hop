@@ -771,7 +771,14 @@ impl<S: Store> Endpoint<S> {
             }
         }
         for k in learned {
-            let _ = self.persist_handled(k, now_ms.saturating_add(HANDLED_TTL_MS));
+            if let Err(e) = self.persist_handled(k, now_ms.saturating_add(HANDLED_TTL_MS)) {
+                eprintln!(
+                    "warning: failed to persist learned gossip key: {e}; revoking in-memory claim"
+                );
+                if let Some(cluster) = self.cluster.as_mut() {
+                    cluster.revoke_handled(&k);
+                }
+            }
         }
         self.delete_removed_handled();
         for cm in outbound {
@@ -869,9 +876,9 @@ mod tests {
                 routes: HashMap::new(),
             }
         }
-        fn connect(
+        fn connect<S: Store>(
             &mut self,
-            eps: &mut [Endpoint<MemoryStore>],
+            eps: &mut [Endpoint<S>],
             a: usize,
             la: LinkId,
             b: usize,
@@ -883,7 +890,7 @@ mod tests {
             eps[b].handle(BearerEvent::Connected(lb, Role::Responder));
             self.pump(eps);
         }
-        fn pump(&mut self, eps: &mut [Endpoint<MemoryStore>]) {
+        fn pump<S: Store>(&mut self, eps: &mut [Endpoint<S>]) {
             for _ in 0..1000 {
                 let mut any = false;
                 for i in 0..eps.len() {
@@ -969,7 +976,7 @@ mod tests {
 
     /// Tick every endpoint + pump a few rounds so membership (Presence gossip) converges: each
     /// replica learns the others before rendezvous ownership is computed.
-    fn converge(net: &mut Wire, eps: &mut [Endpoint<MemoryStore>], t: u64) {
+    fn converge<S: Store>(net: &mut Wire, eps: &mut [Endpoint<S>], t: u64) {
         for r in 0..4u64 {
             for e in eps.iter_mut() {
                 e.tick(t + r);
@@ -1606,6 +1613,16 @@ mod tests {
             fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
                 self.0.get_kv(key)
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                if key.starts_with(HANDLED_PREFIX) {
+                    return Err("disk full / store unavailable".into());
+                }
+                self.0.put_kv_if_absent_critical(key, value)
+            }
         }
 
         let store = FailingStore(MemoryStore::new());
@@ -1623,6 +1640,120 @@ mod tests {
         assert!(
             !endpoint.cluster_would_drop(&from, &id),
             "STORE-005 failure: endpoint marked request handled despite persistence failure"
+        );
+    }
+
+    #[test]
+    fn svc_016_gossip_ingestion_storage_failure_revokes_claim_and_does_not_mark_handled() {
+        // SVC-016: When cluster gossip is ingested but durable persistence of a learned key fails,
+        // pump_cluster must verify the persistence result and revoke the in-memory claim,
+        // ensuring unpersisted claims are not treated as permanently handled.
+        use hop_core::bundle::Bundle;
+        use hop_core::store::KvMutation;
+
+        struct FailingStore {
+            inner: MemoryStore,
+            fail_handled: bool,
+        }
+        impl Store for FailingStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, _key: &str, _value: Vec<u8>) {}
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                if self.fail_handled {
+                    for m in mutations {
+                        if let KvMutation::Put { key, .. } = m {
+                            if key.starts_with(HANDLED_PREFIX) {
+                                return Err("disk full / store unavailable".into());
+                            }
+                        }
+                    }
+                }
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                if self.fail_handled && key.starts_with(HANDLED_PREFIX) {
+                    return Err("disk full / store unavailable".into());
+                }
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let e_id = [42u8; 32];
+        let store_a = FailingStore {
+            inner: MemoryStore::new(),
+            fail_handled: false,
+        };
+        let node_a = Node::with_store(Identity::from_secret_bytes(&e_id), store_a);
+        let ep_a = Endpoint::new(node_a);
+
+        let store_b = FailingStore {
+            inner: MemoryStore::new(),
+            fail_handled: true,
+        };
+        let node_b = Node::with_store(Identity::from_secret_bytes(&e_id), store_b);
+        let ep_b = Endpoint::new(node_b);
+        let mut eps = [ep_a, ep_b];
+
+        let csecret = [7u8; 32];
+        eps[0].cluster_join(csecret);
+        eps[1].cluster_join(csecret);
+        for e in eps.iter_mut() {
+            e.set_time(1_000);
+        }
+
+        let mut net = Wire::new();
+        net.connect(&mut eps, 0, 10, 1, 10);
+        converge(&mut net, &mut eps, 1_000);
+        assert!(
+            eps[0].cluster_members() >= 2 && eps[1].cluster_members() >= 2,
+            "membership converged"
+        );
+
+        let from = [1u8; 32];
+        let id = [2u8; 32];
+        eps[0].cluster_mark_done(&from, &id);
+
+        // Deliver gossip from A to B
+        net.pump(&mut eps);
+
+        // Advance B's clock and pump cluster to process the gossip
+        eps[1].tick(1_001);
+
+        // On the unfixed tree, B's in-memory cluster marked the request handled despite persistence failure!
+        // With the SVC-016 fix, the unpersisted claim was revoked, so B does NOT treat it as handled.
+        assert!(
+            !eps[1].cluster_would_drop(&from, &id),
+            "SVC-016 failure: endpoint treated unpersisted gossip claim as handled"
         );
     }
 }

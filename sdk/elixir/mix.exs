@@ -22,7 +22,7 @@ defmodule Hop.MixProject do
   defp package do
     [
       name: "hop_endpoint",
-      # The Elixir wrapper is Apache-2.0. The checksum-covered vendored protocol crates retain FSL.
+      # The Elixir wrapper and the checksum-covered vendored protocol crates are Apache-2.0.
       licenses: ["Apache-2.0"],
       links: %{"Homepage" => "https://hopme.sh"},
       files: [

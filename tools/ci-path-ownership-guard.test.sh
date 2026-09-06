@@ -10,7 +10,8 @@
 # (g) routing apps/react-native/HopDemo without a consuming step in react-native-sdk fails,
 # (h) routing apps/ble-lab/android without a consuming step in android fails,
 # (i) routing testkit/** under docs fails,
-# (j) routing testkit without a consuming step in automation fails.
+# (j) routing testkit without a consuming step in automation fails,
+# (k) missing pyyaml dependency fails closed (PROC-017).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -495,6 +496,20 @@ EOF
 
 run_case "missing_testkit_consuming_step_fails" 1 "$TMP/ci_testkit_no_step.yml" "$TMP/files.txt"
 
+# (k) missing pyyaml dependency fails closed (PROC-017)
+mkdir -p "$TMP/empty_pythonpath"
+set +e
+output="$(PYTHONPATH="$TMP/empty_pythonpath" python3 -c 'import sys, runpy; sys.modules["yaml"] = None; runpy.run_path("'"$GUARD"'")' 2>&1)"
+got_exit=$?
+set -e
+if [ "$got_exit" -ne 0 ]; then
+  echo "  PASS missing_pyyaml_fails_closed (exit $got_exit as expected)"
+  pass=$((pass + 1))
+else
+  echo "  FAIL missing_pyyaml_fails_closed (expected non-zero exit, got 0)"
+  printf '    %s\n' "$output"
+  fail=$((fail + 1))
+fi
 echo
 if [ "$fail" -eq 0 ]; then
   echo "ci-path-ownership-guard.test.sh: all $pass tests passed"

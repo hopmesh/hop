@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "hop"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bs58",
  "hop-core",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "hop-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "bs58",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "hop-endpoint-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "hop-core",
@@ -549,9 +549,10 @@ dependencies = [
 
 [[package]]
 name = "hop-store-sqlite"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "hop-core",
+ "libc",
  "rusqlite",
  "zeroize",
 ]

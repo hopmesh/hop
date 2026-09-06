@@ -242,7 +242,7 @@ class HopBearer internal constructor(
     // The driver forms pure-L2CAP BLE + LAN + cloud-relay links, all multiplexed by ONE BearerManager
     // and surfaced through bearerSink into the node seam. The manager's global link-id space starts
     // HIGH (1_000_000). (The legacy in-driver BLE/LAN/relay transports and Wi-Fi Direct were removed.)
-    private val bearerMgr = sh.hop.BearerManager(baseLinkId = 1_000_000L)
+    internal val bearerMgr = sh.hop.BearerManager(baseLinkId = 1_000_000L)
 
     /** Fixed display order, so toggling never makes rows jump around. */
     private val TRANSPORT_DISPLAY = listOf("BT" to "Bluetooth", "LAN" to "Local Net", "Relay" to "Relay")
@@ -480,9 +480,7 @@ class HopBearer internal constructor(
                 // completed. The BearerManager owns the transports now, so this reads node state only.
                 val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
                 for (p in pls) {
-                    if (runCatching { node.isSecured(p.address) }.getOrDefault(false)) {
-                        bearerMgr.markSecured(p.link.toLong())
-                    }
+                    bearerMgr.markSecured(p.link.toLong())
                 }
                 bearerMgr.checkPreauthDeadlines(nowMs().toLong())
                 val distinctPeers = pls.map { it.address.toList() }.distinct().size
@@ -1272,6 +1270,7 @@ class HopBearer internal constructor(
         val ltLocal = LinkedHashMap<List<Byte>, String>()
         val pls = runCatching { node.peerLinks() }.getOrDefault(emptyList())
         pls.forEach { pl ->
+            bearerMgr.markSecured(pl.link.toLong())
             ltLocal[pl.address.toList()] = bearerMgr.transportNameOf(pl.link.toLong()) ?: "BT"
         }
         if (pls.isNotEmpty() && pls.size != lastPeerLinkCount && DriverFlags.verboseContentLogs) {

@@ -2082,11 +2082,14 @@ surfaces are **not** equal under GDPR:
   ledger (`usage/`, `carriage_usage/`, `telemetry_usage/`, `storage_usage/`, each
   `{hour}/{tenant}/{writer}`, tenant identifiers rather than device ones). The **values** on the
   session and prekey rows are ratchet and prekey material: the node's own key material for the
-  sessions it terminates, not user content keys. Unlike bundles and presence, kv carries **no
-  `expireAt` and therefore no TTL policy** (`infra/bootstrap/core.tf` declares TTL fields on
-  `bundles`, `presence`, `registry` and `operations` only), so a kv row persists until the relay
-  deletes it. That combination, a durable indexed device address with no retention bound, is the real
-  exposure here, and it is accepted rather than fixed: see "Why the kv key space is cleartext" below.
+  sessions it terminates, not user content keys. Transient kv documents carry an **`expireAt`
+  timestampValue field for Firestore TTL policy and an `expiresAt` integer field**
+  (`hop-store-firestore::kv_doc_json`), bounding `session/<peer>` rows to 30 days (matching
+  `SESSION_MAX_IDLE_MS`), `strm/<sender>/...` rows to 24 hours (matching `CARRIER_STREAM_LIFETIME_MS`),
+  and `inbox-seen/<id>` rows to 7 days (matching `MAX_SEEN_LIFETIME_MS`), backed by a store-side
+  bounded sweep (`sweep_expired_kv`, bounded to 100 rows per tick; CLAIM-020). Financial ledger rows
+  (`usage/`, `carriage_usage/`, `journal/`) and telemetry seen markers are exempt and persist until their
+  respective domain reconcilers sweep them. See "Why the kv key space is cleartext" below.
 - **Blind mailbox spool** (`mailboxes/{mailbox-tag}/bundles`, §39 P5). The one surface whose key space
   is derived rather than literal: the tag is `H("v2" | address | epoch)` (`crypto::mailbox_tag`), so a
   reader sees spooled ciphertext bucketed by a rotating pseudonym instead of by a recipient address.
@@ -2113,11 +2116,11 @@ surfaces are **not** equal under GDPR:
   below).
 - **No central identity/name registry (§23).** Addresses are pseudonymous public keys with no
   account mapping. Pseudonymization and data minimization by construction.
-- **TTL eviction** on bundles, presence, the liveness registry and the operation journal
-  (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on those writes)
-  and heartbeat staleness on presence, so storage limitation (Art. 5(1)(e)) is built in for those
-  four. It is **not** built in for `kv`, which has no `expireAt` at all.
-
+- **TTL eviction** on bundles, presence, the liveness registry, the operation journal
+  (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on those writes),
+  and transient `kv` rows (30-day session retention, 24-hour carrier streams, 7-day inbox-seen dedup,
+  backed by store-side sweeps; CLAIM-020), plus heartbeat staleness on presence, so storage limitation
+  (Art. 5(1)(e)) is built into both message spools and transient relay state.
 ### Why the kv key space is cleartext, and what that exposes
 
 A decision, recorded so it is not mistaken for an oversight. Blinding the kv key was evaluated and
@@ -2146,12 +2149,13 @@ load-bearing rather than incidental:
 over-broad `roles/datastore.viewer` credential, a backup export, or lawful process against the single
 US database) can list `relays/{node}/kv` and recover, for each relay partition, the base58 public key
 of every device that held a session with that relay, the sender public key of every carrier stream,
-and per-document `createTime`/`updateTime` as an attachment timeline, with no TTL bounding how long
-those rows live. That is the same correlation the relay's logging discipline (netlog vs netlog_private)
-exists to prevent, stored durably instead of logged. It is bounded by IAM and by the fact that the
-value side stays opaque; it is not bounded cryptographically. The honest fix is a durable-cursor
-redesign (opaque page tokens) plus a per-prefix keyed index, and until that is built this stays on the
-exposure list rather than being described as mitigated.
+and per-document `createTime`/`updateTime` as an attachment timeline, bounded to the 30-day session
+retention window (or 24-hour stream window) by `expireAt` TTL and store-side sweeping (CLAIM-020).
+That is the same correlation the relay's logging discipline (netlog vs netlog_private) exists to
+prevent, stored durably instead of logged. It is bounded by IAM, by retention TTL, and by the fact
+that the value side stays opaque; it is not bounded cryptographically. The honest fix is a
+durable-cursor redesign (opaque page tokens) plus a per-prefix keyed index, and until that is built
+this stays on the exposure list rather than being described as mitigated.
 
 **SQLCipher divergence.** `hop-store-sqlite` requires an application-level at-rest key (`open_keyed`,
 SQLCipher) for exactly this class of material, and the Firestore path has no equivalent: it relies on
@@ -2675,17 +2679,41 @@ report it to **Stripe** so an invoice actually goes out. The chain is **capture 
 Stripe meters → invoice**, and every link is idempotent so the worst case is a retry, never a double
 charge or a silent loss.
 
-### What we meter (four dimensions)
+### What we meter (four billable dimensions + zero-fee tenant auth)
 
 All keyed by `RAT.tenant` (§35), measured on the **sealed envelope**, counts and bytes, never content
-(§33).
+(§33), exactly matching the public pricing rate card (`pricing.astro` and `docs/pricing-cost-model.md`):
 
-| Dimension | Unit | Stripe meter aggregation | Captured when |
-|---|---|---|---|
-| **Active devices (MAD)** | distinct devices / period | `count` of first-seen events | a device's first authenticated link in the billing period |
-| **Data carried** | chunks (and/or bytes) | `sum` | each chunk/bundle the relay stores-and-forwards (§31, a large message is many chunks) |
-| **Internet egress** | bytes | `sum` | bytes fulfilled to the public internet / bridged across regions |
-| **Mailbox storage** | byte-hours → GB-month | `sum` of byte-hours | sampled per retention interval on held inbox bytes |
+| Dimension | Unit | Stripe meter (`event_name`) | Price &amp; Allowance | Captured when |
+|---|---|---|---|---|
+| **Reach (offline delivery)** | verified deliveries | `reach_delivery` (`sum`) | $0.002 / delivery (10,000 included / mo) | relay delivers a held bundle to an offline destination upon reconnection |
+| **Telemetry** | events | `telemetry_events` (`sum`) | $0.30 / 1,000,000 events (25M included / mo) | telemetry collector ingests and translates events to OTLP |
+| **Internet egress** | bytes | `internet_egress_bytes` (`sum`) | $0.15 / GB | bytes fulfilled to public internet / bridged across regions past allowance |
+| **Mailbox storage** | byte-hours to GB-month | `mailbox_storage_byte_hours` (`sum`) | $0.40 / GB-month | sampled per retention interval on held inbox bytes past allowance |
+| **Active devices (MAD)** | distinct devices / period | `mad` (`count`) | $0 (never as a per-seat fee) | a device's first authenticated link in the billing period (tenant auth only) |
+
+### Reach delivery billing calculation
+
+Reach measures backbone delivery to an offline recipient, the core capability provided by the Hop
+managed relay backbone. When a destination device is disconnected, bundles are spooled in the relay
+mailbox store. Upon device reconnection or delivery through an on-path carrier, verified proof of
+delivery is committed at the relay edge.
+
+The monthly billable Reach charge is computed as:
+```
+Reach Billed = max(0, total_reach_deliveries - 10000) * $0.002
+```
+
+Direct peer-to-peer transmissions, local bearer hops, and direct live deliveries do not route through
+mailbox spooling and emit zero `reach_delivery` events ($0 charge).
+
+Similarly, Telemetry is billed as:
+```
+Telemetry Billed = max(0, total_telemetry_events - 25000000) * ($0.30 / 1000000)
+```
+
+Active devices (MAD) are tracked solely for tenant authentication, security rate limiting, and abuse
+monitoring; MAD is priced at $0 per device and is never charged as a per-seat fee.
 
 **MAD without storing identity.** Active devices is a *distinct count*, but Stripe meters only
 `sum`/`count` events, they can't dedup. So we dedup at the edge: the **first** time a device address

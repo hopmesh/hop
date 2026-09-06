@@ -259,8 +259,20 @@ class RelayBearer(
         internal fun stablePeerIdForUrl(url: String): ByteArray =
             MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).copyOf(16)
 
-        fun sanitizeRelayUrl(input: String): String =
-            input.trim().substringBefore('?').substringBefore('#')
+        fun sanitizeRelayUrl(input: String): String {
+            val trimmed = input.trim()
+            return runCatching {
+                val uri = java.net.URI(trimmed)
+                if (uri.host != null) {
+                    java.net.URI(uri.scheme, null, uri.host, uri.port, uri.path, null, null).toString()
+                } else {
+                    null
+                }
+            }.getOrNull() ?: run {
+                val withoutQueryOrFrag = trimmed.substringBefore('?').substringBefore('#')
+                withoutQueryOrFrag.replaceFirst(Regex("^(https?|wss?)://[^/@]+@"), "$1://")
+            }
+        }
     }
 
     // ---- dial / down / reconnect (all on `exec`) ----

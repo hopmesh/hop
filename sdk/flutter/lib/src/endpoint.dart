@@ -174,8 +174,8 @@ class HopEndpoint {
   final _handlers = <String, HopHandler>{};
   final _links = <int, void Function(Uint8List)>{};
   final _pending = <String, Completer<HopResponse>>{};
+  final _inFlightRequests = <String>{};
   final _closers = <void Function()>[];
-
   void _ensureOpen() {
     if (_closed) throw StateError('endpoint is closed');
   }
@@ -195,12 +195,14 @@ class HopEndpoint {
   /// Durably accept a service request after application processing completes.
   bool acceptServiceRequest(Uint8List requestId) {
     _ensureOpen();
+    _inFlightRequests.remove(_hex(requestId));
     return _ffi.acceptServiceRequest(_node, requestId);
   }
 
   /// Reject a service request without ACK so it remains queued for redelivery.
   bool rejectServiceRequest(Uint8List requestId) {
     _ensureOpen();
+    _inFlightRequests.remove(_hex(requestId));
     return _ffi.rejectServiceRequest(_node, requestId);
   }
 
@@ -393,8 +395,11 @@ class HopEndpoint {
     }
     for (final (from, rid, service, method, args)
         in _ffi.takeServiceRequests(_node)) {
+      final key = _hex(rid);
+      if (_inFlightRequests.contains(key)) continue;
       final handler = _handlers[service];
       if (handler != null) {
+        _inFlightRequests.add(key);
         final req = HopRequest(
           from: _ffi.toBase58(from),
           fromBytes: from,
@@ -411,14 +416,18 @@ class HopEndpoint {
           final res = handler(req, HopReply._(this, from, rid));
           if (res is Future) {
             res.then((_) {
+              _inFlightRequests.remove(key);
               if (!_closed) _ffi.acceptServiceRequest(_node, rid);
             }).catchError((Object error, StackTrace stack) {
+              _inFlightRequests.remove(key);
               _reportError(error, stack);
             });
           } else {
+            _inFlightRequests.remove(key);
             _ffi.acceptServiceRequest(_node, rid);
           }
         } catch (error, stack) {
+          _inFlightRequests.remove(key);
           _reportError(error, stack);
         }
       }
@@ -444,6 +453,7 @@ class HopEndpoint {
     _pump?.cancel();
     _pump = null;
     final closers = List<void Function()>.of(_closers);
+    _inFlightRequests.clear();
     _closers.clear();
     for (final c in closers) {
       try {

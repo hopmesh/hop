@@ -41,7 +41,8 @@ run_case() {
 CHANGES=$'  changes:\n    name: Detect changed areas\n    steps:\n      - run: echo changes\n'
 RUST=$'  rust:\n    name: Rust checks\n    needs: changes\n    steps:\n      - run: echo rust\n'
 WEB=$'  web:\n    name: Web build\n    needs: changes\n    steps:\n      - run: echo web\n'
-AUTOMATION=$'  automation:\n    name: Automation authority guards\n    steps:\n      - run: echo automation\n'
+# PROC-016: the automation job is the one place commit-message-guard runs, unconditionally.
+AUTOMATION=$'  automation:\n    name: Automation authority guards\n    steps:\n      - run: bash tools/commit-message-guard.sh --github-event\n'
 
 gate() {
   printf '%s' $'  gate:\n    name: CI gate\n    runs-on: ubuntu-latest\n    if: always()\n    needs:\n'
@@ -73,6 +74,12 @@ run_case "automation_has_condition" fail "$CHANGES$RUST$WEB$AUTOMATION_IF$GATE_O
 
 AUTOMATION_NEEDS="${AUTOMATION/    steps:/    needs: changes$'\n'    steps:}"
 run_case "automation_has_dependency" fail "$CHANGES$RUST$WEB$AUTOMATION_NEEDS$GATE_OK"
+
+AUTOMATION_NO_COMMIT_GUARD="${AUTOMATION/bash tools\/commit-message-guard.sh --github-event/echo automation}"
+run_case "automation_without_commit_message_guard" fail "$CHANGES$RUST$WEB$AUTOMATION_NO_COMMIT_GUARD$GATE_OK"
+
+RUST_RUNS_COMMIT_GUARD="${RUST/echo rust/bash tools\/commit-message-guard.sh --github-event}"
+run_case "commit_message_guard_in_filtered_job" fail "$CHANGES$RUST_RUNS_COMMIT_GUARD$WEB$AUTOMATION$GATE_OK"
 
 NONAME=$'  sneaky:\n    needs: changes\n    steps:\n      - run: echo hidden\n'
 GATE_SNEAKY="$(gate $'      - rust\n      - web\n      - automation\n      - sneaky\n      - changes\n')"

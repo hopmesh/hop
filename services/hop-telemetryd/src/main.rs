@@ -67,6 +67,11 @@ const MAX_REQ_HEAD_BYTES: u64 = 8 * 1024;
 const MAX_CONNS: usize = 256;
 static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(not(test))]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Cap on a single inbound WS bearer message/frame (mirroring the relay's services-05 cap), instead of
 /// tungstenite's 64 MiB default, so a mesh peer can't push a giant frame the instance must buffer.
 const MAX_FRAME_BYTES: usize = 1 << 20; // 1 MiB
@@ -262,10 +267,77 @@ impl TelemetryCounts {
 #[derive(Default)]
 struct TelemetryMeter {
     counts: HashMap<TenantId, TelemetryCounts>,
+    uncommitted: HashMap<(u64, TenantId), TelemetryCounts>,
+    bases: HashMap<(u64, TenantId), TelemetryCounts>,
     /// Events accepted WITHOUT a tenant, which is only reachable with `--allow-unattributed`.
     unattributed: u64,
     /// Events REFUSED because they could not be attributed and the collector is fail-closed.
     refused: u64,
+}
+
+fn encode_telemetry_journal(entries: &[(TenantId, TelemetryCounts, TelemetryCounts)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(entries.len() * 48);
+    for (tenant, delta, target) in entries {
+        out.extend_from_slice(tenant);
+        out.extend_from_slice(&delta.events.to_le_bytes());
+        out.extend_from_slice(&delta.payload_bytes.to_le_bytes());
+        out.extend_from_slice(&target.events.to_le_bytes());
+        out.extend_from_slice(&target.payload_bytes.to_le_bytes());
+    }
+    out
+}
+
+fn decode_telemetry_journal(bytes: &[u8]) -> Vec<(TenantId, TelemetryCounts, TelemetryCounts)> {
+    let mut entries = Vec::new();
+    for chunk in bytes.chunks_exact(48) {
+        let mut tenant = [0u8; 16];
+        tenant.copy_from_slice(&chunk[..16]);
+        let delta = TelemetryCounts {
+            events: u64::from_le_bytes(chunk[16..24].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(chunk[24..32].try_into().unwrap_or_default()),
+        };
+        let target = TelemetryCounts {
+            events: u64::from_le_bytes(chunk[32..40].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(chunk[40..48].try_into().unwrap_or_default()),
+        };
+        entries.push((tenant, delta, target));
+    }
+    entries
+}
+
+pub fn reconcile_surviving_telemetry_journals<S: Store + ?Sized>(store: &mut S) -> usize {
+    let rows = store.list_kv("journal/telemetry_usage/");
+    let mut reconciled = 0;
+    for (key, bytes) in rows {
+        if bytes.is_empty() {
+            let _ = store.remove_kv_critical(&key);
+            store.remove_kv(&key);
+            continue;
+        }
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() != 4 || parts[0] != "journal" || parts[1] != "telemetry_usage" {
+            continue;
+        }
+        let writer = parts[2];
+        let Ok(hour) = parts[3].parse::<u64>() else {
+            continue;
+        };
+        let entries = decode_telemetry_journal(&bytes);
+        for (tenant, _delta, target) in entries {
+            let ledger_key = telemetry_usage_key_for(hour, &tenant, writer);
+            let current = store
+                .get_kv(&ledger_key)
+                .map(|b| decode_counts(&b))
+                .unwrap_or_default();
+            if current.events < target.events || current.payload_bytes < target.payload_bytes {
+                let _ = store.put_kv_critical(&ledger_key, encode_counts(&target));
+                reconciled += 1;
+            }
+        }
+        let _ = store.remove_kv_critical(&key);
+        store.remove_kv(&key);
+    }
+    reconciled
 }
 
 impl TelemetryMeter {
@@ -310,43 +382,112 @@ impl TelemetryMeter {
         now_ms: u64,
         key_for: impl Fn(u64, &TenantId) -> String,
     ) {
-        if self.counts.is_empty() {
+        let hour = now_ms / 3_600_000;
+        for (tenant, count) in self.counts.drain() {
+            let already_tracked_events: u64 = self
+                .uncommitted
+                .iter()
+                .filter(|((_, t), _)| *t == tenant)
+                .map(|(_, c)| c.events)
+                .sum();
+            let already_tracked_bytes: u64 = self
+                .uncommitted
+                .iter()
+                .filter(|((_, t), _)| *t == tenant)
+                .map(|(_, c)| c.payload_bytes)
+                .sum();
+            let fresh = TelemetryCounts {
+                events: count.events.saturating_sub(already_tracked_events),
+                payload_bytes: count.payload_bytes.saturating_sub(already_tracked_bytes),
+            };
+            if fresh != TelemetryCounts::default() {
+                self.uncommitted
+                    .entry((hour, tenant))
+                    .or_default()
+                    .add(&fresh);
+            }
+        }
+        if self.uncommitted.is_empty() {
             return;
         }
-        let hour = now_ms / 3_600_000;
-        let mut committed = Vec::new();
+        let probe_sample = key_for(hour, &[0u8; 16]);
+        let writer = probe_sample
+            .rsplit('/')
+            .next()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| ledger_writer_id().to_string());
+
+        let hours: std::collections::BTreeSet<u64> =
+            self.uncommitted.keys().map(|(h, _)| *h).collect();
         let mut failed = false;
-        for (tenant, counts) in &self.counts {
-            if *counts == TelemetryCounts::default() {
-                committed.push(*tenant);
-                continue;
+        for h in hours {
+            let mut entries = Vec::new();
+            for (&(entry_h, tenant), counts) in self.uncommitted.iter() {
+                if entry_h != h {
+                    continue;
+                }
+                if *counts == TelemetryCounts::default() {
+                    continue;
+                }
+                let key = key_for(h, &tenant);
+                let base = self.bases.entry((h, tenant)).or_insert_with(|| {
+                    store
+                        .get_kv(&key)
+                        .map(|b| decode_counts(&b))
+                        .unwrap_or_default()
+                });
+                let mut target = *base;
+                target.add(counts);
+                entries.push((tenant, *counts, target));
             }
-            let key = key_for(hour, tenant);
-            let mut total = store
-                .get_kv(&key)
-                .map(|b| decode_counts(&b))
-                .unwrap_or_default();
-            total.add(counts);
-            match store.put_kv_critical(&key, encode_counts(&total)) {
-                Ok(()) => {
-                    committed.push(*tenant);
+
+            let journal_key = format!("journal/telemetry_usage/{writer}/{h}");
+            if !entries.is_empty() {
+                let payload = encode_telemetry_journal(&entries);
+                let _ = store.put_kv_critical(&journal_key, payload);
+            }
+
+            let mut committed = Vec::new();
+            for (tenant, _counts, target) in &entries {
+                let key = key_for(h, tenant);
+                match store.put_kv_critical(&key, encode_counts(target)) {
+                    Ok(()) => {
+                        committed.push((h, *tenant));
+                    }
+                    Err(e) => {
+                        failed = true;
+                        eprintln!("hop-telemetryd: telemetry_usage write failed for {key}: {e}");
+                    }
                 }
-                Err(e) => {
-                    failed = true;
-                    eprintln!("hop-telemetryd: telemetry_usage write failed for {key}: {e}");
-                }
+            }
+            for entry in &committed {
+                self.uncommitted.remove(entry);
+                self.bases.remove(entry);
+            }
+            let remaining_for_h = self.uncommitted.keys().any(|(entry_h, _)| *entry_h == h);
+            if !remaining_for_h {
+                let _ = store.remove_kv_critical(&journal_key);
+                store.remove_kv(&journal_key);
+            } else {
+                let remaining_entries: Vec<_> = entries
+                    .into_iter()
+                    .filter(|(t, _, _)| self.uncommitted.contains_key(&(h, *t)))
+                    .collect();
+                let payload = encode_telemetry_journal(&remaining_entries);
+                let _ = store.put_kv_critical(&journal_key, payload);
             }
         }
-        for tenant in committed {
-            self.counts.remove(&tenant);
+
+        for (&(_, tenant), c) in &self.uncommitted {
+            self.counts.entry(tenant).or_default().add(c);
         }
+
         if failed {
             store_healthy().store(false, Ordering::SeqCst);
         } else {
             store_healthy().store(true, Ordering::SeqCst);
         }
     }
-
     fn take_unattributed(&mut self) -> u64 {
         std::mem::replace(&mut self.unattributed, 0)
     }
@@ -690,7 +831,8 @@ fn main() {
     // Durable store: the telemetry_usage ledger must survive a restart for the §37 reconciler to read
     // it, so the collector runs on SQLite (local) or Firestore (cloud), never an in-memory store.
     install_shutdown_handler();
-    let store = build_store(&firestore, &db, &identity.address());
+    let mut store = build_store(&firestore, &db, &identity.address());
+    reconcile_surviving_telemetry_journals(&mut store);
     let mut node = Node::with_store(identity, store);
     // Keys come from the static --key-server file PLUS, when --firestore is set, the tenant registry
     // the account service projects. configure_collector_node then installs the SAME Keyed access
@@ -1038,7 +1180,7 @@ pub fn sweep_expired_telemetry_markers<S: Store>(store: &mut S, now_ms: u64) -> 
             let epoch_str = parts.next();
             if prefix == Some("telemetry_seen") {
                 if let Some(epoch) = epoch_str.and_then(|s| s.parse::<u64>().ok()) {
-                    if epoch < cutoff_epoch_hour {
+                    if epoch < cutoff_epoch_hour || epoch > now_epoch_hour {
                         let _ = store.remove_kv_critical(&key);
                         deleted += 1;
                     }
@@ -1185,7 +1327,7 @@ fn bearer_ws_config() -> tungstenite::protocol::WebSocketConfig {
 /// to decide, leaving the bytes for whichever handler takes over.
 fn serve_conn(stream: TcpStream, ev_tx: &Sender<Ev>) {
     let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
     match peek_kind(&stream) {
         PeekKind::Http => {
             serve_http_min(stream);
@@ -1194,7 +1336,12 @@ fn serve_conn(stream: TcpStream, ev_tx: &Sender<Ev>) {
         PeekKind::WsUpgrade => {}
         PeekKind::Empty => return,
     }
-    let _ = stream.set_read_timeout(None); // hand a clean blocking socket to tungstenite
+    // SVC-013: Keep a bounded read timeout configured on the socket across tungstenite's
+    // accept_with_config. Do NOT remove it (set_read_timeout(None)): an unauthenticated client
+    // that sends `Upgrade: websocket` and then stalls must not block indefinitely and exhaust
+    // connection slots (blocking /healthz). The steady-state WS loop resets its own 100ms
+    // read timeout right after accept_with_config succeeds.
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
 
     let mut ws = match tungstenite::accept_with_config(stream, Some(bearer_ws_config())) {
         Ok(w) => w,
@@ -1423,16 +1570,25 @@ fn dial_relay(url: String, ev_tx: Sender<Ev>) {
 // --- identity ----------------------------------------------------------------------------------
 
 /// Load a stable identity from a 32-byte file (so the collector's published address survives
-/// restarts), generating and persisting one 0600 on first run.
+/// restarts), generating and persisting one on first run.
+///
+/// STORE-006, SVC-014: If the identity file exists but is unreadable or not exactly 32 bytes,
+/// the service fails loudly (panics) rather than silently rotating identity and overwriting
+/// the corrupt file.
 fn load_identity(path: &Option<String>) -> Identity {
     if let Some(path) = path {
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Identity::from_secret_bytes(&seed);
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(seed) => return Identity::from_secret_bytes(&seed),
+                    Err(_) => panic!("--identity-file {path} must be exactly 32 bytes"),
+                },
+                Err(e) => panic!("--identity-file {path} unreadable: {e}"),
             }
         }
         let id = Identity::generate();
-        if let Err(e) = write_secret_600(path, &id.to_secret_bytes()) {
+        if let Err(e) = write_secret_atomic(path, &id.to_secret_bytes()) {
             eprintln!(
                 "warning: could not persist identity to {path}: {e}; address will change on restart"
             );
@@ -1443,33 +1599,58 @@ fn load_identity(path: &Option<String>) -> Identity {
     Identity::generate()
 }
 
-/// Write `bytes` to `path` with owner-only (0600) permissions. On Unix the mode is applied at create
-/// time so the secret is never briefly world-readable.
-fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)?;
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
     }
     #[cfg(not(unix))]
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+            .create_new(true)
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
-        f.sync_all()
+        f.sync_all()?;
     }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1481,6 +1662,147 @@ mod tests {
             events,
             payload_bytes,
         }
+    }
+
+    struct DeferRemove(std::path::PathBuf);
+    impl Drop for DeferRemove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_short_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_telemetryd_short_{}.key", std::process::id()));
+        std::fs::write(&path, [1u8; 31]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_oversized_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_telemetryd_long_{}.key", std::process::id()));
+        std::fs::write(&path, [1u8; 33]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    fn load_identity_generates_and_persists_then_reloads_stable() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "test_telemetryd_persist_{}.key",
+            std::process::id()
+        ));
+        let _guard = DeferRemove(path.clone());
+        let id1 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        let id2 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        assert_eq!(id1.address(), id2.address());
+    }
+
+    #[test]
+    fn serve_conn_stalled_ws_upgrade_times_out_and_allows_healthz() {
+        // SVC-013: A client that sends an incomplete WebSocket upgrade request must time out
+        // and release the connection slot so that subsequent /healthz connections succeed.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (ev_tx, _ev_rx) = mpsc::channel();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let ev_tx_clone = ev_tx.clone();
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (sock, _) = listener.accept().unwrap();
+                if ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+                    ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+                    drop(sock);
+                    continue;
+                }
+                let tx = ev_tx_clone.clone();
+                let dt = done_tx.clone();
+                std::thread::spawn(move || {
+                    let _guard = ConnGuard;
+                    serve_conn(sock, &tx);
+                    let _ = dt.send(());
+                });
+            }
+        });
+
+        // Client 1: sends partial WS upgrade and stalls without completing headers
+        let mut client1 = TcpStream::connect(addr).unwrap();
+        client1
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+            )
+            .unwrap();
+
+        // Wait for server to time out client 1 and drop ConnGuard
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("stalled WS upgrade timed out");
+
+        // Client 2: /healthz request must succeed immediately
+        let mut client2 = TcpStream::connect(addr).unwrap();
+        client2
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client2
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+
+        let mut resp = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = client2.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if resp.contains("\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK")
+                || resp.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "healthz responded after stalled client: {resp}"
+        );
+        drop(client1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn sweep_expired_telemetry_markers_removes_future_and_expired_markers() {
+        // SVC-012: sweep_expired_telemetry_markers must prune both expired markers (< cutoff)
+        // and invalid future markers (> now), preventing permanent unprunable bloat.
+        let mut store = MemoryStore::new();
+        let now_ms = 1_000 * 3_600_000; // epoch 1000
+        let now_epoch_hour = 1_000;
+        let expired_epoch = now_epoch_hour - (hop_core::access::MAX_ATTRIBUTION_AGE_EPOCHS + 5);
+        let valid_epoch = now_epoch_hour - 1;
+        let future_epoch = now_epoch_hour + 500;
+
+        store.put_kv(&format!("telemetry_seen/{expired_epoch}/id1"), vec![1]);
+        store.put_kv(&format!("telemetry_seen/{valid_epoch}/id2"), vec![2]);
+        store.put_kv(&format!("telemetry_seen/{future_epoch}/id3"), vec![3]);
+
+        let deleted = sweep_expired_telemetry_markers(&mut store, now_ms);
+        assert_eq!(deleted, 2, "both expired and future markers pruned");
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{expired_epoch}/id1"))
+            .is_none());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{valid_epoch}/id2"))
+            .is_some());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{future_epoch}/id3"))
+            .is_none());
     }
 
     #[test]
@@ -2135,6 +2457,13 @@ mod tests {
             ) -> std::result::Result<(), String> {
                 Err("disk full / firestore unavailable".into())
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Err("disk full / firestore unavailable".into())
+            }
         }
 
         let mut meter = TelemetryMeter::default();
@@ -2168,6 +2497,477 @@ mod tests {
             "unwritten tenant counts must be retained in retry buffer"
         );
         assert!(!store_healthy().load(Ordering::SeqCst));
+        store_healthy().store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn svc_011_hostile_ambiguous_commit_retry_does_not_double_count_telemetry() {
+        use hop_core::store::{KvMutation, MemoryStore};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct AmbiguousStore {
+            inner: MemoryStore,
+            fail_commit: AtomicBool,
+        }
+        impl Store for AmbiguousStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                self.inner.put_kv(key, value);
+                if self.fail_commit.load(Ordering::SeqCst) {
+                    Err("network partition: commit timed out on response".into())
+                } else {
+                    Ok(())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let tenant: TenantId = [8u8; 16];
+        let mut meter = TelemetryMeter::default();
+        let mut store = AmbiguousStore {
+            inner: MemoryStore::new(),
+            fail_commit: AtomicBool::new(true),
+        };
+
+        // Cycle 1: add 50 events / 5000 bytes
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            },
+        );
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        let key = telemetry_usage_key(1, &tenant);
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_counts(&b)),
+            Some(TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            }),
+            "store committed 50 events before returning ambiguous error"
+        );
+        assert!(meter.counts.contains_key(&tenant));
+
+        // Cycle 2: 10 new events arrive; commit succeeds
+        store.fail_commit.store(false, Ordering::SeqCst);
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 10,
+                payload_bytes: 1000,
+            },
+        );
+        meter.flush_to_store(&mut store, 3_600_000);
+
+        let final_counts = store.get_kv(&key).map(|b| decode_counts(&b)).unwrap();
+        assert_eq!(
+            final_counts,
+            TelemetryCounts {
+                events: 60,
+                payload_bytes: 6000,
+            },
+            "ambiguous retry must NOT double-count previous 50 events"
+        );
+        assert!(!meter.counts.contains_key(&tenant));
+    }
+
+    #[test]
+    fn svc_011_durable_journal_reconciles_uncommitted_telemetry_on_restart() {
+        use hop_core::store::MemoryStore;
+
+        struct CrashBeforeCommitStore {
+            inner: MemoryStore,
+        }
+        impl Store for CrashBeforeCommitStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.inner.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                m: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(m)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                if key.starts_with("journal/") {
+                    self.inner.put_kv(key, value);
+                    Ok(())
+                } else {
+                    Err("process crash before ledger commit".into())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let tenant: TenantId = [6u8; 16];
+        let mut meter = TelemetryMeter::default();
+        let mut crash_store = CrashBeforeCommitStore {
+            inner: MemoryStore::new(),
+        };
+        let hour = 42u64;
+        let now = hour * 3_600_000;
+
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            },
+        );
+        meter.flush_to_store(&mut crash_store, now);
+
+        let mut store = crash_store.inner;
+        let ledger_key = telemetry_usage_key(hour, &tenant);
+        assert_eq!(
+            store.get_kv(&ledger_key),
+            None,
+            "ledger row was not committed before crash"
+        );
+        assert!(
+            !store.list_kv("journal/telemetry_usage/").is_empty(),
+            "journal row must be in store"
+        );
+
+        let reconciled = reconcile_surviving_telemetry_journals(&mut store);
+        assert_eq!(
+            reconciled, 1,
+            "startup reconcile must recover 1 uncommitted row"
+        );
+
+        let recovered = store
+            .get_kv(&ledger_key)
+            .map(|b| decode_counts(&b))
+            .unwrap();
+        assert_eq!(
+            recovered,
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000
+            },
+            "recovered ledger row must equal actual telemetry counts"
+        );
+        assert!(
+            store.list_kv("journal/telemetry_usage/").is_empty(),
+            "journal row must be deleted"
+        );
+        store_healthy().store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn svc_011_durable_journal_reconcile_is_noop_when_telemetry_commit_succeeded() {
+        use hop_core::store::MemoryStore;
+
+        struct CrashBeforeDeleteStore {
+            inner: MemoryStore,
+        }
+        impl Store for CrashBeforeDeleteStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.inner.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                m: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(m)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                self.inner.put_kv(key, value);
+                Ok(())
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+            fn remove_kv(&mut self, _key: &str) {}
+            fn remove_kv_critical(&mut self, _key: &str) -> std::result::Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let tenant: TenantId = [6u8; 16];
+        let mut meter = TelemetryMeter::default();
+        let mut crash_store = CrashBeforeDeleteStore {
+            inner: MemoryStore::new(),
+        };
+        let hour = 42u64;
+        let now = hour * 3_600_000;
+
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            },
+        );
+        meter.flush_to_store(&mut crash_store, now);
+
+        let mut store = crash_store.inner;
+        let ledger_key = telemetry_usage_key(hour, &tenant);
+        assert_eq!(
+            store.get_kv(&ledger_key).map(|b| decode_counts(&b)),
+            Some(TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000
+            }),
+            "ledger row was committed"
+        );
+        assert!(
+            !store.list_kv("journal/telemetry_usage/").is_empty(),
+            "journal row retained due to crash before deletion"
+        );
+
+        let reconciled = reconcile_surviving_telemetry_journals(&mut store);
+        assert_eq!(
+            reconciled, 0,
+            "reconcile must be no-op when commit already succeeded"
+        );
+
+        let final_counts = store
+            .get_kv(&ledger_key)
+            .map(|b| decode_counts(&b))
+            .unwrap();
+        assert_eq!(
+            final_counts,
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000
+            },
+            "ledger row must not be double counted"
+        );
+        assert!(
+            store.list_kv("journal/telemetry_usage/").is_empty(),
+            "journal row must be deleted"
+        );
+    }
+
+    #[test]
+    fn svc_011_cross_hour_retry_does_not_corrupt_new_hour_base_telemetry() {
+        use hop_core::store::MemoryStore;
+
+        let tenant: TenantId = [4u8; 16];
+        let mut store = MemoryStore::new();
+
+        let key_h1 = telemetry_usage_key(1, &tenant);
+        store.put_kv(
+            &key_h1,
+            encode_counts(&TelemetryCounts {
+                events: 100,
+                payload_bytes: 10000,
+            }),
+        );
+        let key_h2 = telemetry_usage_key(2, &tenant);
+
+        struct FailH1Store(MemoryStore);
+        impl Store for FailH1Store {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.0.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.0.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.0.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                m: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.0.apply_kv_batch(m)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                if key.starts_with("journal/") {
+                    self.0.put_kv(key, value);
+                    Ok(())
+                } else {
+                    Err("h1 write failed".into())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.0.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let mut fail_store = FailH1Store(store);
+        let mut meter = TelemetryMeter::default();
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 50,
+                payload_bytes: 5000,
+            },
+        );
+        meter.flush_to_store(&mut fail_store, 3_600_000);
+
+        let mut store = fail_store.0;
+        meter.add(
+            Some(tenant),
+            TelemetryCounts {
+                events: 10,
+                payload_bytes: 1000,
+            },
+        );
+        meter.flush_to_store(&mut store, 2 * 3_600_000);
+
+        assert_eq!(
+            store.get_kv(&key_h1).map(|b| decode_counts(&b)),
+            Some(TelemetryCounts {
+                events: 150,
+                payload_bytes: 15000
+            })
+        );
+
+        assert_eq!(
+            store.get_kv(&key_h2).map(|b| decode_counts(&b)),
+            Some(TelemetryCounts {
+                events: 10,
+                payload_bytes: 1000
+            }),
+            "hour 2 row must NOT be seeded with hour 1's base of 100"
+        );
         store_healthy().store(true, Ordering::SeqCst);
     }
 
