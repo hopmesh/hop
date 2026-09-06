@@ -3,7 +3,7 @@ import DocsLayout from '../../layouts/DocsLayout.astro';
 
 const cargo = `# Cargo.toml, embed the core
 [dependencies]
-hop-core = "0.1"   # free to start`;
+hop-mesh-core = "0.0.3"   # free to start`;
 
 const rust = `<span style="color:var(--tok-comment)">// open a node from your 32-byte secret (you own key storage)</span>
 <span style="color:var(--tok-kw)">let</span> node = HopNode::open(secret)?;
@@ -22,7 +22,7 @@ node.send_service_request(endpoint, <span style="color:var(--tok-str)">"acme/ord
 ---
 <DocsLayout
   title="Quickstart, embed Hop"
-  description="Embed hop-core in your app: add the dependency, open a node from a secret, send to a device or the internet, drain your inbox. iOS & Android via UniFFI."
+  description="Embed hop-mesh-core in your app: add the dependency, open a node from a secret, send to a device or the internet, drain your inbox. iOS & Android via the C ABI and HopContract."
 >
   <div class="eyebrow">Getting started</div>
   <h1>Quickstart</h1>
@@ -35,7 +35,7 @@ node.send_service_request(endpoint, <span style="color:var(--tok-str)">"acme/ord
       <div class="n">1</div>
       <div>
         <h3>Add the core</h3>
-        <p>Embed <code>hop-core</code> in your Rust app, or pull the UniFFI bindings into an iOS or Android target.</p>
+        <p>Embed <code>hop-mesh-core</code> in your Rust app, or pull the SDK bindings into an iOS or Android target.</p>
         <pre class="code-block sm" set:html={cargo}></pre>
       </div>
     </div>

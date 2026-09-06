@@ -78,6 +78,27 @@ else
   fail=$((fail + 1)); echo "FAIL [minimal_feature_subset]: expected fewer crates, got $min_count vs $good_count"
 fi
 
+# (g) BIZ-009: Section 'Crates whose licence text could not be read' must be absent
+if grep -F "## Crates whose licence text could not be read" "$TMP/good.md" >/dev/null 2>&1; then
+  fail=$((fail + 1)); echo "FAIL [no_missing_licence_section]: notice contains unread license text section"
+else
+  pass=$((pass + 1)); echo "ok   [no_missing_licence_section]: no unread license text section found"
+fi
+
+# (h) BIZ-009: every crate must have license text (headings match details blocks)
+crates_count="$(grep -c '^### ' "$TMP/good.md")"
+details_count="$(grep -c '<details><summary>' "$TMP/good.md")"
+if [ "$crates_count" -gt 0 ] && [ "$crates_count" -eq "$details_count" ]; then
+  pass=$((pass + 1)); echo "ok   [every_crate_has_license_text]: all $crates_count crates carry license text"
+else
+  fail=$((fail + 1)); echo "FAIL [every_crate_has_license_text]: $details_count license blocks for $crates_count crates"
+fi
+
+# (i) BIZ-009: a notice containing 'Crates whose licence text could not be read' fails check
+cp "$TMP/good.md" "$OUT"
+printf '\n## Crates whose licence text could not be read\n\n- `dummy 1.0.0` (MIT)\n' >> "$OUT"
+expect 1 "unread_licence_section_fails_check"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "gen-third-party-notices.test: all $pass cases passed"

@@ -925,12 +925,22 @@ def pinned_abi_version(export):
     require(found is not None, "Apple package does not declare expectedABIVersion")
     return int(found.group(1))
 
+def apple_release_tag(binary_url):
+    match = re.search(r"^https://github\.com/hopmesh/hop-sdk-apple/releases/download/([^/]+)/", binary_url)
+    require(match is not None, f"published Apple manifest does not use its immutable release URL: {binary_url}")
+    return match.group(1)
 
-def validate_apple(export, work, bundle):
+
+def validate_apple(export, work, bundle, release_tag=None):
     dumped = run(["swift", "package", "dump-package"], export, capture=True)
     manifest = json.loads(dumped)
     binary = next(target for target in manifest["targets"] if target["name"] == "CHop")
-    require(binary.get("url", "").startswith("https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.1/"), "published Apple manifest does not use its immutable release URL")
+    url = binary.get("url", "")
+    parsed_tag = apple_release_tag(url)
+    if release_tag is not None:
+        require(parsed_tag == release_tag, f"published Apple manifest release tag {parsed_tag} does not match expected {release_tag}")
+    else:
+        release_tag = parsed_tag
     expected_checksum = binary.get("checksum")
     require(isinstance(expected_checksum, str) and re.fullmatch(r"[0-9a-f]{64}", expected_checksum), "published Apple checksum is invalid")
     helper_path = export / "native/native-artifacts.py"
@@ -975,7 +985,7 @@ def validate_apple(export, work, bundle):
         f"Apple xcframework header does not expose the level the shipped wrapper pins ({abi})",
     )
     require(len(set(module_maps)) == 1 and b"module CHop {" in module_maps[0], "Apple xcframework module maps differ")
-    run(["python3", "install-local-xcframework.py", "--version", "v0.0.1", "--bundle", bundle], export)
+    run(["python3", "install-local-xcframework.py", "--version", release_tag, "--bundle", bundle], export)
     frameworks = export / "Frameworks"
     xcframework = frameworks / "libhop.xcframework"
     run(

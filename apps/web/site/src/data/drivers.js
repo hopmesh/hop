@@ -9,10 +9,10 @@ export const drivers = [
     id: 'ios', name: 'iOS', icon: '<i class="fa-duotone fa-solid fa-mobile-screen"></i>',
     status: 'Available', tagline: 'Swift host over CoreBluetooth',
     summary:
-      'Embeds hop-core through UniFFI and drives BLE via CoreBluetooth, central and peripheral at once, with an L2CAP channel for bulk and background operation within iOS limits.',
+      'Embeds hop-core through the C ABI (sdk/hop.h) and drives BLE via CoreBluetooth, central and peripheral at once, with an L2CAP channel for bulk and background operation within iOS limits.',
     bearers: ['BLE, GATT + L2CAP CoC', 'LAN, Wi-Fi'],
     notes: [
-      'UniFFI Swift bindings wrap the Rust core: hand it a key, address bundles, poll the durable inbox.',
+      'Swift bindings wrap the C ABI (sdk/hop.h): hand it a key, address bundles, poll the durable inbox.',
       'CoreBluetooth runs as both central and peripheral so any two devices can relay through each other.',
       'Background BLE within iOS constraints, beaconing, state restoration, wake on connection events. Designing around iOS background is the hardest platform constraint in the project.',
       'L2CAP connection-oriented channel carries bulk; GATT carries control and small frames.',
@@ -23,10 +23,10 @@ export const drivers = [
     id: 'android', name: 'Android', icon: '<i class="fa-duotone fa-solid fa-robot"></i>',
     status: 'Available', tagline: 'Kotlin host over the Android BLE + LAN stack',
     summary:
-      'Embeds hop-core through UniFFI and drives BLE (GATT + L2CAP) plus LAN, with a foreground service for sustained background meshing.',
+      'Embeds hop-core through the C ABI (sdk/hop.h via JNA) and drives BLE (GATT + L2CAP) plus LAN, with a foreground service for sustained background meshing.',
     bearers: ['BLE, GATT + L2CAP CoC', 'LAN, mDNS + TCP'],
     notes: [
-      'UniFFI Kotlin bindings, the same core API as iOS.',
+      'Kotlin bindings over the C ABI via HopContract, the same protocol architecture as iOS.',
       'A foreground service keeps the mesh alive in the background.',
       'The LAN bearer (mDNS + TCP) adds high-bandwidth local transfer where available. (Wi-Fi Direct was removed: its per-device approval dialog breaks the passive, no-pairing principle.)',
     ],
@@ -48,10 +48,10 @@ export const drivers = [
     id: 'esp32', name: 'ESP32', icon: '<i class="fa-duotone fa-solid fa-microchip"></i>',
     status: 'In development', tagline: 'Embedded host for the long-range bridge',
     summary:
-      'A bare-metal host that runs hop-core on an ESP32 and drives BLE on one side and a long-range 900 MHz radio on the other, the Hop Bridge.',
+      'An embedded host running ESP-IDF that embeds hop-core via the C ABI on an ESP32 and drives BLE on one side and a long-range 900 MHz radio on the other, the Hop Bridge.',
     bearers: ['BLE', '900 MHz, LoRa + other sub-GHz firmware'],
     notes: [
-      'Runs the core in a no-std embedded context and drives a sub-GHz radio module.',
+      'Runs the core compiled against ESP-IDF and FreeRTOS using the C ABI (sdk/hop.h), driving a sub-GHz radio module.',
       'Bridges a local BLE cluster to a long-range link, see the <a href="/lora/">Hop Bridge</a>.',
       'The 900 MHz radio is multi-firmware: LoRa is one waveform of several on the same chipset.',
     ],

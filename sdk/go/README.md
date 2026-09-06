@@ -167,5 +167,5 @@ exposes, not a separate release.
 
 ## License
 
-[Apache-2.0](./LICENSE.md), embed it freely. Only the protocol core (`hop-core`) is FSL-1.1-ALv2,
-source-available and converting to Apache-2.0 after two years.
+[Apache-2.0](./LICENSE.md), embed it freely. The protocol core it binds (`hop-core`) is
+also Apache-2.0.

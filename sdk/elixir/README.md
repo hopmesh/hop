@@ -38,8 +38,8 @@ end
 The native side is a **Rustler NIF** that compiles `hop-core`, the Rust protocol core, into your app on
 the first `mix` build, so you need a Rust toolchain present. The Hex archive includes the exact four
 Rust crates needed by the NIF under `native/vendor` plus `native/Cargo.lock`; no path escapes the Hex
-package and no monorepo checkout is required. Those protocol sources retain their FSL license while the
-Elixir wrapper is Apache-2.0. `:ssl`, `:public_key`, and `:crypto` power the WSS bearer and discovery,
+package and no monorepo checkout is required. Those protocol sources are Apache-2.0, as is the
+Elixir wrapper. `:ssl`, `:public_key`, and `:crypto` power the WSS bearer and discovery,
 with no third-party WebSocket deps.
 
 ## Quick start
@@ -152,5 +152,5 @@ exposes, not a separate release.
 
 ## License
 
-[Apache-2.0](./LICENSE.md), embed it freely. Only the protocol core (`hop-core`) is FSL-1.1-ALv2,
-source-available and converting to Apache-2.0 after two years.
+[Apache-2.0](./LICENSE.md), embed it freely. The protocol core it binds (`hop-core`) is
+also Apache-2.0.
