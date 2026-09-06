@@ -385,11 +385,15 @@ test('CLAIM-020: privacy.astro and dpa.astro must accurately describe persistent
   const privacy = readSite('src/pages/privacy.astro');
   const dpa = readSite('src/pages/dpa.astro');
 
-  // privacy.astro must disclose persistent relay KV storage of device public keys and timestamps
+  // privacy.astro must disclose persistent relay KV storage and TTL retention periods
   assert.match(privacy, /relays\/\{node\}\/kv|device public keys and timestamps|session.*metadata/i, 'privacy.astro must disclose persistent session and device metadata in relay KV');
+  assert.match(privacy, /30 days/i, 'privacy.astro must disclose 30-day session TTL retention policy');
+  assert.match(privacy, /24 hours/i, 'privacy.astro must disclose 24-hour carrier stream TTL');
 
-  // dpa.astro must disclose persistent relay KV storage
+  // dpa.astro must disclose persistent relay KV storage and TTL retention periods
   assert.match(dpa, /relays\/\{node\}\/kv|device public keys and timestamps|session.*metadata/i, 'dpa.astro must disclose persistent session and device metadata in relay KV');
+  assert.match(dpa, /30 days/i, 'dpa.astro must disclose 30-day session TTL retention policy');
+  assert.match(dpa, /24 hours/i, 'dpa.astro must disclose 24-hour carrier stream TTL');
 });
 
 test('CLAIM-018: index.astro must describe universal C ABI and HopContract bindings rather than UniFFI', () => {
