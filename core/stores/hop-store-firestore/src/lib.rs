@@ -1287,7 +1287,10 @@ impl Store for FirestoreStore {
         if let Some(val) = self.inner.get_kv(key) {
             return Some(val);
         }
-        if key.starts_with(TELEMETRY_SEEN_PREFIX) || key.starts_with(LAZY_KV_PREFIX) {
+        if key.starts_with(TELEMETRY_SEEN_PREFIX)
+            || key.starts_with(LAZY_KV_PREFIX)
+            || is_billing_ledger_key(key)
+        {
             if let Ok(Some(val)) = self.mirror.get_kv(key) {
                 return Some(val);
             }
@@ -1322,12 +1325,23 @@ impl Store for FirestoreStore {
             Ok(false) => {
                 if let Ok(Some(existing)) = self.mirror.get_kv(key) {
                     self.inner.put_kv(key, existing);
+                    Ok(false)
                 } else {
-                    self.inner.put_kv(key, value);
+                    self.durability.mark_not_ready();
+                    Err(
+                        "put_kv_if_absent reported already present but document does not exist"
+                            .into(),
+                    )
                 }
-                Ok(false)
             }
-            Err(e) => Err(e.to_string()),
+            Err(e) => {
+                if matches!(e, MirrorBatchError::Unknown(_)) {
+                    self.durability.quarantine();
+                } else {
+                    self.durability.mark_not_ready();
+                }
+                Err(e.to_string())
+            }
         }
     }
 
@@ -2137,8 +2151,11 @@ struct FirestoreClient {
 
 impl FirestoreClient {
     fn new(project: &str, node_addr: &[u8]) -> Self {
+        Self::new_with_base("https://firestore.googleapis.com/v1", project, node_addr)
+    }
+
+    fn new_with_base(base: &str, project: &str, node_addr: &[u8]) -> Self {
         let node = bs58::encode(node_addr).into_string();
-        let base = "https://firestore.googleapis.com/v1";
         let collection_url = format!(
             "{base}/projects/{project}/databases/(default)/documents/relays/{node}/bundles"
         );
@@ -2182,6 +2199,14 @@ impl FirestoreClient {
             operation_recovery: Mutex::new(()),
             token: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn with_base_url_for_test(base: &str, project: &str, node_addr: &[u8]) -> Self {
+        let client = Self::new_with_base(base, project, node_addr);
+        *client.token.lock().unwrap() = Some(("mock-test-token".to_string(), Instant::now()));
+        client
     }
 
     /// A cached OAuth token: metadata server (Cloud Run/GCE) or `FIRESTORE_ACCESS_TOKEN`.
@@ -2434,7 +2459,15 @@ impl FirestoreClient {
             .send();
         match response {
             Ok(resp) if resp.status().is_success() => Ok(true),
-            Ok(resp) if resp.status().as_u16() == 409 => Ok(false),
+            Ok(resp) if resp.status().as_u16() == 409 => match self.get_kv(key) {
+                Ok(Some(_)) => Ok(false),
+                Ok(None) => Err(MirrorBatchError::definitive(
+                    "put_kv_if_absent commit returned 409 conflict but document does not exist (operation fence mismatch or contention)",
+                )),
+                Err(e) => Err(MirrorBatchError::unknown(format!(
+                    "put_kv_if_absent commit returned 409 conflict and verification query failed: {e}",
+                ))),
+            },
             Ok(resp) => {
                 if self.get_kv(key).unwrap_or(None).is_some() {
                     Ok(false)
