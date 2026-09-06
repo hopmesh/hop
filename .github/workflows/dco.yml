@@ -1,0 +1,43 @@
+name: DCO & CLA Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco-check:
+    name: Verify DCO and CLA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Signed-off-by trailer on PR commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Checking commits between $BASE_SHA and $HEAD_SHA for DCO sign-off..."
+          failed=0
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            subject=$(git log -1 --format='%s' "$sha")
+            body=$(git log -1 --format='%B' "$sha")
+            if ! echo "$body" | grep -E -q '^Signed-off-by: .+ <.+@.+>'; then
+              echo "::error file=CONTRIBUTING.md::Commit $sha (\"$subject\") lacks a valid 'Signed-off-by: Name <email>' DCO trailer. Run 'git commit --amend -s' to add it."
+              failed=1
+            fi
+          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
+
+          if [ "$failed" -ne 0 ]; then
+            echo "DCO and CLA verification failed. All commits must include a valid Signed-off-by trailer."
+            exit 1
+          fi
+          echo "DCO and CLA verification successful."

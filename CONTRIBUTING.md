@@ -81,6 +81,13 @@ is a protocol break that must be called out (see `docs/release-engineering.md`).
   purity, and header drift. Merge on green.
 - Run `cargo deny check` for dependency changes (see `deny.toml`).
 
+## Contributor License Agreement &amp; Developer Certificate of Origin
+
+All external contributions to Hop require agreement to the Contributor License Agreement (CLA) or Developer Certificate of Origin (DCO sign-off):
+
+- **Contributor License Agreement (CLA):** By submitting a pull request, you agree to the terms in `CLA.md` (present in each component directory). Hop is distributed under a dual-licensing model (Apache-2.0 for client libraries and core protocol, FSL-1.1-ALv2 for cloud services). The CLA grants Hop Mesh, LLC the necessary rights to distribute and relicense contributions under these terms while preserving your original authorship.
+- **Developer Certificate of Origin (DCO):** Commits should include a `Signed-off-by: Author Name <email>` trailer (`git commit -s`), certifying that you wrote the code or have the right to contribute it under open-source and source-available licenses.
+- **Automated Verification:** Pull requests are automatically verified for DCO sign-off and CLA compliance via GitHub Actions (`.github/workflows/dco.yml`).
 ## Security
 
 Do not file security or privacy issues in public. See `SECURITY.md` for the private

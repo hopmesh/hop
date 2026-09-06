@@ -1,8 +1,5 @@
 # Hop Mesh Contributor License Agreement
 
-> This is a template, provided as a starting point. Have your own legal counsel
-> review it before you rely on it. It is not legal advice.
-
 Thank you for contributing to Hop. This Contributor License Agreement (the
 "Agreement") sets the terms under which you contribute. By submitting a
 Contribution to a Hop project, you agree to this Agreement.
