@@ -6,7 +6,9 @@
 # 2. Fails when a doc cites a relative path that does not exist.
 # 3. Passes when BUNDLE_VERSION in prose matches bundle.rs.
 # 4. Fails when MECHANISMS.md or SECURITY.md cites a stale wire version or corpus.
-
+# 5. Fails when a doc cites an unqualified PR number above max known PR (PROC-015).
+# 6. Passes when a PR citation is qualified with a historical repository (PROC-015).
+# 7. Passes when a PR citation is at or below the max known PR (PROC-015).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HERE/doc-path-guard.sh"
@@ -125,6 +127,18 @@ expect "$TMP/ci_stale_total" fail "stale_ci_total_jobs_fails"
 lay_down "$TMP/ci_stale_deps" "16" "16" "bundle-v16.json" ""
 lay_down_ci "$TMP/ci_stale_deps" "is the gate: 4 jobs. The aggregate CI gate depends on the other 19 and is required."
 expect "$TMP/ci_stale_deps" fail "stale_ci_gate_deps_fails"
+
+# Test 9: Unqualified PR citation above max PR -> FAIL (PROC-015)
+lay_down "$TMP/pr_unqualified" "16" "16" "bundle-v16.json" "- Fixes issue in PR #138 without qualification"
+expect "$TMP/pr_unqualified" fail "unqualified_pr_above_max_fails"
+
+# Test 10: Qualified PR citation (hopmesh/monorepo#138) above max PR -> PASS (PROC-015)
+lay_down "$TMP/pr_qualified" "16" "16" "bundle-v16.json" "- Fixes issue in hopmesh/monorepo#138 with qualification"
+expect "$TMP/pr_qualified" pass "qualified_pr_above_max_passes"
+
+# Test 11: Valid PR citation at or below max PR -> PASS (PROC-015)
+lay_down "$TMP/pr_valid" "16" "16" "bundle-v16.json" "- Merged in PR #71 cleanly"
+expect "$TMP/pr_valid" pass "pr_below_max_passes"
 
 echo
 if [ "$fail" -eq 0 ]; then
