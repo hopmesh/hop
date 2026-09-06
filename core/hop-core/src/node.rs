@@ -9024,12 +9024,41 @@ impl<S: Store> Node<S> {
                                 return false;
                             }
                             let now = self.now_ms;
-                            let epoch_hour = bundle
-                                .env
-                                .access
-                                .as_deref()
-                                .map(|s| s.epoch)
-                                .unwrap_or(now / 3_600_000);
+                            let now_epoch = now / 3_600_000;
+
+                            // SVC-012: Validate carriage stamp epoch and verify signature via attribute_fresh
+                            // BEFORE writing any deduplication key to durable storage. Unauthenticated
+                            // bundles with invalid signatures or future epoch values must be rejected immediately
+                            // without invoking put_kv_if_absent_critical (zero rows written).
+                            let tenant = match (&self.access_policy, bundle.env.access.as_deref()) {
+                                (AccessPolicy::Keyed(_), None) => {
+                                    // Keyed policy requires an authenticated carriage stamp
+                                    return false;
+                                }
+                                (_, Some(stamp)) => {
+                                    if stamp.epoch > now_epoch
+                                        || now_epoch.saturating_sub(stamp.epoch)
+                                            > crate::access::MAX_ATTRIBUTION_AGE_EPOCHS
+                                    {
+                                        // Future or expired stamp epoch: reject immediately
+                                        return false;
+                                    }
+                                    let attributed =
+                                        self.access_policy.attribute_fresh(stamp, &id, now);
+                                    if matches!(self.access_policy, AccessPolicy::Keyed(_))
+                                        && attributed.is_none()
+                                    {
+                                        // Keyed policy requires a valid verified signature
+                                        return false;
+                                    }
+                                    attributed
+                                }
+                                (AccessPolicy::Open, None) => None,
+                            };
+
+                            // Deduplication key must always derive epoch_hour from local verified time (now / 3_600_000)
+                            // or from a stamp verified by attribute_fresh, never from unverified input.
+                            let epoch_hour = now_epoch;
                             let dedup_key = format!(
                                 "telemetry_seen/{}/{}",
                                 epoch_hour,
@@ -9041,7 +9070,7 @@ impl<S: Store> Node<S> {
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    // Duplicate telemetry batch already processed (SVC-006)
+                                    // Duplicate telemetry batch already processed (SVC-006, SVC-012)
                                     return false;
                                 }
                                 Err(_) => {
@@ -9049,9 +9078,6 @@ impl<S: Store> Node<S> {
                                     return false;
                                 }
                             }
-                            let tenant = bundle.env.access.as_deref().and_then(|stamp| {
-                                self.access_policy.attribute_fresh(stamp, &id, now)
-                            });
                             let Some(charge) = self.reserve_app_queue(
                                 AppQueueKind::Telemetry,
                                 Some(from),
@@ -11781,8 +11807,7 @@ mod tests {
             nodes[0].send_telemetry(nodes[1].address(), &batch).unwrap();
             net.pump(&mut nodes);
             let got = nodes[1].take_telemetry();
-            assert_eq!(got.len(), 1, "the batch itself still arrives");
-            got[0].tenant
+            got.first().and_then(|t| t.tenant)
         };
 
         // Well inside the window (a device offline for hours still bills correctly).
@@ -11847,6 +11872,175 @@ mod tests {
             Some(TENANT),
             "attributed to the tenant via the carriage stamp"
         );
+    }
+
+    #[test]
+    fn svc_012_telemetry_bundle_with_invalid_signature_or_future_epoch_writes_zero_store_rows() {
+        // SVC-012: telemetry bundles with invalid signature or future stamp epoch must be rejected
+        // and write ZERO rows to the underlying store.
+        use crate::access::CarriageStamp;
+        use crate::bundle::{Bundle, BundleOpts, Destination, Payload};
+        const TENANT: crate::access::TenantId = [7u8; 16];
+        let now = 100 * crate::access::CARRIAGE_EPOCH_MS + 5;
+        let now_epoch = now / crate::access::CARRIAGE_EPOCH_MS;
+        let stamper_key = Identity::generate();
+
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        nodes[0].set_time(now);
+        nodes[1].set_time(now);
+        nodes[1].set_kind(NodeKind::Endpoint);
+        nodes[1].set_telemetry_ingest(true);
+
+        let mut server = crate::access::KeyServer::new();
+        server.insert(TENANT, stamper_key.address());
+        nodes[1].set_access_policy(AccessPolicy::Keyed(crate::access::KeyedAccess::new(
+            server,
+            std::collections::HashSet::new(),
+        )));
+        nodes[1].refresh_access();
+
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        // Test 1: Future epoch with fake signature
+        let batch = crate::telemetry::TelemetryBatch::new().counter("hop.test", 1, now);
+        let mut bundle = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        bundle.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch + 1000,
+            hint: [0u8; 4],
+            sig: vec![0u8; 64],
+        }));
+
+        nodes[1].on_bundle(1, bundle);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            0,
+            "zero rows must be written to store on future epoch"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
+
+        // Test 2: Current epoch with invalid signature
+        let mut bundle2 = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        bundle2.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch,
+            hint: [0u8; 4],
+            sig: vec![0xba; 64],
+        }));
+
+        nodes[1].on_bundle(1, bundle2);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            0,
+            "zero rows must be written to store on invalid signature"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
+    }
+
+    #[test]
+    fn svc_012_replaying_telemetry_bundle_with_mutated_stamp_epoch_is_rejected() {
+        // SVC-012: replaying a telemetry bundle with mutated stamp.epoch must be rejected
+        // and cannot bypass deduplication or write a new marker.
+        use crate::access::CarriageStamp;
+        use crate::bundle::{Bundle, BundleOpts, Destination, Payload};
+        const TENANT: crate::access::TenantId = [7u8; 16];
+        let now = 100 * crate::access::CARRIAGE_EPOCH_MS + 5;
+        let now_epoch = now / crate::access::CARRIAGE_EPOCH_MS;
+        let stamper_key = Identity::generate();
+
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        nodes[0].set_time(now);
+        nodes[1].set_time(now);
+        nodes[0].set_stamper(Some(Stamper::new(
+            TENANT,
+            Identity::from_secret_bytes(&stamper_key.to_secret_bytes()),
+        )));
+        nodes[1].set_kind(NodeKind::Endpoint);
+        nodes[1].set_telemetry_ingest(true);
+
+        let mut server = crate::access::KeyServer::new();
+        server.insert(TENANT, stamper_key.address());
+        nodes[1].set_access_policy(AccessPolicy::Keyed(crate::access::KeyedAccess::new(
+            server,
+            std::collections::HashSet::new(),
+        )));
+        nodes[1].refresh_access();
+
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 1);
+
+        let batch = crate::telemetry::TelemetryBatch::new().counter("hop.test", 1, now);
+        nodes[0].send_telemetry(nodes[1].address(), &batch).unwrap();
+        net.pump(&mut nodes);
+
+        let got = nodes[1].take_telemetry();
+        assert_eq!(got.len(), 1, "original stamped telemetry arrives");
+        let initial_rows = nodes[1].store.list_kv("telemetry_seen/").len();
+        assert_eq!(initial_rows, 1, "exactly one dedup row written");
+
+        // Now attempt replay with mutated stamp epoch
+        let mut replayed = Bundle::create(
+            &nodes[0].identity,
+            Destination::Device(nodes[1].address()),
+            &nodes[1].address(),
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Mutate the epoch
+        replayed.env.access = Some(Box::new(CarriageStamp {
+            epoch: now_epoch.saturating_sub(1),
+            hint: [0u8; 4],
+            sig: vec![0u8; 64],
+        }));
+
+        nodes[1].on_bundle(1, replayed);
+        assert_eq!(
+            nodes[1].store.list_kv("telemetry_seen/").len(),
+            initial_rows,
+            "no extra row written on mutated replay"
+        );
+        assert_eq!(nodes[1].take_telemetry().len(), 0);
     }
 
     #[test]

@@ -1043,7 +1043,7 @@ pub fn sweep_expired_telemetry_markers<S: Store>(store: &mut S, now_ms: u64) -> 
             let epoch_str = parts.next();
             if prefix == Some("telemetry_seen") {
                 if let Some(epoch) = epoch_str.and_then(|s| s.parse::<u64>().ok()) {
-                    if epoch < cutoff_epoch_hour {
+                    if epoch < cutoff_epoch_hour || epoch > now_epoch_hour {
                         let _ = store.remove_kv_critical(&key);
                         deleted += 1;
                     }
@@ -1634,6 +1634,28 @@ mod tests {
         );
         drop(client1);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn sweep_expired_telemetry_markers_removes_future_and_expired_markers() {
+        // SVC-012: sweep_expired_telemetry_markers must prune both expired markers (< cutoff)
+        // and invalid future markers (> now), preventing permanent unprunable bloat.
+        let mut store = MemoryStore::new();
+        let now_ms = 1_000 * 3_600_000; // epoch 1000
+        let now_epoch_hour = 1_000;
+        let expired_epoch = now_epoch_hour - (hop_core::access::MAX_ATTRIBUTION_AGE_EPOCHS + 5);
+        let valid_epoch = now_epoch_hour - 1;
+        let future_epoch = now_epoch_hour + 500;
+
+        store.put_kv(&format!("telemetry_seen/{expired_epoch}/id1"), vec![1]);
+        store.put_kv(&format!("telemetry_seen/{valid_epoch}/id2"), vec![2]);
+        store.put_kv(&format!("telemetry_seen/{future_epoch}/id3"), vec![3]);
+
+        let deleted = sweep_expired_telemetry_markers(&mut store, now_ms);
+        assert_eq!(deleted, 2, "both expired and future markers pruned");
+        assert!(store.get_kv(&format!("telemetry_seen/{expired_epoch}/id1")).is_none());
+        assert!(store.get_kv(&format!("telemetry_seen/{valid_epoch}/id2")).is_some());
+        assert!(store.get_kv(&format!("telemetry_seen/{future_epoch}/id3")).is_none());
     }
 
     #[test]
