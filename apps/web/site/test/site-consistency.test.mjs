@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -417,13 +418,45 @@ test('BIZ-015: CLA templates must not contain generic template disclaimers, CONT
     env: { ...process.env, ACTOR: 'dependabot[bot]' }
   });
   assert.equal(resBot.status, 0, 'DCO script must exit 0 for dependabot[bot]');
-  assert.match(resBot.stdout.toString(), /Exempting automated actor \(dependabot\[bot\]\)/);
+  assert.match(resBot.stdout.toString(), /Exempting maintainer or automated actor \(dependabot\[bot\]\)/);
 
   const resSync = spawnSync('bash', ['-c', dcoRunScript], {
     env: { ...process.env, PR_USER: 'hop-sync' }
   });
   assert.equal(resSync.status, 0, 'DCO script must exit 0 for hop-sync');
-  assert.match(resSync.stdout.toString(), /Exempting automated PR author \(hop-sync\)/);
+  assert.match(resSync.stdout.toString(), /Exempting maintainer or automated PR author \(hop-sync\)/);
+
+  // GitHub computes author_association lazily: the owner's own PR #131 arrived as CONTRIBUTOR at
+  // event time, so the maintainer exemption has to hold on the login as well.
+  const resMaintainerLogin = spawnSync('bash', ['-c', dcoRunScript], {
+    env: { ...process.env, AUTHOR_ASSOCIATION: 'CONTRIBUTOR', ACTOR: 'jwaldrip', PR_USER: 'jwaldrip' }
+  });
+  assert.equal(resMaintainerLogin.status, 0, 'DCO script must exit 0 for the maintainer login even when author_association lags');
+  assert.match(resMaintainerLogin.stdout.toString(), /Exempting maintainer or automated actor \(jwaldrip\)/);
+
+  // An outside contributor with an unsigned commit must still be refused: exercise the real
+  // rev-list path against this repository's own history with a synthetic unsigned commit range.
+  const tmpRepo = mkdtempSync(join(tmpdir(), 'hop-dco-'));
+  const git = (...args) => spawnSync('git', ['-C', tmpRepo, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: 'Outside', GIT_AUTHOR_EMAIL: 'o@example.com', GIT_COMMITTER_NAME: 'Outside', GIT_COMMITTER_EMAIL: 'o@example.com' } });
+  git('init', '-q');
+  git('-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'base');
+  const base = git('rev-parse', 'HEAD').stdout.toString().trim();
+  git('-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'unsigned change');
+  const head = git('rev-parse', 'HEAD').stdout.toString().trim();
+  const resOutside = spawnSync('bash', ['-c', dcoRunScript], {
+    cwd: tmpRepo,
+    env: { ...process.env, AUTHOR_ASSOCIATION: 'CONTRIBUTOR', ACTOR: 'outsider', PR_USER: 'outsider', BASE_SHA: base, HEAD_SHA: head }
+  });
+  assert.notEqual(resOutside.status, 0, 'DCO script must refuse an unsigned commit from an outside contributor');
+  assert.match(resOutside.stdout.toString(), /lacks a valid 'Signed-off-by: Name <email>' DCO trailer/);
+  git('-c', 'commit.gpgsign=false', 'commit', '-q', '--amend', '--allow-empty', '--no-edit', '-s');
+  const signedHead = git('rev-parse', 'HEAD').stdout.toString().trim();
+  const resSigned = spawnSync('bash', ['-c', dcoRunScript], {
+    cwd: tmpRepo,
+    env: { ...process.env, AUTHOR_ASSOCIATION: 'CONTRIBUTOR', ACTOR: 'outsider', PR_USER: 'outsider', BASE_SHA: base, HEAD_SHA: signedHead }
+  });
+  assert.equal(resSigned.status, 0, 'DCO script must accept the same commit once signed off');
+  rmSync(tmpRepo, { recursive: true, force: true });
 
   // All 22 CLA.md files must NOT have "This is a template"
   const claPaths = [
