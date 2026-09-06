@@ -85,12 +85,12 @@ def load_manifest(path: pathlib.Path = MANIFEST) -> list[dict]:
     return entries
 
 
-def last_real_run(entry: dict, fetch=_get) -> tuple[datetime.datetime | None, int, int]:
-    """Return (when the named job last really concluded, runs examined, times it skipped).
+def last_real_run(entry: dict, fetch=_get) -> tuple[datetime.datetime | None, str | None, int, int]:
+    """Return (when the named job last really concluded, its conclusion, runs examined, times it skipped).
 
     "Really concluded" means the job reached success or failure. skipped, cancelled and a null
     conclusion all mean the job did not execute, which is the whole point: those are the states that
-    render as a green run while doing nothing.
+    render as a green run while doing nothing. Deploy-critical automation must reach success.
     """
     runs = fetch(f"{API}/repos/{REPO}/actions/workflows/{entry['file']}/runs?per_page={RUNS_PER_WORKFLOW}")
     if "workflow_runs" not in runs:
@@ -108,17 +108,18 @@ def last_real_run(entry: dict, fetch=_get) -> tuple[datetime.datetime | None, in
                 stamp = job.get("completed_at") or run.get("updated_at")
                 return (
                     datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")),
+                    job.get("conclusion"),
                     examined,
                     skipped,
                 )
             skipped += 1
-    return None, examined, skipped
+    return None, None, examined, skipped
 
 
 def check(entries: list[dict], now: datetime.datetime, fetch=_get) -> list[str]:
     problems: list[str] = []
     for entry in entries:
-        when, examined, skipped = last_real_run(entry, fetch=fetch)
+        when, conclusion, examined, skipped = last_real_run(entry, fetch=fetch)
         label = f"{entry['file']} :: {entry['job']}"
         if when is None:
             problems.append(
@@ -127,6 +128,12 @@ def check(entries: list[dict], now: datetime.datetime, fetch=_get) -> list[str]:
             print(f"  FAIL  {label}: no real execution in {examined} runs, {skipped} skipped")
             continue
         age = (now - when).days
+        if conclusion == "failure":
+            problems.append(
+                f"{label}: last real run FAILED ({age}d ago). Deploy-critical automation must conclude with success. {entry['why']}"
+            )
+            print(f"  FAIL  {label}: last real run FAILED ({age}d ago, limit {entry['max_age_days']}d)")
+            continue
         state = "ok" if age <= entry["max_age_days"] else "FAIL"
         print(f"  {state:<4}  {label}: last real run {age}d ago (limit {entry['max_age_days']}d)")
         if age > entry["max_age_days"]:
