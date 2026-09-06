@@ -252,22 +252,215 @@ finally:
     mod.gh_json = original
 
 # --- canonical app installation tests (INFRA-023) --------------------------------------------------
-mod.gh_json = lambda path: None
-try:
-    assert "not installed" in mod.canonical_app_installation()
-finally:
-    mod.gh_json = original
+orig_gh_get = mod.gh_get
 
-mod.gh_json = lambda path: {"id": 1, "permissions": {"actions": "read", "checks": "read"}}
+# Case 1: 401 on the org-installations lookup -> message says the token cannot read org installations,
+# and does NOT contain "not installed".
+print("case: 401 on org installations lookup")
+mod.gh_get = lambda path, paginate=False: (401, None)
 try:
-    assert "missing permissions: contents:read" in mod.canonical_app_installation()
+    msg = mod.canonical_app_installation()
+    assert msg is not None, "expected issue message on 401"
+    assert "org installations unreadable with this token" in msg, f"unexpected message: {msg}"
+    assert "needs admin:org" in msg, f"message must mention admin:org, got: {msg}"
+    assert "not installed" not in msg, f"401 must not produce 'not installed' wording, got: {msg}"
 finally:
-    mod.gh_json = original
+    mod.gh_get = orig_gh_get
 
-mod.gh_json = lambda path: {"id": 1, "permissions": {"actions": "read", "checks": "read", "contents": "read"}}
+# Case 2: org installations readable, hop-source absent -> "not installed on the hopmesh organization"
+print("case: hop-source absent from org installations")
+mod.gh_get = lambda path, paginate=False: (
+    200,
+    [{"installations": [{"app_slug": "other-app", "id": 1}]}],
+)
+try:
+    msg = mod.canonical_app_installation()
+    assert msg is not None, "expected issue message when hop-source absent"
+    assert "not installed on the hopmesh organization" in msg, f"unexpected message: {msg}"
+finally:
+    mod.gh_get = orig_gh_get
+
+# Case 3: present with repository_selection: all and full permissions -> None
+print("case: hop-source present with repository_selection all")
+mod.gh_get = lambda path, paginate=False: (
+    200,
+    [
+        {
+            "installations": [
+                {
+                    "id": 149989111,
+                    "app_slug": "hop-source",
+                    "repository_selection": "all",
+                    "permissions": {
+                        "actions": "read",
+                        "checks": "read",
+                        "contents": "read",
+                    },
+                }
+            ]
+        }
+    ],
+)
 try:
     assert mod.canonical_app_installation() is None
 finally:
-    mod.gh_json = original
+    mod.gh_get = orig_gh_get
+
+# Case 4: present, selected, repositories list contains hopmesh/hop -> None
+print("case: hop-source present with repository_selection selected and hopmesh/hop included")
+def fake_gh_get_selected_ok(path, paginate=False):
+    if "installations" in path and "user" not in path:
+        return (
+            200,
+            [
+                {
+                    "installations": [
+                        {
+                            "id": 149989111,
+                            "app_slug": "hop-source",
+                            "repository_selection": "selected",
+                            "permissions": {
+                                "actions": "read",
+                                "checks": "read",
+                                "contents": "read",
+                            },
+                        }
+                    ]
+                }
+            ],
+        )
+    if "user/installations/149989111/repositories" in path:
+        return (
+            200,
+            [
+                {
+                    "repositories": [
+                        {"name": "hop", "full_name": "hopmesh/hop"}
+                    ]
+                }
+            ],
+        )
+    return (404, None)
+
+mod.gh_get = fake_gh_get_selected_ok
+try:
+    assert mod.canonical_app_installation() is None
+finally:
+    mod.gh_get = orig_gh_get
+
+# Case 5: present, selected, repositories list lacks hopmesh/hop -> message names hopmesh/hop as not selected
+print("case: hop-source present with repository_selection selected and hopmesh/hop not selected")
+def fake_gh_get_selected_missing_hop(path, paginate=False):
+    if "installations" in path and "user" not in path:
+        return (
+            200,
+            [
+                {
+                    "installations": [
+                        {
+                            "id": 149989111,
+                            "app_slug": "hop-source",
+                            "repository_selection": "selected",
+                            "permissions": {
+                                "actions": "read",
+                                "checks": "read",
+                                "contents": "read",
+                            },
+                        }
+                    ]
+                }
+            ],
+        )
+    if "user/installations/149989111/repositories" in path:
+        return (
+            200,
+            [
+                {
+                    "repositories": [
+                        {"name": "other-repo", "full_name": "hopmesh/other-repo"}
+                    ]
+                }
+            ],
+        )
+    return (404, None)
+
+mod.gh_get = fake_gh_get_selected_missing_hop
+try:
+    msg = mod.canonical_app_installation()
+    assert msg is not None, "expected issue message when hopmesh/hop not selected"
+    assert "hopmesh/hop" in msg and "not selected" in msg, (
+        f"message must name hopmesh/hop as not selected, got: {msg}"
+    )
+finally:
+    mod.gh_get = orig_gh_get
+
+# Case 6: present, selected, repositories lookup 403 -> selection unreadable (read:user) and does NOT contain "not installed"
+print("case: hop-source present with repository_selection selected and repositories lookup 403")
+def fake_gh_get_selected_403(path, paginate=False):
+    if "installations" in path and "user" not in path:
+        return (
+            200,
+            [
+                {
+                    "installations": [
+                        {
+                            "id": 149989111,
+                            "app_slug": "hop-source",
+                            "repository_selection": "selected",
+                            "permissions": {
+                                "actions": "read",
+                                "checks": "read",
+                                "contents": "read",
+                            },
+                        }
+                    ]
+                }
+            ],
+        )
+    if "user/installations/149989111/repositories" in path:
+        return (403, None)
+    return (404, None)
+
+mod.gh_get = fake_gh_get_selected_403
+try:
+    msg = mod.canonical_app_installation()
+    assert msg is not None, "expected issue message on 403 repositories lookup"
+    assert "read:user" in msg, f"message must mention read:user, got: {msg}"
+    assert "selection unreadable" in msg or "selected repositories unreadable" in msg, (
+        f"message must state selection unreadable, got: {msg}"
+    )
+    assert "not installed" not in msg, f"403 must not produce 'not installed' wording, got: {msg}"
+finally:
+    mod.gh_get = orig_gh_get
+
+# Case 7: present with contents: none -> message lists contents:read as missing
+print("case: hop-source present with missing permissions")
+mod.gh_get = lambda path, paginate=False: (
+    200,
+    [
+        {
+            "installations": [
+                {
+                    "id": 149989111,
+                    "app_slug": "hop-source",
+                    "repository_selection": "all",
+                    "permissions": {
+                        "actions": "read",
+                        "checks": "read",
+                        "contents": "none",
+                    },
+                }
+            ]
+        }
+    ],
+)
+try:
+    msg = mod.canonical_app_installation()
+    assert msg is not None, "expected issue message on missing permissions"
+    assert "contents:read" in msg, f"message must list contents:read as missing, got: {msg}"
+    assert "missing permissions" in msg, f"expected 'missing permissions' in msg, got: {msg}"
+finally:
+    mod.gh_get = orig_gh_get
+
 print("mirror secret checker tests passed")
 PY

@@ -175,7 +175,9 @@ Every publishing mirror (`hop-sdk-apple`, `hop-sdk-go`, `hop-sdk-crystal`) must 
 
 The `hop-source` GitHub App must be installed on the canonical `hopmesh/hop` repository with
 `actions: read`, `checks: read`, and `contents: read` permissions. Mirror release workflows mint tokens
-via this App to verify canonical-source provenance.
+via this App to verify canonical-source provenance. The audit verifies this installation through
+organization installations and repository selection; listing selected repositories requires the
+`read:user` scope on the audit token.
 
 Mirror `sync-back.yml` workflows reference `HOP_SYNC_APP_ID` and `HOP_SYNC_APP_PRIVATE_KEY` in the
 `component-sync` environment. On mirrors where these are not provisioned, sync-back runs as
