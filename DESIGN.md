@@ -2675,17 +2675,41 @@ report it to **Stripe** so an invoice actually goes out. The chain is **capture 
 Stripe meters → invoice**, and every link is idempotent so the worst case is a retry, never a double
 charge or a silent loss.
 
-### What we meter (four dimensions)
+### What we meter (four billable dimensions + zero-fee tenant auth)
 
 All keyed by `RAT.tenant` (§35), measured on the **sealed envelope**, counts and bytes, never content
-(§33).
+(§33), exactly matching the public pricing rate card (`pricing.astro` and `docs/pricing-cost-model.md`):
 
-| Dimension | Unit | Stripe meter aggregation | Captured when |
-|---|---|---|---|
-| **Active devices (MAD)** | distinct devices / period | `count` of first-seen events | a device's first authenticated link in the billing period |
-| **Data carried** | chunks (and/or bytes) | `sum` | each chunk/bundle the relay stores-and-forwards (§31, a large message is many chunks) |
-| **Internet egress** | bytes | `sum` | bytes fulfilled to the public internet / bridged across regions |
-| **Mailbox storage** | byte-hours → GB-month | `sum` of byte-hours | sampled per retention interval on held inbox bytes |
+| Dimension | Unit | Stripe meter (`event_name`) | Price &amp; Allowance | Captured when |
+|---|---|---|---|---|
+| **Reach (offline delivery)** | verified deliveries | `reach_delivery` (`sum`) | $0.002 / delivery (10,000 included / mo) | relay delivers a held bundle to an offline destination upon reconnection |
+| **Telemetry** | events | `telemetry_events` (`sum`) | $0.30 / 1,000,000 events (25M included / mo) | telemetry collector ingests and translates events to OTLP |
+| **Internet egress** | bytes | `internet_egress_bytes` (`sum`) | $0.15 / GB | bytes fulfilled to public internet / bridged across regions past allowance |
+| **Mailbox storage** | byte-hours to GB-month | `mailbox_storage_byte_hours` (`sum`) | $0.40 / GB-month | sampled per retention interval on held inbox bytes past allowance |
+| **Active devices (MAD)** | distinct devices / period | `mad` (`count`) | $0 (never as a per-seat fee) | a device's first authenticated link in the billing period (tenant auth only) |
+
+### Reach delivery billing calculation
+
+Reach measures backbone delivery to an offline recipient, the core capability provided by the Hop
+managed relay backbone. When a destination device is disconnected, bundles are spooled in the relay
+mailbox store. Upon device reconnection or delivery through an on-path carrier, verified proof of
+delivery is committed at the relay edge.
+
+The monthly billable Reach charge is computed as:
+```
+Reach Billed = max(0, total_reach_deliveries - 10000) * $0.002
+```
+
+Direct peer-to-peer transmissions, local bearer hops, and direct live deliveries do not route through
+mailbox spooling and emit zero `reach_delivery` events ($0 charge).
+
+Similarly, Telemetry is billed as:
+```
+Telemetry Billed = max(0, total_telemetry_events - 25000000) * ($0.30 / 1000000)
+```
+
+Active devices (MAD) are tracked solely for tenant authentication, security rate limiting, and abuse
+monitoring; MAD is priced at $0 per device and is never charged as a per-seat fee.
 
 **MAD without storing identity.** Active devices is a *distinct count*, but Stripe meters only
 `sum`/`count` events, they can't dedup. So we dedup at the edge: the **first** time a device address
