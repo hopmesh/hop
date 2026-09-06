@@ -22,8 +22,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print("dependabot-coverage-guard: SKIP (pyyaml unavailable)", file=sys.stderr)
-    sys.exit(0)
+    print("dependabot-coverage-guard: FAIL (pyyaml unavailable)", file=sys.stderr)
+    sys.exit(1)
 
 
 # Roots that cannot use Dependabot or are deliberately managed manually.

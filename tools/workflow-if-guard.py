@@ -31,8 +31,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:  # pragma: no cover - CI always has pyyaml
-    print("workflow-if-guard: SKIP (pyyaml unavailable)", file=sys.stderr)
-    sys.exit(0)
+    print("workflow-if-guard: FAIL (pyyaml unavailable)", file=sys.stderr)
+    sys.exit(1)
 
 
 def walk_ifs(node, trail):

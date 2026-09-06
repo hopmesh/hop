@@ -500,6 +500,7 @@ def validate_ledger(data: dict[str, Any], *, allow_incomplete: bool = False) -> 
     verification = _require_list(errors, data, "verification", "ledger")
     passed_commits: set[str] = set()
     passed_scopes_by_commit: dict[str, set[str]] = {}
+    verification_records: list[dict[str, Any]] = []
     for index, item in enumerate(verification):
         prefix = f"verification[{index}]"
         if not isinstance(item, dict):
@@ -507,6 +508,8 @@ def validate_ledger(data: dict[str, Any], *, allow_incomplete: bool = False) -> 
             continue
         for key in ("name", "command", "commit", "scope"):
             _require_string(errors, item, key, prefix)
+        if item.get("id") is not None and not _is_nonempty_string(item.get("id")):
+            errors.append(f"{prefix}.id must be a nonempty string")
         _validate_claim_metadata(errors, item, prefix, audit.get("classification"))
         if _is_nonempty_string(item.get("commit")) and not SHA_PATTERN.fullmatch(item["commit"]):
             errors.append(f"{prefix}.commit must be a lowercase 40-character Git SHA")
@@ -519,7 +522,7 @@ def validate_ledger(data: dict[str, Any], *, allow_incomplete: bool = False) -> 
         ):
             passed_commits.add(item["commit"])
             passed_scopes_by_commit.setdefault(item["commit"], set()).add(item["scope"])
-
+        verification_records.append(item)
     for key in ("limits", "operational_actions"):
         claims = _require_list(errors, data, key, "ledger")
         for index, item in enumerate(claims):
@@ -564,6 +567,31 @@ def validate_ledger(data: dict[str, Any], *, allow_incomplete: bool = False) -> 
         source_validated = isinstance(closure_state, dict) and closure_state.get("source") == "validated"
         if source_validated and "protected_ci" not in passed_scopes:
             errors.append(f"findings[{index}] source closure requires passed protected_ci evidence")
+        if status == "source_closed":
+            closure_evidence = finding.get("closure_evidence") or []
+            evidence_text = "\n".join(str(item) for item in closure_evidence)
+            matched_verifications = []
+            for v in verification_records:
+                v_id = v.get("id")
+                v_cmd = v.get("command")
+                v_name = v.get("name")
+                if _is_nonempty_string(v_id) and v_id in evidence_text:
+                    matched_verifications.append(v)
+                elif _is_nonempty_string(v_cmd) and v_cmd in evidence_text:
+                    matched_verifications.append(v)
+                elif _is_nonempty_string(v_name) and v_name in evidence_text:
+                    matched_verifications.append(v)
+            if not matched_verifications:
+                errors.append(
+                    f"findings[{index}] status source_closed requires closure_evidence to reference at least one verification entry ID or test command"
+                )
+            elif not any(
+                v.get("result") == "passed" and v.get("commit") == audit_commit
+                for v in matched_verifications
+            ):
+                errors.append(
+                    f"findings[{index}] status source_closed requires referenced verification to be passed at audit.commit"
+                )
         if status == "operationally_validated" and "operational" not in passed_scopes:
             errors.append(f"findings[{index}] operational validation requires passed operational evidence")
         if isinstance(closure_state, dict):

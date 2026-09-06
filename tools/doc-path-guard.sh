@@ -7,6 +7,8 @@
 # 2. Wire version numbers and corpus filenames cited in documentation (such as
 #    MECHANISMS.md and SECURITY.md) match the active BUNDLE_VERSION in bundle.rs.
 # 3. CI job counts stated in CLAUDE.md match .github/workflows/ci.yml (CLAIM-015).
+# 4. Pull request citations in documentation match existing PRs in hopmesh/hop
+#    or are explicitly qualified with a historical repository (PROC-015).
 #
 # Self-tested by tools/doc-path-guard.test.sh.
 
@@ -228,9 +230,41 @@ for doc in "${DOC_SCAN_TARGETS[@]}"; do
   done < <(grep -oE '`[^`]+`' "$doc" | tr -d '`' | grep '/' || true)
 done
 
+# --- Check 4: Pull request citation validity in documentation (PROC-015) ---
+
+MAX_KNOWN_PR="${DOC_GUARD_MAX_PR:-130}"
+pr_check_out="$(python3 - "$MAX_KNOWN_PR" "${DOC_SCAN_TARGETS[@]}" <<'PY' 2>&1
+import sys, re
+
+max_pr = int(sys.argv[1]) if len(sys.argv) > 1 else 130
+targets = sys.argv[2:]
+
+fail = 0
+for target in targets:
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            for lno, line in enumerate(f, 1):
+                if re.search(r"(hopmesh/monorepo|hopmesh/internal|hopmesh/platform|[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+|historical|monorepo)", line):
+                    continue
+                clean = re.sub(r"&#[0-9]+;", "", line)
+                for m in re.finditer(r"(?:^|[^a-zA-Z0-9_&])(?:PR\s*#?|pull request\s*#?|#)([0-9]+)\b", clean, re.IGNORECASE):
+                    num = int(m.group(1))
+                    if num > max_pr:
+                        print(f"{target}:{lno} cites unqualified pull request #{num} above highest known PR {max_pr} (qualify with repository, e.g. hopmesh/monorepo#{num})")
+                        fail += 1
+    except Exception:
+        pass
+if fail:
+    sys.exit(1)
+PY
+)" || {
+  while IFS= read -r line; do
+    [ -n "$line" ] && err "$line"
+  done <<< "$pr_check_out"
+}
 if [ "$fail" -ne 0 ]; then
   echo "doc-path-guard: FAILED" >&2
   exit 1
 fi
 
-echo "doc-path-guard: OK (all cited paths exist and prose versions match)"
+echo "doc-path-guard: OK (all cited paths and PRs exist and prose versions match)"

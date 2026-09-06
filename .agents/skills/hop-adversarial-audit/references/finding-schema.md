@@ -241,7 +241,7 @@ Approval is not closure. Remediation mode may mutate only findings represented b
 
 Expand a group approval into one approval record per matching finding. Use a UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` form. The validator rejects `approved`, `in_remediation`, `source_closed`, `operationally_validated`, `accepted_risk`, and `deferred` statuses without a matching approval record.
 
-`source_closed` requires closure evidence and passed protected-CI verification at the audit commit. `operationally_validated` requires closure evidence and passed `operational` verification. A technical finding may retain `source: validated`, which independently requires protected CI; an operational finding may use `source: not_applicable`. `accepted_risk`, `deferred`, and `blocked` findings record the decision, dependency, or blocker in `residual`.
+`source_closed` requires closure evidence referencing at least one specific verification entry ID or test command that ran and passed at the audit commit, plus passed protected-CI verification. `operationally_validated` requires closure evidence and passed `operational` verification. A technical finding may retain `source: validated`, which independently requires protected CI; an operational finding may use `source: not_applicable`. `accepted_risk`, `deferred`, and `blocked` findings record the decision, dependency, or blocker in `residual`.
 
 ## Closeout transitions
 

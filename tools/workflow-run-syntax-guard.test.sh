@@ -7,6 +7,7 @@
 # (b) FAILS on a missing `done` in a for loop (the incident fixture)
 # (c) FAILS on an unclosed if block
 # (d) FAILS on an empty workflows directory
+# (e) FAILS when pyyaml is missing (PROC-017)
 # No repo state.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -111,6 +112,18 @@ expect "$TMP/unclosed_if" fail "unclosed_if_block"
 mkdir -p "$TMP/empty"
 expect "$TMP/empty" fail "empty_workflows_dir"
 
+# (e) missing pyyaml dependency fails closed (PROC-017)
+mkdir -p "$TMP/empty_pythonpath"
+out="$TMP/out"
+err="$TMP/err"
+if PYTHONPATH="$TMP/empty_pythonpath" python3 -c 'import sys, runpy; sys.modules["yaml"] = None; runpy.run_path("'"$GUARD"'")' >"$out" 2>"$err"; then
+  echo "  FAIL missing_pyyaml: expected non-zero exit, got 0"
+  fail=$((fail + 1))
+else
+  rc=$?
+  echo "  PASS missing_pyyaml (exit $rc as expected)"
+  pass=$((pass + 1))
+fi
 echo
 if [ "$fail" -eq 0 ]; then
   echo "workflow-run-syntax-guard.test.sh: all $pass tests passed"

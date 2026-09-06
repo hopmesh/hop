@@ -134,7 +134,7 @@ class LedgerValidationTests(unittest.TestCase):
     def test_remediation_status_requires_explicit_approval(self) -> None:
         finding = self.data["findings"][0]
         finding["status"] = "source_closed"
-        finding["closure_evidence"] = ["Protected CI passed at the audit commit."]
+        finding["closure_evidence"] = ["Passed protected_ci: verify-protected_ci passed at the audit commit."]
         finding["closure_state"]["source"] = "validated"
         self.data["verification"].append(passed_verification("protected_ci"))
         self.assert_error_contains("status source_closed requires an approval record")
@@ -170,11 +170,66 @@ class LedgerValidationTests(unittest.TestCase):
     def test_closed_status_requires_verification_at_audit_commit(self) -> None:
         finding = self.data["findings"][0]
         finding["status"] = "source_closed"
-        finding["closure_evidence"] = ["A regression and protected CI prove closure."]
+        finding["closure_evidence"] = ["cargo test -p hop-core"]
         finding["closure_state"]["source"] = "validated"
         self.data["approvals"].append(approval(finding["id"]))
         self.data["verification"][0]["commit"] = "b" * 40
         self.assert_error_contains("closed status requires passed verification at audit.commit")
+    def test_source_closed_requires_matching_verification_record(self) -> None:
+        finding = self.data["findings"][0]
+        finding["status"] = "source_closed"
+        finding["closure_evidence"] = ["Fabricated string without test."]
+        finding["closure_state"]["source"] = "validated"
+        self.data["approvals"].append(approval(finding["id"]))
+        self.data["verification"].append(passed_verification("protected_ci"))
+        self.assert_error_contains(
+            "requires closure_evidence to reference at least one verification entry ID or test command"
+        )
+
+        # Unmatched test command
+        finding["closure_evidence"] = ["cargo test -p nonexistent-crate"]
+        self.assert_error_contains(
+            "requires closure_evidence to reference at least one verification entry ID or test command"
+        )
+
+        # Matching test command that ran and passed at audit commit
+        finding["closure_evidence"] = ["Executed cargo test -p hop-core successfully."]
+        self.assertEqual(validate_ledger(self.data), [])
+
+    def test_source_closed_rejects_failed_or_stale_referenced_verification(self) -> None:
+        finding = self.data["findings"][0]
+        finding["status"] = "source_closed"
+        finding["closure_evidence"] = ["cargo test -p hop-core"]
+        finding["closure_state"]["source"] = "validated"
+        self.data["approvals"].append(approval(finding["id"]))
+        self.data["verification"].append(passed_verification("protected_ci"))
+
+        # When the referenced test failed
+        self.data["verification"][0]["result"] = "failed"
+        self.assert_error_contains(
+            "requires referenced verification to be passed at audit.commit"
+        )
+
+        # When the referenced test ran at another commit
+        self.data["verification"][0]["result"] = "passed"
+        self.data["verification"][0]["commit"] = "c" * 40
+        self.assert_error_contains(
+            "requires referenced verification to be passed at audit.commit"
+        )
+
+        # Restoring commit passes
+        self.data["verification"][0]["commit"] = AUDIT_SHA
+        self.assertEqual(validate_ledger(self.data), [])
+
+    def test_source_closed_accepts_verification_entry_id(self) -> None:
+        finding = self.data["findings"][0]
+        finding["status"] = "source_closed"
+        finding["closure_evidence"] = ["V-001 passed in CI at audit.commit."]
+        finding["closure_state"]["source"] = "validated"
+        self.data["approvals"].append(approval(finding["id"]))
+        self.data["verification"].append(passed_verification("protected_ci"))
+        self.data["verification"][0]["id"] = "V-001"
+        self.assertEqual(validate_ledger(self.data), [])
 
     def test_closure_state_must_agree_with_status_and_evidence(self) -> None:
         self.data["findings"][0]["closure_state"]["source"] = "validated"

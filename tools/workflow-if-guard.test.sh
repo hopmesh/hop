@@ -7,7 +7,7 @@
 # indentation (which folds to spaces and is legitimate), (c) FAILS the more-indented fold that caused
 # the incident, (d) FAILS a newline-bearing expression on a step-level `if`, not just a job-level one,
 # (e) passes an `if` with a newline but NO expression (a plain string, which GitHub treats literally
-# and is not this bug), and (f) fails on an empty workflows dir. No repo state.
+# and is not this bug), (f) fails on an empty workflows dir, and (g) fails when pyyaml is missing (PROC-017). No repo state.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HERE/workflow-if-guard.py"
@@ -108,6 +108,13 @@ expect "$TMP/noexpr" pass "newline_without_expression_is_ignored"
 mkdir -p "$TMP/empty"
 expect "$TMP/empty" fail "empty_workflows_dir"
 
+# (g) missing pyyaml dependency fails closed (PROC-017)
+mkdir -p "$TMP/empty_pythonpath"
+if PYTHONPATH="$TMP/empty_pythonpath" python3 -c 'import sys, runpy; sys.modules["yaml"] = None; runpy.run_path("'"$GUARD"'")' >/dev/null 2>&1; then
+  fail=$((fail + 1)); echo "FAIL [missing_pyyaml]: expected non-zero exit, got 0"
+else
+  pass=$((pass + 1)); echo "ok   [missing_pyyaml]: guard failed as expected"
+fi
 echo
 if [ "$fail" -eq 0 ]; then
   echo "workflow-if-guard.test: all $pass cases passed"
