@@ -20,12 +20,11 @@ import Base from '../layouts/Base.astro';
       <p class="updated">Hop Privacy Policy · Effective date: September 4, 2026</p>
 
       <h2>Data Controller &amp; Processor Roles</h2>
-      <p>Under applicable privacy frameworks including the General Data Protection Regulation (GDPR):</p>
+      <p>Under applicable privacy frameworks including the General Data Protection Regulation (GDPR) and California Consumer Privacy Act (CCPA):</p>
       <ul>
-        <li><strong>Data Controller:</strong> Hop acts as Data Controller for developer console accounts, authentication credentials, billing records, and support inquiries.</li>
+        <li><strong>Data Controller:</strong> Hop Mesh, LLC, a Delaware limited liability company ("Hop", "we", "us", or "our"), acts as Data Controller for developer console accounts, authentication credentials, billing records, and support inquiries.</li>
         <li><strong>Data Processor:</strong> For traffic traversing our hosted cloud backbone, Hop acts as a Data Processor on behalf of our customers pursuant to our <a href="/dpa/">Data Processing Addendum</a> and <a href="/terms/">Terms of Service</a>.</li>
       </ul>
-
       <h2>Content is end-to-end encrypted</h2>
       <p>Every message payload is encrypted to the destination's key (X25519 + ChaCha20-Poly1305)
          before it leaves your device. Relays, including our hosted backbone, carry ciphertext
@@ -44,9 +43,9 @@ import Base from '../layouts/Base.astro';
       <h2>What the hosted backbone holds</h2>
       <p>When you use the optional cloud backbone, it stores <strong>sealed bundles</strong> (ciphertext)
          and their routing envelope so a message can wait for an offline recipient and bridge across
-         regions. Held messages are evicted on their lifetime/TTL and purged on delivery. The backbone
+         regions. Held messages in the message spool are evicted on their lifetime/TTL and purged upon verified delivery. The backbone
          relays what it's given; it does not decrypt it.</p>
-
+      <p>In addition to transient message spools, relay instances persistently store session and device metadata in Google Cloud Firestore under <code>{`relays/{node}/kv`}</code>. This metadata includes base58 device public keys and timestamps of connected devices, used for active connection tracking, peer routing, and network rate limiting. While payload contents remain strictly encrypted and inaccessible, these session records persist across connections to enable reliable store-and-forward routing.</p>
       <h2>What we measure for billing</h2>
       <p>Billing is metered on the sealed envelope, <strong>counts and bytes, never content</strong>:
          active devices, data carried, internet egress, and mailbox storage. Active-device counts use
@@ -70,12 +69,19 @@ import Base from '../layouts/Base.astro';
         <li>We don't require personal accounts to use the protocol.</li>
       </ul>
 
+      <h2>Third-Party Services &amp; Scripts</h2>
+      <p>Our public marketing website loads client-side icon fonts from Font Awesome (Fonticons, Inc.). When your browser requests these resources, Fonticons, Inc. may receive your client IP address and standard HTTP request headers. No message contents, cryptographic keys, or application payloads are ever transmitted to Fonticons. Developer console payments and billing subscriptions are administered through Stripe, Inc.</p>
+
+      <h2>Children's Privacy &amp; Age Floor</h2>
+      <p>The Hosted Services and developer tools are strictly intended for developers and commercial organizations. They are not directed to, and we do not knowingly collect personal information from, children under 13 years of age (or under 16 in the European Economic Area or United Kingdom), in compliance with the Children's Online Privacy Protection Act (COPPA) and applicable European data protection legislation. If we become aware that a child under 13 has provided personal data to us, we will take immediate steps to delete such information.</p>
+
       <h2>Self-hosting</h2>
       <p>You can run the SDK fully peer-to-peer with no backbone at all, or operate your own private
          backbone, in which case the data never touches our infrastructure and these backbone
          practices are yours to set.</p>
+
       <h2>Data Subject Rights &amp; Retention</h2>
-      <p>Depending on your jurisdiction (including the EEA, UK, and California), you may have rights to access, correct, port, or request deletion of personal information we hold about you as a Data Controller. Held bundles in our relay spool are transient, purged immediately upon verified delivery or evicted automatically upon TTL expiration.</p>
+      <p>Depending on your jurisdiction (including the EEA, UK, and California), you may have rights to access, correct, port, or request deletion of personal information we hold about you as a Data Controller. Held bundles in our relay spool are transient, purged immediately upon verified delivery or evicted automatically upon TTL expiration. Persistent relay connection records and device public keys and timestamps in <code>{`relays/{node}/kv`}</code> are maintained under strict IAM access controls for network operation and rate limiting.</p>
 
       <h2>Contact</h2>
       <p>Questions about data handling or privacy rights: <a class="mono" style="color:var(--accent)" href="mailto:privacy@hopme.sh">privacy@hopme.sh</a>.</p>
