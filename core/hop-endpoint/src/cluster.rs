@@ -175,6 +175,18 @@ impl Cluster {
         true
     }
 
+    /// Revoke a previously admitted handled key (e.g. if local durable persistence failed).
+    /// Returns `true` if the key was present and removed, `false` if not found.
+    pub fn revoke_handled(&mut self, key: &ClaimKey) -> bool {
+        if self.handled.remove(key).is_some() {
+            self.order.retain(|k| k != key);
+            self.pending.retain(|k| k != key);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Apply an inbound gossip message. Returns keys learned for the FIRST time, so the caller can
     /// persist exactly the new ones. Gossip from our own `me` is ignored (broadcasts flood back).
     pub fn on_gossip(&mut self, msg: &ClusterMsg, now_ms: u64) -> Vec<ClaimKey> {
@@ -480,6 +492,19 @@ mod tests {
             !g.iter().any(|m| matches!(m, ClusterMsg::Handled { .. })),
             "loaded keys are not re-gossiped"
         );
+    }
+
+    #[test]
+    fn revoke_handled_removes_unpersisted_claim() {
+        // SVC-016: If local persistence of a handled key fails, revoke_handled rolls back
+        // the in-memory claim so it is not treated as handled.
+        let mut a = Cluster::new([0xAA; 16]);
+        let k = key(42);
+        a.mark_handled(k, 1_000);
+        assert!(a.is_handled(&k));
+        assert!(a.revoke_handled(&k));
+        assert!(!a.is_handled(&k));
+        assert!(!a.revoke_handled(&k));
     }
 
     #[test]
