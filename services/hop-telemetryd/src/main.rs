@@ -67,6 +67,11 @@ const MAX_REQ_HEAD_BYTES: u64 = 8 * 1024;
 const MAX_CONNS: usize = 256;
 static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(not(test))]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Cap on a single inbound WS bearer message/frame (mirroring the relay's services-05 cap), instead of
 /// tungstenite's 64 MiB default, so a mesh peer can't push a giant frame the instance must buffer.
 const MAX_FRAME_BYTES: usize = 1 << 20; // 1 MiB
@@ -1038,7 +1043,7 @@ pub fn sweep_expired_telemetry_markers<S: Store>(store: &mut S, now_ms: u64) -> 
             let epoch_str = parts.next();
             if prefix == Some("telemetry_seen") {
                 if let Some(epoch) = epoch_str.and_then(|s| s.parse::<u64>().ok()) {
-                    if epoch < cutoff_epoch_hour {
+                    if epoch < cutoff_epoch_hour || epoch > now_epoch_hour {
                         let _ = store.remove_kv_critical(&key);
                         deleted += 1;
                     }
@@ -1185,7 +1190,7 @@ fn bearer_ws_config() -> tungstenite::protocol::WebSocketConfig {
 /// to decide, leaving the bytes for whichever handler takes over.
 fn serve_conn(stream: TcpStream, ev_tx: &Sender<Ev>) {
     let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
     match peek_kind(&stream) {
         PeekKind::Http => {
             serve_http_min(stream);
@@ -1194,7 +1199,12 @@ fn serve_conn(stream: TcpStream, ev_tx: &Sender<Ev>) {
         PeekKind::WsUpgrade => {}
         PeekKind::Empty => return,
     }
-    let _ = stream.set_read_timeout(None); // hand a clean blocking socket to tungstenite
+    // SVC-013: Keep a bounded read timeout configured on the socket across tungstenite's
+    // accept_with_config. Do NOT remove it (set_read_timeout(None)): an unauthenticated client
+    // that sends `Upgrade: websocket` and then stalls must not block indefinitely and exhaust
+    // connection slots (blocking /healthz). The steady-state WS loop resets its own 100ms
+    // read timeout right after accept_with_config succeeds.
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
 
     let mut ws = match tungstenite::accept_with_config(stream, Some(bearer_ws_config())) {
         Ok(w) => w,
@@ -1423,16 +1433,25 @@ fn dial_relay(url: String, ev_tx: Sender<Ev>) {
 // --- identity ----------------------------------------------------------------------------------
 
 /// Load a stable identity from a 32-byte file (so the collector's published address survives
-/// restarts), generating and persisting one 0600 on first run.
+/// restarts), generating and persisting one on first run.
+///
+/// STORE-006, SVC-014: If the identity file exists but is unreadable or not exactly 32 bytes,
+/// the service fails loudly (panics) rather than silently rotating identity and overwriting
+/// the corrupt file.
 fn load_identity(path: &Option<String>) -> Identity {
     if let Some(path) = path {
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Identity::from_secret_bytes(&seed);
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(seed) => return Identity::from_secret_bytes(&seed),
+                    Err(_) => panic!("--identity-file {path} must be exactly 32 bytes"),
+                },
+                Err(e) => panic!("--identity-file {path} unreadable: {e}"),
             }
         }
         let id = Identity::generate();
-        if let Err(e) = write_secret_600(path, &id.to_secret_bytes()) {
+        if let Err(e) = write_secret_atomic(path, &id.to_secret_bytes()) {
             eprintln!(
                 "warning: could not persist identity to {path}: {e}; address will change on restart"
             );
@@ -1443,33 +1462,58 @@ fn load_identity(path: &Option<String>) -> Identity {
     Identity::generate()
 }
 
-/// Write `bytes` to `path` with owner-only (0600) permissions. On Unix the mode is applied at create
-/// time so the secret is never briefly world-readable.
-fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)?;
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
     }
     #[cfg(not(unix))]
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+            .create_new(true)
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
-        f.sync_all()
+        f.sync_all()?;
     }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1481,6 +1525,147 @@ mod tests {
             events,
             payload_bytes,
         }
+    }
+
+    struct DeferRemove(std::path::PathBuf);
+    impl Drop for DeferRemove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_short_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_telemetryd_short_{}.key", std::process::id()));
+        std::fs::write(&path, [1u8; 31]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_oversized_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_telemetryd_long_{}.key", std::process::id()));
+        std::fs::write(&path, [1u8; 33]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    fn load_identity_generates_and_persists_then_reloads_stable() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "test_telemetryd_persist_{}.key",
+            std::process::id()
+        ));
+        let _guard = DeferRemove(path.clone());
+        let id1 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        let id2 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        assert_eq!(id1.address(), id2.address());
+    }
+
+    #[test]
+    fn serve_conn_stalled_ws_upgrade_times_out_and_allows_healthz() {
+        // SVC-013: A client that sends an incomplete WebSocket upgrade request must time out
+        // and release the connection slot so that subsequent /healthz connections succeed.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (ev_tx, _ev_rx) = mpsc::channel();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let ev_tx_clone = ev_tx.clone();
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (sock, _) = listener.accept().unwrap();
+                if ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+                    ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+                    drop(sock);
+                    continue;
+                }
+                let tx = ev_tx_clone.clone();
+                let dt = done_tx.clone();
+                std::thread::spawn(move || {
+                    let _guard = ConnGuard;
+                    serve_conn(sock, &tx);
+                    let _ = dt.send(());
+                });
+            }
+        });
+
+        // Client 1: sends partial WS upgrade and stalls without completing headers
+        let mut client1 = TcpStream::connect(addr).unwrap();
+        client1
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+            )
+            .unwrap();
+
+        // Wait for server to time out client 1 and drop ConnGuard
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("stalled WS upgrade timed out");
+
+        // Client 2: /healthz request must succeed immediately
+        let mut client2 = TcpStream::connect(addr).unwrap();
+        client2
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client2
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+
+        let mut resp = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = client2.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if resp.contains("\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK")
+                || resp.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "healthz responded after stalled client: {resp}"
+        );
+        drop(client1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn sweep_expired_telemetry_markers_removes_future_and_expired_markers() {
+        // SVC-012: sweep_expired_telemetry_markers must prune both expired markers (< cutoff)
+        // and invalid future markers (> now), preventing permanent unprunable bloat.
+        let mut store = MemoryStore::new();
+        let now_ms = 1_000 * 3_600_000; // epoch 1000
+        let now_epoch_hour = 1_000;
+        let expired_epoch = now_epoch_hour - (hop_core::access::MAX_ATTRIBUTION_AGE_EPOCHS + 5);
+        let valid_epoch = now_epoch_hour - 1;
+        let future_epoch = now_epoch_hour + 500;
+
+        store.put_kv(&format!("telemetry_seen/{expired_epoch}/id1"), vec![1]);
+        store.put_kv(&format!("telemetry_seen/{valid_epoch}/id2"), vec![2]);
+        store.put_kv(&format!("telemetry_seen/{future_epoch}/id3"), vec![3]);
+
+        let deleted = sweep_expired_telemetry_markers(&mut store, now_ms);
+        assert_eq!(deleted, 2, "both expired and future markers pruned");
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{expired_epoch}/id1"))
+            .is_none());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{valid_epoch}/id2"))
+            .is_some());
+        assert!(store
+            .get_kv(&format!("telemetry_seen/{future_epoch}/id3"))
+            .is_none());
     }
 
     #[test]

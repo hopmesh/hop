@@ -125,6 +125,11 @@ const FETCH_RESERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_READ_CHUNK_BYTES: usize = 16 * 1024;
 const FRAME_RESERVATION_TIMEOUT: Duration = Duration::from_millis(250);
 
+#[cfg(not(test))]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// F-19: cap on concurrent inbound connections, so the one-thread-per-connection accept loop can't
 /// exhaust threads/memory on the single always-on instance. Generous for legitimate traffic.
 const MAX_CONNS: usize = 256;
@@ -1762,7 +1767,7 @@ fn serve_conn(
     trusted_proxy: TrustedProxy,
 ) {
     let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
     // services-r3-05: classify WS-upgrade vs plain HTTP from a NON-consuming peek. A single peek can
     // return only the first TCP segment, so a handshake split across segments (the `Upgrade:
     // websocket` header arriving in a later packet than the request line) would misroute to the HTTP
@@ -1777,7 +1782,12 @@ fn serve_conn(
         PeekKind::WsUpgrade => {}  // fall through to the WS handshake below
         PeekKind::Empty => return, // no data (e.g. a bare TCP probe) - nothing to serve
     }
-    let _ = stream.set_read_timeout(None); // hand a clean blocking socket to tungstenite
+    // SVC-013: Keep a bounded read timeout configured on the socket across tungstenite's
+    // accept_with_config. Do NOT remove it (set_read_timeout(None)): an unauthenticated client
+    // that sends `Upgrade: websocket` and then stalls must not block indefinitely and exhaust
+    // connection slots (blocking /healthz). The steady-state WS loop resets its own 100ms
+    // read timeout right after accept_with_config succeeds.
+    let _ = stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
 
     // services-r7-02: accept with the bearer frame cap (bearer_ws_config) instead of tungstenite's
     // 64 MiB default, so an oversized frame from any mesh peer is rejected rather than buffered.
@@ -3953,6 +3963,86 @@ mod tests {
             "an invalid WS handshake surfaces no Ev::Up"
         );
         h.join().unwrap();
+    }
+
+    #[test]
+    fn serve_conn_stalled_ws_upgrade_times_out_and_allows_healthz() {
+        // SVC-013: A client that sends an incomplete WebSocket upgrade request must time out
+        // and release the connection slot so that subsequent /healthz connections succeed.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (ev_tx, _ev_rx) = event_channel();
+        let http = reqwest::blocking::Client::builder().build().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let ev_tx_clone = ev_tx.clone();
+        let http_clone = http.clone();
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (sock, _) = listener.accept().unwrap();
+                if ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+                    ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+                    drop(sock);
+                    continue;
+                }
+                let tx = ev_tx_clone.clone();
+                let h = http_clone.clone();
+                let dt = done_tx.clone();
+                std::thread::spawn(move || {
+                    let _guard = ConnGuard;
+                    serve_conn(
+                        sock,
+                        &tx,
+                        "http://127.0.0.1:1",
+                        &h,
+                        1024,
+                        TrustedProxy::None,
+                    );
+                    let _ = dt.send(());
+                });
+            }
+        });
+
+        // Client 1: sends partial WS upgrade and stalls without completing headers
+        let mut client1 = TcpStream::connect(addr).unwrap();
+        client1
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+            )
+            .unwrap();
+
+        // Wait for server to time out client 1 and drop ConnGuard
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("stalled WS upgrade timed out");
+
+        // Client 2: /healthz request must succeed immediately
+        let mut client2 = TcpStream::connect(addr).unwrap();
+        client2
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client2
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+
+        let mut resp = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = client2.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if resp.contains("\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "healthz succeeded after stalled client: {resp}"
+        );
+        drop(client1);
+        server.join().unwrap();
     }
 
     #[test]
