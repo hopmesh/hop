@@ -209,9 +209,9 @@ printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node, cha
   > "$work/wrong-width/sdk/node/lib/ffi.mjs"
 expect "$work/wrong-width" fail "wrapper binds symbol with wrong integer width" "width mismatch"
 
-# (r) ABI-016: Run generator and verifier self-tests
-python3 "$HERE/generate-abi-manifest.py" --self-test >/dev/null
-python3 "$HERE/verify-abi-signatures.py" --self-test >/dev/null
+# (r) ABI-016: Run generator and verifier self-test suites
+bash "$HERE/generate-abi-manifest.test.sh" >/dev/null
+bash "$HERE/verify-abi-signatures.test.sh" >/dev/null
 echo "ok   [generator and verifier self-tests]: pass as expected"
 pass=$((pass + 1))
 

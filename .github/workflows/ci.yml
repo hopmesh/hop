@@ -897,7 +897,10 @@ jobs:
       # silently stops working. The guard used to read six hand-listed paths out of twelve; it now
       # sweeps the tree, so the self-test runs first to prove that coverage is real.
       - name: ABI version guard self-test
-        run: bash tools/codegen/check-abi-version.test.sh
+        run: |
+          bash tools/codegen/check-abi-version.test.sh
+          bash tools/codegen/generate-abi-manifest.test.sh
+          bash tools/codegen/verify-abi-signatures.test.sh
 
       - name: ABI version consistency (cabi.rs ↔ headers ↔ every wrapper ↔ docs)
         run: bash tools/codegen/check-abi-version.sh

@@ -317,14 +317,46 @@ def parse_type_descriptor(raw: str) -> dict:
 
 
 def extract_node_koffi_bindings(source: str) -> dict:
-    """Node koffi: lib.func('ret hop_name(params)')"""
+    """Node koffi: lib.func('ret hop_name(params)') or multi-line declarations."""
     bindings = {}
-    pattern = re.compile(
-        r"\blib\.func\(\s*['\"]([^'\"]*?\b(hop_[a-z0-9_]+)\s*\(([^'\"]*?)\))['\"]\s*\)",
-        re.S,
-    )
-    for full_sig, fn_name, params_str in pattern.findall(source):
-        params_str = params_str.strip()
+    pattern = re.compile(r"\blib\.func\s*\(")
+    for m in pattern.finditer(source):
+        start = m.end()
+        depth = 1
+        i = start
+        in_quote = None
+        escape = False
+        while i < len(source) and depth > 0:
+            c = source[i]
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif in_quote:
+                if c == in_quote:
+                    in_quote = None
+            elif c in ("'", '"', "`"):
+                in_quote = c
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
+        inner = source[start : i - 1]
+
+        str_pattern = re.compile(r"(['\"`])((?:\\.|(?!\1).)*?)\1", re.S)
+        all_strs = [s for _, s in str_pattern.findall(inner)]
+        if not any("hop_" in s for s in all_strs):
+            continue
+
+        full_sig = " ".join(" ".join(all_strs).split())
+        fn_m = re.search(r"\b(hop_[a-z0-9_]+)\s*\((.*?)\)", full_sig, re.S)
+        if not fn_m:
+            continue
+
+        fn_name = fn_m.group(1)
+        params_str = fn_m.group(2).strip()
+
         if params_str in ("", "void"):
             params = []
         else:
@@ -471,7 +503,8 @@ def extract_dart_ffi_bindings(source: str) -> dict:
     """Dart FFI: _lib.lookupFunction<CType, DartType>('hop_name')"""
     bindings = {}
     lookup_pattern = re.compile(
-        r"_lib\.lookupFunction<([A-Za-z0-9_]+),\s*([A-Za-z0-9_]+)>\(\s*['\"](hop_[a-z0-9_]+)['\"]\s*\)"
+        r"_lib\s*\.\s*lookupFunction\s*<\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*>\s*\(\s*['\"](hop_[a-z0-9_]+)['\"]\s*,?\s*\)",
+        re.S,
     )
     for c_type, dart_type, fn_name in lookup_pattern.findall(source):
         td_m = re.search(
@@ -885,6 +918,158 @@ def extract_wrapper_bindings(surface_dir: str) -> dict:
     return combined
 
 
+# ---------------------------------------------------------------------------
+# Documented per-wrapper exclusions
+# ---------------------------------------------------------------------------
+# Functions exported in the canonical C ABI (sdk/hop.h) that are intentionally
+# not bound in specific wrapper targets, grouped by architectural capability:
+#
+# 1. Server clustering (hop_cluster_*): only bound by server-side endpoints
+#    (Node, Python, Ruby, Crystal, Go). Mobile (Apple, Android, Flutter) and
+#    microcontroller (Embedded) SDKs do not host cluster nodes.
+# 2. Reachability records (hop_sign_reach_record, hop_verify_reach_record): public
+#    HTTPS endpoint discovery documents. Client SDKs do not sign reach records.
+# 3. Wire bundle validation (hop_validate_wire_bundle): relay/router diagnostics.
+# 4. Multi-hop status and routing (hop_send_to, hop_message_status, hop_is_secured):
+#    specialized routing/inspection APIs not bound in server endpoint wrappers or
+#    simplistic wrappers.
+# 5. Persistent database handles (hop_node_open, hop_node_open_keyed, etc.):
+#    microcontroller (Embedded) uses in-memory state only.
+# 6. Go Cgo sink trampolines: cgo cannot pass Go funcs directly to C function
+#    pointers without C trampolines in the cgo preamble; direct C.hop_* calls in Go
+#    cover the remaining non-sink functions.
+WRAPPER_EXCLUSIONS = {
+    "apple": {
+        "hop_cluster_join",
+        "hop_cluster_join_passphrase",
+        "hop_cluster_mark_done",
+        "hop_cluster_members",
+        "hop_cluster_set_quorum",
+        "hop_cluster_would_drop",
+        "hop_sign_reach_record",
+        "hop_validate_wire_bundle",
+        "hop_verify_reach_record",
+    },
+    "android": {
+        "hop_cluster_join",
+        "hop_cluster_join_passphrase",
+        "hop_cluster_mark_done",
+        "hop_cluster_members",
+        "hop_cluster_set_quorum",
+        "hop_cluster_would_drop",
+        "hop_sign_reach_record",
+        "hop_validate_wire_bundle",
+        "hop_verify_reach_record",
+    },
+    "embedded": {
+        "hop_accept_inbox",
+        "hop_cluster_join",
+        "hop_cluster_join_passphrase",
+        "hop_cluster_mark_done",
+        "hop_cluster_members",
+        "hop_cluster_set_quorum",
+        "hop_cluster_would_drop",
+        "hop_message_status",
+        "hop_node_is_persistent",
+        "hop_node_open",
+        "hop_node_open_keyed",
+        "hop_node_rehydrate_dropped",
+        "hop_send_to",
+        "hop_sign_reach_record",
+        "hop_validate_wire_bundle",
+        "hop_verify_reach_record",
+    },
+    "go": {
+        "hop_drain_outgoing",
+        "hop_hps_browse",
+        "hop_hps_members",
+        "hop_hps_my_topics",
+        "hop_hps_pending",
+        "hop_hps_rekey",
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_node_secret",
+        "hop_node_set_name",
+        "hop_poll_hps_invites",
+        "hop_poll_hps_messages",
+        "hop_poll_inbox",
+        "hop_poll_service_requests",
+        "hop_poll_service_responses",
+        "hop_send_message",
+        "hop_send_to",
+        "hop_sign_reach_record",
+        "hop_validate_wire_bundle",
+        "hop_verify_reach_record",
+    },
+    "node": {
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_send_to",
+        "hop_validate_wire_bundle",
+    },
+    "python": {
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_node_secret",
+        "hop_node_set_name",
+        "hop_poll_inbox",
+        "hop_send_message",
+        "hop_send_to",
+        "hop_validate_wire_bundle",
+    },
+    "ruby": {
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_node_secret",
+        "hop_node_set_name",
+        "hop_poll_inbox",
+        "hop_send_message",
+        "hop_send_to",
+        "hop_validate_wire_bundle",
+    },
+    "crystal": {
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_node_secret",
+        "hop_node_set_name",
+        "hop_poll_inbox",
+        "hop_send_message",
+        "hop_send_to",
+        "hop_validate_wire_bundle",
+    },
+    "flutter": {
+        "hop_is_secured",
+        "hop_message_status",
+        "hop_node_rehydrate_dropped",
+        "hop_node_secret",
+        "hop_node_set_name",
+        "hop_poll_inbox",
+        "hop_relay_add",
+        "hop_relay_next",
+        "hop_relay_pool_size",
+        "hop_relay_report",
+        "hop_send_message",
+        "hop_send_to",
+        "hop_validate_wire_bundle",
+    },
+}
+
+
+def get_wrapper_exclusions(surface_dir: str) -> set[str]:
+    """Return documented exclusions for a wrapper directory."""
+    norm = surface_dir.replace("\\", "/").rstrip("/")
+    parts = norm.split("/")
+    for key, exclusions in WRAPPER_EXCLUSIONS.items():
+        if f"sdk/{key}" in norm or key in parts:
+            return exclusions
+    return set()
+
+
 def verify_signatures(manifest: dict, surface_dir: str, required_symbol: str = None) -> list[str]:
     errors = []
     bindings = extract_wrapper_bindings(surface_dir)
@@ -897,8 +1082,21 @@ def verify_signatures(manifest: dict, surface_dir: str, required_symbol: str = N
             return errors
         to_check = [required_symbol]
     else:
-        to_check = list(bindings.keys())
+        exclusions = get_wrapper_exclusions(surface_dir)
+        expected_symbols = set(manifest_funcs.keys()) - exclusions
+        bound_symbols = set(bindings.keys())
 
+        missing = expected_symbols - bound_symbols
+        if missing:
+            for sym in sorted(missing):
+                errors.append(f"missing required ABI function {sym} in {surface_dir}")
+
+        unknown = bound_symbols - set(manifest_funcs.keys())
+        if unknown:
+            for sym in sorted(unknown):
+                errors.append(f"wrapper under {surface_dir} binds unknown function {sym}")
+
+        to_check = [s for s in sorted(bound_symbols) if s in manifest_funcs]
     for sym in to_check:
         if sym not in manifest_funcs:
             errors.append(f"wrapper under {surface_dir} binds unknown function {sym}")
@@ -1217,10 +1415,75 @@ def run_self_tests(manifest_path: str = None) -> int:
         errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_poll_service_requests")
         assert any("callback arg #1 shape mismatch" in e for e in errs), f"Expected callback arg shape mismatch, got: {errs}"
 
+        # Restore original extract function for real file parsing tests
+        globals()["extract_wrapper_bindings"] = orig_extract
+
+        # 6. Multi-line declaration parsing and verification
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            multiline_source = """
+const raw = {
+  abi_version: lib.func('uint32_t hop_abi_version()'),
+  node_open: lib.func(
+    'void *hop_node_open(\\n' +
+    '  const char *db_path, uint8_t *secret, size_t secret_len, uint8_t *app_secret, size_t app_secret_len\\n' +
+    ')',
+  ),
+};
+"""
+            extracted_node = extract_node_koffi_bindings(multiline_source)
+            assert "hop_node_open" in extracted_node, "Expected multi-line hop_node_open to be extracted"
+            assert extracted_node["hop_node_open"]["param_count"] == 5
+
+            dart_source = """
+typedef _HpsSubscribeC = Bool Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Utf8>, Pointer<Uint8>);
+late final _hpsSubscribe = _lib
+    .lookupFunction<
+        _HpsSubscribeC,
+        _HpsSubscribeDart
+    >(
+      'hop_hps_subscribe',
+    );
+"""
+            extracted_dart = extract_dart_ffi_bindings(dart_source)
+            assert "hop_hps_subscribe" in extracted_dart, "Expected multi-line hop_hps_subscribe to be extracted"
+            assert extracted_dart["hop_hps_subscribe"]["param_count"] == 4
+
+            # Verify multi-line wrapper file in temp dir against mock manifest passes
+            test_manifest = {
+                "functions": {
+                    "hop_abi_version": manifest["functions"]["hop_abi_version"],
+                    "hop_node_open": manifest["functions"]["hop_node_open"],
+                }
+            }
+            pass_dir = os.path.join(tmpdir, "pass_wrapper")
+            os.makedirs(pass_dir)
+            with open(os.path.join(pass_dir, "ffi.mjs"), "w") as f:
+                f.write(multiline_source)
+
+            errs_pass = verify_signatures(test_manifest, pass_dir)
+            assert not errs_pass, f"Expected multi-line wrapper to pass, got: {errs_pass}"
+
+            # 7. Fail closed on deleted declaration
+            fail_dir = os.path.join(tmpdir, "fail_wrapper")
+            os.makedirs(fail_dir)
+            with open(os.path.join(fail_dir, "ffi.mjs"), "w") as f:
+                f.write("""
+const raw = {
+  abi_version: lib.func('uint32_t hop_abi_version()'),
+  // hop_node_open is deleted!
+};
+""")
+            errs_fail = verify_signatures(test_manifest, fail_dir)
+            assert any("missing required ABI function hop_node_open" in e for e in errs_fail), (
+                f"Expected fail-closed missing symbol error, got: {errs_fail}"
+            )
+
     finally:
         globals()["extract_wrapper_bindings"] = orig_extract
 
-    print("verify-abi-signatures self-test: OK (unsigned rekey, void sink, wrong-width int, callback arity, callback shape rejected)")
+    print("verify-abi-signatures self-test: OK (unsigned rekey, void sink, wrong-width int, callback arity, callback shape, multi-line parsing, fail-closed missing declaration)")
     return 0
 
 
