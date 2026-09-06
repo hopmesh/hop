@@ -5,6 +5,7 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- pin CHop to the reproducible v0.0.3 bundle built at 37a620b432a1a1968ec1bbb503c5f1b02ca3083f (ABI-008) (9532aa8)
 - stop the ledger retry-buffer tests racing and unclassify the Apple pin comment (REL-010) (82b5bfe)
 - make the native libraries reproducible by pinning SOURCE_DATE_EPOCH (REL-009) (18800a7)
 - pin CHop to the v0.0.3 bundle built and attested at cd1289256f23354042ba2b1107cb26c5ad53cbaa (ABI-008) (36540e9)
@@ -23,6 +24,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (a202908)
 - update release runbook and references for v0.0.3 (ABI-008) (70378e0)
 - document ABI 7 requirement and release runbook in Package.swift (ABI-008) (b4f219a)
 - update prose claims and exclude changelog in check-abi-version (ABI-002, ABI-004, ABI-005) (903bc65)
