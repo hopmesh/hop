@@ -10,7 +10,11 @@ permissions:
 jobs:
   dco-check:
     name: Verify DCO and CLA
-    if: ${{ !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && !contains(fromJSON('["dependabot[bot]","hop-sync"]'), github.actor) && !contains(fromJSON('["dependabot[bot]","hop-sync"]'), github.event.pull_request.user.login) }}
+    # author_association is computed lazily by GitHub: the pull_request payload for the repository
+    # owner's own PR #131 said CONTRIBUTOR while the REST API said MEMBER, so the association alone
+    # cannot carry the maintainer exemption. The login list is the same allowlist pr-automerge.yml
+    # trusts, so the two workflows agree on who the maintainers are.
+    if: ${{ !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && !contains(fromJSON('["jwaldrip","dependabot[bot]","hop-sync"]'), github.actor) && !contains(fromJSON('["jwaldrip","dependabot[bot]","hop-sync"]'), github.event.pull_request.user.login) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,14 +38,14 @@ jobs:
               ;;
           esac
           case "$ACTOR" in
-            "dependabot[bot]"|"hop-sync")
-              echo "Exempting automated actor ($ACTOR) from DCO check."
+            "jwaldrip"|"dependabot[bot]"|"hop-sync")
+              echo "Exempting maintainer or automated actor ($ACTOR) from DCO check."
               exit 0
               ;;
           esac
           case "$PR_USER" in
-            "dependabot[bot]"|"hop-sync")
-              echo "Exempting automated PR author ($PR_USER) from DCO check."
+            "jwaldrip"|"dependabot[bot]"|"hop-sync")
+              echo "Exempting maintainer or automated PR author ($PR_USER) from DCO check."
               exit 0
               ;;
           esac
