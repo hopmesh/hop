@@ -91,12 +91,12 @@ release/                    plan.py resolves each publishing component's declare
                             mirror's main already declares the version (the mirror asserts tag ==
                             manifest). Driven by release-tags.yml after a successful export.
                             Self-test: release/release.test.sh (pins the tag/skip policy AND the token scope).
-                            release/check-mirror-secrets.py compares the secrets each mirror's release.yml
-                            REFERENCES against what is seeded at repo + environment + org scope. It exists
-                            because HOP_SOURCE_APP_ID/_PRIVATE_KEY were never seeded on any mirror, and an
-                            unset secret resolves to "" rather than erroring, so nothing ever published and
-                            the only symptom was an action complaining about an empty input. Needs a
-                            secrets-read token; the weekly branch-protection-audit runs it when armed.
+release/check-mirror-secrets.py compares the secrets each mirror's release.yml
+                            REFERENCES against what is seeded at repo + environment + org scope.
+                            With --audit-protection, it also audits mirror main branch protection
+                            and release environment rules (INFRA-019), and verifies canonical
+                            hop-source App installation on hopmesh/hop (INFRA-023).
+                            Needs a secrets-read token; branch-protection-audit runs it when armed.
                             Self-test: release/check-mirror-secrets.test.sh.
 agent-output-guard.mjs      blocks known environment dumps and clears recognized shell secrets.
 meshtastic-parity.sh        keeps the Meshtastic bearer wire contract identical on Apple and Android
@@ -133,9 +133,10 @@ Rewriting history would alter roughly 20% of all commits, strip 184 valid signat
 three Copybara mirrors' GitOrigin-RevId chains and every published source SHA.
 
 The owner therefore chose the zero-rewrite design: scan only the commits a change INTRODUCES, with
-zero allowlist entries. In CI (`.github/workflows/ci.yml`), `tools/commit-message-guard-range.sh`
-computes the introduced commit range from GitHub event context (`pull_request` base..HEAD, `push`
-before..HEAD with zero-SHA / unreachable fallbacks to HEAD, or `workflow_dispatch` HEAD).
+zero allowlist entries. In CI (`.github/workflows/ci.yml`), `tools/commit-message-guard.sh --github-event`
+runs unconditionally in the `automation` job on every PR and push without path filters (PROC-016).
+Range is computed via `tools/commit-message-guard-range.sh` from GitHub event context (`pull_request`
+base..HEAD, `push` before..HEAD with zero-SHA / unreachable fallbacks to HEAD, or `workflow_dispatch` HEAD).
 No commit-message allowlist exists, and historical commits before the change base are not scanned.
 
 ## Rules
