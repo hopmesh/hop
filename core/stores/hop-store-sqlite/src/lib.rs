@@ -1365,6 +1365,7 @@ mod tests {
             seen_rows: std::cell::Cell::new(0),
             _file_lock: None,
             _process_lease: None,
+            encrypted: false,
         };
 
         store

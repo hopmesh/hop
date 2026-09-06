@@ -1696,6 +1696,16 @@ mod tests {
             fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
                 self.inner.get_kv(key)
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                if self.fail_handled && key.starts_with(HANDLED_PREFIX) {
+                    return Err("disk full / store unavailable".into());
+                }
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
         }
 
         let e_id = [42u8; 32];
