@@ -712,11 +712,40 @@ impl Store for SqliteStore {
         }])
     }
 
-    fn flush(&self, _timeout: std::time::Duration) -> bool {
-        // STORE-001: Checkpoint WAL frames back to the database file and fsync.
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
-            .is_ok()
+    fn flush(&self, timeout: std::time::Duration) -> bool {
+        // STORE-001 / STORE-013: Checkpoint WAL frames back to the database file and fsync.
+        // Inspect (busy, log, checkpointed) columns:
+        // * busy: 0 if checkpoint ran without lock conflicts, 1 if blocked by readers/writers.
+        // * log: number of frames in WAL (-1 if not in WAL mode).
+        // * checkpointed: number of frames successfully checkpointed to database.
+        // A flush is durable only when busy == 0 and all logged frames are checkpointed (checkpointed >= log).
+        let start = std::time::Instant::now();
+        loop {
+            let res = self
+                .conn
+                .query_row("PRAGMA wal_checkpoint(PASSIVE);", [], |row| {
+                    let busy: i32 = row.get(0)?;
+                    let log: i32 = row.get(1)?;
+                    let checkpointed: i32 = row.get(2)?;
+                    Ok((busy, log, checkpointed))
+                });
+
+            match res {
+                Ok((busy, log, checkpointed)) => {
+                    if busy == 0 && (log <= 0 || checkpointed >= log) {
+                        return true;
+                    }
+                }
+                Err(_) => return false,
+            }
+
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            std::thread::sleep(
+                std::time::Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())),
+            );
+        }
     }
 
     fn list_kv_page(
@@ -1274,6 +1303,79 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}-wal"));
         let _ = std::fs::remove_file(format!("{path}-shm"));
         let _ = std::fs::remove_file(format!("{path}.lock"));
+    }
+
+    #[test]
+    fn store_013_sqlite_flush_under_reader_contention_fails_or_waits() {
+        // STORE-013: PRAGMA wal_checkpoint(PASSIVE) without column inspection returns success
+        // even when reader contention leaves WAL frames uncheckpointed. Flush must inspect
+        // (busy, log, checkpointed) and fail (or wait) when checkpoint cannot complete.
+        let path = format!(
+            "{}/hop-sqlite-store-013-contention-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // Construct a SqliteStore with WAL mode without locking_mode=EXCLUSIVE so concurrent
+        // reader transactions can simulate lock contention against wal_checkpoint.
+        let conn = rusqlite::Connection::open(&path).expect("open connection");
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
+        )
+        .unwrap();
+        let mut store = SqliteStore {
+            conn,
+            seen_rows: std::cell::Cell::new(0),
+            _file_lock: None,
+            _process_lease: None,
+        };
+
+        store
+            .put_kv_critical("key1", b"val1".to_vec())
+            .expect("put key1");
+        // Flush initial frames to establish baseline
+        assert!(store.flush(std::time::Duration::from_millis(500)));
+
+        // Open a secondary reader connection to hold a read transaction on the baseline frame.
+        let reader = rusqlite::Connection::open(&path).expect("reader open succeeds");
+        reader
+            .execute_batch("BEGIN DEFERRED; SELECT count(*) FROM kv;")
+            .expect("begin read transaction");
+
+        // Write new critical KV through store, appending frames to WAL after the reader's mark.
+        store
+            .put_kv_critical("key2", b"val2".to_vec())
+            .expect("put key2");
+
+        // Attempting to flush while reader holds the read transaction must FAIL within timeout
+        // because uncheckpointed frames cannot be checkpointed past the reader's lock.
+        let flushed_under_contention = store.flush(std::time::Duration::from_millis(50));
+        assert!(
+            !flushed_under_contention,
+            "flush must report false when reader contention prevents complete WAL checkpointing"
+        );
+
+        // Release the reader lock.
+        reader
+            .execute_batch("COMMIT;")
+            .expect("commit read transaction");
+        drop(reader);
+
+        // Now flush must succeed completely once the reader lock is released.
+        assert!(
+            store.flush(std::time::Duration::from_secs(1)),
+            "flush must succeed once reader contention is released"
+        );
+
+        drop(store);
+        cleanup(&path);
     }
 
     #[test]
