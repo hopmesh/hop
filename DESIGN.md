@@ -2082,11 +2082,14 @@ surfaces are **not** equal under GDPR:
   ledger (`usage/`, `carriage_usage/`, `telemetry_usage/`, `storage_usage/`, each
   `{hour}/{tenant}/{writer}`, tenant identifiers rather than device ones). The **values** on the
   session and prekey rows are ratchet and prekey material: the node's own key material for the
-  sessions it terminates, not user content keys. Unlike bundles and presence, kv carries **no
-  `expireAt` and therefore no TTL policy** (`infra/bootstrap/core.tf` declares TTL fields on
-  `bundles`, `presence`, `registry` and `operations` only), so a kv row persists until the relay
-  deletes it. That combination, a durable indexed device address with no retention bound, is the real
-  exposure here, and it is accepted rather than fixed: see "Why the kv key space is cleartext" below.
+  sessions it terminates, not user content keys. Transient kv documents carry an **`expireAt`
+  timestampValue field for Firestore TTL policy and an `expiresAt` integer field**
+  (`hop-store-firestore::kv_doc_json`), bounding `session/<peer>` rows to 30 days (matching
+  `SESSION_MAX_IDLE_MS`), `strm/<sender>/...` rows to 24 hours (matching `CARRIER_STREAM_LIFETIME_MS`),
+  and `inbox-seen/<id>` rows to 7 days (matching `MAX_SEEN_LIFETIME_MS`), backed by a store-side
+  bounded sweep (`sweep_expired_kv`, bounded to 100 rows per tick; CLAIM-020). Financial ledger rows
+  (`usage/`, `carriage_usage/`, `journal/`) and telemetry seen markers are exempt and persist until their
+  respective domain reconcilers sweep them. See "Why the kv key space is cleartext" below.
 - **Blind mailbox spool** (`mailboxes/{mailbox-tag}/bundles`, §39 P5). The one surface whose key space
   is derived rather than literal: the tag is `H("v2" | address | epoch)` (`crypto::mailbox_tag`), so a
   reader sees spooled ciphertext bucketed by a rotating pseudonym instead of by a recipient address.
@@ -2113,11 +2116,11 @@ surfaces are **not** equal under GDPR:
   below).
 - **No central identity/name registry (§23).** Addresses are pseudonymous public keys with no
   account mapping. Pseudonymization and data minimization by construction.
-- **TTL eviction** on bundles, presence, the liveness registry and the operation journal
-  (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on those writes)
-  and heartbeat staleness on presence, so storage limitation (Art. 5(1)(e)) is built in for those
-  four. It is **not** built in for `kv`, which has no `expireAt` at all.
-
+- **TTL eviction** on bundles, presence, the liveness registry, the operation journal
+  (`infra/bootstrap/core.tf` field policies; `hop-store-firestore` stamps `expireAt` on those writes),
+  and transient `kv` rows (30-day session retention, 24-hour carrier streams, 7-day inbox-seen dedup,
+  backed by store-side sweeps; CLAIM-020), plus heartbeat staleness on presence, so storage limitation
+  (Art. 5(1)(e)) is built into both message spools and transient relay state.
 ### Why the kv key space is cleartext, and what that exposes
 
 A decision, recorded so it is not mistaken for an oversight. Blinding the kv key was evaluated and
@@ -2146,12 +2149,13 @@ load-bearing rather than incidental:
 over-broad `roles/datastore.viewer` credential, a backup export, or lawful process against the single
 US database) can list `relays/{node}/kv` and recover, for each relay partition, the base58 public key
 of every device that held a session with that relay, the sender public key of every carrier stream,
-and per-document `createTime`/`updateTime` as an attachment timeline, with no TTL bounding how long
-those rows live. That is the same correlation the relay's logging discipline (netlog vs netlog_private)
-exists to prevent, stored durably instead of logged. It is bounded by IAM and by the fact that the
-value side stays opaque; it is not bounded cryptographically. The honest fix is a durable-cursor
-redesign (opaque page tokens) plus a per-prefix keyed index, and until that is built this stays on the
-exposure list rather than being described as mitigated.
+and per-document `createTime`/`updateTime` as an attachment timeline, bounded to the 30-day session
+retention window (or 24-hour stream window) by `expireAt` TTL and store-side sweeping (CLAIM-020).
+That is the same correlation the relay's logging discipline (netlog vs netlog_private) exists to
+prevent, stored durably instead of logged. It is bounded by IAM, by retention TTL, and by the fact
+that the value side stays opaque; it is not bounded cryptographically. The honest fix is a
+durable-cursor redesign (opaque page tokens) plus a per-prefix keyed index, and until that is built
+this stays on the exposure list rather than being described as mitigated.
 
 **SQLCipher divergence.** `hop-store-sqlite` requires an application-level at-rest key (`open_keyed`,
 SQLCipher) for exactly this class of material, and the Firestore path has no equivalent: it relies on

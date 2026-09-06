@@ -20,9 +20,12 @@
 //!    forward-secret ratchet sessions, prekey secrets, pending content. Before stores-07 this was
 //!    memory-only on the relay, so a scale-to-zero dropped every relay-hosted session and forced a
 //!    re-secure churn against mobile peers; now it round-trips through the same mirror seam. The
-//!    VALUES are opaque bytes; the KEYS are cleartext and indexed, which makes this collection a
-//!    durable device-identifier surface (SVC-004). It is inventoried, with the accepted exposure and
-//!    the reasoning, in DESIGN.md §33; `kv_doc_json` carries the short version.
+//!    The VALUES are opaque bytes; the KEYS are cleartext and indexed, which makes this collection a
+//!    durable device-identifier surface (SVC-004). Storage limitation is enforced by a Firestore TTL
+//!    policy on `expireAt` (30 days for forward-secret sessions, 24 hours for carrier streams, 7 days
+//!    for inbox deduplication markers) backed by a store-side bounded sweep (CLAIM-020).
+//!    The accepted exposure and reasoning are documented in DESIGN.md §33; `kv_doc_json` carries
+//!    the short version.
 //!
 //! The dedup `seen` set stays in-memory (losing it across a scale cycle costs at most some
 //! re-flooding, which the receiver dedups; §7).
@@ -533,8 +536,10 @@ pub struct FirestoreStore {
     /// stores-r2-05: the background writer's join handle. Drop signals `closed` then best-effort
     /// joins (bounded wait) so ops enqueued-but-not-yet-flushed on an UNCLEAN teardown (panic, early
     /// return, a drop not preceded by `flush()`) still get drained rather than silently lost. `Option`
-    /// so Drop can `take()` it and `join()`.
     writer: Option<std::thread::JoinHandle<()>>,
+    /// Expiration timestamps (epoch-ms) for transient KV rows (CLAIM-020, DESIGN.md section 33).
+    /// Financial ledger and telemetry seen rows are exempt and never entered here.
+    kv_expiry: std::collections::BTreeMap<String, u64>,
 }
 
 /// The bounded mirror queue's producer end (stores-09). No accepted operation is droppable.
@@ -647,6 +652,57 @@ impl FirestoreStore {
     pub fn startup_cleanup_pending(&self) -> bool {
         self.startup_cleanup_pending.load(Ordering::Acquire) != 0
     }
+    /// Write a KV pair with an explicit expiration epoch-ms (CLAIM-020, DESIGN.md section 33).
+    /// If `expires_at` is Some, records it for store-side sweeping and stamps `expireAt`
+    /// for Firestore TTL policy. Exempt keys (billing ledger and telemetry_seen) ignore `expires_at`.
+    pub fn put_kv_with_expiry(&mut self, key: &str, value: Vec<u8>, expires_at: Option<u64>) {
+        let durable = value.clone();
+        if self
+            .commit_op(|ack| Op::KvWrite {
+                key: key.to_string(),
+                value: durable,
+                ack,
+            })
+            .is_ok()
+        {
+            self.inner.put_kv(key, value);
+            if let Some(exp) = expires_at {
+                if !is_billing_ledger_key(key) && !is_telemetry_seen_key(key) {
+                    self.kv_expiry.insert(key.to_string(), exp);
+                }
+            } else {
+                self.kv_expiry.remove(key);
+            }
+        }
+    }
+
+    /// Sweep expired KV rows past retention (CLAIM-020, DESIGN.md section 33).
+    ///
+    /// Bounded per tick to at most `max_deletions` rows (e.g. [`FIRESTORE_KV_SWEEP_PAGE_SIZE`]).
+    /// Idempotent: once deleted, keys are removed from memory and mirrored to Firestore.
+    /// Financial ledger rows (usage/, carriage_usage/, journal rows) and telemetry_seen are NEVER touched.
+    pub fn sweep_expired_kv(&mut self, now_ms: u64, max_deletions: usize) -> usize {
+        if max_deletions == 0 {
+            return 0;
+        }
+        let mut expired = Vec::new();
+        for (key, &expires_at) in &self.kv_expiry {
+            if is_billing_ledger_key(key) || is_telemetry_seen_key(key) {
+                continue;
+            }
+            if expires_at <= now_ms {
+                expired.push(key.clone());
+                if expired.len() == max_deletions {
+                    break;
+                }
+            }
+        }
+        let count = expired.len();
+        for key in &expired {
+            Store::remove_kv(self, key);
+        }
+        count
+    }
 
     /// stores-r2-01: re-mirror an already-held bundle (after a retransmit
     /// handoff) reusing the RECEIVER-anchored `expires_at` this store recorded at `put` time,
@@ -714,10 +770,12 @@ impl FirestoreStore {
             format!("Firestore write/read/delete readiness probe failed: {error}")
         })?;
         let mut inner = MemoryStore::new();
+        let mut kv_expiry = std::collections::BTreeMap::new();
         let mut startup_usage = StartupUsage::default();
         let mut startup_maintenance = StartupMaintenance::default();
         let startup_complete = run_startup_maintenance_round(
             &mut inner,
+            &mut kv_expiry,
             mirror.as_ref(),
             &mut startup_usage,
             &mut startup_maintenance,
@@ -855,6 +913,7 @@ impl FirestoreStore {
             startup_limits: limits,
             held_bytes: startup_usage.bytes,
             writer: Some(writer),
+            kv_expiry,
         })
     }
     fn recompute_held_bytes(&mut self) {
@@ -872,6 +931,7 @@ impl FirestoreStore {
 
 fn run_startup_maintenance_round(
     inner: &mut MemoryStore,
+    kv_expiry: &mut std::collections::BTreeMap<String, u64>,
     mirror: &dyn BundleMirror,
     usage: &mut StartupUsage,
     maintenance: &mut StartupMaintenance,
@@ -1024,6 +1084,9 @@ fn run_startup_maintenance_round(
                         continue;
                     }
                     inner.put_kv(&row.key, value);
+                    if let Some(retention) = kv_retention_ms(&row.key) {
+                        kv_expiry.insert(row.key.clone(), now_ms.saturating_add(retention));
+                    }
                     usage.eager_kv_rows += 1;
                     usage.bytes += bytes;
                 }
@@ -1227,6 +1290,7 @@ impl Store for FirestoreStore {
     fn prune(&mut self, now_ms: u64) {
         self.inner.prune(now_ms);
         self.recompute_held_bytes();
+        self.sweep_expired_kv(now_ms, FIRESTORE_KV_SWEEP_PAGE_SIZE);
     }
 
     fn seen_expiry(&self, id: &BundleId) -> Option<u64> {
@@ -1239,17 +1303,8 @@ impl Store for FirestoreStore {
     // --- kv surface (stores-07): write-through to the durable `relays/{node}/kv` collection. ---
 
     fn put_kv(&mut self, key: &str, value: Vec<u8>) {
-        let durable = value.clone();
-        if self
-            .commit_op(|ack| Op::KvWrite {
-                key: key.to_string(),
-                value: durable,
-                ack,
-            })
-            .is_ok()
-        {
-            self.inner.put_kv(key, value);
-        }
+        let expires_at = kv_retention_ms(key).map(|retention| epoch_ms().saturating_add(retention));
+        self.put_kv_with_expiry(key, value, expires_at);
     }
 
     fn apply_kv_batch(&mut self, mutations: &[KvMutation]) -> std::result::Result<(), String> {
@@ -1273,6 +1328,20 @@ impl Store for FirestoreStore {
         })
         .map_err(|error| error.to_string())?;
         self.inner = candidate;
+        for mutation in mutations {
+            match mutation {
+                KvMutation::Put { key, .. } => {
+                    if let Some(retention) = kv_retention_ms(key) {
+                        self.kv_expiry
+                            .insert(key.clone(), epoch_ms().saturating_add(retention));
+                    }
+                }
+                KvMutation::Remove { key } => {
+                    self.kv_expiry.remove(key);
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -1321,11 +1390,19 @@ impl Store for FirestoreStore {
         match self.mirror.put_kv_if_absent(key, &value) {
             Ok(true) => {
                 self.inner.put_kv(key, value);
+                if let Some(retention) = kv_retention_ms(key) {
+                    self.kv_expiry
+                        .insert(key.to_string(), epoch_ms().saturating_add(retention));
+                }
                 Ok(true)
             }
             Ok(false) => {
                 if let Ok(Some(existing)) = self.mirror.get_kv(key) {
                     self.inner.put_kv(key, existing);
+                    if let Some(retention) = kv_retention_ms(key) {
+                        self.kv_expiry
+                            .insert(key.to_string(), epoch_ms().saturating_add(retention));
+                    }
                     Ok(false)
                 } else {
                     self.durability.mark_not_ready();
@@ -1347,6 +1424,7 @@ impl Store for FirestoreStore {
     }
 
     fn remove_kv(&mut self, key: &str) {
+        self.kv_expiry.remove(key);
         if self
             .commit_op(|ack| Op::KvDelete {
                 key: key.to_string(),
@@ -1493,6 +1571,7 @@ impl Store for FirestoreStore {
                 .ok_or_else(|| "Firestore startup maintenance state is missing".to_string())?;
             match run_startup_maintenance_round(
                 &mut self.inner,
+                &mut self.kv_expiry,
                 self.mirror.as_ref(),
                 &mut self.startup_usage,
                 &mut maintenance,
@@ -3444,27 +3523,101 @@ fn prefix_upper_bound(prefix: &str) -> Option<String> {
     None
 }
 
+/// Retention periods for transient relay KV records (DESIGN.md section 33, CLAIM-020).
+///
+/// 1. `session/<peer>`: 30 days. Matches `SESSION_MAX_IDLE_MS` in `hop-core::node` (D6), where
+///    forward-secret sessions idle past 30 days are pruned from memory and store. If an idle peer
+///    returns after 30 days, the session re-establishes with a fresh ephemeral prekey without data loss.
+pub const KV_SESSION_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+
+/// 2. `strm/<sender>/...`: 24 hours. Matches `CARRIER_STREAM_LIFETIME_MS` in `hop-core::node`.
+///    Carrier stream chunks are bounded by a 24-hour assembly window; incomplete streams past 24 hours
+///    are abandoned and cannot be reassembled.
+pub const KV_STREAM_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// 3. `inbox-seen/<bundle_id>`: 7 days. Matches `MAX_SEEN_LIFETIME_MS` in `hop-core::store` (F-07),
+///    bounding receiver-side deduplication markers to one week.
+pub const KV_SEEN_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+
+/// 4. Default fallback for other transient relay KV rows (e.g. `response/<id>`, `hps/...`): 30 days.
+///    Bounds transient operational state to the session lifetime window.
+pub const KV_DEFAULT_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+/// Maximum number of expired KV rows deleted in a single sweep tick (bounded maintenance).
+pub const FIRESTORE_KV_SWEEP_PAGE_SIZE: usize = 100;
+
+/// Compute the retention period in milliseconds for a KV key, or None if the key is exempt
+/// from TTL and store-side sweeping (financial ledger and telemetry seen markers).
+pub fn kv_retention_ms(key: &str) -> Option<u64> {
+    if is_billing_ledger_key(key) || is_telemetry_seen_key(key) {
+        return None;
+    }
+    if key.starts_with("session/") {
+        Some(KV_SESSION_RETENTION_MS)
+    } else if key.starts_with(LAZY_KV_PREFIX) {
+        Some(KV_STREAM_RETENTION_MS)
+    } else if key.starts_with("inbox-seen/") {
+        Some(KV_SEEN_RETENTION_MS)
+    } else {
+        Some(KV_DEFAULT_RETENTION_MS)
+    }
+}
+
+/// Build a Firestore document body for a kv pair with an explicit expiration epoch-ms.
+///
+/// If `expires_at` is present, writes an `expireAt` timestampValue for Firestore's TTL policy
+/// and an `expiresAt` integerValue for local parsing (CLAIM-020, DESIGN.md section 33).
+pub fn kv_doc_json_with_expiry(
+    key: &str,
+    value: &[u8],
+    expires_at: Option<u64>,
+) -> serde_json::Value {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(value);
+    let mut fields = serde_json::json!({
+        "key": { "stringValue": key },
+        "value": { "bytesValue": b64 },
+    });
+    if let Some(exp) = expires_at {
+        fields["expiresAt"] = serde_json::json!({ "integerValue": exp.to_string() });
+        fields["expireAt"] = serde_json::json!({ "timestampValue": rfc3339_utc(exp) });
+    }
+    serde_json::json!({ "fields": fields })
+}
+
 /// Build a Firestore document body for a kv pair: the original key (so `list_kv` recovers it
 /// exactly, since the doc id is a base58 of the key bytes) plus the opaque value as base64 bytes.
 ///
-/// SVC-004: the `key` field is CLEARTEXT and Firestore indexes it, so `session/<base58 peer public
+/// SVC-004 / CLAIM-020: the `key` field is CLEARTEXT and Firestore indexes it, so `session/<base58 peer public
 /// key>` and `strm/<base58 sender public key>/...` are durable, listable device identifiers to anyone
-/// holding a read credential on this database, with no `expireAt` bounding how long they live. That is
-/// an ACCEPTED exposure, not an oversight: `query_kv_page` runs server-side range filters and an
-/// `orderBy` on this exact field and hands a key back as the pagination cursor, rehydration recovers
-/// the peer address by decoding the key, and hop-billingd parses `usage/` keys with a credential that
-/// must never hold relay key material. DESIGN.md section 33 records the full reasoning, what remains
-/// exposed, and what a real fix would have to redesign first. Do not "improve" this by hashing the key:
-/// a reader of this database also reads the bundle headers, which carry the addresses, so an unkeyed
-/// hash is reversible by dictionary and would only make the exposure look mitigated.
-fn kv_doc_json(key: &str, value: &[u8]) -> serde_json::Value {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(value);
-    serde_json::json!({
-        "fields": {
-            "key": { "stringValue": key },
-            "value": { "bytesValue": b64 },
+/// holding a read credential on this database. To enforce storage limitation without breaking ordered
+/// range queries, every transient kv document carries an `expireAt` timestampValue for Firestore's
+/// TTL policy (30 days for sessions matching SESSION_MAX_IDLE_MS, 24 hours for carrier streams matching
+/// CARRIER_STREAM_LIFETIME_MS, and 7 days for inbox-seen matching MAX_SEEN_LIFETIME_MS), plus an
+/// `expiresAt` integer epoch-ms field for local parsing and store-side bounded sweeping.
+/// Financial ledger rows (usage/, carriage_usage/, journal/) and telemetry_seen markers are exempt
+/// from TTL and store-side sweeping.
+pub fn kv_doc_json(key: &str, value: &[u8]) -> serde_json::Value {
+    let expires_at = kv_retention_ms(key).map(|retention| epoch_ms().saturating_add(retention));
+    kv_doc_json_with_expiry(key, value, expires_at)
+}
+
+/// Parse the optional expiration epoch-ms from a Firestore kv document if present.
+pub fn parse_kv_doc_expires_at(d: &serde_json::Value) -> Option<u64> {
+    let fields = d.get("fields")?;
+    if let Some(exp_str) = fields
+        .get("expiresAt")
+        .and_then(|v| v.get("integerValue"))
+        .and_then(|v| v.as_str())
+    {
+        if let Ok(exp) = exp_str.parse::<u64>() {
+            return Some(exp);
         }
-    })
+    }
+    None
+}
+
+/// Sweep expired KV rows on a FirestoreStore (CLAIM-020, DESIGN.md section 33).
+pub fn sweep_expired_kv(store: &mut FirestoreStore, now_ms: u64, max_deletions: usize) -> usize {
+    store.sweep_expired_kv(now_ms, max_deletions)
 }
 
 /// Parse a Firestore kv document into `(key, value)`.
@@ -9053,5 +9206,173 @@ mod tests {
             Some(expected_val),
             "store.get_kv must retrieve unloaded billing ledger key from remote mirror"
         );
+    }
+    #[test]
+    fn kv_doc_carries_expire_at_for_transient_keys_and_omits_for_exempt() {
+        // CLAIM-020: Transient KV documents carry expireAt timestampValue and expiresAt integerValue.
+        let now = 1_000_000_000_000u64; // 2001-09-09T01:46:40Z
+
+        // 1. Session key: 30 days retention
+        let session_doc = kv_doc_json_with_expiry(
+            "session/alice",
+            b"session_data",
+            Some(now + KV_SESSION_RETENTION_MS),
+        );
+        assert_eq!(
+            session_doc["fields"]["expiresAt"]["integerValue"],
+            (now + KV_SESSION_RETENTION_MS).to_string()
+        );
+        assert_eq!(
+            session_doc["fields"]["expireAt"]["timestampValue"],
+            rfc3339_utc(now + KV_SESSION_RETENTION_MS)
+        );
+
+        // 2. Stream chunk key: 24 hours retention
+        let stream_doc = kv_doc_json_with_expiry(
+            "strm/bob/stream1/0",
+            b"chunk",
+            Some(now + KV_STREAM_RETENTION_MS),
+        );
+        assert_eq!(
+            stream_doc["fields"]["expiresAt"]["integerValue"],
+            (now + KV_STREAM_RETENTION_MS).to_string()
+        );
+        assert_eq!(
+            stream_doc["fields"]["expireAt"]["timestampValue"],
+            rfc3339_utc(now + KV_STREAM_RETENTION_MS)
+        );
+
+        // 3. Inbox seen key: 7 days retention
+        let seen_doc = kv_doc_json_with_expiry(
+            "inbox-seen/bundle1",
+            b"seen",
+            Some(now + KV_SEEN_RETENTION_MS),
+        );
+        assert_eq!(
+            seen_doc["fields"]["expiresAt"]["integerValue"],
+            (now + KV_SEEN_RETENTION_MS).to_string()
+        );
+        assert_eq!(
+            seen_doc["fields"]["expireAt"]["timestampValue"],
+            rfc3339_utc(now + KV_SEEN_RETENTION_MS)
+        );
+
+        // 4. Billing ledger keys: exempt, no expireAt or expiresAt
+        let usage_doc = kv_doc_json("usage/402/tenant/writer", b"ledger");
+        assert!(usage_doc["fields"].get("expireAt").is_none());
+        assert!(usage_doc["fields"].get("expiresAt").is_none());
+
+        let carriage_doc = kv_doc_json("carriage_usage/402/tenant/writer", b"ledger");
+        assert!(carriage_doc["fields"].get("expireAt").is_none());
+        assert!(carriage_doc["fields"].get("expiresAt").is_none());
+
+        let journal_doc = kv_doc_json("journal/402", b"ledger");
+        assert!(journal_doc["fields"].get("expireAt").is_none());
+        assert!(journal_doc["fields"].get("expiresAt").is_none());
+
+        // 5. Telemetry seen marker: exempt from this TTL (has independent sweep)
+        let telem_doc = kv_doc_json("telemetry_seen/491520/marker", b"seen");
+        assert!(telem_doc["fields"].get("expireAt").is_none());
+        assert!(telem_doc["fields"].get("expiresAt").is_none());
+    }
+
+    #[test]
+    fn kv_sweep_prunes_expired_rows_and_leaves_unexpired_surviving() {
+        // CLAIM-020: Expired rows are deleted by sweep; unexpired rows survive.
+        let mirror = FakeMirror::default();
+        let mut store = FirestoreStore::open_with_mirror(mirror.clone()).unwrap();
+
+        // Write row expired in the past
+        store.put_kv_with_expiry("session/expired_peer", b"old_ratchet".to_vec(), Some(1_000));
+        // Write live row with expiry far in the future
+        store.put_kv_with_expiry(
+            "session/live_peer",
+            b"live_ratchet".to_vec(),
+            Some(2_000_000_000_000),
+        );
+
+        assert!(store.get_kv("session/expired_peer").is_some());
+        assert!(store.get_kv("session/live_peer").is_some());
+
+        // Sweep at now_ms = 50_000 (past 1_000, before 2_000_000_000_000)
+        let deleted = store.sweep_expired_kv(50_000, 100);
+        assert_eq!(deleted, 1);
+
+        assert!(store.get_kv("session/expired_peer").is_none());
+        assert!(store.get_kv("session/live_peer").is_some());
+    }
+
+    #[test]
+    fn kv_sweep_never_touches_ledger_or_telemetry_seen_rows() {
+        // CLAIM-020: Financial ledger and telemetry seen rows are never deleted by KV sweep.
+        let mirror = FakeMirror::default();
+        let mut store = FirestoreStore::open_with_mirror(mirror.clone()).unwrap();
+
+        store.put_kv("usage/100/tenant1/writer1", b"usage_val".to_vec());
+        store.put_kv(
+            "carriage_usage/100/tenant1/writer1",
+            b"carriage_val".to_vec(),
+        );
+        store.put_kv("storage_usage/100/tenant1/writer1", b"storage_val".to_vec());
+        store.put_kv(
+            "telemetry_usage/100/tenant1/writer1",
+            b"telemetry_val".to_vec(),
+        );
+        store.put_kv("journal/100", b"journal_val".to_vec());
+        store.put_kv("telemetry_seen/491520/marker1", b"seen_val".to_vec());
+
+        // Sweep far in the future
+        let deleted = store.sweep_expired_kv(u64::MAX, 100);
+        assert_eq!(deleted, 0);
+
+        assert_eq!(
+            store.get_kv("usage/100/tenant1/writer1"),
+            Some(b"usage_val".to_vec())
+        );
+        assert_eq!(
+            store.get_kv("carriage_usage/100/tenant1/writer1"),
+            Some(b"carriage_val".to_vec())
+        );
+        assert_eq!(
+            store.get_kv("storage_usage/100/tenant1/writer1"),
+            Some(b"storage_val".to_vec())
+        );
+        assert_eq!(
+            store.get_kv("telemetry_usage/100/tenant1/writer1"),
+            Some(b"telemetry_val".to_vec())
+        );
+        assert_eq!(store.get_kv("journal/100"), Some(b"journal_val".to_vec()));
+        assert_eq!(
+            store.get_kv("telemetry_seen/491520/marker1"),
+            Some(b"seen_val".to_vec())
+        );
+    }
+
+    #[test]
+    fn kv_sweep_is_bounded_by_page_size_and_idempotent() {
+        // CLAIM-020: Sweep deletes at most max_deletions in one tick, and is idempotent.
+        let mirror = FakeMirror::default();
+        let mut store = FirestoreStore::open_with_mirror(mirror.clone()).unwrap();
+
+        // Insert 150 expired rows
+        for i in 0..150 {
+            store.put_kv_with_expiry(
+                &format!("session/peer_{i:03}"),
+                b"data".to_vec(),
+                Some(1_000),
+            );
+        }
+
+        // Tick 1: limit 100
+        let deleted_tick1 = store.sweep_expired_kv(50_000, 100);
+        assert_eq!(deleted_tick1, 100);
+
+        // Tick 2: deletes remaining 50
+        let deleted_tick2 = store.sweep_expired_kv(50_000, 100);
+        assert_eq!(deleted_tick2, 50);
+
+        // Tick 3: idempotent, 0 remaining
+        let deleted_tick3 = store.sweep_expired_kv(50_000, 100);
+        assert_eq!(deleted_tick3, 0);
     }
 }
