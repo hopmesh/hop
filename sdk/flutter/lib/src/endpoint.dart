@@ -205,6 +205,7 @@ class HopEndpoint {
     _inFlightRequests.remove(_hex(requestId));
     return _ffi.rejectServiceRequest(_node, requestId);
   }
+
   /// Mark a request handled in the replica cluster.
   void clusterMarkDone(Uint8List from, Uint8List requestId) {
     _ensureOpen();
