@@ -99,6 +99,7 @@ pub const BILLING_LEDGER_PREFIXES: &[&str] = &[
     "carriage_usage/",
     "storage_usage/",
     "telemetry_usage/",
+    "journal/",
 ];
 
 pub fn is_billing_ledger_key(key: &str) -> bool {
@@ -8921,7 +8922,11 @@ mod tests {
             &node_addr,
         );
         let res_exists = client_exists.put_kv_if_absent("test_key", b"val");
-        assert_eq!(res_exists, Ok(false), "409 when doc exists must return Ok(false)");
+        assert_eq!(
+            res_exists,
+            Ok(false),
+            "409 when doc exists must return Ok(false)"
+        );
 
         let server_absent = spawn_mock(vec![
             (404, String::new()),
@@ -9022,7 +9027,11 @@ mod tests {
         let mirror = FakeMirror::default();
         let billing_key = "usage/100/00000000000000000000000000000001/0000000000000001";
         let expected_val = vec![42u8; 16];
-        mirror.kv.lock().unwrap().insert(billing_key.to_string(), expected_val.clone());
+        mirror
+            .kv
+            .lock()
+            .unwrap()
+            .insert(billing_key.to_string(), expected_val.clone());
 
         let store = FirestoreStore::open_with_mirror_limits(
             mirror,
