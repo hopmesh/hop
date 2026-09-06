@@ -698,17 +698,28 @@ fn dial_relay(url: String, ev_tx: EventTx) {
 }
 
 /// Load a stable identity from a 32-byte file (so the gateway's well-known address survives
-/// restarts), generating and persisting one 0600 on first run.
+/// restarts), generating and persisting one on first run.
+///
+/// STORE-006, SVC-014: If the identity file exists but is unreadable or not exactly 32 bytes,
+/// the service fails loudly (panics) rather than silently rotating identity and overwriting
+/// the corrupt file.
 fn load_identity(path: &Option<String>) -> Identity {
     if let Some(path) = path {
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Identity::from_secret_bytes(&seed);
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(seed) => return Identity::from_secret_bytes(&seed),
+                    Err(_) => panic!("--identity-file {path} must be exactly 32 bytes"),
+                },
+                Err(e) => panic!("--identity-file {path} unreadable: {e}"),
             }
         }
         let id = Identity::generate();
-        if let Err(e) = write_secret_600(path, &id.to_secret_bytes()) {
-            eprintln!("warning: could not persist identity to {path}: {e}; address will change");
+        if let Err(e) = write_secret_atomic(path, &id.to_secret_bytes()) {
+            eprintln!(
+                "warning: could not persist identity to {path}: {e}; address will change on restart"
+            );
         }
         return id;
     }
@@ -716,32 +727,58 @@ fn load_identity(path: &Option<String>) -> Identity {
     Identity::generate()
 }
 
-/// Write `bytes` to `path` owner-only (0600), like hop-endpoint (services-13).
-fn write_secret_600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+/// Write `bytes` to `path` atomically with owner-only (0600) permissions.
+/// Distinguishes EEXIST from absence, never truncates an existing file,
+/// and fsyncs the file and parent directory.
+fn write_secret_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("identity file {} already exists", path.display()),
+        ));
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let tmp_name = format!(
+        ".tmp.{}.{}.key",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp_path = parent.join(tmp_name);
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)?;
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
     }
     #[cfg(not(unix))]
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+            .create_new(true)
+            .open(&tmp_path)?;
         f.write_all(bytes)?;
-        f.sync_all()
+        f.sync_all()?;
     }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -851,5 +888,44 @@ mod tests {
         assert_eq!(deny_response(Screen::RateLimited).0, 429);
         assert_eq!(deny_response(Screen::RequestTooLarge).0, 413);
         assert_eq!(deny_response(Screen::Duplicate).0, 208);
+    }
+
+    struct DeferRemove(std::path::PathBuf);
+    impl Drop for DeferRemove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_short_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_gw_short_{}.key", std::process::id()));
+        std::fs::write(&path, &[1u8; 31]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly 32 bytes")]
+    fn load_identity_panics_on_oversized_identity_file() {
+        // SVC-014: corrupt non-32-byte identity files must panic immediately
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_gw_long_{}.key", std::process::id()));
+        std::fs::write(&path, &[1u8; 33]).unwrap();
+        let _guard = DeferRemove(path.clone());
+        load_identity(&Some(path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    fn load_identity_generates_and_persists_then_reloads_stable() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_gw_persist_{}.key", std::process::id()));
+        let _guard = DeferRemove(path.clone());
+        let id1 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        let id2 = load_identity(&Some(path.to_str().unwrap().to_string()));
+        assert_eq!(id1.address(), id2.address());
     }
 }
