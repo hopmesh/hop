@@ -260,4 +260,115 @@ final class MultipeerBearerTests: XCTestCase {
         wait(for: [drained], timeout: 2)
         XCTAssertEqual(b.linkId(forPeer: "peer1"), link, "sending must not disturb the link table")
     }
+
+    // MARK: - PLAT-015: dead peer tracking, 8-peer MCSession ceiling, and session cycling
+
+    func testDeadPeersAreTrackedAndSessionCycledUponExhaustion() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+
+        // Connect 8 unauthenticated peers to reach the 8-peer MCSession ceiling
+        var links: [LinkId] = []
+        for i in 0..<MultipeerBearer.maxSessionPeers {
+            let link = b.noteConnected(peerName: "peer\(i)")!
+            links.append(link)
+        }
+        XCTAssertEqual(b.deadPeerNames.count, 0)
+        XCTAssertEqual(b.sessionCycleCount, 0)
+
+        // Preauth deadline expires for all 8 peers (driver calls close on each)
+        for link in links {
+            b.close(link)
+        }
+
+        let drained = expectation(description: "queue drained")
+        b.queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+
+        // Verify that dead peers were tracked and session was cycled to clear exhaustion
+        XCTAssertEqual(b.sessionCycleCount, 1, "session must be cycled when 8 peers are closed")
+        XCTAssertTrue(b.deadPeerNames.isEmpty, "cycling session must clear dead peers")
+        XCTAssertTrue(b.linkByPeer.isEmpty, "link table is clean")
+        XCTAssertEqual(sink.downs.count, 8, "all 8 dead peers surfaced linkDown")
+
+        // An honest peer can connect after the session was cycled
+        let honestLink = b.noteConnected(peerName: "honestPeer")
+        XCTAssertNotNil(honestLink, "honest peer can connect after session was cycled")
+
+        // A reaped peer can also reconnect
+        let reconnectedLink = b.noteConnected(peerName: "peer0")
+        XCTAssertNotNil(reconnectedLink, "reaped peer can reconnect after session was cycled")
+    }
+
+    func testApproachingEightPeerCeilingCyclesWhenSlotExhaustionOccursOnAdmission() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+
+        // Connect 7 unauthenticated peers (N-1)
+        var links: [LinkId] = []
+        for i in 0..<7 {
+            links.append(b.noteConnected(peerName: "peer\(i)")!)
+        }
+        XCTAssertEqual(b.sessionCycleCount, 0)
+
+        // Close 2 peers: 5 active, 2 dead (total occupied = 7)
+        b.close(links[0])
+        b.close(links[1])
+
+        let drained1 = expectation(description: "queue drained 1")
+        b.queue.async { drained1.fulfill() }
+        wait(for: [drained1], timeout: 2)
+
+        XCTAssertEqual(b.deadPeerNames.count, 2)
+        XCTAssertEqual(b.linkByPeer.count, 5)
+        XCTAssertEqual(b.sessionCycleCount, 0, "session must not cycle while under ceiling with active links")
+
+        // Connect peer 7: now 6 active, 2 dead (total occupied = 8, at ceiling)
+        let link7 = b.noteConnected(peerName: "peer7")!
+        XCTAssertNotNil(link7)
+
+        // Close peer 7: now 5 active, 3 dead (total occupied = 8)
+        b.close(link7)
+
+        let drained2 = expectation(description: "queue drained 2")
+        b.queue.async { drained2.fulfill() }
+        wait(for: [drained2], timeout: 2)
+
+        // An incoming honest peer arrives at the ceiling with dead peers holding slots
+        let honest = b.noteConnected(peerName: "honestNew")
+        XCTAssertNotNil(honest, "honest peer must be admitted")
+        XCTAssertEqual(b.sessionCycleCount, 1, "session must cycle to free dead slots for new peer")
+        XCTAssertEqual(b.linkByPeer.count, 1, "honest peer is now the active link")
+    }
+
+    func testReconnectionOfDeadPeerRemovesFromDeadPeers() {
+        let b = MultipeerBearer(transportId: "aa")
+        let link = b.noteConnected(peerName: "reconnectPeer")!
+        b.close(link)
+
+        let drained = expectation(description: "queue drained")
+        b.queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+
+        XCTAssertEqual(b.sessionCycleCount, 1, "closing the only active link cycles idle session")
+        XCTAssertTrue(b.deadPeerNames.isEmpty)
+
+        let freshLink = b.noteConnected(peerName: "reconnectPeer")
+        XCTAssertNotNil(freshLink)
+        XCTAssertNotEqual(freshLink, link, "reconnected peer gets fresh link id")
+    }
+
+    func testOversizedInboundDataDropsPeerAndTracksDeadPeer() {
+        let b = MultipeerBearer(transportId: "aa")
+        let sink = CapturingSink()
+        b.sink = sink
+        let link = b.noteConnected(peerName: "flooder")!
+        let overCap = Data(repeating: 0x41, count: 65537)
+        XCTAssertFalse(b.acceptInboundData(overCap, for: link, peerName: "flooder"))
+        XCTAssertEqual(b.sessionCycleCount, 1, "session cycled after dropping only active link")
+        XCTAssertTrue(b.deadPeerNames.isEmpty)
+        XCTAssertEqual(sink.downs, [link])
+    }
 }

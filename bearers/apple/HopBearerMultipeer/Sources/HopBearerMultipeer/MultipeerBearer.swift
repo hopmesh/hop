@@ -46,10 +46,13 @@ public final class MultipeerBearer: NSObject, Bearer {
 
     public static let maxLinks = 32
     public static let maxPreauthLinks = 16
+    public static let maxSessionPeers = 8
     private var authenticatedLinks = Set<LinkId>()
     var linkByPeer: [String: LinkId] = [:]     // display name -> our local link id
     var peerNameByLink: [LinkId: String] = [:]
     private var nextLinkId: LinkId = 1
+    var deadPeerNames = Set<String>()
+    public private(set) var sessionCycleCount: Int = 0
 
     public func close(_ link: LinkId) {
         queue.async { [weak self] in
@@ -57,6 +60,8 @@ public final class MultipeerBearer: NSObject, Bearer {
             guard let peerName = self.peerNameByLink[link] else { return }
             _ = self.noteDisconnected(peerName: peerName)
             self.sink?.linkDown(link)
+            self.deadPeerNames.insert(peerName)
+            self.checkSessionExhaustion()
         }
     }
 
@@ -155,11 +160,15 @@ public final class MultipeerBearer: NSObject, Bearer {
     /// second link the consumer would treat as a distinct path).
     func noteConnected(peerName: String) -> LinkId? {
         guard linkByPeer[peerName] == nil else { return nil }
+        if (linkByPeer.count + deadPeerNames.count) >= Self.maxSessionPeers && !deadPeerNames.isEmpty {
+            cycleSession()
+        }
         let preauth = linkByPeer.count - authenticatedLinks.count
         guard preauth < Self.maxPreauthLinks && linkByPeer.count < Self.maxLinks else { return nil }
         let id = mint()
         linkByPeer[peerName] = id
         peerNameByLink[id] = peerName
+        deadPeerNames.remove(peerName)
         return id
     }
 
@@ -179,10 +188,39 @@ public final class MultipeerBearer: NSObject, Bearer {
         guard data.count <= 65536 else {
             if let l = noteDisconnected(peerName: peerName) {
                 sink?.linkDown(l)
+                deadPeerNames.insert(peerName)
+                checkSessionExhaustion()
             }
             return false
         }
         sink?.linkBytes(link, data)
         return true
+    }
+
+    func checkSessionExhaustion() {
+        if shouldCycleSession() {
+            cycleSession()
+        }
+    }
+
+    func shouldCycleSession() -> Bool {
+        guard !deadPeerNames.isEmpty else { return false }
+        if linkByPeer.isEmpty { return true }
+        let unauthenticatedActive = linkByPeer.count - authenticatedLinks.count
+        if unauthenticatedActive == 0 && (authenticatedLinks.count + deadPeerNames.count) >= Self.maxSessionPeers {
+            return true
+        }
+        return false
+    }
+
+    func cycleSession() {
+        sessionCycleCount += 1
+        deadPeerNames.removeAll()
+        let orphans = peerNameByLink.keys.sorted()
+        linkByPeer.removeAll()
+        peerNameByLink.removeAll()
+        authenticatedLinks.removeAll()
+        for id in orphans { sink?.linkDown(id) }
+        cycleStack()
     }
 }

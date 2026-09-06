@@ -72,4 +72,64 @@ class RelaySanitizerTest {
             RelayBearer.sanitizeRelayUrl("wss://relay.example.com/hop"),
         )
     }
+
+    @Test fun candidateUrlWithUserInfoIsSanitizedInLogs() {
+        ShadowLog.clear()
+        val rawUrl = "wss://user:secretToken@relay.example.com/hop?token=secret#frag"
+        val b = RelayBearer(rawUrl)
+        bearer = b
+        b.start()
+
+        val deadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < deadline &&
+            ShadowLog.getLogsForTag(TAG).none { it.msg.contains("relay dial") }
+        ) {
+            Thread.sleep(20)
+        }
+
+        val logs = ShadowLog.getLogsForTag(TAG)
+        val dialLogs = logs.filter { it.msg.contains("relay dial") }
+        assertTrue("at least one dial log was emitted", dialLogs.isNotEmpty())
+        for (log in dialLogs) {
+            assertFalse(
+                "username must not leak in dial logs: ${log.msg}",
+                log.msg.contains("user:"),
+            )
+            assertFalse(
+                "secretToken must not leak in dial logs: ${log.msg}",
+                log.msg.contains("secretToken"),
+            )
+            assertFalse(
+                "query token must not leak in dial logs: ${log.msg}",
+                log.msg.contains("token=secret"),
+            )
+            assertFalse(
+                "fragment must not leak in dial logs: ${log.msg}",
+                log.msg.contains("frag"),
+            )
+            assertTrue(
+                "sanitized url must be logged: ${log.msg}",
+                log.msg.contains("relay dial wss://relay.example.com/hop"),
+            )
+        }
+    }
+
+    @Test fun directSanitizeFunctionRedactsUserInfo() {
+        assertEquals(
+            "wss://relay.example.com/hop",
+            RelayBearer.sanitizeRelayUrl("wss://user:secretToken@relay.example.com/hop"),
+        )
+        assertEquals(
+            "wss://relay.example.com/hop",
+            RelayBearer.sanitizeRelayUrl("wss://user@relay.example.com/hop"),
+        )
+        assertEquals(
+            "wss://relay.example.com/hop",
+            RelayBearer.sanitizeRelayUrl("wss://user:secretToken@relay.example.com/hop?token=secret#frag"),
+        )
+        assertEquals(
+            "wss://relay.example.com:9443/hop",
+            RelayBearer.sanitizeRelayUrl("wss://user:secretToken@relay.example.com:9443/hop"),
+        )
+    }
 }

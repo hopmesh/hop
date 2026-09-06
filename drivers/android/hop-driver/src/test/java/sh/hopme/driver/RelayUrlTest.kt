@@ -65,4 +65,11 @@ class RelayUrlTest {
     @Test fun sanitizeRelayUrlStripsQueryAndFragment() {
         assertEquals("wss://relay.example.com/hop", HopBearer.sanitizeRelayUrl("wss://relay.example.com/hop?credential=secret#token"))
     }
+
+    @Test fun sanitizeRelayUrlRedactsUserInfoAuthority() {
+        assertEquals("wss://relay.example.com/hop", HopBearer.sanitizeRelayUrl("wss://user:secret@relay.example.com/hop"))
+        assertEquals("wss://relay.example.com/hop", HopBearer.sanitizeRelayUrl("wss://user:secretToken@relay.example.com/hop?credential=secret#token"))
+        assertEquals("wss://relay.example.com:9443/hop", HopBearer.sanitizeRelayUrl("wss://user:secret@relay.example.com:9443/hop"))
+        assertEquals("wss://[::1]:9443/hop", HopBearer.sanitizeRelayUrl("wss://user:secret@[::1]:9443/hop"))
+    }
 }
