@@ -282,9 +282,9 @@ final class LanIntegrationTests: XCTestCase {
     // MARK: dedup - two legs to the SAME peer exercise the real onUp one-pipe-per-peer survivor pick.
 
     func testAcceptorDedupKeepsOnePipePerPeer() {
-        // myId chosen GREATER than the peer id so the keep-rule is "keep my dialer"; both inbound legs are
-        // acceptors (neither is my dialer), so the survivor pick falls through to the NEW leg: the second
-        // connection wins and the first is dropped (its prior linkUp pairs one linkDown).
+        // PLAT-014: myId chosen GREATER than the peer id so the keep-rule is "keep my dialer"; both inbound legs are
+        // acceptors (neither is my dialer). The existing in-flight handshake must be prioritized: the first
+        // connection wins and the incoming duplicate is dropped without evicting the in-flight leg.
         let myId = Data(repeating: 0xFF, count: 16)
         let peerId = Data(repeating: 0x01, count: 16)
         let bearer = LanBearer(myId: myId)
@@ -301,10 +301,11 @@ final class LanIntegrationTests: XCTestCase {
 
         let peer2 = RawPeer(host: "127.0.0.1", port: port, onReady: { $0.send(helloBody(peerId, dialer: true)) }, onBody: { _ in })
         peer2.start()
-        // Dedup: the new leg wins, surfaces its own linkUp, and the first (previously-surfaced) leg is
-        // dropped -> exactly one linkDown for the first, and the bearer keeps a single pipe to the peer.
-        XCTAssertTrue(spinWait { sink.ups.count == 2 }, "the dedup survivor surfaces a second linkUp")
-        XCTAssertTrue(spinWait { sink.downs.contains(first) }, "the deduped-out first leg emits its linkDown")
+        // Dedup: the existing leg wins; the second leg is closed with dedup without surfacing.
+        // The first (in-flight) leg is NOT dropped.
+        XCTAssertTrue(spinWait { peer2.isClosed }, "the duplicate incoming leg is closed by dedup")
+        XCTAssertFalse(sink.downs.contains(first), "the in-flight first leg must NOT emit linkDown")
+        XCTAssertEqual(sink.ups.count, 1, "only the survivor surfaced linkUp")
         peer1.cancel(); peer2.cancel()
     }
 

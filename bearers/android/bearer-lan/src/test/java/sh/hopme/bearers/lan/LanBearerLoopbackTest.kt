@@ -499,4 +499,29 @@ class LanBearerLoopbackTest {
 
         assertTrue("unauthenticated link must be closed after preauth deadline despite active PINGs", waitUntil(4000) { rec.downs.contains(link) })
     }
+
+    @Test fun unauthenticatedInFlightHandshakeSurvivesIncomingRogueHelloDedupEviction() {
+        // PLAT-014: Node B (greater ID) receives an inbound connection from Node A (lesser ID).
+        // Before Node A completes its Noise handshake, a rogue peer on the local network sends
+        // a HELLO claiming Node A's ID. The in-flight unauthenticated handshake must NOT be evicted.
+        val rec = Rec()
+        val bearer = startedBearer(fill(0x02), rec) // greater ID
+
+        val peerA = RawPeer(bearer.boundPort)
+        val peerAId = fill(0x01) // lesser ID
+        peerA.sendHello(peerAId, dialer = true)
+        assertTrue("peerA linkUp", waitUntil { rec.upCount() == 1 })
+        val linkA = rec.ups.first().first
+
+        // Attacker opens a connection to bearer claiming peerAId
+        val attacker = RawPeer(bearer.boundPort)
+        attacker.sendHello(peerAId, dialer = true)
+        assertTrue("attacker surfaced linkUp before dedup", waitUntil { rec.upCount() == 2 })
+        assertTrue("dedup triggered", waitUntil { rec.downCount() >= 1 })
+
+        // The in-flight unauthenticated linkA must survive
+        assertFalse("in-flight unauthenticated linkA must NOT be dropped by incoming duplicate", rec.downs.contains(linkA))
+        val attackerLink = rec.ups.first { it.first != linkA }.first
+        assertTrue("attacker duplicate link must be dropped", rec.downs.contains(attackerLink))
+    }
 }

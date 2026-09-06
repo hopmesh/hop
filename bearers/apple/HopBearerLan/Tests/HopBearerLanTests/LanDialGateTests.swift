@@ -51,16 +51,16 @@ final class LanDialGateTests: XCTestCase {
         XCTAssertTrue(bDials, "the greater id (b) is the dialer")
     }
 
-    // MARK: lanNewLegSurvives defensive branch. Both legs the same direction.
+    // MARK: lanNewLegSurvives tiebreaker branch. Both legs the same direction.
 
-    func testSurvivorDefaultsToNewLegWhenNeitherMatchesKeepRule() {
-        // I am greater (keepDialed = true), but BOTH the existing and the new leg are acceptors (neither
-        // is my dialer). This can't happen with a real simultaneous dial (one leg is always the dialer),
-        // but the survivor pick must still be deterministic: it falls through to the NEW leg.
+    func testSurvivorPrioritizesExistingLegWhenNeitherMatchesKeepRule() {
+        // PLAT-014: I am greater (keepDialed = true), but BOTH the existing and the new leg are acceptors
+        // (neither is my dialer). The existing in-flight handshake must be prioritized over the incoming duplicate:
+        // lanNewLegSurvives returns false (existing leg survives).
         let me = bytes([0x02]); let peer = bytes([0x01])
-        XCTAssertTrue(lanNewLegSurvives(myId: me, peer: peer, existingIsDialer: false, newIsDialer: false),
-                      "neither leg matches the keep-rule -> defensively keep the new leg")
-        // Symmetric: I am lesser (keepDialed = false) but both legs are dialers -> also new leg.
-        XCTAssertTrue(lanNewLegSurvives(myId: peer, peer: me, existingIsDialer: true, newIsDialer: true))
+        XCTAssertFalse(lanNewLegSurvives(myId: me, peer: peer, existingIsDialer: false, newIsDialer: false),
+                       "neither leg matches the keep-rule -> prioritize existing in-flight leg")
+        // Symmetric: I am lesser (keepDialed = false) but both legs are dialers -> also existing leg.
+        XCTAssertFalse(lanNewLegSurvives(myId: peer, peer: me, existingIsDialer: true, newIsDialer: true))
     }
 }

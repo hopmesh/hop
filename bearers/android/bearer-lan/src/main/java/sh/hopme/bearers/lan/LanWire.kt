@@ -144,13 +144,13 @@ internal object LanDedup {
     fun decide(amGreater: Boolean, existingIsDialer: Boolean, incomingIsDialer: Boolean): DedupKeep {
         // Keep MY dialed channel iff I'm the greater id; else keep MY accepted channel.
         val keepDialed = amGreater
-        // Prefer whichever competing link's role matches; if neither matches (shouldn't happen for a
-        // real dialer/acceptor pair) fall back to the incoming one, matching LanBearer.onUp.
+        // Prefer whichever competing link's role matches; if both match or neither matches
+        // (e.g. duplicate incoming legs when amGreater), prioritize the existing leg to prevent
+        // an unauthenticated incoming duplicate from evicting an in-flight connection (PLAT-014).
         return when {
             existingIsDialer == keepDialed && incomingIsDialer != keepDialed -> DedupKeep.EXISTING
             incomingIsDialer == keepDialed && existingIsDialer != keepDialed -> DedupKeep.INCOMING
-            existingIsDialer == keepDialed -> DedupKeep.EXISTING // both match (degenerate): keep existing
-            else -> DedupKeep.INCOMING
+            else -> DedupKeep.EXISTING
         }
     }
 }
