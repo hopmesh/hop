@@ -199,6 +199,35 @@ void main() {
         client.close();
       }
     });
+    test(
+        'a request with an async handler taking 200ms is not redispatched during 50ms pump intervals (ABI-017)',
+        () async {
+      var dispatchCount = 0;
+      final server = HopEndpoint(tick: const Duration(milliseconds: 50));
+      server.on('acme/slow', (req, reply) async {
+        dispatchCount++;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        reply(200, 'done');
+      });
+
+      final client = HopEndpoint(tick: const Duration(milliseconds: 50));
+      connectInProcess(server, client);
+
+      try {
+        final resp = await client.request(
+          server.addressBytes,
+          'acme/slow',
+          'action',
+          timeout: const Duration(seconds: 5),
+        );
+        expect(resp.status, 200);
+        expect(resp.text, 'done');
+        expect(dispatchCount, 1);
+      } finally {
+        server.close();
+        client.close();
+      }
+    });
 
     test('cluster join + quorum bindings resolve and chain', () {
       final e =

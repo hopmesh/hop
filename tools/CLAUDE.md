@@ -82,8 +82,9 @@ codegen/check-contract-purity.sh asserts sdk/hop.h and all SDK language faces co
 codegen/check-abi-version.sh asserts HOP_ABI_VERSION agreement across cabi.rs, headers, wrappers, and docs,
                            verifies canonical tools/codegen/abi-manifest.json matches sdk/hop.h via
                            generate-abi-manifest.py --check, and proves every wrapper's FFI declarations
-                           match manifest signatures via verify-abi-signatures.py. Self-test:
-                           codegen/check-abi-version.test.sh.
+                           match manifest signatures (width, signedness, callbacks) via
+                           verify-abi-signatures.py. Self-tests: codegen/check-abi-version.test.sh,
+                           codegen/generate-abi-manifest.test.sh, codegen/verify-abi-signatures.test.sh.
 identity-secret-guard.py    scans tracked files for raw 32-byte high-entropy binary identity seeds and
                            private key markers. Self-test: identity-secret-guard.test.sh.
 native-attestation/         local GitHub OIDC SLSA bundle creation when hosted attestation storage is unavailable.

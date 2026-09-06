@@ -20,6 +20,7 @@ final class HopMesh: RCTEventEmitter {
   private struct Entry {
     let node: HopNode
     var timer: DispatchSourceTimer?
+    var inFlight = Set<String>()
   }
 
   private let lock = NSLock()
@@ -148,6 +149,7 @@ final class HopMesh: RCTEventEmitter {
     if var entry = nodes[handle] {
       entry.timer?.cancel()
       entry.timer = nil
+      entry.inFlight.removeAll()
       nodes[handle] = nil
     }
     lock.unlock()
@@ -249,10 +251,13 @@ final class HopMesh: RCTEventEmitter {
 
   @objc(acceptInbox:id:resolver:rejecter:)
   func acceptInbox(_ handle: Int, id idB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    lock.lock()
+    nodes[handle]?.inFlight.remove(idB64)
+    let n = nodes[handle]?.node
+    lock.unlock()
+    guard let node = n else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.acceptInbox(data(idB64)))
   }
-
   // MARK: hops:// request / response
 
   @objc(sendServiceRequest:to:service:method:args:resolver:rejecter:)
@@ -278,19 +283,31 @@ final class HopMesh: RCTEventEmitter {
 
   @objc(acceptServiceResponse:forRequestId:resolver:rejecter:)
   func acceptServiceResponse(_ handle: Int, forRequestId reqB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    lock.lock()
+    nodes[handle]?.inFlight.remove(reqB64)
+    let n = nodes[handle]?.node
+    lock.unlock()
+    guard let node = n else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.acceptServiceResponse(forRequestId: data(reqB64)))
   }
 
   @objc(acceptServiceRequest:requestId:resolver:rejecter:)
   func acceptServiceRequest(_ handle: Int, requestId reqB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    lock.lock()
+    nodes[handle]?.inFlight.remove(reqB64)
+    let n = nodes[handle]?.node
+    lock.unlock()
+    guard let node = n else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.acceptServiceRequest(data(reqB64)))
   }
 
   @objc(rejectServiceRequest:requestId:resolver:rejecter:)
   func rejectServiceRequest(_ handle: Int, requestId reqB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    lock.lock()
+    nodes[handle]?.inFlight.remove(reqB64)
+    let n = nodes[handle]?.node
+    lock.unlock()
+    guard let node = n else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.rejectServiceRequest(data(reqB64)))
   }
 
@@ -387,10 +404,13 @@ final class HopMesh: RCTEventEmitter {
 
   @objc(acceptHpsMessage:id:resolver:rejecter:)
   func acceptHpsMessage(_ handle: Int, id idB64: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-    guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
+    lock.lock()
+    nodes[handle]?.inFlight.remove(idB64)
+    let n = nodes[handle]?.node
+    lock.unlock()
+    guard let node = n else { return reject("hop_error", "unknown node handle", nil) }
     resolve(node.acceptHpsMessage(data(idB64)))
   }
-
   @objc(hpsInvite:path:dest:resolver:rejecter:)
   func hpsInvite(_ handle: Int, path: String, dest destB58: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     guard let node = node(handle) else { return reject("hop_error", "unknown node handle", nil) }
@@ -540,9 +560,17 @@ final class HopMesh: RCTEventEmitter {
       self.send("HopMesh:outgoing", ["node": handle, "link": Int(link), "bytes": self.b64(bytes)])
     }
     node.pollInbox { m in
+      let idB64 = self.b64(m.id)
+      self.lock.lock()
+      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
+      if entry.inFlight.contains(idB64) { self.lock.unlock(); return }
+      entry.inFlight.insert(idB64)
+      self.nodes[handle] = entry
+      self.lock.unlock()
+
       self.send("HopMesh:message", [
         "node": handle,
-        "id": self.b64(m.id),
+        "id": idB64,
         "from": HopAddress.base58(m.from),
         "contentType": m.contentType,
         "body": self.b64(m.body),
@@ -551,10 +579,18 @@ final class HopMesh: RCTEventEmitter {
       ])
     }
     node.pollServiceRequestsAccepting { r in
+      let ridB64 = self.b64(r.requestId)
+      self.lock.lock()
+      guard var entry = self.nodes[handle] else { self.lock.unlock(); return false }
+      if entry.inFlight.contains(ridB64) { self.lock.unlock(); return false }
+      entry.inFlight.insert(ridB64)
+      self.nodes[handle] = entry
+      self.lock.unlock()
+
       self.send("HopMesh:serviceRequest", [
         "node": handle,
         "from": HopAddress.base58(r.from),
-        "requestId": self.b64(r.requestId),
+        "requestId": ridB64,
         "service": r.service,
         "method": r.method,
         "args": self.b64(r.args),
@@ -562,10 +598,18 @@ final class HopMesh: RCTEventEmitter {
       return false
     }
     node.pollServiceResponses { r in
+      let ridB64 = self.b64(r.forRequestId)
+      self.lock.lock()
+      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
+      if entry.inFlight.contains(ridB64) { self.lock.unlock(); return }
+      entry.inFlight.insert(ridB64)
+      self.nodes[handle] = entry
+      self.lock.unlock()
+
       self.send("HopMesh:serviceResponse", [
         "node": handle,
         "from": HopAddress.base58(r.from),
-        "forRequestId": self.b64(r.forRequestId),
+        "forRequestId": ridB64,
         "status": Int(r.status),
         "body": self.b64(r.body),
       ])
@@ -573,9 +617,17 @@ final class HopMesh: RCTEventEmitter {
     // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
     // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
     node.pollHpsMessages { m in
+      let idB64 = self.b64(m.id)
+      self.lock.lock()
+      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
+      if entry.inFlight.contains(idB64) { self.lock.unlock(); return }
+      entry.inFlight.insert(idB64)
+      self.nodes[handle] = entry
+      self.lock.unlock()
+
       self.send("HopMesh:hpsMessage", [
         "node": handle,
-        "id": self.b64(m.id),
+        "id": idB64,
         "path": m.path,
         "sender": HopAddress.base58(m.sender),
         "body": self.b64(m.body),

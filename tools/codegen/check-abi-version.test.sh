@@ -57,7 +57,7 @@ lay_down() {
   printf 'const abiExpected = %s\nC.hop_relay_next(n.node, outBuf, outCap)\n' "$ABI" > "$d/sdk/go/hop.go"
   cat << EOF > "$d/sdk/flutter/lib/src/ffi.dart"
 const int hopAbiVersion = $ABI;
-typedef _RelayNextC = IntPtr Function(Pointer<Void>, Pointer<Utf8>, IntPtr);
+typedef _RelayNextC = Size Function(Pointer<Void>, Pointer<Utf8>, Size);
 late final _relayNext = _lib.lookupFunction<_RelayNextC, _RelayNextC>('hop_relay_next');
 EOF
   printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node, char *out, size_t out_cap)")\n' "$ABI" \
@@ -180,6 +180,40 @@ expect "$work/wrong-arity" fail "wrapper binds symbol with wrong parameter arity
 lay_down "$work/manifest-drift"
 printf 'uintptr_t hop_unmanifested_call(void);\n' >> "$work/manifest-drift/sdk/hop.h"
 expect "$work/manifest-drift" fail "header change not reflected in manifest" "ABI manifest drift"
+
+# (o) ABI-016: A wrapper binding signed error-returning function (hop_hps_rekey) as unsigned must fail.
+lay_down "$work/unsigned-rekey"
+printf 'intptr_t hop_hps_rekey(const struct HopNode *node, const char *path, const char *new_path, const uint8_t *remove, size_t remove_count, void (*sink)(void *ctx, const uint8_t *id), void *ctx);\n' >> "$work/unsigned-rekey/sdk/hop.h"
+cp "$work/unsigned-rekey/sdk/hop.h" "$work/unsigned-rekey/core/hop/include/hop.h"
+python3 "$HERE/generate-abi-manifest.py" "$work/unsigned-rekey/sdk/hop.h" "$work/unsigned-rekey/tools/codegen/abi-manifest.json" >/dev/null
+cat << 'EOF' >> "$work/unsigned-rekey/sdk/node/lib/ffi.mjs"
+export const HpsIdSink = koffi.proto('void HpsIdSink(void *ctx, uint8_t *id)')
+lib.func('size_t hop_hps_rekey(void *node, const char *path, const char *new_path, uint8_t *remove, size_t remove_count, HpsIdSink *sink, void *ctx)')
+EOF
+expect "$work/unsigned-rekey" fail "signed error-returning function bound to unsigned type" "signedness mismatch"
+
+# (p) ABI-016: A wrapper with void-returning service request sink (must be bool) must fail.
+lay_down "$work/void-sink"
+printf 'void hop_poll_service_requests(const struct HopNode *node, bool (*sink)(void *ctx, const uint8_t *from, const uint8_t *request_id, const char *service, const char *method, const uint8_t *args, uintptr_t args_len), void *ctx);\n' >> "$work/void-sink/sdk/hop.h"
+cp "$work/void-sink/sdk/hop.h" "$work/void-sink/core/hop/include/hop.h"
+python3 "$HERE/generate-abi-manifest.py" "$work/void-sink/sdk/hop.h" "$work/void-sink/tools/codegen/abi-manifest.json" >/dev/null
+cat << 'EOF' >> "$work/void-sink/sdk/node/lib/ffi.mjs"
+export const SvcReqSink = koffi.proto('void SvcReqSink(void *ctx, uint8_t *from, uint8_t *request_id, const char *service, const char *method, uint8_t *args, size_t args_len)')
+lib.func('void hop_poll_service_requests(void *node, SvcReqSink *sink, void *ctx)')
+EOF
+expect "$work/void-sink" fail "callback trampoline with void return instead of bool" "callback return mismatch"
+
+# (q) ABI-016: A wrapper with wrong-width integer (32-bit instead of 64-bit) must fail.
+lay_down "$work/wrong-width"
+printf 'const ABI_EXPECTED = %s\nlib.func("size_t hop_relay_next(void *node, char *out, uint32_t out_cap)")\n' "$ABI" \
+  > "$work/wrong-width/sdk/node/lib/ffi.mjs"
+expect "$work/wrong-width" fail "wrapper binds symbol with wrong integer width" "width mismatch"
+
+# (r) ABI-016: Run generator and verifier self-tests
+python3 "$HERE/generate-abi-manifest.py" --self-test >/dev/null
+python3 "$HERE/verify-abi-signatures.py" --self-test >/dev/null
+echo "ok   [generator and verifier self-tests]: pass as expected"
+pass=$((pass + 1))
 
 echo "check-abi-version self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

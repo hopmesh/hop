@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""verify-abi-signatures.py (ABI-009): Compare wrapper FFI bindings against
-canonical ABI manifest (tools/codegen/abi-manifest.json). Verifies symbol
-presence, parameter arity, and pointer-vs-scalar/integer shape across all
-supported wrapper DSLs: Node (koffi), Python (ctypes), Ruby (fiddle),
+"""verify-abi-signatures.py (ABI-009, ABI-016): Compare wrapper FFI bindings
+against canonical ABI manifest (tools/codegen/abi-manifest.json). Verifies
+symbol presence, parameter arity, integer signedness (intptr_t vs uintptr_t/size_t),
+bit widths, and callback trampoline types (return values, arity, and pointer-ness)
+across all supported wrapper DSLs: Node (koffi), Python (ctypes), Ruby (fiddle),
 Crystal (lib), Dart (ffi), Go (cgo), Kotlin (JNA), Swift, and Embedded C.
 Comments and string literals are stripped so non-callable mentions never pass.
 """
@@ -132,6 +133,184 @@ def strip_comments_and_strings(text: str, strip_strings: bool = False) -> str:
     return "".join(result)
 
 
+def parse_type_descriptor(raw: str) -> dict:
+    """Parse a language-specific type annotation into canonical shape, width, and signedness."""
+    raw = raw.strip()
+    is_ptr = False
+    width = None
+    signed = None
+    is_cb = False
+    cb_ret = None
+    cb_name = None
+    cb_params = None
+
+    # Check for Crystal inline callback: (types... -> RetType) or (types... ->)
+    if "->" in raw and "(" in raw:
+        is_ptr = True
+        is_cb = True
+        width = 64
+        signed = False
+        parts = raw.split("->")
+        ret_part = parts[1].strip().rstrip(")")
+        cb_ret = "bool" if "Bool" in ret_part else "void"
+        p_part = parts[0].strip().lstrip("(").rstrip(",").strip()
+        cb_raw_params = [p.strip() for p in p_part.split(",") if p.strip()]
+        cb_params = [parse_type_descriptor(p) for p in cb_raw_params]
+        return {
+            "shape": "pointer",
+            "is_pointer": True,
+            "width": 64,
+            "signed": False,
+            "is_callback": True,
+            "callback_name": None,
+            "callback_return": cb_ret,
+            "callback_params": cb_params,
+            "raw": raw,
+        }
+
+    # Check for Embedded C inline function pointer: ret (*name)(args)
+    cb_c_m = re.search(r"\b(void|bool)\s*\(\s*\*\s*([a-zA-Z0-9_]+)\s*\)\s*\((.*?)\)", raw)
+    if cb_c_m:
+        cb_ret = cb_c_m.group(1)
+        args_str = cb_c_m.group(3).strip()
+        cb_raw_params = [p.strip() for p in args_str.split(",") if p.strip() and p.strip() != "void"]
+        cb_params = [parse_type_descriptor(p) for p in cb_raw_params]
+        return {
+            "shape": "pointer",
+            "is_pointer": True,
+            "width": 64,
+            "signed": False,
+            "is_callback": True,
+            "callback_name": cb_c_m.group(2),
+            "callback_return": cb_ret,
+            "callback_params": cb_params,
+            "raw": raw,
+        }
+
+    # Ruby Fiddle single-letter constants
+    if raw == "P":
+        return {"shape": "pointer", "is_pointer": True, "width": 64, "signed": False, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "V":
+        return {"shape": "scalar", "is_pointer": False, "width": 0, "signed": False, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "SZ":
+        return {"shape": "scalar", "is_pointer": False, "width": 64, "signed": False, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "SSZ":
+        return {"shape": "scalar", "is_pointer": False, "width": 64, "signed": True, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "I":
+        return {"shape": "scalar", "is_pointer": False, "width": None, "signed": None, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "LL":
+        return {"shape": "scalar", "is_pointer": False, "width": 64, "signed": None, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+    elif raw == "CH":
+        return {"shape": "scalar", "is_pointer": False, "width": 8, "signed": None, "is_callback": False, "callback_name": None, "callback_return": None, "callback_params": None, "raw": raw}
+
+    # Explicit pointer types
+    if "*" in raw:
+        is_ptr = True
+        width = 64
+        signed = False
+        for s in ("DrainSink", "InboxSink", "SvcReqSink", "SvcRespSink", "ReachSignSink", "ReachVerifySink", "HpsMsgSink", "HpsInviteSink", "HpsAddrSink", "HpsIdSink", "HpsTopicSink", "HpsBrowseSink"):
+            if s in raw:
+                is_cb = True
+                cb_name = s
+                break
+    elif any(raw.startswith(p) for p in ("Pointer", "POINTER(", "c_void_p", "c_char_p", "ByteArray", "String")) or "Reference" in raw:
+        is_ptr = True
+        width = 64
+        signed = False
+        if "NativeFunction<" in raw:
+            is_cb = True
+            m = re.search(r"NativeFunction<\s*([A-Za-z0-9_]+)\s*>", raw)
+            if m:
+                cb_name = m.group(1)
+        elif "Sink" in raw:
+            is_cb = True
+            m = re.search(r"([A-Za-z0-9_]+Sink[A-Za-z0-9_]*)", raw)
+            if m:
+                cb_name = m.group(1)
+
+    # Sink / Callback references by name
+    cb_match = re.search(r"\b([A-Za-z0-9_]+(?:Sink|SINK|Callback)[A-Za-z0-9_]*)\b", raw)
+    if cb_match:
+        is_ptr = True
+        is_cb = True
+        width = 64
+        signed = False
+        cb_name = cb_match.group(1)
+
+    if not is_ptr:
+        tokens = re.findall(r"[A-Za-z0-9_:]+", raw)
+        t_lowers = [t.lower() for t in tokens]
+
+        # Kotlin JNA types: JVM primitives have no unsigned representation, so signedness is None
+        if "NativeLong" in tokens or any(t == "nativelong" for t in t_lowers):
+            width = 64
+            signed = None
+        elif raw.rstrip("?") == "Long":
+            width = 64
+            signed = None
+        elif raw.rstrip("?") == "Int":
+            width = 32
+            signed = None
+        elif raw.rstrip("?") == "Short":
+            width = 16
+            signed = None
+        elif raw.rstrip("?") == "Byte":
+            width = 8
+            signed = None
+        # 64-bit unsigned (must be checked before 64-bit signed because size_t / uintptr)
+        elif any(t in ("uint64", "uint64_t", "c_uint64", "c_ulonglong", "size_t", "c_size_t", "size", "uintptr_t", "uintptr", "sz") for t in t_lowers) or "LibC::SizeT" in raw or "UInt64" in tokens:
+            width = 64
+            signed = False
+        # 64-bit signed
+        elif any(t in ("int64", "int64_t", "c_int64", "c_longlong", "intptr", "intptr_t", "ssize_t", "c_ssize_t", "ssz", "long") for t in t_lowers) or "LibC::SSizeT" in raw or "LibC::IntPtrT" in raw or "Int64" in tokens or "IntPtr" in tokens or raw == "LL":
+            width = 64
+            signed = True
+        # 32-bit unsigned
+        elif any(t in ("uint32", "uint32_t", "c_uint32", "c_uint", "u32") for t in t_lowers) or "UInt32" in tokens:
+            width = 32
+            signed = False
+        # 32-bit signed
+        elif any(t in ("int32", "int32_t", "c_int32", "c_int", "i32", "int") for t in t_lowers) or "Int32" in tokens:
+            width = 32
+            signed = True
+        # 16-bit unsigned
+        elif any(t in ("uint16", "uint16_t", "c_uint16", "c_ushort", "u16") for t in t_lowers) or "UInt16" in tokens:
+            width = 16
+            signed = False
+        # 16-bit signed
+        elif any(t in ("int16", "int16_t", "c_int16", "c_short", "i16", "short") for t in t_lowers) or "Int16" in tokens:
+            width = 16
+            signed = True
+        # 8-bit unsigned
+        elif any(t in ("uint8", "uint8_t", "c_uint8", "c_ubyte", "u8") for t in t_lowers) or "UInt8" in tokens:
+            width = 8
+            signed = False
+        # 8-bit signed
+        elif any(t in ("int8", "int8_t", "c_int8", "c_byte", "i8") for t in t_lowers) or "Int8" in tokens:
+            width = 8
+            signed = True
+        # Bool / Byte
+        elif any(t in ("bool", "c_bool", "boolean") for t in t_lowers) or raw == "CH" or raw == "Byte" or "Bool" in tokens:
+            width = 8
+            signed = False
+        # Void
+        elif any(t in ("void", "unit", "none") for t in t_lowers) or raw == "V":
+            width = 0
+            signed = False
+
+    return {
+        "shape": "pointer" if is_ptr else "scalar",
+        "is_pointer": is_ptr,
+        "width": width,
+        "signed": signed,
+        "is_callback": is_cb,
+        "callback_name": cb_name,
+        "callback_return": cb_ret,
+        "callback_params": cb_params,
+        "raw": raw,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-wrapper FFI DSL extractors
 # ---------------------------------------------------------------------------
@@ -152,13 +331,16 @@ def extract_node_koffi_bindings(source: str) -> dict:
             params = [p.strip() for p in params_str.split(",") if p.strip()]
 
         ret_prefix = full_sig[: full_sig.find(fn_name)].strip()
-        ret_shape = "pointer" if "*" in ret_prefix else ("scalar" if ret_prefix else "unknown")
+        param_types = [parse_type_descriptor(p) for p in params]
+        ret_type = parse_type_descriptor(ret_prefix)
 
         bindings[fn_name] = {
             "name": fn_name,
             "param_count": len(params),
-            "params": [("pointer" if ("*" in p) else "scalar") for p in params],
-            "return": ret_shape,
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
+            "return": ret_type["shape"],
+            "return_type": ret_type,
             "raw": full_sig.strip(),
         }
     return bindings
@@ -173,31 +355,31 @@ def extract_python_ctypes_bindings(source: str) -> dict:
     )
     for fn_name, args_str in pattern.findall(source):
         args = [a.strip() for a in args_str.split(",") if a.strip()]
-        params = []
-        for arg in args:
-            if "POINTER" in arg or arg in ("c_void_p", "c_char_p") or arg.endswith("_SINK") or "SINK" in arg or "ByReference" in arg:
-                params.append("pointer")
-            else:
-                params.append("scalar")
+        param_types = [parse_type_descriptor(a) for a in args]
         bindings[fn_name] = {
             "name": fn_name,
-            "param_count": len(params),
-            "params": params,
+            "param_count": len(args),
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
             "return": "unknown",
+            "return_type": parse_type_descriptor(""),
             "raw": f"_lib.{fn_name}.argtypes = [{args_str}]",
         }
 
     restype_pattern = re.compile(r"_lib\.(hop_[a-z0-9_]+)\.restype\s*=\s*([A-Za-z0-9_]+)")
     for fn_name, res in restype_pattern.findall(source):
-        ret_shape = "pointer" if res in ("c_void_p", "c_char_p") or "POINTER" in res else "scalar"
+        ret_type = parse_type_descriptor(res)
         if fn_name in bindings:
-            bindings[fn_name]["return"] = ret_shape
+            bindings[fn_name]["return"] = ret_type["shape"]
+            bindings[fn_name]["return_type"] = ret_type
         else:
             bindings[fn_name] = {
                 "name": fn_name,
                 "param_count": 0,
                 "params": [],
-                "return": ret_shape,
+                "param_types": [],
+                "return": ret_type["shape"],
+                "return_type": ret_type,
                 "raw": f"_lib.{fn_name}.restype = {res}",
             }
     return bindings
@@ -212,18 +394,15 @@ def extract_ruby_fiddle_bindings(source: str) -> dict:
     )
     for fn_name, args_str, ret_type in pattern.findall(source):
         args = [a.strip() for a in args_str.split(",") if a.strip()]
-        params = []
-        for arg in args:
-            if arg == "P":
-                params.append("pointer")
-            else:
-                params.append("scalar")
-        ret_shape = "pointer" if ret_type == "P" else "scalar"
+        param_types = [parse_type_descriptor(a) for a in args]
+        ret_desc = parse_type_descriptor(ret_type)
         bindings[fn_name] = {
             "name": fn_name,
-            "param_count": len(params),
-            "params": params,
-            "return": ret_shape,
+            "param_count": len(args),
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
+            "return": ret_desc["shape"],
+            "return_type": ret_desc,
             "raw": f'fn("{fn_name}", [{args_str}], {ret_type})',
         }
     return bindings
@@ -274,18 +453,15 @@ def extract_crystal_lib_bindings(source: str) -> dict:
         if cur and "".join(cur).strip():
             raw_params.append("".join(cur).strip())
 
-        params = []
-        for p in raw_params:
-            if "*" in p or "->" in p:
-                params.append("pointer")
-            else:
-                params.append("scalar")
-
+        param_types = [parse_type_descriptor(p) for p in raw_params]
+        ret_type = parse_type_descriptor(ret_str)
         bindings[fn_name] = {
             "name": fn_name,
-            "param_count": len(params),
-            "params": params,
-            "return": "pointer" if "*" in ret_str else "scalar",
+            "param_count": len(param_types),
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
+            "return": ret_type["shape"],
+            "return_type": ret_type,
             "raw": f"fun {fn_name}({params_str}) : {ret_str}",
         }
     return bindings
@@ -305,8 +481,7 @@ def extract_dart_ffi_bindings(source: str) -> dict:
         )
         if td_m:
             ret_type_str = td_m.group(1).strip()
-            ret_shape = "pointer" if "Pointer" in ret_type_str else "scalar"
-
+            ret_type = parse_type_descriptor(ret_type_str)
             params_str = " ".join(td_m.group(2).split()).strip()
             raw_params = []
             depth = 0
@@ -326,17 +501,14 @@ def extract_dart_ffi_bindings(source: str) -> dict:
             if cur and "".join(cur).strip():
                 raw_params.append("".join(cur).strip())
 
-            params = []
-            for p in raw_params:
-                if "Pointer" in p or "NativeFunction" in p:
-                    params.append("pointer")
-                else:
-                    params.append("scalar")
+            param_types = [parse_type_descriptor(p) for p in raw_params]
             bindings[fn_name] = {
                 "name": fn_name,
-                "param_count": len(params),
-                "params": params,
-                "return": ret_shape,
+                "param_count": len(param_types),
+                "params": [pt["shape"] for pt in param_types],
+                "param_types": param_types,
+                "return": ret_type["shape"],
+                "return_type": ret_type,
                 "raw": f"lookupFunction<{c_type}>('{fn_name}')",
             }
         else:
@@ -420,22 +592,19 @@ def extract_kotlin_jna_bindings(source: str) -> dict:
 
         if params_str:
             raw_params = [p.strip() for p in params_str.split(",") if p.strip()]
-            params = []
-            for p in raw_params:
-                p_type = p.split(":")[-1].strip() if ":" in p else p
-                if any(k in p_type for k in ("Pointer", "ByteArray", "Reference", "Sink", "String")):
-                    params.append("pointer")
-                else:
-                    params.append("scalar")
+            param_types = [parse_type_descriptor(p.split(":")[-1].strip() if ":" in p else p) for p in raw_params]
         else:
-            params = []
+            raw_params = []
+            param_types = []
 
-        ret_shape = "pointer" if (ret_str and "Pointer" in ret_str) else "scalar"
+        ret_type = parse_type_descriptor(ret_str or "Unit")
         bindings[fn_name] = {
             "name": fn_name,
-            "param_count": len(params),
-            "params": params,
-            "return": ret_shape,
+            "param_count": len(param_types),
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
+            "return": ret_type["shape"],
+            "return_type": ret_type,
             "raw": f"fun {fn_name}({params_str}) : {ret_str or 'Unit'}",
         }
 
@@ -462,7 +631,6 @@ def extract_embedded_c_bindings(source: str) -> dict:
     else:
         block = source
 
-    # Strip comments from the block
     block = re.sub(r"/\*.*?\*/", "", block, flags=re.S)
     lines = [line.split("//", 1)[0] for line in block.splitlines()]
     block = "\n".join(lines)
@@ -477,7 +645,7 @@ def extract_embedded_c_bindings(source: str) -> dict:
             continue
 
         if params_str in ("", "void"):
-            params = []
+            raw_params = []
         else:
             raw_params = []
             depth = 0
@@ -497,14 +665,15 @@ def extract_embedded_c_bindings(source: str) -> dict:
             if cur and "".join(cur).strip():
                 raw_params.append("".join(cur).strip())
 
-            params = [("pointer" if ("*" in p) else "scalar") for p in raw_params]
-
-        ret_shape = "pointer" if "*" in ret_str else "scalar"
+        param_types = [parse_type_descriptor(p) for p in raw_params]
+        ret_type = parse_type_descriptor(ret_str)
         bindings[fn_name] = {
             "name": fn_name,
-            "param_count": len(params),
-            "params": params,
-            "return": ret_shape,
+            "param_count": len(param_types),
+            "params": [pt["shape"] for pt in param_types],
+            "param_types": param_types,
+            "return": ret_type["shape"],
+            "return_type": ret_type,
             "raw": f"{ret_str} {fn_name}({params_str})",
         }
 
@@ -582,6 +751,96 @@ def extract_swift_bindings(source: str) -> dict:
     return bindings
 
 
+def extract_wrapper_callbacks(surface_dir: str) -> dict:
+    """Extract callback definitions and trampolines from wrapper directory."""
+    cbs = {}
+    for root, dirs, files in os.walk(surface_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("target", "build", "node_modules")]
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                content = open(p, "r", encoding="utf-8", errors="ignore").read()
+            except Exception:
+                continue
+
+            if f.endswith((".mjs", ".js")):
+                node_cb_pattern = re.compile(
+                    r"export\s+const\s+([A-Za-z0-9_]+)\s*=\s*koffi\.proto\(\s*[\x27\x22](void|bool)\s+([A-Za-z0-9_]+)\s*\((.*?)\)[\x27\x22]\s*,?\s*\)",
+                    re.S,
+                )
+                for var_name, ret, fn_name, params_str in node_cb_pattern.findall(content):
+                    raw_params = [param.strip() for param in params_str.split(",") if param.strip()]
+                    cbs[var_name] = {
+                        "return_type": ret,
+                        "parameter_count": len(raw_params),
+                        "parameters": [parse_type_descriptor(param) for param in raw_params],
+                    }
+                    cbs[fn_name] = cbs[var_name]
+            elif f.endswith(".py"):
+                for m in re.finditer(r"\b([A-Za-z0-9_]+)\s*=\s*CFUNCTYPE\(", content):
+                    cb_name = m.group(1)
+                    start = m.end()
+                    depth = 1
+                    i = start
+                    while i < len(content) and depth > 0:
+                        if content[i] == "(":
+                            depth += 1
+                        elif content[i] == ")":
+                            depth -= 1
+                        i += 1
+                    args_str = content[start : i - 1].strip()
+
+                    raw_params = []
+                    p_depth = 0
+                    cur = []
+                    for c in args_str:
+                        if c == "(":
+                            p_depth += 1
+                            cur.append(c)
+                        elif c == ")":
+                            p_depth -= 1
+                            cur.append(c)
+                        elif c == "," and p_depth == 0:
+                            raw_params.append("".join(cur).strip())
+                            cur = []
+                        else:
+                            cur.append(c)
+                    if cur and "".join(cur).strip():
+                        raw_params.append("".join(cur).strip())
+
+                    if raw_params:
+                        ret = "void" if raw_params[0] == "None" else "bool"
+                        cb_params = raw_params[1:]
+                        cbs[cb_name] = {
+                            "return_type": ret,
+                            "parameter_count": len(cb_params),
+                            "parameters": [parse_type_descriptor(param) for param in cb_params],
+                        }
+            elif f.endswith(".dart"):
+                dart_cb_pattern = re.compile(r"typedef\s+([A-Za-z0-9_]+)\s*=\s*(Void|Bool)\s+Function\s*\((.*?)\)\s*;", re.S)
+                for name, ret, params_str in dart_cb_pattern.findall(content):
+                    raw_params = [param.strip() for param in params_str.split(",") if param.strip()]
+                    cbs[name] = {
+                        "return_type": "void" if ret == "Void" else "bool",
+                        "parameter_count": len(raw_params),
+                        "parameters": [parse_type_descriptor(param) for param in raw_params],
+                    }
+            elif f.endswith(".kt"):
+                kt_cb_pattern = re.compile(
+                    r"internal\s+fun\s+interface\s+([A-Za-z0-9_]+)\s*:\s*Callback\s*\{\s*fun\s+invoke\s*\((.*?)\)(?:\s*:\s*([A-Za-z0-9_?]+))?",
+                    re.S,
+                )
+                for name, params_str, ret_str in kt_cb_pattern.findall(content):
+                    raw_params = [param.strip() for param in params_str.split(",") if param.strip()]
+                    ret = "bool" if ret_str in ("Byte", "Boolean") else "void"
+                    cbs[name] = {
+                        "return_type": ret,
+                        "parameter_count": len(raw_params),
+                        "parameters": [parse_type_descriptor(param.split(":")[-1].strip()) for param in raw_params],
+                    }
+    return cbs
+
+
 def extract_wrapper_bindings(surface_dir: str) -> dict:
     """Extract bindings from wrapper directory based on files present."""
     combined = {}
@@ -618,7 +877,6 @@ def extract_wrapper_bindings(surface_dir: str) -> dict:
                 clean_text = strip_comments_and_strings(content, strip_strings=True)
                 combined.update(extract_kotlin_jna_bindings(clean_text))
             elif f.endswith((".h", ".cpp", ".c", ".cc")):
-                # Pass raw content to extract_embedded_c_bindings to find extern "C"
                 combined.update(extract_embedded_c_bindings(content))
             elif f.endswith(".swift"):
                 clean_text = strip_comments_and_strings(content, strip_strings=True)
@@ -630,6 +888,7 @@ def extract_wrapper_bindings(surface_dir: str) -> dict:
 def verify_signatures(manifest: dict, surface_dir: str, required_symbol: str = None) -> list[str]:
     errors = []
     bindings = extract_wrapper_bindings(surface_dir)
+    callbacks = extract_wrapper_callbacks(surface_dir) if os.path.isdir(surface_dir) else {}
     manifest_funcs = manifest.get("functions", {})
 
     if required_symbol:
@@ -653,35 +912,327 @@ def verify_signatures(manifest: dict, surface_dir: str, required_symbol: str = N
             exp_count = expected["parameter_count"]
             act_count = actual["param_count"]
             if act_count != exp_count:
+                raw_act = actual.get("raw", "")
                 errors.append(
-                    f"{sym} arity mismatch in {surface_dir}: wrapper declared {act_count} params, manifest expects {exp_count} (raw: {actual.get('raw', '')})"
+                    f"{sym} arity mismatch in {surface_dir}: wrapper declared {act_count} params, manifest expects {exp_count} (raw: {raw_act})"
                 )
                 continue
 
-            # Check pointer vs scalar shape where known
-            if actual["params"] and actual["params"] != ["unknown"] * act_count:
+            # Check parameter types if known
+            param_types = actual.get("param_types")
+            if param_types and len(param_types) == exp_count:
+                for idx, (act_type, exp_param) in enumerate(zip(param_types, expected["parameters"])):
+                    act_shape = act_type.get("shape", "unknown")
+                    if act_shape == "unknown":
+                        continue
+                    exp_shape = "pointer" if exp_param.get("is_pointer") else "scalar"
+                    if act_shape != exp_shape:
+                        raw_exp = exp_param.get("raw", "")
+                        errors.append(
+                            f"{sym} param #{idx+1} shape mismatch in {surface_dir}: wrapper declared {act_shape}, manifest expects {exp_shape} ({raw_exp})"
+                        )
+
+                    # Check width for non-pointers
+                    if not act_type.get("is_pointer") and not exp_param.get("is_pointer"):
+                        act_w = act_type.get("width")
+                        exp_w = exp_param.get("width_bits")
+                        if act_w is not None and exp_w is not None and act_w > 0 and exp_w > 0 and act_w != exp_w:
+                            raw_a = act_type.get("raw", "")
+                            raw_e = exp_param.get("raw", "")
+                            errors.append(
+                                f"{sym} param #{idx+1} width mismatch in {surface_dir}: wrapper declared {act_w}-bit ({raw_a}), manifest expects {exp_w}-bit ({raw_e})"
+                            )
+
+                        # Check signedness (ABI-016)
+                        act_s = act_type.get("signed")
+                        exp_s = exp_param.get("signed")
+                        if act_s is not None and exp_s is not None and exp_w is not None and exp_w > 8:
+                            if act_s != exp_s:
+                                exp_sign = "signed" if exp_s else "unsigned"
+                                act_sign = "signed" if act_s else "unsigned"
+                                raw_a = act_type.get("raw", "")
+                                raw_e = exp_param.get("raw", "")
+                                errors.append(
+                                    f"{sym} param #{idx+1} signedness mismatch in {surface_dir}: wrapper declared {act_sign} ({raw_a}), manifest expects {exp_sign} ({raw_e})"
+                                )
+
+                    # Check callback trampoline types and return values (ABI-016)
+                    if exp_param.get("is_callback"):
+                        cb_id = exp_param.get("callback_id")
+                        exp_cb = manifest.get("callbacks", {}).get(cb_id, {})
+                        exp_cb_ret = exp_cb.get("return_type", "void")
+                        exp_cb_raw_args = exp_cb.get("arguments", "")
+                        exp_cb_arg_list = [a.strip() for a in exp_cb_raw_args.split(",") if a.strip()] if exp_cb_raw_args and exp_cb_raw_args != "void" else []
+                        exp_cb_params = [parse_type_descriptor(a) for a in exp_cb_arg_list]
+
+                        act_cb_ret = act_type.get("callback_return")
+                        act_cb_params = act_type.get("callback_params")
+                        cb_name = act_type.get("callback_name")
+                        if not act_cb_ret and cb_name:
+                            cb_info = callbacks.get(cb_name)
+                            if not cb_info:
+                                for k, v in callbacks.items():
+                                    if k.lower().replace("_", "") == cb_name.lower().replace("_", ""):
+                                        cb_info = v
+                                        break
+                            if cb_info:
+                                act_cb_ret = cb_info.get("return_type")
+                                act_cb_params = cb_info.get("parameters")
+
+                        if act_cb_ret:
+                            exp_ret_norm = "bool" if exp_cb_ret == "bool" else "void"
+                            act_ret_norm = "bool" if act_cb_ret in ("bool", "c_bool", "Bool", "Byte") else "void"
+                            if act_ret_norm != exp_ret_norm:
+                                errors.append(
+                                    f"{sym} param #{idx+1} callback return mismatch in {surface_dir}: wrapper declared {act_ret_norm}, manifest expects {exp_ret_norm}"
+                                )
+                        if act_cb_params is not None:
+                            if len(act_cb_params) != len(exp_cb_params):
+                                errors.append(
+                                    f"{sym} param #{idx+1} callback parameter count mismatch in {surface_dir}: wrapper declared {len(act_cb_params)} params, manifest expects {len(exp_cb_params)}"
+                                )
+                            else:
+                                for p_idx, (act_p, exp_p) in enumerate(zip(act_cb_params, exp_cb_params)):
+                                    act_ptr = act_p.get("is_pointer") if isinstance(act_p, dict) else (act_p == "pointer")
+                                    exp_ptr = exp_p.get("is_pointer")
+                                    if act_ptr != exp_ptr:
+                                        act_s = "pointer" if act_ptr else "scalar"
+                                        exp_s = "pointer" if exp_ptr else "scalar"
+                                        errors.append(
+                                            f"{sym} param #{idx+1} callback arg #{p_idx+1} shape mismatch in {surface_dir}: wrapper declared {act_s}, manifest expects {exp_s}"
+                                        )
+
+            elif actual["params"] and actual["params"] != ["unknown"] * act_count:
                 for idx, (act_shape, exp_param) in enumerate(zip(actual["params"], expected["parameters"])):
                     if act_shape == "unknown":
                         continue
                     exp_shape = "pointer" if exp_param.get("is_pointer") else "scalar"
                     if act_shape != exp_shape:
+                        raw_exp = exp_param.get("raw", "")
                         errors.append(
-                            f"{sym} param #{idx+1} shape mismatch in {surface_dir}: wrapper declared {act_shape}, manifest expects {exp_shape} ({exp_param.get('raw', '')})"
+                            f"{sym} param #{idx+1} shape mismatch in {surface_dir}: wrapper declared {act_shape}, manifest expects {exp_shape} ({raw_exp})"
                         )
 
-        # Check return type shape if known
-        act_ret = actual.get("return")
-        if act_ret and act_ret != "unknown":
-            exp_ret = "pointer" if expected["return_type"].get("is_pointer") else "scalar"
-            if act_ret != exp_ret:
+        # Check return type
+        act_ret_type = actual.get("return_type")
+        if act_ret_type and act_ret_type.get("shape") != "unknown":
+            exp_ret = expected["return_type"]
+            act_ret_shape = act_ret_type.get("shape", "unknown")
+            exp_ret_shape = "pointer" if exp_ret.get("is_pointer") else "scalar"
+            if act_ret_shape != exp_ret_shape:
+                raw_exp = exp_ret.get("raw", "")
                 errors.append(
-                    f"{sym} return shape mismatch in {surface_dir}: wrapper declared {act_ret}, manifest expects {exp_ret} ({expected['return_type'].get('raw', '')})"
+                    f"{sym} return shape mismatch in {surface_dir}: wrapper declared {act_ret_shape}, manifest expects {exp_ret_shape} ({raw_exp})"
                 )
+
+            if not act_ret_type.get("is_pointer") and not exp_ret.get("is_pointer"):
+                act_w = act_ret_type.get("width")
+                exp_w = exp_ret.get("width_bits")
+                if act_w is not None and exp_w is not None and act_w > 0 and exp_w > 0 and act_w != exp_w:
+                    raw_a = act_ret_type.get("raw", "")
+                    raw_e = exp_ret.get("raw", "")
+                    errors.append(
+                        f"{sym} return width mismatch in {surface_dir}: wrapper declared {act_w}-bit ({raw_a}), manifest expects {exp_w}-bit ({raw_e})"
+                    )
+
+                act_s = act_ret_type.get("signed")
+                exp_s = exp_ret.get("signed")
+                if act_s is not None and exp_s is not None and exp_w is not None and exp_w > 8:
+                    if act_s != exp_s:
+                        exp_sign = "signed" if exp_s else "unsigned"
+                        act_sign = "signed" if act_s else "unsigned"
+                        raw_a = act_ret_type.get("raw", "")
+                        raw_e = exp_ret.get("raw", "")
+                        errors.append(
+                            f"{sym} return signedness mismatch in {surface_dir}: wrapper declared {act_sign} ({raw_a}), manifest expects {exp_sign} ({raw_e})"
+                        )
+                elif act_s is False and exp_s is True:
+                    # Fail when a signed error-returning C function is bound to an unsigned type (ABI-016)
+                    raw_a = act_ret_type.get("raw", "")
+                    raw_e = exp_ret.get("raw", "")
+                    errors.append(
+                        f"{sym} return signedness mismatch in {surface_dir}: wrapper declared unsigned ({raw_a}), manifest expects signed ({raw_e})"
+                    )
+        else:
+            act_ret = actual.get("return")
+            if act_ret and act_ret != "unknown":
+                exp_ret = "pointer" if expected["return_type"].get("is_pointer") else "scalar"
+                if act_ret != exp_ret:
+                    raw_exp = expected["return_type"].get("raw", "")
+                    errors.append(
+                        f"{sym} return shape mismatch in {surface_dir}: wrapper declared {act_ret}, manifest expects {exp_ret} ({raw_exp})"
+                    )
 
     return errors
 
 
+def run_self_tests(manifest_path: str = None) -> int:
+    """Run internal self-tests for ABI-016 contract compliance."""
+    if not manifest_path:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        manifest_path = os.path.join(root, "tools", "codegen", "abi-manifest.json")
+
+    manifest = load_manifest(manifest_path)
+
+    # 1. Reject unsigned binding for hop_hps_rekey
+    mock_unsigned_rekey = {
+        "hop_hps_rekey": {
+            "name": "hop_hps_rekey",
+            "param_count": 7,
+            "params": ["pointer", "pointer", "pointer", "pointer", "scalar", "pointer", "pointer"],
+            "param_types": [
+                parse_type_descriptor("void *node"),
+                parse_type_descriptor("const char *path"),
+                parse_type_descriptor("const char *new_path"),
+                parse_type_descriptor("uint8_t *remove"),
+                parse_type_descriptor("size_t remove_count"),
+                parse_type_descriptor("HpsIdSink *sink"),
+                parse_type_descriptor("void *ctx"),
+            ],
+            "return": "scalar",
+            "return_type": parse_type_descriptor("size_t"),  # Unsigned binding for signed error return
+            "raw": "size_t hop_hps_rekey(...)",
+        }
+    }
+    orig_extract = globals()["extract_wrapper_bindings"]
+    try:
+        globals()["extract_wrapper_bindings"] = lambda d: mock_unsigned_rekey
+        errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_hps_rekey")
+        assert any("signedness mismatch" in e for e in errs), f"Expected signedness mismatch, got: {errs}"
+
+        # 2. Reject void-returning service request sink
+        mock_void_sink = {
+            "hop_poll_service_requests": {
+                "name": "hop_poll_service_requests",
+                "param_count": 3,
+                "params": ["pointer", "pointer", "pointer"],
+                "param_types": [
+                    parse_type_descriptor("void *node"),
+                    {
+                        "shape": "pointer",
+                        "is_pointer": True,
+                        "width": 64,
+                        "signed": False,
+                        "is_callback": True,
+                        "callback_name": None,
+                        "callback_return": "void",  # Void instead of bool!
+                        "callback_params": None,
+                        "raw": "void (*sink)(void *ctx, ...)",
+                    },
+                    parse_type_descriptor("void *ctx"),
+                ],
+                "return": "scalar",
+                "return_type": parse_type_descriptor("void"),
+                "raw": "void hop_poll_service_requests(...)",
+            }
+        }
+        globals()["extract_wrapper_bindings"] = lambda d: mock_void_sink
+        errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_poll_service_requests")
+        assert any("callback return mismatch" in e for e in errs), f"Expected callback return mismatch, got: {errs}"
+
+        # 3. Reject wrong-width integer
+        mock_wrong_width = {
+            "hop_node_tick": {
+                "name": "hop_node_tick",
+                "param_count": 2,
+                "params": ["pointer", "scalar"],
+                "param_types": [
+                    parse_type_descriptor("void *node"),
+                    parse_type_descriptor("uint32_t now_ms"),  # 32-bit instead of 64-bit!
+                ],
+                "return": "scalar",
+                "return_type": parse_type_descriptor("void"),
+                "raw": "void hop_node_tick(void *node, uint32_t now_ms)",
+            }
+        }
+        globals()["extract_wrapper_bindings"] = lambda d: mock_wrong_width
+        errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_node_tick")
+        assert any("width mismatch" in e for e in errs), f"Expected width mismatch, got: {errs}"
+
+        # 4. Reject callback parameter count mismatch
+        mock_cb_arity = {
+            "hop_poll_service_requests": {
+                "name": "hop_poll_service_requests",
+                "param_count": 3,
+                "params": ["pointer", "pointer", "pointer"],
+                "param_types": [
+                    parse_type_descriptor("void *node"),
+                    {
+                        "shape": "pointer",
+                        "is_pointer": True,
+                        "width": 64,
+                        "signed": False,
+                        "is_callback": True,
+                        "callback_name": None,
+                        "callback_return": "bool",
+                        "callback_params": [parse_type_descriptor("void *ctx")],  # 1 param instead of 7!
+                        "raw": "bool (*sink)(void *ctx)",
+                    },
+                    parse_type_descriptor("void *ctx"),
+                ],
+                "return": "scalar",
+                "return_type": parse_type_descriptor("void"),
+                "raw": "void hop_poll_service_requests(...)",
+            }
+        }
+        globals()["extract_wrapper_bindings"] = lambda d: mock_cb_arity
+        errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_poll_service_requests")
+        assert any("callback parameter count mismatch" in e for e in errs), f"Expected callback arity mismatch, got: {errs}"
+
+        # 5. Reject callback argument pointer shape mismatch
+        mock_cb_shape = {
+            "hop_poll_service_requests": {
+                "name": "hop_poll_service_requests",
+                "param_count": 3,
+                "params": ["pointer", "pointer", "pointer"],
+                "param_types": [
+                    parse_type_descriptor("void *node"),
+                    {
+                        "shape": "pointer",
+                        "is_pointer": True,
+                        "width": 64,
+                        "signed": False,
+                        "is_callback": True,
+                        "callback_name": None,
+                        "callback_return": "bool",
+                        "callback_params": [
+                            parse_type_descriptor("uint64_t ctx"),  # scalar instead of pointer!
+                            parse_type_descriptor("uint8_t *from"),
+                            parse_type_descriptor("uint8_t *request_id"),
+                            parse_type_descriptor("const char *service"),
+                            parse_type_descriptor("const char *method"),
+                            parse_type_descriptor("uint8_t *args"),
+                            parse_type_descriptor("size_t args_len"),
+                        ],
+                        "raw": "bool (*sink)(uint64_t ctx, ...)",
+                    },
+                    parse_type_descriptor("void *ctx"),
+                ],
+                "return": "scalar",
+                "return_type": parse_type_descriptor("void"),
+                "raw": "void hop_poll_service_requests(...)",
+            }
+        }
+        globals()["extract_wrapper_bindings"] = lambda d: mock_cb_shape
+        errs = verify_signatures(manifest, "mock_dir", required_symbol="hop_poll_service_requests")
+        assert any("callback arg #1 shape mismatch" in e for e in errs), f"Expected callback arg shape mismatch, got: {errs}"
+
+    finally:
+        globals()["extract_wrapper_bindings"] = orig_extract
+
+    print("verify-abi-signatures self-test: OK (unsigned rekey, void sink, wrong-width int, callback arity, callback shape rejected)")
+    return 0
+
+
 def main():
+    if "--self-test" in sys.argv or "--test" in sys.argv:
+        manifest_arg = None
+        for a in sys.argv[1:]:
+            if not a.startswith("--"):
+                manifest_arg = a
+                break
+        sys.exit(run_self_tests(manifest_arg))
+
     if len(sys.argv) < 3:
         print("Usage: verify-abi-signatures.py <abi-manifest.json> <surface-dir> [required-symbol]")
         sys.exit(1)
