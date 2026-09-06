@@ -192,6 +192,122 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert '.binaryTarget(name: "CHop", path:' not in apple_manifest
     assert (apple / "Package.local.swift").is_file()
 
+    # REL-008: validate_apple must parse release tag dynamically and succeed on Package.swift containing v0.0.3
+    v003_url = "https://github.com/hopmesh/hop-sdk-apple/releases/download/v0.0.3/libhop.xcframework.zip"
+    assert exports.apple_release_tag(v003_url) == "v0.0.3"
+    rejected(
+        lambda: exports.apple_release_tag("https://github.com/hopmesh/hop-sdk-apple/releases/latest/libhop.xcframework.zip"),
+        "invalid release url",
+    )
+    rejected(
+        lambda: exports.apple_release_tag("https://example.com/libhop.xcframework.zip"),
+        "non-github release url",
+    )
+
+    apple_work = temporary / "apple-validate-work"
+    apple_work.mkdir()
+    apple_export = temporary / "apple-export-v003"
+    apple_export.mkdir()
+    (apple_export / "Package.swift").write_text(
+        '// swift-tools-version:5.9\nimport PackageDescription\n'
+        'let package = Package(name: "Hop", targets: [.binaryTarget(name: "CHop", url: "'
+        + v003_url
+        + '", checksum: "79f63ccb805b6bb407beaa98d35488e58c0245479aa58d41827309e836311571")])\n'
+    )
+    (apple_export / "Package.local.swift").write_text("// local swift\n")
+    (apple_export / "Sources/Hop").mkdir(parents=True)
+    (apple_export / "Sources/Hop/Hop.swift").write_text("let expectedABIVersion: UInt32 = 7\n")
+    (apple_export / "native").mkdir()
+    (apple_export / "native/native-artifacts.py").write_text("#!/usr/bin/env python3\n")
+    (apple_export / "native/native-artifacts-public.pem").write_text("PEM\n")
+    (apple_export / "Frameworks/libhop.xcframework").mkdir(parents=True)
+
+    fake_archive = apple_work / "libhop.xcframework.zip"
+    apple_slices = ("ios-arm64", "ios-arm64_x86_64-simulator", "macos-arm64_x86_64")
+    with zipfile.ZipFile(fake_archive, "w") as zf:
+        zf.writestr("libhop.xcframework/Info.plist", "plist")
+        zf.writestr("libhop.xcframework/architecture-manifest.json", "manifest")
+        zf.writestr("libhop.xcframework/THIRD-PARTY-NOTICES.md", "notices")
+        zf.writestr("libhop.xcframework/LICENSE.md", "license")
+        for sl in apple_slices:
+            zf.writestr(f"libhop.xcframework/{sl}/Headers/hop.h", "#define HOP_ABI_VERSION 7\n")
+            zf.writestr(f"libhop.xcframework/{sl}/Headers/module.modulemap", "module CHop { header \"hop.h\" }\n")
+            zf.writestr(f"libhop.xcframework/{sl}/libhop.a", "archive")
+
+    fake_checksum = "0123456789abcdef" * 4
+    commands_run = []
+    original_run = exports.run
+    def mock_run_with_checksum(cmd, *args, **kwargs):
+        commands_run.append(list(cmd))
+        if cmd[:3] == ["swift", "package", "compute-checksum"]:
+            return fake_checksum
+        if cmd[:3] == ["swift", "package", "dump-package"]:
+            return json.dumps({
+                "targets": [
+                    {
+                        "name": "CHop",
+                        "url": v003_url,
+                        "checksum": fake_checksum,
+                    }
+                ]
+            })
+        return ""
+
+    class FakeAppleHelper:
+        @staticmethod
+        def verify_release(manifest_path, signature, pem, directory, artifact_type):
+            return {"release": "v0.0.3"}
+        @staticmethod
+        def select_artifact(manifest_value, artifact_type):
+            return {
+                "filename": fake_archive.name,
+                "archive": {
+                    "files": [
+                        {"path": "libhop.xcframework/Info.plist"},
+                        {"path": "libhop.xcframework/architecture-manifest.json"},
+                        {"path": "libhop.xcframework/THIRD-PARTY-NOTICES.md"},
+                        {"path": "libhop.xcframework/LICENSE.md"},
+                    ] + [
+                        {"path": f"libhop.xcframework/{sl}/Headers/hop.h"} for sl in apple_slices
+                    ] + [
+                        {"path": f"libhop.xcframework/{sl}/Headers/module.modulemap"} for sl in apple_slices
+                    ] + [
+                        {"path": f"libhop.xcframework/{sl}/libhop.a"} for sl in apple_slices
+                    ]
+                }
+            }
+        @staticmethod
+        def pack_archive(frameworks, items, repacked, format):
+            repacked.write_bytes(fake_archive.read_bytes())
+
+    fake_bundle = apple_work / "bundle"
+    fake_bundle.mkdir()
+    (fake_bundle / "native-artifacts.json").write_text("{}")
+    (fake_bundle / "native-artifacts.json.sig").write_text("sig")
+    (fake_bundle / fake_archive.name).write_bytes(fake_archive.read_bytes())
+
+    exports.run = mock_run_with_checksum
+    original_spec = importlib.util.spec_from_file_location
+    try:
+        import importlib.machinery
+        class FakeLoader:
+            def create_module(self, spec):
+                return FakeAppleHelper
+            def exec_module(self, module):
+                pass
+        importlib.util.spec_from_file_location = lambda name, loc: importlib.machinery.ModuleSpec(name, FakeLoader())
+        import sys
+        sys.modules["apple_native_artifacts"] = FakeAppleHelper
+        exports.validate_apple(apple_export, apple_work, fake_bundle)
+        install_cmds = [c for c in commands_run if len(c) > 1 and "install-local-xcframework.py" in str(c[1])]
+        assert len(install_cmds) == 1, f"expected install-local-xcframework call, got: {commands_run}"
+        assert install_cmds[0] == ["python3", "install-local-xcframework.py", "--version", "v0.0.3", "--bundle", fake_bundle]
+    finally:
+        exports.run = original_run
+        importlib.util.spec_from_file_location = original_spec
+        import sys
+        sys.modules.pop("apple_native_artifacts", None)
+
     # The hop-sdk-android and hop-embedded export-shape checks lived here and are gone with those
     # mirrors (2026-08 retirement). What they pinned was per-export packaging (AAR layout, the
     # PlatformIO installer, the AGP symbol-stripping consumer), which has no subject once the export
