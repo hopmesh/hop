@@ -10867,6 +10867,13 @@ mod tests {
         ) -> Vec<(String, Vec<u8>)> {
             self.inner.list_kv_page(prefix, after, limit)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
+        }
     }
 
     #[derive(Clone, Default)]
@@ -11049,6 +11056,13 @@ mod tests {
             }
             self.inner
                 .list_kv_page_bounded(prefix, after, limit, max_bytes)
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
         }
     }
 
@@ -22255,6 +22269,16 @@ mod tests {
         fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
             self.inner.list_kv(prefix)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            if key == self.panic_key {
+                panic!("PanicOnPutKv: simulated fallible-write panic on {key}");
+            }
+            self.inner.put_kv_if_absent_critical(key, value)
+        }
     }
 
     #[test]
@@ -22388,6 +22412,13 @@ mod tests {
             }
             fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
                 self.inner.remove_kv_critical(key)
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
             }
         }
 

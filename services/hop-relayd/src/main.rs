@@ -939,12 +939,12 @@ fn usage_kv_key(hour: u64, tenant: &TenantId) -> String {
 /// Carriage-measurement row key: per (hour bucket, tenant), on a SEPARATE prefix from the billed
 /// `usage/` reach ledger. Deliberately separate: reach billing is live, and this row is measurement
 /// only, so it must never be summed into or parsed by the reach path.
+fn carriage_kv_key_for(hour: u64, tenant: &TenantId, writer: &str) -> String {
+    format!("carriage_usage/{hour}/{}/{}", hex_string(tenant), writer)
+}
+
 fn carriage_kv_key(hour: u64, tenant: &TenantId) -> String {
-    format!(
-        "carriage_usage/{hour}/{}/{}",
-        hex_string(tenant),
-        ledger_writer_id()
-    )
+    carriage_kv_key_for(hour, tenant, ledger_writer_id())
 }
 
 /// Ledger row value: `bundles` then `payload_bytes`, both u64 LE (16 bytes total).
@@ -967,13 +967,70 @@ fn decode_usage(bytes: &[u8]) -> Usage {
     }
 }
 
-static RETRY_USAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+static RETRY_USAGE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
-static RETRY_CARRIAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>> =
+static RETRY_USAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
-static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<TenantId, u64>> =
+static RETRY_CARRIAGE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_CARRIAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_STORAGE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static RETRY_STORAGE_BASE: std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), u64>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+fn encode_usage_journal(entries: &[(TenantId, Usage, Usage)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(entries.len() * 48);
+    for (tenant, delta, target) in entries {
+        out.extend_from_slice(tenant);
+        out.extend_from_slice(&delta.bundles.to_le_bytes());
+        out.extend_from_slice(&delta.payload_bytes.to_le_bytes());
+        out.extend_from_slice(&target.bundles.to_le_bytes());
+        out.extend_from_slice(&target.payload_bytes.to_le_bytes());
+    }
+    out
+}
+
+fn decode_usage_journal(bytes: &[u8]) -> Vec<(TenantId, Usage, Usage)> {
+    let mut entries = Vec::new();
+    for chunk in bytes.chunks_exact(48) {
+        let mut tenant = [0u8; 16];
+        tenant.copy_from_slice(&chunk[..16]);
+        let delta = Usage {
+            bundles: u64::from_le_bytes(chunk[16..24].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(chunk[24..32].try_into().unwrap_or_default()),
+        };
+        let target = Usage {
+            bundles: u64::from_le_bytes(chunk[32..40].try_into().unwrap_or_default()),
+            payload_bytes: u64::from_le_bytes(chunk[40..48].try_into().unwrap_or_default()),
+        };
+        entries.push((tenant, delta, target));
+    }
+    entries
+}
+
+fn encode_storage_journal(entries: &[(TenantId, u64, u64)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(entries.len() * 32);
+    for (tenant, delta, target) in entries {
+        out.extend_from_slice(tenant);
+        out.extend_from_slice(&delta.to_le_bytes());
+        out.extend_from_slice(&target.to_le_bytes());
+    }
+    out
+}
+
+fn decode_storage_journal(bytes: &[u8]) -> Vec<(TenantId, u64, u64)> {
+    let mut entries = Vec::new();
+    for chunk in bytes.chunks_exact(32) {
+        let mut tenant = [0u8; 16];
+        tenant.copy_from_slice(&chunk[..16]);
+        let delta = u64::from_le_bytes(chunk[16..24].try_into().unwrap_or_default());
+        let target = u64::from_le_bytes(chunk[24..32].try_into().unwrap_or_default());
+        entries.push((tenant, delta, target));
+    }
+    entries
+}
 /// Read-modify-write the drained per-tenant usage into this writer's hour-bucketed ledger rows.
 /// Returns the number of rows touched. See [`merge_rows_into_store_buffered`] for the concurrency premise.
 fn merge_usage_into_store<S: Store>(
@@ -981,7 +1038,15 @@ fn merge_usage_into_store<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, usage_kv_key, &RETRY_USAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        usage_kv_key,
+        &RETRY_USAGE,
+        &RETRY_USAGE_BASE,
+        "usage",
+    )
 }
 
 /// Read-modify-write the drained per-tenant CARRIAGE measurement into its own hour-bucketed rows.
@@ -990,7 +1055,15 @@ fn merge_carriage_into_store<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, carriage_kv_key, &RETRY_CARRIAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        carriage_kv_key,
+        &RETRY_CARRIAGE,
+        &RETRY_CARRIAGE_BASE,
+        "carriage_usage",
+    )
 }
 
 /// Test-only wrapper over the usage retry buffer for the ledger unit tests.
@@ -1001,7 +1074,15 @@ fn merge_rows_into_store<S: Store>(
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
 ) -> usize {
-    merge_rows_into_store_buffered(store, drained, now_ms, key_for, &RETRY_USAGE)
+    merge_rows_into_store_buffered(
+        store,
+        drained,
+        now_ms,
+        key_for,
+        &RETRY_USAGE,
+        &RETRY_USAGE_BASE,
+        "usage",
+    )
 }
 
 /// The shared RMW body for both 16-byte ledger shapes, backed by an in-memory retry buffer.
@@ -1011,41 +1092,84 @@ fn merge_rows_into_store_buffered<S: Store>(
     drained: &[(TenantId, Usage)],
     now_ms: u64,
     key_for: impl Fn(u64, &TenantId) -> String,
-    retry_map: &std::sync::Mutex<std::collections::BTreeMap<TenantId, Usage>>,
+    retry_map: &std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>>,
+    base_map: &std::sync::Mutex<std::collections::BTreeMap<(u64, TenantId), Usage>>,
+    journal_kind: &str,
 ) -> usize {
     let mut map = retry_map.lock().unwrap();
-    for (tenant, usage) in drained {
-        map.entry(*tenant).or_default().add(usage);
-    }
+    let mut bases = base_map.lock().unwrap();
     let hour = now_ms / 3_600_000;
-    let mut committed = Vec::new();
-    for (tenant, usage) in map.iter() {
-        let key = key_for(hour, tenant);
-        let mut total = store
-            .get_kv(&key)
-            .map(|b| decode_usage(&b))
-            .unwrap_or_default();
-        total.add(usage);
-        if store.put_kv_critical(&key, encode_usage(&total)).is_ok() {
-            committed.push(*tenant);
+    for (tenant, usage) in drained {
+        map.entry((hour, *tenant)).or_default().add(usage);
+    }
+    let probe_sample = key_for(hour, &[0u8; 16]);
+    let writer = probe_sample
+        .rsplit('/')
+        .next()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| ledger_writer_id().to_string());
+    let hours: std::collections::BTreeSet<u64> = map.keys().map(|(h, _)| *h).collect();
+    let mut total_committed = 0;
+    for h in hours {
+        let mut entries = Vec::new();
+        for (&(entry_h, tenant), usage) in map.iter() {
+            if entry_h != h {
+                continue;
+            }
+            let key = key_for(h, &tenant);
+            let base = bases.entry((h, tenant)).or_insert_with(|| {
+                store
+                    .get_kv(&key)
+                    .map(|b| decode_usage(&b))
+                    .unwrap_or_default()
+            });
+            let mut target = *base;
+            target.add(usage);
+            entries.push((tenant, *usage, target));
+        }
+        let journal_key = format!("journal/{journal_kind}/{writer}/{h}");
+        if !entries.is_empty() {
+            let payload = encode_usage_journal(&entries);
+            let _ = store.put_kv_critical(&journal_key, payload);
+        }
+        let mut committed = Vec::new();
+        for (tenant, _usage, target) in &entries {
+            let key = key_for(h, tenant);
+            if store.put_kv_critical(&key, encode_usage(target)).is_ok() {
+                committed.push((h, *tenant));
+            }
+        }
+        total_committed += committed.len();
+        for entry in &committed {
+            map.remove(entry);
+            bases.remove(entry);
+        }
+        let remaining_for_h = map.keys().any(|(entry_h, _)| *entry_h == h);
+        if !remaining_for_h {
+            let _ = store.remove_kv_critical(&journal_key);
+            store.remove_kv(&journal_key);
+        } else {
+            let remaining_entries: Vec<_> = entries
+                .into_iter()
+                .filter(|(t, _, _)| map.contains_key(&(h, *t)))
+                .collect();
+            let payload = encode_usage_journal(&remaining_entries);
+            let _ = store.put_kv_critical(&journal_key, payload);
         }
     }
-    for tenant in &committed {
-        map.remove(tenant);
-    }
-    committed.len()
+    total_committed
 }
 
 /// One storage-occupancy row key: per (hour bucket, tenant, writer). A SEPARATE prefix from `usage/`
 /// on purpose (§35 header rule: only ever ADD fields by a new key prefix, never re-shape the 16-byte
 /// carriage value in place). Mirrors the `telemetry_usage/` precedent; a reader that predates it
 /// simply ignores the unknown prefix. The writer segment is [`ledger_writer_id`] (SVC-005).
+fn storage_usage_kv_key_for(hour: u64, tenant: &TenantId, writer: &str) -> String {
+    format!("storage_usage/{hour}/{}/{}", hex_string(tenant), writer)
+}
+
 fn storage_usage_kv_key(hour: u64, tenant: &TenantId) -> String {
-    format!(
-        "storage_usage/{hour}/{}/{}",
-        hex_string(tenant),
-        ledger_writer_id()
-    )
+    storage_usage_kv_key_for(hour, tenant, ledger_writer_id())
 }
 
 /// Storage row value: accrued occupancy in byte-milliseconds, u64 LE (8 bytes). Anything malformed
@@ -1069,29 +1193,131 @@ fn merge_storage_into_store<S: Store>(
     now_ms: u64,
 ) -> usize {
     let mut map = RETRY_STORAGE.lock().unwrap();
+    let mut bases = RETRY_STORAGE_BASE.lock().unwrap();
+    let hour = now_ms / 3_600_000;
     for (tenant, byte_ms) in accrued {
         if *byte_ms == 0 {
             continue;
         }
-        let current = map.entry(*tenant).or_default();
+        let current = map.entry((hour, *tenant)).or_default();
         *current = current.saturating_add(*byte_ms);
     }
-    let hour = now_ms / 3_600_000;
-    let mut committed = Vec::new();
-    for (tenant, byte_ms) in map.iter() {
-        let key = storage_usage_kv_key(hour, tenant);
-        let prev = store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0);
-        if store
-            .put_kv_critical(&key, encode_storage(prev.saturating_add(*byte_ms)))
-            .is_ok()
-        {
-            committed.push(*tenant);
+    let writer = ledger_writer_id();
+    let hours: std::collections::BTreeSet<u64> = map.keys().map(|(h, _)| *h).collect();
+    let mut total_committed = 0;
+    for h in hours {
+        let mut entries = Vec::new();
+        for (&(entry_h, tenant), byte_ms) in map.iter() {
+            if entry_h != h {
+                continue;
+            }
+            let key = storage_usage_kv_key(h, &tenant);
+            let base = bases
+                .entry((h, tenant))
+                .or_insert_with(|| store.get_kv(&key).map(|b| decode_storage(&b)).unwrap_or(0));
+            let target = base.saturating_add(*byte_ms);
+            entries.push((tenant, *byte_ms, target));
+        }
+        let journal_key = format!("journal/storage_usage/{writer}/{h}");
+        if !entries.is_empty() {
+            let payload = encode_storage_journal(&entries);
+            let _ = store.put_kv_critical(&journal_key, payload);
+        }
+        let mut committed = Vec::new();
+        for (tenant, _byte_ms, target) in &entries {
+            let key = storage_usage_kv_key(h, tenant);
+            if store.put_kv_critical(&key, encode_storage(*target)).is_ok() {
+                committed.push((h, *tenant));
+            }
+        }
+        total_committed += committed.len();
+        for entry in &committed {
+            map.remove(entry);
+            bases.remove(entry);
+        }
+        let remaining_for_h = map.keys().any(|(entry_h, _)| *entry_h == h);
+        if !remaining_for_h {
+            let _ = store.remove_kv_critical(&journal_key);
+            store.remove_kv(&journal_key);
+        } else {
+            let remaining_entries: Vec<_> = entries
+                .into_iter()
+                .filter(|(t, _, _)| map.contains_key(&(h, *t)))
+                .collect();
+            let payload = encode_storage_journal(&remaining_entries);
+            let _ = store.put_kv_critical(&journal_key, payload);
         }
     }
-    for tenant in &committed {
-        map.remove(tenant);
+    total_committed
+}
+
+/// Reconcile surviving retry journal records on startup.
+/// For each journal row in `journal/`:
+/// If the current ledger row is already at or above the target total, the commit succeeded
+/// before the previous process died and the reconcile is a no-op on the ledger row.
+/// Otherwise, the target is written to the ledger row.
+/// Finally, the journal row is deleted.
+pub fn reconcile_surviving_relay_journals<S: Store + ?Sized>(store: &mut S) -> usize {
+    let rows = store.list_kv("journal/");
+    let mut reconciled = 0;
+    for (key, bytes) in rows {
+        if bytes.is_empty() {
+            let _ = store.remove_kv_critical(&key);
+            store.remove_kv(&key);
+            continue;
+        }
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() != 4 || parts[0] != "journal" {
+            continue;
+        }
+        let kind = parts[1];
+        let writer = parts[2];
+        let Ok(hour) = parts[3].parse::<u64>() else {
+            continue;
+        };
+        match kind {
+            "usage" | "carriage_usage" => {
+                let entries = decode_usage_journal(&bytes);
+                for (tenant, _delta, target) in entries {
+                    let ledger_key = if kind == "usage" {
+                        usage_kv_key_for(hour, &tenant, writer)
+                    } else {
+                        carriage_kv_key_for(hour, &tenant, writer)
+                    };
+                    let current = store
+                        .get_kv(&ledger_key)
+                        .map(|b| decode_usage(&b))
+                        .unwrap_or_default();
+                    if current.bundles < target.bundles
+                        || current.payload_bytes < target.payload_bytes
+                    {
+                        let _ = store.put_kv_critical(&ledger_key, encode_usage(&target));
+                        reconciled += 1;
+                    }
+                }
+                let _ = store.remove_kv_critical(&key);
+                store.remove_kv(&key);
+            }
+            "storage_usage" => {
+                let entries = decode_storage_journal(&bytes);
+                for (tenant, _delta, target) in entries {
+                    let ledger_key = storage_usage_kv_key_for(hour, &tenant, writer);
+                    let current = store
+                        .get_kv(&ledger_key)
+                        .map(|b| decode_storage(&b))
+                        .unwrap_or(0);
+                    if current < target {
+                        let _ = store.put_kv_critical(&ledger_key, encode_storage(target));
+                        reconciled += 1;
+                    }
+                }
+                let _ = store.remove_kv_critical(&key);
+                store.remove_kv(&key);
+            }
+            _ => {}
+        }
     }
-    committed.len()
+    reconciled
 }
 
 /// Drain the node's §35 meter + refusal counter into the ledger and the private log, now.
@@ -1949,6 +2175,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("durable store failed readiness: {error}"));
     validate_or_set_identity_sentinel(store.as_mut(), &addr)
         .unwrap_or_else(|error| panic!("identity sentinel verification failed: {error}"));
+    reconcile_surviving_relay_journals(store.as_mut());
     let durability = store.durability_handle().unwrap_or_default();
     let _ = DURABILITY.set(durability.clone());
     let mut node = Node::with_store(identity, store);
@@ -5437,6 +5664,13 @@ mod driver_tests {
         fn remove_kv_critical(&mut self, key: &str) -> std::result::Result<(), String> {
             self.0.remove_kv_critical(key)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.0.put_kv_if_absent_critical(key, value)
+        }
     }
 
     struct ReadinessStore {
@@ -5516,6 +5750,13 @@ mod driver_tests {
                 return Err("unreconciled mutation remains".into());
             }
             Ok(())
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            self.inner.put_kv_if_absent_critical(key, value)
         }
     }
 
@@ -7299,7 +7540,11 @@ mod access_and_ledger_tests {
     fn lock_retry_buffers() -> std::sync::MutexGuard<'static, ()> {
         let guard = lock_driver_statics();
         RETRY_USAGE.lock().unwrap().clear();
+        RETRY_USAGE_BASE.lock().unwrap().clear();
         RETRY_CARRIAGE.lock().unwrap().clear();
+        RETRY_CARRIAGE_BASE.lock().unwrap().clear();
+        RETRY_STORAGE.lock().unwrap().clear();
+        RETRY_STORAGE_BASE.lock().unwrap().clear();
         guard
     }
 
@@ -7716,6 +7961,19 @@ mod access_and_ledger_tests {
             // Deliberately the PROCESS-LOCAL copy, never the durable row.
             self.local.get_kv(key)
         }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            let mut guard = self.durable.lock().unwrap();
+            if guard.contains_key(key) {
+                return Ok(false);
+            }
+            guard.insert(key.to_string(), value.clone());
+            self.local.put_kv(key, value);
+            Ok(true)
+        }
     }
 
     /// Sum every `usage/` row in the durable partition the way hop-billingd's reconciler does
@@ -7858,6 +8116,13 @@ mod access_and_ledger_tests {
             ) -> std::result::Result<(), String> {
                 Err("disk full / firestore unavailable".into())
             }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                _key: &str,
+                _value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                Err("disk full / firestore unavailable".into())
+            }
         }
 
         let tenant: TenantId = [7u8; 16];
@@ -7879,7 +8144,480 @@ mod access_and_ledger_tests {
             "STORE-005 failure: failed store write claimed success, reported {} committed",
             committed
         );
-        assert!(RETRY_USAGE.lock().unwrap().contains_key(&tenant));
+        assert!(RETRY_USAGE
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(_, t)| *t == tenant));
         RETRY_USAGE.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn svc_011_hostile_ambiguous_commit_retry_does_not_double_count_usage() {
+        let _buffers = lock_retry_buffers();
+        use hop_core::store::{KvMutation, MemoryStore};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct AmbiguousStore {
+            inner: MemoryStore,
+            fail_commit: AtomicBool,
+        }
+        impl Store for AmbiguousStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                // Ambiguous commit: write succeeds in datastore, but network timeout returns Err
+                self.inner.put_kv(key, value);
+                if self.fail_commit.load(Ordering::SeqCst) {
+                    Err("network partition: commit timed out on response".into())
+                } else {
+                    Ok(())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let tenant: TenantId = [9u8; 16];
+        let mut store = AmbiguousStore {
+            inner: MemoryStore::new(),
+            fail_commit: AtomicBool::new(true),
+        };
+
+        // Cycle 1: 50 bundles / 5000 bytes drained
+        let drained1 = vec![(
+            tenant,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            },
+        )];
+        let committed1 = merge_usage_into_store(&mut store, &drained1, 3_600_000);
+        assert_eq!(committed1, 0, "ambiguous failure must report 0 committed");
+        let key = usage_kv_key(1, &tenant);
+        assert_eq!(
+            store.get_kv(&key).map(|b| decode_usage(&b)),
+            Some(Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            }),
+            "store committed the 50 units before returning ambiguous error"
+        );
+
+        // Cycle 2: 10 new bundles arrive; commit now succeeds
+        store.fail_commit.store(false, Ordering::SeqCst);
+        let drained2 = vec![(
+            tenant,
+            Usage {
+                bundles: 10,
+                payload_bytes: 1000,
+            },
+        )];
+        let committed2 = merge_usage_into_store(&mut store, &drained2, 3_600_000);
+        assert_eq!(committed2, 1, "retry must report 1 committed");
+
+        // The final total must be 60 (50 + 10), NEVER 110 (50 committed + (50+10) retry)!
+        let final_usage = store.get_kv(&key).map(|b| decode_usage(&b)).unwrap();
+        assert_eq!(
+            final_usage,
+            Usage {
+                bundles: 60,
+                payload_bytes: 6000,
+            },
+            "ambiguous retry must NOT double-count the previous 50 units"
+        );
+    }
+
+    #[test]
+    fn svc_011_durable_journal_reconciles_uncommitted_usage_on_restart() {
+        let _buffers = lock_retry_buffers();
+        let tenant: TenantId = [7u8; 16];
+        let store = MemoryStore::new();
+        let hour = 42u64;
+        let now = hour * 3_600_000;
+
+        struct CrashBeforeCommitStore {
+            inner: MemoryStore,
+        }
+        impl Store for CrashBeforeCommitStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.inner.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                if key.starts_with("journal/") {
+                    self.inner.put_kv(key, value);
+                    Ok(())
+                } else {
+                    Err("process crash before ledger commit".into())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let mut crash_store = CrashBeforeCommitStore { inner: store };
+        let drained = vec![(
+            tenant,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            },
+        )];
+        let committed = merge_usage_into_store(&mut crash_store, &drained, now);
+        assert_eq!(committed, 0, "commit must fail, simulating process crash");
+
+        let mut store = crash_store.inner;
+        let ledger_key = usage_kv_key(hour, &tenant);
+        assert_eq!(
+            store.get_kv(&ledger_key),
+            None,
+            "ledger row was not committed before crash"
+        );
+        assert!(
+            !store.list_kv("journal/usage/").is_empty(),
+            "journal row must be present in store"
+        );
+
+        RETRY_USAGE.lock().unwrap().clear();
+        RETRY_USAGE_BASE.lock().unwrap().clear();
+
+        let reconciled = reconcile_surviving_relay_journals(&mut store);
+        assert_eq!(
+            reconciled, 1,
+            "startup reconcile must recover the 1 uncommitted tenant row"
+        );
+
+        let recovered_usage = store.get_kv(&ledger_key).map(|b| decode_usage(&b)).unwrap();
+        assert_eq!(
+            recovered_usage,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000
+            },
+            "recovered ledger row must equal actual usage"
+        );
+        assert!(
+            store.list_kv("journal/usage/").is_empty(),
+            "journal row must be deleted after reconcile"
+        );
+    }
+
+    #[test]
+    fn svc_011_durable_journal_reconcile_is_noop_when_commit_succeeded() {
+        let _buffers = lock_retry_buffers();
+        let tenant: TenantId = [7u8; 16];
+        let store = MemoryStore::new();
+        let hour = 42u64;
+        let now = hour * 3_600_000;
+
+        struct CrashBeforeDeleteStore {
+            inner: MemoryStore,
+        }
+        impl Store for CrashBeforeDeleteStore {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.inner.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.inner.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.inner.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.inner.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.inner.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.inner.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.inner.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.inner.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.inner.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.inner.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.inner.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                self.inner.put_kv(key, value);
+                Ok(())
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.inner.put_kv_if_absent_critical(key, value)
+            }
+            fn remove_kv(&mut self, _key: &str) {}
+            fn remove_kv_critical(&mut self, _key: &str) -> std::result::Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let mut crash_store = CrashBeforeDeleteStore { inner: store };
+        let drained = vec![(
+            tenant,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            },
+        )];
+        let committed = merge_usage_into_store(&mut crash_store, &drained, now);
+        assert_eq!(committed, 1, "ledger commit succeeded");
+
+        let mut store = crash_store.inner;
+        let ledger_key = usage_kv_key(hour, &tenant);
+        assert_eq!(
+            store.get_kv(&ledger_key).map(|b| decode_usage(&b)),
+            Some(Usage {
+                bundles: 50,
+                payload_bytes: 5000
+            }),
+            "ledger row was committed"
+        );
+        assert!(
+            !store.list_kv("journal/usage/").is_empty(),
+            "journal row is retained due to crash before deletion"
+        );
+
+        RETRY_USAGE.lock().unwrap().clear();
+        RETRY_USAGE_BASE.lock().unwrap().clear();
+
+        let reconciled = reconcile_surviving_relay_journals(&mut store);
+        assert_eq!(
+            reconciled, 0,
+            "startup reconcile must be a no-op because ledger is already at target"
+        );
+
+        let final_usage = store.get_kv(&ledger_key).map(|b| decode_usage(&b)).unwrap();
+        assert_eq!(
+            final_usage,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000
+            },
+            "ledger row must NOT be double-counted by reconcile"
+        );
+        assert!(
+            store.list_kv("journal/usage/").is_empty(),
+            "journal row must be deleted after reconcile"
+        );
+    }
+
+    #[test]
+    fn svc_011_cross_hour_retry_does_not_corrupt_new_hour_base() {
+        let _buffers = lock_retry_buffers();
+        let tenant: TenantId = [5u8; 16];
+        let mut store = MemoryStore::new();
+
+        let key_h1 = usage_kv_key(1, &tenant);
+        store.put_kv(
+            &key_h1,
+            encode_usage(&Usage {
+                bundles: 100,
+                payload_bytes: 10000,
+            }),
+        );
+        let key_h2 = usage_kv_key(2, &tenant);
+
+        struct FailH1Store(MemoryStore);
+        impl Store for FailH1Store {
+            fn put(&mut self, b: Bundle, now: u64) -> bool {
+                self.0.put(b, now)
+            }
+            fn get(&self, id: &BundleId) -> Option<Bundle> {
+                self.0.get(id)
+            }
+            fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+                self.0.remove(id)
+            }
+            fn seen(&self, id: &BundleId) -> bool {
+                self.0.seen(id)
+            }
+            fn contains(&self, id: &BundleId) -> bool {
+                self.0.contains(id)
+            }
+            fn have(&self) -> hop_core::store::HaveSet {
+                self.0.have()
+            }
+            fn prune(&mut self, now: u64) {
+                self.0.prune(now);
+            }
+            fn put_kv(&mut self, key: &str, value: Vec<u8>) {
+                self.0.put_kv(key, value);
+            }
+            fn get_kv(&self, key: &str) -> Option<Vec<u8>> {
+                self.0.get_kv(key)
+            }
+            fn list_kv(&self, prefix: &str) -> Vec<(String, Vec<u8>)> {
+                self.0.list_kv(prefix)
+            }
+            fn apply_kv_batch(
+                &mut self,
+                mutations: &[hop_core::store::KvMutation],
+            ) -> std::result::Result<(), String> {
+                self.0.apply_kv_batch(mutations)
+            }
+            fn put_kv_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<(), String> {
+                if key.starts_with("journal/") {
+                    self.0.put_kv(key, value);
+                    Ok(())
+                } else {
+                    Err("h1 write failed".into())
+                }
+            }
+            fn put_kv_if_absent_critical(
+                &mut self,
+                key: &str,
+                value: Vec<u8>,
+            ) -> std::result::Result<bool, String> {
+                self.0.put_kv_if_absent_critical(key, value)
+            }
+        }
+
+        let mut fail_store = FailH1Store(store);
+        let drained1 = vec![(
+            tenant,
+            Usage {
+                bundles: 50,
+                payload_bytes: 5000,
+            },
+        )];
+        let committed1 = merge_usage_into_store(&mut fail_store, &drained1, 3_600_000);
+        assert_eq!(committed1, 0);
+
+        let mut store = fail_store.0;
+        let drained2 = vec![(
+            tenant,
+            Usage {
+                bundles: 10,
+                payload_bytes: 1000,
+            },
+        )];
+        let committed2 = merge_usage_into_store(&mut store, &drained2, 2 * 3_600_000);
+        assert_eq!(
+            committed2, 2,
+            "both hour 1 and hour 2 rows should commit on success"
+        );
+
+        assert_eq!(
+            store.get_kv(&key_h1).map(|b| decode_usage(&b)),
+            Some(Usage {
+                bundles: 150,
+                payload_bytes: 15000
+            })
+        );
+
+        assert_eq!(
+            store.get_kv(&key_h2).map(|b| decode_usage(&b)),
+            Some(Usage {
+                bundles: 10,
+                payload_bytes: 1000
+            }),
+            "hour 2 row must NOT be seeded with hour 1's base of 100"
+        );
     }
 }
