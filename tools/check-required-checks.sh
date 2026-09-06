@@ -119,6 +119,12 @@ else:
         errors.append("Automation authority guards must not depend on a path-filtered job")
     if any(re.match(r"^    if:\s*", line) for line in automation_block):
         errors.append("Automation authority guards must not have a job-level condition")
+    automation_text = "\n".join(automation_block)
+    if "tools/commit-message-guard.sh --github-event" not in automation_text:
+        errors.append("Automation authority guards must run commit-message-guard unconditionally (PROC-016)")
+    for other_id, other_block in blocks:
+        if other_id != automation_ids[0] and "tools/commit-message-guard.sh" in "\n".join(other_block):
+            errors.append(f"job {other_id} must not run commit-message-guard (PROC-016)")
 if len(gate_ids) != 1:
     errors.append(f"ci.yml must define exactly one job named 'CI gate', found {len(gate_ids)}")
 else:

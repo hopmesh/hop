@@ -95,6 +95,63 @@ def org_secret_names_for(repo, cache={}):
                 names.add(secret["name"])
     return names
 
+def mirror_branch_protection(repo):
+    """Audit default branch protection on the mirror repository (INFRA-019).
+
+    Mirrors receive direct fast-forward pushes from the Copybara export (sync-components.yml,
+    hop-sync App token), so required status checks and PR reviews are deliberately not required
+    on mirror main. Protection requires: enforce_admins true, allow_force_pushes false,
+    allow_deletions false.
+    """
+    data = gh_json(f"repos/{OWNER}/{repo}/branches/main/protection")
+    if not data:
+        return "main branch is not protected"
+    admins = data.get("enforce_admins", {}).get("enabled")
+    if admins is not True:
+        return "main branch does not enforce admin parity (enforce_admins is not true)"
+    force_pushes = data.get("allow_force_pushes", {}).get("enabled")
+    if force_pushes is not False:
+        return "main branch does not block force pushes (allow_force_pushes is not false)"
+    deletions = data.get("allow_deletions", {}).get("enabled")
+    if deletions is not False:
+        return "main branch does not block deletions (allow_deletions is not false)"
+    return None
+
+
+def mirror_environment_protection(repo, environment):
+    """Audit environment protection rules on the mirror release environment (INFRA-019)."""
+    data = gh_json(f"repos/{OWNER}/{repo}/environments/{environment}")
+    if not data:
+        return f"environment '{environment}' is not configured"
+    rules = data.get("protection_rules", [])
+    has_reviewer = False
+    for r in rules:
+        for rev in r.get("reviewers", []):
+            if rev.get("reviewer", {}).get("login") == "jwaldrip":
+                has_reviewer = True
+    if not has_reviewer:
+        return f"environment '{environment}' lacks required reviewer 'jwaldrip'"
+    policy = data.get("deployment_branch_policy")
+    if not policy:
+        return f"environment '{environment}' lacks deployment_branch_policy"
+    return None
+
+
+def canonical_app_installation():
+    """Verify hop-source GitHub App is installed on hopmesh/hop (INFRA-023)."""
+    data = gh_json(f"repos/{OWNER}/hop/installation")
+    if not data:
+        return "hop-source GitHub App is not installed on hopmesh/hop"
+    perms = data.get("permissions", {})
+    missing_perms = [
+        f"{req}:read"
+        for req in ("actions", "checks", "contents")
+        if perms.get(req) not in ("read", "write", "admin")
+    ]
+    if missing_perms:
+        return f"hop-source GitHub App on hopmesh/hop missing permissions: {', '.join(missing_perms)}"
+    return None
+
 
 def workflow_requirements(root):
     """Every publishing component: the secrets its release.yml references + its environment."""
@@ -120,7 +177,7 @@ def workflow_requirements(root):
     return out
 
 
-def audit(root):
+def audit(root, check_protection=False):
     findings = []
     for entry in workflow_requirements(root):
         repo = entry["component"]
@@ -128,7 +185,18 @@ def audit(root):
         for environment in entry["environments"]:
             seeded |= environment_secret_names(repo, environment)
         missing = [name for name in entry["required"] if name not in seeded]
-        findings.append({**entry, "missing": missing})
+
+        protection_issues = []
+        if check_protection:
+            bp_issue = mirror_branch_protection(repo)
+            if bp_issue:
+                protection_issues.append(bp_issue)
+            for env in entry["environments"]:
+                env_issue = mirror_environment_protection(repo, env)
+                if env_issue:
+                    protection_issues.append(env_issue)
+
+        findings.append({**entry, "missing": missing, "protection_issues": protection_issues})
     return findings
 
 
@@ -136,35 +204,51 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--root", default=".")
+    parser.add_argument("--audit-protection", action="store_true", help="also audit mirror branch and environment protection rules")
     args = parser.parse_args()
 
-    findings = audit(Path(args.root).resolve())
+    findings = audit(Path(args.root).resolve(), check_protection=args.audit_protection)
+    app_issue = canonical_app_installation() if args.audit_protection else None
     if args.json:
-        print(json.dumps(findings, indent=2))
+        payload = {"mirrors": findings}
+        if args.audit_protection:
+            payload["app_installation"] = app_issue or "OK"
+        print(json.dumps(payload, indent=2))
     else:
         for entry in findings:
-            state = (
-                "OK"
-                if not entry["missing"]
-                else "MISSING " + ", ".join(entry["missing"])
-            )
+            status_parts = []
+            if entry["missing"]:
+                status_parts.append("MISSING " + ", ".join(entry["missing"]))
+            if entry.get("protection_issues"):
+                status_parts.append("PROTECTION: " + ", ".join(entry["protection_issues"]))
+            state = "; ".join(status_parts) if status_parts else "OK"
             print(f"{entry['component']:22} {state}")
+        if args.audit_protection:
+            print(f"{'hop-source App (hop)':22} {'OK' if not app_issue else app_issue}")
 
     broken = [entry for entry in findings if entry["missing"]]
-    if broken:
-        names = sorted({name for entry in broken for name in entry["missing"]})
-        print(
-            f"\n{len(broken)} of {len(findings)} publishing mirrors cannot release: "
-            f"unseeded {', '.join(names)}.\n"
-            "An unset secret resolves to the empty string, so the release fails inside "
-            "create-github-app-token instead of naming the cause. Seed it once as an organization "
-            "secret scoped to these repositories (see docs/release-engineering.md, which carries the "
-            "exact gh secret set commands).",
-            file=sys.stderr,
-        )
+    prot_broken = [entry for entry in findings if entry.get("protection_issues")]
+    if broken or prot_broken or app_issue:
+        if broken:
+            names = sorted({name for entry in broken for name in entry["missing"]})
+            print(
+                f"\n{len(broken)} of {len(findings)} publishing mirrors cannot release: "
+                f"unseeded {', '.join(names)}.\n"
+                "An unset secret resolves to the empty string, so the release fails inside "
+                "create-github-app-token instead of naming the cause. Seed it once as an organization "
+                "secret scoped to these repositories (see docs/release-engineering.md, which carries the "
+                "exact gh secret set commands).",
+                file=sys.stderr,
+            )
+        if prot_broken:
+            print(
+                f"\n{len(prot_broken)} of {len(findings)} publishing mirrors have unprotected release boundaries (INFRA-019).",
+                file=sys.stderr,
+            )
+        if app_issue:
+            print(f"\n{app_issue} (INFRA-023).", file=sys.stderr)
         raise SystemExit(1)
-    print(f"\nall {len(findings)} publishing mirrors have every referenced secret seeded")
-
+    print(f"\nall {len(findings)} publishing mirrors have every referenced secret seeded and protection rules satisfied")
 
 if __name__ == "__main__":
     try:

@@ -103,6 +103,25 @@ build_fixture "$tmp/skips-then-real.json" '{
 }'
 expect "skips ahead of a real run still ACCEPTED" 0 "$tmp/skips-then-real.json"
 
+# --- 8. latest real run failure: PROC-018 ------------------------------------------------------------
+# Chronic job failure must not be accepted as fresh. A failing run inside the age window must fail closed.
+build_fixture "$tmp/latest-failed.json" '{
+  "runs/1/jobs": {"jobs": [{"name": "Sign and attest native release bundle", "conclusion": "failure",
+                             "completed_at": "2026-08-15T12:00:00Z"}]}
+}'
+expect "latest real run failure is REJECTED" 1 "$tmp/latest-failed.json"
+
+# Failure after a prior success must also fail: the most recent execution was broken.
+build_fixture "$tmp/failure-after-success.json" '{
+  "workflows/native-artifacts.yml/runs": {"workflow_runs": [{"id": 10, "updated_at": "2026-08-15T12:00:00Z"},
+                                                            {"id": 1,  "updated_at": "2026-08-14T12:00:00Z"}]},
+  "runs/10/jobs": {"jobs": [{"name": "Sign and attest native release bundle", "conclusion": "failure",
+                              "completed_at": "2026-08-15T12:00:00Z"}]},
+  "runs/1/jobs": {"jobs": [{"name": "Sign and attest native release bundle", "conclusion": "success",
+                             "completed_at": "2026-08-14T12:00:00Z"}]}
+}'
+expect "failure after success is REJECTED" 1 "$tmp/failure-after-success.json"
+
 # --- 8. the manifest itself must be non-empty and complete ------------------------------------------
 python3 - <<'PY'
 import json, pathlib, sys

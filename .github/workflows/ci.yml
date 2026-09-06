@@ -948,6 +948,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -1115,6 +1116,17 @@ jobs:
         run: |
           find testkit -maxdepth 1 -type f \( -name '*.sh' -o -name 'tk' \) -exec bash -n {} +
           find testkit -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} +
+      - name: Self-test the commit message guard
+        run: bash tools/commit-message-guard.test.sh
+      # PROC-009 / PROC-016: scan introduced commit messages for banned em/en/lookalike dashes with zero allowlist.
+      # Range is computed from event context (pull_request: base..HEAD, push: before..HEAD, etc.).
+      # Note: On pull_request, GitHub Actions checks out refs/pull/N/merge by default, which is a
+      # synthetic merge commit with two parents (base and PR head) whose message is "Merge <sha> into <sha>".
+      # base.sha..HEAD includes this synthetic merge commit; GitHub's generated message never contains
+      # dashes, but any introduced merge commit in the PR or the synthetic merge commit itself is checked.
+      # Runs unconditionally in the automation job on every PR without path filters.
+      - name: Run commit message guard
+        run: bash tools/commit-message-guard.sh --github-event
 
   docs-tokens:
     name: Docs token guard (banned copy)
@@ -1149,16 +1161,6 @@ jobs:
       # and comments too, not just docs. See the `docs` path filter above.
       - name: Run docs token guard
         run: bash tools/docs-token-guard.sh
-      - name: Self-test the commit message guard
-        run: bash tools/commit-message-guard.test.sh
-      # PROC-009: scan introduced commit messages for banned em/en/lookalike dashes with zero allowlist.
-      # Range is computed from event context (pull_request: base..HEAD, push: before..HEAD, etc.).
-      # Note: On pull_request, GitHub Actions checks out refs/pull/N/merge by default, which is a
-      # synthetic merge commit with two parents (base and PR head) whose message is "Merge <sha> into <sha>".
-      # base.sha..HEAD includes this synthetic merge commit; GitHub's generated message never contains
-      # dashes, but any introduced merge commit in the PR or the synthetic merge commit itself is checked.
-      - name: Run commit message guard
-        run: bash tools/commit-message-guard.sh --github-event
       - name: Self-test the documentation path guard
         run: bash tools/doc-path-guard.test.sh
       - name: Run documentation path guard

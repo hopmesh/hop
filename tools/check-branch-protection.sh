@@ -91,6 +91,11 @@ enforce_admins = d.get("enforce_admins", {}).get("enabled")
 if enforce_admins is not True:
     print(f"::error:: enforce_admins must be enabled (got {enforce_admins!r})", file=sys.stderr)
     sys.exit(1)
+pr_reviews = d.get("required_pull_request_reviews")
+lock_branch = d.get("lock_branch", {}).get("enabled")
+if pr_reviews is None and not lock_branch:
+    print("::error:: main branch protection must configure required_pull_request_reviews or lock_branch to prevent direct pushes bypassing PR gates (INFRA-022)", file=sys.stderr)
+    sys.exit(1)
 ctx = set()
 for c in rsc.get("checks", []) or []:
     if c.get("context"): ctx.add(c["context"])
@@ -196,4 +201,33 @@ else:
   fi
 done
 
-echo "branch protection on main requires exactly the single CI gate check, strict is true, auto-merge is enabled, and environments are protected"
+pages_api="https://api.github.com/repos/${REPO}/pages"
+pages_resp="$(curl -sSL -w '\n%{http_code}' \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  "$pages_api")"
+pages_code="$(printf '%s' "$pages_resp" | tail -n1)"
+pages_body="$(printf '%s' "$pages_resp" | sed '$d')"
+if [ "$pages_code" = "200" ]; then
+  pages_check="$(printf '%s' "$pages_body" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+cname = d.get("cname")
+domain_state = d.get("protected_domain_state")
+if cname and domain_state != "verified":
+    print(f"INVALID: cname {cname} has protected_domain_state={domain_state}")
+else:
+    print("OK")
+')"
+  if [ "$pages_check" != "OK" ]; then
+    echo "::error:: GitHub Pages custom domain must be verified to prevent domain takeover (INFRA-021): $pages_check"
+    exit 1
+  fi
+elif [ "$pages_code" != "404" ]; then
+  echo "::error:: unexpected HTTP $pages_code reading GitHub Pages settings from $pages_api"
+  printf '%s\n' "$pages_body" | head -5
+  exit 1
+fi
+
+echo "branch protection on main requires CI gate, strict is true, auto-merge is enabled, direct pushes are prevented, environments are protected, and Pages custom domain is verified"
