@@ -56,7 +56,7 @@ export async function GET() {
     '## Licensing & facts',
     '- Licensing is two-tier and per-component: the hosted services (services/*: relay, endpoint, gateway, telemetry, account, billing) are source-available under FSL-1.1-ALv2 and convert to Apache-2.0 after two years; the protocol core, the SDKs, the bearers and the drivers are Apache-2.0. The protocol itself is never monetized.',
     '- Revenue comes from the hosted cloud backbone (usage-based) and commercial licensing.',
-    '- Pure-Rust core (deterministic, testable without a radio) with iOS and Android bindings via UniFFI.',
+    '- Pure-Rust core (deterministic, testable without a radio) bound via C ABI (sdk/hop.h) and HopContract for iOS and Android.',
     '- End-to-end encrypted (X25519 + ChaCha20-Poly1305); identities are public keys, not phone numbers or accounts.',
     '- BLE is the primary local bearer (passive, no pairing); Wi-Fi/LAN and an internet relay extend reach; multipath epidemic forward; at-least-once with dedup.',
     '- Contact: hello@hopme.sh'
