@@ -27,6 +27,17 @@ test("base64 round-trips arbitrary bytes including high bytes and 32-byte ids", 
 test("fromBase64 rejects malformed input", () => {
   assert.throws(() => fromBase64("Zg="), /multiple of 4/);
   assert.throws(() => fromBase64("****"), /outside the alphabet/);
+  // ABI-015: Non-ASCII Unicode characters and characters outside 0-255 must throw
+  assert.throws(() => fromBase64("\u0100\u0100\u0100\u0100"), /outside the alphabet/);
+  assert.throws(() => fromBase64("A\u0100AA"), /outside the alphabet/);
+  assert.throws(() => fromBase64("\u2026\u2026\u2026\u2026"), /outside the alphabet/);
+  assert.throws(() => fromBase64("\u00FF\u00FF\u00FF\u00FF"), /outside the alphabet/);
+  assert.throws(() => fromBase64("\u0000\u0000\u0000\u0000"), /outside the alphabet/);
+  // Misplaced padding characters must throw
+  assert.throws(() => fromBase64("==AA"), /outside the alphabet/);
+  assert.throws(() => fromBase64("A=AA"), /outside the alphabet/);
+  assert.throws(() => fromBase64("AA=A"), /outside the alphabet/);
+  assert.throws(() => fromBase64("A==="), /outside the alphabet/);
 });
 
 test("utf8 round-trips and asBytes accepts strings and bytes", () => {
