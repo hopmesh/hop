@@ -43,18 +43,73 @@ class CheckError(RuntimeError):
     pass
 
 
+def parse_json_stream(text):
+    """Parse one or more concatenated JSON documents from text."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    objs = []
+    text = (text or "").strip()
+    if not text:
+        return objs
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+            objs.append(obj)
+            pos = end
+        except json.JSONDecodeError:
+            break
+    return objs
+
+
+def gh_get(path, paginate=False):
+    """GET an API path using gh api, returning (status, data).
+
+    Status is the HTTP status code (int): 200 on success (returncode == 0),
+    or parsed from gh api stderr (which prints e.g. 'HTTP 401' / 'HTTP 403'
+    without needing --include / -i). On non-HTTP or unparsed errors with
+    non-zero returncode, status is None.
+    Data is parsed JSON (a list of page objects when paginate=True, or single
+    parsed value when paginate=False) or None when absent/forbidden/failed.
+    """
+    cmd = ["gh", "api"]
+    if paginate:
+        cmd.append("--paginate")
+    cmd.append(path)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    if result.returncode == 0:
+        status = 200
+        if paginate:
+            return status, parse_json_stream(result.stdout)
+        try:
+            return status, json.loads(result.stdout or "null")
+        except json.JSONDecodeError:
+            return status, None
+
+    status = None
+    match = re.search(r"\bHTTP\s+(\d{3})\b", result.stderr)
+    if match:
+        status = int(match.group(1))
+    else:
+        try:
+            err_obj = json.loads(result.stdout or "null")
+            if isinstance(err_obj, dict) and "status" in err_obj:
+                status = int(err_obj["status"])
+        except Exception:
+            pass
+
+    return status, None
+
+
 def gh_json(path):
     """GET an API path, returning parsed JSON or None when it is absent/forbidden."""
-    result = subprocess.run(
-        ["gh", "api", path], capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout or "null")
-    except json.JSONDecodeError:
-        return None
-
+    _status, data = gh_get(path, paginate=False)
+    return data
 
 def repo_secret_names(repo):
     data = gh_json(f"repos/{OWNER}/{repo}/actions/secrets") or {}
@@ -138,20 +193,83 @@ def mirror_environment_protection(repo, environment):
 
 
 def canonical_app_installation():
-    """Verify hop-source GitHub App is installed on hopmesh/hop (INFRA-023)."""
-    data = gh_json(f"repos/{OWNER}/hop/installation")
-    if not data:
-        return "hop-source GitHub App is not installed on hopmesh/hop"
-    perms = data.get("permissions", {})
+    """Verify hop-source GitHub App is installed on hopmesh/hop (INFRA-023).
+
+    Returns None if and only if all of the following are positively observed:
+    1. orgs/hopmesh/installations contains app_slug 'hop-source'.
+    2. Its permissions include actions, checks, and contents at read or higher.
+    3. Either repository_selection is 'all', or repository_selection is 'selected'
+       and user/installations/<id>/repositories contains hopmesh/hop.
+
+    Every other outcome returns a distinct message naming the specific cause.
+    Auth and transport failures never produce 'not installed' wording.
+    """
+    status, pages = gh_get(f"orgs/{OWNER}/installations", paginate=True)
+    if status != 200 or pages is None:
+        return "org installations unreadable with this token (needs admin:org)"
+
+    installations = []
+    if isinstance(pages, dict):
+        pages = [pages]
+    for page in (pages or []):
+        if isinstance(page, dict):
+            installations.extend(page.get("installations", []))
+        elif isinstance(page, list):
+            installations.extend(page)
+
+    target_app = None
+    for inst in installations:
+        if isinstance(inst, dict) and inst.get("app_slug") == "hop-source":
+            target_app = inst
+            break
+
+    if target_app is None:
+        return "hop-source not installed on the hopmesh organization"
+
+    perms = target_app.get("permissions", {})
     missing_perms = [
         f"{req}:read"
         for req in ("actions", "checks", "contents")
         if perms.get(req) not in ("read", "write", "admin")
     ]
     if missing_perms:
-        return f"hop-source GitHub App on hopmesh/hop missing permissions: {', '.join(missing_perms)}"
-    return None
+        return f"hop-source GitHub App missing permissions: {', '.join(missing_perms)}"
 
+    selection = target_app.get("repository_selection")
+    if selection == "all":
+        return None
+
+    if selection == "selected":
+        inst_id = target_app.get("id")
+        repo_status, repo_pages = gh_get(
+            f"user/installations/{inst_id}/repositories", paginate=True
+        )
+        if repo_status != 200 or repo_pages is None:
+            return (
+                "selected repositories unreadable with this token "
+                "(needs read:user; verify by minting in a mirror release run)"
+            )
+
+        repos = []
+        if isinstance(repo_pages, dict):
+            repo_pages = [repo_pages]
+        for page in (repo_pages or []):
+            if isinstance(page, dict):
+                repos.extend(page.get("repositories", []))
+            elif isinstance(page, list):
+                repos.extend(page)
+
+        # full_name is what the API returns for every repository; a bare "hop" match would accept a
+        # same-named repository under another owner if the installation ever spans one.
+        full_names = {r.get("full_name") for r in repos if isinstance(r, dict)}
+        if f"{OWNER}/hop" in full_names:
+            return None
+        return (
+            "installed with selected repositories but hopmesh/hop is not among them "
+            "(hopmesh/hop not selected)"
+        )
+
+    return f"hop-source GitHub App has unknown repository_selection: {selection}"
 
 def workflow_requirements(root):
     """Every publishing component: the secrets its release.yml references + its environment."""
