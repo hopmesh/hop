@@ -259,10 +259,10 @@ def canonical_app_installation():
             elif isinstance(page, list):
                 repos.extend(page)
 
-        repo_names = {r.get("name") for r in repos if isinstance(r, dict)} | {
-            r.get("full_name") for r in repos if isinstance(r, dict)
-        }
-        if "hop" in repo_names or f"{OWNER}/hop" in repo_names:
+        # full_name is what the API returns for every repository; a bare "hop" match would accept a
+        # same-named repository under another owner if the installation ever spans one.
+        full_names = {r.get("full_name") for r in repos if isinstance(r, dict)}
+        if f"{OWNER}/hop" in full_names:
             return None
         return (
             "installed with selected repositories but hopmesh/hop is not among them "
