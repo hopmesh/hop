@@ -25,11 +25,12 @@ ignore = []
 
 [licenses]
 private = { ignore = true }
-# No repo-wide root license: every first-party crate carries its OWN FSL-1.1-ALv2 via a crate-local
-# `license-file = "LICENSE.md"` (FSL is not an SPDX id, hence license-file not a `license` field).
-# In CI this is gated via the `deny` job. First-party crates are clarified via
-# `[[licenses.clarify]]` mapping their license-file to `LicenseRef-FSL-1.1-ALv2`
-# (or exempted via `[licenses] private = { ignore = true }`).
+# No repo-wide root license: components carry their own license in two tiers:
+# services/* carries FSL-1.1-ALv2 via a crate-local `license-file = "LICENSE.md"`
+# (FSL is not an SPDX id, hence license-file not a `license` field).
+# The protocol core, SDKs, bearers, and drivers carry Apache-2.0.
+# In CI this is gated via the `deny` job. First-party service crates are clarified via
+# `[[licenses.clarify]]` mapping their license-file to `LicenseRef-FSL-1.1-ALv2`.
 # This list governs THIRD-PARTY dependency licenses, which must be permissive so they can travel inside
 # the shipped binaries and the per-bearer packages.
 allow = [
@@ -50,40 +51,6 @@ allow = [
 # A crate missing usable license metadata falls below this and fails the check, which is what we want
 # for THIRD-PARTY crates (unknown terms should not ship). First-party crates carry FSL via license-file.
 confidence-threshold = 0.9
-
-# FSL is not an SPDX-listed license. Bind the custom identifier to the byte-identical license file
-# carried by every core crate; repo-integrity-guard.sh separately enforces that these copies stay in
-# lockstep. Any text change invalidates the hash and forces a deliberate clarification update.
-[[licenses.clarify]]
-crate = "hop"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-endpoint-core"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-sim"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-store-firestore"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-store-sqlite"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
-[[licenses.clarify]]
-crate = "hop-wasm"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
-
 [bans]
 # Warn on duplicate versions of the same crate so tree bloat and skew stay visible;
 # deny wildcard version requirements in first-party crates.
@@ -106,6 +73,10 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
+# FSL is not an SPDX-listed license. Bind the custom identifier to the byte-identical license file
+# carried by the hosted service crates (services/*); repo-integrity-guard.sh separately enforces
+# that these copies stay in lockstep. Any text change invalidates the hash and forces a deliberate
+# clarification update.
 [[licenses.clarify]]
 crate = "hop-endpoint"
 expression = "LicenseRef-FSL-1.1-ALv2"
@@ -126,7 +97,3 @@ crate = "hop-telemetryd"
 expression = "LicenseRef-FSL-1.1-ALv2"
 license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]
 
-[[licenses.clarify]]
-crate = "hop-example-origin"
-expression = "LicenseRef-FSL-1.1-ALv2"
-license-files = [{ path = "LICENSE.md", hash = 0xf0da4c46 }]

@@ -191,5 +191,4 @@ bash test/run-host-tests.sh
 ## License
 
 [Apache-2.0](./LICENSE.md). The protocol core (`hop-core`, published on crates.io as
-[hop-mesh-core](https://crates.io/crates/hop-mesh-core)) is FSL-1.1-ALv2 and converts to Apache-2.0
-after two years.
+[hop-mesh-core](https://crates.io/crates/hop-mesh-core)) is also Apache-2.0.
