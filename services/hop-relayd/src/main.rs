@@ -2452,10 +2452,7 @@ fn redact_url_part(url_str: &str) -> String {
             _ => None,
         };
 
-        let frag_part = match frag_start {
-            Some(f) => Some(&remainder[f..]),
-            None => None,
-        };
+        let frag_part = frag_start.map(|f| &remainder[f..]);
 
         let sanitized_query = if let Some(query) = query_part {
             let mut params = Vec::new();
