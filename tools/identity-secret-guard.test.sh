@@ -53,8 +53,13 @@ echo "pub fn normal_code() {}" > "$TMP_DIR/normal.rs"
 python3 "$GUARD" "$TMP_DIR/normal.rs" >/dev/null
 
 
-# 4. Test (PROC-008): 33-byte random seed with trailing newline must be rejected
-python3 -c "import os; open('$TMP_DIR/seed_with_newline.bin', 'wb').write(os.urandom(32) + b'\n')"
+# 4. Test (PROC-008): 33-byte seed with trailing newline must be rejected.
+# The fixture is DETERMINISTIC on purpose. os.urandom(32) draws 32 bytes that collide often enough
+# that Shannon entropy lands under the guard's 4.5 bits/byte threshold about once in 5,700 runs
+# (measured: 35 accepts in 200,000 draws), which made this self-test a rare red gate on unrelated
+# branches. 32 distinct bytes carry exactly 5.0 bits/byte, so the case tests the guard rather than
+# the draw. Case 7 below pins the other side of the threshold.
+python3 -c "open('$TMP_DIR/seed_with_newline.bin', 'wb').write(bytes(range(0x80, 0xa0)) + b'\n')"
 set +e
 out="$(python3 "$GUARD" "$TMP_DIR/seed_with_newline.bin" 2>&1)"
 exit_code=$?
@@ -69,7 +74,7 @@ if ! echo "$out" | grep -q "raw 32-byte high-entropy identity seed detected"; th
 fi
 
 # 5. Test (PROC-008): 32-byte random seed in file with safe extension (.png) must be rejected
-python3 -c "import os; open('$TMP_DIR/fake_image.png', 'wb').write(os.urandom(32))"
+python3 -c "open('$TMP_DIR/fake_image.png', 'wb').write(bytes(range(0xc0, 0xe0)))"
 set +e
 out="$(python3 "$GUARD" "$TMP_DIR/fake_image.png" 2>&1)"
 exit_code=$?
@@ -102,6 +107,12 @@ fi
 # 7. Test (CLAIM-016): Allowlisted path (/home/web_user/) must pass
 echo "const HOME = '/home/web_user/';" > "$TMP_DIR/allowlisted_path.js"
 python3 "$GUARD" "$TMP_DIR/allowlisted_path.js" >/dev/null
+# 7b. Test (PROC-008): a 32-byte blob BELOW the entropy threshold must pass, or cases 4 and 5 would
+# also pass on a guard that rejects every 32-byte binary file regardless of entropy. Four distinct
+# bytes repeated eight times each carry 2.0 bits/byte.
+python3 -c "open('$TMP_DIR/low_entropy.bin', 'wb').write(bytes([0x80, 0x81, 0x82, 0x83]) * 8)"
+python3 "$GUARD" "$TMP_DIR/low_entropy.bin" >/dev/null
+
 # 8. Test: Full repository scan must be clean
 python3 "$GUARD" >/dev/null
 
