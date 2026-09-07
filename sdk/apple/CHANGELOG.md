@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- remove template disclaimers, document CLA and DCO, and add DCO workflow (2bbcbc6)
+- align SDK READMEs and deny.toml with core Apache-2.0 license (84474f5)
 - pin CHop to the reproducible v0.0.3 bundle built at 37a620b432a1a1968ec1bbb503c5f1b02ca3083f (ABI-008) (9532aa8)
 - stop the ledger retry-buffer tests racing and unclassify the Apple pin comment (REL-010) (82b5bfe)
 - make the native libraries reproducible by pinning SOURCE_DATE_EPOCH (REL-009) (18800a7)
@@ -24,6 +26,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - update release runbook and references for v0.0.3 (ABI-008) (70378e0)
 - document ABI 7 requirement and release runbook in Package.swift (ABI-008) (b4f219a)
