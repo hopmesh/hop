@@ -2,13 +2,23 @@
 // client SDK (sdk/apple, the `Hop` product) and exposes it to JavaScript. Binary values cross the
 // bridge as base64 strings and addresses as base58 strings, matching android/ and src/native.ts.
 //
-// Node handles are integers minted here; the module keeps a handle -> (HopNode, pump timer) registry
-// behind a lock. The pump ticks the clock, drains outbound packets, and polls the inbox and hops://
-// queues on an interval, emitting one event per item over RCTEventEmitter.
+// Node handles are integers minted here; the module keeps a handle -> (HopNode, HopRuntime, pump timer)
+// registry behind a lock. The pump ticks the clock, drains outbound packets, and polls the inbox,
+// hops://, and hps:// queues on an interval, emitting events over RCTEventEmitter.
+//
+// When native bearers and the JavaScript transport seam are both active, links owned by native
+// transports take precedence and route directly, while non-native links fall through to JavaScript
+// outgoing packet events.
 
 import Foundation
 import Hop
-// RCTEventEmitter, RCTPromiseResolveBlock and RCTPromiseRejectBlock live in the React module (the
+import HopContract
+#if canImport(HopBearerBle)
+import HopBearerBle
+#endif
+#if canImport(HopBearerLan)
+import HopBearerLan
+#endif
 // React-Core pod). Without this import every one of them is "cannot find type ... in scope" and the @objc
 // class is rejected for not inheriting from NSObject. It was missing because this file had never actually
 // been compiled: every iOS build died earlier, at `import Hop`, so the second defect was hidden behind the
@@ -17,10 +27,57 @@ import React
 
 @objc(HopMesh)
 final class HopMesh: RCTEventEmitter {
-  private struct Entry {
+  private final class Entry {
+    let handle: Int
     let node: HopNode
+    let runtime: HopRuntime
     var timer: DispatchSourceTimer?
     var inFlight = Set<String>()
+
+    private let stateLock = NSLock()
+    private var revision = 0
+    private var lastStates = ["ble": "enabled", "lan": "enabled", "relay": "disabled"]
+
+    init(handle: Int, node: HopNode) {
+      self.handle = handle
+      self.node = node
+      self.runtime = HopRuntime(node: node)
+
+      // The transport id is process-local and intentionally unrelated to the node address. BLE and LAN
+      // receive the same 16 bytes so their peer tiebreaker and duplicate-link behavior agree.
+      let transportId = randomNodeId()
+#if canImport(HopBearerBle)
+      runtime.register(BleBearer(myId: transportId))
+#endif
+#if canImport(HopBearerLan)
+      runtime.register(LanBearer(myId: transportId))
+#endif
+    }
+
+    func snapshot() -> (body: [String: Any], changed: Bool) {
+      let enabled = runtime.bearers.bearerStates()
+      let active = runtime.bearers.activeTransports()
+      let states = [
+        "ble": nativeState(tag: "BT", enabled: enabled, active: active),
+        "lan": nativeState(tag: "LAN", enabled: enabled, active: active),
+        // Relay has a separate native-bearer probe. This cross-platform bridge intentionally owns BLE
+        // and LAN only, so it never advertises a relay capability it does not register.
+        "relay": "disabled",
+      ]
+
+      stateLock.lock(); defer { stateLock.unlock() }
+      let changed = states != lastStates
+      if changed {
+        revision += 1
+        lastStates = states
+      }
+      return (["revision": revision, "states": states], changed)
+    }
+
+    private func nativeState(tag: String, enabled: [String: Bool], active: [String: Int]) -> String {
+      guard enabled[tag] == true else { return "disabled" }
+      return active[tag, default: 0] > 0 ? "active" : "enabled"
+    }
   }
 
   private let lock = NSLock()
@@ -35,7 +92,7 @@ final class HopMesh: RCTEventEmitter {
 
   override func supportedEvents() -> [String]! {
     ["HopMesh:message", "HopMesh:serviceRequest", "HopMesh:serviceResponse", "HopMesh:outgoing",
-     "HopMesh:hpsMessage", "HopMesh:hpsInvite"]
+     "HopMesh:bearerState", "HopMesh:hpsMessage", "HopMesh:hpsInvite"]
   }
 
   override func startObserving() { hasListeners = true }
@@ -47,13 +104,17 @@ final class HopMesh: RCTEventEmitter {
     lock.lock(); defer { lock.unlock() }
     let handle = nextHandle
     nextHandle += 1
-    nodes[handle] = Entry(node: node, timer: nil)
+    nodes[handle] = Entry(handle: handle, node: node)
     return handle
   }
 
-  private func node(_ handle: Int) -> HopNode? {
+  private func entry(for handle: Int) -> Entry? {
     lock.lock(); defer { lock.unlock() }
-    return nodes[handle]?.node
+    return nodes[handle]
+  }
+
+  private func node(_ handle: Int) -> HopNode? {
+    entry(for: handle)?.node
   }
 
   private func data(_ b64: String) -> Data { Data(base64Encoded: b64) ?? Data() }
@@ -146,13 +207,16 @@ final class HopMesh: RCTEventEmitter {
   @objc(closeNode:resolver:rejecter:)
   func closeNode(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     lock.lock()
-    if var entry = nodes[handle] {
+    let entry = nodes.removeValue(forKey: handle)
+    lock.unlock()
+
+    if let entry = entry {
       entry.timer?.cancel()
       entry.timer = nil
       entry.inFlight.removeAll()
-      nodes[handle] = nil
+      entry.runtime.stop()
+      entry.node.close()
     }
-    lock.unlock()
     resolve(nil)
   }
 
@@ -329,6 +393,42 @@ final class HopMesh: RCTEventEmitter {
       return reject("hop_error", "link must be a safe non-negative integer", nil)
     }
     node.linkDown(UInt64(link)); resolve(nil)
+  }
+
+  // MARK: native bearer runtime
+
+  @objc(bearerSnapshot:resolver:rejecter:)
+  func bearerSnapshot(_ handle: Int, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let entry = entry(for: handle) else { return reject("hop_error", "unknown node handle", nil) }
+    resolve(emitBearerSnapshot(entry).body)
+  }
+
+  @objc(setBearerEnabled:bearer:enabled:resolver:rejecter:)
+  func setBearerEnabled(_ handle: Int, bearer: String, enabled: Bool, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let entry = entry(for: handle) else { return reject("hop_error", "unknown node handle", nil) }
+    switch bearer {
+    case "ble":
+      entry.runtime.bearers.setEnabled("BT", enabled)
+    case "lan":
+      entry.runtime.bearers.setEnabled("LAN", enabled)
+    case "relay":
+      if enabled {
+        return reject("hop_bearer_unavailable", "relay is intentionally outside the cross-platform native bridge; probe it through its native bearer package", nil)
+      }
+    default:
+      return reject("hop_error", "unrecognized bearer: \(bearer)", nil)
+    }
+    resolve(emitBearerSnapshot(entry).body)
+  }
+
+  private func emitBearerSnapshot(_ entry: Entry, force: Bool = false) -> (body: [String: Any], changed: Bool) {
+    let result = entry.snapshot()
+    if force || result.changed {
+      var event = result.body
+      event["node"] = entry.handle
+      send("HopMesh:bearerState", event)
+    }
+    return result
   }
 
   @objc(bytesReceived:link:bytes:resolver:rejecter:)
@@ -527,37 +627,44 @@ final class HopMesh: RCTEventEmitter {
 
   @objc(startPump:intervalMs:resolver:rejecter:)
   func startPump(_ handle: Int, intervalMs: Double, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let entry = entry(for: handle) else { return reject("hop_error", "unknown node handle", nil) }
     lock.lock()
-    guard var entry = nodes[handle] else { lock.unlock(); return reject("hop_error", "unknown node handle", nil) }
     entry.timer?.cancel()
     let timer = DispatchSource.makeTimerSource(queue: pumpQueue)
     let interval = max(intervalMs, 10) / 1000.0
     timer.schedule(deadline: .now(), repeating: interval)
     timer.setEventHandler { [weak self] in self?.pump(handle) }
     entry.timer = timer
-    nodes[handle] = entry
     lock.unlock()
     timer.resume()
+    entry.runtime.start()
+    _ = emitBearerSnapshot(entry, force: true)
     resolve(nil)
   }
 
   @objc(stopPump:resolver:rejecter:)
   func stopPump(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    guard let entry = entry(for: handle) else { return reject("hop_error", "unknown node handle", nil) }
     lock.lock()
-    if var entry = nodes[handle] {
-      entry.timer?.cancel()
-      entry.timer = nil
-      nodes[handle] = entry
-    }
+    entry.timer?.cancel()
+    entry.timer = nil
     lock.unlock()
+    entry.runtime.stop()
+    _ = emitBearerSnapshot(entry)
     resolve(nil)
   }
 
   private func pump(_ handle: Int) {
-    guard let node = node(handle) else { return }
-    node.tick(nowMs: UInt64(Date().timeIntervalSince1970 * 1000))
+    guard let entry = entry(for: handle) else { return }
+    let node = entry.node
+    entry.runtime.tick(nowMs: UInt64(Date().timeIntervalSince1970 * 1000))
+    _ = emitBearerSnapshot(entry)
     node.drainOutgoing { link, bytes in
-      self.send("HopMesh:outgoing", ["node": handle, "link": Int(link), "bytes": self.b64(bytes)])
+      if entry.runtime.bearers.transportName(of: link) != nil {
+        entry.runtime.bearers.send(bytes, on: link)
+      } else {
+        self.send("HopMesh:outgoing", ["node": handle, "link": Int(link), "bytes": self.b64(bytes)])
+      }
     }
     node.pollInbox { m in
       let idB64 = self.b64(m.id)

@@ -148,6 +148,16 @@ RCT_EXTERN_METHOD(bytesReceived:(NSInteger)handle
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+
+RCT_EXTERN_METHOD(bearerSnapshot:(NSInteger)handle
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(setBearerEnabled:(NSInteger)handle
+                  bearer:(NSString *)bearer
+                  enabled:(BOOL)enabled
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
 // Section 19 relay pool. `configured` marks an operator or user choice a gossiped endpoint cannot
 // demote, so it crosses as its own BOOL rather than being inferred from the URL.
 RCT_EXTERN_METHOD(relayAdd:(NSInteger)handle
