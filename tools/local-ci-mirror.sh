@@ -220,6 +220,7 @@ step "repo-integrity guard"           bash tools/repo-integrity-guard.sh
 step "package export smoke"           bash tools/package-export-smoke.test.sh
 step "sim pkg freshness"              bash sim/check-pkg-fresh.sh
 step "sim wire vectors"               node sim/wire-vector-check.mjs
+step "wasm tool installer self-test"  bash core/hop-wasm/install-wasm-pack.test.sh
 
 # --- CI's Kotlin SDK + Android jobs --------------------------------------------------------------
 android_env() {
