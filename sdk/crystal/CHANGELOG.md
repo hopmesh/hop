@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- remove template disclaimers, document CLA and DCO, and add DCO workflow (2bbcbc6)
+- align SDK READMEs and deny.toml with core Apache-2.0 license (84474f5)
 - bind the C sample sinks to ABI 7 and settle formatter drift (3927543)
 - handle service request acceptance and add persistent node constructor (ABI-002, ABI-003) (4721a7e)
 - bind C ABI 7 surface and propagate rekey and request acceptance (ABI-002, ABI-004) (83b31cc)
@@ -17,6 +19,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - update prose claims and exclude changelog in check-abi-version (ABI-002, ABI-004, ABI-005) (903bc65)
 - regenerate from conventional commits (f592a14)
