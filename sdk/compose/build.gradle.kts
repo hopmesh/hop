@@ -9,8 +9,8 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     kotlin("multiplatform") version "2.4.10"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.10"
-    id("org.jetbrains.compose") version "1.8.2"
-    id("com.android.library") version "9.2.1"
+    id("org.jetbrains.compose") version "1.12.0"
+    id("com.android.library") version "9.4.0"
     `maven-publish`
 }
 
@@ -43,13 +43,13 @@ kotlin {
                 implementation(compose.foundation)
                 implementation(compose.material3)
                 implementation(compose.ui)
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
             }
         }
         val jvmSharedMain by creating { dependsOn(commonMain) }
