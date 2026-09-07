@@ -75,6 +75,10 @@ struct Established {
     /// plaintext and the next fragment index expected. `frag_cnt == 0` means none in progress.
     frag_buf: Vec<u8>,
     frag_next: u16,
+    /// Time (ms) of the most recently received fragment for this partial record (CAND-PROTO-06b).
+    frag_last_recv_ms: u64,
+    /// Consecutive AEAD decrypt failures on this established link (CAND-PROTO-B).
+    decrypt_failures: u8,
 }
 
 /// Per-PEER gossip dedup that SURVIVES link re-establishment. The per-`Established` `sent_*` sets
@@ -8082,6 +8086,20 @@ impl<S: Store> Node<S> {
                 self.offer_adverts_to_all();
             }
         }
+        // CAND-PROTO-06b: expire abandoned fragmented link records so partial reassemblies
+        // do not stay pinned in memory for the life of the link.
+        for state in self.links.values_mut() {
+            if let LinkState::Up(est) = state {
+                if est.frag_next > 0
+                    && now_ms.saturating_sub(est.frag_last_recv_ms)
+                        >= Self::FRAG_REASSEMBLY_IDLE_TIMEOUT_MS
+                {
+                    est.frag_buf.clear();
+                    est.frag_next = 0;
+                    est.frag_last_recv_ms = 0;
+                }
+            }
+        }
         // core-03: rotate our signed prekey on epoch boundaries so a compromised SPK secret only
         // exposes a bounded recent window of sessions, then re-publish the new one.
         self.rotate_prekey_if_due();
@@ -8497,6 +8515,8 @@ impl<S: Store> Node<S> {
                     peer_has: HashSet::new(),
                     frag_buf: Vec::new(),
                     frag_next: 0,
+                    frag_last_recv_ms: 0,
+                    decrypt_failures: 0,
                 })),
             );
             // ALWAYS re-offer our OWN adverts (prekey/presence) on link-up: clear them from the
@@ -8583,14 +8603,93 @@ impl<S: Store> Node<S> {
 
     // --- inbound records ------------------------------------------------------
 
+    /// Maximum consecutive AEAD decrypt failures permitted on an established link before
+    /// declaring the transport session desynchronized and tearing the link down (CAND-PROTO-B).
+    ///
+    /// A single failure may arise from an isolated out-of-order arrival, bearer-level retry,
+    /// or line corruption; dropping the bad frame allows the link to continue if subsequent
+    /// frames match the receiver's sequential nonce. If 5 consecutive frames fail AEAD
+    /// decryption with no intervening success, the Snow transport state cannot recover.
+    /// Bounding at 5 prevents an off-path or transient attacker from causing cheap teardowns
+    /// of a healthy link while ensuring a permanently desynchronized link does not linger
+    /// indefinitely in [`LinkState::Up`].
+    pub const MAX_CONSECUTIVE_LINK_DECRYPT_FAILURES: u8 = 5;
+
+    /// Maximum idle time (ms) allowed between successive fragment arrivals for an in-progress
+    /// fragmented link record before [`Established::frag_buf`] is cleared (CAND-PROTO-06b).
+    ///
+    /// Arithmetic: One maximum fragment is [`MAX_RECORD_PLAINTEXT`] (60,000 bytes). On the slowest
+    /// supported bearer (Meshtastic LoRa over 200-byte packets at ~200 B/s under regional duty cycle
+    /// constraints), transmitting one fragment takes ~300 seconds (5 minutes). Allowing a 2x margin
+    /// for channel backoff and bearer queueing yields a 600,000 ms (10 minutes) idle timeout, ensuring
+    /// legitimate slow senders are never cut off mid-transfer while bounding memory retention for
+    /// abandoned sequences.
+    pub const FRAG_REASSEMBLY_IDLE_TIMEOUT_MS: u64 = 600_000;
+
+    /// Tear down an established or handshaking link: remove from [`self.links`], snapshot
+    /// gossip state, and clean up per-link rate-limits and gradient routes.
+    fn teardown_link(&mut self, link: LinkId) {
+        if let Some(LinkState::Up(est)) = self.links.remove(&link) {
+            self.peer_sent.insert(
+                est.peer,
+                PeerSent {
+                    adverts: est.sent_adverts,
+                    bundles: est.sent_bundles,
+                    last_seen_ms: self.now_ms,
+                },
+            );
+            self.prune_peer_sent();
+        }
+        self.priv_ingest.remove(&link);
+        self.advert_ingest.remove(&link);
+        self.beacon_ingest.remove(&link);
+        self.recv_gradient.retain(|_, e| {
+            e.links.retain(|(l, _)| *l != link);
+            !e.links.is_empty()
+        });
+    }
+
+    /// Observability: is the link with [`LinkId`] currently in [`LinkState::Up`]?
+    pub fn is_link_up(&self, link: LinkId) -> bool {
+        matches!(self.links.get(&link), Some(LinkState::Up(_)))
+    }
+
+    /// Observability: consecutive AEAD decrypt failures on an established link.
+    pub fn link_decrypt_failures(&self, link: LinkId) -> Option<u8> {
+        match self.links.get(&link) {
+            Some(LinkState::Up(est)) => Some(est.decrypt_failures),
+            _ => None,
+        }
+    }
+
     fn on_record(&mut self, link: LinkId, ct: &[u8]) {
-        let Some(LinkState::Up(est)) = self.links.get_mut(&link) else {
-            return;
+        let action = {
+            let Some(LinkState::Up(est)) = self.links.get_mut(&link) else {
+                return;
+            };
+            match est.session.decrypt(ct) {
+                Ok(plaintext) => {
+                    est.decrypt_failures = 0;
+                    Ok((plaintext, est.peer))
+                }
+                Err(_) => {
+                    est.decrypt_failures = est.decrypt_failures.saturating_add(1);
+                    if est.decrypt_failures >= Self::MAX_CONSECUTIVE_LINK_DECRYPT_FAILURES {
+                        Err(true)
+                    } else {
+                        Err(false)
+                    }
+                }
+            }
         };
-        let Ok(plaintext) = est.session.decrypt(ct) else {
-            return;
+        let (plaintext, peer) = match action {
+            Ok(pair) => pair,
+            Err(true) => {
+                self.teardown_link(link);
+                return;
+            }
+            Err(false) => return,
         };
-        let peer = est.peer;
         if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
             return;
         }
@@ -8610,65 +8709,100 @@ impl<S: Store> Node<S> {
     /// plaintext; on the final fragment, decode and dispatch the whole [`Wire`]. An
     /// out-of-order fragment means loss/corruption: drop the partial record and resync.
     fn on_record_frag(&mut self, link: LinkId, idx: u16, cnt: u16, ct: &[u8]) {
-        let ready = {
+        enum FragStep {
+            Ready(Vec<u8>, PubKeyBytes),
+            Desync,
+            Done,
+        }
+        let now_ms = self.now_ms;
+        let step = (|| -> FragStep {
             let Some(LinkState::Up(est)) = self.links.get_mut(&link) else {
-                return;
+                return FragStep::Done;
             };
             // Decrypt now: the Noise ratchet must advance in lockstep with arrivals.
-            let Ok(piece) = est.session.decrypt(ct) else {
-                return;
+            let piece = match est.session.decrypt(ct) {
+                Ok(piece) => {
+                    est.decrypt_failures = 0;
+                    piece
+                }
+                Err(_) => {
+                    est.frag_buf.clear();
+                    est.frag_next = 0;
+                    est.frag_last_recv_ms = 0;
+                    est.decrypt_failures = est.decrypt_failures.saturating_add(1);
+                    if est.decrypt_failures >= Self::MAX_CONSECUTIVE_LINK_DECRYPT_FAILURES {
+                        return FragStep::Desync;
+                    } else {
+                        return FragStep::Done;
+                    }
+                }
             };
-            // A valid advert is at most 8 KiB and therefore never needs record fragmentation.
-            // A valid Have set is at most MAX_HAVE_ADVERTISE IDs and requires at most
-            // MAX_HAVE_RECORD_FRAGMENTS pieces. Reject on the first fragment before accumulating
-            // a large attacker record (PROTO-010).
-            if piece.is_empty()
-                || (idx == 0
-                    && (piece.first() == Some(&1)
-                        || (piece.first() == Some(&2)
-                            && usize::from(cnt) > MAX_HAVE_RECORD_FRAGMENTS)))
-            {
+            // A valid record at idx == 0 must have a discriminant that can legitimately fragment:
+            // - Wire::Bundle (0) may fragment up to MAX_RECORD_FRAGMENTS.
+            // - Wire::Have (2) may fragment up to MAX_HAVE_RECORD_FRAGMENTS.
+            // - Wire::Advert (1) is at most 8 KiB and never legitimately fragments.
+            // - Wire::RecvBeacon (3) is ~5 bytes and never legitimately fragments.
+            // - Any unknown discriminant (> 3) cannot deserialize into Wire and must never fragment.
+            // Reject on the first fragment before accumulating an attacker record in frag_buf (CAND-PROTO-06a).
+            let invalid_fragment_variant = match piece.first() {
+                Some(0) => false,
+                Some(2) => usize::from(cnt) > MAX_HAVE_RECORD_FRAGMENTS,
+                _ => true,
+            };
+            if piece.is_empty() || (idx == 0 && invalid_fragment_variant) {
                 est.frag_buf.clear();
                 est.frag_next = 0;
-                return;
+                est.frag_last_recv_ms = 0;
+                return FragStep::Done;
             }
             if !fragment_bounds_ok(cnt, piece.len(), est.frag_buf.len()) {
                 est.frag_buf.clear();
                 est.frag_next = 0;
-                return;
+                est.frag_last_recv_ms = 0;
+                return FragStep::Done;
             }
             if cnt == 0 || idx >= cnt || idx != est.frag_next {
                 // Stray or reordered fragment: reset. Only a fresh idx 0 starts a new record.
                 est.frag_buf.clear();
                 est.frag_next = 0;
+                est.frag_last_recv_ms = 0;
                 if idx != 0 {
-                    return;
+                    return FragStep::Done;
                 }
             }
             est.frag_buf.extend_from_slice(&piece);
             est.frag_next += 1;
+            est.frag_last_recv_ms = now_ms;
             if est.frag_next == cnt {
                 let plaintext = std::mem::take(&mut est.frag_buf);
                 est.frag_next = 0;
-                Some((plaintext, est.peer))
+                est.frag_last_recv_ms = 0;
+                FragStep::Ready(plaintext, est.peer)
             } else {
-                None
+                FragStep::Done
             }
-        };
-        if let Some((plaintext, peer)) = ready {
-            if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext) {
-                return;
+        })();
+        match step {
+            FragStep::Desync => {
+                self.teardown_link(link);
             }
-            match postcard::from_bytes::<Wire>(&plaintext) {
-                Ok(Wire::Bundle(b)) => {
-                    self.on_bundle(link, b);
+            FragStep::Done => {}
+            FragStep::Ready(plaintext, peer) => {
+                if advert_record_exceeds_limit(&plaintext) || have_record_exceeds_limit(&plaintext)
+                {
+                    return;
                 }
-                Ok(Wire::Advert(a)) => self.on_advert(link, peer, a),
-                Ok(Wire::Have(hs)) => self.on_have(link, hs),
-                Ok(Wire::RecvBeacon { route, distance }) => {
-                    self.on_recv_beacon(link, route, distance)
+                match postcard::from_bytes::<Wire>(&plaintext) {
+                    Ok(Wire::Bundle(b)) => {
+                        self.on_bundle(link, b);
+                    }
+                    Ok(Wire::Advert(a)) => self.on_advert(link, peer, a),
+                    Ok(Wire::Have(hs)) => self.on_have(link, hs),
+                    Ok(Wire::RecvBeacon { route, distance }) => {
+                        self.on_recv_beacon(link, route, distance)
+                    }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
         }
     }
@@ -23446,6 +23580,366 @@ mod access_gate_tests {
                 node.store.contains(b_id),
                 "Sender B's normal-priority bundle {i} was evicted by Sybil priority=255 flood under Open policy"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod link_desync_tests {
+    use super::*;
+
+    fn connect_nodes(a: &mut Node, b: &mut Node, link_id: LinkId) {
+        a.handle(BearerEvent::Connected(link_id, Role::Initiator));
+        b.handle(BearerEvent::Connected(link_id, Role::Responder));
+        for _ in 0..8 {
+            let out_a = a.drain_outgoing();
+            let out_b = b.drain_outgoing();
+            for (_, bytes) in out_a {
+                b.handle(BearerEvent::Data(link_id, bytes));
+            }
+            for (_, bytes) in out_b {
+                a.handle(BearerEvent::Data(link_id, bytes));
+            }
+        }
+        assert!(matches!(a.links.get(&link_id), Some(LinkState::Up(_))));
+        assert!(matches!(b.links.get(&link_id), Some(LinkState::Up(_))));
+    }
+
+    #[test]
+    fn replayed_frame_tolerated_and_subsequent_traffic_flows() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        let id1 = BundleId::from([1u8; 32]);
+        let id2 = BundleId::from([2u8; 32]);
+        alice.send_record(1, &Wire::Have(crate::store::HaveSet { ids: vec![id1] }));
+        let p1 = alice.drain_outgoing();
+        alice.send_record(1, &Wire::Have(crate::store::HaveSet { ids: vec![id2] }));
+        let p2 = alice.drain_outgoing();
+
+        // Deliver p1: succeeds, failure counter remains 0.
+        for (_, b) in &p1 {
+            bob.handle(BearerEvent::Data(1, b.clone()));
+        }
+        assert_eq!(bob.link_decrypt_failures(1), Some(0));
+        assert!(bob.is_link_up(1));
+
+        // Replay p1: decrypt fails, failure counter increments to 1, link stays up.
+        for (_, b) in &p1 {
+            bob.handle(BearerEvent::Data(1, b.clone()));
+        }
+        assert_eq!(bob.link_decrypt_failures(1), Some(1));
+        assert!(bob.is_link_up(1));
+
+        // Deliver p2: decrypt succeeds, failure counter resets to 0, traffic flows.
+        for (_, b) in &p2 {
+            bob.handle(BearerEvent::Data(1, b.clone()));
+        }
+        assert_eq!(bob.link_decrypt_failures(1), Some(0));
+        assert!(bob.is_link_up(1));
+
+        let bob_has: HashSet<BundleId> = match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => est.peer_has.clone(),
+            _ => panic!("link not up"),
+        };
+        assert!(bob_has.contains(&id1));
+        assert!(bob_has.contains(&id2));
+    }
+
+    #[test]
+    fn desynchronized_link_tears_down_after_consecutive_failures_and_recovers_on_reconnect() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        // Alice prepares 6 records:
+        let mut packets = Vec::new();
+        for i in 1..=6u8 {
+            let id = BundleId::from([i; 32]);
+            alice.send_record(1, &Wire::Have(crate::store::HaveSet { ids: vec![id] }));
+            packets.push(alice.drain_outgoing());
+        }
+
+        // Drop packet 0 (nonce 0 lost in transit).
+        // Deliver packets 1..4 (4 consecutive failures, below threshold of 5).
+        for p in &packets[1..5] {
+            for (_, b) in p {
+                bob.handle(BearerEvent::Data(1, b.clone()));
+            }
+        }
+        // Link is still up, failure count is 4:
+        assert!(bob.is_link_up(1));
+        assert_eq!(bob.link_decrypt_failures(1), Some(4));
+
+        // Deliver packet 5 (5th consecutive failure reaches threshold).
+        for (_, b) in &packets[5] {
+            bob.handle(BearerEvent::Data(1, b.clone()));
+        }
+        // Observable signal: link is torn down and no longer Up.
+        assert!(!bob.is_link_up(1));
+        assert_eq!(bob.link_decrypt_failures(1), None);
+
+        // Re-establish link on a fresh connection (link id 2):
+        connect_nodes(&mut alice, &mut bob, 2);
+        assert!(alice.is_link_up(2));
+        assert!(bob.is_link_up(2));
+
+        // Send fresh traffic over the re-established link:
+        let id7 = BundleId::from([7u8; 32]);
+        alice.send_record(2, &Wire::Have(crate::store::HaveSet { ids: vec![id7] }));
+        let p7 = alice.drain_outgoing();
+        for (_, b) in p7 {
+            bob.handle(BearerEvent::Data(2, b));
+        }
+
+        let bob_has: HashSet<BundleId> = match bob.links.get(&2) {
+            Some(LinkState::Up(est)) => est.peer_has.clone(),
+            _ => panic!("link not up"),
+        };
+        assert!(bob_has.contains(&id7));
+    }
+
+    #[test]
+    fn rejected_fragment_sequence_clears_buffer_and_subsequent_valid_sequence_reassembles() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        // First, a rejected sequence: piece with Advert discriminant (1) sent as a fragment.
+        let mut piece = vec![0u8; 100];
+        piece[0] = 1; // Advert cannot fragment
+        let ct_rej = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&piece).unwrap(),
+            _ => panic!("link established"),
+        };
+        bob.on_record_frag(1, 0, 2, &ct_rej);
+
+        // Buffer must be empty and next expected fragment must be 0:
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(est.frag_buf.is_empty());
+                assert_eq!(est.frag_next, 0);
+                assert_eq!(est.frag_last_recv_ms, 0);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Now deliver a valid multi-fragment record: Have record split into 2 pieces.
+        // Have record with discriminant 2 fits within MAX_HAVE_RECORD_FRAGMENTS.
+        let mut have_ids = Vec::new();
+        for i in 0..20u8 {
+            have_ids.push(BundleId::from([i; 32]));
+        }
+        let record = Wire::Have(crate::store::HaveSet {
+            ids: have_ids.clone(),
+        });
+        let encoded = postcard::to_allocvec(&record).unwrap();
+        assert!(encoded.len() > 10);
+        let half = encoded.len() / 2;
+        let piece0 = &encoded[..half];
+        let piece1 = &encoded[half..];
+
+        let (ct0, ct1) = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => (
+                est.session.encrypt(piece0).unwrap(),
+                est.session.encrypt(piece1).unwrap(),
+            ),
+            _ => panic!("link established"),
+        };
+
+        bob.on_record_frag(1, 0, 2, &ct0);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert_eq!(est.frag_buf.len(), half);
+                assert_eq!(est.frag_next, 1);
+            }
+            _ => panic!("link established"),
+        }
+
+        bob.on_record_frag(1, 1, 2, &ct1);
+        // Reassembly complete: buffer cleared and Have set applied:
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(est.frag_buf.is_empty());
+                assert_eq!(est.frag_next, 0);
+                for id in &have_ids {
+                    assert!(est.peer_has.contains(id));
+                }
+            }
+            _ => panic!("link established"),
+        }
+    }
+
+    #[test]
+    fn early_fragment_rejection_enumerates_all_non_fragmentable_wire_variants() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        // Discriminant 3 (RecvBeacon) at idx 0, cnt 18: must be rejected immediately (CAND-PROTO-06a).
+        let mut beacon_piece = vec![0u8; 100];
+        beacon_piece[0] = 3;
+        let ct_beacon = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&beacon_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+        bob.on_record_frag(1, 0, 18, &ct_beacon);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "RecvBeacon must not accumulate in frag_buf"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Discriminant 1 (Advert) at idx 0, cnt 2: rejected immediately.
+        let mut advert_piece = vec![0u8; 100];
+        advert_piece[0] = 1;
+        let ct_advert = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&advert_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+        bob.on_record_frag(1, 0, 2, &ct_advert);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "Advert must not accumulate in frag_buf"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Discriminant 2 (Have) with cnt > MAX_HAVE_RECORD_FRAGMENTS: rejected immediately.
+        let mut have_piece = vec![0u8; 100];
+        have_piece[0] = 2;
+        let ct_have_bad = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&have_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+        bob.on_record_frag(1, 0, (MAX_HAVE_RECORD_FRAGMENTS as u16) + 1, &ct_have_bad);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "oversized Have cnt must not accumulate"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Unknown discriminant (e.g. 4) at idx 0, cnt 2: rejected immediately.
+        let mut unknown_piece = vec![0u8; 100];
+        unknown_piece[0] = 4;
+        let ct_unknown = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&unknown_piece).unwrap(),
+            _ => panic!("link established"),
+        };
+        bob.on_record_frag(1, 0, 2, &ct_unknown);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "unknown variant must not accumulate"
+                );
+                assert_eq!(est.frag_next, 0);
+            }
+            _ => panic!("link established"),
+        }
+    }
+
+    #[test]
+    fn abandoned_fragment_buffer_expires_after_idle_timeout_and_fresh_sequence_reassembles() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        // Initialize clock at t = 1,000 ms:
+        alice.tick(1_000);
+        bob.tick(1_000);
+
+        let mut piece0 = vec![0u8; 500];
+        piece0[0] = 0; // Wire::Bundle discriminant
+        let ct0 = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => est.session.encrypt(&piece0).unwrap(),
+            _ => panic!("link established"),
+        };
+
+        // Receive fragment 0 of 2 at t = 1,000 ms:
+        bob.on_record_frag(1, 0, 2, &ct0);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert_eq!(est.frag_buf.len(), 500);
+                assert_eq!(est.frag_next, 1);
+                assert_eq!(est.frag_last_recv_ms, 1_000);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Intermediate tick: 5 minutes later (300,000 ms).
+        // Legitimate slow transfer must NOT be cut off before the 10-minute budget:
+        bob.tick(1_000 + 300_000);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert_eq!(
+                    est.frag_buf.len(),
+                    500,
+                    "slow legitimate sender must not be cut off"
+                );
+                assert_eq!(est.frag_next, 1);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Tick past the 10-minute idle budget (600,000 ms elapsed since last fragment arrival):
+        bob.tick(1_000 + Node::<MemoryStore>::FRAG_REASSEMBLY_IDLE_TIMEOUT_MS + 1);
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(
+                    est.frag_buf.is_empty(),
+                    "abandoned fragment buffer must be cleared"
+                );
+                assert_eq!(est.frag_next, 0, "frag_next must be reset to 0 on expiry");
+                assert_eq!(est.frag_last_recv_ms, 0);
+            }
+            _ => panic!("link established"),
+        }
+
+        // Now verify that a fresh valid sequence reassembles completely after the expiry:
+        let id = BundleId::from([99u8; 32]);
+        let record = Wire::Have(crate::store::HaveSet { ids: vec![id] });
+        let encoded = postcard::to_allocvec(&record).unwrap();
+        let half = encoded.len() / 2;
+        let fresh0 = &encoded[..half];
+        let fresh1 = &encoded[half..];
+
+        let (ct_fresh0, ct_fresh1) = match alice.links.get_mut(&1) {
+            Some(LinkState::Up(est)) => (
+                est.session.encrypt(fresh0).unwrap(),
+                est.session.encrypt(fresh1).unwrap(),
+            ),
+            _ => panic!("link established"),
+        };
+
+        bob.on_record_frag(1, 0, 2, &ct_fresh0);
+        bob.on_record_frag(1, 1, 2, &ct_fresh1);
+
+        match bob.links.get(&1) {
+            Some(LinkState::Up(est)) => {
+                assert!(est.frag_buf.is_empty());
+                assert_eq!(est.frag_next, 0);
+                assert!(
+                    est.peer_has.contains(&id),
+                    "fresh sequence reassembled successfully"
+                );
+            }
+            _ => panic!("link established"),
         }
     }
 }
