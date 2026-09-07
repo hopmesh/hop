@@ -4363,9 +4363,52 @@ impl<S: Store> Node<S> {
                 // neither replace an established ratchet nor trigger control traffic at the victim.
                 // (ADV18-01 / core-protocol-r18-01: the same off-map-until-authenticated property this
                 // review called for; main landed this restructure independently, so we adopt it.)
-                let fresh = match self.sessions.get(&from) {
-                    None => true,
-                    Some(ps) => ps.established_by != Some(ek_pub),
+                // Session arbitration for simultaneous session inits (CAND-PROTO-A):
+                // When both peers initiate a session concurrently, both send a SessionInit.
+                // Without arbitration, each peer treats the inbound SessionInit as a fresh
+                // handshake, replacing its outbound initiator session with an inbound responder
+                // session. This causes both peers to cross roots: Node A adopts root_B as responder,
+                // while Node B adopts root_A as responder. Neither peer shares the same root, so all
+                // subsequent messages fail decryption permanently.
+                //
+                // Architectural choice:
+                // We implement (a) deterministic total order on the handshakes using material both
+                // peers already have (comparing the initiator ephemeral public keys, with identity
+                // address tie-break). The winner's handshake becomes the single canonical session
+                // for both peers.
+                //
+                // We reject (b) (retaining the losing session as a long-lived decrypt-only fallback)
+                // because Hop's architecture maintains a single canonical PeerSession per peer.
+                // Maintaining a secondary fallback session map with eviction windows and timers would
+                // introduce mutable state, synchronization hazards, and potential desync.
+                // Instead, under (a), any in-flight message encrypted by the loser under the losing
+                // chain is contained within that SessionInit. The winner derives the losing root via
+                // x3dh_respond, decrypts the message, and delivers it to the inbox, but DOES NOT
+                // adopt the losing session as its live session (session: None). The loser adopts the
+                // winner's session upon receiving the winner's SessionInit (session: Some(candidate)).
+                // Thus, messages encrypted under the losing chain are delivered to the recipient
+                // inbox rather than dropped, while both peers converge on the winner's session.
+                // If the losing handshake cannot be decrypted (e.g. invalid keys or missing prekey),
+                // it returns an explicit error and is never silently dropped.
+                // Furthermore, an old losing SessionInit replayed after arbitration cannot displace
+                // the established live session because its ephemeral key loses against the live session.
+                let (fresh, retain_existing) = match self.sessions.get(&from) {
+                    None => (true, false),
+                    Some(ps) => {
+                        if ps.established_by == Some(ek_pub) {
+                            (false, false)
+                        } else {
+                            let we_win = match ps.established_by {
+                                Some(est_ek) => match est_ek.cmp(&ek_pub) {
+                                    std::cmp::Ordering::Greater => true,
+                                    std::cmp::Ordering::Less => false,
+                                    std::cmp::Ordering::Equal => self.identity.address() > from,
+                                },
+                                None => false,
+                            };
+                            (true, we_win)
+                        }
+                    }
                 };
                 // Which OPK this handshake consumed, if any. Recorded here, SPENT below only once
                 // the AEAD has authenticated the handshake (see the `Ok` arm).
@@ -4439,10 +4482,14 @@ impl<S: Store> Node<S> {
                         let message = self.surface_session_inner(from, &inner)?;
                         Ok(PreparedInbound {
                             message,
-                            session: Some(candidate),
+                            session: if retain_existing {
+                                None
+                            } else {
+                                Some(candidate)
+                            },
                             // A peer initiating to us establishes a session both ways, so content
                             // deferred to them can ratchet immediately after the atomic commit.
-                            flush_pending: true,
+                            flush_pending: !retain_existing,
                         })
                     }
                     Err(e) => {
@@ -23447,5 +23494,442 @@ mod access_gate_tests {
                 "Sender B's normal-priority bundle {i} was evicted by Sybil priority=255 flood under Open policy"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod session_arbitration_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct Wire2 {
+        routes: HashMap<(usize, LinkId), (usize, LinkId)>,
+    }
+    impl Wire2 {
+        fn new() -> Self {
+            Self {
+                routes: HashMap::new(),
+            }
+        }
+        fn connect(&mut self, nodes: &mut [Node], a: usize, la: LinkId, b: usize, lb: LinkId) {
+            self.routes.insert((a, la), (b, lb));
+            self.routes.insert((b, lb), (a, la));
+            nodes[a].handle(BearerEvent::Connected(la, Role::Initiator));
+            nodes[b].handle(BearerEvent::Connected(lb, Role::Responder));
+            self.pump(nodes);
+        }
+        fn pump(&mut self, nodes: &mut [Node]) {
+            for _ in 0..1000 {
+                let mut any = false;
+                for i in 0..nodes.len() {
+                    for (link, bytes) in nodes[i].drain_outgoing() {
+                        any = true;
+                        if let Some(&(j, jl)) = self.routes.get(&(i, link)) {
+                            nodes[j].handle(BearerEvent::Data(jl, bytes));
+                        }
+                    }
+                }
+                if !any {
+                    return;
+                }
+            }
+            panic!("network did not quiesce");
+        }
+    }
+
+    fn exchange_prekeys(net: &mut Wire2, nodes: &mut [Node]) {
+        for n in nodes.iter_mut() {
+            n.publish_prekey().unwrap();
+        }
+        net.pump(nodes);
+    }
+
+    #[test]
+    fn simultaneous_first_sends_both_deliver_and_subsequent_sends_succeed() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-first".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-first".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(
+            nodes[0].inbox_items().len(),
+            1,
+            "node 0 received first message"
+        );
+        assert_eq!(
+            nodes[1].inbox_items().len(),
+            1,
+            "node 1 received first message"
+        );
+        assert_eq!(nodes[0].inbox_items()[0].body, b"b-first");
+        assert_eq!(nodes[1].inbox_items()[0].body, b"a-first");
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-second".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-second".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(
+            nodes[0].inbox_items().len(),
+            2,
+            "node 0 received second message"
+        );
+        assert_eq!(
+            nodes[1].inbox_items().len(),
+            2,
+            "node 1 received second message"
+        );
+
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-third".to_vec(), false)
+            .unwrap();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-third".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(
+            nodes[0].inbox_items().len(),
+            3,
+            "node 0 received third message"
+        );
+        assert_eq!(
+            nodes[1].inbox_items().len(),
+            3,
+            "node 1 received third message"
+        );
+    }
+
+    #[test]
+    fn three_way_race_one_side_sends_twice_before_peer_init_arrives() {
+        // Direction 1: Node 0 sends two messages before Node 1's init arrives
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-msg-1".to_vec(), false)
+            .unwrap();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-msg-2".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-msg-1".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 1, "node 0 got b-msg-1");
+        assert_eq!(
+            nodes[1].inbox_items().len(),
+            2,
+            "node 1 got both a-msg-1 and a-msg-2"
+        );
+        assert_eq!(nodes[0].inbox_items()[0].body, b"b-msg-1");
+        assert_eq!(nodes[1].inbox_items()[0].body, b"a-msg-1");
+        assert_eq!(nodes[1].inbox_items()[1].body, b"a-msg-2");
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-msg-3".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-msg-2".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 2, "node 0 got b-msg-2");
+        assert_eq!(nodes[1].inbox_items().len(), 3, "node 1 got a-msg-3");
+
+        // Direction 2: Node 1 sends two messages before Node 0's init arrives
+        let mut nodes2 = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net2 = Wire2::new();
+        net2.connect(&mut nodes2, 0, 1, 1, 10);
+        exchange_prekeys(&mut net2, &mut nodes2);
+        let a2 = nodes2[0].address();
+        let b2 = nodes2[1].address();
+
+        nodes2[1]
+            .send_message(a2, "text/plain".into(), b"b2-msg-1".to_vec(), false)
+            .unwrap();
+        nodes2[1]
+            .send_message(a2, "text/plain".into(), b"b2-msg-2".to_vec(), false)
+            .unwrap();
+        nodes2[0]
+            .send_message(b2, "text/plain".into(), b"a2-msg-1".to_vec(), false)
+            .unwrap();
+        net2.pump(&mut nodes2);
+
+        assert_eq!(nodes2[1].inbox_items().len(), 1, "node 1 got a2-msg-1");
+        assert_eq!(
+            nodes2[0].inbox_items().len(),
+            2,
+            "node 0 got both b2-msg-1 and b2-msg-2"
+        );
+
+        nodes2[0]
+            .send_message(b2, "text/plain".into(), b"a2-msg-2".to_vec(), false)
+            .unwrap();
+        nodes2[1]
+            .send_message(a2, "text/plain".into(), b"b2-msg-3".to_vec(), false)
+            .unwrap();
+        net2.pump(&mut nodes2);
+
+        assert_eq!(nodes2[0].inbox_items().len(), 3, "node 0 got b2-msg-3");
+        assert_eq!(nodes2[1].inbox_items().len(), 2, "node 1 got a2-msg-2");
+    }
+
+    #[test]
+    fn replayed_old_session_init_after_arbitration_must_not_displace_live_session() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        // Both send initial messages
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-init".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-init".to_vec(), false)
+            .unwrap();
+
+        // Capture the initial outgoing frames before delivering them
+        let mut init_frames_0 = Vec::new();
+        for (link, bytes) in nodes[0].drain_outgoing() {
+            init_frames_0.push((link, bytes));
+        }
+        let mut init_frames_1 = Vec::new();
+        for (link, bytes) in nodes[1].drain_outgoing() {
+            init_frames_1.push((link, bytes));
+        }
+
+        // Deliver initial frames to simulate normal exchange
+        for (link, bytes) in &init_frames_0 {
+            if let Some(&(j, jl)) = net.routes.get(&(0, *link)) {
+                nodes[j].handle(BearerEvent::Data(jl, bytes.clone()));
+            }
+        }
+        for (link, bytes) in &init_frames_1 {
+            if let Some(&(j, jl)) = net.routes.get(&(1, *link)) {
+                nodes[j].handle(BearerEvent::Data(jl, bytes.clone()));
+            }
+        }
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 1);
+        assert_eq!(nodes[1].inbox_items().len(), 1);
+
+        // Follow-up messages establish bidirectional confirmed session
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-second".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-second".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].inbox_items().len(), 2);
+        assert_eq!(nodes[1].inbox_items().len(), 2);
+
+        // Now replay the initial SessionInit frames against both nodes
+        for (link, bytes) in &init_frames_0 {
+            if let Some(&(j, jl)) = net.routes.get(&(0, *link)) {
+                nodes[j].handle(BearerEvent::Data(jl, bytes.clone()));
+            }
+        }
+        for (link, bytes) in &init_frames_1 {
+            if let Some(&(j, jl)) = net.routes.get(&(1, *link)) {
+                nodes[j].handle(BearerEvent::Data(jl, bytes.clone()));
+            }
+        }
+        net.pump(&mut nodes);
+
+        // Live session must still be intact and functional
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"a-third".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"b-third".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(
+            nodes[0].inbox_items().len(),
+            3,
+            "node 0 received third message after replay"
+        );
+        assert_eq!(
+            nodes[1].inbox_items().len(),
+            3,
+            "node 1 received third message after replay"
+        );
+        assert_eq!(nodes[0].inbox_items()[2].body, b"b-third");
+        assert_eq!(nodes[1].inbox_items()[2].body, b"a-third");
+    }
+
+    #[test]
+    fn message_encrypted_under_losing_chain_is_delivered_or_explicitly_fails() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        // Part 1: Both send simultaneously; assert both messages deliver
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"from-node-0".to_vec(), false)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"from-node-1".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 1);
+        assert_eq!(nodes[1].inbox_items().len(), 1);
+        assert_eq!(nodes[0].inbox_items()[0].body, b"from-node-1");
+        assert_eq!(nodes[1].inbox_items()[0].body, b"from-node-0");
+
+        // Part 2: If a losing chain handshake arrives with invalid or missing prekey material,
+        // prepare_inbound_message explicitly fails with an error and does not silently drop.
+        let bogus_init = Payload::SessionInit {
+            ek_pub: [99u8; 32],
+            spk_pub: [88u8; 32], // Unknown prekey
+            opk_id: None,
+            msg: crate::session::RatchetMessage {
+                header: crate::session::Header {
+                    dh: [99u8; 32],
+                    pn: 0,
+                    n: 0,
+                },
+                ciphertext: vec![1, 2, 3, 4],
+            },
+        };
+        let res = nodes[0].prepare_inbound_message(b, bogus_init, false);
+        assert!(
+            res.is_err(),
+            "unknown prekey on losing handshake must explicitly fail"
+        );
+    }
+
+    #[test]
+    fn signed_path_simultaneous_first_sends_does_not_wedge() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        // Simultaneous send on signed path (signed = true)
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"signed-a1".to_vec(), true)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"signed-b1".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 1, "signed round 1 node 0");
+        assert_eq!(nodes[1].inbox_items().len(), 1, "signed round 1 node 1");
+
+        // Follow-ups on signed path
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"signed-a2".to_vec(), true)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"signed-b2".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 2, "signed round 2 node 0");
+        assert_eq!(nodes[1].inbox_items().len(), 2, "signed round 2 node 1");
+
+        // Third round on signed path
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"signed-a3".to_vec(), true)
+            .unwrap();
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"signed-b3".to_vec(), true)
+            .unwrap();
+        net.pump(&mut nodes);
+
+        assert_eq!(nodes[0].inbox_items().len(), 3, "signed round 3 node 0");
+        assert_eq!(nodes[1].inbox_items().len(), 3, "signed round 3 node 1");
+    }
+
+    #[test]
+    fn sequential_first_sends_continue_to_pass() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        let mut net = Wire2::new();
+        net.connect(&mut nodes, 0, 1, 1, 10);
+        exchange_prekeys(&mut net, &mut nodes);
+        let a = nodes[0].address();
+        let b = nodes[1].address();
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"seq-a1".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].inbox_items().len(), 0);
+        assert_eq!(nodes[1].inbox_items().len(), 1);
+
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"seq-b1".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].inbox_items().len(), 1);
+        assert_eq!(nodes[1].inbox_items().len(), 1);
+
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"seq-a2".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].inbox_items().len(), 1);
+        assert_eq!(nodes[1].inbox_items().len(), 2);
+
+        nodes[1]
+            .send_message(a, "text/plain".into(), b"seq-b2".to_vec(), false)
+            .unwrap();
+        net.pump(&mut nodes);
+        assert_eq!(nodes[0].inbox_items().len(), 2);
+        assert_eq!(nodes[1].inbox_items().len(), 2);
     }
 }
