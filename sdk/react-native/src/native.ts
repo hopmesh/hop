@@ -40,6 +40,16 @@ export interface NativeHpsTopicInfo {
   access: string;
 }
 
+/** The scalar-only form a complete native bearer snapshot takes across the RN bridge. */
+export interface NativeBearerSnapshot {
+  revision: number;
+  states: {
+    ble: string;
+    lan: string;
+    relay: string;
+  };
+}
+
 export interface HopNativeModule {
   // ---- node lifecycle (returns an opaque integer handle) ----
   createEphemeral(): Promise<number>;
@@ -81,6 +91,14 @@ export interface HopNativeModule {
   linkUp(handle: number, link: number, role: string): Promise<void>;
   linkDown(handle: number, link: number): Promise<void>;
   bytesReceived(handle: number, link: number, bytesB64: string): Promise<void>;
+
+  // ---- native bearer runtime ----
+  //
+  // Packets never cross this bridge for native bearers. The native HopRuntime owns BLE/LAN links,
+  // drains outbound packets, and routes them back to their bearer. Every state response and event is
+  // a complete snapshot.
+  bearerSnapshot(handle: number): Promise<NativeBearerSnapshot>;
+  setBearerEnabled(handle: number, bearer: string, enabled: boolean): Promise<NativeBearerSnapshot>;
 
   // ---- section 19 relay pool ----
   relayAdd(handle: number, url: string, configured: boolean): Promise<boolean>;
@@ -127,6 +145,7 @@ export const HopEvent = {
   ServiceRequest: "HopMesh:serviceRequest",
   ServiceResponse: "HopMesh:serviceResponse",
   Outgoing: "HopMesh:outgoing",
+  BearerState: "HopMesh:bearerState",
   HpsMessage: "HopMesh:hpsMessage",
   HpsInvite: "HopMesh:hpsInvite",
 } as const;

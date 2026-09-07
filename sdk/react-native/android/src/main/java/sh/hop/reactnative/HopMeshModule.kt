@@ -2,10 +2,13 @@
 // SDK (sdk/android, the `sh.hop` package) and exposes it to JavaScript. Binary values cross the bridge
 // as base64 strings and addresses as base58 strings, matching ios/ and src/native.ts.
 //
-// Node handles are integers minted here; the module keeps a handle -> (HopNode, pump future) registry.
-// The pump ticks the clock, drains outbound packets, and polls the inbox and hops:// queues on an
-// interval, emitting one event per item over the device event emitter.
-
+// Node handles are integers minted here; the module keeps a handle -> (HopNode, HopRuntime, pump future)
+// registry. The pump ticks the clock, drains outbound packets, and polls the inbox, hops://, and hps://
+// queues on an interval, emitting events over RCTDeviceEventEmitter.
+//
+// When native bearers and the JavaScript transport seam are both active, links owned by native
+// transports take precedence and route directly, while non-native links fall through to JavaScript
+// outgoing packet events.
 package sh.hop.reactnative
 
 import android.util.Base64
@@ -30,14 +33,62 @@ import sh.hop.HpsAccess
 import sh.hop.HpsKind
 import sh.hop.HpsVisibility
 
+import sh.hop.HopRuntime
+import sh.hop.randomNodeId
+import sh.hopme.bearers.ble.BleBearer
+import sh.hopme.bearers.lan.LanBearer
 class HopMeshModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
-  private class Entry(val node: HopNode) {
+  private data class BearerSnapshot(val revision: Int, val states: Map<String, String>)
+
+  private class Entry(val handle: Int, val node: HopNode, context: ReactApplicationContext) {
+    val runtime = HopRuntime(node)
     @Volatile var pump: ScheduledFuture<*>? = null
     val inFlight = ConcurrentHashMap.newKeySet<String>()
-  }
 
+    private val stateLock = Any()
+    private var revision = 0
+    private var lastStates = mapOf("ble" to "enabled", "lan" to "enabled", "relay" to "disabled")
+
+    init {
+      // This is a process-local 16-byte transport identity, deliberately distinct from Hop's stable
+      // node address. Sharing it makes BLE and LAN use one tiebreaker and one dedup identity.
+      val transportId = randomNodeId()
+      runtime.register(BleBearer(context, transportId))
+      runtime.register(LanBearer(context, transportId))
+    }
+
+    fun snapshot(): Pair<BearerSnapshot, Boolean> {
+      val enabled = runtime.bearers.bearerStates()
+      val active = runtime.bearers.activeTransports()
+      val states = mapOf(
+        "ble" to nativeState("BT", enabled, active),
+        "lan" to nativeState("LAN", enabled, active),
+        // Relay has its own native-bearer probe. This cross-platform bridge intentionally owns BLE
+        // and LAN only, so it never advertises a relay capability it does not register.
+        "relay" to "disabled",
+      )
+      return synchronized(stateLock) {
+        val changed = states != lastStates
+        if (changed) {
+          revision += 1
+          lastStates = states
+        }
+        BearerSnapshot(revision, states) to changed
+      }
+    }
+
+    private fun nativeState(
+      tag: String,
+      enabled: Map<String, Boolean>,
+      active: Map<String, Int>,
+    ): String = when {
+      enabled[tag] != true -> "disabled"
+      (active[tag] ?: 0) > 0 -> "active"
+      else -> "enabled"
+    }
+  }
   private val nodes = ConcurrentHashMap<Int, Entry>()
   private val nextHandle = AtomicInteger(1)
   private val pumps = Executors.newScheduledThreadPool(1) { r ->
@@ -51,8 +102,30 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   private fun register(node: HopNode): Int {
     val handle = nextHandle.getAndIncrement()
-    nodes[handle] = Entry(node)
+    nodes[handle] = Entry(handle, node, reactContext)
     return handle
+  }
+
+  private fun snapshotMap(snapshot: BearerSnapshot): WritableMap {
+    val states = Arguments.createMap()
+    states.putString("ble", snapshot.states["ble"] ?: "disabled")
+    states.putString("lan", snapshot.states["lan"] ?: "disabled")
+    states.putString("relay", snapshot.states["relay"] ?: "disabled")
+    return Arguments.createMap().apply {
+      putInt("revision", snapshot.revision)
+      putMap("states", states)
+    }
+  }
+
+  private fun emitBearerSnapshot(entry: Entry, force: Boolean = false): WritableMap {
+    val (snapshot, changed) = entry.snapshot()
+    val body = snapshotMap(snapshot)
+    if (force || changed) {
+      val event = snapshotMap(snapshot)
+      event.putInt("node", entry.handle)
+      emit("HopMesh:bearerState", event)
+    }
+    return body
   }
 
   private fun entry(handle: Int, promise: Promise): Entry? {
@@ -156,7 +229,9 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun closeNode(handle: Int, promise: Promise) {
     nodes.remove(handle)?.let { e ->
       e.pump?.cancel(false)
+      e.pump = null
       e.inFlight.clear()
+      e.runtime.stop()
       e.node.close()
     }
     promise.resolve(null)
@@ -340,6 +415,37 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
     val e = entry(handle, promise) ?: return
     e.node.bytesReceived(link.toLong(), dec(bytesB64))
     promise.resolve(null)
+  }
+
+  // MARK: native bearer runtime
+
+  @ReactMethod
+  fun bearerSnapshot(handle: Int, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    promise.resolve(emitBearerSnapshot(e))
+  }
+
+  @ReactMethod
+  fun setBearerEnabled(handle: Int, bearer: String, enabled: Boolean, promise: Promise) {
+    val e = entry(handle, promise) ?: return
+    when (bearer) {
+      "ble" -> e.runtime.bearers.setEnabled("BT", enabled)
+      "lan" -> e.runtime.bearers.setEnabled("LAN", enabled)
+      "relay" -> {
+        if (enabled) {
+          promise.reject(
+            "hop_bearer_unavailable",
+            "relay is intentionally outside the cross-platform native bridge; probe it through its native bearer package",
+          )
+          return
+        }
+      }
+      else -> {
+        promise.reject("hop_error", "unrecognized bearer: $bearer")
+        return
+      }
+    }
+    promise.resolve(emitBearerSnapshot(e))
   }
 
   // MARK: section 19 relay pool
@@ -539,6 +645,8 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   fun startPump(handle: Int, intervalMs: Double, promise: Promise) {
     val e = entry(handle, promise) ?: return
     e.pump?.cancel(false)
+    e.runtime.start()
+    emitBearerSnapshot(e, force = true)
     val period = maxOf(intervalMs.toLong(), 10L)
     e.pump = pumps.scheduleWithFixedDelay({ pump(handle) }, 0, period, TimeUnit.MILLISECONDS)
     promise.resolve(null)
@@ -546,20 +654,29 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun stopPump(handle: Int, promise: Promise) {
-    nodes[handle]?.let { it.pump?.cancel(false); it.pump = null }
+    val e = entry(handle, promise) ?: return
+    e.pump?.cancel(false)
+    e.pump = null
+    e.runtime.stop()
+    emitBearerSnapshot(e)
     promise.resolve(null)
   }
 
   private fun pump(handle: Int) {
     val e = nodes[handle] ?: return
     val node = e.node
-    node.tick(System.currentTimeMillis())
+    e.runtime.tick(System.currentTimeMillis())
+    emitBearerSnapshot(e)
     node.drainOutgoing { link, bytes ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putDouble("link", link.toDouble())
-      m.putString("bytes", enc(bytes))
-      emit("HopMesh:outgoing", m)
+      if (e.runtime.bearers.transportNameOf(link) != null) {
+        e.runtime.bearers.send(bytes, link)
+      } else {
+        val m = Arguments.createMap()
+        m.putInt("node", handle)
+        m.putDouble("link", link.toDouble())
+        m.putString("bytes", enc(bytes))
+        emit("HopMesh:outgoing", m)
+      }
     }
     node.pollInbox { msg ->
       val idB64 = enc(msg.id)
@@ -647,7 +764,13 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   override fun invalidate() {
     super.invalidate()
-    nodes.values.forEach { it.pump?.cancel(false); it.node.close() }
+    nodes.values.forEach {
+      it.pump?.cancel(false)
+      it.pump = null
+      it.inFlight.clear()
+      it.runtime.stop()
+      it.node.close()
+    }
     nodes.clear()
     pumps.shutdownNow()
   }
