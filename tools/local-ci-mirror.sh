@@ -221,6 +221,10 @@ step "package export smoke"           bash tools/package-export-smoke.test.sh
 step "sim pkg freshness"              bash sim/check-pkg-fresh.sh
 step "sim wire vectors"               node sim/wire-vector-check.mjs
 step "wasm tool installer self-test"  bash core/hop-wasm/install-wasm-pack.test.sh
+# PROC-014 is a LOCAL invariant: every agent worktree committed to a named branch before it yielded.
+# CI has no worktrees, so it runs only the self-test; this is the one place the guard itself can bite.
+step "worktree checkpoints self-test" bash tools/check-worktree-checkpoints.test.sh
+step "worktree checkpoints"           bash tools/check-worktree-checkpoints.sh
 
 # --- CI's Kotlin SDK + Android jobs --------------------------------------------------------------
 android_env() {
