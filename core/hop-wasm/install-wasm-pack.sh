@@ -10,19 +10,53 @@ BINARYEN_SHA256="3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e8321
 base="${WASM_PACK_INSTALL_DIR:-${RUNNER_TEMP:-/tmp}/hop-wasm-tools}"
 downloads="${RUNNER_TEMP:-/tmp}/hop-wasm-downloads"
 
-if [ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]; then
-  echo "unsupported wasm tool installer platform: $(uname -s)-$(uname -m)" >&2
-  exit 1
-fi
-
 fetch() {
-  url="$1"
-  output="$2"
-  expected="$3"
-  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-    "$url" --output "$output"
-  printf '%s  %s\n' "$expected" "$output" | sha256sum -c -
+  local url="$1"
+  local output="$2"
+  local EXPECTED_SHA256="$3"
+  local max_attempts=3
+  local attempt=1
+  local curl_exit=0
+  local backoff="${WASM_TOOL_RETRY_DELAY:-1}"
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    rm -f "$output"
+    curl_exit=0
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+      "$url" --output "$output" || curl_exit=$?
+
+    if [ "$curl_exit" -eq 0 ] && [ -f "$output" ]; then
+      # Checksum mismatch is a supply-chain signal, not a transient network error: do not retry.
+      local actual_sha256
+      actual_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
+      if [ "$actual_sha256" != "$EXPECTED_SHA256" ]; then
+        rm -f "$output"
+        echo "checksum mismatch for $url: expected $EXPECTED_SHA256, got $actual_sha256" >&2
+        exit 1
+      fi
+      return 0
+    fi
+
+    rm -f "$output"
+    if [ "$curl_exit" -eq 0 ]; then
+      curl_exit=1
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      sleep "$backoff"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    echo "fetch failed for $url" >&2
+    echo "exhausted $max_attempts attempts (last curl exit code: $curl_exit)" >&2
+    exit "$curl_exit"
+  done
 }
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  if [ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]; then
+    echo "unsupported wasm tool installer platform: $(uname -s)-$(uname -m)" >&2
+    exit 1
+  fi
 
 rm -rf "$base" "$downloads"
 mkdir -p "$base/wasm-pack" "$base/wasm-bindgen" "$base/binaryen" "$downloads"
@@ -56,4 +90,5 @@ if [ -n "${GITHUB_PATH:-}" ]; then
   printf '%s\n' "$base/wasm-pack" "$base/wasm-bindgen" "$base/binaryen/bin" >> "$GITHUB_PATH"
 else
   printf 'verified wasm tools installed under %s\n' "$base"
+fi
 fi

@@ -970,6 +970,8 @@ jobs:
         run: bash tools/executable-reference-guard.test.sh
       - name: Enforce immutable executable and publication references
         run: python3 tools/executable-reference-guard.py
+      - name: Self-test wasm tool installer
+        run: bash core/hop-wasm/install-wasm-pack.test.sh
       - name: Self-test BLE dial-backoff parity guard
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
