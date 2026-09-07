@@ -860,7 +860,7 @@ mod tests {
                 _key: &str,
                 _value: Vec<u8>,
             ) -> std::result::Result<bool, String> {
-                Ok(false)
+                Err("critical kv persistence unsupported".into())
             }
             fn apply_kv_batch(
                 &mut self,
@@ -883,6 +883,15 @@ mod tests {
             flushes.load(Ordering::SeqCst),
             1,
             "Box<dyn Store>::flush must forward to the concrete impl"
+        );
+        let mut counting_mut = CountingStore {
+            flushes: Arc::clone(&flushes),
+        };
+        assert!(
+            counting_mut
+                .put_kv_if_absent_critical("k", vec![1])
+                .is_err(),
+            "CountingStore must return Err when critical KV persistence is unsupported"
         );
     }
 
@@ -1012,7 +1021,7 @@ mod tests {
                 _key: &str,
                 _value: Vec<u8>,
             ) -> std::result::Result<bool, String> {
-                Ok(false)
+                Err("critical kv persistence unsupported".into())
             }
         }
 
@@ -1042,6 +1051,10 @@ mod tests {
         );
         assert!(store.put_kv_critical("k", vec![1]).is_err());
         assert!(store.remove_kv_critical("k").is_err());
+        assert!(
+            store.put_kv_if_absent_critical("k", vec![1]).is_err(),
+            "BareStore must return Err when critical KV persistence is unsupported"
+        );
         assert!(
             store.flush(std::time::Duration::from_millis(1)),
             "default flush reports done immediately, nothing is buffered"
