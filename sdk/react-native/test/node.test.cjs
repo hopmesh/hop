@@ -66,6 +66,16 @@ function makeNative(overrides = {}) {
     linkUp: (...a) => record("linkUp", a, undefined),
     linkDown: (...a) => record("linkDown", a, undefined),
     bytesReceived: (...a) => record("bytesReceived", a, undefined),
+    bearerSnapshot: (...a) =>
+      record("bearerSnapshot", a, {
+        revision: 4,
+        states: { ble: "enabled", lan: "active", relay: "disabled" },
+      }),
+    setBearerEnabled: (...a) =>
+      record("setBearerEnabled", a, {
+        revision: 5,
+        states: { ble: "active", lan: "disabled", relay: "disabled" },
+      }),
     addressToBase58: (...a) => record("addressToBase58", a, "z6MkAddr"),
     addressFromBase58: (...a) => record("addressFromBase58", a, toBase64(new Uint8Array(32).fill(2))),
     relayAdd: (...a) => record("relayAdd", a, true),
@@ -190,6 +200,105 @@ test("onOutgoing decodes packets for a JS bearer", async () => {
   assert.equal(packets.length, 1);
   assert.equal(packets[0].link, 42);
   assert.deepEqual(Array.from(packets[0].bytes), [9, 8, 7]);
+});
+
+test("bearerSnapshot returns the shape the native module reports", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+
+  const snapshot = await node.bearerSnapshot();
+  assert.deepEqual(snapshot, {
+    revision: 4,
+    states: { ble: "enabled", lan: "active", relay: "disabled" },
+  });
+  assert.deepEqual(native.calls.at(-1), { name: "bearerSnapshot", args: [7] });
+});
+
+test("setBearerEnabled forwards name and flag", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+
+  const updated = await node.setBearerEnabled("lan", false);
+  assert.deepEqual(updated, {
+    revision: 5,
+    states: { ble: "active", lan: "disabled", relay: "disabled" },
+  });
+  assert.deepEqual(native.calls.at(-1), { name: "setBearerEnabled", args: [7, "lan", false] });
+});
+
+test("onBearerState decodes full snapshot and only fires for this node handle", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+
+  const snapshots = [];
+  node.onBearerState((snapshot) => snapshots.push(snapshot));
+
+  // Ignored: other node's handle
+  emitter.emit("HopMesh:bearerState", {
+    node: 99,
+    revision: 6,
+    states: { ble: "active", lan: "active", relay: "disabled" },
+  });
+  // Handled: this node's handle
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 6,
+    states: { ble: "active", lan: "active", relay: "disabled" },
+  });
+
+  assert.deepEqual(snapshots, [
+    { revision: 6, states: { ble: "active", lan: "active", relay: "disabled" } },
+  ]);
+});
+
+test("bearer snapshot rejects an incomplete or invented native state", async () => {
+  const malformed = makeNative({
+    bearerSnapshot: () =>
+      Promise.resolve({ revision: 1, states: { ble: "on", lan: "enabled", relay: "disabled" } }),
+  });
+  await assert.rejects(
+    new HopNode(malformed, makeEmitter(), 7).bearerSnapshot(),
+    /invalid ble bearer state/,
+  );
+
+  const badRevision = makeNative({
+    bearerSnapshot: () =>
+      Promise.resolve({ revision: -1, states: { ble: "enabled", lan: "enabled", relay: "disabled" } }),
+  });
+  await assert.rejects(
+    new HopNode(badRevision, makeEmitter(), 7).bearerSnapshot(),
+    /non-negative integer revision/,
+  );
+});
+
+test("the JS seam still functions when native bearers are present", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+
+  // JS linkUp
+  await node.linkUp(42, "dialer");
+  assert.deepEqual(native.calls.at(-1), { name: "linkUp", args: [7, 42, "dialer"] });
+
+  // JS bytesReceived
+  const bytes = new Uint8Array([1, 2, 3]);
+  await node.bytesReceived(42, bytes);
+  assert.deepEqual(native.calls.at(-1), { name: "bytesReceived", args: [7, 42, toBase64(bytes)] });
+
+  // JS onOutgoing packet emission
+  const packets = [];
+  node.onOutgoing((p) => packets.push(p));
+  emitter.emit("HopMesh:outgoing", { node: 7, link: 42, bytes: toBase64(new Uint8Array([9, 8, 7])) });
+  assert.equal(packets.length, 1);
+  assert.equal(packets[0].link, 42);
+  assert.deepEqual(Array.from(packets[0].bytes), [9, 8, 7]);
+
+  // JS linkDown
+  await node.linkDown(42);
+  assert.deepEqual(native.calls.at(-1), { name: "linkDown", args: [7, 42] });
 });
 
 test("Hop.ephemeral and Hop.open build nodes over the injected native module", async () => {

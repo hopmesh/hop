@@ -10,10 +10,14 @@ import { asBytes, fromBase64, toBase64 } from "./base64";
 import {
   HopEvent,
   HopNativeModule,
+  NativeBearerSnapshot,
   NativeHpsTopic,
   NativeHpsTopicInfo,
 } from "./native";
 import {
+  HopBearer,
+  HopBearerSnapshot,
+  HopBearerState,
   HopHpsInvite,
   HopHpsMessage,
   HopHpsTopic,
@@ -129,6 +133,28 @@ function decodeHpsTopicInfo(t: NativeHpsTopicInfo): HopHpsTopicInfo {
   };
 }
 
+function decodeBearerSnapshot(snapshot: NativeBearerSnapshot): HopBearerSnapshot {
+  const states = snapshot?.states;
+  if (!Number.isSafeInteger(snapshot?.revision) || snapshot.revision < 0) {
+    throw new TypeError("HopMesh returned a bearer snapshot without a non-negative integer revision");
+  }
+
+  const decodeState = (bearer: HopBearer): HopBearerState => {
+    const state = states?.[bearer];
+    if (state === "disabled" || state === "enabled" || state === "active") return state;
+    throw new TypeError(`HopMesh returned an invalid ${bearer} bearer state`);
+  };
+
+  return {
+    revision: snapshot.revision,
+    states: {
+      ble: decodeState("ble"),
+      lan: decodeState("lan"),
+      relay: decodeState("relay"),
+    },
+  };
+}
+
 function assertSafeInteger(val: number, name: string): void {
   if (typeof val !== "number" || !Number.isSafeInteger(val) || val < 0) {
     throw new RangeError(`${name} must be a safe non-negative integer, got ${val}`);
@@ -146,8 +172,10 @@ function assertStatus(val: number): void {
  *
  * The core is poll-model: nothing is pushed asynchronously until you `start()` the pump. The pump ticks
  * the clock, drains outbound packets (delivered as `onOutgoing` events for your bearer to transmit),
- * and polls the inbox, the hops:// queues and the hps:// queues, surfacing each as an event. Inbox
- * items, responses and hps:// publications repeat on every poll until you `acceptInbox` /
+ * and polls the inbox, the hops:// queues and the hps:// queues, surfacing each as an event. When native
+ * bearers and the JavaScript transport seam are both active, links owned by native transports take
+ * precedence and route directly, while non-native links fall through to JavaScript outgoing packet
+ * events. Inbox items, responses and hps:// publications repeat on every poll until you `acceptInbox` /
  * `acceptServiceResponse` / `acceptHpsMessage` them. hps:// INVITES are the exception: the pump takes
  * and clears them, so a drained invite is gone and a host must persist what it surfaces.
  */
@@ -296,6 +324,28 @@ export class HopNode {
   /** Reject a previously-polled request without ACK so a retransmission can retry. */
   rejectServiceRequest(requestId: Uint8Array): Promise<boolean> {
     return this.native.rejectServiceRequest(this.handle, toBase64(requestId));
+  }
+
+  // ---- native bearer manager ----
+
+  /**
+   * Read every bearer's authoritative state in one revisioned snapshot.
+   *
+   * BLE and LAN are native bearer AAR/pod dependencies. Relay is deliberately outside this
+   * cross-platform bridge and remains disabled in this state shape.
+   */
+  async bearerSnapshot(): Promise<HopBearerSnapshot> {
+    return decodeBearerSnapshot(await this.native.bearerSnapshot(this.handle));
+  }
+
+  /**
+   * Enable or disable one native bearer without affecting the others.
+   *
+   * Disabling closes its live native links before this resolves. Enabling relay rejects because this
+   * bridge does not own a relay bearer.
+   */
+  async setBearerEnabled(bearer: HopBearer, enabled: boolean): Promise<HopBearerSnapshot> {
+    return decodeBearerSnapshot(await this.native.setBearerEnabled(this.handle, bearer, enabled));
   }
   // ---- bearer seam (drive a transport from JS) ----
 
@@ -527,6 +577,14 @@ export class HopNode {
       (p) => ({ link: p.link, bytes: fromBase64(p.bytes) }),
       cb,
     );
+  }
+
+  /**
+   * Subscribe to complete bearer snapshots. A callback always receives BLE, LAN, and relay together,
+   * ordered by a revision the native runtime increases whenever any state changes.
+   */
+  onBearerState(cb: (snapshot: HopBearerSnapshot) => void): Subscription {
+    return this.subscribe$(HopEvent.BearerState, decodeBearerSnapshot, cb);
   }
 
   /** Subscribe to inbound hps:// publications on topics this node hosts or follows. Each repeats on
