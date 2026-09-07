@@ -539,15 +539,44 @@ test('BIZ-018: terms must include US export and OFAC sanctions representations a
   assert.match(psd, /export-compliance evaluation|export classification|EAR/i, 'public-safety-defense.astro must reference export evaluation');
 });
 
-test('CLAIM-020: privacy.astro and dpa.astro must accurately describe persistent Firestore KV device public key and timestamp storage', () => {
+test('CLAIM-020: privacy.astro and dpa.astro must accurately describe persistent Firestore KV device public key and timestamp storage and retention periods', () => {
   const privacy = readSite('src/pages/privacy.astro');
   const dpa = readSite('src/pages/dpa.astro');
+  const firestoreLib = readRepo('core/stores/hop-store-firestore/src/lib.rs');
 
-  // privacy.astro must disclose persistent relay KV storage of device public keys and timestamps
+  function parseRetentionConstant(name) {
+    const pattern = new RegExp(`pub\\s+const\\s+${name}:\\s*u64\\s*=\\s*([^;]+);`);
+    const match = firestoreLib.match(pattern);
+    assert.ok(match, `Must find constant ${name} in hop-store-firestore/src/lib.rs`);
+    const expr = match[1].replace(/_/g, '').trim();
+    return expr.split('*').reduce((acc, term) => acc * Number(term.trim()), 1);
+  }
+
+  const sessionMs = parseRetentionConstant('KV_SESSION_RETENTION_MS');
+  const streamMs = parseRetentionConstant('KV_STREAM_RETENTION_MS');
+  const seenMs = parseRetentionConstant('KV_SEEN_RETENTION_MS');
+
+  const sessionDays = Math.round(sessionMs / (24 * 60 * 60 * 1000));
+  const streamHours = Math.round(streamMs / (60 * 60 * 1000));
+  const seenDays = Math.round(seenMs / (24 * 60 * 60 * 1000));
+
+  // Existing kv-path assertions
   assert.match(privacy, /relays\/\{node\}\/kv|device public keys and timestamps|session.*metadata/i, 'privacy.astro must disclose persistent session and device metadata in relay KV');
-
-  // dpa.astro must disclose persistent relay KV storage
   assert.match(dpa, /relays\/\{node\}\/kv|device public keys and timestamps|session.*metadata/i, 'dpa.astro must disclose persistent session and device metadata in relay KV');
+
+  // privacy.astro must state the exact retention periods matching the Rust constants
+  assert.match(privacy, new RegExp(`${sessionDays}\\s*days`, 'i'), `privacy.astro must disclose ${sessionDays}-day session TTL retention policy`);
+  assert.match(privacy, new RegExp(`${streamHours}\\s*hours`, 'i'), `privacy.astro must disclose ${streamHours}-hour carrier stream TTL`);
+  assert.match(privacy, new RegExp(`${seenDays}\\s*days`, 'i'), `privacy.astro must disclose ${seenDays}-day seen bundle TTL`);
+  assert.match(privacy, /financial ledger|billing/i, 'privacy.astro must mention financial ledger or billing records');
+  assert.match(privacy, /no automated (?:TTL )?(?:expiry|expiration)|exempt/i, 'privacy.astro must state records with no automated expiry');
+
+  // dpa.astro must state the exact retention periods matching the Rust constants
+  assert.match(dpa, new RegExp(`${sessionDays}\\s*days`, 'i'), `dpa.astro must disclose ${sessionDays}-day session TTL retention policy`);
+  assert.match(dpa, new RegExp(`${streamHours}\\s*hours`, 'i'), `dpa.astro must disclose ${streamHours}-hour carrier stream TTL`);
+  assert.match(dpa, new RegExp(`${seenDays}\\s*days`, 'i'), `dpa.astro must disclose ${seenDays}-day seen bundle TTL`);
+  assert.match(dpa, /financial ledger|billing/i, 'dpa.astro must mention financial ledger or billing records');
+  assert.match(dpa, /no automated (?:TTL )?(?:expiry|expiration)|exempt/i, 'dpa.astro must state records with no automated expiry');
 });
 
 test('CLAIM-018: index.astro must describe universal C ABI and HopContract bindings rather than UniFFI', () => {
