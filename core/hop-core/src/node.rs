@@ -8608,12 +8608,12 @@ impl<S: Store> Node<S> {
     ///
     /// A single failure may arise from an isolated out-of-order arrival, bearer-level retry,
     /// or line corruption; dropping the bad frame allows the link to continue if subsequent
-    /// frames match the receiver's sequential nonce. If 5 consecutive frames fail AEAD
+    /// frames match the receiver's sequential nonce. If 3 consecutive frames fail AEAD
     /// decryption with no intervening success, the Snow transport state cannot recover.
-    /// Bounding at 5 prevents an off-path or transient attacker from causing cheap teardowns
-    /// of a healthy link while ensuring a permanently desynchronized link does not linger
-    /// indefinitely in [`LinkState::Up`].
-    pub const MAX_CONSECUTIVE_LINK_DECRYPT_FAILURES: u8 = 5;
+    /// Bounding at 3 prevents an isolated replayed or corrupted frame from causing cheap teardowns
+    /// of a healthy link while ensuring that active traffic quickly detects a desynchronized link
+    /// rather than lingering indefinitely in [`LinkState::Up`].
+    pub const MAX_CONSECUTIVE_LINK_DECRYPT_FAILURES: u8 = 3;
 
     /// Maximum idle time (ms) allowed between successive fragment arrivals for an in-progress
     /// fragmented link record before [`Established::frag_buf`] is cleared (CAND-PROTO-06b).
@@ -23653,32 +23653,33 @@ mod link_desync_tests {
         let mut bob = Node::new(Identity::generate());
         connect_nodes(&mut alice, &mut bob, 1);
 
-        // Alice prepares 6 records:
+        // Alice prepares 4 records:
         let mut packets = Vec::new();
-        for i in 1..=6u8 {
+        for i in 1..=4u8 {
             let id = BundleId::from([i; 32]);
             alice.send_record(1, &Wire::Have(crate::store::HaveSet { ids: vec![id] }));
             packets.push(alice.drain_outgoing());
         }
 
         // Drop packet 0 (nonce 0 lost in transit).
-        // Deliver packets 1..4 (4 consecutive failures, below threshold of 5).
-        for p in &packets[1..5] {
+        // Deliver packet 1 (failure 1) and packet 2 (failure 2, below threshold of 3).
+        for p in &packets[1..3] {
             for (_, b) in p {
                 bob.handle(BearerEvent::Data(1, b.clone()));
             }
         }
-        // Link is still up, failure count is 4:
+        // Link is still up, failure count is 2:
         assert!(bob.is_link_up(1));
-        assert_eq!(bob.link_decrypt_failures(1), Some(4));
+        assert_eq!(bob.link_decrypt_failures(1), Some(2));
 
-        // Deliver packet 5 (5th consecutive failure reaches threshold).
-        for (_, b) in &packets[5] {
+        // Deliver packet 3 (3rd consecutive failure reaches threshold).
+        for (_, b) in &packets[3] {
             bob.handle(BearerEvent::Data(1, b.clone()));
         }
         // Observable signal: link is torn down and no longer Up.
         assert!(!bob.is_link_up(1));
         assert_eq!(bob.link_decrypt_failures(1), None);
+        assert!(!bob.peers().contains(&alice.address()));
 
         // Re-establish link on a fresh connection (link id 2):
         connect_nodes(&mut alice, &mut bob, 2);
@@ -23686,10 +23687,10 @@ mod link_desync_tests {
         assert!(bob.is_link_up(2));
 
         // Send fresh traffic over the re-established link:
-        let id7 = BundleId::from([7u8; 32]);
-        alice.send_record(2, &Wire::Have(crate::store::HaveSet { ids: vec![id7] }));
-        let p7 = alice.drain_outgoing();
-        for (_, b) in p7 {
+        let id5 = BundleId::from([5u8; 32]);
+        alice.send_record(2, &Wire::Have(crate::store::HaveSet { ids: vec![id5] }));
+        let p5 = alice.drain_outgoing();
+        for (_, b) in p5 {
             bob.handle(BearerEvent::Data(2, b));
         }
 
@@ -23697,7 +23698,185 @@ mod link_desync_tests {
             Some(LinkState::Up(est)) => est.peer_has.clone(),
             _ => panic!("link not up"),
         };
-        assert!(bob_has.contains(&id7));
+        assert!(bob_has.contains(&id5));
+    }
+
+    #[test]
+    fn quiet_link_single_bad_frame_does_not_teardown_and_documents_residual() {
+        let mut alice = Node::new(Identity::generate());
+        let mut bob = Node::new(Identity::generate());
+        connect_nodes(&mut alice, &mut bob, 1);
+
+        // Alice sends a record:
+        let id1 = BundleId::from([1u8; 32]);
+        alice.send_record(1, &Wire::Have(crate::store::HaveSet { ids: vec![id1] }));
+        let p1 = alice.drain_outgoing();
+        assert_eq!(p1.len(), 1);
+
+        // A single corrupted frame arrives on Bob's link:
+        let mut corrupted = p1[0].1.clone();
+        if let Some(byte) = corrupted.last_mut() {
+            *byte ^= 0xFF; // flip bits in ciphertext/tag
+        }
+        bob.handle(BearerEvent::Data(1, corrupted));
+
+        // Exactly one frame was received by Bob:
+        // Failure count is 1. Teardown must NOT fire on an isolated bad frame,
+        // because doing so would allow any single replayed frame to force a teardown.
+        assert_eq!(bob.link_decrypt_failures(1), Some(1));
+        assert!(bob.is_link_up(1));
+        assert!(bob.peers().contains(&alice.address()));
+
+        // Advance the clock 15 minutes (900_000 ms) with no further frames arriving:
+        bob.tick(bob.now_ms + 900_000);
+
+        // Residual: On a quiet link where no further frames arrive, the receiver
+        // cannot distinguish an isolated replayed or corrupted frame from an abandoned
+        // desynced link. The link remains in LinkState::Up until either subsequent
+        // traffic arrives (triggering teardown once consecutive failures reach the bound)
+        // or the bearer drops/redials.
+        assert!(
+            bob.is_link_up(1),
+            "isolated failure must not tear down quiet link"
+        );
+        assert_eq!(bob.link_decrypt_failures(1), Some(1));
+    }
+
+    #[test]
+    fn public_api_reordered_frames_reach_teardown_and_redial_flushes_stored_bundles() {
+        let mut nodes = [
+            Node::new(Identity::generate()),
+            Node::new(Identity::generate()),
+        ];
+        // Connect link 1 <-> link 10:
+        nodes[0].handle(BearerEvent::Connected(1, Role::Initiator));
+        nodes[1].handle(BearerEvent::Connected(10, Role::Responder));
+        for _ in 0..8 {
+            let out0 = nodes[0].drain_outgoing();
+            let out1 = nodes[1].drain_outgoing();
+            for (_, b) in out0 {
+                nodes[1].handle(BearerEvent::Data(10, b));
+            }
+            for (_, b) in out1 {
+                nodes[0].handle(BearerEvent::Data(1, b));
+            }
+        }
+        assert!(nodes[0].is_link_up(1));
+        assert!(nodes[1].is_link_up(10));
+        for n in &mut nodes {
+            n.publish_prekey().unwrap();
+        }
+        for _ in 0..8 {
+            let out0 = nodes[0].drain_outgoing();
+            let out1 = nodes[1].drain_outgoing();
+            for (_, b) in out0 {
+                nodes[1].handle(BearerEvent::Data(10, b));
+            }
+            for (_, b) in out1 {
+                nodes[0].handle(BearerEvent::Data(1, b));
+            }
+        }
+
+        let b = nodes[1].address();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"m1".to_vec(), false)
+            .unwrap();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"m2".to_vec(), false)
+            .unwrap();
+
+        let mut held = nodes[0].drain_outgoing();
+        assert_eq!(held.len(), 2);
+        held.reverse(); // Deliver reversed: m2 then m1
+
+        // Frame 0 received by Bob: m2 (nonce 1). Bob expects nonce 0. Fails (failure 1).
+        nodes[1].handle(BearerEvent::Data(10, held[0].1.clone()));
+        assert_eq!(nodes[1].link_decrypt_failures(10), Some(1));
+
+        // Frame 1 received by Bob: m1 (nonce 0). Bob expects nonce 0. Decrypts! Resets failures to 0!
+        nodes[1].handle(BearerEvent::Data(10, held[1].1.clone()));
+        assert_eq!(nodes[1].link_decrypt_failures(10), Some(0));
+        assert_eq!(nodes[1].inbox_items().len(), 1);
+
+        // Now Alice sends after0, after1, after2:
+        // Each generates an outbound frame with nonces 2, 3, 4:
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"after0".to_vec(), false)
+            .unwrap();
+        let f0 = nodes[0].drain_outgoing();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"after1".to_vec(), false)
+            .unwrap();
+        let f1 = nodes[0].drain_outgoing();
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"after2".to_vec(), false)
+            .unwrap();
+        let f2 = nodes[0].drain_outgoing();
+
+        // Deliver after0: Bob receives failure 1 (below bound of 3):
+        for (_, bytes) in f0 {
+            nodes[1].handle(BearerEvent::Data(10, bytes));
+        }
+        assert_eq!(nodes[1].link_decrypt_failures(10), Some(1));
+        assert!(nodes[1].is_link_up(10));
+
+        // Deliver after1: Bob receives failure 2 (below bound of 3):
+        for (_, bytes) in f1 {
+            nodes[1].handle(BearerEvent::Data(10, bytes));
+        }
+        assert_eq!(nodes[1].link_decrypt_failures(10), Some(2));
+        assert!(nodes[1].is_link_up(10));
+
+        // Deliver after2: Bob receives failure 3 -> TEARDOWN FIRES!
+        for (_, bytes) in f2 {
+            nodes[1].handle(BearerEvent::Data(10, bytes));
+        }
+        // Bob's link is torn down! Driver observables:
+        assert!(!nodes[1].is_link_up(10));
+        assert_eq!(nodes[1].link_decrypt_failures(10), None);
+        assert!(!nodes[1].peers().contains(&nodes[0].address()));
+        assert!(!nodes[1].peer_links().iter().any(|&(_, l)| l == 10));
+
+        // Now redial / reconnect on new link IDs (link 2 <-> link 20):
+        nodes[0].handle(BearerEvent::Disconnected(1));
+        nodes[1].handle(BearerEvent::Disconnected(10));
+        nodes[0].handle(BearerEvent::Connected(2, Role::Initiator));
+        nodes[1].handle(BearerEvent::Connected(20, Role::Responder));
+        for _ in 0..8 {
+            let out0 = nodes[0].drain_outgoing();
+            let out1 = nodes[1].drain_outgoing();
+            for (_, b) in out0 {
+                nodes[1].handle(BearerEvent::Data(20, b));
+            }
+            for (_, b) in out1 {
+                nodes[0].handle(BearerEvent::Data(2, b));
+            }
+        }
+        assert!(nodes[0].is_link_up(2));
+        assert!(nodes[1].is_link_up(20));
+
+        // Alice sends a new message over the fresh link:
+        nodes[0]
+            .send_message(b, "text/plain".into(), b"after-redial".to_vec(), false)
+            .unwrap();
+        // Shuttle traffic until quiescent:
+        for _ in 0..100 {
+            let mut any = false;
+            for (_, bytes) in nodes[0].drain_outgoing() {
+                any = true;
+                nodes[1].handle(BearerEvent::Data(20, bytes));
+            }
+            for (_, bytes) in nodes[1].drain_outgoing() {
+                any = true;
+                nodes[0].handle(BearerEvent::Data(2, bytes));
+            }
+            if !any {
+                break;
+            }
+        }
+
+        // On redial, stored bundles flush and all 6 messages arrive at Bob!
+        assert_eq!(nodes[1].inbox_items().len(), 6);
     }
 
     #[test]
