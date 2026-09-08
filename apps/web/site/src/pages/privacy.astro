@@ -81,7 +81,7 @@ import Base from '../layouts/Base.astro';
          practices are yours to set.</p>
 
       <h2>Data Subject Rights &amp; Retention</h2>
-      <p>Depending on your jurisdiction (including the EEA, UK, and California), you may have rights to access, correct, port, or request deletion of personal information we hold about you as a Data Controller. Held bundles in our relay spool are transient, purged immediately upon verified delivery or evicted automatically upon TTL expiration. Persistent relay connection records and device public keys and timestamps in <code>{`relays/{node}/kv`}</code> are maintained under strict IAM access controls for network operation and rate limiting.</p>
+      <p>Depending on your jurisdiction (including the EEA, UK, and California), you may have rights to access, correct, port, or request deletion of personal information we hold about you as a Data Controller. Held bundles in our relay spool are transient, purged immediately upon verified delivery or evicted automatically upon TTL expiration. Persistent relay connection records and device public keys and timestamps in <code>{`relays/{node}/kv`}</code> are maintained under strict IAM access controls for network operation and rate limiting, governed by automatic TTL retention policies (session state expires after 30 days, carrier streams after 24 hours, seen bundle identifiers after 7 days, and default transient KV rows after 30 days; financial ledger records and telemetry deduplication markers are exempt from TTL and have no automated expiry).</p>
 
       <h2>Contact</h2>
       <p>Questions about data handling or privacy rights: <a class="mono" style="color:var(--accent)" href="mailto:privacy@hopme.sh">privacy@hopme.sh</a>.</p>

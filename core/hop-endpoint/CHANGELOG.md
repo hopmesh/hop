@@ -5,9 +5,12 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- make put_kv_if_absent_critical required on Store trait (6ab0280)
+- revoke in-memory cluster claim on handled gossip persistence failure (93a79be)
 - use fallible critical KV writes and prevent telemetry replay across restart (STORE-005, SVC-006) (63cbcf0)
 
 ### Documentation
+- regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)
@@ -32,4 +35,7 @@ git-cliff. Do not edit by hand.
 - phase 3 hold-until-coordinated quorum (CP; never double-process) (#159) (9900a0d)
 - phase 2 rendezvous ownership (exactly-once when the owner is up) (#155) (50bd74f)
 - self-clustering endpoints (phase 1 dedup) as a hop-endpoint-core layer over the mesh (#153) (76c420c)
+
+### Testing
+- reconcile cross-lane test stores with the required put_kv_if_absent_critical and the encrypted field (PROTO-009, ABI-014) (e4e73e3)
 

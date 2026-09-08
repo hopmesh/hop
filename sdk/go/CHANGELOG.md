@@ -5,6 +5,8 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- remove template disclaimers, document CLA and DCO, and add DCO workflow (2bbcbc6)
+- align SDK READMEs and deny.toml with core Apache-2.0 license (84474f5)
 - close the round-2 closure-audit reopens (ABI-009, CLAIM-015, CLAIM-016, PROC-002, INFRA-015) (190f4c9)
 - handle service request acceptance and add persistent node constructor (ABI-002, ABI-003) (187c46a)
 - bundle third-party notices and licenses across packages and targets (ABI-011) (a9ca30f)
@@ -20,6 +22,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)
