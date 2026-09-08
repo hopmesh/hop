@@ -972,6 +972,12 @@ jobs:
         run: python3 tools/executable-reference-guard.py
       - name: Self-test wasm tool installer
         run: bash core/hop-wasm/install-wasm-pack.test.sh
+      # PROC-014's guard inspects the LOCAL agent worktrees, of which a CI checkout has none, so only
+      # its self-test belongs here: it plants a dirty worktree and an unreachable HEAD and requires a
+      # rejection. The guard itself runs in tools/local-ci-mirror.sh, where worktrees exist. Until this
+      # step existed nothing invoked either file, while CLAUDE.md said the rule was enforced by it.
+      - name: Self-test worktree checkpoint guard
+        run: bash tools/check-worktree-checkpoints.test.sh
       - name: Self-test BLE dial-backoff parity guard
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
