@@ -5,7 +5,10 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- invoke the worktree checkpoint guard that PROC-014 documented as enforcing the rule (PROC-022) (b066104)
+- arbitrate simultaneous session inits (CAND-PROTO-A) (2d7822b)
 - fail closed when critical KV persistence is unsupported (CAND-PROTO-C) (e203668)
+- recover a link whose transport session can no longer decrypt (CAND-PROTO-B) (f4491d8)
 - state the Firestore KV retention periods the relay actually enforces (CLAIM-020) (d33d341)
 - retry a reset connection when fetching a pinned wasm tool, never a checksum mismatch (db7b477)
 - remove deprecated moduleResolution option for TypeScript 7 (c382a33)
@@ -319,6 +322,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (f67300f)
 - regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - describe the monorepo's staleness without naming a superseded ABI level (CLAIM-017) (75b7889)
@@ -597,6 +601,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- prove link teardown fires on delivered frames, lower the bound to 3, and record the quiet-link residual (CAND-PROTO-B) (0c51fac)
 - make the identity secret guard fixtures deterministic and pin the entropy threshold from below (PROC-008) (40cc16f)
 - prove the DCO gate exempts the maintainer login and still refuses an unsigned outside commit (BIZ-015) (1cf2fbf)
 - teach the required-check self-test the PROC-016 commit-message-guard rule; format the Flutter endpoint (ABI-016, PROC-016) (41662ef)
