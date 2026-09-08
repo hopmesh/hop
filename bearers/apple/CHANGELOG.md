@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- remove template disclaimers, document CLA and DCO, and add DCO workflow (2bbcbc6)
+- track dead peers and cycle MCSession on exhaustion (5ad69b8)
+- prioritize in-flight handshakes in dedup tiebreaker (97e3257)
 - override authenticated on LanBearer and drop dead BLE constant (PLAT-005) (d9e29b5)
 - wire authentication feedback and enforce preauth deadline across bearers (PLAT-005) (c51d33d)
 - enforce accessory authorization and bounded reassembly for Meshtastic (PLAT-006) (8e5f47b)
@@ -19,6 +22,7 @@ git-cliff. Do not edit by hand.
 - finish the monorepo layout, kill platform stubs, unify the platform axis (O-1/O-3/O-4/O-5) (#115) (a0550d7)
 
 ### Documentation
+- regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - regenerate from conventional commits (f592a14)
 - regenerate from conventional commits (ce99725)

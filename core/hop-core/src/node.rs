@@ -9218,11 +9218,14 @@ impl<S: Store> Node<S> {
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    // Duplicate telemetry batch already processed (SVC-006, SVC-012)
-                                    return false;
+                                    // Duplicate telemetry batch already processed (SVC-006, SVC-012).
+                                    // Mark seen but don't hold: handled duplicate.
+                                    let stored = self.store.put(bundle, self.now_ms);
+                                    self.store.remove(&id);
+                                    return stored || self.store.seen(&id);
                                 }
                                 Err(_) => {
-                                    // Critical persistence failure: fail closed
+                                    // Critical persistence failure: fail closed, do not mark handled
                                     return false;
                                 }
                             }
@@ -23581,6 +23584,160 @@ mod access_gate_tests {
                 "Sender B's normal-priority bundle {i} was evicted by Sybil priority=255 flood under Open policy"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod store_contract_tests {
+    use super::*;
+    use crate::bundle::{Bundle, BundleOpts, Destination, Payload};
+    use crate::store::{KvMutation, MemoryStore, Store};
+    use crate::telemetry::TelemetryBatch;
+
+    struct FailingCriticalPutStore {
+        inner: MemoryStore,
+        fail_critical_put: bool,
+    }
+
+    impl Store for FailingCriticalPutStore {
+        fn put(&mut self, b: Bundle, now_ms: u64) -> bool {
+            self.inner.put(b, now_ms)
+        }
+        fn get(&self, id: &BundleId) -> Option<Bundle> {
+            self.inner.get(id)
+        }
+        fn remove(&mut self, id: &BundleId) -> Option<Bundle> {
+            self.inner.remove(id)
+        }
+        fn seen(&self, id: &BundleId) -> bool {
+            self.inner.seen(id)
+        }
+        fn contains(&self, id: &BundleId) -> bool {
+            self.inner.contains(id)
+        }
+        fn have(&self) -> crate::store::HaveSet {
+            self.inner.have()
+        }
+        fn prune(&mut self, now_ms: u64) {
+            self.inner.prune(now_ms);
+        }
+        fn apply_kv_batch(&mut self, mutations: &[KvMutation]) -> std::result::Result<(), String> {
+            if self.fail_critical_put {
+                return Err("critical kv persistence unsupported".into());
+            }
+            self.inner.apply_kv_batch(mutations)
+        }
+        fn put_kv_if_absent_critical(
+            &mut self,
+            key: &str,
+            value: Vec<u8>,
+        ) -> std::result::Result<bool, String> {
+            if self.fail_critical_put {
+                return Err("critical kv persistence unsupported".into());
+            }
+            self.inner.put_kv_if_absent_critical(key, value)
+        }
+    }
+
+    #[test]
+    fn cand_proto_c_telemetry_critical_kv_failure_does_not_mark_handled() {
+        let now = 3_600_000 * 10;
+        let alice = Identity::generate();
+        let bob_id = Identity::generate();
+        let bob_addr = bob_id.address();
+
+        let store = FailingCriticalPutStore {
+            inner: MemoryStore::new(),
+            fail_critical_put: true,
+        };
+        let mut bob = Node::with_store(bob_id, store);
+        bob.now_ms = now;
+
+        let batch = TelemetryBatch::new().counter("hop.test", 1, now);
+        let bundle = Bundle::create(
+            &alice,
+            Destination::Device(bob_addr),
+            &bob_addr,
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let bundle_id = bundle.id();
+
+        // Process telemetry bundle on bob when critical put fails:
+        // Must return false AND must not mark bundle as handled/seen.
+        let handled = bob.process_bundle(1, bundle.clone());
+        assert!(
+            !handled,
+            "process_bundle must return false when critical KV persistence fails"
+        );
+
+        // Telemetry must not be admitted to telemetry_in queue
+        assert_eq!(bob.take_telemetry().len(), 0);
+
+        // Critical persistence failed: the bundle must NOT be marked as handled/seen in store!
+        assert!(
+            !bob.store.seen(&bundle_id),
+            "A bundle whose critical KV persistence failed must NOT be recorded as handled in store"
+        );
+    }
+
+    #[test]
+    fn cand_proto_c_telemetry_duplicate_ok_false_marks_handled_without_reprocessing() {
+        let now = 3_600_000 * 10;
+        let alice = Identity::generate();
+        let bob_id = Identity::generate();
+        let bob_addr = bob_id.address();
+
+        let store = FailingCriticalPutStore {
+            inner: MemoryStore::new(),
+            fail_critical_put: false,
+        };
+        let mut bob = Node::with_store(bob_id, store);
+        bob.now_ms = now;
+
+        let batch = TelemetryBatch::new().counter("hop.test", 1, now);
+        let bundle = Bundle::create(
+            &alice,
+            Destination::Device(bob_addr),
+            &bob_addr,
+            &Payload::ServiceRequest {
+                service: SERVICE_TELEMETRY.into(),
+                method: "export".into(),
+                args: batch.to_bytes(),
+            },
+            BundleOpts {
+                created_at: now,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let bundle_id = bundle.id();
+
+        // First arrival succeeds
+        let first_res = bob.process_bundle(1, bundle.clone());
+        assert!(first_res, "first arrival should be accepted/stored");
+        assert_eq!(bob.take_telemetry().len(), 1);
+        assert!(bob.store.seen(&bundle_id));
+
+        // Second arrival (duplicate) returns Ok(false) from put_kv_if_absent_critical:
+        // Must return true (handled as duplicate) or be recognized as duplicate!
+        let second_res = bob.process_bundle(1, bundle.clone());
+        // Must not deliver duplicate telemetry
+        assert_eq!(bob.take_telemetry().len(), 0);
+        // Must be treated as duplicate (handled)
+        assert!(
+            second_res,
+            "duplicate arrival must return true (treated as handled duplicate)"
+        );
+        assert!(bob.store.seen(&bundle_id));
     }
 }
 
