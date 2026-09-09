@@ -40,6 +40,16 @@ check-branch-protection.sh asserts the live branch-protection rule on main requi
 check-worktree-checkpoints.sh asserts that all active worktrees have clean working trees and that their
                            HEAD commits are reachable from a named branch before pruning (PROC-014).
                            Self-test: check-worktree-checkpoints.test.sh.
+test-module-inline-guard.sh fails when a new inline mod *_tests block is added to a Rust file that already
+                           contains one. Enforces the per-file test convention (#[path = "..."] mod ...;)
+                           for additive test modules so concurrent agent lanes do not append blocks to EOF
+                           and collide during git 3-way merge.
+                           Self-test: test-module-inline-guard.test.sh.
+integration-content-guard.sh proves every lane commit's content is present in the integration result,
+                           not merely that branch references were merged. Uses in-memory 3-way merge-tree
+                           and residual diff analysis to detect dropped or superseded commits (such as
+                           historical f6cfd1fa on fix/r3-legal).
+                           Self-test: integration-content-guard.test.sh.
 repo-integrity-guard.sh    fails if a critical file (LICENSE, load-bearing docs, sdk/hop.h) is missing,
                            empty, truncated, or drifted. TWO-TIER licenses: services/* byte-identical
                            FSL-1.1-ALv2, every other component (core, sdk, bearers, drivers, examples)
