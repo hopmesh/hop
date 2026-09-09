@@ -244,7 +244,7 @@ Four repositories partition the project estate following the 2026-08 repository 
 - **Stripe and Resend configuration**: Defined in `infra/billing/` (Stripe products, meters, prices, and Resend domain). Present in both `hopmesh/platform` and `hopmesh/monorepo`. Last successfully applied by `hopmesh/monorepo` via `billing-catalog.yml` on 2026-08-16.
 - **Public mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`, `hop-bearers-apple`)**: `hopmesh/hop` is the sole source of truth. Copybara export is strictly one-directional from `hopmesh/hop` to the mirror repositories via `.github/workflows/sync-components.yml`. `hopmesh/monorepo` is not upstream for anything; its sync workflow was disabled on 2026-09-04.
 
-### 3. Forensic finding: why commits still land in the old monorepo
+### 3. Forensic finding: why commits still land in the old monorepo and what production actually serves
 
 Commits continue to land daily in `hopmesh/monorepo` due to an un-decommissioned automated changelog loop:
 
@@ -256,9 +256,17 @@ Commits continue to land daily in `hopmesh/monorepo` due to an un-decommissioned
 6. GitHub merges the PR to `main` as `Merge pull request #<N> from hopmesh/chore/changelog-...` authored by `Jason Waldrip`.
 7. The push to `main` triggers monorepo's `ci.yml` on `main`.
 8. When `ci.yml` completes on `main`, `.github/workflows/runtime-deploy.yml` triggers via `workflow_run: workflows: ["CI"], types: [completed]`.
-9. `runtime-deploy.yml` builds Docker images from `hopmesh/monorepo`'s local tree (where `services/hop-relayd` is from 2026-08-12) and applies `infra/` to GCP `hop-mesh-tfstate/relay-fleet`.
+9. `runtime-deploy.yml` builds Docker images and applies `infra/` to GCP `hop-mesh-tfstate/relay-fleet`.
 
-Evidence: Run 34357179362 completed successfully on 2026-09-09T13:27:23Z with `Apply complete! Resources: 0 added, 3 changed, 0 destroyed.` at 13:36:04Z. As a consequence, `hopmesh/monorepo` daily downgrades production infrastructure to an obsolete August 2026 codebase, overwriting changes made in `hopmesh/platform` or `hopmesh/hop`.
+Evidence: Run 34357179362 completed successfully on 2026-09-09T13:27:23Z with `Apply complete! Resources: 0 added, 3 changed, 0 destroyed.` at 13:36:04Z.
+
+Deploy attribution is confirmed by direct observation on the live infrastructure: all three live Cloud Run services in `hop-mesh` (`hop-console`, `hop-accountd`, and `hop-example`) carry the label `hop-source-sha: b149f04a287344af3a571018fe290b78b6f98b87`, updated between 13:34Z and 13:35Z on 2026-09-09, exactly matching today's auto-merged commit in `hopmesh/monorepo`.
+
+However, what is actually serving must be distinguished by service:
+- The three deployed Cloud Run services are `hop-console`, `hop-accountd`, and `hop-example` (the relay fleet is currently disabled, `relays_enabled=false`).
+- `hop-console` and `hop-accountd` do NOT exist in `hopmesh/hop` at all. In `hopmesh/hop`, `services/` holds only `hop-endpoint`, `hop-gateway`, `hop-relayd`, and `hop-telemetryd`, and the root `Cargo.toml` deliberately excludes `hop-accountd` and `hop-billingd` from the public export. For these two commercial services, `hopmesh/monorepo` is not a rogue duplicate; it is currently the only active deploying home they have.
+- The one deployed service that does diverge from code maintained in `hopmesh/hop` is `hop-example` (built from `services/hop-endpoint`). In `hopmesh/monorepo`, `services/hop-endpoint` was last modified on 2026-08-12 (`5c12557b`) and its underlying protocol dependency `core/hop-core/src/node.rs` was last modified on 2026-08-06 (`40ae3907`). In `hopmesh/hop`, `core/hop-core/src/node.rs` was updated on 2026-09-09 at `9fe9c3a0`. This represents a month of protocol hardening and wire updates sitting in `hopmesh/hop` that `hop-example` in production does not receive.
+- The primary operational risk is state collision and divergence. Both `hopmesh/monorepo` and `hopmesh/platform` declare the exact same OpenTofu backend bucket and prefix (`bucket = "hop-mesh-tfstate"`, `prefix = "relay-fleet"`). Whichever repository applies next wins the state, and the two trees disagree by more than a month of protocol and service commits.
 
 ### 4. Forensic finding: five consecutive Infrastructure drift failures in platform
 
@@ -278,10 +286,10 @@ Audit of every workflow in `hopmesh/monorepo`:
 
 | Workflow | File | Trigger | Most recent success | Classification | Status and role |
 | --- | --- | --- | --- | --- | --- |
-| Runtime deploy | `.github/workflows/runtime-deploy.yml` | `workflow_run` (CI on main) | 2026-09-09T13:27:23Z | (b) Sole owner (active) | Sole active automated deployer to `hop-mesh-tfstate/relay-fleet`. Deploys stale August 2026 code daily. |
+| Runtime deploy | `.github/workflows/runtime-deploy.yml` | `workflow_run` (CI on main) | 2026-09-09T13:27:23Z | (b) Sole owner (active) | Sole active automated deployer to `hop-mesh-tfstate/relay-fleet`. Deploys monorepo commercial services and console daily. |
 | Bootstrap root | `.github/workflows/bootstrap-apply.yml` | `pull_request`, `workflow_dispatch` | 2026-08-16T17:17:05Z | (b) Sole owner | Holds the last successful apply of bootstrap IAM and WIF. Platform has failed applies. |
 | Billing catalog | `.github/workflows/billing-catalog.yml` | `pull_request`, `workflow_dispatch` | 2026-08-16T16:11:17Z | (b) Sole owner | Holds the last successful apply of the Stripe catalog and Resend domain. |
-| Changelog | `.github/workflows/changelog.yml` | `schedule` (08:17 UTC daily) | 2026-09-09T12:58:56Z | (a) Redundant | Duplicated in hop. Harmful: drives the daily commit loop that triggers stale deploys. |
+| Changelog | `.github/workflows/changelog.yml` | `schedule` (08:17 UTC daily) | 2026-09-09T12:58:56Z | (a) Redundant | Duplicated in hop. Harmful: drives the daily commit loop that triggers automated deploys. |
 | PR auto-merge | `.github/workflows/pr-automerge.yml` | `pull_request_target` | 2026-09-09T13:02:30Z | (a) Redundant | Duplicated in hop. Harmful: automatically merges the daily changelog PRs. |
 | CI | `.github/workflows/ci.yml` | `push: [main]`, `pull_request` | 2026-09-09T13:14:44Z | (a) Redundant | Duplicated in hop. In monorepo, its completion acts as the trigger for runtime deploy. |
 | Native artifacts | `.github/workflows/native-artifacts.yml` | `push: [main]` | 2026-09-09T13:14:44Z | (a) Redundant | Duplicated in hop. In monorepo, artifacts are not consumed because release-tags is disabled. |
@@ -297,7 +305,24 @@ Audit of every workflow in `hopmesh/monorepo`:
 
 ### 6. Reconciliation recommendation
 
-The division between public protocol code (`hopmesh/hop`) and private infrastructure/commercial code (`hopmesh/platform`) is structurally correct. `hopmesh/monorepo` should be phased out entirely once `hopmesh/platform` is fully armed.
+Do NOT archive `hopmesh/monorepo` today. Archiving `hopmesh/monorepo` right now would remove the only active deployer of the commercial backend (`hop-accountd`) and customer console (`hop-console`), and the only active repository holding their source and live configuration.
+
+Instead, the project must sequence the transition in three distinct steps:
+
+#### Step 1: Settle repository ownership of the commercial stack
+Formally confirm where `services/hop-accountd`, `services/hop-billingd`, and `apps/web/console` belong. While `hopmesh/platform` was created on 2026-08-17 to hold them, `hopmesh/platform` has zero Actions secrets provisioned (`gh api repos/hopmesh/platform/actions/secrets` returns `[]`), so today it cannot deploy or even verify infrastructure drift.
+
+#### Step 2: Arm `hopmesh/platform` so it can deploy
+Before touching `hopmesh/monorepo`'s deploy path:
+- Seed the missing repository secrets in `hopmesh/platform`: `BOOTSTRAP_TFVARS`, `STRIPE_API_KEY`, and `RESEND_API_KEY`.
+- Run `.github/workflows/infra-drift.yml` in `hopmesh/platform` and verify it transitions from red to green.
+- Execute `.github/workflows/runtime-deploy.yml` in `hopmesh/platform` via `workflow_dispatch` with `confirm: apply`, verifying that it builds public images against `hopmesh/hop@main`, builds commercial images from `hopmesh/platform`, and successfully applies `infra/` to `hop-mesh-tfstate/relay-fleet`.
+
+#### Step 3: Transition `hopmesh/monorepo` once platform is proven
+Only after `hopmesh/platform` has demonstrated successful, repeatable deployments of all production services:
+- Neutralize monorepo's daily automated loop by disabling `changelog.yml` and `pr-automerge.yml` in `hopmesh/monorepo`.
+- Change `.github/workflows/runtime-deploy.yml` in `hopmesh/monorepo` from `workflow_run` to `workflow_dispatch` only, keeping it solely as an emergency rollback mechanism until the migration is settled.
+- At that point, and only at that point, consider retiring `hopmesh/monorepo`.
 
 #### What should move to `hopmesh/hop`
 - Documentation only: `CLAUDE.md`, `docs/repo-catalog.md`, and `docs/release-engineering.md` must accurately state where deploy authority lives.
@@ -307,28 +332,7 @@ The division between public protocol code (`hopmesh/hop`) and private infrastruc
 - `hopmesh/platform`: Must remain the sole home for `services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, and `infra/` (runtime OpenTofu, bootstrap, and billing).
 - `hopmesh/internal`: Must remain the home for security audits, remediation ledgers, financial models, and mockups.
 
-#### What can be turned off in `hopmesh/monorepo`
-- Immediately safe to disable:
-  - `changelog.yml`: Stops the automated daily PR generation. Risk: None. `hopmesh/hop` has its own changelog workflow.
-  - `pr-automerge.yml`: Stops auto-merging PRs into `main`. Risk: None.
-  - Redundant CI/testing workflows: `native-artifacts.yml`, `branch-protection-audit.yml`, `fuzz.yml`, `workflow-freshness.yml`, and `dep-fix-tag.yml`. Risk: None. Active copies run in `hopmesh/hop`.
-- What must NOT be turned off without verification:
-  - `runtime-deploy.yml`: Do not disable until `hopmesh/platform` has its secrets provisioned and its deploy workflow is proven on main. Disabling `runtime-deploy.yml` in monorepo prematurely would eliminate the only functioning deploy path.
-
-#### Phased cutover roadmap (Recommend; do NOT execute in this lane)
-1. **Phase 1: Neutralize the automated daily downgrade loop in monorepo.**
-   - Disable `changelog.yml` and `pr-automerge.yml` in `hopmesh/monorepo`.
-   - In `hopmesh/monorepo`, change `.github/workflows/runtime-deploy.yml` from `workflow_run: workflows: ["CI"]` to `workflow_dispatch` only. This immediately stops the daily automated downgrade of production while preserving monorepo's deployer as a manual emergency rollback option.
-   - Risk: Very low. Only manual deploys remain in monorepo, stopping unreviewed automated deploys.
-2. **Phase 2: Seed missing secrets in `hopmesh/platform`.**
-   - Seed `BOOTSTRAP_TFVARS`, `STRIPE_API_KEY`, and `RESEND_API_KEY` in `hopmesh/platform/actions/secrets`.
-   - Verify that `.github/workflows/infra-drift.yml` runs green in `hopmesh/platform`, proving IAM and state bucket access.
-   - Risk: None. Enables existing drift detection.
-3. **Phase 3: Prove deploy execution from `hopmesh/platform`.**
-   - Dispatch `.github/workflows/runtime-deploy.yml` in `hopmesh/platform` with `confirm: apply`.
-   - Verify that it checks out `hopmesh/hop@main`, builds fresh images (`hop-relayd`, `hop-endpoint`), builds `hop-accountd` and `hop-console`, and applies `infra/` to `hop-mesh-tfstate/relay-fleet`.
-   - Risk: Low if tested during a maintenance window with a verified plan.
-4. **Phase 4: Decommission and archive `hopmesh/monorepo`.**
-   - Disable `runtime-deploy.yml`, `bootstrap-apply.yml`, and `billing-catalog.yml` in `hopmesh/monorepo`.
-   - Mark `hopmesh/monorepo` as archived in GitHub repository settings.
-   - Risk: Zero once Phase 3 is completed.
+#### Risk assessment
+- **Disabling monorepo deploy prematurely**: High risk. Would leave production without an operational deploy mechanism for `hop-console` and `hop-accountd`.
+- **Leaving monorepo automated deploy active**: Moderate risk. Overwrites `relay-fleet` OpenTofu state daily, ensuring any manual apply from `hopmesh/platform` is reverted on the next daily run.
+- **Seeding secrets in `hopmesh/platform`**: Zero risk. Enables existing drift checks and unlocks platform deployment capabilities.
