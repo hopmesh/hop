@@ -5,19 +5,17 @@ component subtree to its own standalone repo (so it has its own package page, is
 brings external contributions back, without forking. It is the Meta react-native / relay pattern,
 done with [Copybara](https://github.com/google/copybara) instead of fbshipit.
 
-Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`. A fourth,
-`hop-bearers-apple`, is WIRED but NOT MIRRORED: it has a `components.json` entry, a `copy.bara.sky`
-registration, and its own `release.yml` and `sync-back.yml`, but the repository
-`hopmesh/hop-bearers-apple` does not exist and never has, so nothing has ever been exported to it.
-Creating it is a human action (`tools/copybara/bootstrap-mirrors.sh`, which this repository's
-automation deliberately cannot perform), followed by one seeded export with `init_history=true`.
-Until both happen, the Apple bearers are available only inside this repository, and any consumer
-instruction naming that mirror URL is aspirational. `tools/copybara/components.json` is the dispatch
-allowlist and `tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an
-export and import workflow for each. Their CI self-test rejects any drift between the two. Twenty
-other components were mirrored until the 2026-08 retirement and their repos deleted;
-`hop-bearers-apple` is one of those twenty, wired for restoration, and the other nineteen live only
-here. See `docs/repo-catalog.md`.
+Three components mirror today: `hop-sdk-go`, `hop-sdk-crystal`, and `hop-sdk-apple`.
+A fourth component, `hop-bearers-apple`, was previously wired in `components.json`, but because its
+repository `hopmesh/hop-bearers-apple` does not exist, the component wiring was retired so the tree does
+not reference a repository that returns 404. Creating it is a human action
+(`tools/copybara/bootstrap-mirrors.sh`, which this repository's automation deliberately cannot perform),
+followed by one seeded export with `init_history=true`. Until both happen, the Apple bearers are
+available only inside this repository, and any consumer instruction naming that mirror URL is
+aspirational. `tools/copybara/components.json` is the dispatch allowlist and
+`tools/copybara/copy.bara.sky` holds the matching `COMPONENTS` list used to generate an export and
+import workflow for each. Their CI self-test rejects any drift between the two. Twenty-one other
+components were retired and their repos deleted; see `docs/repo-catalog.md`.
 
 These mirrors exist because their package managers resolve FROM a git repo root: SwiftPM needs
 `Package.swift` at the repository root, shards needs `shard.yml` there, and the Go module proxy
@@ -254,13 +252,13 @@ The dispatch self-test enforces the first three mappings. Then add the mirror to
 `bootstrap-mirrors.sh`, create the repo, and run the seed command above.
 
 The components wired today are the three that survived the 2026-08 retirement (`hop-sdk-go`,
-`hop-sdk-crystal`, `hop-sdk-apple`) plus `hop-bearers-apple`, the first retired name wired for return.
-Its repo has NOT been recreated, so the config is complete and the destination is absent: the export
-would fail on a missing repository, not on a Copybara error. Every component subtree still carries its
+`hop-sdk-crystal`, `hop-sdk-apple`). `hop-bearers-apple` was previously wired as a fourth, but its repo
+was never recreated under `hopmesh`, so its component wiring was retired. Every component subtree still carries its
 own `LICENSE.md` (FSL-1.1-ALv2 for `services/*`, Apache-2.0 for everything else including the core),
 so any of them is ready to stand alone if it is mirrored again.
-Bringing back one of the nineteen remaining retired names still means recreating its repository first,
-because the old one was deleted; `docs/repo-catalog.md` lists them.
+Bringing back a retired mirror means recreating its repository first (via `bootstrap-mirrors.sh`),
+re-adding the component to `components.json`, `copy.bara.sky`, and `sync-components.yml`, and seeding
+history; `docs/repo-catalog.md` lists them.
 
 ## Historical note: the 2026-08 handover (already done)
 

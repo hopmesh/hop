@@ -41,17 +41,13 @@ def rejected(call, label):
 
 
 components = exports.load_components(root)
-# The live mirror set: the three that survived the 2026-08 retirement plus hop-bearers-apple, the
-# first retired name restored. Asserted by NAME, not by count: a bare
-# integer said nothing about WHICH components, so swapping one for another would have passed. These
-# four exist because their package manager cannot resolve a library from a subdirectory (SwiftPM
-# needs Package.swift at a repo root; shards has no subdirectory resolver at all) or because the
-# import path is materially worse without one (Go subdirectory modules force sdk/go/v1.2.3 tags). The
-# bearers are the same SwiftPM case as the Apple SDK, one level out: an external app needs the five
-# bearer products resolvable without the monorepo, and they ride on the published SDK by URL rather
-# than libhop, so the export carries no native bundle.
+# The live mirror set: the three SDK mirrors that survived the 2026-08 retirement.
+# Asserted by NAME, not by count: a bare integer said nothing about WHICH components,
+# so swapping one for another would have passed. These three exist because their package
+# manager cannot resolve a library from a subdirectory (SwiftPM needs Package.swift at a
+# repo root; shards has no subdirectory resolver at all) or because the import path is
+# materially worse without one (Go subdirectory modules force sdk/go/v1.2.3 tags).
 assert sorted(components) == [
-    "hop-bearers-apple",
     "hop-sdk-apple",
     "hop-sdk-crystal",
     "hop-sdk-go",
