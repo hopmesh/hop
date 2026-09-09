@@ -131,7 +131,7 @@ The three proof records were:
 2026-09-09T06:43:45Z RNMAC ack bearer=ble nonce=rn_ble_20260909T064235Z_b2 delivered=true deliveryMs=32895 hops=1
 ```
 
-Verdict: exercised on the physical Pixel 7 and the Mac Bluetooth radio. LAN, P2P, relay, and LoRa were unavailable or disabled on both ends before the send.
+Verdict: exercised on the physical Pixel 7 and the Mac BLE radio. LAN, P2P, relay, and LoRa were unavailable or disabled on both ends before the send.
 
 ## LAN-only result
 
@@ -152,7 +152,7 @@ Delivery remained blocked. Two Mac-to-Pixel attempts discovered the Pixel throug
 2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=["BT": false, "P2P": false, "LAN": true, "LoRa": false] active=[:]
 ```
 
-The two hosts were on `10.4.1.0/24` and passed ICMP both ways. macOS Local Network privacy was not the cause: unified logs showed the RnMacPeer path as satisfied and its listener inbox active on `en0`, with no privacy denial. A direct probe to that exact listener discriminated by Android UID:
+The two hosts were on the same 10.4.1.0/24 subnet and passed ICMP both ways. macOS Local Network privacy was not the cause: unified logs showed the RnMacPeer path as satisfied and its listener inbox active on `en0`, with no privacy denial. A direct probe to that exact listener discriminated by Android UID:
 
 ```text
 RnMacPeer 98118 ... TCP *:60524 (LISTEN)
