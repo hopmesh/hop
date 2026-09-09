@@ -152,7 +152,24 @@ Delivery remained blocked. Two Mac-to-Pixel attempts discovered the Pixel throug
 2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=["BT": false, "P2P": false, "LAN": true, "LoRa": false] active=[:]
 ```
 
-The two hosts were on `10.4.1.0/24` and passed ICMP both ways. Shell-owned TCP control listeners connected in both directions. Only the app-owned native LAN listeners timed out across the host boundary. No receiver log or sender ACK exists for a LAN nonce, so the LAN class is blocked and is not reported as exercised.
+The two hosts were on `10.4.1.0/24` and passed ICMP both ways. macOS Local Network privacy was not the cause: unified logs showed the RnMacPeer path as satisfied and its listener inbox active on `en0`, with no privacy denial. A direct probe to that exact listener discriminated by Android UID:
+
+```text
+RnMacPeer 98118 ... TCP *:60524 (LISTEN)
+mac-loopback: connected, rc=0
+Pixel shell UID to 10.4.1.221:60524: rc=0
+Pixel com.hopdemo UID to 10.4.1.221:60524: nc: Timeout, rc=1
+```
+
+`NEARBY_WIFI_DEVICES` was then declared in the merged manifest, the rebuilt APK was installed, `pm grant` succeeded, and appops reported `NEARBY_WIFI_DEVICES: allow`. The same native LAN attempt still failed:
+
+```text
+09-09 01:27:16.676 ... HOPLOG: lan discovered peer=4fbcb79e -> DIAL
+09-09 01:27:21.722 ... HOPLOG: lan dial failed peer=4fbcb79e: failed to connect to /10.4.1.221 (port 60525) from /10.4.1.203 (port 34896) after 5000ms
+2026-09-09T07:28:44Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T072700Z_d1 sent=true states=["BT": false, "P2P": false, "LoRa": false, "LAN": true] active=[:]
+```
+
+That rerun falsified the missing-permission hypothesis, so the temporary permission declaration was not retained. Both native listeners bind, mDNS resolves, and the Mac Network.framework path is satisfied, but the React Native app path never completes TCP. No receiver line or sender ACK exists for any LAN nonce, so LAN remains blocked on a Hop app-path defect and is not reported as exercised.
 
 ## Failure modes found by this run
 

@@ -113,7 +113,8 @@
       "nonces": [
         "rn_lan_20260909T064520Z_c1",
         "rn_lan_20260909T064810Z_c2",
-        "rn_lan_20260909T065150Z_c3"
+        "rn_lan_20260909T065150Z_c3",
+        "rn_lan_20260909T072700Z_d1"
       ],
       "verdict": "blocked",
       "isolation": {
@@ -126,9 +127,18 @@
         "2026-09-09 00:48:25.338 ... HOPLAB 8.010 STATE lan link-down (connect timeout) peer=???????? isDialer=true",
         "09-09 00:55:25.557 ... HOPLOG: lan discovered peer=40cc9c1b -> DIAL",
         "09-09 00:55:30.602 ... HOPLOG: lan dial failed peer=40cc9c1b: failed to connect to /10.4.1.221 (port 60523) from /10.4.1.203 (port 43720) after 5000ms",
-        "2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=[\"BT\": false, \"P2P\": false, \"LAN\": true, \"LoRa\": false] active=[:]"
+        "2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=[\"BT\": false, \"P2P\": false, \"LAN\": true, \"LoRa\": false] active=[:]",
+        "RnMacPeer PID 98118 listened on TCP *:60524; Mac loopback and Pixel shell UID both connected successfully.",
+        "Pixel app UID probe: shell-uid rc=0; run-as com.hopdemo /system/bin/nc ... 60524 -> nc: Timeout, rc=1.",
+        "Pixel appops: ACCESS_LOCAL_NETWORK allow; NEARBY_WIFI_DEVICES Uid mode ignore and permission absent from the package requested-permissions list.",
+        "macOS unified log: RnMacPeer Network.framework paths were satisfied and listener inboxes started on en0; no Local Network privacy denial was logged.",
+        "Permission-enabled APK sha256 3fa27a42b5105306a87da8f7f875f1cc93a24a96eab775f50beae2f66e68099e installed successfully.",
+        "Pixel package requested android.permission.NEARBY_WIFI_DEVICES and appops reported NEARBY_WIFI_DEVICES: allow.",
+        "09-09 01:27:16.676 ... HOPLOG: lan discovered peer=4fbcb79e -> DIAL",
+        "09-09 01:27:21.722 ... HOPLOG: lan dial failed peer=4fbcb79e: failed to connect to /10.4.1.221 (port 60525) from /10.4.1.203 (port 34896) after 5000ms",
+        "2026-09-09T07:28:44Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T072700Z_d1 sent=true states=[\"BT\": false, \"P2P\": false, \"LoRa\": false, \"LAN\": true] active=[:]"
       ],
-      "reason": "mDNS discovery worked, but native app-owned TCP connections timed out in both directions on the same /24. ICMP and shell-owned TCP control connections succeeded in both directions. BushidoPhone was locked; the unlocked Test iPhone XR did not surface a LAN service."
+      "reason": "LAN still times out after NEARBY_WIFI_DEVICES is declared, granted, and reported allow. That falsifies the permission hypothesis. mDNS resolves, both native listeners bind, the Network.framework path is satisfied, and shell traffic reaches the same listener, but the React Native app path never completes TCP."
     }
   ],
   "pairsNotExercised": [
@@ -139,8 +149,9 @@
   ],
   "limits": [
     "BLE is proven on Pixel 7 plus the Mac Bluetooth radio, not Pixel 7 plus BushidoPhone.",
-    "LAN has no receiver nonce line and no sender ACK, so it remains blocked.",
     "The public hop-sdk-apple v0.0.3 binary artifact returned HTTP 404; the Mac peer used source-built exact-snapshot frameworks.",
-    "tools/build-xcframework.sh changed ten tracked generated files; those files are restored before commit."
-  ]
+    "tools/build-xcframework.sh changed ten tracked generated files; those files are restored before commit.",
+    "LAN has no receiver nonce line and no sender ACK after the permission-enabled rerun, so it remains blocked on a Hop app-path defect."
+  ],
+  "owner_held": []
 }
