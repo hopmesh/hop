@@ -5,6 +5,9 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- keep the audit report inside its viewport (8ca6003)
+- name and fix what blocks the app uid LAN socket (98ff0d7)
+- make the hex package buildable (9825b0d)
 - gate the xcframework fixtures and assert the ABI drift case (fbbe2e9)
 - assert the apple surface status the tree justifies (5a78859)
 - own the fail-closed consumer fixture instead of asserting against the tree (7ba4f28)
@@ -340,6 +343,8 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (47a8bf6)
+- say BLE in the proof record (ec82185)
 - say BLE, and keep the subnet out of path syntax (b2c0640)
 - cite Firestore collections and the IAM role without repo path syntax (29b5231)
 - attribute the LAN block to the app UID socket path (64d3d48)
