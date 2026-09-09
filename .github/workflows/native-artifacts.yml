@@ -50,7 +50,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTUP_TOOLCHAIN: '1.97.0'
-
+  CARGO_NET_RETRY: '3'
+  NPM_CONFIG_FETCH_RETRIES: '3'
 jobs:
   authorize:
     name: Authorize canonical source
@@ -106,7 +107,16 @@ jobs:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.97.0 --profile minimal --target '${{ matrix.target }}'
+        run: |
+          for attempt in 1 2 3; do
+            if rustup toolchain install 1.97.0 --profile minimal --target '${{ matrix.target }}'; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
       - name: Build and package Linux libhop
         env:
           TARGET: ${{ matrix.target }}
@@ -143,7 +153,16 @@ jobs:
         with:
           xcode-version: 16.2
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.97.0 --profile minimal
+        run: |
+          for attempt in 1 2 3; do
+            if rustup toolchain install 1.97.0 --profile minimal; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
       - name: Build exact Apple artifacts
         env:
           HOP_SQLCIPHER: '1'
@@ -194,7 +213,15 @@ jobs:
       - name: Install exact NDK and Rust builders
         run: |
           sdkmanager "ndk;27.1.12297006"
-          rustup toolchain install 1.97.0 --profile minimal
+          for attempt in 1 2 3; do
+            if rustup toolchain install 1.97.0 --profile minimal; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
           rustup target add aarch64-linux-android armv7-linux-androideabi \
             i686-linux-android x86_64-linux-android --toolchain 1.97.0
           cargo install cargo-ndk --version 4.1.2 --locked

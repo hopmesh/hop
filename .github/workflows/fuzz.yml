@@ -34,7 +34,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned fuzz toolchain and cargo-fuzz
         run: |
-          rustup toolchain install "$CARGO_FUZZ_TOOLCHAIN" --profile minimal
+          for attempt in 1 2 3; do
+            if rustup toolchain install "$CARGO_FUZZ_TOOLCHAIN" --profile minimal; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
           cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
       - name: Run every fuzz target by iteration count
         env:
