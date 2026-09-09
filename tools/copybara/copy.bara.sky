@@ -125,11 +125,11 @@ def _go_import_paths():
 # The functional validity of these transforms is exercised by tools/copybara/dispatch.test.sh.
 # The Hex package vendors the four Rust crates needed by its Rustler NIF. This avoids an unpublished
 # path dependency and keeps every Rust source file under native/vendor, inside Hex's package checksum.
-ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop" }
+ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop", features = ["sqlcipher"] }
 
 [workspace]
 """
-ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true }\n'
+ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true, features = ["sqlcipher"] }\n'
 
 def _elixir_vendor_export():
     return [

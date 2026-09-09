@@ -6,6 +6,7 @@ same C-ABI-era contract, a different runtime.
 
 ```
 mix.exs                       the mix project (dep: rustler); .mise.toml pins erlang 27 + elixir 1.18
+build-hex-package.sh          builds the publishable Hex package with vendored native crates
 native/hop_endpoint/          the Rustler NIF crate: binds the `hop` crate's HopNode Rust API
 lib/hop/native.ex             the NIF module (use Rustler); stubs replaced at load
 lib/hop/endpoint.ex           Hop.Endpoint GenServer (pump loop + handler dispatch) + Hop.Request
@@ -26,10 +27,10 @@ test/ examples/               the round-trip + discovery ExUnit tests + a runnab
 - **`native/hop_endpoint` is EXCLUDED from the root workspace** (it has its own empty `[workspace]`, and
   is in the root `Cargo.toml` `exclude` list). So the main Rust CI job (`cargo ... --workspace`) never
   touches it, no tax, no cdylib-link risk on the main job. It builds only via Rustler/mix (or an explicit
-  `cargo build --manifest-path`). In the Copybara export, the empty workspace marker is removed and
-  `hop`, `hop-core`, `hop-endpoint-core`, and `hop-store-sqlite` are vendored under `native/vendor` in a
-  package-local workspace. Hex checksums that source and the root `Cargo.lock`; no exported dependency
-  path leaves the package.
+  `cargo build --manifest-path`). In the packaging pass (`sdk/elixir/build-hex-package.sh`), the empty
+  workspace marker is removed and `hop`, `hop-core`, `hop-endpoint-core`, and `hop-store-sqlite` are
+  vendored under `native/vendor` in a package-local workspace. Hex checksums that source and the
+  `Cargo.lock`; no exported dependency path leaves the package.
 - **core is poll-model.** `Hop.Endpoint` pumps via `:timer.send_interval` (tick, drain outbound to the
   bearer, take requests -> handlers, take responses -> reply to callers). Handlers currently run inline
   in the pump; a slow handler stalls the pump (a known prototype simplification, spawn for real work).

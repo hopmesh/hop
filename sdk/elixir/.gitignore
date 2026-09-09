@@ -6,3 +6,8 @@ erl_crash.dump
 # Rustler NIF build output
 /priv/native/
 native/*/target/
+# Staged hex package artifacts
+/native/vendor/
+/native/Cargo.toml
+/native/Cargo.lock
+/*.tar

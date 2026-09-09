@@ -800,18 +800,27 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert all_surfaces["android"]["status"] == "ok"
     assert all_surfaces["crystal"]["status"] == "ok"
     assert all_surfaces["dart"]["status"] == "ok"
-    assert all_surfaces["elixir"]["status"] == "finding"
+    assert all_surfaces["elixir"]["status"] == "ok"
     assert all_surfaces["mirrors"]["status"] == "ok"
 
-    # Prove allowlist enforcement: unallowlisted finding must fail closed
+    # Prove allowlist enforcement: unallowlisted finding must fail closed.
+    # The fixture owns its own broken state rather than asserting against a defect in the tree.
     saved_exceptions = exports.KNOWN_PACKAGING_EXCEPTIONS
+    orig_validate_elixir = exports.validate_elixir_hex_surface
     try:
+        exports.validate_elixir_hex_surface = lambda r: {"status": "finding", "reason": "synthetic test finding"}
         exports.KNOWN_PACKAGING_EXCEPTIONS = {}
         rejected(
             lambda: exports.validate_all_surfaces(fixed_tree),
             "unallowlisted finding fails validate_all_surfaces",
         )
+        exports.KNOWN_PACKAGING_EXCEPTIONS = {
+            "elixir": {"status": "finding", "owner": "test", "reason": "synthetic"}
+        }
+        res = exports.validate_all_surfaces(fixed_tree)
+        assert res["elixir"]["status"] == "finding"
     finally:
+        exports.validate_elixir_hex_surface = orig_validate_elixir
         exports.KNOWN_PACKAGING_EXCEPTIONS = saved_exceptions
     # 1. NPM surface fail-closed checks
     npm_bad_export = temporary / "npm-bad-export"
@@ -983,11 +992,22 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     shutil.copytree(root / "sdk/elixir", elixir_wrong_app / "sdk/elixir")
     (elixir_wrong_app / "tools/copybara").mkdir(parents=True)
     shutil.copy2(root / "tools/copybara/components.json", elixir_wrong_app / "tools/copybara/components.json")
+    shutil.copy2(root / "tools/copybara/elixir-native-Cargo.toml", elixir_wrong_app / "tools/copybara/elixir-native-Cargo.toml")
+    shutil.copy2(root / "tools/copybara/elixir-native-Cargo.lock", elixir_wrong_app / "tools/copybara/elixir-native-Cargo.lock")
     shutil.copy2(root / "Cargo.toml", elixir_wrong_app / "Cargo.toml")
     mix_txt = (elixir_wrong_app / "sdk/elixir/mix.exs").read_text()
     (elixir_wrong_app / "sdk/elixir/mix.exs").write_text(mix_txt.replace("app: :hop_endpoint", "app: :wrong_app"))
     rejected(lambda: exports.validate_elixir_hex_surface(elixir_wrong_app), "elixir wrong app name")
 
+    elixir_missing_script = temporary / "elixir-missing-script"
+    shutil.copytree(root / "sdk/elixir", elixir_missing_script / "sdk/elixir")
+    (elixir_missing_script / "tools/copybara").mkdir(parents=True)
+    shutil.copy2(root / "tools/copybara/components.json", elixir_missing_script / "tools/copybara/components.json")
+    shutil.copy2(root / "tools/copybara/elixir-native-Cargo.toml", elixir_missing_script / "tools/copybara/elixir-native-Cargo.toml")
+    shutil.copy2(root / "tools/copybara/elixir-native-Cargo.lock", elixir_missing_script / "tools/copybara/elixir-native-Cargo.lock")
+    shutil.copy2(root / "Cargo.toml", elixir_missing_script / "Cargo.toml")
+    (elixir_missing_script / "sdk/elixir/build-hex-package.sh").unlink()
+    rejected(lambda: exports.validate_elixir_hex_surface(elixir_missing_script), "elixir missing build script")
     # 10. Mirrors surface fail-closed checks
     mirrors_bad = temporary / "mirrors-bad"
     (mirrors_bad / "tools/copybara").mkdir(parents=True)
