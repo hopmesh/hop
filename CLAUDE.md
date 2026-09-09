@@ -65,7 +65,7 @@ mod <lane>_tests;
 ```
 Child modules in external files retain access to all parent private items via `super::*`. Enforced by `tools/test-module-inline-guard.sh`.
 
-Integration content rule: when merging lane branches into an integration branch, never rely on commit identity or `git branch --contains`. Rebased, superseded, or dropped commits can leave lane work silently abandoned (such as historical commit `f6cfd1fa` on `fix/r3-legal`). Verify content presence for every lane branch before declaring integration complete:
+Integration content rule: when merging lane branches into an integration branch, never rely on commit identity or `git branch --contains`. Rebased, superseded, or dropped commits can leave lane work silently abandoned (as commit `f6cfd1fa` was on the branch `origin/fix/r3-legal`, relanded days later as PR #139). Verify content presence for every lane branch before declaring integration complete:
 ```bash
 tools/integration-content-guard.sh <integration-tip> <lane-branch>...
 ```
