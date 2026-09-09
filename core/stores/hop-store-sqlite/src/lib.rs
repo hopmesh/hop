@@ -2149,4 +2149,778 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{path}.lock"));
     }
+
+    // --- Durability proof tests: crash atomicity, concurrent opener, unclean shutdown, disk flush ---
+
+    const DURABILITY_SQLCIPHER_KEY: [u8; 32] = [0x5au8; 32];
+
+    #[cfg(unix)]
+    fn wait_for_marker(reader: &mut std::io::BufReader<std::process::ChildStdout>, marker: &str) {
+        use std::io::BufRead;
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line.trim() == marker {
+                return;
+            }
+            line.clear();
+        }
+        panic!("marker {marker} not found in child output");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_durability_subprocess_worker() {
+        let mode = match std::env::var("HOP_DURABILITY_WORKER_MODE") {
+            Ok(m) => m,
+            Err(_) => return, // Running as normal test in runner, no-op return immediately.
+        };
+        let path = std::env::var("HOP_DURABILITY_DB_PATH").expect("db path");
+        let use_key = std::env::var("HOP_DURABILITY_USE_KEY").is_ok();
+        let key: &[u8] = if use_key {
+            &DURABILITY_SQLCIPHER_KEY
+        } else {
+            &[]
+        };
+
+        match mode.as_str() {
+            "kill_9_writer" => {
+                use std::io::Write;
+                let mut store = if key.is_empty() {
+                    SqliteStore::open(&path).expect("child open plaintext")
+                } else {
+                    SqliteStore::open_keyed(&path, key).expect("child open keyed")
+                };
+
+                // 1. Commit an initial atom within child
+                store
+                    .put_kv_critical("atom/child_committed", b"child_committed_val".to_vec())
+                    .expect("child put committed atom");
+                assert!(
+                    store.flush(std::time::Duration::from_secs(1)),
+                    "child flush"
+                );
+
+                println!("HOP_MARKER:COMMITTED");
+                let _ = std::io::stdout().flush();
+
+                // 2. Start a transaction that will be interrupted mid-write by SIGKILL
+                let tx = store.conn.unchecked_transaction().expect("start tx");
+                tx.execute(
+                    "INSERT OR REPLACE INTO kv (key, value) VALUES ('torn/in_flight_1', 'val1')",
+                    [],
+                )
+                .expect("insert in-flight");
+
+                println!("HOP_MARKER:WRITING");
+                let _ = std::io::stdout().flush();
+
+                // Sleep waiting for parent to SIGKILL us
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let _ = tx.commit();
+            }
+            "unclean_shutdown" => {
+                use std::io::Write;
+                let mut store = if key.is_empty() {
+                    SqliteStore::open(&path).expect("child open plaintext")
+                } else {
+                    SqliteStore::open_keyed(&path, key).expect("child open keyed")
+                };
+
+                store
+                    .put_kv_critical("unclean/committed_1", b"val_1".to_vec())
+                    .expect("put atom 1");
+                store
+                    .put_kv_critical("unclean/committed_2", b"val_2".to_vec())
+                    .expect("put atom 2");
+
+                // Do not call flush, do not close SQLite connection cleanly.
+                // std::mem::forget prevents drop and sqlite3_close from running.
+                std::mem::forget(store);
+
+                println!("HOP_MARKER:UNCHECKPOINTED_COMMITTED");
+                let _ = std::io::stdout().flush();
+                std::process::exit(0);
+            }
+            "concurrent_opener" => {
+                use std::io::Write;
+                let store = if key.is_empty() {
+                    SqliteStore::open(&path)
+                } else {
+                    SqliteStore::open_keyed(&path, key)
+                };
+                match store {
+                    Ok(s) => {
+                        println!("HOP_MARKER:CHILD_OPEN_OK");
+                        let _ = std::io::stdout().flush();
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                        drop(s);
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        println!("HOP_MARKER:CHILD_OPEN_REFUSED: {e}");
+                        let _ = std::io::stdout().flush();
+                        std::process::exit(42);
+                    }
+                }
+            }
+            other => panic!("unknown durability worker mode: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_9_during_write_proves_no_torn_state_and_no_lost_committed_atom() {
+        let path = format!(
+            "{}/hop-sqlite-kill9-durability-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // 1. Establish baseline committed state
+        {
+            let mut s = SqliteStore::open(&path).expect("open store");
+            s.put_kv_critical("atom/baseline_0", b"val_baseline_0".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_secs(1)));
+        }
+
+        // 2. Spawn worker child that writes an atom and then begins an uncommitted write
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "kill_9_writer")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn kill_9_writer child");
+
+        let mut stdout_reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:COMMITTED");
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:WRITING");
+
+        // 3. Child is mid-write: kill child abruptly with SIGKILL (kill -9)
+        child.kill().expect("send SIGKILL to child");
+        let _ = child.wait();
+
+        // 4. Reopen store: proves stale lock recovery, no torn state, no lost committed atom
+        let mut recovered = SqliteStore::open(&path).expect("reopen store after kill -9");
+        assert_eq!(
+            recovered.get_kv("atom/baseline_0"),
+            Some(b"val_baseline_0".to_vec()),
+            "baseline committed atom must not be lost"
+        );
+        assert_eq!(
+            recovered.get_kv("atom/child_committed"),
+            Some(b"child_committed_val".to_vec()),
+            "child committed atom must not be lost"
+        );
+        assert_eq!(
+            recovered.get_kv("torn/in_flight_1"),
+            None,
+            "in-flight interrupted transaction must be rolled back with no torn state"
+        );
+
+        // 5. Verify store is healthy and can accept new writes and flush
+        recovered
+            .put_kv_critical("atom/after_crash", b"val_after_crash".to_vec())
+            .unwrap();
+        assert!(recovered.flush(std::time::Duration::from_secs(1)));
+        assert_eq!(
+            recovered.get_kv("atom/after_crash"),
+            Some(b"val_after_crash".to_vec())
+        );
+
+        drop(recovered);
+        cleanup(&path);
+    }
+
+    #[cfg(all(unix, feature = "sqlcipher"))]
+    #[test]
+    fn kill_9_during_write_proves_no_torn_state_and_no_lost_committed_atom_sqlcipher() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-kill9-durability-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // 1. Establish baseline committed state under SQLCipher
+        {
+            let mut s = SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY)
+                .expect("open keyed store");
+            s.put_kv_critical("atom/baseline_0", b"val_baseline_0".to_vec())
+                .unwrap();
+            assert!(s.flush(std::time::Duration::from_secs(1)));
+        }
+
+        // 2. Spawn worker child with key
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "kill_9_writer")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .env("HOP_DURABILITY_USE_KEY", "1")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn kill_9_writer child");
+
+        let mut stdout_reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:COMMITTED");
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:WRITING");
+
+        // 3. Mid-write kill -9
+        child.kill().expect("send SIGKILL to child");
+        let _ = child.wait();
+
+        // 4. Reopen keyed store
+        let mut recovered = SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY)
+            .expect("reopen keyed store after kill -9");
+        assert_eq!(
+            recovered.get_kv("atom/baseline_0"),
+            Some(b"val_baseline_0".to_vec()),
+            "baseline committed atom must not be lost under SQLCipher"
+        );
+        assert_eq!(
+            recovered.get_kv("atom/child_committed"),
+            Some(b"child_committed_val".to_vec()),
+            "child committed atom must not be lost under SQLCipher"
+        );
+        assert_eq!(
+            recovered.get_kv("torn/in_flight_1"),
+            None,
+            "in-flight transaction must be rolled back with no torn state under SQLCipher"
+        );
+
+        // 5. Verify store is functional
+        recovered
+            .put_kv_critical("atom/after_crash", b"val_after_crash".to_vec())
+            .unwrap();
+        assert!(recovered.flush(std::time::Duration::from_secs(1)));
+        assert_eq!(
+            recovered.get_kv("atom/after_crash"),
+            Some(b"val_after_crash".to_vec())
+        );
+
+        drop(recovered);
+        cleanup(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn second_concurrent_opener_refused_rather_than_corrupting() {
+        let path = format!(
+            "{}/hop-sqlite-concurrent-opener-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // Phase 1: Parent holds store. Child attempts to open: must be refused.
+        let parent_store = SqliteStore::open(&path).expect("parent open");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "concurrent_opener")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .status()
+            .expect("spawn concurrent child");
+        assert_eq!(
+            status.code(),
+            Some(42),
+            "second concurrent opener must be refused with exit code 42"
+        );
+
+        // Phase 2: Parent drops store. Child opens successfully. Parent attempts to open: parent is refused.
+        drop(parent_store);
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "concurrent_opener")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn concurrent child");
+
+        let mut stdout_reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:CHILD_OPEN_OK");
+
+        // Parent attempts to open while child holds lock: must fail
+        assert!(
+            SqliteStore::open(&path).is_err(),
+            "parent must be refused while child holds store lock"
+        );
+
+        // Kill child, parent opens cleanly
+        child.kill().expect("kill child");
+        let _ = child.wait();
+
+        let s_after = SqliteStore::open(&path);
+        assert!(
+            s_after.is_ok(),
+            "store opens cleanly after concurrent opener exits"
+        );
+
+        drop(s_after);
+        cleanup(&path);
+    }
+
+    #[cfg(all(unix, feature = "sqlcipher"))]
+    #[test]
+    fn second_concurrent_opener_refused_rather_than_corrupting_sqlcipher() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-concurrent-opener-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // Phase 1: Parent holds store. Child attempts to open: must be refused.
+        let parent_store =
+            SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY).expect("parent open keyed");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "concurrent_opener")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .env("HOP_DURABILITY_USE_KEY", "1")
+            .status()
+            .expect("spawn concurrent child");
+        assert_eq!(
+            status.code(),
+            Some(42),
+            "second concurrent opener under SQLCipher must be refused with exit code 42"
+        );
+
+        // Phase 2: Parent drops store. Child opens successfully. Parent attempts to open: parent is refused.
+        drop(parent_store);
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "concurrent_opener")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .env("HOP_DURABILITY_USE_KEY", "1")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn concurrent child");
+
+        let mut stdout_reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        wait_for_marker(&mut stdout_reader, "HOP_MARKER:CHILD_OPEN_OK");
+
+        // Parent attempts to open while child holds lock: must fail
+        assert!(
+            SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY).is_err(),
+            "parent must be refused while child holds SQLCipher store lock"
+        );
+
+        // Kill child, parent opens cleanly
+        child.kill().expect("kill child");
+        let _ = child.wait();
+
+        let s_after = SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY);
+        assert!(
+            s_after.is_ok(),
+            "store opens cleanly after concurrent SQLCipher opener exits"
+        );
+
+        drop(s_after);
+        cleanup(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unclean_shutdown_wal_replay_recovers_committed_state() {
+        let path = format!(
+            "{}/hop-sqlite-unclean-shutdown-wal-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock", ".main_isolated"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // 1. Child writes committed state, forgets store (no flush, no close), exits 0
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "unclean_shutdown")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .status()
+            .expect("run unclean shutdown child");
+        assert_eq!(status.code(), Some(0));
+
+        // 2. Verify that WAL file exists and contains uncheckpointed frames
+        let wal_path = format!("{path}-wal");
+        assert!(
+            std::path::Path::new(&wal_path).exists(),
+            "WAL file must exist after unclean shutdown"
+        );
+        let wal_len = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            wal_len > 0,
+            "WAL file must have non-zero length with uncheckpointed frames"
+        );
+
+        // 3. Isolated main db copy without WAL does not have the uncheckpointed frames
+        let main_isolated = format!("{path}.main_isolated");
+        std::fs::copy(&path, &main_isolated).expect("copy main db file alone");
+        {
+            let raw = rusqlite::Connection::open(&main_isolated).expect("open raw isolated db");
+            let val: rusqlite::Result<Vec<u8>> = raw.query_row(
+                "SELECT value FROM kv WHERE key = 'unclean/committed_1'",
+                [],
+                |r| r.get(0),
+            );
+            assert!(
+                val.is_err(),
+                "uncheckpointed frame must not exist in main db file before WAL replay"
+            );
+        }
+        let _ = std::fs::remove_file(&main_isolated);
+
+        // 4. Reopen store with WAL present: SQLite automatically performs WAL replay
+        let store = SqliteStore::open(&path).expect("open store with WAL present");
+        assert_eq!(
+            store.get_kv("unclean/committed_1"),
+            Some(b"val_1".to_vec()),
+            "WAL replay must recover committed atom 1"
+        );
+        assert_eq!(
+            store.get_kv("unclean/committed_2"),
+            Some(b"val_2".to_vec()),
+            "WAL replay must recover committed atom 2"
+        );
+
+        // 5. Flush checkpoints the replayed frames to main db file
+        assert!(store.flush(std::time::Duration::from_secs(1)));
+        drop(store);
+
+        // Now isolated main db copy DOES have the recovered frames
+        std::fs::copy(&path, &main_isolated).expect("copy main db file alone");
+        {
+            let raw = rusqlite::Connection::open(&main_isolated).expect("open raw isolated db");
+            let val: Vec<u8> = raw
+                .query_row(
+                    "SELECT value FROM kv WHERE key = 'unclean/committed_1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("checkpointed row must exist in main db file");
+            assert_eq!(val, b"val_1");
+        }
+        let _ = std::fs::remove_file(&main_isolated);
+
+        cleanup(&path);
+    }
+
+    #[cfg(all(unix, feature = "sqlcipher"))]
+    #[test]
+    fn unclean_shutdown_wal_replay_recovers_committed_state_sqlcipher() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-unclean-shutdown-wal-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock", ".main_isolated"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        // 1. Child writes committed state under SQLCipher, forgets store (no flush, no close), exits 0
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::helper_durability_subprocess_worker")
+            .arg("--nocapture")
+            .env("HOP_DURABILITY_WORKER_MODE", "unclean_shutdown")
+            .env("HOP_DURABILITY_DB_PATH", &path)
+            .env("HOP_DURABILITY_USE_KEY", "1")
+            .status()
+            .expect("run unclean shutdown child");
+        assert_eq!(status.code(), Some(0));
+
+        // 2. Verify WAL file exists and contains uncheckpointed frames
+        let wal_path = format!("{path}-wal");
+        assert!(
+            std::path::Path::new(&wal_path).exists(),
+            "WAL file must exist after unclean shutdown under SQLCipher"
+        );
+        let wal_len = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            wal_len > 0,
+            "WAL file must have non-zero length with uncheckpointed frames under SQLCipher"
+        );
+
+        // 3. Isolated main db copy without WAL does not have the uncheckpointed frames
+        let main_isolated = format!("{path}.main_isolated");
+        std::fs::copy(&path, &main_isolated).expect("copy main db file alone");
+        {
+            let isolated_store = SqliteStore::open_keyed(&main_isolated, &DURABILITY_SQLCIPHER_KEY)
+                .expect("open raw isolated keyed db");
+            assert_eq!(
+                isolated_store.get_kv("unclean/committed_1"),
+                None,
+                "uncheckpointed frame must not exist in main db file before WAL replay under SQLCipher"
+            );
+        }
+        let _ = std::fs::remove_file(&main_isolated);
+
+        // 4. Reopen keyed store with WAL present: WAL replay executes
+        let store = SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY)
+            .expect("open keyed store with WAL present");
+        assert_eq!(
+            store.get_kv("unclean/committed_1"),
+            Some(b"val_1".to_vec()),
+            "WAL replay must recover committed atom 1 under SQLCipher"
+        );
+        assert_eq!(
+            store.get_kv("unclean/committed_2"),
+            Some(b"val_2".to_vec()),
+            "WAL replay must recover committed atom 2 under SQLCipher"
+        );
+
+        // 5. Flush checkpoints the replayed frames to main db file
+        assert!(store.flush(std::time::Duration::from_secs(1)));
+        drop(store);
+
+        // Now isolated main db copy DOES have the recovered frames
+        std::fs::copy(&path, &main_isolated).expect("copy main db file alone");
+        {
+            let isolated_store = SqliteStore::open_keyed(&main_isolated, &DURABILITY_SQLCIPHER_KEY)
+                .expect("open raw isolated keyed db");
+            assert_eq!(
+                isolated_store.get_kv("unclean/committed_1"),
+                Some(b"val_1".to_vec()),
+                "checkpointed row must exist in main db file under SQLCipher"
+            );
+        }
+        let _ = std::fs::remove_file(&main_isolated);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn flush_return_value_checked_against_disk_persistence() {
+        let path = format!(
+            "{}/hop-sqlite-flush-disk-truth-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock", ".main_isolated"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        let mut store = SqliteStore::open(&path).expect("open store");
+
+        // Write a critical key
+        store
+            .put_kv_critical("flush/key_1", b"val_disk_1".to_vec())
+            .expect("put key 1");
+
+        // Prior to flush, copy main db file alone without WAL
+        let isolated = format!("{path}.main_isolated");
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let raw = rusqlite::Connection::open(&isolated).expect("open raw isolated");
+            let res: rusqlite::Result<Vec<u8>> =
+                raw.query_row("SELECT value FROM kv WHERE key = 'flush/key_1'", [], |r| {
+                    r.get(0)
+                });
+            assert!(
+                res.is_err(),
+                "before flush, data must not yet reside in main db file"
+            );
+        }
+        let _ = std::fs::remove_file(&isolated);
+
+        // Call flush: returns true
+        assert!(
+            store.flush(std::time::Duration::from_secs(2)),
+            "flush must return true"
+        );
+
+        // Copy main db file alone without WAL: data MUST reside in main db file
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let raw = rusqlite::Connection::open(&isolated).expect("open raw isolated");
+            let val: Vec<u8> = raw
+                .query_row("SELECT value FROM kv WHERE key = 'flush/key_1'", [], |r| {
+                    r.get(0)
+                })
+                .expect("after flush, data must reside in main db file on disk");
+            assert_eq!(val, b"val_disk_1");
+        }
+        let _ = std::fs::remove_file(&isolated);
+        drop(store);
+
+        // Part 2: Test contention using a connection without locking_mode=EXCLUSIVE
+        // so concurrent reader transactions can simulate lock contention against wal_checkpoint.
+        let conn2 = rusqlite::Connection::open(&path).expect("open connection 2");
+        conn2
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=FULL;
+                 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
+            )
+            .unwrap();
+        let mut store_contended = SqliteStore {
+            conn: conn2,
+            seen_rows: std::cell::Cell::new(0),
+            _file_lock: None,
+            _process_lease: None,
+            encrypted: false,
+        };
+
+        // Flush baseline
+        assert!(store_contended.flush(std::time::Duration::from_millis(500)));
+
+        // Open secondary reader
+        let reader = rusqlite::Connection::open(&path).expect("open reader");
+        reader
+            .execute_batch("BEGIN DEFERRED; SELECT count(*) FROM kv;")
+            .expect("begin reader");
+
+        store_contended
+            .put_kv_critical("flush/key_contended", b"val_contended".to_vec())
+            .expect("put contended key");
+
+        // Flush must report false because reader contention blocks full checkpoint
+        let flushed_under_contention = store_contended.flush(std::time::Duration::from_millis(50));
+        assert!(
+            !flushed_under_contention,
+            "flush must report false under reader contention"
+        );
+
+        // Verify that contended frame did NOT reach main db file
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let raw = rusqlite::Connection::open(&isolated).expect("open raw isolated");
+            let res: rusqlite::Result<Vec<u8>> = raw.query_row(
+                "SELECT value FROM kv WHERE key = 'flush/key_contended'",
+                [],
+                |r| r.get(0),
+            );
+            assert!(
+                res.is_err(),
+                "uncheckpointed contended data must not reside in main db file"
+            );
+        }
+        let _ = std::fs::remove_file(&isolated);
+
+        // Release reader lock
+        reader.execute_batch("COMMIT;").expect("commit reader");
+        drop(reader);
+
+        // Flush now succeeds
+        assert!(
+            store_contended.flush(std::time::Duration::from_secs(2)),
+            "flush must succeed once contention released"
+        );
+
+        // Verify contended data now DOES reside in main db file on disk
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let raw = rusqlite::Connection::open(&isolated).expect("open raw isolated");
+            let val: Vec<u8> = raw
+                .query_row(
+                    "SELECT value FROM kv WHERE key = 'flush/key_contended'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("after successful flush, contended data must reside in main db file");
+            assert_eq!(val, b"val_contended");
+        }
+        let _ = std::fs::remove_file(&isolated);
+
+        drop(store_contended);
+        cleanup(&path);
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn flush_return_value_checked_against_disk_persistence_sqlcipher() {
+        let path = format!(
+            "{}/hop-sqlite-sqlcipher-flush-disk-truth-test.db",
+            std::env::temp_dir().display()
+        );
+        let cleanup = |p: &str| {
+            for suf in ["", "-wal", "-shm", ".lock", ".main_isolated"] {
+                let _ = std::fs::remove_file(format!("{p}{suf}"));
+            }
+        };
+        cleanup(&path);
+
+        let mut store =
+            SqliteStore::open_keyed(&path, &DURABILITY_SQLCIPHER_KEY).expect("open keyed store");
+
+        // Write a critical key under SQLCipher
+        store
+            .put_kv_critical("flush/key_1", b"val_disk_1".to_vec())
+            .expect("put key 1");
+
+        // Prior to flush, copy main db file alone without WAL
+        let isolated = format!("{path}.main_isolated");
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let isolated_store = SqliteStore::open_keyed(&isolated, &DURABILITY_SQLCIPHER_KEY)
+                .expect("open raw isolated keyed store");
+            assert_eq!(
+                isolated_store.get_kv("flush/key_1"),
+                None,
+                "before flush, data must not yet reside in main db file under SQLCipher"
+            );
+        }
+        let _ = std::fs::remove_file(&isolated);
+
+        // Call flush: returns true
+        assert!(
+            store.flush(std::time::Duration::from_secs(2)),
+            "flush must return true under SQLCipher"
+        );
+
+        // Copy main db file alone without WAL: data MUST reside in main db file
+        std::fs::copy(&path, &isolated).expect("copy main file");
+        {
+            let isolated_store = SqliteStore::open_keyed(&isolated, &DURABILITY_SQLCIPHER_KEY)
+                .expect("open raw isolated keyed store");
+            assert_eq!(
+                isolated_store.get_kv("flush/key_1"),
+                Some(b"val_disk_1".to_vec()),
+                "after flush, data must reside in main db file on disk under SQLCipher"
+            );
+        }
+        let _ = std::fs::remove_file(&isolated);
+
+        drop(store);
+        cleanup(&path);
+    }
 }
