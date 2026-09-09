@@ -1038,6 +1038,16 @@ jobs:
       # step existed nothing invoked either file, while CLAUDE.md said the rule was enforced by it.
       - name: Self-test worktree checkpoint guard
         run: bash tools/check-worktree-checkpoints.test.sh
+      # Round-4 integration hazards. The inline-module guard runs on the PR's own range: it is a
+      # source-shape rule and CI is exactly where it belongs. The content guard needs the lane
+      # branches an integration claims to merge, which only the integrator knows, so CI runs its
+      # self-test and tools/local-ci-mirror.sh runs the guard itself.
+      - name: Self-test additive test module guard
+        run: bash tools/test-module-inline-guard.test.sh
+      - name: Enforce the per-file test module convention
+        run: bash tools/test-module-inline-guard.sh "origin/${{ github.base_ref || 'main' }}..HEAD"
+      - name: Self-test integration content guard
+        run: bash tools/integration-content-guard.test.sh
       - name: Self-test BLE dial-backoff parity guard
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
