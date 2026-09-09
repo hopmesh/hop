@@ -129,4 +129,64 @@ mod tests {
             assert!(decode_bundle(&padded).is_err());
         }
     }
+
+    #[test]
+    fn measure_canonical_decode_overhead() {
+        use std::time::Instant;
+
+        let sender = Identity::generate();
+        let recipient = Identity::generate();
+        let bundle = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "text/plain".into(),
+                body: b"measurement payload for benchmarking decode overhead".to_vec(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap();
+        let bytes = bundle.to_bytes().unwrap();
+
+        const ITERS: u32 = 10_000;
+
+        // Warm up
+        for _ in 0..1_000 {
+            let b = Bundle::from_bytes(&bytes).unwrap();
+            let _ = b.to_bytes().unwrap();
+        }
+
+        let start_decode = Instant::now();
+        for _ in 0..ITERS {
+            let _ = Bundle::from_bytes(&bytes).unwrap();
+        }
+        let decode_elapsed = start_decode.elapsed();
+
+        let start_reencode = Instant::now();
+        for _ in 0..ITERS {
+            let b = Bundle::from_bytes(&bytes).unwrap();
+            let _ = b.to_bytes().unwrap();
+        }
+        let reencode_elapsed = start_reencode.elapsed();
+
+        let start_full = Instant::now();
+        for _ in 0..ITERS {
+            let _ = decode_bundle(&bytes).unwrap();
+        }
+        let full_elapsed = start_full.elapsed();
+
+        let decode_ns = decode_elapsed.as_nanos() as f64 / ITERS as f64;
+        let reencode_ns =
+            (reencode_elapsed.as_nanos() - decode_elapsed.as_nanos()) as f64 / ITERS as f64;
+        let full_ns = full_elapsed.as_nanos() as f64 / ITERS as f64;
+
+        println!(
+            "BENCHMARK: from_bytes={:.2}us, re-encode={:.2}us, full decode_bundle={:.2}us (overhead={:.2}us per bundle)",
+            decode_ns / 1000.0,
+            reencode_ns / 1000.0,
+            full_ns / 1000.0,
+            (full_ns - decode_ns) / 1000.0
+        );
+    }
 }

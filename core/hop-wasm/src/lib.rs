@@ -32,17 +32,11 @@ pub use wasm_glue::{StoreBridge, WasmNode};
 /// The exact input bytes must also be the bundle's canonical re-encoding.
 #[wasm_bindgen]
 pub fn validate_wire_bundle(bytes: &[u8], expected_id: &[u8]) -> Result<Vec<u8>, JsValue> {
-    let bundle = hop_core::bundle::Bundle::from_bytes(bytes)
+    let bundle = hop_core::canonical::decode_bundle(bytes)
         .map_err(|error| JsValue::from_str(&format!("bundle decode failed: {error}")))?;
     bundle
         .verify()
         .map_err(|error| JsValue::from_str(&format!("bundle verify failed: {error}")))?;
-    let canonical = bundle
-        .to_bytes()
-        .map_err(|error| JsValue::from_str(&format!("bundle encode failed: {error}")))?;
-    if canonical != bytes {
-        return Err(JsValue::from_str("bundle bytes are not canonical"));
-    }
     if expected_id != bundle.id() {
         return Err(JsValue::from_str("bundle id does not match the vector"));
     }
