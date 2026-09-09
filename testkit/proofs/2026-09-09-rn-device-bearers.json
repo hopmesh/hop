@@ -86,7 +86,7 @@
     {
       "class": "hardware",
       "bearer": "ble",
-      "what": "React Native native consumer on physical Pixel 7 received a Mac Bluetooth-only send and returned the end-to-end ACK.",
+      "what": "React Native native consumer on physical Pixel 7 received a Mac BLE-only send and returned the end-to-end ACK.",
       "pair": [
         "Pixel 7 / com.hopdemo native React Native consumer",
         "Mac / RnMacPeer using HopBearerBle"
