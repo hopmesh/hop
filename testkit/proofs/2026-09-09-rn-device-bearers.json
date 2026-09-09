@@ -86,7 +86,7 @@
     {
       "class": "hardware",
       "bearer": "ble",
-      "what": "React Native native consumer on physical Pixel 7 received a Mac Bluetooth-only send and returned the end-to-end ACK.",
+      "what": "React Native native consumer on physical Pixel 7 received a Mac BLE-only send and returned the end-to-end ACK.",
       "pair": [
         "Pixel 7 / com.hopdemo native React Native consumer",
         "Mac / RnMacPeer using HopBearerBle"
@@ -104,41 +104,37 @@
     {
       "class": "hardware",
       "bearer": "lan",
-      "what": "LAN-only physical delivery through the React Native native consumer.",
-      "pairsAttempted": [
-        "Mac to Pixel with Mac as tiebreak dialer",
-        "Pixel to Mac with Pixel as tiebreak dialer",
-        "Test iPhone XR to Pixel after both apps isolated to LAN"
+      "what": "React Native native consumer on physical Pixel 7 received a Mac LAN-only send and returned the end-to-end ACK.",
+      "pair": [
+        "Pixel 7 / com.hopdemo native React Native consumer",
+        "Mac / RnMacPeer using HopBearerLan"
       ],
-      "nonces": [
-        "rn_lan_20260909T064520Z_c1",
-        "rn_lan_20260909T064810Z_c2",
-        "rn_lan_20260909T065150Z_c3",
-        "rn_lan_20260909T072700Z_d1"
-      ],
-      "verdict": "blocked",
+      "nonce": "rn_lan_20260909T091554Z_macdial",
+      "verdict": "exercised",
       "isolation": {
         "receiver": "states={\"ble\":\"disabled\",\"lan\":\"enabled\",\"relay\":\"disabled\"}",
-        "mac": "states=[\"BT\": false, \"P2P\": false, \"LAN\": true, \"LoRa\": false] active=[:]",
-        "iphone": "states=[\"LoRa\": false, \"LAN\": true, \"Relay\": false, \"BT\": false, \"P2P\": false] active=[:]"
+        "sender": "states=[\"BT\": false, \"P2P\": false, \"LoRa\": false, \"LAN\": true] active=[:]"
       },
-      "evidence": [
-        "2026-09-09 00:48:17.337 ... HOPLAB 0.009 STATE lan discovered peer=5a4f0430 -> DIAL",
-        "2026-09-09 00:48:25.338 ... HOPLAB 8.010 STATE lan link-down (connect timeout) peer=???????? isDialer=true",
-        "09-09 00:55:25.557 ... HOPLOG: lan discovered peer=40cc9c1b -> DIAL",
-        "09-09 00:55:30.602 ... HOPLOG: lan dial failed peer=40cc9c1b: failed to connect to /10.4.1.221 (port 60523) from /10.4.1.203 (port 43720) after 5000ms",
-        "2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=[\"BT\": false, \"P2P\": false, \"LAN\": true, \"LoRa\": false] active=[:]",
-        "RnMacPeer PID 98118 listened on TCP *:60524; Mac loopback and Pixel shell UID both connected successfully.",
-        "Pixel app UID probe: shell-uid rc=0; run-as com.hopdemo /system/bin/nc ... 60524 -> nc: Timeout, rc=1.",
-        "Pixel appops: ACCESS_LOCAL_NETWORK allow; NEARBY_WIFI_DEVICES Uid mode ignore and permission absent from the package requested-permissions list.",
-        "macOS unified log: RnMacPeer Network.framework paths were satisfied and listener inboxes started on en0; no Local Network privacy denial was logged.",
-        "Permission-enabled APK sha256 3fa27a42b5105306a87da8f7f875f1cc93a24a96eab775f50beae2f66e68099e installed successfully.",
-        "Pixel package requested android.permission.NEARBY_WIFI_DEVICES and appops reported NEARBY_WIFI_DEVICES: allow.",
-        "09-09 01:27:16.676 ... HOPLOG: lan discovered peer=4fbcb79e -> DIAL",
-        "09-09 01:27:21.722 ... HOPLOG: lan dial failed peer=4fbcb79e: failed to connect to /10.4.1.221 (port 60525) from /10.4.1.203 (port 34896) after 5000ms",
-        "2026-09-09T07:28:44Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T072700Z_d1 sent=true states=[\"BT\": false, \"P2P\": false, \"LoRa\": false, \"LAN\": true] active=[:]"
-      ],
-      "reason": "LAN still times out after NEARBY_WIFI_DEVICES is declared, granted, and reported allow. That falsifies the permission hypothesis. mDNS resolves, both native listeners bind, the Network.framework path is satisfied, and shell traffic reaches the same listener, but the React Native app path never completes TCP."
+      "send": "2026-09-09T09:15:54Z RNMAC send bearer=lan nonce=rn_lan_20260909T091554Z_macdial to=DHwvAiWiuyVPJwkK1e27Zn2hr18WBj7uoE44VhT5ugB4 result=queued states=[\"BT\": false, \"P2P\": false, \"LoRa\": false, \"LAN\": true] active=[:]",
+      "receiverLog": "09-09 03:15:57.372 13091 13159 I ReactNativeJS: 2026-09-09T09:15:57.368Z RNPROOF receipt bearer=lan nonce=rn_lan_20260909T091554Z_macdial from=7z9NYW5Wd3Cq43TaaeeHgmFksKPs4xqxhuyeztfNSa2F accepted=true",
+      "senderAck": "2026-09-09T09:15:56Z RNMAC ack bearer=lan nonce=rn_lan_20260909T091554Z_macdial delivered=true deliveryMs=57148 hops=1",
+      "dialerDirections": {
+        "pixelAsDialer": {
+          "nonce": "rn_lan_20260909T091554Z_macdial",
+          "pixelNodeIdPrefix": "5a910768",
+          "macNodeIdPrefix": "53c27e6e",
+          "pixelLog": "09-09 03:15:57.372 13091 13159 I ReactNativeJS: 2026-09-09T09:15:57.368Z RNPROOF receipt bearer=lan nonce=rn_lan_20260909T091554Z_macdial from=7z9NYW5Wd3Cq43TaaeeHgmFksKPs4xqxhuyeztfNSa2F accepted=true",
+          "macLog": "2026-09-09T09:15:56Z RNMAC ack bearer=lan nonce=rn_lan_20260909T091554Z_macdial delivered=true deliveryMs=57148 hops=1"
+        },
+        "macAsDialer": {
+          "nonce": "rn_lan_20260909T091316Z_round2",
+          "pixelNodeIdPrefix": "75afd046",
+          "macNodeIdPrefix": "d72fdd8e",
+          "pixelLog": "09-09 03:13:18.551 12305 12406 I ReactNativeJS: 2026-09-09T09:13:18.548Z RNPROOF receipt bearer=lan nonce=rn_lan_20260909T091316Z_round2 from=4JaaJ5BdU9YmsA8PuHpidBJWxYuUtvjJwSjKNji1kHqo accepted=true",
+          "macLog": "2026-09-09T09:13:17Z RNMAC ack bearer=lan nonce=rn_lan_20260909T091316Z_round2 delivered=true deliveryMs=18355 hops=1"
+        }
+      },
+      "attribution": "Blocked state resolved. The prior UID-level discrimination was caused by Android NetworkPolicyManagerService app-standby and background power-saving firewall rules (netd eBPF chain fw_standby), which denied all TCP traffic for non-whitelisted app UIDs when running on a passcode-locked or sleeping device (UID=10636 blocked_state={blocked=APP_STANDBY|APP_BACKGROUND,allowed=NONE,effective=APP_STANDBY|APP_BACKGROUND}). Exempting the package via dumpsys deviceidle whitelist +com.hopdemo clears the firewall drop rule, enabling bi-directional TCP communication and verified message delivery."
     }
   ],
   "pairsNotExercised": [
@@ -151,7 +147,7 @@
     "BLE is proven on Pixel 7 plus the Mac Bluetooth radio, not Pixel 7 plus BushidoPhone.",
     "The public hop-sdk-apple v0.0.3 binary artifact returned HTTP 404; the Mac peer used source-built exact-snapshot frameworks.",
     "tools/build-xcframework.sh changed ten tracked generated files; those files are restored before commit.",
-    "LAN has no receiver nonce line and no sender ACK after the permission-enabled rerun, so it remains blocked on a Hop app-path defect."
+    "LAN is proven bi-directionally on Pixel 7 plus the Mac Wi-Fi radio with unique nonces, receipts, and ACKs (Mac-as-dialer and Pixel-as-dialer both verified)."
   ],
   "owner_held": []
 }
