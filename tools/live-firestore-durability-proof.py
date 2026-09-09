@@ -6,7 +6,7 @@ against Google Cloud Platform (or an in-process mock for offline self-test):
 1. Single-writer exclusive lease and operation fence (refusal of conflicting lease).
 2. Bundle document write, read-back byte integrity, and TTL metadata.
 3. KV document write, read-back byte integrity, and TTL metadata.
-4. Definitive write/read/delete/404-confirm readiness probe.
+4. Definitive write, read, delete, and 404-confirm readiness probe.
 5. Scale-to-zero complete cleanup and zero residual document verification.
 """
 
@@ -71,7 +71,7 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
 
     documents = {}
     lock = threading.Lock()
-    fail_probe = False
+    fault = None
 
     def log_message(self, format, *args):
         pass
@@ -82,6 +82,7 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
         if p.startswith(prefix):
             return p[len(prefix):]
         return p
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = self._norm(parsed.path)
@@ -101,6 +102,12 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
 
             doc = self.documents.get(path)
             if doc is None:
+                if self.fault == "post-delete-returns-200":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"name": "mock-ghost", "fields": {}}')
+                    return
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -116,7 +123,7 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
 
-        if self.fail_probe and "readiness-" in path:
+        if self.fault == "probe-write-fails" and "readiness-" in path:
             self.send_response(500)
             self.end_headers()
             self.wfile.write(b'{"error": "injected probe failure"}')
@@ -165,12 +172,18 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
 
                     current = self.documents.get(doc_path)
                     if exists_cond is False and current is not None:
-                        self.send_response(400)
+                        if self.fault == "fence-collision-accepts-200":
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(b'{"commitResults": [{"updateTime": "2026-09-09T00:00:03.000000Z"}]}')
+                            return
+                        self.send_response(409)
                         self.end_headers()
                         self.wfile.write(b'{"error": "document already exists"}')
                         return
                     if update_time_cond and (current is None or current.get("updateTime") != update_time_cond):
-                        self.send_response(400)
+                        self.send_response(409)
                         self.end_headers()
                         self.wfile.write(b'{"error": "condition not met"}')
                         return
@@ -194,9 +207,9 @@ class MockFirestoreHandler(http.server.BaseHTTPRequestHandler):
 
 
 class MockFirestoreServer:
-    def __init__(self, fail_probe=False):
+    def __init__(self, fault=None):
         MockFirestoreHandler.documents = {}
-        MockFirestoreHandler.fail_probe = fail_probe
+        MockFirestoreHandler.fault = fault
         self.server = http.server.HTTPServer(("127.0.0.1", 0), MockFirestoreHandler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever)
@@ -302,7 +315,7 @@ def run_durability_exercise(base_url, project, database, node_id, token):
         }]
     }
     status, body, err = http_req(commit_url, method="POST", body=fence_payload_2)
-    if status in (400, 409):
+    if status == 409:
         print(f"  OK: Conflicting fence acquisition refused as expected [HTTP {status}]")
     else:
         print(f"FAILED: Conflicting fence acquisition was not refused: HTTP {status}")
@@ -438,11 +451,16 @@ def main():
     parser.add_argument("--node-id", default=os.environ.get("HOP_TEST_NODE_ID"))
     parser.add_argument("--token", default=None)
     parser.add_argument("--mock", action="store_true", help="Run against local in-process mock Firestore server")
-    parser.add_argument("--mock-fail", action="store_true", help="Simulate a probe failure in mock server")
+    parser.add_argument(
+        "--fault",
+        choices=["fence-collision-accepts-200", "post-delete-returns-200", "probe-write-fails"],
+        default=None,
+        help="Inject specific fault in mock server to verify runner failure discrimination",
+    )
     args = parser.parse_args()
 
-    if args.mock or args.mock_fail:
-        server = MockFirestoreServer(fail_probe=args.mock_fail)
+    if args.mock or args.fault:
+        server = MockFirestoreServer(fault=args.fault)
         server.start()
         base_url = f"http://127.0.0.1:{server.port}"
         node_id = args.node_id or f"mock-node-{secrets.token_hex(4)}"
