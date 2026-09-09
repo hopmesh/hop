@@ -742,8 +742,37 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     finally:
         native.MAX_EXPANDED_BYTES = original_expanded_limit
     # --- PACKAGING CONSUMER CONTRACT GUARDS -------------------------------------
-    # Prove every packaging surface matches its consumer contract and fails closed.
-    all_surfaces = exports.validate_all_surfaces(root)
+    # 1. Base commit fail-closed proof: validate_all_surfaces and validate_gradle_consumers
+    # strictly fail on the pre-existing defect at apps/react-native/HopDemo/android/build.gradle line 62.
+    rejected(
+        lambda: exports.validate_all_surfaces(root),
+        "validate_all_surfaces fails closed on broken HopDemo consumer at c74f89ba",
+    )
+    rejected(
+        lambda: exports.validate_gradle_consumers(root),
+        "validate_gradle_consumers fails closed on exact parent group filter at c74f89ba",
+    )
+
+    # 2. Scratch tree representing repository state once the sibling's HopDemo fix lands:
+    fixed_tree = temporary / "fixed-tree"
+    for sub in ("Cargo.toml", "tools", "sdk", "bearers", "apps", "core", "services", "drivers"):
+        src = root / sub
+        dest = fixed_tree / sub
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+    demo_gradle = fixed_tree / "apps/react-native/HopDemo/android/build.gradle"
+    demo_gradle.write_text(
+        demo_gradle.read_text().replace(
+            'content { includeGroup "sh.hop" }',
+            'content { includeGroupByRegex "sh\\\\.hop(?:\\\\..*)?" }',
+        )
+    )
+
+    # Prove validate_all_surfaces passes against the fixed tree
+    all_surfaces = exports.validate_all_surfaces(fixed_tree)
     assert all_surfaces["npm"]["status"] == "ok"
     assert all_surfaces["python"]["status"] == "ok"
     assert all_surfaces["ruby"]["status"] == "ok"
@@ -755,6 +784,16 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert all_surfaces["elixir"]["status"] == "finding"
     assert all_surfaces["mirrors"]["status"] == "ok"
 
+    # Prove allowlist enforcement: unallowlisted finding must fail closed
+    saved_exceptions = exports.KNOWN_PACKAGING_EXCEPTIONS
+    try:
+        exports.KNOWN_PACKAGING_EXCEPTIONS = {}
+        rejected(
+            lambda: exports.validate_all_surfaces(fixed_tree),
+            "unallowlisted finding fails validate_all_surfaces",
+        )
+    finally:
+        exports.KNOWN_PACKAGING_EXCEPTIONS = saved_exceptions
     # 1. NPM surface fail-closed checks
     npm_bad_export = temporary / "npm-bad-export"
     shutil.copytree(root / "sdk/node", npm_bad_export / "sdk/node")
@@ -875,6 +914,13 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     shutil.copy2(root / "Cargo.toml", android_no_prefab / "Cargo.toml")
     (android_no_prefab / "sdk/android/build.gradle.kts").write_text(android_gradle.replace('from(aarMetadataDir) { into("prefab") }', ''))
     rejected(lambda: exports.validate_android_surface(android_no_prefab), "android missing prefab staging")
+    android_bad_coord = temporary / "android-bad-coord"
+    shutil.copytree(root / "sdk/android", android_bad_coord / "sdk/android")
+    shutil.copytree(root / "bearers/android", android_bad_coord / "bearers/android")
+    shutil.copy2(root / "Cargo.toml", android_bad_coord / "Cargo.toml")
+    dev_script = (android_bad_coord / "sdk/android/build-aar-dev.sh")
+    dev_script.write_text(dev_script.read_text().replace("sh.hop.bearers", "sh.hop.bearerz"))
+    rejected(lambda: exports.validate_android_surface(android_bad_coord), "android coordinate drift in build-aar-dev.sh")
 
     # 7. Crystal surface fail-closed checks
     crystal_has_dep = temporary / "crystal-has-dep"
@@ -922,6 +968,18 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     comps["hop-unexpected"] = {"prefix": "unexpected"}
     (mirrors_bad / "tools/copybara/components.json").write_text(json.dumps(comps))
     rejected(lambda: exports.validate_mirrors_and_owner_held(mirrors_bad), "unexpected mirror component")
+    # 11. Consumer-side Gradle filter fail-closed checks
+    consumer_bad_tree = temporary / "consumer-bad-tree"
+    (consumer_bad_tree / "app").mkdir(parents=True)
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroup "sh.hop" } } }')
+    rejected(
+        lambda: exports.validate_gradle_consumers(consumer_bad_tree),
+        "consumer exact match silently excluding subgroups",
+    )
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroupByRegex "sh\\\\.hop(?:\\\\..*)?" } } }')
+    exports.validate_gradle_consumers(consumer_bad_tree)
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroup "sh.hop"; includeGroup "sh.hop.bearers" } } }')
+    exports.validate_gradle_consumers(consumer_bad_tree)
 
 # --- RETIRED WITH THE RUST CRATE MIRRORS (2026-08) ---------------------------------------------
 # A ~120-line suite lived here pinning verify_standalone_lock's mid-release tolerance: the carve-out

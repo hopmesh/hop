@@ -1459,6 +1459,17 @@ PUBLISHED_CRATES = (
     ("core/stores/hop-store-firestore", "hop-store-firestore", "hop-mesh-store-firestore"),
 )
 
+KNOWN_PACKAGING_EXCEPTIONS = {
+    "elixir": {
+        "status": "finding",
+        "owner": "jwaldrip",
+        "reason": (
+            "sdk/elixir mix.exs declares native/vendor/... and native/Cargo.toml in package().files "
+            "that are absent in tree; hop-sdk-elixir mirror was retired in 2026-08 and requires "
+            "an explicit export-vendoring pass before hex.build can succeed."
+        ),
+    },
+}
 
 def validate_npm_surface(root):
     root = Path(root).resolve()
@@ -1601,12 +1612,42 @@ def validate_apple_surface(root):
 
     return {"status": "ok", "xcframework": "libhop.xcframework", "slices": sorted(list(found_slices)), "abi": cabi_abi}
 
+def validate_gradle_consumers(root, family_parent="sh.hop", family_subgroups=None):
+    root = Path(root).resolve()
+    if family_subgroups is None:
+        family_subgroups = ["sh.hop.bearers"]
+    exact_parent = f'"{family_parent}"'
+    exact_parent_call = f'("{family_parent}")'
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name not in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"):
+            continue
+        parts = path.relative_to(root).parts
+        if any(p in ("build", ".gradle", "node_modules", "target") for p in parts):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "includeGroup" in text or "includeGroupByRegex" in text:
+            if exact_parent in text or exact_parent_call in text:
+                has_regex = "includeGroupByRegex" in text
+                admits_subgroups = has_regex or all(
+                    (f'"{sub}"' in text or f'("{sub}")' in text) for sub in family_subgroups
+                )
+                if not admits_subgroups:
+                    rel = path.relative_to(root).as_posix()
+                    raise ExportError(
+                        f"Gradle consumer {rel} filters repository by exact '{family_parent}', "
+                        f"silently excluding published subgroups {family_subgroups}"
+                    )
+
+
 def validate_android_surface(root):
     root = Path(root).resolve()
     android_gradle = root / "sdk/android/build.gradle.kts"
     require(android_gradle.is_file(), "sdk/android/build.gradle.kts is missing")
     content = android_gradle.read_text(encoding="utf-8")
     require('group = "sh.hop"' in content, "sdk/android/build.gradle.kts must set group = 'sh.hop'")
+    sdk_group = "sh.hop"
     require('net.java.dev.jna:jna' in content, "sdk/android POM customization must declare net.java.dev.jna:jna dependency")
     require('from(aarMetadataDir) { into("prefab") }' in content, "sdk/android must stage prefab metadata into prefab directory")
     require('into("prefab/modules/libhop/include")' in content, "sdk/android must stage C headers into prefab modules include directory")
@@ -1614,13 +1655,40 @@ def validate_android_surface(root):
     require(bearer_gradle.is_file(), "bearers/android/build.gradle.kts is missing")
     b_content = bearer_gradle.read_text(encoding="utf-8")
     require('group = "sh.hop.bearers"' in b_content, "bearers/android/build.gradle.kts must set group = 'sh.hop.bearers'")
+    b_group = "sh.hop.bearers"
     require('create<MavenPublication>("bearer")' in b_content, "bearers/android must configure bearer MavenPublication")
     b_settings = (root / "bearers/android/settings.gradle.kts").read_text(encoding="utf-8")
     require(':bearer-ble' in b_settings and ':bearer-lan' in b_settings, "bearers/android settings must include bearer-ble and bearer-lan")
-    require((root / "sdk/android/build-aar-dev.sh").is_file() and os.access(root / "sdk/android/build-aar-dev.sh", os.X_OK), "build-aar-dev.sh missing or not executable")
-    require((root / "sdk/android/build-aar.sh").is_file() and os.access(root / "sdk/android/build-aar.sh", os.X_OK), "build-aar.sh missing or not executable")
-    return {"status": "ok", "sdk_group": "sh.hop", "bearers_group": "sh.hop.bearers"}
 
+    dev_script_path = root / "sdk/android/build-aar-dev.sh"
+    require(dev_script_path.is_file() and os.access(dev_script_path, os.X_OK), "build-aar-dev.sh missing or not executable")
+    dev_script_content = dev_script_path.read_text(encoding="utf-8")
+
+    # Cross-check publishing script coordinates against declared gradle groups:
+    # 1. SDK publication path and coordinates
+    require(f'{sdk_group}:hop' in dev_script_content, f"build-aar-dev.sh must publish coordinate {sdk_group}:hop")
+    sdk_repo_path = sdk_group.replace(".", "/") + "/hop/"
+    require(sdk_repo_path in dev_script_content, f"build-aar-dev.sh must publish to path {sdk_repo_path}")
+
+    # 2. Bearers publication path and coordinates
+    require(f'{b_group}:bearer-ble' in dev_script_content, f"build-aar-dev.sh must publish coordinate {b_group}:bearer-ble")
+    require(f'{b_group}:bearer-lan' in dev_script_content, f"build-aar-dev.sh must publish coordinate {b_group}:bearer-lan")
+    bearers_repo_path = b_group.replace(".", "/") + "/bearer-ble/"
+    require(bearers_repo_path in dev_script_content, f"build-aar-dev.sh must publish to path {bearers_repo_path}")
+
+    # 3. Consumer instructions must match exact groups
+    require(f'includeGroup "{sdk_group}"' in dev_script_content, f"build-aar-dev.sh usage must instruct includeGroup '{sdk_group}'")
+    require(f'includeGroup "{b_group}"' in dev_script_content, f"build-aar-dev.sh usage must instruct includeGroup '{b_group}'")
+    require(f'implementation "{sdk_group}:hop:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{sdk_group}:hop:'")
+    require(f'implementation "{b_group}:bearer-ble:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{b_group}:bearer-ble:'")
+    require(f'implementation "{b_group}:bearer-lan:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{b_group}:bearer-lan:'")
+
+    require((root / "sdk/android/build-aar.sh").is_file() and os.access(root / "sdk/android/build-aar.sh", os.X_OK), "build-aar.sh missing or not executable")
+
+    # 4. Consumer-side check: assert every Gradle consumer in the tree admits the whole published family
+    validate_gradle_consumers(root, family_parent=sdk_group, family_subgroups=[b_group])
+
+    return {"status": "ok", "sdk_group": sdk_group, "bearers_group": b_group}
 
 def validate_crystal_surface(root):
     root = Path(root).resolve()
@@ -1693,7 +1761,7 @@ def validate_mirrors_and_owner_held(root):
 
 
 def validate_all_surfaces(root):
-    return {
+    results = {
         "npm": validate_npm_surface(root),
         "python": validate_python_surface(root),
         "ruby": validate_ruby_surface(root),
@@ -1705,6 +1773,17 @@ def validate_all_surfaces(root):
         "elixir": validate_elixir_hex_surface(root),
         "mirrors": validate_mirrors_and_owner_held(root),
     }
+    for name, res in results.items():
+        status = res.get("status")
+        if status != "ok":
+            if name not in KNOWN_PACKAGING_EXCEPTIONS:
+                raise ExportError(f"packaging surface {name} has unallowlisted status {status}: {res}")
+            expected = KNOWN_PACKAGING_EXCEPTIONS[name]
+            require(
+                status == expected.get("status"),
+                f"packaging surface {name} status {status} differs from expected allowlisted status {expected.get('status')}",
+            )
+    return results
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1762,7 +1841,12 @@ def main():
             results = validate_all_surfaces(root)
             print("all packaging surfaces validated:")
             for name, res in sorted(results.items()):
-                print(f"  {name}: {res.get('status')}")
+                status = res.get("status")
+                if name in KNOWN_PACKAGING_EXCEPTIONS:
+                    exc = KNOWN_PACKAGING_EXCEPTIONS[name]
+                    print(f"  {name}: {status} [ALLOWLISTED: owner={exc['owner']} reason={exc['reason']}]")
+                else:
+                    print(f"  {name}: {status}")
     except (ExportError, OSError, ValueError, json.JSONDecodeError, tarfile.TarError, zipfile.BadZipFile) as error:
         raise SystemExit(f"package export rejected: {error}") from error
 
