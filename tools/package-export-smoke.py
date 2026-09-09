@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import stat
@@ -1452,6 +1453,342 @@ def validate_existing_android(export, work_root, bundle):
     work.mkdir()
     validate_android(export, work, bundle)
 
+PUBLISHED_CRATES = (
+    ("core/hop-core", "hop-core", "hop-mesh-core"),
+    ("core/stores/hop-store-sqlite", "hop-store-sqlite", "hop-mesh-store-sqlite"),
+    ("core/stores/hop-store-firestore", "hop-store-firestore", "hop-mesh-store-firestore"),
+)
+
+KNOWN_PACKAGING_EXCEPTIONS = {
+    "elixir": {
+        "status": "finding",
+        "owner": "jwaldrip",
+        "reason": (
+            "sdk/elixir mix.exs declares native/vendor/... and native/Cargo.toml in package().files "
+            "that are absent in tree; hop-sdk-elixir mirror was retired in 2026-08 and requires "
+            "an explicit export-vendoring pass before hex.build can succeed."
+        ),
+    },
+}
+
+def validate_npm_surface(root):
+    root = Path(root).resolve()
+    node_pkg_path = root / "sdk/node/package.json"
+    require(node_pkg_path.is_file(), "sdk/node/package.json is missing")
+    pkg = json.loads(node_pkg_path.read_text(encoding="utf-8"))
+    require(pkg.get("name") == "@hop-mesh/endpoint", f"unexpected npm package name: {pkg.get('name')}")
+    ws_ver = workspace_version(root)
+    require(pkg.get("version") == ws_ver, f"npm package version {pkg.get('version')} does not match workspace {ws_ver}")
+    require(pkg.get("type") == "module", "sdk/node/package.json must declare type: module")
+    require(pkg.get("license") == "Apache-2.0", f"unexpected npm package license: {pkg.get('license')}")
+    exports = pkg.get("exports")
+    require(isinstance(exports, dict), "sdk/node/package.json exports must be a dictionary")
+    for subpath in (".", "./raw", "./tcp", "./wss", "./discovery"):
+        require(subpath in exports, f"sdk/node/package.json missing export {subpath}")
+        target = root / "sdk/node" / exports[subpath]
+        require(target.is_file(), f"sdk/node export target missing: {target}")
+    files = pkg.get("files")
+    require(isinstance(files, list) and files, "sdk/node/package.json files list is missing or empty")
+    for item in ("lib", "README.md", "LICENSE.md", "THIRD-PARTY-NOTICES.md"):
+        require(item in files, f"sdk/node files list missing {item}")
+        require((root / "sdk/node" / item).exists(), f"sdk/node file missing on disk: {item}")
+    deps = pkg.get("dependencies", {})
+    require("koffi" in deps and "ws" in deps, "sdk/node dependencies must contain koffi and ws")
+    require(not any(v.startswith("file:") or v.startswith("link:") for v in deps.values()), "sdk/node has local file/link dependency")
+
+    rn_pkg_path = root / "sdk/react-native/package.json"
+    require(rn_pkg_path.is_file(), "sdk/react-native/package.json is missing")
+    rn_pkg = json.loads(rn_pkg_path.read_text(encoding="utf-8"))
+    require(rn_pkg.get("name") == "@hop-mesh/react-native", f"unexpected react-native package name: {rn_pkg.get('name')}")
+    require(rn_pkg.get("private") is True, "@hop-mesh/react-native must be marked private: true")
+    return {"status": "ok", "package": "@hop-mesh/endpoint", "version": pkg.get("version")}
+
+
+def validate_python_surface(root):
+    root = Path(root).resolve()
+    pyproject_path = root / "sdk/python/pyproject.toml"
+    require(pyproject_path.is_file(), "sdk/python/pyproject.toml is missing")
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    require(project.get("name") == "hop-endpoint", f"unexpected python project name: {project.get('name')}")
+    ws_ver = workspace_version(root)
+    require(project.get("version") == ws_ver, f"python project version {project.get('version')} does not match workspace {ws_ver}")
+    require(project.get("license") == "Apache-2.0", f"unexpected python project license: {project.get('license')}")
+    license_files = project.get("license-files", [])
+    for lf in ("LICENSE.md", "THIRD-PARTY-NOTICES.md"):
+        require(lf in license_files, f"python pyproject.toml license-files missing {lf}")
+        require((root / "sdk/python" / lf).is_file(), f"python license file missing on disk: {lf}")
+    deps = project.get("dependencies", None)
+    require(deps == [], f"python sdk/python must have zero runtime dependencies, got: {deps}")
+    build_sys = data.get("build-system", {})
+    require(build_sys.get("build-backend") == "setuptools.build_meta", f"unexpected build backend: {build_sys.get('build-backend')}")
+    find_pkg = data.get("tool", {}).get("setuptools", {}).get("packages", {}).get("find", {})
+    require("hop_endpoint*" in find_pkg.get("include", []), "setuptools include must contain hop_endpoint*")
+
+    for mod in ("__init__.py", "endpoint.py", "_ffi.py", "tcp_bearer.py", "wss_bearer.py", "discovery.py"):
+        mod_path = root / "sdk/python/hop_endpoint" / mod
+        require(mod_path.is_file(), f"python module missing: {mod_path}")
+    return {"status": "ok", "package": "hop-endpoint", "version": project.get("version")}
+
+
+def validate_ruby_surface(root):
+    root = Path(root).resolve()
+    gemspec_path = root / "sdk/ruby/hop-endpoint.gemspec"
+    require(gemspec_path.is_file(), "sdk/ruby/hop-endpoint.gemspec is missing")
+    content = gemspec_path.read_text(encoding="utf-8")
+    require('spec.name        = "hop-endpoint"' in content, "ruby gemspec missing spec.name = 'hop-endpoint'")
+    ws_ver = workspace_version(root)
+    require(f'spec.version     = "{ws_ver}"' in content, f"ruby gemspec version does not match workspace {ws_ver}")
+    require('spec.license     = "Apache-2.0"' in content, "ruby gemspec missing Apache-2.0 license")
+    require("add_dependency" not in content and "add_runtime_dependency" not in content, "ruby gemspec must have zero runtime gem dependencies")
+    for rf in ("lib/hop.rb", "lib/hop/ffi.rb", "lib/hop/endpoint.rb", "lib/hop/tcp_bearer.rb", "lib/hop/wss_bearer.rb", "lib/hop/discovery.rb"):
+        require((root / "sdk/ruby" / rf).is_file(), f"ruby source file missing: {rf}")
+    return {"status": "ok", "package": "hop-endpoint", "version": ws_ver}
+
+
+def validate_rust_crates_surface(root):
+    root = Path(root).resolve()
+    ws_ver = workspace_version(root)
+    crates_info = []
+    for crate_rel, local_name, published_name in PUBLISHED_CRATES:
+        manifest_path = root / crate_rel / "Cargo.toml"
+        require(manifest_path.is_file(), f"Cargo.toml missing for {crate_rel}")
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        pkg = data.get("package", {})
+        require(pkg.get("name") == local_name, f"unexpected crate name {pkg.get('name')} in {crate_rel}")
+        pkg_ver = pkg.get("version")
+        if isinstance(pkg_ver, dict) and pkg_ver.get("workspace") is True:
+            pkg_ver = ws_ver
+        require(pkg_ver == ws_ver, f"crate {local_name} version {pkg_ver} does not match workspace {ws_ver}")
+        pkg_license = pkg.get("license")
+        require(pkg_license == "Apache-2.0", f"crate {local_name} missing Apache-2.0 license")
+        require(bool(pkg.get("description")), f"crate {local_name} missing description")
+        pkg_repo = pkg.get("repository")
+        if isinstance(pkg_repo, dict) and pkg_repo.get("workspace") is True:
+            pkg_repo = "https://github.com/hopmesh/hop"
+        require("github.com/hopmesh/hop" in str(pkg_repo), f"crate {local_name} invalid repository")
+        crates_info.append(published_name)
+    return {"status": "ok", "crates": crates_info, "version": ws_ver}
+
+
+def validate_apple_surface(root):
+    root = Path(root).resolve()
+    ws_ver = workspace_version(root)
+    manifest_path = root / "sdk/apple/Package.swift"
+    require(manifest_path.is_file(), "sdk/apple/Package.swift is missing")
+    manifest = manifest_path.read_text(encoding="utf-8")
+    expected_url = f"https://github.com/hopmesh/hop-sdk-apple/releases/download/v{ws_ver}/libhop.xcframework.zip"
+    require(expected_url in manifest, f"Package.swift missing expected release url {expected_url}")
+    require('.binaryTarget(\n            name: "CHop"' in manifest or '.binaryTarget(name: "CHop"' in manifest, "Package.swift missing binaryTarget CHop")
+    require('.library(name: "HopContract"' in manifest, "Package.swift missing HopContract product")
+    require('.library(name: "Hop"' in manifest, "Package.swift missing Hop product")
+
+    local_path = root / "sdk/apple/Package.local.swift"
+    require(local_path.is_file(), "sdk/apple/Package.local.swift is missing")
+    local_manifest = local_path.read_text(encoding="utf-8")
+    require('path: "Frameworks/libhop.xcframework"' in local_manifest, "Package.local.swift must reference Frameworks/libhop.xcframework")
+
+    xcframework = root / "sdk/apple/Frameworks/libhop.xcframework"
+    if not xcframework.is_dir():
+        return {
+            "status": "skipped",
+            "xcframework": None,
+            "reason": "sdk/apple/Frameworks/libhop.xcframework not built (requires macOS xcodebuild / sdk/apple/build-xcframework.sh)",
+        }
+    plist_path = xcframework / "Info.plist"
+    require(plist_path.is_file(), f"xcframework Info.plist missing: {plist_path}")
+    plist = plistlib.loads(plist_path.read_bytes())
+    available = plist.get("AvailableLibraries", [])
+    require(len(available) >= 3, f"xcframework must contain at least 3 library slices, got {len(available)}")
+    expected_slices = {"macos-arm64_x86_64", "ios-arm64", "ios-arm64_x86_64-simulator"}
+    found_slices = {lib.get("LibraryIdentifier") for lib in available}
+    require(expected_slices.issubset(found_slices), f"xcframework missing slices: {expected_slices - found_slices}")
+
+    cabi_abi = pinned_abi_version(root / "sdk/apple")
+    for slice_id in expected_slices:
+        slice_dir = xcframework / slice_id
+        require((slice_dir / "libhop.a").is_file() and (slice_dir / "libhop.a").stat().st_size > 0, f"missing non-empty libhop.a in {slice_id}")
+        h_file = slice_dir / "Headers/hop.h"
+        require(h_file.is_file(), f"missing hop.h in {slice_id}")
+        match = re.search(r"#define\s+HOP_ABI_VERSION\s+(\d+)", h_file.read_text(encoding="utf-8"))
+        require(match and int(match.group(1)) == cabi_abi, f"ABI mismatch in {slice_id} header: expected {cabi_abi}")
+        mm_file = slice_dir / "Headers/module.modulemap"
+        require(mm_file.is_file() and 'module CHop' in mm_file.read_text(encoding="utf-8"), f"invalid module.modulemap in {slice_id}")
+
+    return {"status": "ok", "xcframework": "libhop.xcframework", "slices": sorted(list(found_slices)), "abi": cabi_abi}
+
+def validate_gradle_consumers(root, family_parent="sh.hop", family_subgroups=None):
+    root = Path(root).resolve()
+    if family_subgroups is None:
+        family_subgroups = ["sh.hop.bearers"]
+    exact_parent = f'"{family_parent}"'
+    exact_parent_call = f'("{family_parent}")'
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name not in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"):
+            continue
+        parts = path.relative_to(root).parts
+        if any(p in ("build", ".gradle", "node_modules", "target") for p in parts):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "includeGroup" in text or "includeGroupByRegex" in text:
+            if exact_parent in text or exact_parent_call in text:
+                has_regex = "includeGroupByRegex" in text
+                admits_subgroups = has_regex or all(
+                    (f'"{sub}"' in text or f'("{sub}")' in text) for sub in family_subgroups
+                )
+                if not admits_subgroups:
+                    rel = path.relative_to(root).as_posix()
+                    raise ExportError(
+                        f"Gradle consumer {rel} filters repository by exact '{family_parent}', "
+                        f"silently excluding published subgroups {family_subgroups}"
+                    )
+
+
+def validate_android_surface(root):
+    root = Path(root).resolve()
+    android_gradle = root / "sdk/android/build.gradle.kts"
+    require(android_gradle.is_file(), "sdk/android/build.gradle.kts is missing")
+    content = android_gradle.read_text(encoding="utf-8")
+    require('group = "sh.hop"' in content, "sdk/android/build.gradle.kts must set group = 'sh.hop'")
+    sdk_group = "sh.hop"
+    require('net.java.dev.jna:jna' in content, "sdk/android POM customization must declare net.java.dev.jna:jna dependency")
+    require('from(aarMetadataDir) { into("prefab") }' in content, "sdk/android must stage prefab metadata into prefab directory")
+    require('into("prefab/modules/libhop/include")' in content, "sdk/android must stage C headers into prefab modules include directory")
+    bearer_gradle = root / "bearers/android/build.gradle.kts"
+    require(bearer_gradle.is_file(), "bearers/android/build.gradle.kts is missing")
+    b_content = bearer_gradle.read_text(encoding="utf-8")
+    require('group = "sh.hop.bearers"' in b_content, "bearers/android/build.gradle.kts must set group = 'sh.hop.bearers'")
+    b_group = "sh.hop.bearers"
+    require('create<MavenPublication>("bearer")' in b_content, "bearers/android must configure bearer MavenPublication")
+    b_settings = (root / "bearers/android/settings.gradle.kts").read_text(encoding="utf-8")
+    require(':bearer-ble' in b_settings and ':bearer-lan' in b_settings, "bearers/android settings must include bearer-ble and bearer-lan")
+
+    dev_script_path = root / "sdk/android/build-aar-dev.sh"
+    require(dev_script_path.is_file() and os.access(dev_script_path, os.X_OK), "build-aar-dev.sh missing or not executable")
+    dev_script_content = dev_script_path.read_text(encoding="utf-8")
+
+    # Cross-check publishing script coordinates against declared gradle groups:
+    # 1. SDK publication path and coordinates
+    require(f'{sdk_group}:hop' in dev_script_content, f"build-aar-dev.sh must publish coordinate {sdk_group}:hop")
+    sdk_repo_path = sdk_group.replace(".", "/") + "/hop/"
+    require(sdk_repo_path in dev_script_content, f"build-aar-dev.sh must publish to path {sdk_repo_path}")
+
+    # 2. Bearers publication path and coordinates
+    require(f'{b_group}:bearer-ble' in dev_script_content, f"build-aar-dev.sh must publish coordinate {b_group}:bearer-ble")
+    require(f'{b_group}:bearer-lan' in dev_script_content, f"build-aar-dev.sh must publish coordinate {b_group}:bearer-lan")
+    bearers_repo_path = b_group.replace(".", "/") + "/bearer-ble/"
+    require(bearers_repo_path in dev_script_content, f"build-aar-dev.sh must publish to path {bearers_repo_path}")
+
+    # 3. Consumer instructions must match exact groups
+    require(f'includeGroup "{sdk_group}"' in dev_script_content, f"build-aar-dev.sh usage must instruct includeGroup '{sdk_group}'")
+    require(f'includeGroup "{b_group}"' in dev_script_content, f"build-aar-dev.sh usage must instruct includeGroup '{b_group}'")
+    require(f'implementation "{sdk_group}:hop:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{sdk_group}:hop:'")
+    require(f'implementation "{b_group}:bearer-ble:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{b_group}:bearer-ble:'")
+    require(f'implementation "{b_group}:bearer-lan:' in dev_script_content, f"build-aar-dev.sh usage must instruct implementation '{b_group}:bearer-lan:'")
+
+    require((root / "sdk/android/build-aar.sh").is_file() and os.access(root / "sdk/android/build-aar.sh", os.X_OK), "build-aar.sh missing or not executable")
+
+    # 4. Consumer-side check: assert every Gradle consumer in the tree admits the whole published family
+    validate_gradle_consumers(root, family_parent=sdk_group, family_subgroups=[b_group])
+
+    return {"status": "ok", "sdk_group": sdk_group, "bearers_group": b_group}
+
+def validate_crystal_surface(root):
+    root = Path(root).resolve()
+    ws_ver = workspace_version(root)
+    shard_path = root / "sdk/crystal/shard.yml"
+    require(shard_path.is_file(), "sdk/crystal/shard.yml is missing")
+    content = shard_path.read_text(encoding="utf-8")
+    require("name: hop-endpoint" in content, "sdk/crystal/shard.yml must have name: hop-endpoint")
+    require(f"version: {ws_ver}" in content, f"shard.yml version does not match workspace {ws_ver}")
+    require("license: Apache-2.0" in content, "shard.yml must have license: Apache-2.0")
+    require("\ndependencies:" not in content, "sdk/crystal/shard.yml must have zero shard dependencies")
+    for sf in ("src/hop.cr", "src/hop/ffi.cr", "src/hop/endpoint.cr"):
+        require((root / "sdk/crystal" / sf).is_file(), f"crystal source file missing: {sf}")
+    return {"status": "ok", "shard": "hop-endpoint", "version": ws_ver}
+
+
+def validate_dart_surface(root):
+    root = Path(root).resolve()
+    ws_ver = workspace_version(root)
+    pubspec_path = root / "sdk/flutter/pubspec.yaml"
+    require(pubspec_path.is_file(), "sdk/flutter/pubspec.yaml is missing")
+    content = pubspec_path.read_text(encoding="utf-8")
+    require("name: hop_endpoint" in content, "sdk/flutter/pubspec.yaml must have name: hop_endpoint")
+    require(f"version: {ws_ver}" in content, f"pubspec.yaml version does not match workspace {ws_ver}")
+    require("ffi: ^2.1.0" in content or "ffi:" in content, "pubspec.yaml must declare ffi dependency")
+    for df in ("lib/hop_endpoint.dart", "lib/src/ffi.dart", "lib/src/endpoint.dart"):
+        require((root / "sdk/flutter" / df).is_file(), f"dart source file missing: {df}")
+    return {"status": "ok", "package": "hop_endpoint", "version": ws_ver}
+
+
+def validate_elixir_hex_surface(root):
+    root = Path(root).resolve()
+    ws_ver = workspace_version(root)
+    mix_path = root / "sdk/elixir/mix.exs"
+    require(mix_path.is_file(), "sdk/elixir/mix.exs is missing")
+    content = mix_path.read_text(encoding="utf-8")
+    require("app: :hop_endpoint" in content, "sdk/elixir/mix.exs must declare app: :hop_endpoint")
+    require(f'version: "{ws_ver}"' in content, f"mix.exs version does not match workspace {ws_ver}")
+    has_vendored_declarations = "native/vendor/hop-core" in content
+    vendored_exists = (root / "sdk/elixir/native/vendor").is_dir()
+    components = load_components(root)
+    elixir_mirrored = "hop-sdk-elixir" in components
+    return {
+        "status": "finding" if (has_vendored_declarations and not vendored_exists) else "ok",
+        "app": "hop_endpoint",
+        "has_vendored_declarations": has_vendored_declarations,
+        "vendored_exists": vendored_exists,
+        "mirror_active": elixir_mirrored,
+    }
+
+
+def validate_mirrors_and_owner_held(root):
+    root = Path(root).resolve()
+    components = load_components(root)
+    expected = {"hop-sdk-go", "hop-sdk-crystal", "hop-sdk-apple", "hop-bearers-apple"}
+    require(set(components.keys()) == expected, f"unexpected components: {set(components.keys())} != {expected}")
+    owner_held = [
+        {
+            "component": "hop-bearers-apple",
+            "status": "wired_repo_missing",
+            "detail": "hopmesh/hop-bearers-apple is declared in tools/copybara/components.json and copy.bara.sky but repository does not exist on GitHub",
+        },
+        {
+            "component": "hop-sdk-apple",
+            "status": "release_asset_missing",
+            "detail": "sdk/apple/Package.swift pins remote binary v0.0.3 libhop.xcframework.zip, which was never published to GitHub releases",
+        },
+    ]
+    return {"status": "ok", "components": sorted(list(components.keys())), "owner_held": owner_held}
+
+
+def validate_all_surfaces(root):
+    results = {
+        "npm": validate_npm_surface(root),
+        "python": validate_python_surface(root),
+        "ruby": validate_ruby_surface(root),
+        "rust": validate_rust_crates_surface(root),
+        "apple": validate_apple_surface(root),
+        "android": validate_android_surface(root),
+        "crystal": validate_crystal_surface(root),
+        "dart": validate_dart_surface(root),
+        "elixir": validate_elixir_hex_surface(root),
+        "mirrors": validate_mirrors_and_owner_held(root),
+    }
+    for name, res in results.items():
+        status = res.get("status")
+        if status not in ("ok", "skipped"):
+            if name not in KNOWN_PACKAGING_EXCEPTIONS:
+                raise ExportError(f"packaging surface {name} has unallowlisted status {status}: {res}")
+            expected = KNOWN_PACKAGING_EXCEPTIONS[name]
+            require(
+                status == expected.get("status"),
+                f"packaging surface {name} status {status} differs from expected allowlisted status {expected.get('status')}",
+            )
+    return results
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1480,6 +1817,7 @@ def main():
     validate_android_export.add_argument("--export", default=".")
     validate_android_export.add_argument("--work-root", required=True)
     validate_android_export.add_argument("--native-bundle", required=True)
+    subparsers.add_parser("validate-packaging")
     args = parser.parse_args()
     root = Path(args.root).resolve()
     try:
@@ -1504,6 +1842,18 @@ def main():
             validate_elixir_cargo(Path(args.export).resolve())
         elif args.command == "validate-android-export":
             validate_existing_android(args.export, args.work_root, args.native_bundle)
+        elif args.command == "validate-packaging":
+            results = validate_all_surfaces(root)
+            print("all packaging surfaces validated:")
+            for name, res in sorted(results.items()):
+                status = res.get("status")
+                if status == "skipped":
+                    print(f"  {name}: skipped [REASON: {res.get('reason')}]")
+                elif name in KNOWN_PACKAGING_EXCEPTIONS:
+                    exc = KNOWN_PACKAGING_EXCEPTIONS[name]
+                    print(f"  {name}: {status} [ALLOWLISTED: owner={exc['owner']} reason={exc['reason']}]")
+                else:
+                    print(f"  {name}: {status}")
     except (ExportError, OSError, ValueError, json.JSONDecodeError, tarfile.TarError, zipfile.BadZipFile) as error:
         raise SystemExit(f"package export rejected: {error}") from error
 

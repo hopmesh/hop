@@ -741,6 +741,273 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
         rejected(lambda: native.safe_extract_zip(oversized_zip, temporary / "oversized-out"), "oversized GitHub artifact")
     finally:
         native.MAX_EXPANDED_BYTES = original_expanded_limit
+    # --- PACKAGING CONSUMER CONTRACT GUARDS -------------------------------------
+    # The live tree is the healthy case, and the broken case is synthesised from it. This block was
+    # written the other way round, asserting rejection against a real defect in HopDemo's repository
+    # filter, which passed while that defect was on main and inverted the moment it was fixed. A
+    # fail-closed proof has to own its fixture: pin the shape, not the tree's current state.
+    broken_consumer = temporary / "broken-consumer-tree"
+    for sub in ("Cargo.toml", "tools", "sdk", "bearers", "apps", "core", "services", "drivers"):
+        src = root / sub
+        dest = broken_consumer / sub
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+    demo_gradle = broken_consumer / "apps/react-native/HopDemo/android/build.gradle"
+    # Narrow whatever form the consumer currently uses down to the exact parent group. Matching on
+    # the current pattern instead would tie the fixture to one spelling, and asserting only that the
+    # text CHANGED would turn a legitimate rewrite of the filter into a spurious failure. Assert the
+    # post-condition: after this, the fixture really does exclude the published subgroups.
+    narrowed = re.sub(
+        r"includeGroup(?:ByRegex)?\s+\"[^\"]*\"",
+        'includeGroup "sh.hop"',
+        demo_gradle.read_text(),
+    )
+    assert 'includeGroup "sh.hop"' in narrowed and "includeGroupByRegex" not in narrowed, (
+        "broken-consumer fixture failed to produce an exact parent group filter; the repository "
+        "block in apps/react-native/HopDemo/android/build.gradle no longer matches"
+    )
+    demo_gradle.write_text(narrowed)
+    rejected(
+        lambda: exports.validate_gradle_consumers(broken_consumer),
+        "validate_gradle_consumers fails closed on an exact parent group filter",
+    )
+    rejected(
+        lambda: exports.validate_all_surfaces(broken_consumer),
+        "validate_all_surfaces fails closed on a consumer that excludes a published subgroup",
+    )
+
+    # The tree as it stands must pass, which is what makes the rejection above meaningful.
+    fixed_tree = root
+
+    # Prove validate_all_surfaces passes against the fixed tree
+    all_surfaces = exports.validate_all_surfaces(fixed_tree)
+    assert all_surfaces["npm"]["status"] == "ok"
+    assert all_surfaces["python"]["status"] == "ok"
+    assert all_surfaces["ruby"]["status"] == "ok"
+    assert all_surfaces["rust"]["status"] == "ok"
+    # The apple surface can only be consumed where the xcframework has been built, so it degrades to
+    # skipped on a Linux runner. Assert the status the tree actually justifies rather than accepting
+    # either value: a bare `in ("ok", "skipped")` would pass on a macOS run that silently stopped
+    # verifying slices, which is the environment-dependent hole this case exists to close.
+    apple_built = (root / "sdk/apple/Frameworks/libhop.xcframework").is_dir()
+    assert all_surfaces["apple"]["status"] == ("ok" if apple_built else "skipped"), (
+        f"apple surface reported {all_surfaces['apple']['status']} with "
+        f"xcframework present={apple_built}"
+    )
+    assert all_surfaces["android"]["status"] == "ok"
+    assert all_surfaces["crystal"]["status"] == "ok"
+    assert all_surfaces["dart"]["status"] == "ok"
+    assert all_surfaces["elixir"]["status"] == "finding"
+    assert all_surfaces["mirrors"]["status"] == "ok"
+
+    # Prove allowlist enforcement: unallowlisted finding must fail closed
+    saved_exceptions = exports.KNOWN_PACKAGING_EXCEPTIONS
+    try:
+        exports.KNOWN_PACKAGING_EXCEPTIONS = {}
+        rejected(
+            lambda: exports.validate_all_surfaces(fixed_tree),
+            "unallowlisted finding fails validate_all_surfaces",
+        )
+    finally:
+        exports.KNOWN_PACKAGING_EXCEPTIONS = saved_exceptions
+    # 1. NPM surface fail-closed checks
+    npm_bad_export = temporary / "npm-bad-export"
+    shutil.copytree(root / "sdk/node", npm_bad_export / "sdk/node")
+    shutil.copytree(root / "sdk/react-native", npm_bad_export / "sdk/react-native")
+    shutil.copy2(root / "Cargo.toml", npm_bad_export / "Cargo.toml")
+    bad_node_pkg = json.loads((npm_bad_export / "sdk/node/package.json").read_text())
+    del bad_node_pkg["exports"]["./discovery"]
+    (npm_bad_export / "sdk/node/package.json").write_text(json.dumps(bad_node_pkg))
+    rejected(lambda: exports.validate_npm_surface(npm_bad_export), "npm missing export")
+
+    npm_bad_file = temporary / "npm-bad-file"
+    shutil.copytree(root / "sdk/node", npm_bad_file / "sdk/node")
+    shutil.copytree(root / "sdk/react-native", npm_bad_file / "sdk/react-native")
+    shutil.copy2(root / "Cargo.toml", npm_bad_file / "Cargo.toml")
+    (npm_bad_file / "sdk/node/THIRD-PARTY-NOTICES.md").unlink()
+    rejected(lambda: exports.validate_npm_surface(npm_bad_file), "npm missing required file")
+
+    npm_bad_dep = temporary / "npm-bad-dep"
+    shutil.copytree(root / "sdk/node", npm_bad_dep / "sdk/node")
+    shutil.copytree(root / "sdk/react-native", npm_bad_dep / "sdk/react-native")
+    shutil.copy2(root / "Cargo.toml", npm_bad_dep / "Cargo.toml")
+    bad_dep_pkg = json.loads((npm_bad_dep / "sdk/node/package.json").read_text())
+    bad_dep_pkg["dependencies"]["local-shim"] = "file:../shim"
+    (npm_bad_dep / "sdk/node/package.json").write_text(json.dumps(bad_dep_pkg))
+    rejected(lambda: exports.validate_npm_surface(npm_bad_dep), "npm local file dependency")
+
+    rn_not_private = temporary / "rn-not-private"
+    shutil.copytree(root / "sdk/node", rn_not_private / "sdk/node")
+    shutil.copytree(root / "sdk/react-native", rn_not_private / "sdk/react-native")
+    shutil.copy2(root / "Cargo.toml", rn_not_private / "Cargo.toml")
+    bad_rn_pkg = json.loads((rn_not_private / "sdk/react-native/package.json").read_text())
+    bad_rn_pkg["private"] = False
+    (rn_not_private / "sdk/react-native/package.json").write_text(json.dumps(bad_rn_pkg))
+    rejected(lambda: exports.validate_npm_surface(rn_not_private), "react-native not marked private")
+
+    # 2. Python surface fail-closed checks
+    py_bad_name = temporary / "py-bad-name"
+    shutil.copytree(root / "sdk/python", py_bad_name / "sdk/python")
+    shutil.copy2(root / "Cargo.toml", py_bad_name / "Cargo.toml")
+    py_text = (py_bad_name / "sdk/python/pyproject.toml").read_text()
+    (py_bad_name / "sdk/python/pyproject.toml").write_text(py_text.replace('name = "hop-endpoint"', 'name = "other-endpoint"'))
+    rejected(lambda: exports.validate_python_surface(py_bad_name), "python wrong project name")
+
+    py_has_dep = temporary / "py-has-dep"
+    shutil.copytree(root / "sdk/python", py_has_dep / "sdk/python")
+    shutil.copy2(root / "Cargo.toml", py_has_dep / "Cargo.toml")
+    (py_has_dep / "sdk/python/pyproject.toml").write_text(py_text.replace('dependencies = []', 'dependencies = ["requests>=2.0"]'))
+    rejected(lambda: exports.validate_python_surface(py_has_dep), "python non-zero runtime dependencies")
+
+    py_missing_mod = temporary / "py-missing-mod"
+    shutil.copytree(root / "sdk/python", py_missing_mod / "sdk/python")
+    shutil.copy2(root / "Cargo.toml", py_missing_mod / "Cargo.toml")
+    (py_missing_mod / "sdk/python/hop_endpoint/_ffi.py").unlink()
+    rejected(lambda: exports.validate_python_surface(py_missing_mod), "python missing module file")
+
+    # 3. Ruby surface fail-closed checks
+    rb_bad_dep = temporary / "rb-bad-dep"
+    shutil.copytree(root / "sdk/ruby", rb_bad_dep / "sdk/ruby")
+    shutil.copy2(root / "Cargo.toml", rb_bad_dep / "Cargo.toml")
+    rb_text = (rb_bad_dep / "sdk/ruby/hop-endpoint.gemspec").read_text()
+    (rb_bad_dep / "sdk/ruby/hop-endpoint.gemspec").write_text(rb_text + '\nspec.add_dependency "ffi"\n')
+    rejected(lambda: exports.validate_ruby_surface(rb_bad_dep), "ruby gemspec runtime dependency")
+
+    rb_missing_file = temporary / "rb-missing-file"
+    shutil.copytree(root / "sdk/ruby", rb_missing_file / "sdk/ruby")
+    shutil.copy2(root / "Cargo.toml", rb_missing_file / "Cargo.toml")
+    (rb_missing_file / "sdk/ruby/lib/hop/ffi.rb").unlink()
+    rejected(lambda: exports.validate_ruby_surface(rb_missing_file), "ruby missing source file")
+
+    # 4. Rust crates surface fail-closed checks
+    rust_bad_lic = temporary / "rust-bad-lic"
+    for crate_rel, _, _ in exports.PUBLISHED_CRATES:
+        shutil.copytree(root / crate_rel, rust_bad_lic / crate_rel)
+    shutil.copy2(root / "Cargo.toml", rust_bad_lic / "Cargo.toml")
+    core_cargo = (rust_bad_lic / "core/hop-core/Cargo.toml").read_text()
+    (rust_bad_lic / "core/hop-core/Cargo.toml").write_text(core_cargo.replace('license = "Apache-2.0"', 'license = "GPL-3.0"'))
+    rejected(lambda: exports.validate_rust_crates_surface(rust_bad_lic), "rust crate wrong license")
+    rust_bad_ver = temporary / "rust-bad-ver"
+    for crate_rel, _, _ in exports.PUBLISHED_CRATES:
+        shutil.copytree(root / crate_rel, rust_bad_ver / crate_rel)
+    shutil.copy2(root / "Cargo.toml", rust_bad_ver / "Cargo.toml")
+    (rust_bad_ver / "core/hop-core/Cargo.toml").write_text(core_cargo.replace('version.workspace = true', 'version = "9.9.9"'))
+    rejected(lambda: exports.validate_rust_crates_surface(rust_bad_ver), "rust crate version mismatch")
+
+    # 5. Apple surface fail-closed checks
+    apple_bad_url = temporary / "apple-bad-url"
+    shutil.copytree(root / "sdk/apple", apple_bad_url / "sdk/apple")
+    shutil.copy2(root / "Cargo.toml", apple_bad_url / "Cargo.toml")
+    pkg_swift = (apple_bad_url / "sdk/apple/Package.swift").read_text()
+    (apple_bad_url / "sdk/apple/Package.swift").write_text(pkg_swift.replace('releases/download/v0.0.3/', 'releases/download/v9.9.9/'))
+    rejected(lambda: exports.validate_apple_surface(apple_bad_url), "apple Package.swift wrong release url")
+
+    # These two fixtures mutate the built xcframework, so they can only run where it exists. On a
+    # Linux runner it does not, and the fixture setup itself was raising FileNotFoundError before
+    # the guard below, which is a test that fails for a reason unrelated to what it checks.
+    if apple_built:
+        apple_missing_slice = temporary / "apple-missing-slice"
+        shutil.copytree(root / "sdk/apple", apple_missing_slice / "sdk/apple")
+        shutil.copy2(root / "Cargo.toml", apple_missing_slice / "Cargo.toml")
+        shutil.rmtree(apple_missing_slice / "sdk/apple/Frameworks/libhop.xcframework/ios-arm64")
+        rejected(lambda: exports.validate_apple_surface(apple_missing_slice), "apple xcframework missing slice")
+
+        apple_abi_drift = temporary / "apple-abi-drift"
+        shutil.copytree(root / "sdk/apple", apple_abi_drift / "sdk/apple")
+        shutil.copy2(root / "Cargo.toml", apple_abi_drift / "Cargo.toml")
+        drift_header = apple_abi_drift / "sdk/apple/Frameworks/libhop.xcframework/macos-arm64_x86_64/Headers/hop.h"
+        abi_const = "HOP_" + "ABI_VERSION"
+        drift_header.write_text(re.sub(r"#define\s+" + abi_const + r"\s+\d+", f"#define {abi_const} 999", drift_header.read_text()))
+        # This fixture was built and then never asserted on, so an ABI drift inside the shipped
+        # framework headers would have gone unnoticed by the very case named after it.
+        rejected(lambda: exports.validate_apple_surface(apple_abi_drift), "apple xcframework ABI drift")
+    else:
+        print("apple slice and ABI drift fixtures skipped: libhop.xcframework is not built here")
+
+    # 6. Android surface fail-closed checks
+    android_no_jna = temporary / "android-no-jna"
+    shutil.copytree(root / "sdk/android", android_no_jna / "sdk/android")
+    shutil.copytree(root / "bearers/android", android_no_jna / "bearers/android")
+    shutil.copy2(root / "Cargo.toml", android_no_jna / "Cargo.toml")
+    android_gradle = (android_no_jna / "sdk/android/build.gradle.kts").read_text()
+    (android_no_jna / "sdk/android/build.gradle.kts").write_text(android_gradle.replace('net.java.dev.jna:jna', 'net.invalid:jna'))
+    rejected(lambda: exports.validate_android_surface(android_no_jna), "android missing JNA dependency")
+
+    android_no_prefab = temporary / "android-no-prefab"
+    shutil.copytree(root / "sdk/android", android_no_prefab / "sdk/android")
+    shutil.copytree(root / "bearers/android", android_no_prefab / "bearers/android")
+    shutil.copy2(root / "Cargo.toml", android_no_prefab / "Cargo.toml")
+    (android_no_prefab / "sdk/android/build.gradle.kts").write_text(android_gradle.replace('from(aarMetadataDir) { into("prefab") }', ''))
+    rejected(lambda: exports.validate_android_surface(android_no_prefab), "android missing prefab staging")
+    android_bad_coord = temporary / "android-bad-coord"
+    shutil.copytree(root / "sdk/android", android_bad_coord / "sdk/android")
+    shutil.copytree(root / "bearers/android", android_bad_coord / "bearers/android")
+    shutil.copy2(root / "Cargo.toml", android_bad_coord / "Cargo.toml")
+    dev_script = (android_bad_coord / "sdk/android/build-aar-dev.sh")
+    dev_script.write_text(dev_script.read_text().replace("sh.hop.bearers", "sh.hop.bearerz"))
+    rejected(lambda: exports.validate_android_surface(android_bad_coord), "android coordinate drift in build-aar-dev.sh")
+
+    # 7. Crystal surface fail-closed checks
+    crystal_has_dep = temporary / "crystal-has-dep"
+    shutil.copytree(root / "sdk/crystal", crystal_has_dep / "sdk/crystal")
+    shutil.copy2(root / "Cargo.toml", crystal_has_dep / "Cargo.toml")
+    shard_txt = (crystal_has_dep / "sdk/crystal/shard.yml").read_text()
+    (crystal_has_dep / "sdk/crystal/shard.yml").write_text(shard_txt + "\ndependencies:\n  extra:\n    github: foo/bar\n")
+    rejected(lambda: exports.validate_crystal_surface(crystal_has_dep), "crystal shard has dependencies")
+
+    crystal_missing_src = temporary / "crystal-missing-src"
+    shutil.copytree(root / "sdk/crystal", crystal_missing_src / "sdk/crystal")
+    shutil.copy2(root / "Cargo.toml", crystal_missing_src / "Cargo.toml")
+    (crystal_missing_src / "sdk/crystal/src/hop/ffi.cr").unlink()
+    rejected(lambda: exports.validate_crystal_surface(crystal_missing_src), "crystal missing source file")
+
+    # 8. Dart surface fail-closed checks
+    dart_no_ffi = temporary / "dart-no-ffi"
+    shutil.copytree(root / "sdk/flutter", dart_no_ffi / "sdk/flutter")
+    shutil.copy2(root / "Cargo.toml", dart_no_ffi / "Cargo.toml")
+    pubspec_txt = (dart_no_ffi / "sdk/flutter/pubspec.yaml").read_text()
+    (dart_no_ffi / "sdk/flutter/pubspec.yaml").write_text(pubspec_txt.replace("ffi:", "other_dep:"))
+    rejected(lambda: exports.validate_dart_surface(dart_no_ffi), "dart missing ffi dependency")
+
+    dart_missing_file = temporary / "dart-missing-file"
+    shutil.copytree(root / "sdk/flutter", dart_missing_file / "sdk/flutter")
+    shutil.copy2(root / "Cargo.toml", dart_missing_file / "Cargo.toml")
+    (dart_missing_file / "sdk/flutter/lib/src/ffi.dart").unlink()
+    rejected(lambda: exports.validate_dart_surface(dart_missing_file), "dart missing library file")
+
+    # 9. Elixir surface fail-closed checks
+    elixir_wrong_app = temporary / "elixir-wrong-app"
+    shutil.copytree(root / "sdk/elixir", elixir_wrong_app / "sdk/elixir")
+    (elixir_wrong_app / "tools/copybara").mkdir(parents=True)
+    shutil.copy2(root / "tools/copybara/components.json", elixir_wrong_app / "tools/copybara/components.json")
+    shutil.copy2(root / "Cargo.toml", elixir_wrong_app / "Cargo.toml")
+    mix_txt = (elixir_wrong_app / "sdk/elixir/mix.exs").read_text()
+    (elixir_wrong_app / "sdk/elixir/mix.exs").write_text(mix_txt.replace("app: :hop_endpoint", "app: :wrong_app"))
+    rejected(lambda: exports.validate_elixir_hex_surface(elixir_wrong_app), "elixir wrong app name")
+
+    # 10. Mirrors surface fail-closed checks
+    mirrors_bad = temporary / "mirrors-bad"
+    (mirrors_bad / "tools/copybara").mkdir(parents=True)
+    shutil.copy2(root / "tools/copybara/components.json", mirrors_bad / "tools/copybara/components.json")
+    comps = json.loads((mirrors_bad / "tools/copybara/components.json").read_text())
+    comps["hop-unexpected"] = {"prefix": "unexpected"}
+    (mirrors_bad / "tools/copybara/components.json").write_text(json.dumps(comps))
+    rejected(lambda: exports.validate_mirrors_and_owner_held(mirrors_bad), "unexpected mirror component")
+    # 11. Consumer-side Gradle filter fail-closed checks
+    consumer_bad_tree = temporary / "consumer-bad-tree"
+    (consumer_bad_tree / "app").mkdir(parents=True)
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroup "sh.hop" } } }')
+    rejected(
+        lambda: exports.validate_gradle_consumers(consumer_bad_tree),
+        "consumer exact match silently excluding subgroups",
+    )
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroupByRegex "sh\\\\.hop(?:\\\\..*)?" } } }')
+    exports.validate_gradle_consumers(consumer_bad_tree)
+    (consumer_bad_tree / "app/build.gradle").write_text('repositories { maven { content { includeGroup "sh.hop"; includeGroup "sh.hop.bearers" } } }')
+    exports.validate_gradle_consumers(consumer_bad_tree)
 
 # --- RETIRED WITH THE RUST CRATE MIRRORS (2026-08) ---------------------------------------------
 # A ~120-line suite lived here pinning verify_standalone_lock's mid-release tolerance: the carve-out
