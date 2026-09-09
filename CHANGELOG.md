@@ -5,7 +5,27 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- gate the xcframework fixtures and assert the ABI drift case (fbbe2e9)
+- assert the apple surface status the tree justifies (5a78859)
+- own the fail-closed consumer fixture instead of asserting against the tree (7ba4f28)
+- preserve the required Apple check name (4873d4d)
+- compile the React Native iOS module (0353ae5)
+- allowlist the internal mac peer package and fix a runtime path citation (d767eb3)
+- derive the doc guard PR ceiling from the repository, not a constant (291b7b8)
+- guard the two integration hazards that round 4 exposed (50e74c5)
+- classify test ABI fixture and explicitly degrade absent xcframework (65259b8)
+- enforce strict allowlist, coordinate cross-checks, and consumer family filters (44c321d)
+- make native Android consumer buildable and gate it (CAND-DEPS-01, CAND-DEPS-02) (acabb03)
+- retry pinned fetches and reconcile toolchain floors (PROC-020, CAND-DEPS-03 to 07) (4581030)
+- harden carrier bundle reassembly and hop-wasm decode (CAND-PROTO-04) (9fe9c3a)
+- reject non-canonical bundle encoding on Rust ingest paths (CAND-PROTO-04) (dc07516)
+- strengthen live manifest coverage with mechanizable signal and exclusions (868b424)
+- declare every wire-shaping source in the manifest (CAND-PROTO-05) (8bfd527)
+- quiesce the pump on close and report every bearer transition (CAND-RN-01, CAND-RN-02) (ddaed19)
+- invoke the worktree checkpoint guard that PROC-014 documented as enforcing the rule (PROC-022) (b066104)
+- arbitrate simultaneous session inits (CAND-PROTO-A) (2d7822b)
 - fail closed when critical KV persistence is unsupported (CAND-PROTO-C) (e203668)
+- recover a link whose transport session can no longer decrypt (CAND-PROTO-B) (f4491d8)
 - state the Firestore KV retention periods the relay actually enforces (CLAIM-020) (d33d341)
 - retry a reset connection when fetching a pinned wasm tool, never a checksum mismatch (db7b477)
 - remove deprecated moduleResolution option for TypeScript 7 (c382a33)
@@ -252,6 +272,7 @@ git-cliff. Do not edit by hand.
 - bump @react-native/eslint-config (a8d3abc)
 
 ### CI
+- run the two integration hazard guards in the automation job (130b4de)
 - provision Gradle 9.7.1 for the compose job, AGP 9.4.0 needs 9.6+ (038b52f)
 - sdk/node CI as a canonical composite action (shared monorepo <-> standalone repo) (#149) (48399b2)
 - gate the six server SDKs (node/python/go/ruby/crystal/elixir) (#136) (f67eefd)
@@ -319,6 +340,10 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- say BLE, and keep the subnet out of path syntax (b2c0640)
+- cite Firestore collections and the IAM role without repo path syntax (29b5231)
+- attribute the LAN block to the app UID socket path (64d3d48)
+- regenerate from conventional commits (f67300f)
 - regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - describe the monorepo's staleness without naming a superseded ABI level (CLAIM-017) (75b7889)
@@ -455,6 +480,9 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (37a19b2)
 
 ### Other
+- exercise the durability claims and gate the ones that were untested (6146a44)
+- exercise React Native physical bearers (dc6b439)
+- consume every publishable surface from a clean room and gate it (aaa8e7d)
 - apply cargo fmt and clippy cleanups (e25ad84)
 - retire reach.rs to wire_reach.rs in wire manifest (PROTO-008) (39984cd)
 - apply dart format to the new hps bindings (be0dd51)
@@ -597,6 +625,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- prove link teardown fires on delivered frames, lower the bound to 3, and record the quiet-link residual (CAND-PROTO-B) (0c51fac)
 - make the identity secret guard fixtures deterministic and pin the entropy threshold from below (PROC-008) (40cc16f)
 - prove the DCO gate exempts the maintainer login and still refuses an unsigned outside commit (BIZ-015) (1cf2fbf)
 - teach the required-check self-test the PROC-016 commit-message-guard rule; format the Flutter endpoint (ABI-016, PROC-016) (41662ef)
