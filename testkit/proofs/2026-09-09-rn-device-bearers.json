@@ -1,7 +1,7 @@
 {
   "schema": "hop.rn-device-bearer-proof.v1",
-  "baseSnapshot": "c74f89ba2411eeb7544827bac15a80e560336c69",
-  "recordedAt": "2026-09-09T07:02:00Z",
+  "baseSnapshot": "cb7693e791b866c1e30a501a3554ee5b4b5c7774",
+  "recordedAt": "2026-09-09T09:45:00Z",
   "devices": [
     {
       "command": "adb devices -l",
@@ -27,9 +27,11 @@
     {
       "command": "xcrun devicectl device info lockState --device 802500FE-27D7-502F-9D2C-9486D5CA74B2",
       "id": "802500FE-27D7-502F-9D2C-9486D5CA74B2",
-      "name": "Test iPhone",
+      "name": "Test iPhone (XR)",
       "passcodeRequired": false,
       "unlockedSinceBoot": true,
+      "developerModeStatus": "enabled",
+      "ddiServicesAvailable": true,
       "launch": "Launched application with sh.hopme.demo bundle identifier."
     }
   ],
@@ -66,6 +68,19 @@
         "package:/data/app/.../com.hopdemo-.../base.apk",
         "versionCode=1 minSdk=29 targetSdk=36"
       ]
+    },
+    "appleBuild": {
+      "command": "cd apps/apple/HopDemo && xcodegen && xcodebuild -project HopDemo.xcodeproj -scheme HopDemo -destination 'id=802500FE-27D7-502F-9D2C-9486D5CA74B2' build",
+      "result": "passed",
+      "signingIdentity": "Apple Development: Jason Waldrip (LY77W79566)",
+      "provisioningProfile": "iOS Team Provisioning Profile: sh.hopme.demo (6cfc04ec-7b7e-4522-9841-8c0ed41645de)",
+      "app": "DerivedData/HopDemo-.../Build/Products/Debug-iphoneos/HopDemo.app"
+    },
+    "appleInstall": {
+      "command": "xcrun devicectl device install app --device 802500FE-27D7-502F-9D2C-9486D5CA74B2 DerivedData/.../HopDemo.app",
+      "result": "Success",
+      "bundleId": "sh.hopme.demo",
+      "installationURL": "file:///private/var/containers/Bundle/Application/7D2A1ACC-7B84-4799-8EEA-C6012FE7DFB3/HopDemo.app/"
     },
     "consumerConstraints": [
       {
@@ -135,18 +150,59 @@
         }
       },
       "attribution": "Blocked state resolved. The prior UID-level discrimination was caused by Android NetworkPolicyManagerService app-standby and background power-saving firewall rules (netd eBPF chain fw_standby), which denied all TCP traffic for non-whitelisted app UIDs when running on a passcode-locked or sleeping device (UID=10636 blocked_state={blocked=APP_STANDBY|APP_BACKGROUND,allowed=NONE,effective=APP_STANDBY|APP_BACKGROUND}). Exempting the package via dumpsys deviceidle whitelist +com.hopdemo clears the firewall drop rule, enabling bi-directional TCP communication and verified message delivery."
+    },
+    {
+      "class": "hardware",
+      "bearer": "ble",
+      "what": "Physical iPhone XR native HopDemo app launched on hardware, but CoreBluetooth central and peripheral managers report unauthorized state due to iOS TCC privacy gating.",
+      "pair": [
+        "Test iPhone (XR) / sh.hopme.demo native Apple consumer",
+        "Pixel 7 / com.hopdemo or Mac / RnMacPeer"
+      ],
+      "verdict": "blocked",
+      "evidence": {
+        "peripheralLog": "2026-09-09 09:41:22.327 HopDemo[8433:375481] HOPLAB 0.035 STATE peripheral state=unauthorized",
+        "centralLog": "2026-09-09 09:41:22.332 HopDemo[8433:375481] HOPLAB 0.039 STATE central state=unauthorized",
+        "tccIpcLog": "Sep 9 09:35:26.537069 HopDemo(TCC)[8331] <Info>: SEND: 0/7 synchronous to com.apple.tccd: request: msgID=8331.1, function=TCCAccessRequest, service=kTCCServiceBluetoothAlways",
+        "dormantMitigation": "Invoked blelab://radio?enabled=false to enforce HopBleLab persistent dormant mode and verified process termination to eliminate multi-app radio contention."
+      },
+      "missingPrerequisite": "Physical human interaction on Test iPhone XR screen to tap Allow on the system Bluetooth permission dialog (or enable Bluetooth for Hop Debug in Settings -> Privacy & Security -> Bluetooth)."
+    },
+    {
+      "class": "hardware",
+      "bearer": "lan",
+      "what": "Physical iPhone XR native HopDemo app launched on hardware with NWListener listening for _hoplan._tcp on en0, but network topology isolation keeps XR on USB link-local ethernet (en27) separated from the Wi-Fi LAN (10.4.1.0/24).",
+      "pair": [
+        "Test iPhone (XR) / sh.hopme.demo native Apple consumer",
+        "Pixel 7 / com.hopdemo or Mac / RnMacPeer"
+      ],
+      "verdict": "blocked",
+      "evidence": {
+        "lanStartLog": "2026-09-09 09:41:22.296 HopDemo[8433:375441] HOPLAB 0.004 STATE lan node-start myId=29c6b4f4 service=_hoplan._tcp",
+        "lanListeningLog": "2026-09-09 09:41:22.299 HopDemo[8433:375484] HOPLAB 0.007 STATE lan listening name=29c6b4f4",
+        "bearerStatesLog": "HOPLAB HOPAUTO bearerstates states=[\"P2P\": true, \"LoRa\": true, \"LAN\": true, \"Relay\": true, \"BT\": true] active=[\"Relay\": 1]",
+        "networkInterfaceLog": "nw_listener_reconcile_advertised_endpoints [L1] Reconciling advertised endpoints (null) for path satisfied (Path is satisfied), interface: en0[802.11], ipv4, dns, uses wifi",
+        "usbEthernetPing": "ping -c 2 169.254.52.86 -> 2 packets transmitted, 2 packets received, 0.0% packet loss, rtt avg = 1.320 ms on en27"
+      },
+      "missingPrerequisite": "Test iPhone XR is intentionally kept as the fleet's BLE-only handset per testkit/devices.sh and is not joined to the operator's Wi-Fi LAN (10.4.1.0/24) where Pixel 7 (10.4.1.203) and Mac (10.4.1.221) reside; Bonjour mDNS multicast (_hoplan._tcp) advertises on Wi-Fi en0 rather than USB link-local ethernet."
     }
   ],
   "pairsNotExercised": [
     {
       "pair": "Pixel 7 to BushidoPhone",
-      "reason": "devicectl launch failed with CoreDeviceError 12040 because the iPhone was locked."
+      "reason": "devicectl launch failed with CoreDeviceError 12040 because BushidoPhone is passcode-locked."
+    },
+    {
+      "pair": "Pixel 7 / Mac to Test iPhone XR",
+      "reason": "BLE delivery blocked by iOS TCC Bluetooth permission gating; LAN delivery blocked by Wi-Fi network segregation."
     }
   ],
   "limits": [
     "BLE is proven on Pixel 7 plus the Mac Bluetooth radio, not Pixel 7 plus BushidoPhone.",
-    "The public hop-sdk-apple v0.0.3 binary artifact returned HTTP 404; the Mac peer used source-built exact-snapshot frameworks.",
-    "tools/build-xcframework.sh changed ten tracked generated files; those files are restored before commit.",
+    "BushidoPhone (0280AC9F-551E-55DA-A969-62D4242A003C) remains passcode-locked and refuses DDI services (CoreDeviceError 12040).",
+    "Test iPhone XR (802500FE-27D7-502F-9D2C-9486D5CA74B2) is unlocked and developer-mode enabled, with HopDemo built and installed directly from source.",
+    "Apple BLE delivery is blocked by pending TCC Bluetooth authorization on Test iPhone XR.",
+    "Apple LAN delivery is blocked because Test iPhone XR is connected over USB link-local ethernet and kept off the Wi-Fi LAN (10.4.1.0/24) where the peer nodes reside.",
     "LAN is proven bi-directionally on Pixel 7 plus the Mac Wi-Fi radio with unique nonces, receipts, and ACKs (Mac-as-dialer and Pixel-as-dialer both verified)."
   ],
   "owner_held": []
