@@ -788,7 +788,15 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     assert all_surfaces["python"]["status"] == "ok"
     assert all_surfaces["ruby"]["status"] == "ok"
     assert all_surfaces["rust"]["status"] == "ok"
-    assert all_surfaces["apple"]["status"] == "ok"
+    # The apple surface can only be consumed where the xcframework has been built, so it degrades to
+    # skipped on a Linux runner. Assert the status the tree actually justifies rather than accepting
+    # either value: a bare `in ("ok", "skipped")` would pass on a macOS run that silently stopped
+    # verifying slices, which is the environment-dependent hole this case exists to close.
+    apple_built = (root / "sdk/apple/Frameworks/libhop.xcframework").is_dir()
+    assert all_surfaces["apple"]["status"] == ("ok" if apple_built else "skipped"), (
+        f"apple surface reported {all_surfaces['apple']['status']} with "
+        f"xcframework present={apple_built}"
+    )
     assert all_surfaces["android"]["status"] == "ok"
     assert all_surfaces["crystal"]["status"] == "ok"
     assert all_surfaces["dart"]["status"] == "ok"
