@@ -417,10 +417,28 @@ commit_fixture "$repo" wrapped-retire-to-undeclared
 expect_fail "a wrapped record to an undeclared replacement still fails closed" "$repo" "$base"
 
 # --- live tree wire-source manifest coverage check -------------------------------------------
-# Every file in core/hop-core/src that serializes or shapes wire payloads or byte representations
-# that travel across links or in bundles must be declared in the manifest.
+# Every file in core/hop-core/src that matches an on-the-wire serialization signal must be either
+# declared in the manifest or explicitly named in the reasoned exclusions list below.
+# Signal pattern:
+#   1. derive(...) containing Serialize or Deserialize
+#   2. postcard::to_allocvec or postcard::from_bytes
+#   3. to_bytes or from_bytes method definition
+#   4. deflate / compression routines or key material shaping wire envelopes
 check_live_manifest_coverage() {
   local manifest="$ROOT/core/hop-core/vectors/wire-source-manifest.txt"
+  local manifest_paths
+  manifest_paths="$(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u)"
+
+  # Explicitly excluded files with reasons. Any file matching the wire signal that is NOT
+  # declared in the manifest must appear here with a justified reason.
+  declare -A EXCLUDED_WITH_REASON=(
+    ["core/hop-core/src/access.rs"]="retired byte-layout split into wire_stamp.rs (CarriageStamp and stamp producers moved; access.rs is admission and metering policy)"
+    ["core/hop-core/src/node.rs"]="retired byte-layout split into wire_emit.rs (link framing, identify body, and carrier chunking moved; node.rs is state machine and node storage)"
+    ["core/hop-core/src/reach.rs"]="retired byte-layout split into wire_reach.rs (ReachClaim and ReachRecord postcard layouts moved; reach.rs is verification and bounds checks)"
+    ["core/hop-core/src/wire_emit_tests.rs"]="unit test module for wire_emit.rs"
+    ["core/hop-core/src/wire_stamp_tests.rs"]="unit test module for wire_stamp.rs"
+  )
+
   local required_paths=(
     "core/hop-core/src/app.rs"
     "core/hop-core/src/bundle.rs"
@@ -439,11 +457,28 @@ check_live_manifest_coverage() {
   )
   local path
   for path in "${required_paths[@]}"; do
-    if ! grep -Fxq "$path" "$manifest"; then
+    if ! echo "$manifest_paths" | grep -Fxq "$path"; then
       echo "FAIL: required wire-shaping path $path is missing from $manifest" >&2
       return 1
     fi
   done
+
+  local unhandled=0
+  for file in "$ROOT"/core/hop-core/src/*.rs; do
+    local rel="${file#$ROOT/}"
+    if grep -qE 'derive\(.*(Serialize|Deserialize)|postcard::(to_allocvec|from_bytes)|(pub )?fn (to_bytes|from_bytes)|miniz_oxide::deflate|miniz_oxide::inflate' "$file"; then
+      if ! echo "$manifest_paths" | grep -Fxq "$rel"; then
+        if [ -n "${EXCLUDED_WITH_REASON[$rel]:-}" ]; then
+          : # explicitly excluded with reason
+        else
+          echo "FAIL: $rel matches wire serialization signal but is neither declared in $manifest nor in EXCLUDED_WITH_REASON" >&2
+          unhandled=$((unhandled + 1))
+        fi
+      fi
+    fi
+  done
+
+  [ "$unhandled" -eq 0 ] || return 1
   return 0
 }
 
