@@ -84,6 +84,10 @@ MANUAL_UPDATE_ALLOWLIST = {
         "Internal SwiftPM demo kit package referencing local path dependencies; "
         "external packages are governed by sdk/apple/Package.swift"
     ),
+    "testkit/rn-mac-peer": (
+        "Internal SwiftPM device-proof peer referencing local path dependencies only; "
+        "external packages are governed by sdk/apple/Package.swift and it ships nowhere"
+    ),
 }
 
 MANIFEST_FILENAMES = {

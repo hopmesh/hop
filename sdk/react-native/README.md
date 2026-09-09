@@ -124,6 +124,14 @@ podspecs to stop reading siblings.
 
 Autolinking wires the module in. The Hop Android SDK (`sh.hop:hop`) is pulled from a local Maven repository (see [React Native Quickstart](../../docs/react-native-quickstart.md)), not from Maven Central, and ships the `libhop` native slices for every ABI, so there is nothing else to configure.
 
+#### Android consumer requirements
+
+The native bearer artifacts impose three requirements on the host app. Check all three before building:
+
+- Use Kotlin compiler 2.4.10 or newer. The bearer AARs carry Kotlin 2.4.0 metadata; an older host fails with `Module was compiled with an incompatible version of Kotlin. The binary version of its metadata is 2.4.0, expected version is 2.2.0.`
+- Set Android `minSdk` to 29 or newer. BLE uses the API 29 L2CAP channel methods; a lower host fails manifest merge with `uses-sdk:minSdkVersion 24 cannot be smaller than version 29 declared in library [sh.hop.bearers:bearer-ble:0.0.3]`.
+- Admit both `sh.hop` and `sh.hop.bearers` in the local Maven repository content filter. An exact `includeGroup "sh.hop"` excludes the bearer group and fails with `Could not find sh.hop.bearers:bearer-ble:0.0.3` and `Could not find sh.hop.bearers:bearer-lan:0.0.3`. `includeGroupByRegex "sh\\.hop(?:\\..*)?"` admits the package family without opening the repository to unrelated groups.
+
 ## Quick start
 
 ```ts
