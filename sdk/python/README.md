@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://pypi.org/project/hop-endpoint/"><img src="https://img.shields.io/pypi/v/hop-endpoint?color=3776ab&label=pypi" alt="pypi"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-3ddc84" alt="license">
-  <img src="https://img.shields.io/badge/python-%E2%89%A53.9-6ea8fe" alt="python >=3.9">
+  <img src="https://img.shields.io/badge/python-%E2%89%A53.10-6ea8fe" alt="python >=3.10">
 </p>
 
 ---
