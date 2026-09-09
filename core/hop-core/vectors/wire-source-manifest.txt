@@ -37,12 +37,15 @@
 # format change, so it cannot move a wire byte; the same precedent the access.rs and node.rs
 # retirements set, where acceptance ceilings and replay bounds stayed out of the manifest)
 
+core/hop-core/src/app.rs
 core/hop-core/src/bundle.rs
 core/hop-core/src/crypto.rs
 core/hop-core/src/discover.rs
 core/hop-core/src/hps.rs
 core/hop-core/src/link.rs
 core/hop-core/src/session.rs
+core/hop-core/src/telemetry.rs
+core/hop-core/src/util.rs
 core/hop-core/src/wire_emit.rs
 core/hop-core/src/wire_have.rs
 core/hop-core/src/wire_reach.rs

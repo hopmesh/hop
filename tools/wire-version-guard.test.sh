@@ -416,5 +416,44 @@ printf 'node-wire-drift\n' > "$repo/core/hop-core/src/node.rs"
 commit_fixture "$repo" wrapped-retire-to-undeclared
 expect_fail "a wrapped record to an undeclared replacement still fails closed" "$repo" "$base"
 
-[ "$PASSED" -eq 27 ] || { echo "FAIL: expected 27 fixtures, ran $PASSED" >&2; exit 1; }
+# --- live tree wire-source manifest coverage check -------------------------------------------
+# Every file in core/hop-core/src that serializes or shapes wire payloads or byte representations
+# that travel across links or in bundles must be declared in the manifest.
+check_live_manifest_coverage() {
+  local manifest="$ROOT/core/hop-core/vectors/wire-source-manifest.txt"
+  local required_paths=(
+    "core/hop-core/src/app.rs"
+    "core/hop-core/src/bundle.rs"
+    "core/hop-core/src/crypto.rs"
+    "core/hop-core/src/discover.rs"
+    "core/hop-core/src/hps.rs"
+    "core/hop-core/src/link.rs"
+    "core/hop-core/src/session.rs"
+    "core/hop-core/src/telemetry.rs"
+    "core/hop-core/src/util.rs"
+    "core/hop-core/src/wire_emit.rs"
+    "core/hop-core/src/wire_have.rs"
+    "core/hop-core/src/wire_reach.rs"
+    "core/hop-core/src/wire_stamp.rs"
+    "core/hop-core/src/wire_vectors.rs"
+  )
+  local path
+  for path in "${required_paths[@]}"; do
+    if ! grep -Fxq "$path" "$manifest"; then
+      echo "FAIL: required wire-shaping path $path is missing from $manifest" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+if check_live_manifest_coverage; then
+  PASSED=$((PASSED + 1))
+  echo "ok $PASSED - live wire-source manifest declares all required wire-shaping sources"
+else
+  echo "not ok $((PASSED + 1)) - live wire-source manifest coverage" >&2
+  exit 1
+fi
+
+[ "$PASSED" -eq 28 ] || { echo "FAIL: expected 28 fixtures, ran $PASSED" >&2; exit 1; }
 echo "wire version guard self-test passed: $PASSED fixtures"
