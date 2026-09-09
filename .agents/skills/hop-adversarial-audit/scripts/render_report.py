@@ -103,6 +103,7 @@ h2 { margin: 0; font-size: clamp(1.8rem, 4vw, 3.6rem); line-height: 1; letter-sp
 .grade-card { min-height: 190px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between; }
 .grade-label { color: var(--muted); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
 .grade { color: var(--signal); font-size: clamp(2.2rem, 5vw, 4.7rem); font-weight: 850; line-height: 0.9; letter-spacing: -0.05em; }
+.grade.phrase { font-size: clamp(1.3rem, 1.9vw, 2rem); line-height: 1.04; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .grade.previous { color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0; }
 .grade-rationale { color: var(--muted); font-size: 0.84rem; }
 
@@ -168,7 +169,11 @@ h2 { margin: 0; font-size: clamp(1.8rem, 4vw, 3.6rem); line-height: 1; letter-sp
 .coverage-path { color: var(--cyan); font: 0.76rem/1.3 "SFMono-Regular", monospace; overflow-wrap: anywhere; }
 .coverage-status { display: inline-block; margin-top: 12px; color: var(--signal); font: 700 0.72rem/1 "SFMono-Regular", monospace; text-transform: uppercase; }
 .coverage-status.scoped_out { color: var(--amber); }
-.coverage-detail { margin-top: 12px; color: var(--muted); font-size: 0.84rem; }
+/* Holds the evidence path list, so it carries the same wrap rule as .coverage-path and .command.
+   Without it a long path such as bearers/apple/HopBearerMeshtastic/Sources/... measured 629px
+   inside a 454px card, pushing .coverage-grid past .shell and the document to 1522px against a
+   1440px viewport, which is where the report's horizontal scrollbar came from. */
+.coverage-detail { margin-top: 12px; color: var(--muted); font-size: 0.84rem; overflow-wrap: anywhere; }
 
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
@@ -318,10 +323,16 @@ def render_grade_cards(grades: dict[str, Any]) -> str:
             if previous
             else ""
         )
+        # The operational axis carries a phrase rather than a letter, and the letter type scale
+        # does not fit one. Measured on the round-4 and round-5 closeouts at a 1440 viewport:
+        # "Partially validated" rendered 289px wide inside a 227px card, which pushed the whole
+        # document to 1522px and forced a horizontal scrollbar on the report. Letter grades keep
+        # the display size; a phrase gets its own scale and is allowed to wrap.
+        grade_class = "grade" if len(item["grade"]) <= 3 else "grade phrase"
         cards.append(
             '<article class="grade-card">'
             f'<div class="grade-label">{esc(label(key))}</div>'
-            f'<div class="grade">{esc(item["grade"])}</div>'
+            f'<div class="{grade_class}">{esc(item["grade"])}</div>'
             f"{previous_html}"
             f'<div class="grade-rationale">{esc(item["rationale"])}</div>'
             f'<div class="grade-rationale mono">Evidence: {esc(", ".join(item["evidence"]) or "Not graded")}</div>'
