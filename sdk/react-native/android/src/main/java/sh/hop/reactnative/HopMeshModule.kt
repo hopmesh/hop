@@ -42,10 +42,16 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   private data class BearerSnapshot(val revision: Int, val states: Map<String, String>)
 
-  private class Entry(val handle: Int, val node: HopNode, context: ReactApplicationContext) {
+  private class Entry(
+    val handle: Int,
+    val node: HopNode,
+    context: ReactApplicationContext,
+    private val onBearerTransition: (Entry) -> Unit,
+  ) {
     val runtime = HopRuntime(node)
     @Volatile var pump: ScheduledFuture<*>? = null
     val inFlight = ConcurrentHashMap.newKeySet<String>()
+    val pumpLock = java.util.concurrent.locks.ReentrantLock()
 
     private val stateLock = Any()
     private var revision = 0
@@ -57,6 +63,21 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
       val transportId = randomNodeId()
       runtime.register(BleBearer(context, transportId))
       runtime.register(LanBearer(context, transportId))
+
+      val innerSink = runtime.bearers.sink
+      runtime.bearers.sink = object : sh.hop.LinkSink {
+        override fun linkUp(link: Long, role: HopRole, peerId: ByteArray) {
+          innerSink?.linkUp(link, role, peerId)
+          onBearerTransition(this@Entry)
+        }
+        override fun linkBytes(link: Long, bytes: ByteArray) {
+          innerSink?.linkBytes(link, bytes)
+        }
+        override fun linkDown(link: Long) {
+          innerSink?.linkDown(link)
+          onBearerTransition(this@Entry)
+        }
+      }
     }
 
     fun snapshot(): Pair<BearerSnapshot, Boolean> {
@@ -102,7 +123,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   private fun register(node: HopNode): Int {
     val handle = nextHandle.getAndIncrement()
-    nodes[handle] = Entry(handle, node, reactContext)
+    nodes[handle] = Entry(handle, node, reactContext) { e -> emitBearerSnapshot(e) }
     return handle
   }
 
@@ -228,11 +249,16 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun closeNode(handle: Int, promise: Promise) {
     nodes.remove(handle)?.let { e ->
-      e.pump?.cancel(false)
+      e.pump?.cancel(true)
       e.pump = null
-      e.inFlight.clear()
-      e.runtime.stop()
-      e.node.close()
+      e.pumpLock.lock()
+      try {
+        e.inFlight.clear()
+        e.runtime.stop()
+        e.node.close()
+      } finally {
+        e.pumpLock.unlock()
+      }
     }
     promise.resolve(null)
   }
@@ -655,7 +681,7 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun stopPump(handle: Int, promise: Promise) {
     val e = entry(handle, promise) ?: return
-    e.pump?.cancel(false)
+    e.pump?.cancel(true)
     e.pump = null
     e.runtime.stop()
     emitBearerSnapshot(e)
@@ -664,82 +690,98 @@ class HopMeshModule(private val reactContext: ReactApplicationContext) :
 
   private fun pump(handle: Int) {
     val e = nodes[handle] ?: return
-    val node = e.node
-    e.runtime.tick(System.currentTimeMillis())
-    emitBearerSnapshot(e)
-    node.drainOutgoing { link, bytes ->
-      if (e.runtime.bearers.transportNameOf(link) != null) {
-        e.runtime.bearers.send(bytes, link)
-      } else {
+    if (!e.pumpLock.tryLock()) return
+    try {
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      val node = e.node
+      e.runtime.tick(System.currentTimeMillis())
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      emitBearerSnapshot(e)
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.drainOutgoing { link, bytes ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@drainOutgoing
+        if (e.runtime.bearers.transportNameOf(link) != null) {
+          e.runtime.bearers.send(bytes, link)
+        } else {
+          val m = Arguments.createMap()
+          m.putInt("node", handle)
+          m.putDouble("link", link.toDouble())
+          m.putString("bytes", enc(bytes))
+          emit("HopMesh:outgoing", m)
+        }
+      }
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.pollInbox { msg ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@pollInbox
+        val idB64 = enc(msg.id)
+        if (e.inFlight.add(idB64)) {
+          val m = Arguments.createMap()
+          m.putInt("node", handle)
+          m.putString("id", idB64)
+          m.putString("from", HopAddress.base58(msg.from))
+          m.putString("contentType", msg.contentType)
+          m.putString("body", enc(msg.body))
+          m.putInt("hops", msg.hops.toInt())
+          m.putDouble("createdAt", msg.createdAt.toDouble())
+          emit("HopMesh:message", m)
+        }
+      }
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.pollServiceRequestsAccepting { req ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@pollServiceRequestsAccepting false
+        val ridB64 = enc(req.requestId)
+        if (e.inFlight.add(ridB64)) {
+          val m = Arguments.createMap()
+          m.putInt("node", handle)
+          m.putString("from", HopAddress.base58(req.from))
+          m.putString("requestId", ridB64)
+          m.putString("service", req.service)
+          m.putString("method", req.method)
+          m.putString("args", enc(req.args))
+          emit("HopMesh:serviceRequest", m)
+        }
+        false
+      }
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.pollServiceResponses { resp ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@pollServiceResponses
+        val ridB64 = enc(resp.forRequestId)
+        if (e.inFlight.add(ridB64)) {
+          val m = Arguments.createMap()
+          m.putInt("node", handle)
+          m.putString("from", HopAddress.base58(resp.from))
+          m.putString("forRequestId", ridB64)
+          m.putInt("status", resp.status)
+          m.putString("body", enc(resp.body))
+          emit("HopMesh:serviceResponse", m)
+        }
+      }
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.pollHpsMessages { msg ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@pollHpsMessages
+        val idB64 = enc(msg.id)
+        if (e.inFlight.add(idB64)) {
+          val m = Arguments.createMap()
+          m.putInt("node", handle)
+          m.putString("id", idB64)
+          m.putString("path", msg.path)
+          m.putString("sender", HopAddress.base58(msg.sender))
+          m.putString("body", enc(msg.body))
+          emit("HopMesh:hpsMessage", m)
+        }
+      }
+      if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return
+      node.pollHpsInvites { inv ->
+        if (Thread.currentThread().isInterrupted || nodes[handle] !== e) return@pollHpsInvites
         val m = Arguments.createMap()
         m.putInt("node", handle)
-        m.putDouble("link", link.toDouble())
-        m.putString("bytes", enc(bytes))
-        emit("HopMesh:outgoing", m)
+        m.putString("host", HopAddress.base58(inv.host))
+        m.putString("path", inv.path)
+        m.putString("kind", name(inv.kind))
+        emit("HopMesh:hpsInvite", m)
       }
-    }
-    node.pollInbox { msg ->
-      val idB64 = enc(msg.id)
-      if (e.inFlight.add(idB64)) {
-        val m = Arguments.createMap()
-        m.putInt("node", handle)
-        m.putString("id", idB64)
-        m.putString("from", HopAddress.base58(msg.from))
-        m.putString("contentType", msg.contentType)
-        m.putString("body", enc(msg.body))
-        m.putInt("hops", msg.hops.toInt())
-        m.putDouble("createdAt", msg.createdAt.toDouble())
-        emit("HopMesh:message", m)
-      }
-    }
-    node.pollServiceRequestsAccepting { req ->
-      val ridB64 = enc(req.requestId)
-      if (e.inFlight.add(ridB64)) {
-        val m = Arguments.createMap()
-        m.putInt("node", handle)
-        m.putString("from", HopAddress.base58(req.from))
-        m.putString("requestId", ridB64)
-        m.putString("service", req.service)
-        m.putString("method", req.method)
-        m.putString("args", enc(req.args))
-        emit("HopMesh:serviceRequest", m)
-      }
-      false
-    }
-    node.pollServiceResponses { resp ->
-      val ridB64 = enc(resp.forRequestId)
-      if (e.inFlight.add(ridB64)) {
-        val m = Arguments.createMap()
-        m.putInt("node", handle)
-        m.putString("from", HopAddress.base58(resp.from))
-        m.putString("forRequestId", ridB64)
-        m.putInt("status", resp.status)
-        m.putString("body", enc(resp.body))
-        emit("HopMesh:serviceResponse", m)
-      }
-    }
-    // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
-    // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
-    node.pollHpsMessages { msg ->
-      val idB64 = enc(msg.id)
-      if (e.inFlight.add(idB64)) {
-        val m = Arguments.createMap()
-        m.putInt("node", handle)
-        m.putString("id", idB64)
-        m.putString("path", msg.path)
-        m.putString("sender", HopAddress.base58(msg.sender))
-        m.putString("body", enc(msg.body))
-        emit("HopMesh:hpsMessage", m)
-      }
-    }
-    // this hands it.
-    node.pollHpsInvites { inv ->
-      val m = Arguments.createMap()
-      m.putInt("node", handle)
-      m.putString("host", HopAddress.base58(inv.host))
-      m.putString("path", inv.path)
-      m.putString("kind", name(inv.kind))
-      emit("HopMesh:hpsInvite", m)
+    } finally {
+      e.pumpLock.unlock()
     }
   }
 

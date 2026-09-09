@@ -710,3 +710,117 @@ test("service requests are delivered and application controls acceptance (ABI-00
     args: [7, toBase64(reqId)],
   });
 });
+
+test("CAND-RN-01: closing a node while its pump is mid-callback quiesces and delivers no events for closed handle", async () => {
+  const emitter = makeEmitter();
+  let pumpMidCallback = false;
+  const native = makeNative({
+    closeNode: (handle) => {
+      // Simulate pump callback executing concurrently or interleaved with closeNode
+      if (pumpMidCallback) {
+        emitter.emit("HopMesh:message", {
+          node: handle,
+          id: toBase64(new Uint8Array(32).fill(1)),
+          from: "z6MkSender",
+          contentType: "text/plain",
+          body: toBase64(utf8ToBytes("in-flight message")),
+          hops: 1,
+          createdAt: 1000,
+        });
+      }
+      return Promise.resolve();
+    },
+  });
+
+  const node = new HopNode(native, emitter, 7);
+  const delivered = [];
+  node.onMessage((msg) => delivered.push(msg));
+
+  pumpMidCallback = true;
+  await node.close();
+  pumpMidCallback = false;
+
+  // After close, any surviving callback emission must not reach the closed node
+  emitter.emit("HopMesh:message", {
+    node: 7,
+    id: toBase64(new Uint8Array(32).fill(2)),
+    from: "z6MkSender",
+    contentType: "text/plain",
+    body: toBase64(utf8ToBytes("post-close message")),
+    hops: 1,
+    createdAt: 2000,
+  });
+
+  assert.equal(delivered.length, 0, "no events may be delivered for a closed node handle");
+});
+
+test("CAND-RN-01: operations after close are rejected", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+  await node.close();
+
+  await assert.rejects(() => node.address(), /closed/);
+  await assert.rejects(() => node.send({ to: "z6MkDest", body: "hello" }), /closed/);
+});
+
+test("CAND-RN-02: onBearerState emits one event per transition and suppresses unchanged samples", async () => {
+  const native = makeNative();
+  const emitter = makeEmitter();
+  const node = new HopNode(native, emitter, 7);
+
+  const transitions = [];
+  node.onBearerState((snapshot) => transitions.push(snapshot));
+
+  // Initial state transition
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 1,
+    states: { ble: "enabled", lan: "enabled", relay: "disabled" },
+  });
+
+  // Unchanged sample (periodic pump sample without state flip)
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 2,
+    states: { ble: "enabled", lan: "enabled", relay: "disabled" },
+  });
+
+  // Transition: lan becomes active
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 3,
+    states: { ble: "enabled", lan: "active", relay: "disabled" },
+  });
+
+  // Unchanged sample
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 4,
+    states: { ble: "enabled", lan: "active", relay: "disabled" },
+  });
+
+  // Transition: ble becomes active
+  emitter.emit("HopMesh:bearerState", {
+    node: 7,
+    revision: 5,
+    states: { ble: "active", lan: "active", relay: "disabled" },
+  });
+
+  // Transition for another node handle (must be ignored)
+  emitter.emit("HopMesh:bearerState", {
+    node: 99,
+    revision: 6,
+    states: { ble: "disabled", lan: "disabled", relay: "disabled" },
+  });
+
+  assert.equal(transitions.length, 3, "must emit exactly one event per state change");
+  assert.deepEqual(
+    transitions.map((t) => t.states),
+    [
+      { ble: "enabled", lan: "enabled", relay: "disabled" },
+      { ble: "enabled", lan: "active", relay: "disabled" },
+      { ble: "active", lan: "active", relay: "disabled" },
+    ]
+  );
+});
