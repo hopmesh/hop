@@ -7371,7 +7371,7 @@ impl<S: Store> Node<S> {
         carrier_sender: PubKeyBytes,
         bytes: &[u8],
     ) -> bool {
-        let Ok(bundle) = Bundle::from_bytes(bytes) else {
+        let Ok(bundle) = crate::canonical::decode_bundle(bytes) else {
             return false;
         };
         if bundle.verify().is_err()
@@ -14071,6 +14071,48 @@ mod tests {
         assert!(recipient.store.list_kv("strm/").is_empty());
         assert!(recipient.store.seen(&final_id));
         assert!(recipient.last_ack.contains_key(&final_id));
+    }
+
+    #[test]
+    fn carrier_reconstructed_bundle_refuses_non_canonical_padding() {
+        let sender = Identity::generate();
+        let recipient = Node::new(Identity::generate());
+        let original = ratcheted_msg(
+            &sender,
+            &recipient,
+            "text/plain",
+            b"carrier canonical check",
+            false,
+        );
+        let original_id = original.id();
+        let clean = original.to_bytes().unwrap();
+
+        // 1) Non-canonical: reassembled carrier payload has trailing padding.
+        // It must be rejected at process_reconstructed_bundle and not land in inbox.
+        for pad_len in [1, 16, 128] {
+            let mut recipient_padded = Node::new(Identity::from_secret_bytes(
+                &recipient.identity.to_secret_bytes(),
+            ));
+            let mut padded = clean.clone();
+            padded.extend(vec![0xAA; pad_len]);
+            let stream_id = [pad_len as u8; 16];
+            let chunk = carrier(&sender, &recipient_padded, stream_id, 0, padded, true);
+            recipient_padded.on_bundle(1, chunk);
+            assert!(
+                recipient_padded.inbox_items().is_empty(),
+                "padded carrier reconstruction ({pad_len} trailing bytes) must be rejected"
+            );
+        }
+
+        // 2) Clean: exact canonical wire bytes deliver and land in inbox.
+        let mut recipient_clean = Node::new(Identity::from_secret_bytes(
+            &recipient.identity.to_secret_bytes(),
+        ));
+        let clean_stream_id = [0x99; 16];
+        let clean_chunk = carrier(&sender, &recipient_clean, clean_stream_id, 0, clean, true);
+        recipient_clean.on_bundle(1, clean_chunk);
+        assert_eq!(recipient_clean.inbox_items().len(), 1);
+        assert_eq!(recipient_clean.inbox_items()[0].id, original_id);
     }
 
     #[test]

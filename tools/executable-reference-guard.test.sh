@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@1111111111111111111111111111111111111111 # v4.3.1
       - run: python -m pip install --require-hashes -r requirements.txt
+      - run: uv pip install --system --resolution lowest-direct ".[dev]"
       - run: npm install -g npm@11.5.1
       - run: cargo install thing --locked --version 1.2.3
       - run: |
@@ -111,6 +112,8 @@ expect_bad npm-latest $'jobs:\n  x:\n    steps:\n      - run: npm install -g npm
 expect_bad pip-floating $'jobs:\n  x:\n    steps:\n      - run: pipx install platformio'
 expect_bad pip-unhashed $'jobs:\n  x:\n    steps:\n      - run: pip install build==1.5.0'
 expect_bad pip-download-unhashed $'jobs:\n  x:\n    steps:\n      - run: pip download build==1.5.0'
+expect_bad uv-pip-unhashed $'jobs:\n  x:\n    steps:\n      - run: uv pip install build==1.5.0'
+expect_bad uv-pip-download-unhashed $'jobs:\n  x:\n    steps:\n      - run: uv pip download build==1.5.0'
 expect_bad cargo-floating $'jobs:\n  x:\n    steps:\n      - run: cargo install wasm-pack'
 expect_bad wasm-secondary-download $'jobs:\n  x:\n    steps:\n      - run: wasm-pack build --release --target web'
 expect_bad apt-floating $'jobs:\n  x:\n    steps:\n      - run: |\n          apt-get install -y ca-certificates\n          command --flag'

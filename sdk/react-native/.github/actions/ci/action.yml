@@ -27,8 +27,7 @@ runs:
   steps:
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
-        node-version: 20.20.2
-
+        node-version: 22.23.1
     - name: Type-check and test
       shell: bash
       working-directory: ${{ inputs.pkg-dir }}
@@ -119,4 +118,16 @@ runs:
           fail "react-android:${floor} did not resolve on Maven Central"
         fi
 
-        echo "native coordinates OK: react-android floor ${floor} resolves, sh.hop:hop ${declared} matches sdk/android"
+        # 5. The Hop bearer version here must match bearers/android, which is the source of truth.
+        bearer_declared="$(sed -n 's/.*getExtOr("hopBearerVersion", "\([^"]*\)").*/\1/p' "$gradle_file" | head -1)"
+        bearer_source="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' ../../bearers/android/build.gradle.kts | head -1)"
+        [ -n "$bearer_declared" ] || fail "could not read hopBearerVersion from $gradle_file"
+        [ -n "$bearer_source" ] || fail "could not read version from bearers/android/build.gradle.kts"
+        [ "$bearer_declared" = "$bearer_source" ] || \
+          fail "hopBearerVersion is $bearer_declared but bearers/android declares $bearer_source"
+
+        # 6. CAND-DEPS-02: compiler classpath must be pinned for metadata 2.4.0 compatibility.
+        grep -q 'configurations.matching.*kotlinCompilerClasspath' "$gradle_file" || \
+          fail "kotlinCompilerClasspath pin is missing from $gradle_file"
+
+        echo "native coordinates OK: react-android floor ${floor} resolves, sh.hop:hop ${declared} matches sdk/android, bearers ${bearer_declared} match bearers/android"

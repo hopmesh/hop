@@ -33,7 +33,16 @@ jobs:
           fi
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.97.0 --profile minimal
+        run: |
+          for attempt in 1 2 3; do
+            if rustup toolchain install 1.97.0 --profile minimal; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Dry run crate packaging and metadata
         run: |

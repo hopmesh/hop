@@ -216,12 +216,19 @@ def scan_installs(path, text, errors):
             errors.append(f"{path}:{line_number}: Homebrew install is not immutable")
         if re.search(r"\bpipx\s+install\b", code):
             errors.append(f"{path}:{line_number}: pipx install cannot enforce the repository hash lock")
-        if re.search(r"(?:\bpip|/pip\")\s+install\b", code) and not re.search(r"\buv\s+pip\b", code) and not (
-            "--require-hashes" in code
-            and re.search(r"(?:^|\s)(?:-r|--requirement)(?:\s|=)", code)
+        if (
+            re.search(r"(?:\bpip|/pip\"|\buv\s+pip)\s+install\b", code)
+            and not (
+                "--require-hashes" in code
+                and re.search(r"(?:^|\s)(?:-r|--requirement)(?:\s|=)", code)
+            )
+            and not (
+                re.search(r"\buv\s+pip\s+install\b", code)
+                and re.search(r"--resolution\s+(?:lowest|lowest-direct)\b", code)
+            )
         ):
             errors.append(f"{path}:{line_number}: pip install must use --require-hashes and a requirement file")
-        if re.search(r"(?:\bpip|/pip\")\s+download\b", code) and not (
+        if re.search(r"(?:\bpip|/pip\"|\buv\s+pip)\s+download\b", code) and not (
             "--require-hashes" in code
             and re.search(r"(?:^|\s)(?:-r|--requirement)(?:\s|=)", code)
         ):
