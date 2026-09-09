@@ -57,5 +57,18 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 
 File-mutating work in parallel needs `isolation: "worktree"` on each agent, or they corrupt each other's HEAD in the shared checkout. Read-only fan-out is fine shared.
 Worktree checkpoint rule: every file-mutating session in a worktree must commit its changes to a named branch before yielding. Never leave uncommitted changes or detached-HEAD commits without explicit checkpointing. Before tearing down or pruning a worktree, verify `git status --porcelain` is empty and all commits are reachable from a branch or PR. `tools/check-worktree-checkpoints.sh` checks both, and it runs in `tools/local-ci-mirror.sh` rather than in CI, because a CI checkout has no worktrees to inspect; CI runs its self-test only. Nothing invoked either file until 2026-09-07, so treat the guard as a local pre-push step you run, not as a gate that will stop you.
+Additive test module rule: when multiple agents add tests to an existing Rust module, never append inline `mod *_tests` blocks to the end of the shared file. Appending blocks to the same EOF location causes git 3-way merge conflicts where bodies interleave across conflict markers. New test modules must use the per-file convention:
+```rust
+#[cfg(test)]
+#[path = "<file>_<lane>_tests.rs"]
+mod <lane>_tests;
+```
+Child modules in external files retain access to all parent private items via `super::*`. Enforced by `tools/test-module-inline-guard.sh`.
+
+Integration content rule: when merging lane branches into an integration branch, never rely on commit identity or `git branch --contains`. Rebased, superseded, or dropped commits can leave lane work silently abandoned (such as historical commit `f6cfd1fa` on `fix/r3-legal`). Verify content presence for every lane branch before declaring integration complete:
+```bash
+tools/integration-content-guard.sh <integration-tip> <lane-branch>...
+```
+The guard performs an in-memory 3-way merge via `git merge-tree` and asserts the residual diff against the integration tree is empty.
 
 Never enumerate environment values. For diagnostics, check fixed variable names and emit only `NAME=set` or `NAME=unset`; never print the value. The checked-in OpenCode policy blocks known environment dumps and clears recognized sensitive values before agent shell processes start.

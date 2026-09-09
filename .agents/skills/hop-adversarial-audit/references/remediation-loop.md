@@ -80,6 +80,7 @@ A closure test should recreate the dangerous state or timeline and fail against 
 - Cross-language and clean-consumer behavior.
 - Guard bypasses and false positives.
 - Business artifact consistency across public copy, catalog, contract, and operating process.
+- Additive test structure: when extending an existing module that already contains unit tests, place new test modules in a separate file (#[path = "..."] mod ...;). Never append inline mod *_tests blocks to shared source files (enforced by tools/test-module-inline-guard.sh).
 
 ## 6. Independent closure attack
 
@@ -106,6 +107,8 @@ Run:
 - Protected CI on the exact final SHA.
 - Artifact, provenance, package export, and clean-consumer checks where affected.
 - Direct live, registry, or hardware checks only with authority.
+- Additive test collision check: tools/test-module-inline-guard.sh origin/main..HEAD asserts no lane appended inline test modules to shared source files.
+- Content completeness check: tools/integration-content-guard.sh <integration-tip> <lane-branch>... proves all lane commit content is present in the integrated tree (not merely merged or cherry-picked), detecting dropped or superseded commits.
 
 If the branch changes after evidence was produced, rerun affected checks and disclose chronology.
 
