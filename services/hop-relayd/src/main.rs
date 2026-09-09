@@ -1896,7 +1896,7 @@ fn ingest_durable<S: Store>(node: &mut Node<S>, bytes: Vec<u8>, require_flush: b
     if node.store.durability_status() != DurabilityReadiness::Ready {
         return false;
     }
-    if let Ok(b) = Bundle::from_bytes(&bytes) {
+    if let Ok(b) = hop_core::canonical::decode_bundle(&bytes) {
         let id = b.id();
         let dst = match b.inner.dst {
             Destination::Device(d) | Destination::AckTo(d, _) => short_b58(&d),
@@ -3368,7 +3368,7 @@ mod mailbox {
             let tag_b58 = bs58::encode(tag).into_string();
             let visit_result =
                 store.visit_mailbox(&tag_b58, &mut reserve, |reservation, bytes, expires| {
-                    let Ok(bundle) = hop_core::bundle::Bundle::from_bytes(&bytes) else {
+                    let Ok(bundle) = hop_core::canonical::decode_bundle(&bytes) else {
                         return Ok(());
                     };
                     let id = bundle.id();
@@ -3567,7 +3567,7 @@ mod mailbox {
                 "want-beacon in region B pulls the bundle spooled in region A"
             );
             assert_eq!(
-                hop_core::bundle::Bundle::from_bytes(&out_b[0].bytes)
+                hop_core::canonical::decode_bundle(&out_b[0].bytes)
                     .unwrap()
                     .id(),
                 id,
@@ -3874,7 +3874,7 @@ mod handoff {
                                 .map_err(|error| format!("durable reservation failed: {error:?}"))
                         },
                         |reservation, bytes, expires| {
-                            let Ok(bundle) = hop_core::bundle::Bundle::from_bytes(&bytes) else {
+                            let Ok(bundle) = hop_core::canonical::decode_bundle(&bytes) else {
                                 return Ok(());
                             };
                             if ingested.contains_key(&bundle.id()) {
@@ -6137,6 +6137,52 @@ mod driver_tests {
         apply_event(&mut node, &mut writers, Ev::IngestCustody(bytes, ok_tx));
         assert_eq!(ok_rx.recv_timeout(Duration::from_secs(1)), Ok(true));
         assert!(!node.queue().is_empty());
+    }
+
+    #[test]
+    fn apply_event_ingest_refuses_non_canonical_padded_bundle() {
+        let mut node = test_node();
+        let mut writers = HashMap::new();
+        let recipient = Identity::generate();
+        let sender = Identity::generate();
+        let clean = Bundle::create(
+            &sender,
+            Destination::Device(recipient.address()),
+            &recipient.address(),
+            &Payload::PeerMessage {
+                content_type: "t".into(),
+                body: b"canonical-test".to_vec(),
+            },
+            BundleOpts::default(),
+        )
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+
+        // Non-canonical bundles with trailing bytes must be refused by Ev::Ingest and Ev::IngestCustody
+        for pad_len in [1, 16, 128] {
+            let mut padded = clean.clone();
+            padded.extend(vec![0xAA; pad_len]);
+            apply_event(&mut node, &mut writers, Ev::Ingest(padded.clone()));
+            assert!(
+                node.queue().is_empty(),
+                "Ev::Ingest must refuse bundle padded with {pad_len} bytes"
+            );
+
+            let (tx, rx) = mpsc::sync_channel(1);
+            apply_event(&mut node, &mut writers, Ev::IngestCustody(padded, tx));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(1)),
+                Ok(false),
+                "Ev::IngestCustody must refuse bundle padded with {pad_len} bytes"
+            );
+        }
+
+        // Clean bundle without trailing bytes must be accepted and held for forwarding
+        let (ok_tx, ok_rx) = mpsc::sync_channel(1);
+        apply_event(&mut node, &mut writers, Ev::IngestCustody(clean, ok_tx));
+        assert_eq!(ok_rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        assert_eq!(node.queue().len(), 1);
     }
 
     #[test]

@@ -26,6 +26,9 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+env:
+  CARGO_NET_RETRY: "3"
+  NPM_CONFIG_FETCH_RETRIES: "3"
 jobs:
   build:
     if: github.repository == 'hopmesh/hop' && github.ref == 'refs/heads/main'
@@ -84,9 +87,16 @@ jobs:
       - name: Install Rust and wasm32 target
         working-directory: .
         run: |
-          rustup toolchain install 1.97.0 --profile minimal
+          for attempt in 1 2 3; do
+            if rustup toolchain install 1.97.0 --profile minimal; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
           rustup target add wasm32-unknown-unknown --toolchain 1.97.0
-
       - name: Install verified wasm tools
         working-directory: .
         run: bash core/hop-wasm/install-wasm-pack.sh

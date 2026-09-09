@@ -2,7 +2,7 @@
 name = "hop-endpoint"
 version = "0.0.3"
 description = "Receive Hop messages in Python: an embeddable endpoint over the libhop C ABI (ctypes)."
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "THIRD-PARTY-NOTICES.md"]
 # The endpoint SDK itself has ZERO runtime dependencies (ctypes is stdlib). `cryptography` is a

@@ -12,7 +12,7 @@ buildscript {
   }
   dependencies {
     classpath "com.android.tools.build:gradle:8.5.2"
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOr('kotlinVersion', '1.9.24')}"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOr('kotlinVersion', '2.2.10')}"
   }
 }
 
@@ -35,6 +35,18 @@ android {
 
   kotlinOptions {
     jvmTarget = "17"
+  }
+}
+
+// CAND-DEPS-02: Hop bearer AARs (bearer-ble, bearer-lan) are built and published with Kotlin 2.4.10,
+// emitting Kotlin metadata 2.4.0. The React Native host app resolves kotlin-gradle-plugin 2.2.10 by
+// default, whose compiler only reads metadata up to 2.3.0. Pin the compiler classpath for this module
+// to Kotlin 2.4.10 so it can read 2.4 metadata without requiring the host app to bump its global KGP.
+configurations.matching { it.name == "kotlinCompilerClasspath" }.configureEach {
+  resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+    if (details.requested.group == "org.jetbrains.kotlin") {
+      details.useVersion "2.4.10"
+    }
   }
 }
 
@@ -101,3 +113,4 @@ dependencies {
   implementation "sh.hop:hop:${hopSdkVersion}"
   implementation "sh.hop.bearers:bearer-ble:${hopBearerVersion}"
   implementation "sh.hop.bearers:bearer-lan:${hopBearerVersion}"
+}

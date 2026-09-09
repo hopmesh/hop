@@ -11,6 +11,7 @@ pub mod access;
 pub mod admission;
 pub mod app;
 pub mod bundle;
+pub mod canonical;
 pub mod crypto;
 pub mod discover;
 pub mod error;
