@@ -372,6 +372,27 @@ class RendererTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertIn("HOP Adversarial Audit Sample", output.read_text(encoding="utf-8"))
 
+    def test_a_phrase_grade_gets_its_own_type_scale_and_a_letter_grade_does_not(self) -> None:
+        # Measured in a browser at a 1440 viewport before this rule existed: the operational axis
+        # rendered "Partially validated" 289px wide inside a 227px card at the letter type scale.
+        # The test discriminates on the renderer's decision rather than on the stylesheet text, so
+        # it fails if the phrase branch is removed and also if it starts swallowing letter grades.
+        report = render_report(self.data)
+        operational = report.split('Operational Readiness', 1)[1][:400]
+        self.assertIn('class="grade phrase"', operational)
+        source = report.split('Source Quality', 1)[1][:400]
+        self.assertIn('class="grade"', source)
+        self.assertNotIn('class="grade phrase"', source)
+
+    def test_long_evidence_paths_are_allowed_to_wrap(self) -> None:
+        # A path such as bearers/apple/HopBearerMeshtastic/Sources/... has no break opportunity, so
+        # without this rule the coverage card overflowed its grid and the whole report gained a
+        # horizontal scrollbar. Its two siblings, .coverage-path and .command, already carried it.
+        report = render_report(self.data)
+        for selector in (".coverage-detail", ".coverage-path", ".command"):
+            block = report.split(selector, 1)[1].split("}", 1)[0]
+            self.assertIn("overflow-wrap: anywhere", block, f"{selector} must allow wrapping")
+
 
 class PackagingTests(unittest.TestCase):
     def test_claude_alias_resolves_to_the_canonical_skill(self) -> None:
