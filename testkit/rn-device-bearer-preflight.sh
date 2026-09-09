@@ -191,6 +191,12 @@ if [[ "$install_rc" -ne 0 ]]; then
   exit "$install_rc"
 fi
 
+# Whitelist com.hopdemo from battery optimization and set standby bucket active so
+# Android NetworkPolicyManagerService does not drop TCP traffic in APP_STANDBY/APP_BACKGROUND
+# on a passcode-locked / sleeping device.
+capture deviceidle-whitelist adb -s "$PIXEL" shell dumpsys deviceidle whitelist +com.hopdemo
+capture standby-bucket adb -s "$PIXEL" shell am set-standby-bucket com.hopdemo active
+
 reason="build and install passed; this preflight does not claim bearer delivery without a unique nonce, sender ACK, and receiver log"
 write_summary ready blocked 3 "$reason"
 exit 3
