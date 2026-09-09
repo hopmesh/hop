@@ -65,7 +65,7 @@ package:/data/app/.../com.hopdemo-.../base.apk
 versionCode=1 minSdk=29 targetSdk=36
 ```
 
-`testkit/rn-device-bearer-preflight.sh <run-id>` records this inventory, build, hash, and install as JSON under `testkit/results/`. It stops before claiming hardware delivery unless a later stage supplies a unique nonce, sender ACK, and receiver log.
+`testkit/rn-device-bearer-preflight.sh <run-id>` records this inventory, build, hash, and install as JSON, written into a results directory it creates under `testkit` at run time. It stops before claiming hardware delivery unless a later stage supplies a unique nonce, sender ACK, and receiver log.
 
 ## Build the Mac-side peer
 
