@@ -561,7 +561,7 @@ jobs:
         run: ./gradlew assembleDebug testDebugUnitTest --no-daemon --stacktrace
 
   apple:
-    name: Apple bearers + driver + apps + React Native bridge
+    name: Apple bearers + driver + app (build-only)
     # GitHub-hosted, and it must stay that way. This ran on the self-hosted `cirunner-m5max` (an
     # isolated LaunchDaemon on the M5 Max) to avoid the 10x macOS minute multiplier, which only
     # applies to PRIVATE repositories. Hosted macOS is free on public repos, so the minutes this
