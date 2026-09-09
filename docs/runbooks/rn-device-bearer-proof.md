@@ -17,6 +17,8 @@ adb devices -l
 xcrun devicectl list devices
 xcrun devicectl device info lockState --device 0280AC9F-551E-55DA-A969-62D4242A003C
 xcrun devicectl device process launch --device 0280AC9F-551E-55DA-A969-62D4242A003C sh.hopme.demo
+xcrun devicectl device info lockState --device 802500FE-27D7-502F-9D2C-9486D5CA74B2
+xcrun devicectl device info details --device 802500FE-27D7-502F-9D2C-9486D5CA74B2
 ```
 
 Relevant output:
@@ -24,14 +26,20 @@ Relevant output:
 ```text
 34241FDH2004KR  device  product:panther model:Pixel_7 device:panther
 BushidoPhone  0280AC9F-551E-55DA-A969-62D4242A003C  available (paired)  iPhone 17 Pro
-Current device lock state:
+Current device lock state (BushidoPhone):
 passcodeRequired: true
 unlockedSinceBoot: true
 ERROR: ... CoreDeviceError error 12040 ... kAMDMobileImageMounterDeviceLocked: The device is locked.
+
+Test iPhone  802500FE-27D7-502F-9D2C-9486D5CA74B2  available (paired)  iPhone XR
+Current device lock state (Test iPhone XR):
+passcodeRequired: false
+unlockedSinceBoot: true
+developerModeStatus: enabled
+ddiServicesAvailable: true
 ```
 
-BushidoPhone could not be launched or controlled, so the BLE pass used the Pixel 7 and a Mac-side node. The unlocked Test iPhone XR was also inspected for LAN, but it is the fleet's BLE-only handset and did not advertise a LAN service to the Pixel. No Pixel to BushidoPhone claim is made.
-
+BushidoPhone remains passcode-locked and refuses DDI mounting and process launch with `CoreDeviceError 12040`. Test iPhone XR is unlocked, paired over wired USB, and has developer mode enabled. Test iPhone XR is the unlocked handset used for the Apple-side hardware bearer evaluation.
 ## Build the native consumer
 
 From the repository root:
@@ -78,6 +86,94 @@ sdk/apple/with-local-framework.sh swift build --package-path ../../testkit/rn-ma
 ```
 
 `tools/build-xcframework.sh` dirties tracked generated files under `drivers/apple/HopDriver/Frameworks/`, `drivers/apple/HopDriver/.build-staging/`, and `drivers/apple/HopDriver/Sources/HopFFIBindings/`. Restore those generated files after the peer is linked. The compiled `testkit/rn-mac-peer/.build/debug/RnMacPeer` binary contains the exact-snapshot core.
+## Build and install the Apple consumer
+
+The native Apple consumer (`HopDemo.app`) is built from source using XcodeGen and Xcode:
+
+```sh
+cd apps/apple/HopDemo
+xcodegen
+xcodebuild -project HopDemo.xcodeproj -scheme HopDemo \
+  -destination "id=802500FE-27D7-502F-9D2C-9486D5CA74B2" build
+```
+
+The build resolves local package dependencies (`HopDriver`, `HopDemoKit`, `HopBearerBle`, `HopBearerLan`, `HopBearerMultipeer`, `HopBearerRelay`, `HopBearerMeshtastic`, `sdk/apple`), links the local `libhop.a` static archive, and signs the bundle automatically:
+
+```text
+Signing Identity:     "Apple Development: Jason Waldrip (LY77W79566)"
+Provisioning Profile: "iOS Team Provisioning Profile: sh.hopme.demo"
+                      (6cfc04ec-7b7e-4522-9841-8c0ed41645de)
+** BUILD SUCCEEDED **
+```
+
+Install and launch the application onto the connected iPhone XR:
+
+```sh
+xcrun devicectl device install app --device 802500FE-27D7-502F-9D2C-9486D5CA74B2 \
+  ~/Library/Developer/Xcode/DerivedData/HopDemo-*/Build/Products/Debug-iphoneos/HopDemo.app
+xcrun devicectl device process launch --device 802500FE-27D7-502F-9D2C-9486D5CA74B2 \
+  --console --activate --terminate-existing sh.hopme.demo
+```
+
+Application installation succeeds (`bundleID: sh.hopme.demo`), and the process starts on the device.
+
+## Apple physical bearer evaluation
+
+Both physical bearers were exercised on the installed `sh.hopme.demo` on Test iPhone XR.
+
+### Apple BLE evaluation
+
+When `HopDemo` launches on Test iPhone XR, `BleBearer` initializes CoreBluetooth `CBPeripheralManager` and `CBCentralManager`:
+
+```text
+2026-09-09 09:41:22.327 HopDemo[8433:375481] HOPLAB 0.035 STATE peripheral state=unauthorized
+2026-09-09 09:41:22.332 HopDemo[8433:375481] HOPLAB 0.039 STATE central state=unauthorized
+```
+
+System log inspection confirms the TCC access request:
+
+```text
+Sep 9 09:35:26.537069 HopDemo(TCC)[8331] <Info>: SEND: 0/7 synchronous to com.apple.tccd: request: msgID=8331.1, function=TCCAccessRequest, service=kTCCServiceBluetoothAlways
+```
+
+When `state == .unauthorized`, CoreBluetooth suppresses advertising and cancels scanning. Physical radio delivery is blocked by iOS TCC privacy gating.
+
+In addition, coexisting app `HopBleLab` (`sh.hopme.blelab`) was running on the device, which contends for BLE L2CAP PSM publication. The dormant switch was asserted to prevent contention:
+
+```sh
+xcrun devicectl device process launch --device 802500FE-27D7-502F-9D2C-9486D5CA74B2 \
+  --activate --payload-url "blelab://radio?enabled=false" sh.hopme.blelab
+```
+
+Verdict: blocked on Test iPhone XR due to pending TCC permission.
+Missing prerequisite: an operator must tap Allow on the physical iPhone XR screen for the system BLE prompt, or enable BLE for `Hop Debug` in Settings -> Privacy & Security.
+
+### Apple LAN evaluation
+
+On launch, `LanBearer` starts its Bonjour listener and browser:
+
+```text
+2026-09-09 09:41:22.296 HopDemo[8433:375441] HOPLAB 0.004 STATE lan node-start myId=29c6b4f4 service=_hoplan._tcp
+2026-09-09 09:41:22.299 HopDemo[8433:375484] HOPLAB 0.007 STATE lan listening name=29c6b4f4
+2026-09-09 09:41:22.298 HopDemo[8433:375471] HOPLOG p2p start: cdf18b4a60618305db7fd3a867d72018 advertising=true
+```
+
+Querying bearer states via `hopdemo://bearerstates` confirms all transports active:
+
+```text
+HOPLAB HOPAUTO bearerstates states=["P2P": true, "LoRa": true, "LAN": true, "Relay": true, "BT": true] active=["Relay": 1]
+```
+
+Network inspection reveals the interface binding:
+
+```text
+nw_listener_reconcile_advertised_endpoints [L1] Reconciling advertised endpoints (null) for path satisfied (Path is satisfied), interface: en0[802.11], ipv4, dns, uses wifi
+```
+
+The Mac has a direct USB ethernet link to Test iPhone XR on interface `en27` (`169.254.61.24` to `169.254.52.86`), with ICMP ping round-trip times averaging 1.3 ms. However, Bonjour mDNS (`_hoplan._tcp`) advertises on Wi-Fi interface `en0`. Per `testkit/devices.sh`, Test iPhone XR is intentionally kept as a BLE-only handset and is not joined to the local Wi-Fi subnet (10.4.1.0 prefix) where the Pixel 7 (`10.4.1.203`) and Mac (`10.4.1.221`) reside.
+
+Verdict: blocked on Test iPhone XR due to network segregation.
+Missing prerequisite: Test iPhone XR must be joined to the same Wi-Fi LAN (10.4.1.0 subnet) as the Mac and Pixel 7 for Bonjour mDNS multicast to cross between endpoints.
 
 ## Run the React Native receiver
 
@@ -238,3 +334,10 @@ The first full app assembly exposed three consumer constraints that module compi
 3. The demo declared `minSdk 24`, but BLE uses `listenUsingInsecureL2capChannel()` and `createInsecureL2capChannel()`, which first appear in API 29. Manifest merge failed with `uses-sdk:minSdkVersion 24 cannot be smaller than version 29 declared in library [sh.hop.bearers:bearer-ble:0.0.3]`.
 
 The documented Apple build also changed ten tracked generated files. Restore them before committing. The initial Mac binary then trapped on `UniFFI API checksum mismatch`; rebuilding both the framework and generated bindings from the same snapshot fixed it.
+
+The Apple device evaluation exposed four additional operational constraints:
+
+4. Passcode lock prevents CoreDevice DDI mounting and process control: BushidoPhone remains locked, returning `CoreDeviceError error 12040: kAMDMobileImageMounterDeviceLocked: The device is locked.` This blocks developer disk image mounting, process listing, app installation, and launching.
+5. CoreBluetooth TCC privacy gating: on physical iOS hardware, `CBCentralManager` and `CBPeripheralManager` report `.unauthorized` until a physical human operator taps Allow on the system BLE permission alert, or grants BLE access under Settings -> Privacy & Security. Headless automation cannot grant this permission.
+6. BLE coexistence radio contention: `HopBleLab` (`sh.hopme.blelab`) was running on the handset, contending for the BLE L2CAP PSM. The dormant switch was asserted via `blelab://radio?enabled=false` to persist dormancy across relaunches.
+7. Subnet isolation on USB link-local ethernet: Test iPhone XR is connected to the Mac via USB ethernet on interface `en27` (`169.254.52.86`), which answers ICMP ping. However, `NWListener` and `NWBrowser` advertise Bonjour `_hoplan._tcp` on Wi-Fi interface `en0[802.11]`. Because Test iPhone XR is kept off the local Wi-Fi LAN (10.4.1.0 subnet) where the Pixel 7 and Mac reside, mDNS discovery cannot cross between endpoints.
