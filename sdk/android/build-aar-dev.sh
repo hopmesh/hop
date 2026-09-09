@@ -38,24 +38,39 @@
 #
 # USAGE
 #   ./sdk/android/build-aar-dev.sh                       # publishes to sdk/android/build/maven-repository
-#   ./sdk/android/build-aar-dev.sh --repository <path>    # publishes somewhere else
+#   ./sdk/android/build-aar-dev.sh --repository <path>   # publishes somewhere else
+#   ./sdk/android/build-aar-dev.sh --no-native           # stub native slices for compilation/metadata gating
 #
-# Consume it with, and note includeGroup so this repository is never consulted for anything else:
-#   repositories { maven { url = uri("<path>"); content { includeGroup "sh.hop" } } }
-#   dependencies { implementation "sh.hop:hop:<version>" }
+# Consume them with, and note includeGroup so this repository is never consulted for anything else:
+#   repositories {
+#     maven {
+#       url = uri("<path>")
+#       content {
+#         includeGroup "sh.hop"
+#         includeGroup "sh.hop.bearers"
+#       }
+#     }
+#   }
+#   dependencies {
+#     implementation "sh.hop:hop:<version>"
+#     implementation "sh.hop.bearers:bearer-ble:<bearer-version>"
+#     implementation "sh.hop.bearers:bearer-lan:<bearer-version>"
+#   }
 #
-# PREREQUISITES, all of which this script checks before doing any work:
-#   rustup targets: aarch64-linux-android x86_64-linux-android armv7-linux-androideabi i686-linux-android
-#   cargo-ndk, an Android NDK, and a JDK.
+# PREREQUISITES, checked before doing any work:
+#   JDK, Gradle, and Android SDK platforms.
+#   When compiling native slices (default): rustup targets, cargo-ndk, and an Android NDK.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
 repository="$here/build/maven-repository"
+no_native=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repository) repository="${2:?missing repository path}"; shift 2 ;;
+    --no-native) no_native=true; shift ;;
     -h|--help) sed -n '1,50p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -77,23 +92,24 @@ fi
 
 fail() { echo "build-aar-dev: $*" >&2; exit 1; }
 
-# The version below is a LITERAL on purpose. tools/executable-reference-guard.py requires every cargo
-# install in this repo to name an exact version, and it caught this script for suggesting a bare
-# `cargo install cargo-ndk`. It was right: an unpinned install instruction is an unpinned supply-chain
-# reference even when it only ever appears in an error message a human copies.
-#
-# The guard DOES accept a variable, but only in the workflow-YAML shape (`NAME: "1.2.3"` on its own
-# line, as ci.yml does for CARGO_FUZZ_VERSION and CBINDGEN_VERSION). A shell assignment with `=` does
-# not match that, so a variable here would fail the guard for a reason unrelated to being unpinned. A
-# literal is also the better error message: it is copy-pasteable with no indirection.
-command -v cargo >/dev/null || fail "cargo not found. Install rustup; this repo pins its version in rust-toolchain.toml."
-command -v cargo-ndk >/dev/null || fail "cargo-ndk not found. Install it with: cargo install cargo-ndk --locked --version 4.1.2"
+# cargo-ndk and NDK are required only when compiling real native slices.
+if [[ "$no_native" = false ]]; then
+  command -v cargo >/dev/null || fail "cargo not found. Install rustup; this repo pins its version in rust-toolchain.toml."
+  command -v cargo-ndk >/dev/null || fail "cargo-ndk not found. Install it with: cargo install cargo-ndk --locked --version 4.1.2"
+fi
 command -v java >/dev/null || fail "no JDK on PATH. Toolchains here come from mise, not global installs, so try: mise exec -- $0"
 command -v gradle >/dev/null || fail "gradle not found on PATH. Try: mise exec -- $0"
 
-# cargo-ndk finds the NDK through one of these. Checking here turns a deep, unreadable linker error into
-# one line naming what to set.
-if [[ -z "${ANDROID_NDK_HOME:-}${ANDROID_NDK_ROOT:-}${NDK_HOME:-}" ]]; then
+if [[ -z "${ANDROID_HOME:-}${ANDROID_SDK_ROOT:-}" ]]; then
+  for candidate in /opt/homebrew/share/android-commandlinetools "$HOME/Library/Android/sdk" /usr/local/lib/android/sdk; do
+    if [[ -d "$candidate/platforms" ]]; then
+      export ANDROID_HOME="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ "$no_native" = false && -z "${ANDROID_NDK_HOME:-}${ANDROID_NDK_ROOT:-}${NDK_HOME:-}" ]]; then
   candidate=""
   for base in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" /opt/homebrew/share/android-commandlinetools "$HOME/Library/Android/sdk"; do
     [[ -n "$base" && -d "$base/ndk" ]] || continue
@@ -106,21 +122,29 @@ if [[ -z "${ANDROID_NDK_HOME:-}${ANDROID_NDK_ROOT:-}${NDK_HOME:-}" ]]; then
 fi
 
 version="$(python3 -c 'import re,sys; print(re.search(r"^version = \"([^\"]+)\"$", open(sys.argv[1]).read(), re.M).group(1))' "$here/build.gradle.kts")"
-echo "build-aar-dev: sh.hop:hop:$version (version comes from build.gradle.kts, which is the source of truth)"
+bearer_version="$(python3 -c 'import re,sys; print(re.search(r"^version = \"([^\"]+)\"$", open(sys.argv[1]).read(), re.M).group(1))' "$root/bearers/android/build.gradle.kts")"
+echo "build-aar-dev: sh.hop:hop:$version, sh.hop.bearers:$bearer_version"
 
 # The four ABIs the AAR declares. Kept in the same order as build.gradle.kts's androidAbis so a mismatch
 # is easy to spot by eye.
 native="$here/build/native-android-dev"
 rm -rf "$native"
 mkdir -p "$native"
-echo "build-aar-dev: compiling libhop for four ABIs (this is the slow part)"
-( cd "$root" && cargo ndk \
-    -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 \
-    -o "$native" build --release -p hop )
-
-for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-  test -f "$native/$abi/libhop.so" || fail "cargo-ndk did not produce $abi/libhop.so"
-done
+if [[ "$no_native" = true ]]; then
+  echo "build-aar-dev: creating stub native slices (--no-native for compilation and metadata gating)"
+  for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+    mkdir -p "$native/$abi"
+    touch "$native/$abi/libhop.so"
+  done
+else
+  echo "build-aar-dev: compiling libhop for four ABIs (this is the slow part)"
+  ( cd "$root" && cargo ndk \
+      -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 \
+      -o "$native" build --release -p hop )
+  for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+    test -f "$native/$abi/libhop.so" || fail "cargo-ndk did not produce $abi/libhop.so"
+  done
+fi
 
 # Prefab metadata in the AAR ships the C ABI header, and the gradle task requires it at include/hop.h.
 # sdk/hop.h is the canonical generated header (the drift guard in CI is what keeps it honest), so this
@@ -134,7 +158,7 @@ test -f "$root/sdk/hop.h" || fail "sdk/hop.h is missing; it is the canonical C A
 mkdir -p "$here/include"
 cp "$root/sdk/hop.h" "$here/include/hop.h"
 
-echo "build-aar-dev: publishing to $repository"
+echo "build-aar-dev: publishing sh.hop:hop to $repository"
 ( cd "$here" && gradle hopAar publishHopPublicationToHopRepository \
     -PhopNativeDir="$native" -PhopMavenRepository="$repository" --no-daemon -q )
 
@@ -143,39 +167,79 @@ pom="$repository/sh/hop/hop/$version/hop-$version.pom"
 test -f "$aar" || fail "publish reported success but $aar is absent"
 test -f "$pom" || fail "publish reported success but $pom is absent"
 
-# Verify the two things a consumer actually depends on, rather than trusting that gradle exited 0.
-# 1. Every ABI is really inside the archive. An AAR missing a slice builds fine and then crashes on that
-#    device class with an UnsatisfiedLinkError.
-# 2. The POM still carries JNA. If a future change to the publication drops it, the consumer silently
-#    loses the library that loads libhop.
-python3 - "$aar" "$pom" <<'PY'
-import re, sys, zipfile, pathlib
-aar, pom = sys.argv[1], sys.argv[2]
-names = set(zipfile.ZipFile(aar).namelist())
-missing = [a for a in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64") if f"jni/{a}/libhop.so" not in names]
-if missing:
-    sys.exit(f"build-aar-dev: AAR is missing native slices for: {', '.join(missing)}")
-if "classes.jar" not in names:
-    sys.exit("build-aar-dev: AAR has no classes.jar")
-text = pathlib.Path(pom).read_text()
-if "<artifactId>jna</artifactId>" not in text:
-    sys.exit("build-aar-dev: the POM no longer declares JNA. A consumer would build green and then fail "
+echo "build-aar-dev: publishing bearer AARs to $repository"
+( cd "$root/bearers/android" && gradle :bearer-ble:publishBearerPublicationToHopRepository :bearer-lan:publishBearerPublicationToHopRepository \
+    -PhopMavenRepository="$repository" --no-daemon -q )
+
+ble_aar="$repository/sh/hop/bearers/bearer-ble/$bearer_version/bearer-ble-$bearer_version.aar"
+ble_pom="$repository/sh/hop/bearers/bearer-ble/$bearer_version/bearer-ble-$bearer_version.pom"
+lan_aar="$repository/sh/hop/bearers/bearer-lan/$bearer_version/bearer-lan-$bearer_version.aar"
+lan_pom="$repository/sh/hop/bearers/bearer-lan/$bearer_version/bearer-lan-$bearer_version.pom"
+test -f "$ble_aar" || fail "publish reported success but $ble_aar is absent"
+test -f "$ble_pom" || fail "publish reported success but $ble_pom is absent"
+test -f "$lan_aar" || fail "publish reported success but $lan_aar is absent"
+test -f "$lan_pom" || fail "publish reported success but $lan_pom is absent"
+
+python3 - "$aar" "$pom" "$ble_aar" "$ble_pom" "$lan_aar" "$lan_pom" "$no_native" <<'PY'
+import pathlib, sys, zipfile
+
+hop_aar, hop_pom, ble_aar, ble_pom, lan_aar, lan_pom, no_native_str = sys.argv[1:8]
+no_native = (no_native_str == "true")
+
+hop_names = set(zipfile.ZipFile(hop_aar).namelist())
+if not no_native:
+    missing = [a for a in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64") if f"jni/{a}/libhop.so" not in hop_names]
+    if missing:
+        sys.exit(f"build-aar-dev: AAR is missing native slices for: {', '.join(missing)}")
+if "classes.jar" not in hop_names:
+    sys.exit("build-aar-dev: hop AAR has no classes.jar")
+hop_pom_text = pathlib.Path(hop_pom).read_text()
+if "<artifactId>jna</artifactId>" not in hop_pom_text:
+    sys.exit("build-aar-dev: the hop POM no longer declares JNA. A consumer would build green and then fail "
              "at runtime with a ClassNotFoundError on the first bridge call.")
-if "<packaging>aar</packaging>" not in text:
-    sys.exit("build-aar-dev: the POM does not declare aar packaging")
-print(f"build-aar-dev: verified 4 ABIs, classes.jar, aar packaging, and the JNA dependency")
+if "<packaging>aar</packaging>" not in hop_pom_text:
+    sys.exit("build-aar-dev: the hop POM does not declare aar packaging")
+
+for b_name, b_aar, b_pom in [("bearer-ble", ble_aar, ble_pom), ("bearer-lan", lan_aar, lan_pom)]:
+    b_names = set(zipfile.ZipFile(b_aar).namelist())
+    if "classes.jar" not in b_names:
+        sys.exit(f"build-aar-dev: {b_name} AAR has no classes.jar")
+    b_pom_text = pathlib.Path(b_pom).read_text()
+    if "<artifactId>hop</artifactId>" not in b_pom_text:
+        sys.exit(f"build-aar-dev: {b_name} POM does not declare sh.hop:hop dependency")
+    if "<packaging>aar</packaging>" not in b_pom_text:
+        sys.exit(f"build-aar-dev: {b_name} POM does not declare aar packaging")
+
+print("build-aar-dev: verified all 3 required artifacts (sh.hop:hop, bearer-ble, bearer-lan)")
 PY
 
 cat <<EOF
 
-build-aar-dev: published sh.hop:hop:$version (UNSIGNED, local only)
+build-aar-dev: published 3 artifacts (UNSIGNED, local only)
   repository: $repository
-  aar:        $aar
+  sh.hop:hop:$version:
+    aar: $aar
+  sh.hop.bearers:bearer-ble:$bearer_version:
+    aar: $ble_aar
+  sh.hop.bearers:bearer-lan:$bearer_version:
+    aar: $lan_aar
 
-Consume it from a gradle module with:
+Consume them from a gradle module with:
 
-  repositories { maven { url = uri("$repository"); content { includeGroup "sh.hop" } } }
-  dependencies { implementation "sh.hop:hop:$version" }
+  repositories {
+    maven {
+      url = uri("$repository")
+      content {
+        includeGroup "sh.hop"
+        includeGroup "sh.hop.bearers"
+      }
+    }
+  }
+  dependencies {
+    implementation "sh.hop:hop:$version"
+    implementation "sh.hop.bearers:bearer-ble:$bearer_version"
+    implementation "sh.hop.bearers:bearer-lan:$bearer_version"
+  }
 
 Or point @hop-mesh/react-native at it without editing files:
 

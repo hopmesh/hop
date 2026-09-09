@@ -1681,6 +1681,24 @@ jobs:
           npx tsc --noEmit
           npm test
 
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17.0.19+10
+      # Build local Maven AAR dependencies (sh.hop:hop, bearer-ble, bearer-lan).
+      # Uses --no-native so compilation and metadata compatibility are gated deterministically
+      # without the multi-minute overhead of cargo-ndk cross-compilation across 4 Android ABIs.
+      # Native runtime execution on device remains unproven here (covered by on-device workflows).
+      - name: Build local Maven AAR dependencies (sh.hop:hop, bearer-ble, bearer-lan)
+        run: |
+          bash sdk/android/build-aar-dev.sh --no-native --repository sdk/react-native/android/.hop-maven
+      # CAND-DEPS-01 / CAND-DEPS-02: Compile the native Android consumer (:hop-mesh_react-native)
+      # against the local AARs, verifying Gradle evaluation, AAR resolution, and Kotlin 2.4.0
+      # metadata compatibility for HopMeshModule.kt.
+      - name: Build React Native Android native consumer (compile Kotlin against AARs)
+        working-directory: apps/react-native/HopDemo/android
+        run: |
+          ./gradlew :hop-mesh_react-native:compileDebugKotlin --no-daemon --stacktrace
   gate:
     name: CI gate
     runs-on: ubuntu-latest
