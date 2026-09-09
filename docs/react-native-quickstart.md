@@ -13,7 +13,7 @@ Before you start, you need:
 
 ## Android: build the native dependency
 
-The Android half of the SDK depends on the Kotlin SDK `sh.hop:hop`, which is not published to any remote Maven repository. You must build it locally and publish it to a local Maven repository first.
+The Android half of the SDK depends on `sh.hop:hop` and the native BLE/LAN bearers `sh.hop.bearers:bearer-ble` and `sh.hop.bearers:bearer-lan`, which are not published to any remote Maven repository. You must build them locally and publish them to a local Maven repository first.
 
 From the root of this repository, run:
 
@@ -21,11 +21,11 @@ From the root of this repository, run:
 ./sdk/android/build-aar-dev.sh
 ```
 
-This script compiles `libhop` for all four Android ABIs, packages it into an AAR, and publishes it to a local Maven repository at `sdk/android/build/maven-repository` (or the path you pass with `--repository`).
+This script compiles `libhop` for all four Android ABIs, packages `sh.hop:hop` along with `bearer-ble` and `bearer-lan`, and publishes all three AARs and their POMs to a local Maven repository at `sdk/android/build/maven-repository` (or the path you pass with `--repository`).
 
 **Why this is needed:**
-- `sh.hop:hop` was never published to Maven Central (metadata and POM both return 404; a group search for `sh.hop` returns nothing).
-- The version `0.0.2` previously referenced was stale; the current version is `0.0.5`.
+- Neither `sh.hop:hop` nor `sh.hop.bearers` was published to Maven Central (metadata and POM return 404).
+- The React Native bridge requires `sh.hop:hop` alongside `bearer-ble` and `bearer-lan`.
 - The signed publishable path (`sdk/android/build-aar.sh`) is blocked because it requires the `NATIVE_ARTIFACT_SIGNING_KEY` secret and the published bundle does not include Android slices. It also fails because it compares against `sdk/android/include/hop.h`, which does not exist in the repository.
 - The React Native Android module previously declared `implementation "com.facebook.react:react-native:+"`, which silently resolved to `0.71.0-rc.0` because modern React Native publishes `react-android` (versions 0.77 to 0.87) instead of `react-native`. The dependency has been updated to use `react-android` with a 0.77.3 floor.
 
@@ -35,7 +35,19 @@ After the script completes, export the repository path so Gradle can find it:
 export HOP_MAVEN_REPOSITORY="$(pwd)/sdk/android/build/maven-repository"
 ```
 
-Or point your app's `repositories` block at that path with `content { includeGroup "sh.hop" }`.
+Or point your app's `repositories` block at that path with:
+
+```groovy
+repositories {
+    maven {
+        url = uri("/path/to/hop/sdk/android/build/maven-repository")
+        content {
+            includeGroup "sh.hop"
+            includeGroup "sh.hop.bearers"
+        }
+    }
+}
+```
 
 ## iOS: build the native dependency
 
@@ -71,16 +83,17 @@ npm install /path/to/hop/sdk/react-native
 
 ### Option 2: npm pack tarball (outside this repository)
 
-If your app lives outside this repository, pack the SDK into a tarball and install that:
+If your app lives outside this repository, install dependencies and pack the SDK into a tarball, then install that:
 
 ```sh
 cd /path/to/hop/sdk/react-native
+npm ci
 npm pack
 cd /path/to/your-app
-npm install /path/to/hop/sdk/react-native/hop-mesh-react-native-0.0.2.tgz
+npm install /path/to/hop/sdk/react-native/hop-mesh-react-native-0.0.3.tgz
 ```
 
-**Note:** The `npm pack` and `npm install` commands above have not been verified in this session. They are the standard npm workflow for local packages.
+**Note:** The `npm pack` flow requires `npm ci` first because `prepare` invokes `tsc`.
 
 ## iOS: install the pod
 
@@ -106,7 +119,10 @@ In your app's `android/build.gradle` (or `settings.gradle`), add the local Maven
 repositories {
     maven {
         url = uri("/path/to/hop/sdk/android/build/maven-repository")
-        content { includeGroup "sh.hop" }
+        content {
+            includeGroup "sh.hop"
+            includeGroup "sh.hop.bearers"
+        }
     }
 }
 ```
@@ -127,5 +143,5 @@ npx react-native run-android
 
 ## Verification status
 
-- **Android:** The command `./sdk/android/build-aar-dev.sh` has been run successfully on macOS (Darwin 25.5.0, Apple M5 Max) and produced a valid local Maven repository with `sh.hop:hop:0.0.5`.
+- **Android:** The command `./sdk/android/build-aar-dev.sh` has been run successfully on macOS (Darwin 25.5.0, Apple M5 Max) and produced a valid local Maven repository with `sh.hop:hop:0.0.5`, `sh.hop.bearers:bearer-ble:0.0.3`, and `sh.hop.bearers:bearer-lan:0.0.3`. The React Native Android module compiles cleanly against these artifacts.
 - **iOS:** The command `./sdk/apple/build-xcframework.sh` has not been verified in this session. The exact sequence for building and running the iOS example app is being verified by another agent and will be updated here.
