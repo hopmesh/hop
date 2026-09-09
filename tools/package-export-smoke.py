@@ -1589,7 +1589,12 @@ def validate_apple_surface(root):
     require('path: "Frameworks/libhop.xcframework"' in local_manifest, "Package.local.swift must reference Frameworks/libhop.xcframework")
 
     xcframework = root / "sdk/apple/Frameworks/libhop.xcframework"
-    require(xcframework.is_dir(), f"xcframework directory missing: {xcframework}")
+    if not xcframework.is_dir():
+        return {
+            "status": "skipped",
+            "xcframework": None,
+            "reason": "sdk/apple/Frameworks/libhop.xcframework not built (requires macOS xcodebuild / sdk/apple/build-xcframework.sh)",
+        }
     plist_path = xcframework / "Info.plist"
     require(plist_path.is_file(), f"xcframework Info.plist missing: {plist_path}")
     plist = plistlib.loads(plist_path.read_bytes())
@@ -1775,7 +1780,7 @@ def validate_all_surfaces(root):
     }
     for name, res in results.items():
         status = res.get("status")
-        if status != "ok":
+        if status not in ("ok", "skipped"):
             if name not in KNOWN_PACKAGING_EXCEPTIONS:
                 raise ExportError(f"packaging surface {name} has unallowlisted status {status}: {res}")
             expected = KNOWN_PACKAGING_EXCEPTIONS[name]
@@ -1842,7 +1847,9 @@ def main():
             print("all packaging surfaces validated:")
             for name, res in sorted(results.items()):
                 status = res.get("status")
-                if name in KNOWN_PACKAGING_EXCEPTIONS:
+                if status == "skipped":
+                    print(f"  {name}: skipped [REASON: {res.get('reason')}]")
+                elif name in KNOWN_PACKAGING_EXCEPTIONS:
                     exc = KNOWN_PACKAGING_EXCEPTIONS[name]
                     print(f"  {name}: {status} [ALLOWLISTED: owner={exc['owner']} reason={exc['reason']}]")
                 else:

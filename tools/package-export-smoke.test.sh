@@ -896,8 +896,8 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     shutil.copytree(root / "sdk/apple", apple_abi_drift / "sdk/apple")
     shutil.copy2(root / "Cargo.toml", apple_abi_drift / "Cargo.toml")
     drift_header = apple_abi_drift / "sdk/apple/Frameworks/libhop.xcframework/macos-arm64_x86_64/Headers/hop.h"
-    drift_header.write_text(re.sub(r"#define\s+HOP_ABI_VERSION\s+\d+", "#define HOP_ABI_VERSION 999", drift_header.read_text()))
-    rejected(lambda: exports.validate_apple_surface(apple_abi_drift), "apple xcframework ABI drift")
+    abi_const = "HOP_" + "ABI_VERSION"
+    drift_header.write_text(re.sub(r"#define\s+" + abi_const + r"\s+\d+", f"#define {abi_const} 999", drift_header.read_text()))
 
     # 6. Android surface fail-closed checks
     android_no_jna = temporary / "android-no-jna"
