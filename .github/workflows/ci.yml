@@ -1212,10 +1212,11 @@ jobs:
         run: bash tools/release-provenance.test.sh
       - name: Self-test clean package exports and signed native artifacts
         run: bash tools/package-export-smoke.test.sh
-      - name: Generate every exact Copybara export in isolated directories
+      - name: Generate every exact Copybara export and validate package surfaces
         run: |
           mkdir "$RUNNER_TEMP/package-exports"
           python3 tools/package-export-smoke.py check --output-root "$RUNNER_TEMP/package-exports"
+          python3 tools/package-export-smoke.py validate-packaging
       # First prove the guard itself still flags what it should and ignores legit API identifiers /
       # removal notes, then run it against the tree.
       - name: Self-test the docs token guard
