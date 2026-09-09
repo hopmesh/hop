@@ -19,6 +19,7 @@ git-cliff. Do not edit by hand.
 - drop the root license, license per-component (FSL-1.1-ALv2) (#146) (570c680)
 
 ### Documentation
+- regenerate from conventional commits (f67300f)
 - regenerate from conventional commits (6e7dc77)
 - regenerate from conventional commits (a202908)
 - update prose claims and exclude changelog in check-abi-version (ABI-002, ABI-004, ABI-005) (903bc65)
