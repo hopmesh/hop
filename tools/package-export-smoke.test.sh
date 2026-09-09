@@ -742,34 +742,45 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     finally:
         native.MAX_EXPANDED_BYTES = original_expanded_limit
     # --- PACKAGING CONSUMER CONTRACT GUARDS -------------------------------------
-    # 1. Base commit fail-closed proof: validate_all_surfaces and validate_gradle_consumers
-    # strictly fail on the pre-existing defect at apps/react-native/HopDemo/android/build.gradle line 62.
-    rejected(
-        lambda: exports.validate_all_surfaces(root),
-        "validate_all_surfaces fails closed on broken HopDemo consumer at c74f89ba",
-    )
-    rejected(
-        lambda: exports.validate_gradle_consumers(root),
-        "validate_gradle_consumers fails closed on exact parent group filter at c74f89ba",
-    )
-
-    # 2. Scratch tree representing repository state once the sibling's HopDemo fix lands:
-    fixed_tree = temporary / "fixed-tree"
+    # The live tree is the healthy case, and the broken case is synthesised from it. This block was
+    # written the other way round, asserting rejection against a real defect in HopDemo's repository
+    # filter, which passed while that defect was on main and inverted the moment it was fixed. A
+    # fail-closed proof has to own its fixture: pin the shape, not the tree's current state.
+    broken_consumer = temporary / "broken-consumer-tree"
     for sub in ("Cargo.toml", "tools", "sdk", "bearers", "apps", "core", "services", "drivers"):
         src = root / sub
-        dest = fixed_tree / sub
+        dest = broken_consumer / sub
         dest.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             shutil.copytree(src, dest)
         else:
             shutil.copy2(src, dest)
-    demo_gradle = fixed_tree / "apps/react-native/HopDemo/android/build.gradle"
-    demo_gradle.write_text(
-        demo_gradle.read_text().replace(
-            'content { includeGroup "sh.hop" }',
-            'content { includeGroupByRegex "sh\\\\.hop(?:\\\\..*)?" }',
-        )
+    demo_gradle = broken_consumer / "apps/react-native/HopDemo/android/build.gradle"
+    # Narrow whatever form the consumer currently uses down to the exact parent group. Matching on
+    # the current pattern instead would tie the fixture to one spelling, and asserting only that the
+    # text CHANGED would turn a legitimate rewrite of the filter into a spurious failure. Assert the
+    # post-condition: after this, the fixture really does exclude the published subgroups.
+    narrowed = re.sub(
+        r"includeGroup(?:ByRegex)?\s+\"[^\"]*\"",
+        'includeGroup "sh.hop"',
+        demo_gradle.read_text(),
     )
+    assert 'includeGroup "sh.hop"' in narrowed and "includeGroupByRegex" not in narrowed, (
+        "broken-consumer fixture failed to produce an exact parent group filter; the repository "
+        "block in apps/react-native/HopDemo/android/build.gradle no longer matches"
+    )
+    demo_gradle.write_text(narrowed)
+    rejected(
+        lambda: exports.validate_gradle_consumers(broken_consumer),
+        "validate_gradle_consumers fails closed on an exact parent group filter",
+    )
+    rejected(
+        lambda: exports.validate_all_surfaces(broken_consumer),
+        "validate_all_surfaces fails closed on a consumer that excludes a published subgroup",
+    )
+
+    # The tree as it stands must pass, which is what makes the rejection above meaningful.
+    fixed_tree = root
 
     # Prove validate_all_surfaces passes against the fixed tree
     all_surfaces = exports.validate_all_surfaces(fixed_tree)
