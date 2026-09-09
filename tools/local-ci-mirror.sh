@@ -225,6 +225,9 @@ step "wasm tool installer self-test"  bash core/hop-wasm/install-wasm-pack.test.
 # CI has no worktrees, so it runs only the self-test; this is the one place the guard itself can bite.
 step "worktree checkpoints self-test" bash tools/check-worktree-checkpoints.test.sh
 step "worktree checkpoints"           bash tools/check-worktree-checkpoints.sh
+step "test-module-inline guard self-test" bash tools/test-module-inline-guard.test.sh
+step "test-module-inline guard"           bash tools/test-module-inline-guard.sh
+step "integration-content guard self-test" bash tools/integration-content-guard.test.sh
 
 # --- CI's Kotlin SDK + Android jobs --------------------------------------------------------------
 android_env() {

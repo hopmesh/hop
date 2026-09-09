@@ -232,7 +232,27 @@ done
 
 # --- Check 4: Pull request citation validity in documentation (PROC-015) ---
 
-MAX_KNOWN_PR="${DOC_GUARD_MAX_PR:-130}"
+# PROC-015 exists because the monorepo's PR numbers ran far ahead of this repository's, so an
+# unqualified high number in prose was usually a citation of the wrong repo. A hardcoded ceiling is
+# the wrong instrument for that: it goes stale the moment this repository passes it, and then the
+# guard rejects statements that are TRUE, which is how a guard earns a bypass. Ask the repository
+# how many PRs it has, and only fall back to the constant when the answer is unavailable. Git
+# history cannot answer it: the monorepo's own merge commits were grafted in at the split, so
+# `git log --grep 'Merge pull request'` tops out at a monorepo number.
+MAX_KNOWN_PR="${DOC_GUARD_MAX_PR:-}"
+if [ -z "$MAX_KNOWN_PR" ]; then
+  live_pr="$(curl -fsS --max-time 8 \
+    'https://api.github.com/repos/hopmesh/hop/pulls?state=all&per_page=1&sort=created&direction=desc' \
+    2>/dev/null | grep -m1 -Eo '"number": *[0-9]+' | grep -Eo '[0-9]+' || true)"
+  if [ -n "$live_pr" ]; then
+    MAX_KNOWN_PR="$live_pr"
+  else
+    # Offline: the floor below is the last number verified by hand. It only under-reports, so it
+    # can produce a false failure on a citation newer than itself; DOC_GUARD_MAX_PR overrides.
+    MAX_KNOWN_PR=152
+    echo "doc-path-guard: note: PR ceiling unavailable offline, using recorded floor $MAX_KNOWN_PR" >&2
+  fi
+fi
 pr_check_out="$(python3 - "$MAX_KNOWN_PR" "${DOC_SCAN_TARGETS[@]}" <<'PY' 2>&1
 import sys, re
 

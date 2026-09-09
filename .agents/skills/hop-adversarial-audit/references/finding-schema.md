@@ -298,6 +298,9 @@ The bundled `fixtures/sample-ledger.json` is a complete representative input. `s
 ### Process quality
 
 Grade Git recovery, agent isolation, scope control, verification granularity, secret handling, evidence chronology, and source-versus-live discipline.
+- `A`: complete agent isolation, content-verified lane integration (tools/integration-content-guard.sh), collision-free per-file test structure (tools/test-module-inline-guard.sh), zero dropped commits, clean git history and recovery.
+- `B`: lane merge resolution produced interleaved or unverified conflict blocks, or commit content was dropped during integration.
+- `C` or lower: dirty shared worktrees, unverified merges, lost commits, or secret handling regressions.
 
 ### Operational readiness
 

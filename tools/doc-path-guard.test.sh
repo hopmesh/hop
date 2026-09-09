@@ -19,9 +19,14 @@ expect() {
   local dir="$1"
   local want="$2"
   local label="$3"
+  # Optional 4th argument pins the PR ceiling. The PR cases below MUST pin it: the guard now asks
+  # GitHub how many PRs this repository has, so a fixture written against a hardcoded number
+  # silently stops discriminating the moment the real repository passes it. That is exactly the
+  # staleness the guard change fixes, and a test coupled to the same constant would hide it.
+  local pinned_max="${4:-}"
   local code=0
   local out
-  out="$(DOC_GUARD_ROOT="$dir" bash "$GUARD" 2>&1)" || code=$?
+  out="$(DOC_GUARD_ROOT="$dir" DOC_GUARD_MAX_PR="$pinned_max" bash "$GUARD" 2>&1)" || code=$?
 
   if [ "$want" = "pass" ] && [ "$code" -eq 0 ]; then
     echo "  PASS $label (expected pass, got pass)"
@@ -128,17 +133,26 @@ lay_down "$TMP/ci_stale_deps" "16" "16" "bundle-v16.json" ""
 lay_down_ci "$TMP/ci_stale_deps" "is the gate: 4 jobs. The aggregate CI gate depends on the other 19 and is required."
 expect "$TMP/ci_stale_deps" fail "stale_ci_gate_deps_fails"
 
-# Test 9: Unqualified PR citation above max PR -> FAIL (PROC-015)
+# Test 9: Unqualified PR citation above the ceiling -> FAIL (PROC-015)
 lay_down "$TMP/pr_unqualified" "16" "16" "bundle-v16.json" "- Fixes issue in PR #138 without qualification"
-expect "$TMP/pr_unqualified" fail "unqualified_pr_above_max_fails"
+expect "$TMP/pr_unqualified" fail "unqualified_pr_above_max_fails" 130
 
-# Test 10: Qualified PR citation (hopmesh/monorepo#138) above max PR -> PASS (PROC-015)
+# Test 10: Qualified PR citation (hopmesh/monorepo#138) above the ceiling -> PASS (PROC-015)
 lay_down "$TMP/pr_qualified" "16" "16" "bundle-v16.json" "- Fixes issue in hopmesh/monorepo#138 with qualification"
-expect "$TMP/pr_qualified" pass "qualified_pr_above_max_passes"
+expect "$TMP/pr_qualified" pass "qualified_pr_above_max_passes" 130
 
-# Test 11: Valid PR citation at or below max PR -> PASS (PROC-015)
+# Test 11: Valid PR citation at or below the ceiling -> PASS (PROC-015)
 lay_down "$TMP/pr_valid" "16" "16" "bundle-v16.json" "- Merged in PR #71 cleanly"
-expect "$TMP/pr_valid" pass "pr_below_max_passes"
+expect "$TMP/pr_valid" pass "pr_below_max_passes" 130
+
+# Test 12: the ceiling is what discriminates, not the number's size. The same citation must pass
+# once the repository has that many PRs and fail while it does not. Before this pair existed the
+# ceiling was a constant of 130 and every truthful citation above it was rejected, which is the
+# defect this case pins: a doc could not name PR #139 without lying about which repo it was in.
+lay_down "$TMP/pr_ceiling_low" "16" "16" "bundle-v16.json" "- Relanded as PR #139"
+expect "$TMP/pr_ceiling_low" fail "citation_above_ceiling_fails" 130
+lay_down "$TMP/pr_ceiling_high" "16" "16" "bundle-v16.json" "- Relanded as PR #139"
+expect "$TMP/pr_ceiling_high" pass "same_citation_passes_once_ceiling_reached" 152
 
 echo
 if [ "$fail" -eq 0 ]; then
