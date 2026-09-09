@@ -252,7 +252,6 @@ final class HopMesh: RCTEventEmitter {
     pumpQueue.async {
       entry.inFlight.removeAll()
       entry.runtime.stop()
-      entry.node.close()
       resolve(nil)
     }
   }
