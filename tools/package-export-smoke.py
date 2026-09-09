@@ -24,8 +24,8 @@ GO_CGO_MONOREPO = """#cgo CFLAGS: -I${SRCDIR}/..
 """
 GO_CGO_EXPORT = """#cgo pkg-config: hop
 """
-ELIXIR_HOP_PATH_DEP = 'hop = { path = "../../../../core/hop" }'
-ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true }'
+ELIXIR_HOP_PATH_DEP = 'hop = { path = "../../../../core/hop", features = ["sqlcipher"] }'
+ELIXIR_HOP_VENDOR_DEP = 'hop = { workspace = true, features = ["sqlcipher"] }'
 OWNER = "hopmesh"
 MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/hop"'
 
@@ -34,7 +34,7 @@ MONOREPO_REPOSITORY = 'repository = "https://github.com/hopmesh/hop"'
 # consumes it stays live and re-arms automatically if a Rust crate is mirrored again.
 RUST_MIRRORS: set[str] = set()
 NATIVE_COMPONENTS = {"hop-sdk-go", "hop-sdk-apple"}
-PACKAGE_COMPONENTS = ("hop-sdk-go", "hop-sdk-apple")
+PACKAGE_COMPONENTS = ("hop-sdk-go", "hop-sdk-apple", "hop-sdk-elixir")
 ANDROID_GRADLE_VERSION = "9.5.1"
 ANDROID_AGP_VERSION = "9.2.1"
 ANDROID_KOTLIN_VERSION = "2.4.0"
@@ -318,6 +318,9 @@ def workspace_preamble(copybara_config):
 def expected_export_tree(source_root, component, components=None, available=None):
     source_root = Path(source_root).resolve()
     components = components or load_components(source_root)
+    if component == "hop-sdk-elixir" and component not in components:
+        components = dict(components)
+        components["hop-sdk-elixir"] = {"prefix": "sdk/elixir"}
     require(component in components, f"component is not allowlisted: {component}")
     entry = components[component]
     prefix = entry["prefix"]
@@ -325,7 +328,10 @@ def expected_export_tree(source_root, component, components=None, available=None
     tree = {}
     subtree_excludes = ("CLAUDE.md",)
     if component == "hop-sdk-elixir":
-        subtree_excludes += ("native/hop_endpoint/Cargo.lock",)
+        subtree_excludes += (
+            "native/hop_endpoint/Cargo.lock",
+            "build-hex-package.sh",
+        )
     add_tree(tree, source_root, available, prefix, "", exclude=subtree_excludes)
     for source, destination in SHARED_EXPORTS.items():
         add_file(tree, source_root, source, destination)
@@ -880,7 +886,9 @@ def validate_elixir(export, work):
     command, env = mix_command(export, "test")
     run(command, export, env)
     require(lock_path.read_bytes() == locked, "Elixir build modified the packaged Cargo.lock")
-    package = work / "hop_endpoint-0.0.1.tar"
+    ws_manifest = export / "native/Cargo.toml"
+    ws_ver = tomllib.loads(ws_manifest.read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+    package = work / f"hop_endpoint-{ws_ver}.tar"
     command, env = mix_command(export, "hex.build", "--output", str(package))
     run(command, export, env)
     extracted_package = work / "hex-package"
@@ -899,6 +907,8 @@ def validate_elixir(export, work):
         "  test \"loads package\", do: assert(Code.ensure_loaded?(Hop.Endpoint))\nend\n",
         encoding="utf-8",
     )
+    if (export / ".mise.toml").is_file():
+        shutil.copyfile(export / ".mise.toml", consumer / ".mise.toml")
     command, env = mix_command(export, "deps.get")
     run(command, consumer, env)
     command, env = mix_command(export, "test")
@@ -1459,17 +1469,7 @@ PUBLISHED_CRATES = (
     ("core/stores/hop-store-firestore", "hop-store-firestore", "hop-mesh-store-firestore"),
 )
 
-KNOWN_PACKAGING_EXCEPTIONS = {
-    "elixir": {
-        "status": "finding",
-        "owner": "jwaldrip",
-        "reason": (
-            "sdk/elixir mix.exs declares native/vendor/... and native/Cargo.toml in package().files "
-            "that are absent in tree; hop-sdk-elixir mirror was retired in 2026-08 and requires "
-            "an explicit export-vendoring pass before hex.build can succeed."
-        ),
-    },
-}
+KNOWN_PACKAGING_EXCEPTIONS = {}
 
 def validate_npm_surface(root):
     root = Path(root).resolve()
@@ -1732,16 +1732,21 @@ def validate_elixir_hex_surface(root):
     content = mix_path.read_text(encoding="utf-8")
     require("app: :hop_endpoint" in content, "sdk/elixir/mix.exs must declare app: :hop_endpoint")
     require(f'version: "{ws_ver}"' in content, f"mix.exs version does not match workspace {ws_ver}")
-    has_vendored_declarations = "native/vendor/hop-core" in content
-    vendored_exists = (root / "sdk/elixir/native/vendor").is_dir()
-    components = load_components(root)
-    elixir_mirrored = "hop-sdk-elixir" in components
+    build_script = root / "sdk/elixir/build-hex-package.sh"
+    require(build_script.is_file() and os.access(build_script, os.X_OK), "sdk/elixir/build-hex-package.sh missing or not executable")
+    require("package: package()" in content, "sdk/elixir/mix.exs must declare package: package()")
+    require("native/vendor/hop-core/src" in content, "sdk/elixir/mix.exs package().files must declare vendored native crates")
+    require("native/Cargo.toml" in content and "native/Cargo.lock" in content, "sdk/elixir/mix.exs package().files must declare native Cargo workspace files")
+    workspace_manifest = root / "tools/copybara/elixir-native-Cargo.toml"
+    require(workspace_manifest.is_file(), "tools/copybara/elixir-native-Cargo.toml missing")
+    workspace_lock = root / "tools/copybara/elixir-native-Cargo.lock"
+    require(workspace_lock.is_file(), "tools/copybara/elixir-native-Cargo.lock missing")
     return {
-        "status": "finding" if (has_vendored_declarations and not vendored_exists) else "ok",
+        "status": "ok",
         "app": "hop_endpoint",
-        "has_vendored_declarations": has_vendored_declarations,
-        "vendored_exists": vendored_exists,
-        "mirror_active": elixir_mirrored,
+        "package": "hop_endpoint",
+        "version": ws_ver,
+        "build_script": "sdk/elixir/build-hex-package.sh",
     }
 
 

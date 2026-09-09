@@ -53,8 +53,8 @@ if registrations != expected:
 
 elixir_transform_markers = (
     'ELIXIR_LOCK = "tools/copybara/elixir-native-Cargo.lock"',
-    'ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop" }',
-    'ELIXIR_HOP_VENDOR_DEP = \'hop = { workspace = true }\\n\'',
+    'ELIXIR_HOP_PATH_DEP = """hop = { path = "../../../../core/hop", features = ["sqlcipher"] }',
+    'ELIXIR_HOP_VENDOR_DEP = \'hop = { workspace = true, features = ["sqlcipher"] }\\n\'',
     'core.move(ELIXIR_LOCK, "native/Cargo.lock")',
     'import_excludes.extend(["native/Cargo.toml", "native/Cargo.lock", "native/vendor/**"])',
     "export_transforms.extend(_elixir_vendor_export())",
@@ -66,8 +66,8 @@ for marker in elixir_transform_markers:
 
 export_helper = (root / "tools/package-export-smoke.py").read_text()
 for marker in (
-    'ELIXIR_HOP_PATH_DEP = \'hop = { path = "../../../../core/hop" }\'',
-    'ELIXIR_HOP_VENDOR_DEP = \'hop = { workspace = true }\'',
+    'ELIXIR_HOP_PATH_DEP = \'hop = { path = "../../../../core/hop", features = ["sqlcipher"] }\'',
+    'ELIXIR_HOP_VENDOR_DEP = \'hop = { workspace = true, features = ["sqlcipher"] }\'',
     '\"tools/copybara/elixir-native-Cargo.lock\", \"native/Cargo.lock\"',
 ):
     if export_helper.count(marker) != 1:
@@ -98,7 +98,7 @@ def test_elixir_vendor_export_simulation():
         hop_endpoint_cargo = (
             '[package]\nname = "hop_endpoint"\n\n'
             '[dependencies]\n'
-            'hop = { path = "../../../../core/hop" }\n\n'
+            'hop = { path = "../../../../core/hop", features = ["sqlcipher"] }\n\n'
             '[workspace]\n'
         )
         (tpath / "native/hop_endpoint/Cargo.toml").write_text(hop_endpoint_cargo)
@@ -113,8 +113,8 @@ def test_elixir_vendor_export_simulation():
         shutil.move(str(tpath / "tools/copybara/elixir-native-Cargo.lock"), str(tpath / "native/Cargo.lock"))
 
         content = (tpath / "native/hop_endpoint/Cargo.toml").read_text()
-        elixir_hop_path_dep = 'hop = { path = "../../../../core/hop" }\n\n[workspace]\n'
-        elixir_hop_vendor_dep = 'hop = { workspace = true }\n'
+        elixir_hop_path_dep = 'hop = { path = "../../../../core/hop", features = ["sqlcipher"] }\n\n[workspace]\n'
+        elixir_hop_vendor_dep = 'hop = { workspace = true, features = ["sqlcipher"] }\n'
         if elixir_hop_path_dep not in content:
             raise SystemExit("Simulation failure: ELIXIR_HOP_PATH_DEP pattern not found in native/hop_endpoint/Cargo.toml")
         content = content.replace(elixir_hop_path_dep, elixir_hop_vendor_dep)
@@ -136,7 +136,7 @@ def test_elixir_vendor_export_simulation():
             raise SystemExit("Simulation assertion failed: native/Cargo.lock missing")
 
         final_endpoint = (tpath / "native/hop_endpoint/Cargo.toml").read_text()
-        if 'hop = { workspace = true }' not in final_endpoint or '../../../../core/hop' in final_endpoint:
+        if 'hop = { workspace = true, features = ["sqlcipher"] }' not in final_endpoint or '../../../../core/hop' in final_endpoint:
             raise SystemExit("Simulation assertion failed: native/hop_endpoint/Cargo.toml did not rewrite path dependency")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
