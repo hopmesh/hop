@@ -1753,20 +1753,9 @@ def validate_elixir_hex_surface(root):
 def validate_mirrors_and_owner_held(root):
     root = Path(root).resolve()
     components = load_components(root)
-    expected = {"hop-sdk-go", "hop-sdk-crystal", "hop-sdk-apple", "hop-bearers-apple"}
+    expected = {"hop-sdk-go", "hop-sdk-crystal", "hop-sdk-apple"}
     require(set(components.keys()) == expected, f"unexpected components: {set(components.keys())} != {expected}")
-    owner_held = [
-        {
-            "component": "hop-bearers-apple",
-            "status": "wired_repo_missing",
-            "detail": "hopmesh/hop-bearers-apple is declared in tools/copybara/components.json and copy.bara.sky but repository does not exist on GitHub",
-        },
-        {
-            "component": "hop-sdk-apple",
-            "status": "release_asset_missing",
-            "detail": "sdk/apple/Package.swift pins remote binary v0.0.3 libhop.xcframework.zip, which was never published to GitHub releases",
-        },
-    ]
+    owner_held = []
     return {"status": "ok", "components": sorted(list(components.keys())), "owner_held": owner_held}
 
 

@@ -7,8 +7,5 @@
   },
   "hop-sdk-apple": {
     "prefix": "sdk/apple"
-  },
-  "hop-bearers-apple": {
-    "prefix": "bearers/apple"
   }
 }
