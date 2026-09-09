@@ -141,8 +141,8 @@ describes how to perform an end-to-end live exercise against GCP.
 ### Prerequisites & Credentials
 * Target GCP project: `hop-mesh` (or a dedicated staging project `hop-mesh-test`).
 * Database: `(default)` in multi-region `nam5` (US).
-* Service account credentials: A service account with the `roles/datastore.user`
-  IAM role.
+* Service account credentials: a service account holding the Datastore User IAM
+  role, roles/datastore.user.
 * Workstation authentication:
   ```sh
   gcloud auth application-default login
@@ -157,11 +157,12 @@ describes how to perform an end-to-end live exercise against GCP.
 * Net cost: $0.00 (within free tier allowance). Outside free tier: < $0.01.
 
 ### Target Collections
-The live exercise writes to an isolated test node partition:
-* `relays/live-audit-test-node/bundles`
-* `relays/live-audit-test-node/kv`
-* `relays/live-audit-test-node/operations`
-* `presence/live-audit-test-index`
+The live exercise writes to an isolated test node partition, where the node id is
+whatever `HOP_TEST_NODE_ID` is set to below:
+* relays/{node}/bundles
+* relays/{node}/kv
+* relays/{node}/operations
+* presence/{node}-index
 
 ### Step-by-Step Live Execution Procedure
 1. Acquire a fresh access token:
