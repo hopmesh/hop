@@ -905,18 +905,27 @@ with tempfile.TemporaryDirectory(prefix="hop-package-export-test-") as temporary
     (apple_bad_url / "sdk/apple/Package.swift").write_text(pkg_swift.replace('releases/download/v0.0.3/', 'releases/download/v9.9.9/'))
     rejected(lambda: exports.validate_apple_surface(apple_bad_url), "apple Package.swift wrong release url")
 
-    apple_missing_slice = temporary / "apple-missing-slice"
-    shutil.copytree(root / "sdk/apple", apple_missing_slice / "sdk/apple")
-    shutil.copy2(root / "Cargo.toml", apple_missing_slice / "Cargo.toml")
-    shutil.rmtree(apple_missing_slice / "sdk/apple/Frameworks/libhop.xcframework/ios-arm64")
-    rejected(lambda: exports.validate_apple_surface(apple_missing_slice), "apple xcframework missing slice")
+    # These two fixtures mutate the built xcframework, so they can only run where it exists. On a
+    # Linux runner it does not, and the fixture setup itself was raising FileNotFoundError before
+    # the guard below, which is a test that fails for a reason unrelated to what it checks.
+    if apple_built:
+        apple_missing_slice = temporary / "apple-missing-slice"
+        shutil.copytree(root / "sdk/apple", apple_missing_slice / "sdk/apple")
+        shutil.copy2(root / "Cargo.toml", apple_missing_slice / "Cargo.toml")
+        shutil.rmtree(apple_missing_slice / "sdk/apple/Frameworks/libhop.xcframework/ios-arm64")
+        rejected(lambda: exports.validate_apple_surface(apple_missing_slice), "apple xcframework missing slice")
 
-    apple_abi_drift = temporary / "apple-abi-drift"
-    shutil.copytree(root / "sdk/apple", apple_abi_drift / "sdk/apple")
-    shutil.copy2(root / "Cargo.toml", apple_abi_drift / "Cargo.toml")
-    drift_header = apple_abi_drift / "sdk/apple/Frameworks/libhop.xcframework/macos-arm64_x86_64/Headers/hop.h"
-    abi_const = "HOP_" + "ABI_VERSION"
-    drift_header.write_text(re.sub(r"#define\s+" + abi_const + r"\s+\d+", f"#define {abi_const} 999", drift_header.read_text()))
+        apple_abi_drift = temporary / "apple-abi-drift"
+        shutil.copytree(root / "sdk/apple", apple_abi_drift / "sdk/apple")
+        shutil.copy2(root / "Cargo.toml", apple_abi_drift / "Cargo.toml")
+        drift_header = apple_abi_drift / "sdk/apple/Frameworks/libhop.xcframework/macos-arm64_x86_64/Headers/hop.h"
+        abi_const = "HOP_" + "ABI_VERSION"
+        drift_header.write_text(re.sub(r"#define\s+" + abi_const + r"\s+\d+", f"#define {abi_const} 999", drift_header.read_text()))
+        # This fixture was built and then never asserted on, so an ABI drift inside the shipped
+        # framework headers would have gone unnoticed by the very case named after it.
+        rejected(lambda: exports.validate_apple_surface(apple_abi_drift), "apple xcframework ABI drift")
+    else:
+        print("apple slice and ABI drift fixtures skipped: libhop.xcframework is not built here")
 
     # 6. Android surface fail-closed checks
     android_no_jna = temporary / "android-no-jna"
