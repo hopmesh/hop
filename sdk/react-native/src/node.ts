@@ -180,6 +180,9 @@ function assertStatus(val: number): void {
  * and clears them, so a drained invite is gone and a host must persist what it surfaces.
  */
 export class HopNode {
+  private closed = false;
+  private readonly subscriptions = new Set<Subscription>();
+
   constructor(
     private readonly native: HopNativeModule,
     private readonly emitter: Emitter,
@@ -187,55 +190,70 @@ export class HopNode {
     public readonly handle: number,
   ) {}
 
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error("node is closed");
+    }
+  }
+
   // ---- identity + config ----
 
   /** This node's address, base58-encoded. */
-  address(): Promise<string> {
+  async address(): Promise<string> {
+    this.assertOpen();
     return this.native.address(this.handle);
   }
 
   /** This node's 32-byte identity secret; persist it to restore the node later. */
   async secret(): Promise<Uint8Array> {
+    this.assertOpen();
     return fromBase64(await this.native.secret(this.handle));
   }
 
   /** Set the display name reported via presence / hop.identify. */
-  setName(name: string): Promise<void> {
+  async setName(name: string): Promise<void> {
+    this.assertOpen();
     return this.native.setName(this.handle, name);
   }
 
   /** Subscribe to an hps:// topic. */
-  subscribe(topic: string): Promise<void> {
+  async subscribe(topic: string): Promise<void> {
+    this.assertOpen();
     return this.native.subscribe(this.handle, topic);
   }
 
   /** Publish a fresh prekey bundle to the directory. */
-  publishPrekey(): Promise<boolean> {
+  async publishPrekey(): Promise<boolean> {
+    this.assertOpen();
     return this.native.publishPrekey(this.handle);
   }
-
   /** Advance the node clock. The pump calls this for you; only needed for manual driving. */
   async tick(nowMs: number = Date.now()): Promise<void> {
+    this.assertOpen();
     assertSafeInteger(nowMs, "nowMs");
     return this.native.tick(this.handle, nowMs);
   }
 
   /** False means the db path was unusable and the node is running ephemerally (state won't survive). */
-  isPersistent(): Promise<boolean> {
+  async isPersistent(): Promise<boolean> {
+    this.assertOpen();
     return this.native.isPersistent(this.handle);
   }
 
   /** True only when the store is SQLCipher-keyed at rest (F-25, audit-001). */
-  isEncrypted(): Promise<boolean> {
+  async isEncrypted(): Promise<boolean> {
+    this.assertOpen();
     return this.native.isEncrypted(this.handle);
   }
   /** How many persisted records failed to decode on startup; non-zero means state lost on upgrade. */
-  rehydrateDropped(): Promise<number> {
+  async rehydrateDropped(): Promise<number> {
+    this.assertOpen();
     return this.native.rehydrateDropped(this.handle);
   }
 
   /** Whether we hold a forward-secret session with `addr` (content is ratcheted, not static-sealed). */
-  isSecured(addr: string): Promise<boolean> {
+  async isSecured(addr: string): Promise<boolean> {
+    this.assertOpen();
     return this.native.isSecured(this.handle, addr);
   }
 
@@ -243,6 +261,7 @@ export class HopNode {
 
   /** Send an untraceable (section 39) message. Resolves the 32-byte bundle id, or null on error. */
   async send(opts: HopSendOptions): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.send(
       this.handle,
       opts.to,
@@ -255,6 +274,7 @@ export class HopNode {
 
   /** Send to a directly-connected peer (the directed section 27 path). Resolves the bundle id, or null. */
   async sendTo(opts: HopSendOptions): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.sendTo(
       this.handle,
       opts.to,
@@ -266,12 +286,14 @@ export class HopNode {
   }
 
   /** Delivery status of a message we sent, by its bundle id. */
-  status(id: Uint8Array): Promise<HopStatus> {
+  async status(id: Uint8Array): Promise<HopStatus> {
+    this.assertOpen();
     return this.native.status(this.handle, toBase64(id));
   }
 
   /** Durably accept one inbox item (by its id) so it stops repeating on the next poll. */
-  acceptInbox(id: Uint8Array): Promise<boolean> {
+  async acceptInbox(id: Uint8Array): Promise<boolean> {
+    this.assertOpen();
     return this.native.acceptInbox(this.handle, toBase64(id));
   }
 
@@ -284,6 +306,7 @@ export class HopNode {
     method: string;
     args: Uint8Array | string;
   }): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.sendServiceRequest(
       this.handle,
       args.to,
@@ -301,6 +324,7 @@ export class HopNode {
     status: number;
     body: Uint8Array | string;
   }): Promise<boolean> {
+    this.assertOpen();
     assertStatus(args.status);
     return this.native.sendServiceResponse(
       this.handle,
@@ -312,17 +336,20 @@ export class HopNode {
   }
 
   /** Durably accept a previously-polled response by its 32-byte correlation request id. */
-  acceptServiceResponse(forRequestId: Uint8Array): Promise<boolean> {
+  async acceptServiceResponse(forRequestId: Uint8Array): Promise<boolean> {
+    this.assertOpen();
     return this.native.acceptServiceResponse(this.handle, toBase64(forRequestId));
   }
 
   /** Durably accept a previously-polled request by its 32-byte request id. */
-  acceptServiceRequest(requestId: Uint8Array): Promise<boolean> {
+  async acceptServiceRequest(requestId: Uint8Array): Promise<boolean> {
+    this.assertOpen();
     return this.native.acceptServiceRequest(this.handle, toBase64(requestId));
   }
 
   /** Reject a previously-polled request without ACK so a retransmission can retry. */
-  rejectServiceRequest(requestId: Uint8Array): Promise<boolean> {
+  async rejectServiceRequest(requestId: Uint8Array): Promise<boolean> {
+    this.assertOpen();
     return this.native.rejectServiceRequest(this.handle, toBase64(requestId));
   }
 
@@ -335,6 +362,7 @@ export class HopNode {
    * cross-platform bridge and remains disabled in this state shape.
    */
   async bearerSnapshot(): Promise<HopBearerSnapshot> {
+    this.assertOpen();
     return decodeBearerSnapshot(await this.native.bearerSnapshot(this.handle));
   }
 
@@ -345,22 +373,26 @@ export class HopNode {
    * bridge does not own a relay bearer.
    */
   async setBearerEnabled(bearer: HopBearer, enabled: boolean): Promise<HopBearerSnapshot> {
+    this.assertOpen();
     return decodeBearerSnapshot(await this.native.setBearerEnabled(this.handle, bearer, enabled));
   }
   // ---- bearer seam (drive a transport from JS) ----
 
   /** Bring a bearer link up. `link` is any app-chosen id; `role` is who dialed. */
   async linkUp(link: number, role: HopRole): Promise<void> {
+    this.assertOpen();
     assertSafeInteger(link, "link");
     return this.native.linkUp(this.handle, link, role);
   }
 
   async linkDown(link: number): Promise<void> {
+    this.assertOpen();
     assertSafeInteger(link, "link");
     return this.native.linkDown(this.handle, link);
   }
 
   async bytesReceived(link: number, bytes: Uint8Array): Promise<void> {
+    this.assertOpen();
     assertSafeInteger(link, "link");
     return this.native.bytesReceived(this.handle, link, toBase64(bytes));
   }
@@ -376,7 +408,8 @@ export class HopNode {
    * `configured` marks an operator or user choice, which a gossiped endpoint can never demote, and it
    * defaults to true here because a URL an app hands in came from a person or a build, not the mesh.
    */
-  relayAdd(url: string, configured: boolean = true): Promise<boolean> {
+  async relayAdd(url: string, configured: boolean = true): Promise<boolean> {
+    this.assertOpen();
     return this.native.relayAdd(this.handle, url, configured);
   }
 
@@ -388,18 +421,21 @@ export class HopNode {
    * backoff always eventually recovers. null with a zero total is an empty pool, which is the case
    * `relayAdd` fixes.
    */
-  relayNext(): Promise<string | null> {
+  async relayNext(): Promise<string | null> {
+    this.assertOpen();
     return this.native.relayNext(this.handle);
   }
 
   /** Report a dial outcome so the pool can score it. A success clears that endpoint's failure history;
    *  failures back it off exponentially and always eventually recover. */
-  relayReport(url: string, ok: boolean): Promise<void> {
+  async relayReport(url: string, ok: boolean): Promise<void> {
+    this.assertOpen();
     return this.native.relayReport(this.handle, url, ok);
   }
 
   /** Pooled endpoint counts: total known, and how many are dialable right now. */
-  relayPool(): Promise<HopRelayPool> {
+  async relayPool(): Promise<HopRelayPool> {
+    this.assertOpen();
     return this.native.relayPool(this.handle);
   }
 
@@ -424,6 +460,7 @@ export class HopNode {
     access: HpsAccess = "open",
     visibility: HpsVisibility = "private",
   ): Promise<Uint8Array | null> {
+    this.assertOpen();
     const pubkey = await this.native.hpsRegister(this.handle, path, kind, access, visibility);
     return pubkey == null ? null : fromBase64(pubkey);
   }
@@ -431,12 +468,14 @@ export class HopNode {
   /** Subscribe to `hps://{host}/{path}`: ask the host for the topic's keys. Resolves the request's
    *  bundle id, or null. Whether the keys arrive at all is the access mode's call, not this one's. */
   async hpsSubscribe(host: string, path: string): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.hpsSubscribe(this.handle, host, path);
     return id == null ? null : fromBase64(id);
   }
 
   /** Publish to a topic we host, or (for a channel) belong to. Resolves the bundle id, or null. */
   async hpsPublish(path: string, body: Uint8Array | string): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.hpsPublish(this.handle, path, toBase64(asBytes(body)));
     return id == null ? null : fromBase64(id);
   }
@@ -448,25 +487,29 @@ export class HopNode {
    * queued until JS accepts it, so one that arrives while the JS side crashes is redelivered rather
    * than lost. Accept it once your own store holds it.
    */
-  acceptHpsMessage(id: Uint8Array): Promise<boolean> {
+  async acceptHpsMessage(id: Uint8Array): Promise<boolean> {
+    this.assertOpen();
     return this.native.acceptHpsMessage(this.handle, toBase64(id));
   }
 
   /** Host to contact: invite an address to a topic we host (the `invite` access mode). Resolves the
    *  invite's bundle id, or null. */
   async hpsInvite(path: string, dest: string): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.hpsInvite(this.handle, path, dest);
     return id == null ? null : fromBase64(id);
   }
 
   /** Accept an invite we received: joins the topic once the host seals us the keys. */
   async hpsAcceptInvite(host: string, path: string): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.hpsAcceptInvite(this.handle, host, path);
     return id == null ? null : fromBase64(id);
   }
 
   /** Decline an invite. Durable, so the host does not re-offer it. */
-  hpsDeclineInvite(host: string, path: string): Promise<boolean> {
+  async hpsDeclineInvite(host: string, path: string): Promise<boolean> {
+    this.assertOpen();
     return this.native.hpsDeclineInvite(this.handle, host, path);
   }
 
@@ -476,24 +519,28 @@ export class HopNode {
    * The native call also yields the leave bundle's id; this narrows to the ok flag on purpose, because
    * an RN client has nothing to do with that id (there is no hps status query to correlate it against).
    */
-  hpsLeave(path: string): Promise<boolean> {
+  async hpsLeave(path: string): Promise<boolean> {
+    this.assertOpen();
     return this.native.hpsLeave(this.handle, path);
   }
 
   /** Host: the addresses waiting for approval on a `requestToJoin` topic, base58-encoded. */
-  hpsPending(path: string): Promise<string[]> {
+  async hpsPending(path: string): Promise<string[]> {
+    this.assertOpen();
     return this.native.hpsPending(this.handle, path);
   }
 
   /** Host: approve a pending requester, which is what hands them the content key. Resolves the
    *  handoff's bundle id, or null. */
   async hpsApprove(path: string, requester: string): Promise<Uint8Array | null> {
+    this.assertOpen();
     const id = await this.native.hpsApprove(this.handle, path, requester);
     return id == null ? null : fromBase64(id);
   }
 
   /** Host: deny a pending requester. No key is handed out. */
-  hpsDeny(path: string, requester: string): Promise<boolean> {
+  async hpsDeny(path: string, requester: string): Promise<boolean> {
+    this.assertOpen();
     return this.native.hpsDeny(this.handle, path, requester);
   }
 
@@ -504,24 +551,28 @@ export class HopNode {
    * nothing published after the rotation. Resolves one bundle id per member the new key was sealed to.
    */
   async hpsRekey(path: string, newPath: string = "", remove: string[] = []): Promise<Uint8Array[]> {
+    this.assertOpen();
     const ids = await this.native.hpsRekey(this.handle, path, newPath, remove);
     return ids.map((id) => fromBase64(id));
   }
 
   /** Host: how many distinct members have acked a publication on this topic. An Open topic keeps no
    *  member list, so an ack is the only moment it learns a member's address at all. */
-  hpsReach(path: string): Promise<number> {
+  async hpsReach(path: string): Promise<number> {
+    this.assertOpen();
     return this.native.hpsReach(this.handle, path);
   }
 
   /** Host: the retained member set for this topic, base58-encoded. */
-  hpsMembers(path: string): Promise<string[]> {
+  async hpsMembers(path: string): Promise<string[]> {
+    this.assertOpen();
     return this.native.hpsMembers(this.handle, path);
   }
 
   /** Every topic this node hosts or follows, read from the node's own store. Use it to rebuild a topic
    *  list at startup rather than persisting one yourself. */
   async hpsMyTopics(): Promise<HopHpsTopic[]> {
+    this.assertOpen();
     const topics = await this.native.hpsMyTopics(this.handle);
     return topics.map(decodeHpsTopic);
   }
@@ -529,27 +580,41 @@ export class HopNode {
   /** Discoverable topics found on the mesh: decrypted descriptors, not subscriptions. Only topics
    *  hosted by apps holding the same app secret are ever surfaced (section 17). */
   async hpsBrowse(): Promise<HopHpsTopicInfo[]> {
+    this.assertOpen();
     const found = await this.native.hpsBrowse(this.handle);
     return found.map(decodeHpsTopicInfo);
   }
-
   // ---- pump + events ----
 
   /** Start the native pump: tick, drain outbound, and poll the inbox / hops:// / hps:// queues on an
    *  interval. */
-  start(intervalMs: number = 250): Promise<void> {
+  async start(intervalMs: number = 250): Promise<void> {
+    this.assertOpen();
     return this.native.startPump(this.handle, intervalMs);
   }
 
   /** Stop the pump. Events stop until `start()` is called again. */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
+    this.assertOpen();
     return this.native.stopPump(this.handle);
   }
 
   private subscribe$<T>(event: string, decode: (p: any) => T, cb: (value: T) => void): Subscription {
-    return this.emitter.addListener(event, (payload) => {
-      if (payload?.node === this.handle) cb(decode(payload));
+    this.assertOpen();
+    let active = true;
+    const sub = this.emitter.addListener(event, (payload) => {
+      if (active && !this.closed && payload?.node === this.handle) cb(decode(payload));
     });
+    const handle: Subscription = {
+      remove: () => {
+        if (!active) return;
+        active = false;
+        sub.remove();
+        this.subscriptions.delete(handle);
+      },
+    };
+    this.subscriptions.add(handle);
+    return handle;
   }
 
   /** Subscribe to inbound messages. Returns an unsubscribe handle. */
@@ -584,7 +649,19 @@ export class HopNode {
    * ordered by a revision the native runtime increases whenever any state changes.
    */
   onBearerState(cb: (snapshot: HopBearerSnapshot) => void): Subscription {
-    return this.subscribe$(HopEvent.BearerState, decodeBearerSnapshot, cb);
+    let lastSnapshot: HopBearerSnapshot | null = null;
+    return this.subscribe$(HopEvent.BearerState, decodeBearerSnapshot, (snapshot) => {
+      if (
+        lastSnapshot !== null &&
+        lastSnapshot.states.ble === snapshot.states.ble &&
+        lastSnapshot.states.lan === snapshot.states.lan &&
+        lastSnapshot.states.relay === snapshot.states.relay
+      ) {
+        return;
+      }
+      lastSnapshot = snapshot;
+      cb(snapshot);
+    });
   }
 
   /** Subscribe to inbound hps:// publications on topics this node hosts or follows. Each repeats on
@@ -600,7 +677,13 @@ export class HopNode {
   }
 
   /** Free the native node. Idempotent. */
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    for (const sub of this.subscriptions) {
+      sub.remove();
+    }
+    this.subscriptions.clear();
     return this.native.closeNode(this.handle);
   }
 }

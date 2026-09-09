@@ -27,6 +27,30 @@ import React
 
 @objc(HopMesh)
 final class HopMesh: RCTEventEmitter {
+  private final class ForwardingSink: LinkSink {
+    private let inner: LinkSink?
+    private let onTransition: () -> Void
+
+    init(inner: LinkSink?, onTransition: @escaping () -> Void) {
+      self.inner = inner
+      self.onTransition = onTransition
+    }
+
+    func linkUp(_ link: LinkId, role: HopRole, peerId: Data) {
+      inner?.linkUp(link, role: role, peerId: peerId)
+      onTransition()
+    }
+
+    func linkBytes(_ link: LinkId, _ bytes: Data) {
+      inner?.linkBytes(link, bytes)
+    }
+
+    func linkDown(_ link: LinkId) {
+      inner?.linkDown(link)
+      onTransition()
+    }
+  }
+
   private final class Entry {
     let handle: Int
     let node: HopNode
@@ -37,8 +61,9 @@ final class HopMesh: RCTEventEmitter {
     private let stateLock = NSLock()
     private var revision = 0
     private var lastStates = ["ble": "enabled", "lan": "enabled", "relay": "disabled"]
+    private var forwardingSink: ForwardingSink?
 
-    init(handle: Int, node: HopNode) {
+    init(handle: Int, node: HopNode, onBearerTransition: @escaping () -> Void) {
       self.handle = handle
       self.node = node
       self.runtime = HopRuntime(node: node)
@@ -52,8 +77,11 @@ final class HopMesh: RCTEventEmitter {
 #if canImport(HopBearerLan)
       runtime.register(LanBearer(myId: transportId))
 #endif
-    }
 
+      let sink = ForwardingSink(inner: runtime.bearers.sink, onTransition: onBearerTransition)
+      self.forwardingSink = sink
+      runtime.bearers.sink = sink
+    }
     func snapshot() -> (body: [String: Any], changed: Bool) {
       let enabled = runtime.bearers.bearerStates()
       let active = runtime.bearers.activeTransports()
@@ -104,7 +132,10 @@ final class HopMesh: RCTEventEmitter {
     lock.lock(); defer { lock.unlock() }
     let handle = nextHandle
     nextHandle += 1
-    nodes[handle] = Entry(handle: handle, node: node)
+    nodes[handle] = Entry(handle: handle, node: node) { [weak self] in
+      guard let self = self, let entry = self.entry(for: handle) else { return }
+      _ = self.emitBearerSnapshot(entry)
+    }
     return handle
   }
 
@@ -205,19 +236,25 @@ final class HopMesh: RCTEventEmitter {
   }
 
   @objc(closeNode:resolver:rejecter:)
-  func closeNode(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+  func closeNode(_ handle: Int, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     lock.lock()
     let entry = nodes.removeValue(forKey: handle)
     lock.unlock()
 
-    if let entry = entry {
-      entry.timer?.cancel()
-      entry.timer = nil
+    guard let entry = entry else {
+      resolve(nil)
+      return
+    }
+
+    entry.timer?.cancel()
+    entry.timer = nil
+
+    pumpQueue.async {
       entry.inFlight.removeAll()
       entry.runtime.stop()
       entry.node.close()
+      resolve(nil)
     }
-    resolve(nil)
   }
 
   // MARK: identity + config
@@ -643,36 +680,43 @@ final class HopMesh: RCTEventEmitter {
   }
 
   @objc(stopPump:resolver:rejecter:)
-  func stopPump(_ handle: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+  func stopPump(_ handle: Int, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     guard let entry = entry(for: handle) else { return reject("hop_error", "unknown node handle", nil) }
     lock.lock()
     entry.timer?.cancel()
     entry.timer = nil
     lock.unlock()
-    entry.runtime.stop()
-    _ = emitBearerSnapshot(entry)
-    resolve(nil)
+    pumpQueue.async {
+      entry.runtime.stop()
+      _ = self.emitBearerSnapshot(entry)
+      resolve(nil)
+    }
   }
 
   private func pump(_ handle: Int) {
     guard let entry = entry(for: handle) else { return }
     let node = entry.node
+    guard self.entry(for: handle) === entry else { return }
     entry.runtime.tick(nowMs: UInt64(Date().timeIntervalSince1970 * 1000))
+    guard self.entry(for: handle) === entry else { return }
     _ = emitBearerSnapshot(entry)
+    guard self.entry(for: handle) === entry else { return }
     node.drainOutgoing { link, bytes in
+      guard self.entry(for: handle) === entry else { return }
       if entry.runtime.bearers.transportName(of: link) != nil {
         entry.runtime.bearers.send(bytes, on: link)
       } else {
         self.send("HopMesh:outgoing", ["node": handle, "link": Int(link), "bytes": self.b64(bytes)])
       }
     }
+    guard self.entry(for: handle) === entry else { return }
     node.pollInbox { m in
+      guard self.entry(for: handle) === entry else { return }
       let idB64 = self.b64(m.id)
       self.lock.lock()
-      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
-      if entry.inFlight.contains(idB64) { self.lock.unlock(); return }
-      entry.inFlight.insert(idB64)
-      self.nodes[handle] = entry
+      guard let currentEntry = self.nodes[handle], currentEntry === entry else { self.lock.unlock(); return }
+      if currentEntry.inFlight.contains(idB64) { self.lock.unlock(); return }
+      currentEntry.inFlight.insert(idB64)
       self.lock.unlock()
 
       self.send("HopMesh:message", [
@@ -685,13 +729,14 @@ final class HopMesh: RCTEventEmitter {
         "createdAt": Double(m.createdAt),
       ])
     }
+    guard self.entry(for: handle) === entry else { return }
     node.pollServiceRequestsAccepting { r in
+      guard self.entry(for: handle) === entry else { return false }
       let ridB64 = self.b64(r.requestId)
       self.lock.lock()
-      guard var entry = self.nodes[handle] else { self.lock.unlock(); return false }
-      if entry.inFlight.contains(ridB64) { self.lock.unlock(); return false }
-      entry.inFlight.insert(ridB64)
-      self.nodes[handle] = entry
+      guard let currentEntry = self.nodes[handle], currentEntry === entry else { self.lock.unlock(); return false }
+      if currentEntry.inFlight.contains(ridB64) { self.lock.unlock(); return false }
+      currentEntry.inFlight.insert(ridB64)
       self.lock.unlock()
 
       self.send("HopMesh:serviceRequest", [
@@ -704,13 +749,14 @@ final class HopMesh: RCTEventEmitter {
       ])
       return false
     }
+    guard self.entry(for: handle) === entry else { return }
     node.pollServiceResponses { r in
+      guard self.entry(for: handle) === entry else { return }
       let ridB64 = self.b64(r.forRequestId)
       self.lock.lock()
-      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
-      if entry.inFlight.contains(ridB64) { self.lock.unlock(); return }
-      entry.inFlight.insert(ridB64)
-      self.nodes[handle] = entry
+      guard let currentEntry = self.nodes[handle], currentEntry === entry else { self.lock.unlock(); return }
+      if currentEntry.inFlight.contains(ridB64) { self.lock.unlock(); return }
+      currentEntry.inFlight.insert(ridB64)
       self.lock.unlock()
 
       self.send("HopMesh:serviceResponse", [
@@ -721,15 +767,14 @@ final class HopMesh: RCTEventEmitter {
         "body": self.b64(r.body),
       ])
     }
-    // The NON-accepting poll, exactly like pollInbox above: a publication stays queued until JS calls
-    // acceptHpsMessage, so one that arrives while the JS side crashes is redelivered, not lost.
+    guard self.entry(for: handle) === entry else { return }
     node.pollHpsMessages { m in
+      guard self.entry(for: handle) === entry else { return }
       let idB64 = self.b64(m.id)
       self.lock.lock()
-      guard var entry = self.nodes[handle] else { self.lock.unlock(); return }
-      if entry.inFlight.contains(idB64) { self.lock.unlock(); return }
-      entry.inFlight.insert(idB64)
-      self.nodes[handle] = entry
+      guard let currentEntry = self.nodes[handle], currentEntry === entry else { self.lock.unlock(); return }
+      if currentEntry.inFlight.contains(idB64) { self.lock.unlock(); return }
+      currentEntry.inFlight.insert(idB64)
       self.lock.unlock()
 
       self.send("HopMesh:hpsMessage", [
@@ -740,9 +785,9 @@ final class HopMesh: RCTEventEmitter {
         "body": self.b64(m.body),
       ])
     }
-    // Take-and-clear, not accept-to-remove: a drained invite is gone, so the JS side must persist what
-    // this hands it.
+    guard self.entry(for: handle) === entry else { return }
     node.pollHpsInvites { inv in
+      guard self.entry(for: handle) === entry else { return }
       self.send("HopMesh:hpsInvite", [
         "node": handle,
         "host": HopAddress.base58(inv.host),
