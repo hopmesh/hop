@@ -1,6 +1,7 @@
 'use strict';
 
 // Serve the testkit receiver entry when the installed HopDemo debug APK asks Metro for index.bundle.
+const fs = require('fs');
 const path = require('path');
 const {createRequire} = require('module');
 const appRoot = path.resolve(__dirname, '../apps/react-native/HopDemo');
@@ -17,7 +18,11 @@ const entry = `/testkit/rn-device-proof-${bearer}-entry.bundle`;
 const base = getDefaultConfig(repoRoot);
 module.exports = mergeConfig(base, {
   projectRoot: repoRoot,
-  watchFolders: [appRoot, path.resolve(repoRoot, 'sdk/react-native')],
+  watchFolders: [
+    appRoot,
+    path.resolve(repoRoot, 'sdk/react-native'),
+    ...(fs.existsSync(path.join(appRoot, 'node_modules')) ? [fs.realpathSync(path.join(appRoot, 'node_modules'))] : []),
+  ],
   resolver: {
     disableHierarchicalLookup: true,
     nodeModulesPaths: [path.join(appRoot, 'node_modules')],
@@ -25,6 +30,7 @@ module.exports = mergeConfig(base, {
       react: path.join(appRoot, 'node_modules/react'),
       'react-native': path.join(appRoot, 'node_modules/react-native'),
       '@hop-mesh/react-native': path.join(appRoot, 'node_modules/@hop-mesh/react-native'),
+      '@babel/runtime': path.join(appRoot, 'node_modules/@babel/runtime'),
     },
   },
   server: {

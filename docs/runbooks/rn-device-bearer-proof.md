@@ -99,6 +99,8 @@ adb -s 34241FDH2004KR shell pm grant com.hopdemo android.permission.BLUETOOTH_SC
 adb -s 34241FDH2004KR shell pm grant com.hopdemo android.permission.BLUETOOTH_ADVERTISE
 adb -s 34241FDH2004KR shell pm grant com.hopdemo android.permission.BLUETOOTH_CONNECT
 adb -s 34241FDH2004KR shell pm grant com.hopdemo android.permission.ACCESS_LOCAL_NETWORK
+adb -s 34241FDH2004KR shell dumpsys deviceidle whitelist +com.hopdemo
+adb -s 34241FDH2004KR shell am set-standby-bucket com.hopdemo active
 adb -s 34241FDH2004KR shell am force-stop com.hopdemo
 adb -s 34241FDH2004KR shell run-as com.hopdemo rm -f \
   files/rn-device-bearer-proof.db files/rn-device-bearer-proof.db-wal files/rn-device-bearer-proof.db-shm
@@ -142,35 +144,91 @@ RNMAC send bearer=lan ... states=["LAN": true, "LoRa": false, "P2P": false, "BT"
 HOPLAB HOPAUTO bearerstates states=["LoRa": false, "LAN": true, "Relay": false, "BT": false, "P2P": false] active=[:]
 ```
 
-Delivery remained blocked. Two Mac-to-Pixel attempts discovered the Pixel through mDNS, then every native TCP dial timed out. A third attempt selected a lower Mac transport ID so the Pixel became the tiebreak dialer; the Pixel discovered the Mac and its native dial also timed out. The representative evidence is:
+Physical LAN delivery succeeded in both dialer directions once the Android standby firewall restriction was identified and exempted.
 
-```text
-2026-09-09 00:48:17.337 ... HOPLAB 0.009 STATE lan discovered peer=5a4f0430 -> DIAL
-2026-09-09 00:48:25.338 ... HOPLAB 8.010 STATE lan link-down (connect timeout) peer=???????? isDialer=true
-09-09 00:55:25.557 ... HOPLOG: lan discovered peer=40cc9c1b -> DIAL
-09-09 00:55:30.602 HOPLOG: lan dial failed peer=40cc9c1b: failed to connect to /10.4.1.221 (port 60523) from /10.4.1.203 ... after 5000ms
-2026-09-09T06:49:47Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T064810Z_c2 sent=true states=["BT": false, "P2P": false, "LAN": true, "LoRa": false] active=[:]
+### Rejected hypotheses
+
+Two earlier hypotheses were tested and rejected:
+
+1. macOS Local Network privacy denial: Unified logs confirmed that RnMacPeer Network.framework paths were satisfied with listener inboxes active on `en0` and no privacy denials. A probe from the Pixel shell UID (UID 2000) to the Mac listener succeeded (rc=0), proving the Mac listener and the physical Wi-Fi path were unblocked.
+2. Missing Android runtime permission: `NEARBY_WIFI_DEVICES` was added to the manifest, granted, and confirmed as `allow` in appops. Native dials still timed out after 5000 ms because Wi-Fi discovery permissions do not alter kernel IP firewall rules.
+
+### Diagnostic sequence and root cause
+
+The per-UID discrimination was isolated by testing outbound TCP to an external IP (`1.1.1.1:80`):
+
+```sh
+adb -s 34241FDH2004KR shell "nc -w 2 1.1.1.1 80; echo rc=\$?"
+# rc=0 (shell UID 2000 reaches the internet)
+
+adb -s 34241FDH2004KR shell "run-as com.hopdemo nc -w 2 1.1.1.1 80; echo rc=\$?"
+# nc: Timeout, rc=1 (app UID 10636 cannot send any TCP packet)
 ```
 
-The two hosts were on the same 10.4.1.0/24 subnet and passed ICMP both ways. macOS Local Network privacy was not the cause: unified logs showed the RnMacPeer path as satisfied and its listener inbox active on `en0`, with no privacy denial. A direct probe to that exact listener discriminated by Android UID:
+This proved the block was not local-subnet-specific or Wi-Fi-specific: all IP traffic from UID 10636 was being dropped by the OS.
 
-```text
-RnMacPeer 98118 ... TCP *:60524 (LISTEN)
-mac-loopback: connected, rc=0
-Pixel shell UID to 10.4.1.221:60524: rc=0
-Pixel com.hopdemo UID to 10.4.1.221:60524: nc: Timeout, rc=1
+Inspecting Android network policy revealed the exact blocking layer:
+
+```sh
+adb -s 34241FDH2004KR shell dumpsys netpolicy | grep -E "UID=10636"
+# UID=10636 state=null blocked_state={blocked=APP_STANDBY|APP_BACKGROUND,allowed=NONE,effective=APP_STANDBY|APP_BACKGROUND}
+
+adb -s 34241FDH2004KR shell dumpsys network_management | grep 10636
+# UID firewall standby rule: [ ... 10636:2 ... ] (2 = FIREWALL_RULE_DENY)
 ```
 
-`NEARBY_WIFI_DEVICES` was then declared in the merged manifest, the rebuilt APK was installed, `pm grant` succeeded, and appops reported `NEARBY_WIFI_DEVICES: allow`. The same native LAN attempt still failed:
+Because the test runs headlessly on a passcode-locked device with screen sleeping, ActivityManager keeps the app in `PROCESS_STATE_TOP_SLEEPING`. Without power-save allowlisting, `NetworkPolicyManagerService` marks the app `effective=APP_STANDBY|APP_BACKGROUND` and installs a netd eBPF drop rule in the `fw_standby` chain. Outbound SYN packets are dropped before leaving `wlan0`, and inbound SYN packets are dropped before reaching `ServerSocket.accept()`. Shell UID 2000 succeeded because system UIDs have `never_apply_rules_to_core_uids: true`. BLE succeeded because L2CAP channels use HCI through `bluetoothd` rather than the Linux IP packet filter.
 
-```text
-09-09 01:27:16.676 ... HOPLOG: lan discovered peer=4fbcb79e -> DIAL
-09-09 01:27:21.722 ... HOPLOG: lan dial failed peer=4fbcb79e: failed to connect to /10.4.1.221 (port 60525) from /10.4.1.203 (port 34896) after 5000ms
-2026-09-09T07:28:44Z RNMAC timeout bearer=lan nonce=rn_lan_20260909T072700Z_d1 sent=true states=["BT": false, "P2P": false, "LoRa": false, "LAN": true] active=[:]
+Exempting the package from battery restrictions removes the drop rule:
+
+```sh
+adb -s 34241FDH2004KR shell dumpsys deviceidle whitelist +com.hopdemo
+adb -s 34241FDH2004KR shell am set-standby-bucket com.hopdemo active
+adb -s 34241FDH2004KR shell dumpsys netpolicy | grep -E "UID=10636"
+# UID=10636 state=null blocked_state={blocked=APP_BACKGROUND,allowed=POWER_SAVE_ALLOWLIST|POWER_SAVE_EXCEPT_IDLE_ALLOWLIST,effective=NONE}
 ```
 
-That rerun falsified the missing-permission hypothesis, so the temporary permission declaration was not retained. Both native listeners bind, mDNS resolves, and the Mac Network.framework path is satisfied, but the React Native app path never completes TCP. No receiver line or sender ACK exists for any LAN nonce, so LAN remains blocked on a Hop app-path defect and is not reported as exercised.
+With `effective=NONE`, probes connected immediately:
 
+```text
+Pixel app UID to 1.1.1.1:80: rc=0
+Pixel app UID to Mac 10.4.1.221:60555: Accepted connection from ('10.4.1.203', 44778), rc=0
+Mac to Pixel app listener 10.4.1.203:60556: Connection to 10.4.1.203 port 60556 [tcp/*] succeeded!
+```
+
+### Verified physical LAN delivery
+
+With the power-save allowlist in place, physical LAN delivery was exercised in both dialer directions:
+
+1. Pixel as dialer (Mac node ID `53c27e6e` < Pixel node ID `5a910768`):
+
+```text
+Mac send:
+2026-09-09T09:15:54Z RNMAC send bearer=lan nonce=rn_lan_20260909T091554Z_macdial to=DHwvAiWiuyVPJwkK1e27Zn2hr18WBj7uoE44VhT5ugB4 result=queued states=["BT": false, "P2P": false, "LoRa": false, "LAN": true] active=[:]
+HOPLAB 1.149 STATE lan inbound-connection (acceptor)
+HOPLAB 1.157 STATE lan channel-ready isDialer=false
+HOPLAB 1.169 STATE lan hello-recv peer=5a910768
+2026-09-09T09:15:56Z RNMAC ack bearer=lan nonce=rn_lan_20260909T091554Z_macdial delivered=true deliveryMs=57148 hops=1
+
+Pixel receiver:
+09-09 03:15:57.372 13091 13159 I ReactNativeJS: 2026-09-09T09:15:57.368Z RNPROOF receipt bearer=lan nonce=rn_lan_20260909T091554Z_macdial from=7z9NYW5Wd3Cq43TaaeeHgmFksKPs4xqxhuyeztfNSa2F accepted=true
+```
+
+2. Mac as dialer (Mac node ID `d72fdd8e` > Pixel node ID `75afd046`):
+
+```text
+Mac send:
+HOPLAB 0.007 STATE lan discovered peer=75afd046 -> DIAL
+HOPLAB 0.104 STATE lan channel-ready isDialer=true
+HOPLAB 0.133 STATE lan hello-recv peer=75afd046
+2026-09-09T09:13:17Z RNMAC send bearer=lan nonce=rn_lan_20260909T091316Z_round2 to=8c6KdNjhkZS9cn1FdgiA23nDgYSaJpaMd8DpHwEa828N result=queued states=["LoRa": false, "P2P": false, "BT": false, "LAN": true] active=["LAN": 1]
+2026-09-09T09:13:17Z RNMAC ack bearer=lan nonce=rn_lan_20260909T091316Z_round2 delivered=true deliveryMs=18355 hops=1
+
+Pixel receiver:
+09-09 03:13:18.551 12305 12406 I ReactNativeJS: 2026-09-09T09:13:18.548Z RNPROOF receipt bearer=lan nonce=rn_lan_20260909T091316Z_round2 from=4JaaJ5BdU9YmsA8PuHpidBJWxYuUtvjJwSjKNji1kHqo accepted=true
+```
+
+Verdict: exercised on the physical Pixel 7 and the Mac Wi-Fi radio with unique nonces, receipts, and ACKs in both dialer directions.
 ## Failure modes found by this run
 
 The first full app assembly exposed three consumer constraints that module compilation had not:
