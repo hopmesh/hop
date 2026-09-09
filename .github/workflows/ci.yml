@@ -572,7 +572,8 @@ jobs:
     # here; the saving it offers no longer exists.
     runs-on: macos-14
     needs: changes
-    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true'
+    # The React Native job runs on Linux, so its iOS source changes route through this macOS job.
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.apple == 'true' || needs.changes.outputs.sdk_react_native == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -605,7 +606,7 @@ jobs:
           key: cargo-apple-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-apple-${{ runner.os }}-
 
-      # quality-net-02 / infra-04: the SwiftPM stack (Hop SDK wrapper, four bearer packages,
+      # quality-net-02 / infra-04: the SwiftPM stack (Hop SDK wrapper, five bearer packages,
       # HopDriver) links libhop via two gitignored xcframeworks. Build them first from the Rust
       # core (the same scripts a developer runs), then swift-build each package and build-only the
       # app. HOP_SQLCIPHER=0 skips the vendored-OpenSSL cross-compile: this job is a compile gate,
@@ -620,6 +621,75 @@ jobs:
           # remote-only, but use the verified local artifact throughout this disposable CI checkout.
           cp sdk/apple/Package.local.swift sdk/apple/Package.swift
 
+      - name: Set up Node for React Native iOS compile gate
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: |
+            sdk/react-native/package-lock.json
+            apps/react-native/HopDemo/package-lock.json
+
+      # CAND-DEPS-03: Compile the iOS half of @hop-mesh/react-native against the current Hop
+      # sources and the libhop.xcframework built above. Build only the HopMesh CocoaPods target,
+      # not the app, so this needs neither a signing identity nor a booted simulator. The fixture
+      # is isolated under RUNNER_TEMP because the app's committed lock still names the prior Apple
+      # SDK release. CHop is a local development pod here so the gate consumes this commit's
+      # freshly built framework instead of requiring a release to exist before CI can compile.
+      - name: Build React Native iOS native consumer (compile Swift and Objective-C against XCFramework)
+        run: |
+          set -euo pipefail
+          # Native compilation needs the React Native headers and autolinking CLI. npm prepares the
+          # local SDK dependency from its source directory, so install that package's locked build tools
+          # first. The package's JavaScript build and tests still run in react-native-sdk.
+          (cd sdk/react-native && npm ci --ignore-scripts --no-audit --no-fund)
+          (cd apps/react-native/HopDemo && npm ci --ignore-scripts --no-audit --no-fund)
+
+          fixture="$RUNNER_TEMP/hop-rn-ios-gate"
+          app="$fixture/apps/react-native/HopDemo"
+          apple="$fixture/sdk/apple"
+          rm -rf "$fixture"
+          mkdir -p "$app/ios" "$apple"
+
+          cp -R apps/react-native/HopDemo/ios/HopDemo.xcodeproj \
+            apps/react-native/HopDemo/ios/HopDemo "$app/ios/"
+          cp apps/react-native/HopDemo/ios/Podfile "$app/ios/Podfile"
+          cp apps/react-native/HopDemo/package.json "$app/package.json"
+          ln -s "$GITHUB_WORKSPACE/apps/react-native/HopDemo/node_modules" "$app/node_modules"
+
+          cp sdk/apple/CHop.podspec sdk/apple/HopContract.podspec sdk/apple/HopSDK.podspec \
+            sdk/apple/LICENSE.md "$apple/"
+          # The framework step swaps the working manifest to Package.local.swift. The podspecs read
+          # their version from the canonical manifest, so recover this commit's copy for the fixture.
+          git show HEAD:sdk/apple/Package.swift > "$apple/Package.swift"
+          # CocoaPods does not traverse a symlinked source directory while expanding source_files.
+          cp -R sdk/apple/Sources "$apple/"
+          ln -s "$GITHUB_WORKSPACE/sdk/apple/Frameworks/libhop.xcframework" \
+            "$apple/libhop.xcframework"
+
+          python3 - "$app/ios/Podfile" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          old = "pod 'CHop', :podspec => '../../../../sdk/apple/CHop.podspec'"
+          new = "pod 'CHop', :path => '../../../../sdk/apple'"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one CHop pod declaration, found {text.count(old)}")
+          path.write_text(text.replace(old, new))
+          PY
+
+          cd "$app/ios"
+          pod install --no-repo-update
+          xcodebuild \
+            -project Pods/Pods.xcodeproj \
+            -target HopMesh \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
       # apple-07: the pure-logic layers are unit-tested headlessly (no device). The Hop SDK wrapper
       # runs the BearerManager multiplexer + full HopRuntime deliver/ACK tests (core-ffi-09); the BLE
       # bearer runs the dedup-tiebreaker tests; HopDriver runs the Keychain identity/db-key store
@@ -627,14 +697,14 @@ jobs:
       - name: Test the Hop SDK wrapper (HopContract + Hop + HopRuntime)
         run: bash sdk/apple/with-local-framework.sh swift test
 
-      # apple-cov: all three bearer packages are tested headlessly (no device) and coverage-GATED at
+      # apple-cov: all five bearer packages are tested headlessly (no device) and coverage-GATED at
       # >=80% line coverage of their testable (radio-free) source. LAN + Relay run REAL loopback-socket
       # integration tests; BLE cannot (CoreBluetooth has no simulator/headless support and its delegate
       # arg types have no public initializers), so its Central/Peripheral DECISION logic was extracted
       # into pure CentralCore/PeripheralCore + a DedupLink seam and is driven directly by tests. The
       # CoreBluetooth glue (BleBearer+Radio.swift = Link/Central/Peripheral shells + start/stop/wake) and
       # the CoreLocation wake (BeaconWake.swift) are EXCLUDED from the BLE denominator (covered by the
-      # on-device hopmac/testkit workflow). Previously all three re-modeled their logic in the test file
+      # on-device hopmac/testkit workflow). Previously BLE, LAN, and Relay re-modeled logic in the test file
       # and sat at ~7-10% line coverage. `swift test` also builds, so these subsume the old build-only step.
       - name: Self-test Apple coverage gate
         run: bash tools/apple-cov-gate.test.sh
@@ -1038,6 +1108,16 @@ jobs:
       # step existed nothing invoked either file, while CLAUDE.md said the rule was enforced by it.
       - name: Self-test worktree checkpoint guard
         run: bash tools/check-worktree-checkpoints.test.sh
+      # Round-4 integration hazards. The inline-module guard runs on the PR's own range: it is a
+      # source-shape rule and CI is exactly where it belongs. The content guard needs the lane
+      # branches an integration claims to merge, which only the integrator knows, so CI runs its
+      # self-test and tools/local-ci-mirror.sh runs the guard itself.
+      - name: Self-test additive test module guard
+        run: bash tools/test-module-inline-guard.test.sh
+      - name: Enforce the per-file test module convention
+        run: bash tools/test-module-inline-guard.sh "origin/${{ github.base_ref || 'main' }}..HEAD"
+      - name: Self-test integration content guard
+        run: bash tools/integration-content-guard.test.sh
       - name: Self-test BLE dial-backoff parity guard
         run: bash tools/ble-backoff-parity.test.sh
       - name: Enforce BLE dial-backoff parity across bearers
@@ -1667,10 +1747,10 @@ jobs:
     if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdk_react_native == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The cross-platform RN client SDK wraps sdk/apple + sdk/android through one native bridge. Only
-      # the JS layer is verified here: the ios/ and android/ halves compile in a consuming app's build
-      # against the platform SDKs, so there is no libhop to resolve. Unlike the other SDKs this one is
-      # not mirrored or published (docs/repo-catalog.md), so this job is its ONLY gate.
+      # The cross-platform RN client SDK wraps sdk/apple + sdk/android through one native bridge. This
+      # job verifies JavaScript and builds the Android module against local AARs. The macOS apple job
+      # builds HopMesh.swift and HopMesh.m as a CocoaPods target against current Apple SDK sources and
+      # libhop.xcframework. This SDK is not mirrored or published, so these are its only CI gates.
       - uses: ./sdk/react-native/.github/actions/ci
         with:
           pkg-dir: sdk/react-native
