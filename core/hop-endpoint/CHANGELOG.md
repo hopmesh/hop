@@ -10,6 +10,7 @@ git-cliff. Do not edit by hand.
 - use fallible critical KV writes and prevent telemetry replay across restart (STORE-005, SVC-006) (63cbcf0)
 
 ### Documentation
+- regenerate from conventional commits (de9d778)
 - regenerate from conventional commits (47a8bf6)
 - regenerate from conventional commits (f67300f)
 - regenerate from conventional commits (6e7dc77)
