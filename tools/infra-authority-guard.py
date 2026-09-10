@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""Enforce the bootstrap/runtime authority boundary for production deploys."""
+
+import argparse
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+
+EXPECTED_DEPLOY_PROJECT_ROLES = {
+    "roles/bigquery.dataEditor",
+    "roles/certificatemanager.editor",
+    "roles/compute.loadBalancerAdmin",
+    "roles/dns.admin",
+    "roles/logging.configWriter",
+    "roles/logging.logWriter",
+    "roles/monitoring.editor",
+    "roles/run.developer",
+    "roles/serviceusage.serviceUsageConsumer",
+}
+EXPECTED_RUNTIME_PROVIDER_SOURCES = {
+    "hashicorp/google",
+    "hashicorp/google-beta",
+    "hashicorp/time",
+}
+EXPECTED_RUNTIME_PROVIDER_BLOCKS = ["google", "google-beta"]
+ALLOWED_RUNTIME_DATA_SOURCES = {
+    "google_compute_regions",
+    "google_project",
+    "google_secret_manager_secret_version",
+}
+FORBIDDEN_RUNTIME_RESOURCE_PREFIXES = (
+    "google_artifact_registry_repository",
+    "google_cloudbuild_trigger",
+    "google_cloudbuildv2_repository",
+    "google_firestore_database",
+    "google_firestore_field",
+    "google_iam_deny_policy",
+    "google_iam_workload_identity_pool",
+    "google_project_iam",
+    "google_project_service",
+    "google_secret_manager_secret",
+    "google_service_account",
+    "google_storage_bucket_iam",
+)
+FORBIDDEN_DEPLOY_ROLES = {
+    "roles/editor",
+    "roles/owner",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/iam.securityAdmin",
+    "roles/run.admin",
+    "roles/storage.admin",
+    "roles/secretmanager.admin",
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/cloudbuild.builds.editor",
+}
+
+
+def resource_types(text):
+    return re.findall(r'^\s*resource\s+"([^"]+)"\s+"[^"]+"\s*\{', text, re.MULTILINE)
+
+
+def local_role_set(text, name):
+    match = re.search(rf"\b{name}\s*=\s*toset\(\[(.*?)\]\)", text, re.DOTALL)
+    if not match:
+        return None
+    return re.findall(r'"(roles/[^"\s]+)"', match.group(1))
+
+
+def resource_block(text, resource_type, resource_name):
+    return balanced_block(text, f'resource "{resource_type}" "{resource_name}"')
+
+
+def variable_block(text, variable_name):
+    return balanced_block(text, f'variable "{variable_name}"')
+
+def strip_hcl_comment(line):
+    """Blank line comments outside strings while preserving character offsets."""
+    quoted = False
+    escaped = False
+    for index, char in enumerate(line):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char == "#" or line.startswith("//", index):
+            return line[:index] + " " * (len(line) - index)
+    return line
+
+
+def top_level_assignment_pairs(block):
+    """Return active single-line key/value assignments at depth one in an HCL block."""
+    pairs = []
+    depth = 0
+    for raw_line in block.splitlines():
+        line = strip_hcl_comment(raw_line)
+        if depth == 1:
+            match = re.fullmatch(r'\s*("[^"]+"|[A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.*?)\s*', line)
+            if match:
+                pairs.append((match.group(1), match.group(2)))
+        quoted = False
+        escaped = False
+        for char in line:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+    return pairs
+
+
+def top_level_assignment_values(block, key):
+    return [value for found_key, value in top_level_assignment_pairs(block) if found_key == key]
+    return values
+
+
+def has_exact_top_level_assignment(block, key, expected):
+    return top_level_assignment_values(block, key) == [expected]
+
+
+def balanced_block(text, marker):
+    clean = "\n".join(strip_hcl_comment(line) for line in text.splitlines())
+    match = re.search(rf'^\s*{re.escape(marker)}\s*\{{', clean, re.MULTILINE)
+    if not match:
+        return None
+    start = match.start()
+    brace = clean.find("{", match.start())
+    depth = 0
+    quoted = False
+    escaped = False
+    for index in range(brace, len(clean)):
+        char = clean[index]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+def repeated_blocks(text, marker):
+    blocks = []
+    offset = 0
+    while True:
+        match = re.search(rf'^\s*{re.escape(marker)}\s*\{{', text[offset:], re.MULTILINE)
+        if not match:
+            return blocks
+        start = offset + match.start()
+        block = balanced_block(text[start:], marker)
+        if block is None:
+            return blocks
+        blocks.append(block)
+        offset = start + len(block)
+
+def outside_hcl_strings(line):
+    """Blank quoted string contents while preserving unquoted syntax offsets."""
+    result = list(line)
+    quoted = False
+    escaped = False
+    for index, char in enumerate(line):
+        if quoted:
+            result[index] = " "
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+            result[index] = " "
+    return "".join(result)
+
+def strip_hcl_heredocs(text):
+    """Blank heredoc bodies while preserving line and character offsets."""
+    lines = text.splitlines(keepends=True)
+    result = []
+    terminator = None
+    for line in lines:
+        if terminator is not None:
+            if re.fullmatch(rf'\s*{re.escape(terminator)}\s*(?:\r?\n)?', line):
+                terminator = None
+                result.append(" " * (len(line.rstrip("\r\n"))) + line[len(line.rstrip("\r\n")):])
+            else:
+                result.append(" " * (len(line.rstrip("\r\n"))) + line[len(line.rstrip("\r\n")):])
+            continue
+        active = outside_hcl_strings(strip_hcl_comment(line.rstrip("\r\n")))
+        match = re.search(r'<<-?([A-Za-z_][A-Za-z0-9_]*)', active)
+        result.append(line)
+        if match:
+            terminator = match.group(1)
+    return "".join(result)
+
+
+def check(root):
+    root = Path(root)
+    errors = []
+    runtime_files = sorted(path for path in (root / "infra").glob("*.tf") if path.is_file())
+    if not runtime_files:
+        return ["runtime Terraform root is missing"]
+    alternative_config_files = sorted(
+        path.name
+        for path in (root / "infra").iterdir()
+        if path.is_file() and path.name.endswith((".tf.json", ".tofu", ".tofu.json"))
+    )
+    if alternative_config_files:
+        errors.append(f"runtime root contains uninspected alternative OpenTofu configuration: {alternative_config_files}")
+    runtime_parts = []
+    for path in runtime_files:
+        try:
+            runtime_parts.append(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            errors.append(f"runtime configuration is not UTF-8 text: {path.relative_to(root)}")
+    runtime_raw = "\n".join(runtime_parts)
+    if any("/*" in outside_hcl_strings(strip_hcl_comment(line)) or "*/" in outside_hcl_strings(strip_hcl_comment(line)) for line in runtime_raw.splitlines()):
+        errors.append("runtime root may not contain HCL block comments")
+    runtime = strip_hcl_heredocs(runtime_raw)
+    auto_var_files = sorted(
+        path.name
+        for path in (root / "infra").iterdir()
+        if path.is_file()
+        and (
+            path.name in {"terraform.tfvars", "terraform.tfvars.json"}
+            or path.name.endswith(".auto.tfvars")
+            or path.name.endswith(".auto.tfvars.json")
+        )
+    )
+    if auto_var_files:
+        errors.append(f"runtime root contains automatically loaded variable files: {auto_var_files}")
+    override_files = sorted(
+        path.name
+        for path in (root / "infra").iterdir()
+        if path.is_file()
+        and (
+            path.name in {"override.tf", "override.tofu", "override.tf.json", "override.tofu.json"}
+            or path.name.endswith(("_override.tf", "_override.tofu", "_override.tf.json", "_override.tofu.json"))
+        )
+    )
+    if override_files:
+        errors.append(f"runtime root contains OpenTofu override files: {override_files}")
+    resource_declarations = re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', runtime, re.MULTILINE)
+    parsed_resources = [resource_type for resource_type, _ in resource_declarations]
+    if len(resource_declarations) != len(re.findall(r'^\s*resource\b', runtime, re.MULTILINE)):
+        errors.append("runtime root contains an unparseable resource declaration")
+    for resource_type in parsed_resources:
+        if not resource_type.startswith("google_") and resource_type != "time_sleep":
+            errors.append(f"runtime root uses an untrusted provider resource: {resource_type}")
+        if resource_type.startswith(FORBIDDEN_RUNTIME_RESOURCE_PREFIXES):
+            errors.append(f"runtime root contains bootstrap authority resource: {resource_type}")
+        if re.match(r"google_cloud_run.*_iam_", resource_type):
+            errors.append(f"runtime root contains Cloud Run IAM mutation: {resource_type}")
+    for forbidden in ("SHORT_SHA", ":latest", "deploy_image_sha", "substr(var.deployment_source_sha"):
+        if forbidden in runtime:
+            errors.append(f"runtime root contains mutable deployment input: {forbidden}")
+    # Every executable image variable must REJECT anything that is not a digest. The check reads the
+    # variable's own validation condition, not just "the block mentions @sha256 somewhere": the
+    # error_message string mentions it too, so a looser search would pass a gutted condition.
+    for image_variable in ("relay_image", "example_image", "accountd_image", "console_image"):
+        block = variable_block(runtime, image_variable) or ""
+        condition = re.search(r'^\s*condition\s*=\s*([^\n]+)$', block, re.MULTILINE)
+        expression = condition.group(1) if condition else ""
+        if "@sha256:[0-9a-f]{64}$" not in expression or f"var.{image_variable}" not in expression:
+            errors.append(f"runtime {image_variable} does not require a sha256 digest")
+    data_sources = re.findall(r'^\s*data\s+"([^"]+)"\s+"[^"]+"\s*\{', runtime, re.MULTILINE)
+    if len(data_sources) != len(re.findall(r'^\s*data\b', runtime, re.MULTILINE)) or not set(data_sources) <= ALLOWED_RUNTIME_DATA_SOURCES:
+        errors.append(f"runtime data sources drifted: {data_sources}")
+    if re.search(r'^\s*ephemeral\b', runtime, re.MULTILINE):
+        errors.append("runtime root contains an uninspected ephemeral provider resource")
+    if re.search(r'\b(?:cloud|encryption)\s*\{', runtime):
+        errors.append("runtime root replaces or extends trusted state handling")
+    provider_sources = set(re.findall(r'\bsource\s*=\s*"([^"]+)"', runtime))
+    if provider_sources != EXPECTED_RUNTIME_PROVIDER_SOURCES:
+        errors.append(f"runtime provider sources drifted: {sorted(provider_sources)}")
+    provider_blocks = re.findall(r'^\s*provider\s+"([^"]+)"\s*\{', runtime, re.MULTILINE)
+    if provider_blocks != EXPECTED_RUNTIME_PROVIDER_BLOCKS:
+        errors.append(f"runtime provider configuration drifted: {provider_blocks}")
+    providers_path = root / "infra" / "providers.tf"
+    providers = providers_path.read_text(encoding="utf-8") if providers_path.is_file() else ""
+    if not re.fullmatch(
+        r'\s*provider\s+"google"\s*\{\s*project\s*=\s*var\.project_id\s*\}\s*provider\s+"google-beta"\s*\{\s*project\s*=\s*var\.project_id\s*\}\s*',
+        providers,
+    ):
+        errors.append("runtime Google provider configuration contains untrusted credentials, impersonation, aliases, or endpoints")
+    backends = re.findall(r'^\s*backend\s+"([^"]+)"\s*\{', runtime, re.MULTILINE)
+    if backends != ["gcs"]:
+        errors.append(f"runtime backend drifted: {backends}")
+    versions_path = root / "infra" / "versions.tf"
+    versions = versions_path.read_text(encoding="utf-8") if versions_path.is_file() else ""
+    backend = re.search(r'backend\s+"gcs"\s*\{([^{}]*)\}', versions, re.DOTALL)
+    backend_keys = re.findall(r'^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=', backend.group(1), re.MULTILINE) if backend else []
+    if len(backend_keys) != 2 or set(backend_keys) != {"bucket", "prefix"}:
+        errors.append("runtime GCS backend may configure only the bootstrap-overridden bucket and prefix")
+    backend_values = dict(
+        re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', backend.group(1), re.MULTILINE)
+    ) if backend else {}
+    if backend_values != {"bucket": "hop-mesh-tfstate", "prefix": "relay-fleet"}:
+        errors.append(f"runtime GCS backend values drifted: {backend_values}")
+    bootstrap_versions_path = root / "infra" / "bootstrap" / "versions.tf"
+    bootstrap_versions = bootstrap_versions_path.read_text(encoding="utf-8") if bootstrap_versions_path.is_file() else ""
+    bootstrap_backend = re.search(r'backend\s+"gcs"\s*\{([^{}]*)\}', bootstrap_versions, re.DOTALL)
+    bootstrap_backend_values = dict(
+        re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', bootstrap_backend.group(1), re.MULTILINE)
+    ) if bootstrap_backend else {}
+    if bootstrap_backend_values != {"bucket": "hop-mesh-tfstate", "prefix": "bootstrap"}:
+        errors.append(f"bootstrap GCS backend values drifted: {bootstrap_backend_values}")
+    cloud_run_declarations = [
+        declaration for declaration in resource_declarations if declaration[0].startswith("google_cloud_run")
+    ]
+    if len(cloud_run_declarations) != 4 or set(cloud_run_declarations) != {
+        ("google_cloud_run_v2_service", "relay"),
+        ("google_cloud_run_v2_service", "example"),
+        ("google_cloud_run_v2_service", "accountd"),
+        ("google_cloud_run_v2_service", "console"),
+    }:
+        errors.append(f"runtime Cloud Run executable resources drifted: {sorted(cloud_run_declarations)}")
+    image_bindings = [value.strip() for value in re.findall(r'^\s*image\s*=\s*([^\n#]+)', runtime, re.MULTILINE)]
+    if len(image_bindings) != 4 or set(image_bindings) != {
+        "var.relay_image",
+        "var.example_image",
+        "var.accountd_image",
+        "var.console_image",
+    }:
+        errors.append(f"runtime image bindings drifted: {image_bindings}")
+    service_accounts = [
+        value.strip() for value in re.findall(r'^\s*service_account\s*=\s*([^\n#]+)', runtime, re.MULTILINE)
+    ]
+    if len(service_accounts) != 4 or set(service_accounts) != {
+        "local.relay_service_account",
+        "local.example_service_account",
+        "local.accountd_service_account",
+        "local.console_service_account",
+    }:
+        errors.append(f"runtime executable identities drifted: {service_accounts}")
+    example_path = root / "infra" / "example.tf"
+    relay_path = root / "infra" / "cloud_run.tf"
+    if example_path.is_file():
+        example = example_path.read_text(encoding="utf-8")
+        if "service_account = local.example_service_account" not in example or "local.relay_service_account" in example:
+            errors.append("public example does not use only its dedicated runtime identity")
+        if 'secret = "hop-example-identity"' not in example or "hop-relay-identity" in example:
+            errors.append("public example does not use only its dedicated identity secret")
+        if "version = var.example_identity_version" not in example:
+            errors.append("public example identity version is not bootstrap pinned")
+    if relay_path.is_file():
+        relay = relay_path.read_text(encoding="utf-8")
+        if "service_account = local.relay_service_account" not in relay:
+            errors.append("relay service does not use its dedicated runtime identity")
+    console_path = root / "infra" / "console.tf"
+    if console_path.is_file():
+        console = console_path.read_text(encoding="utf-8")
+        for local_name in ("local.accountd_service_account", "local.console_service_account"):
+            if f"service_account = {local_name}" not in console:
+                errors.append(f"console services do not use {local_name}")
+        for foreign in ("local.relay_service_account", "local.example_service_account"):
+            if foreign in console:
+                errors.append(f"console services reuse another service's identity: {foreign}")
+    identities_path = root / "infra" / "data.tf"
+    identities = identities_path.read_text(encoding="utf-8") if identities_path.is_file() else ""
+    relay_identities = re.findall(r'^\s*relay_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    example_identities = re.findall(r'^\s*example_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    accountd_identities = re.findall(r'^\s*accountd_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    console_identities = re.findall(r'^\s*console_service_account\s*=\s*"([^"]+)"', identities, re.MULTILINE)
+    if relay_identities != ["hop-relay@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"relay runtime identity local drifted: {relay_identities}")
+    if example_identities != ["hop-example@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"example runtime identity local drifted: {example_identities}")
+    if accountd_identities != ["hop-accountd@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"accountd runtime identity local drifted: {accountd_identities}")
+    if console_identities != ["hop-console@${var.project_id}.iam.gserviceaccount.com"]:
+        errors.append(f"console runtime identity local drifted: {console_identities}")
+
+    iam_path = root / "infra" / "bootstrap" / "iam.tf"
+    if not iam_path.is_file():
+        errors.append("bootstrap IAM definition is missing")
+        return errors
+    iam = iam_path.read_text(encoding="utf-8")
+
+    deploy_roles = local_role_set(iam, "deploy_project_roles")
+    if deploy_roles is None or set(deploy_roles) != EXPECTED_DEPLOY_PROJECT_ROLES or len(deploy_roles) != len(set(deploy_roles)):
+        errors.append(f"deploy project roles drifted: {deploy_roles}")
+    for role in FORBIDDEN_DEPLOY_ROLES:
+        if role in (deploy_roles or []):
+            errors.append(f"deploy identity has forbidden role: {role}")
+
+    legacy_role = resource_block(iam, "google_project_iam_custom_role", "build_secrets")
+    if not legacy_role:
+        errors.append("legacy secret custom role is not pinned in bootstrap")
+    else:
+        for permission in ("secretmanager.secrets.setIamPolicy", "secretmanager.versions.access"):
+            if permission in legacy_role:
+                errors.append(f"legacy secret role has forbidden permission: {permission}")
+
+    relay_access = resource_block(iam, "google_secret_manager_secret_iam_member", "relay_identity")
+    example_access = resource_block(iam, "google_secret_manager_secret_iam_member", "example_identity")
+    if not relay_access or "google_service_account.relay.email" not in relay_access:
+        errors.append("relay seed accessor is not the relay runtime identity")
+    if relay_access and "google_service_account.deploy.email" in relay_access:
+        errors.append("deploy identity can read the relay seed")
+    if not example_access or "google_service_account.example.email" not in example_access:
+        errors.append("example secret accessor is not the dedicated example identity")
+    # The relay seed's hard-deny policy was removed: GCP rejects roles/iam.denyAdmin at the
+    # project level and forbids iam.denypolicies.* in custom roles, so the project-scoped
+    # applier cannot manage a deny policy without an ORG-level grant. Protection now rests
+    # on the allow side, asserted directly above: only the relay runtime holds the accessor,
+    # and the deploy identity explicitly does not.
+    deploy_state = resource_block(iam, "google_storage_bucket_iam_member", "deploy_state")
+    if not deploy_state or "objects/${var.runtime_state_prefix}/" not in deploy_state:
+        errors.append("deploy state access is not scoped to the trusted runtime prefix")
+
+    # Cutover invariants. These pin the complete state-owning surface, not only the four Cloud Run
+    # addresses. An omitted load balancer, DNS, certificate, observability, or removed-state address
+    # is a destruction just as surely as an omitted service.
+    def load_manifest(relative, expected_count, expected_sha256):
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            errors.append(f"authority manifest is missing or not a regular file: {relative}")
+            return []
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            errors.append(f"authority manifest content drifted: {relative}")
+        rows = raw.decode("utf-8").splitlines()
+        if rows != sorted(set(rows)) or len(rows) != expected_count:
+            errors.append(f"authority manifest {relative} must contain {expected_count} sorted unique entries")
+        return rows
+
+    resource_manifest = load_manifest(
+        "infra/runtime-resource-manifest.txt",
+        73,
+        "13ae275e4c0fcd205eae4655404ec0ab8daa7e6da500e854d7dafe5fb18982da",
+    )
+    declared_resources = sorted(f"{kind}.{name}" for kind, name in resource_declarations)
+    if declared_resources != resource_manifest:
+        errors.append("runtime resource declarations differ from the 73-address authority manifest")
+    removed_manifest = load_manifest(
+        "infra/runtime-removed-manifest.txt",
+        20,
+        "76068a02042194ddd26a7d44ab49b98a0be6b0e2ad3060cc8b0e63a825f01857",
+    )
+    removed_addresses = sorted(re.findall(r'^\s*from\s*=\s*([^\s#]+)\s*$', runtime, re.MULTILINE))
+    if removed_addresses != removed_manifest:
+        errors.append("runtime removed addresses differ from the 20-address authority manifest")
+
+    expected_data = {
+        ("google_compute_regions", "available"),
+        ("google_secret_manager_secret_version", "billing_price_ids"),
+    }
+    data_declarations = re.findall(r'^\s*data\s+"([^"]+)"\s+"([^"]+)"\s*\{', runtime, re.MULTILINE)
+    if len(data_declarations) != len(expected_data) or set(data_declarations) != expected_data:
+        errors.append(f"runtime data-source addresses drifted: {sorted(data_declarations)}")
+    if "terraform_remote_state" in runtime:
+        errors.append("runtime root may not read another OpenTofu state")
+    price_data = balanced_block(runtime, 'data "google_secret_manager_secret_version" "billing_price_ids"') or ""
+    for key, expected in (
+        ("project", "var.project_id"),
+        ("secret", '"hop-billing-price-ids"'),
+        ("version", "var.billing_price_ids_version"),
+    ):
+        if not has_exact_top_level_assignment(price_data, key, expected):
+            errors.append(f"billing price id data source drifted: {key}")
+    price_version = variable_block(runtime, "billing_price_ids_version") or ""
+    price_validation = balanced_block(price_version, "validation") or ""
+    if not has_exact_top_level_assignment(
+        price_validation,
+        "condition",
+        'can(regex("^[1-9][0-9]*$", var.billing_price_ids_version))',
+    ):
+        errors.append("billing_price_ids_version does not require a positive numeric version")
+
+    service_contract = {
+        "relay": ('"hop-relay-${each.value}"', "local.regions"),
+        "example": ('"hop-example"', None),
+        "accountd": ('"hop-accountd"', None),
+        "console": ('"hop-console"', None),
+    }
+    for name, (expected_name, expected_for_each) in service_contract.items():
+        block = resource_block(runtime, "google_cloud_run_v2_service", name) or ""
+        header = block.split("template", 1)[0]
+        if not has_exact_top_level_assignment(header, "name", expected_name):
+            errors.append(f"runtime {name} service name drifted")
+        if expected_for_each:
+            if not has_exact_top_level_assignment(header, "for_each", expected_for_each) or top_level_assignment_values(header, "count"):
+                errors.append(f"runtime {name} service cardinality drifted")
+        elif top_level_assignment_values(header, "count") or top_level_assignment_values(header, "for_each"):
+            errors.append(f"runtime singleton {name} gained count or for_each")
+        labels = balanced_block(header, "labels =") or ""
+        if not has_exact_top_level_assignment(labels, '"hop-source-sha"', "var.deployment_source_sha"):
+            errors.append(f"runtime {name} lacks the canonical hop source label")
+        if not has_exact_top_level_assignment(labels, '"hop-private-source-sha"', "var.private_source_sha"):
+            errors.append(f"runtime {name} lacks the pinned private source label")
+    private_source = variable_block(runtime, "private_source_sha") or ""
+    private_validation = balanced_block(private_source, "validation") or ""
+    if not has_exact_top_level_assignment(
+        private_validation,
+        "condition",
+        'can(regex("^[0-9a-f]{40}$", var.private_source_sha))',
+    ):
+        errors.append("private_source_sha does not require a full lowercase commit")
+
+    # The public repository may orchestrate a private checkout at runtime; the private source and
+    # billing configuration must never become part of its committed or untracked tree.
+    forbidden_public_paths = (
+        "services/hop-accountd",
+        "services/hop-billingd",
+        "apps/web/console",
+        "infra/billing",
+    )
+    for relative in forbidden_public_paths:
+        if (root / relative).exists() or (root / relative).is_symlink():
+            errors.append(f"public checkout contains private source path: {relative}")
+    disclosure_patterns = (
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+        re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+        re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]+\b"),
+        re.compile(r"\bwhsec_[A-Za-z0-9]+\b"),
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\b(?:unit_amount|unit_amount_decimal|base_fee_cents|price_per_[a-z_]+_cents)\s*="),
+        re.compile(r"\$[0-9]+\.[0-9]{2}\b"),
+        re.compile(r'^\s*resource\s+"stripe_', re.MULTILINE),
+    )
+    disclosure_files = list((root / "infra").rglob("*")) + [
+        root / "tools" / "private-source-pin.py",
+        root / "tools" / "private-source-pin.test.sh",
+    ]
+    for path in disclosure_files:
+        if path.is_symlink():
+            errors.append(f"public cutover path may not be a symlink: {path.relative_to(root)}")
+            continue
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"public cutover file is not UTF-8 text: {path.relative_to(root)}")
+            continue
+        if any(pattern.search(text) for pattern in disclosure_patterns):
+            errors.append(f"public cutover file contains credential or private pricing material: {path.relative_to(root)}")
+
+    # The administrator root is more privileged than runtime and gets the same strict provider,
+    # alternate-config, override, auto-tfvars, and backend treatment.
+    bootstrap_root = root / "infra" / "bootstrap"
+    bootstrap_files = sorted(path for path in bootstrap_root.glob("*.tf") if path.is_file())
+    bootstrap_parts = []
+    for path in bootstrap_files:
+        try:
+            bootstrap_parts.append(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            errors.append(f"bootstrap configuration is not UTF-8 text: {path.relative_to(root)}")
+    bootstrap_raw = "\n".join(bootstrap_parts)
+    if any("/*" in outside_hcl_strings(strip_hcl_comment(line)) or "*/" in outside_hcl_strings(strip_hcl_comment(line)) for line in bootstrap_raw.splitlines()):
+        errors.append("bootstrap root may not contain HCL block comments")
+    bootstrap = strip_hcl_heredocs(bootstrap_raw)
+    bootstrap_alternates = sorted(
+        path.name for path in bootstrap_root.iterdir()
+        if path.is_file() and (
+            path.name.endswith((".tf.json", ".tofu", ".tofu.json"))
+            or path.name in {
+                "terraform.tfvars", "terraform.tfvars.json",
+                "override.tf", "override.tofu", "override.tf.json", "override.tofu.json",
+            }
+            or path.name.endswith(("_override.tf", "_override.tofu", "_override.tf.json", "_override.tofu.json"))
+            or path.name.endswith((".auto.tfvars", ".auto.tfvars.json"))
+        )
+    )
+    if bootstrap_alternates:
+        errors.append(f"bootstrap root contains uninspected configuration: {bootstrap_alternates}")
+    bootstrap_sources = set(re.findall(r'^\s*source\s*=\s*"([^"]+)"', bootstrap, re.MULTILINE))
+    if bootstrap_sources != {"hashicorp/google", "hashicorp/google-beta", "hashicorp/random"}:
+        errors.append(f"bootstrap required provider sources drifted: {sorted(bootstrap_sources)}")
+    bootstrap_providers_path = bootstrap_root / "providers.tf"
+    bootstrap_providers_raw = bootstrap_providers_path.read_text(encoding="utf-8") if bootstrap_providers_path.is_file() else ""
+    bootstrap_providers = "\n".join(strip_hcl_comment(line) for line in bootstrap_providers_raw.splitlines())
+    if not re.fullmatch(
+        r'\s*provider\s+"google"\s*\{\s*project\s*=\s*var\.project_id\s*\}\s*provider\s+"google-beta"\s*\{\s*project\s*=\s*var\.project_id\s*\}\s*',
+        bootstrap_providers,
+    ):
+        errors.append("bootstrap Google providers contain credentials, impersonation, aliases, or endpoints")
+    bootstrap_backends = re.findall(r'^\s*backend\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE)
+    bootstrap_backend_block = balanced_block(bootstrap, 'backend "gcs"') or ""
+    bootstrap_keys = [key for key, _ in top_level_assignment_pairs(bootstrap_backend_block)]
+    if bootstrap_backends != ["gcs"] or bootstrap_keys != ["bucket", "prefix"]:
+        errors.append("bootstrap GCS backend may configure only bucket and prefix")
+    if not has_exact_top_level_assignment(bootstrap_backend_block, "bucket", '"hop-mesh-tfstate"') or not has_exact_top_level_assignment(bootstrap_backend_block, "prefix", '"bootstrap"'):
+        errors.append("bootstrap GCS backend values drifted")
+
+    provider = resource_block(bootstrap, "google_iam_workload_identity_pool_provider", "github") or ""
+    if not has_exact_top_level_assignment(provider, "attribute_condition", '"assertion.repository == \\\"hopmesh/hop\\\""'):
+        errors.append("bootstrap WIF provider does not admit only hopmesh/hop")
+    github_repository = variable_block(bootstrap, "github_repository") or ""
+    github_validation = balanced_block(github_repository, "validation") or ""
+    if not has_exact_top_level_assignment(github_repository, "default", '"hopmesh/hop"') or not has_exact_top_level_assignment(github_validation, "condition", 'var.github_repository == "hopmesh/hop"'):
+        errors.append("bootstrap github_repository is not fixed to hopmesh/hop")
+    for var_name, expected in (("runtime_state_bucket", '"hop-mesh-tfstate"'), ("runtime_state_prefix", '"relay-fleet"')):
+        block = variable_block(bootstrap, var_name) or ""
+        validation = balanced_block(block, "validation") or ""
+        if not has_exact_top_level_assignment(block, "default", expected) or not has_exact_top_level_assignment(validation, "condition", f"var.{var_name} == {expected}"):
+            errors.append(f"bootstrap {var_name} is not fixed")
+    main_members = re.findall(r'^\s*github_main_wif_member\s*=\s*(.*?)\s*$', bootstrap, re.MULTILINE)
+    expected_main_member = '"principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"'
+    if main_members != [expected_main_member] or "attribute.repository/" in " ".join(main_members):
+        errors.append("bootstrap shared WIF principal is not the exact main ref")
+    for name in ("deploy_runtime_wif", "bootstrap_apply_wif", "billing_catalog_wif_main"):
+        block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
+        if not has_exact_top_level_assignment(block, "member", "local.github_main_wif_member"):
+            errors.append(f"bootstrap WIF binding {name} is not main-ref scoped")
+
+    price_secret = resource_block(bootstrap, "google_secret_manager_secret", "billing_price_ids") or ""
+    price_replication = balanced_block(price_secret, "replication") or ""
+    price_lifecycle = balanced_block(price_secret, "lifecycle") or ""
+    if not has_exact_top_level_assignment(price_secret, "secret_id", '"hop-billing-price-ids"') or balanced_block(price_replication, "auto") is None or not has_exact_top_level_assignment(price_lifecycle, "prevent_destroy", "true"):
+        errors.append("billing price id secret container drifted")
+    expected_price_grants = {
+        "billing_catalog_price_ids_writer": ("google_service_account.billing_catalog_apply.email", '"roles/secretmanager.secretVersionAdder"'),
+        "deploy_billing_price_ids_accessor": ("google_service_account.deploy.email", '"roles/secretmanager.secretAccessor"'),
+        "deploy_billing_price_ids_viewer": ("google_service_account.deploy.email", '"roles/secretmanager.viewer"'),
+    }
+    for name, (member_name, role) in expected_price_grants.items():
+        block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""
+        if not has_exact_top_level_assignment(block, "secret_id", "google_secret_manager_secret.billing_price_ids.secret_id") or not has_exact_top_level_assignment(block, "role", role) or not has_exact_top_level_assignment(block, "member", f'"serviceAccount:${{{member_name}}}"'):
+            errors.append(f"billing price id secret grant drifted: {name}")
+    secret_iam_names = [name for kind, name in re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE) if kind == "google_secret_manager_secret_iam_member"]
+    deploy_secret_grants = []
+    catalog_price_writers = []
+    for name in secret_iam_names:
+        block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""
+        member = top_level_assignment_values(block, "member")
+        role = top_level_assignment_values(block, "role")
+        if any("google_service_account.deploy.email" in value for value in member):
+            deploy_secret_grants.append(name)
+        if role == ['"roles/secretmanager.secretVersionAdder"']:
+            catalog_price_writers.append(name)
+    if sorted(deploy_secret_grants) != ["deploy_billing_price_ids_accessor", "deploy_billing_price_ids_viewer"]:
+        errors.append(f"hop-deploy secret grants are not exclusive to billing price ids: {sorted(deploy_secret_grants)}")
+    if catalog_price_writers != ["billing_catalog_price_ids_writer"]:
+        errors.append(f"SecretVersionAdder grants drifted: {sorted(catalog_price_writers)}")
+    if resource_block(bootstrap, "google_storage_bucket_iam_member", "deploy_billing_state_reader"):
+        errors.append("hop-deploy retains forbidden read access to private billing state")
+    billing_state = resource_block(bootstrap, "google_storage_bucket_iam_member", "billing_catalog_state") or ""
+    billing_condition = balanced_block(billing_state, "condition") or ""
+    if not has_exact_top_level_assignment(billing_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(billing_state, "role", '"roles/storage.objectAdmin"') or not has_exact_top_level_assignment(billing_state, "member", '"serviceAccount:${google_service_account.billing_catalog_apply.email}"') or not has_exact_top_level_assignment(billing_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\\\")"'):
+        errors.append("billing catalog state access drifted")
+
+    removed_blocks = repeated_blocks(runtime, "removed")
+    if len(removed_blocks) != 20:
+        errors.append(f"runtime removed block count drifted: {len(removed_blocks)}")
+    for block in removed_blocks:
+        lifecycle = balanced_block(block, "lifecycle") or ""
+        if not has_exact_top_level_assignment(lifecycle, "destroy", "false"):
+            errors.append("every removed address must keep lifecycle destroy = false")
+            break
+    return errors
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", default=".")
+    args = parser.parse_args()
+    errors = check(Path(args.root).resolve())
+    for error in errors:
+        print(f"ERROR: {error}")
+    if errors:
+        raise SystemExit(1)
+    print("infra authority guard passed")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,15 @@
+# Non-secret bootstrap inputs. The hop bootstrap workflow materializes the same values from reviewed
+# repository variables, fixed defaults, and enabled Secret Manager version numbers after WIF auth.
+# Never run a local apply.
+
+github_repository      = "hopmesh/hop"
+runtime_state_bucket   = "hop-mesh-tfstate"
+runtime_state_prefix   = "relay-fleet"
+relay_identity_version = "1"
+example_identity_version = "1"
+deployment_environment = "production"
+relays_enabled         = false
+cloud_run_ingress      = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+max_instances_per_region = 1
+region_allowlist       = []
+relay_domain           = "relay.hopme.sh"
