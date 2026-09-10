@@ -56,6 +56,59 @@ FORBIDDEN_DEPLOY_ROLES = {
     "roles/serviceusage.serviceUsageAdmin",
     "roles/cloudbuild.builds.editor",
 }
+EXPECTED_DRIFT_PERMISSIONS = {
+    "bigquery.datasets.get",
+    "bigquery.tables.get",
+    "bigquery.tables.list",
+    "certificatemanager.certificateMapEntries.get",
+    "certificatemanager.certificateMapEntries.list",
+    "certificatemanager.certificateMaps.get",
+    "certificatemanager.certificateMaps.list",
+    "certificatemanager.certificates.get",
+    "certificatemanager.certificates.list",
+    "certificatemanager.dnsAuthorizations.get",
+    "certificatemanager.dnsAuthorizations.list",
+    "certificatemanager.locations.get",
+    "certificatemanager.locations.list",
+    "compute.addresses.get",
+    "compute.addresses.list",
+    "compute.backendServices.get",
+    "compute.backendServices.list",
+    "compute.forwardingRules.get",
+    "compute.forwardingRules.list",
+    "compute.networkEndpointGroups.get",
+    "compute.networkEndpointGroups.list",
+    "compute.regions.get",
+    "compute.regions.list",
+    "compute.sslCertificates.get",
+    "compute.sslCertificates.list",
+    "compute.targetHttpProxies.get",
+    "compute.targetHttpProxies.list",
+    "compute.targetHttpsProxies.get",
+    "compute.targetHttpsProxies.list",
+    "compute.urlMaps.get",
+    "compute.urlMaps.list",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.projects.get",
+    "dns.resourceRecordSets.list",
+    "logging.buckets.get",
+    "logging.buckets.list",
+    "logging.exclusions.get",
+    "logging.exclusions.list",
+    "logging.logMetrics.get",
+    "logging.logMetrics.list",
+    "logging.sinks.get",
+    "logging.sinks.list",
+    "monitoring.alertPolicies.get",
+    "monitoring.alertPolicies.list",
+    "monitoring.notificationChannels.get",
+    "monitoring.notificationChannels.list",
+    "resourcemanager.projects.get",
+    "run.services.get",
+    "run.services.list",
+    "serviceusage.services.use",
+}
 
 
 def resource_types(text):
@@ -822,11 +875,15 @@ def check(root):
     if not has_exact_top_level_assignment(billing_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(billing_state, "role", '"roles/storage.objectAdmin"') or not has_exact_top_level_assignment(billing_state, "member", '"serviceAccount:${google_service_account.billing_catalog_apply.email}"') or not has_exact_top_level_assignment(billing_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\\\")"'):
         errors.append("billing catalog state access drifted")
     drift_sa = resource_block(bootstrap, "google_service_account", "infra_drift") or ""
+    drift_role = resource_block(bootstrap, "google_project_iam_custom_role", "infra_drift") or ""
+    drift_role_clean = "\n".join(strip_hcl_comment(line) for line in drift_role.splitlines())
+    drift_permissions_match = re.search(r"(?ms)^\s*permissions\s*=\s*\[(.*?)^\s*\]", drift_role_clean)
+    drift_permissions = set(re.findall(r'"([^"]+)"', drift_permissions_match.group(1))) if drift_permissions_match else set()
     drift_project = resource_block(bootstrap, "google_project_iam_member", "infra_drift_viewer") or ""
     drift_state = resource_block(bootstrap, "google_storage_bucket_iam_member", "infra_drift_state_reader") or ""
     drift_condition = top_level_block(drift_state, "condition") or ""
-    if not has_exact_top_level_assignment(drift_sa, "account_id", '"hop-infra-drift"') or not has_exact_top_level_assignment(drift_project, "role", '"roles/viewer"') or not has_exact_top_level_assignment(drift_project, "member", '"serviceAccount:${google_service_account.infra_drift.email}"'):
-        errors.append("read-only drift service account or project role drifted")
+    if not has_exact_top_level_assignment(drift_sa, "account_id", '"hop-infra-drift"') or not has_exact_top_level_assignment(drift_role, "role_id", '"hopInfraDriftViewer"') or drift_permissions != EXPECTED_DRIFT_PERMISSIONS or not has_exact_top_level_assignment(drift_project, "role", "google_project_iam_custom_role.infra_drift.id") or not has_exact_top_level_assignment(drift_project, "member", '"serviceAccount:${google_service_account.infra_drift.email}"'):
+        errors.append("read-only drift service account, custom role, or project grant drifted")
     if not has_exact_top_level_assignment(drift_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(drift_state, "role", '"roles/storage.objectViewer"') or not has_exact_top_level_assignment(drift_state, "member", '"serviceAccount:${google_service_account.infra_drift.email}"') or not has_exact_top_level_assignment(drift_condition, "title", '"runtime-drift-state-read-only"') or not has_exact_top_level_assignment(drift_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/\\\")"'):
         errors.append("read-only drift state access drifted")
     drift_project_grants = []

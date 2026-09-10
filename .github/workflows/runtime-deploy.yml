@@ -223,13 +223,25 @@ jobs:
         run: |
           set -euo pipefail
           python3 public/tools/private-source-pin.py verify-checkout \
-            --lock public/infra/private-source.lock --checkout private
+            --lock public/infra/private-source.lock --checkout private \
+            >"$RUNNER_TEMP/private-checkout.log" 2>&1 || {
+              echo "::error::private source checkout verification failed; detailed output withheld"
+              exit 1
+            }
           python3 private/tools/stage-commercial-source.py \
             --platform-root private --dest public \
-            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA"
+            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA" \
+            >"$RUNNER_TEMP/private-stage.log" 2>&1 || {
+              echo "::error::private source staging failed; detailed output withheld"
+              exit 1
+            }
           python3 private/tools/stage-commercial-source.py \
             --platform-root private --dest public \
-            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA" --check
+            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA" --check \
+            >"$RUNNER_TEMP/private-stage-check.log" 2>&1 || {
+              echo "::error::staged private source verification failed; detailed output withheld"
+              exit 1
+            }
 
       - id: private_images
         name: Build and push pinned account and console images
@@ -278,8 +290,12 @@ jobs:
           version="$(python3 - /tmp/price-versions.json <<'PY'
           import json, re, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(data, list):
+              raise SystemExit("gcloud price version output is not a JSON array")
           versions = []
-          for item in data.get("versions", []):
+          for item in data:
+              if not isinstance(item, dict):
+                  raise SystemExit("gcloud price version entry is not an object")
               value = item.get("name", "").rsplit("/", 1)[-1]
               if not re.fullmatch(r"[1-9][0-9]*", value):
                   raise SystemExit(f"non-numeric enabled secret version: {value!r}")
@@ -376,18 +392,27 @@ jobs:
       - name: Prove every live runtime came from these commits
         if: steps.apply.outputs.applied == 'true'
         env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
         run: |
           set -euo pipefail
-          gcloud run services list --project "$PROJECT_ID" --platform managed --format=json \
-            > /tmp/runtime-services.json 2>"$RUNNER_TEMP/runtime-readback.log" || {
-              echo "::error::live runtime services could not be read back"
-              exit 1
-            }
-          python3 - /tmp/runtime-services.json "$DEPLOY_SHA" "$PRIVATE_SOURCE_SHA" "$RELAYS_ENABLED" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          hop_sha, private_sha, relays_enabled = sys.argv[2:]
+          python3 - "$DEPLOY_SHA" "$PRIVATE_SOURCE_SHA" "$RELAYS_ENABLED" "$PROJECT_ID" <<'PY'
+          import json, os, sys, urllib.request
+          hop_sha, private_sha, relays_enabled, project = sys.argv[1:]
+          token = os.environ.get("ACCESS_TOKEN", "")
+          if not token:
+              raise SystemExit("runtime readback access token is empty")
+          request = urllib.request.Request(
+              f"https://run.googleapis.com/v2/projects/{project}/locations/-/services",
+              headers={"Authorization": f"Bearer {token}"},
+          )
+          try:
+              with urllib.request.urlopen(request) as response:
+                  data = json.load(response)
+          except Exception:
+              raise SystemExit("live runtime services could not be read back") from None
+          if not isinstance(data, dict) or not isinstance(data.get("services", []), list):
+              raise SystemExit("live runtime service response is malformed")
           services = {item["name"].rsplit("/", 1)[-1]: item for item in data.get("services", [])}
           required = {"hop-example", "hop-accountd", "hop-console"}
           missing = sorted(required - services.keys())

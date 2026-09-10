@@ -4,8 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$ROOT" <<'PY'
 import importlib.util
+import json
 import pathlib
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -17,7 +20,7 @@ source = (root / ".github/workflows/runtime-deploy.yml").read_text()
 passed = 0
 
 
-def expect(label, old=None, new=None, first=False):
+def expect(label, old=None, new=None, first=False, last=False):
     global passed
     with tempfile.TemporaryDirectory() as directory:
         repo = pathlib.Path(directory)
@@ -26,9 +29,13 @@ def expect(label, old=None, new=None, first=False):
         text = source
         if old is not None:
             count = text.count(old)
-            if count < 1 or (not first and count != 1):
+            if count < 1 or (not first and not last and count != 1):
                 raise AssertionError(f"{label}: bad mutation target count {count}")
-            text = text.replace(old, new, 1)
+            if last:
+                before, separator, after = text.rpartition(old)
+                text = before + new + after if separator else text
+            else:
+                text = text.replace(old, new, 1)
         target.write_text(text)
         errors = guard.check(repo)
         if old is None:
@@ -63,5 +70,31 @@ expect("private source token remains read-only", "permission-contents: read", "p
 expect("private checkout uses minted App token", "token: ${{ steps.private-source-token.outputs.token }}", "token: ${{ github.token }}")
 expect("private build output remains withheld", 'docker push "$tagged" >"$log" 2>&1', 'docker push "$tagged" | tee "$log"')
 expect("price version lookup uses gcloud", "gcloud secrets versions list hop-billing-price-ids", "curl https://secretmanager.googleapis.com")
+
+expect("runtime apply refuses superseded main immediately", 'test "$tip" = "$DEPLOY_SHA"', 'test "$tip" != ""', last=True)
+expect("private staging output remains withheld", 'private-stage.log" 2>&1', 'private-stage.log"')
+expect("runtime readback spans every region", "locations/-/services", "locations/us-central1/services")
+# Execute the inline parser against gcloud's real JSON array shape and a stale REST envelope.
+workflow = guard.load(root / ".github/workflows/runtime-deploy.yml")
+deploy_steps = guard.steps(workflow["jobs"]["deploy"])
+price_run = guard.named(deploy_steps, "Resolve the highest enabled billing price id version")["run"]
+match = re.search(r"(?ms)<<'PY'\n(.*?)\n\s*PY", price_run)
+assert match, "price version parser heredoc not found"
+parser = match.group(1)
+with tempfile.TemporaryDirectory() as directory:
+    fixture = pathlib.Path(directory) / "versions.json"
+    fixture.write_text(json.dumps([
+        {"name": "projects/hop-mesh/secrets/hop-billing-price-ids/versions/2"},
+        {"name": "projects/hop-mesh/secrets/hop-billing-price-ids/versions/7"},
+    ]))
+    result = subprocess.run([sys.executable, "-", str(fixture)], input=parser, text=True, capture_output=True)
+    assert result.returncode == 0 and result.stdout.strip() == "7", result
+    passed += 1
+    print("ok   [gcloud price version array parsed]")
+    fixture.write_text(json.dumps({"versions": []}))
+    result = subprocess.run([sys.executable, "-", str(fixture)], input=parser, text=True, capture_output=True)
+    assert result.returncode != 0 and "not a JSON array" in result.stderr, result
+    passed += 1
+    print("ok   [stale REST price envelope rejected]")
 print(f"runtime deploy guard tests passed: {passed}")
 PY

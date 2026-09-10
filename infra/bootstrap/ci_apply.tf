@@ -86,9 +86,68 @@ resource "google_service_account_iam_member" "infra_drift_wif" {
   member             = local.github_workflow_members.drift
 }
 
+resource "google_project_iam_custom_role" "infra_drift" {
+  role_id     = "hopInfraDriftViewer"
+  title       = "Hop runtime infrastructure drift viewer"
+  description = "Read runtime infrastructure metadata. No application data or mutation permissions."
+  permissions = [
+    "bigquery.datasets.get",
+    "bigquery.tables.get",
+    "bigquery.tables.list",
+    "certificatemanager.certificateMapEntries.get",
+    "certificatemanager.certificateMapEntries.list",
+    "certificatemanager.certificateMaps.get",
+    "certificatemanager.certificateMaps.list",
+    "certificatemanager.certificates.get",
+    "certificatemanager.certificates.list",
+    "certificatemanager.dnsAuthorizations.get",
+    "certificatemanager.dnsAuthorizations.list",
+    "certificatemanager.locations.get",
+    "certificatemanager.locations.list",
+    "compute.addresses.get",
+    "compute.addresses.list",
+    "compute.backendServices.get",
+    "compute.backendServices.list",
+    "compute.forwardingRules.get",
+    "compute.forwardingRules.list",
+    "compute.networkEndpointGroups.get",
+    "compute.networkEndpointGroups.list",
+    "compute.regions.get",
+    "compute.regions.list",
+    "compute.sslCertificates.get",
+    "compute.sslCertificates.list",
+    "compute.targetHttpProxies.get",
+    "compute.targetHttpProxies.list",
+    "compute.targetHttpsProxies.get",
+    "compute.targetHttpsProxies.list",
+    "compute.urlMaps.get",
+    "compute.urlMaps.list",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.projects.get",
+    "dns.resourceRecordSets.list",
+    "logging.buckets.get",
+    "logging.buckets.list",
+    "logging.exclusions.get",
+    "logging.exclusions.list",
+    "logging.logMetrics.get",
+    "logging.logMetrics.list",
+    "logging.sinks.get",
+    "logging.sinks.list",
+    "monitoring.alertPolicies.get",
+    "monitoring.alertPolicies.list",
+    "monitoring.notificationChannels.get",
+    "monitoring.notificationChannels.list",
+    "resourcemanager.projects.get",
+    "run.services.get",
+    "run.services.list",
+    "serviceusage.services.use",
+  ]
+}
+
 resource "google_project_iam_member" "infra_drift_viewer" {
   project = var.project_id
-  role    = "roles/viewer"
+  role    = google_project_iam_custom_role.infra_drift.id
   member  = "serviceAccount:${google_service_account.infra_drift.email}"
 }
 

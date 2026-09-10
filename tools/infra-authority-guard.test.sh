@@ -312,7 +312,7 @@ def mutate_block(repo, relative, kind, name, old, new):
     path.write_text(text.replace(block, bad, 1))
 
 expect("catalog Stripe reader cannot broaden", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_secret_manager_secret_iam_member", "billing_catalog_stripe_api_key_reader", 'role      = "roles/secretmanager.secretAccessor"', 'role      = "roles/secretmanager.admin"'))
-expect("drift project role remains read-only", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "google_project_iam_member", "infra_drift_viewer", 'role    = "roles/viewer"', 'role    = "roles/editor"'))
+expect("drift role excludes BigQuery table data", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "google_project_iam_custom_role", "infra_drift", '"bigquery.tables.get",', '"bigquery.tables.get",\n    "bigquery.tables.getData",'))
 expect("platform rollback WIF remains phase-bound", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif_platform_rollback", 'count              = var.github_authority_phase == "handoff" ? 1 : 0', "count              = 1"))
 expect("rollback billing reader cannot widen", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_storage_bucket_iam_member", "deploy_billing_state_reader", '/objects/billing/', '/objects/'))
 expect("price ids must match private source", lambda r: replace(r, "infra/console.tf", "local.billing_prices.private_source_sha == var.private_source_sha", "true"))

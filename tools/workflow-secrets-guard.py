@@ -42,6 +42,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 
 REPOSITORY = "hopmesh/hop"
 ORGANIZATION = "hopmesh"
@@ -105,6 +107,37 @@ def references(root):
                     continue
                 found.setdefault(name, []).append((workflow.name, job_id, environment))
     return found
+
+def check_scoped_app_tokens(root):
+    """Keep each privileged App mint on one repository with only the permissions it needs."""
+    common = {
+        "app-id": "${{ secrets.HOP_SYNC_APP_ID }}",
+        "private-key": "${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}",
+        "owner": "hopmesh",
+    }
+    contracts = {
+        "runtime-deploy.yml": ("deploy", "private-source-token", {**common, "repositories": "platform", "permission-contents": "read"}),
+        "billing-catalog.yml": ("catalog", "private-source-token", {**common, "repositories": "platform", "permission-contents": "read"}),
+        "changelog.yml": ("regenerate", "app-token", {**common, "repositories": "hop", "permission-contents": "write", "permission-pull-requests": "write"}),
+        "pr-automerge.yml": ("enable-automerge", "app-token", {**common, "repositories": "hop", "permission-contents": "write", "permission-pull-requests": "write"}),
+    }
+    paths = {workflow: Path(root) / ".github/workflows" / workflow for workflow in contracts}
+    if not any(path.exists() for path in paths.values()):
+        return
+    require(all(path.is_file() for path in paths.values()), "scoped App token workflow set is incomplete")
+    for workflow, (job_id, step_id, expected_with) in contracts.items():
+        path = Path(root) / ".github/workflows" / workflow
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        job = doc.get("jobs", {}).get(job_id, {}) if isinstance(doc, dict) else {}
+        require(job.get("environment") == "component-sync", f"{workflow} {job_id} must use component-sync")
+        token_steps = [step for step in job.get("steps", []) if isinstance(step, dict) and step.get("id") == step_id]
+        require(len(token_steps) == 1, f"{workflow} must contain one App token step {step_id}")
+        token = token_steps[0]
+        require(
+            token.get("uses") == "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+            f"{workflow} App token action is not immutable",
+        )
+        require(token.get("with") == expected_with, f"{workflow} App token repository or permission scope drifted")
 
 
 def check_static(root):
@@ -176,6 +209,7 @@ def check_static(root):
                 f"{environment} environment, but the job declares "
                 + (f"environment {declared_environment}" if declared_environment else "no environment"),
             )
+    check_scoped_app_tokens(root)
     for name in sorted(used):
         entry = declared[name]
         state = "declared" if entry.get("provisioned", True) else "declared-NOT-PROVISIONED"

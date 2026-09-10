@@ -159,6 +159,7 @@ jobs:
               "google_service_account_iam_member.bootstrap_apply_wif",
               "google_service_account_iam_member.billing_catalog_wif_main",
               "google_service_account.infra_drift",
+              "google_project_iam_custom_role.infra_drift",
               "google_service_account_iam_member.infra_drift_wif",
               "google_project_iam_member.infra_drift_viewer",
               "google_storage_bucket_iam_member.infra_drift_state_reader",
@@ -192,6 +193,8 @@ jobs:
               actions = tuple(item.get("change", {}).get("actions", []))
               previous = item.get("previous_address")
               if previous is not None:
+                  if operation != "rollback" and address == "google_storage_bucket_iam_member.deploy_billing_state_reader[0]" and previous == "google_storage_bucket_iam_member.deploy_billing_state_reader" and actions == ("delete",):
+                      continue
                   bad.append((address, "moved", previous))
                   continue
               if actions in unchanged:
@@ -233,6 +236,55 @@ jobs:
           tofu apply -input=false -auto-approve -no-color tfplan
           echo "applied=true" >> "$GITHUB_OUTPUT"
 
+      - name: Remove exact legacy duplicate state bindings
+        if: env.OPERATION == 'apply'
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          project = os.environ["PROJECT_ID"]
+          bucket = f"gs://{project}-tfstate"
+          result = subprocess.run(
+              ["gcloud", "storage", "buckets", "get-iam-policy", bucket, "--format=json"],
+              capture_output=True, text=True,
+          )
+          if result.returncode != 0:
+              raise SystemExit("legacy state IAM cleanup could not read the bucket policy")
+          policy = json.loads(result.stdout)
+          targets = (
+              (
+                  f"serviceAccount:{os.environ['BOOTSTRAP_SERVICE_ACCOUNT']}",
+                  "bootstrap-state-prefix-only",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
+              ),
+              (
+                  f"serviceAccount:{os.environ['BILLING_SERVICE_ACCOUNT']}",
+                  "billing-state-prefix-only",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+              ),
+          )
+          for member, title, expression in targets:
+              matches = [
+                  binding for binding in policy.get("bindings", [])
+                  if binding.get("role") == "roles/storage.objectAdmin"
+                  and member in binding.get("members", [])
+                  and binding.get("condition") == {"title": title, "expression": expression}
+              ]
+              if len(matches) > 1:
+                  raise SystemExit("legacy state IAM cleanup found duplicate legacy bindings")
+              if not matches:
+                  continue
+              remove = subprocess.run(
+                  [
+                      "gcloud", "storage", "buckets", "remove-iam-policy-binding", bucket,
+                      "--member", member, "--role", "roles/storage.objectAdmin",
+                      "--condition", f"expression={expression},title={title}", "--quiet",
+                  ],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+              )
+              if remove.returncode != 0:
+                  raise SystemExit("legacy state IAM cleanup failed")
+          PY
+
       - name: Prove final or rollback authority state
         if: steps.apply.outputs.applied == 'true'
         run: |
@@ -248,11 +300,20 @@ jobs:
             account="${item%%:*}"; label="${item##*:}"
             gcloud iam service-accounts get-iam-policy "$account" --format=json > "$RUNNER_TEMP/${label}-iam.json"
           done
+          gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-iam.json"
+          for item in \
+            "hop-billing-price-ids:price" \
+            "stripe-api-key:stripe" \
+            "hop-resend-apikey:resend"; do
+            secret="${item%%:*}"; label="${item##*:}"
+            gcloud secrets get-iam-policy "$secret" --project "$PROJECT_ID" \
+              --format=json > "$RUNNER_TEMP/${label}-secret-iam.json"
+          done
           gcloud storage buckets get-iam-policy "gs://$PROJECT_ID-tfstate" \
             --format=json > "$RUNNER_TEMP/runtime-state-iam.json"
-          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" <<'PY'
+          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" <<'PY'
           import json, pathlib, sys
-          root, operation, project, runtime_sa = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+          root, operation, project, runtime_sa, bootstrap_sa, billing_sa = pathlib.Path(sys.argv[1]), *sys.argv[2:]
           provider = json.load(open(root / "provider.json", encoding="utf-8"))
           final = 'assertion.repository == "hopmesh/hop"'
           rollback = 'assertion.repository == "hopmesh/platform" || assertion.repository == "hopmesh/hop"'
@@ -288,40 +349,138 @@ jobs:
               policy = json.load(open(root / f"{label}-iam.json", encoding="utf-8"))
               found = []
               for binding in policy.get("bindings", []):
-                  if binding.get("role") not in risky:
+                  role = binding.get("role")
+                  members = binding.get("members", [])
+                  if role != "roles/iam.workloadIdentityUser" and any(member.startswith(("principal://", "principalSet://")) for member in members):
+                      raise SystemExit(f"{label} has a federated principal under another role")
+                  if role not in risky:
                       continue
                   if binding.get("condition") not in (None, {}):
                       raise SystemExit(f"{label} live auth grant has an IAM condition")
-                  for member in binding.get("members", []):
-                      found.append((binding.get("role"), member))
+                  for member in members:
+                      found.append((role, member))
               expected = {("roles/iam.workloadIdentityUser", member) for member in wanted}
               if set(found) != expected or len(found) != len(expected):
                   raise SystemExit(f"{label} live auth grants drifted")
+          drift_sa = f"hop-infra-drift@{project}.iam.gserviceaccount.com"
+          identities = {
+              "runtime": f"serviceAccount:{runtime_sa}",
+              "bootstrap": f"serviceAccount:{bootstrap_sa}",
+              "billing": f"serviceAccount:{billing_sa}",
+              "drift": f"serviceAccount:{drift_sa}",
+          }
+          expected_project = {
+              "runtime": {
+                  "roles/bigquery.dataEditor", "roles/certificatemanager.editor",
+                  "roles/compute.loadBalancerAdmin", "roles/dns.admin", "roles/logging.configWriter",
+                  "roles/logging.logWriter", "roles/monitoring.editor", "roles/run.developer",
+                  "roles/serviceusage.serviceUsageConsumer",
+                  f"projects/{project}/roles/hopRuntimeDeployRunIam",
+                  f"projects/{project}/roles/hopRuntimeDeployRegions",
+              },
+              "bootstrap": {
+                  "roles/artifactregistry.admin", "roles/cloudsql.admin", "roles/datastore.owner",
+                  "roles/iam.roleAdmin", "roles/iam.serviceAccountAdmin",
+                  "roles/iam.workloadIdentityPoolAdmin", "roles/resourcemanager.projectIamAdmin",
+                  "roles/serviceusage.serviceUsageAdmin",
+                  f"projects/{project}/roles/hopBootstrapApplySecrets",
+              },
+              "billing": set(),
+              "drift": {f"projects/{project}/roles/hopInfraDriftViewer"},
+          }
+          project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
+          found_project = {label: [] for label in identities}
+          for binding in project_policy.get("bindings", []):
+              role = binding.get("role")
+              members = binding.get("members", [])
+              if any(member.startswith(("principal://", "principalSet://")) for member in members):
+                  raise SystemExit("project IAM contains a federated principal")
+              for label, member in identities.items():
+                  if member not in members:
+                      continue
+                  if binding.get("condition") not in (None, {}):
+                      raise SystemExit(f"{label} project IAM grant has a condition")
+                  found_project[label].append(role)
+          for label, expected in expected_project.items():
+              found = found_project[label]
+              if set(found) != expected or len(found) != len(expected):
+                  raise SystemExit(f"{label} project IAM grants drifted")
+          expected_secrets = {
+              "price": {
+                  ("roles/secretmanager.secretVersionAdder", f"serviceAccount:{billing_sa}"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{runtime_sa}"),
+                  ("roles/secretmanager.viewer", f"serviceAccount:{runtime_sa}"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{drift_sa}"),
+                  ("roles/secretmanager.viewer", f"serviceAccount:{drift_sa}"),
+              },
+              "stripe": {
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-billingd@{project}.iam.gserviceaccount.com"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
+              },
+              "resend": {
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-accountd@{project}.iam.gserviceaccount.com"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
+              },
+          }
+          for label, expected in expected_secrets.items():
+              policy = json.load(open(root / f"{label}-secret-iam.json", encoding="utf-8"))
+              found = []
+              for binding in policy.get("bindings", []):
+                  if binding.get("condition") not in (None, {}):
+                      raise SystemExit(f"{label} secret IAM grant has a condition")
+                  for member in binding.get("members", []):
+                      found.append((binding.get("role"), member))
+              if set(found) != expected or len(found) != len(expected):
+                  raise SystemExit(f"{label} secret IAM grants drifted")
           bucket = json.load(open(root / "runtime-state-iam.json", encoding="utf-8"))
-          deploy_member = f"serviceAccount:{runtime_sa}"
-          found_storage = []
-          for binding in bucket.get("bindings", []):
-              if deploy_member not in binding.get("members", []):
-                  continue
-              condition = binding.get("condition") or {}
-              found_storage.append((binding.get("role"), condition.get("title"), condition.get("description"), condition.get("expression")))
           expected_storage = {
-              (
-                  "roles/storage.objectUser",
-                  "runtime-state-only",
-                  "The deployer can list the backend bucket and mutate only runtime state objects.",
-                  f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
-              )
+              "runtime": {
+                  (
+                      "roles/storage.objectUser", "runtime-state-only",
+                      "The deployer can list the backend bucket and mutate only runtime state objects.",
+                      f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
+                  )
+              },
+              "bootstrap": {
+                  (
+                      "roles/storage.objectAdmin", "bootstrap-state-prefix-only",
+                      "Only the backend bucket listing and objects under the bootstrap/ state prefix.",
+                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
+                  ),
+                  (f"projects/{project}/roles/hopBootstrapApplyStateBucketIam", None, None, None),
+              },
+              "billing": {
+                  (
+                      "roles/storage.objectAdmin", "billing-state-prefix-only",
+                      "Only objects under the billing/ state prefix.",
+                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+                  )
+              },
+              "drift": {
+                  (
+                      "roles/storage.objectViewer", "runtime-drift-state-read-only",
+                      "The drift identity may list the backend and read only runtime state objects.",
+                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/relay-fleet/")',
+                  )
+              },
           }
           if operation == "rollback":
-              expected_storage.add((
-                  "roles/storage.objectViewer",
-                  "billing-state-read-only",
+              expected_storage["runtime"].add((
+                  "roles/storage.objectViewer", "billing-state-read-only",
                   "The deployer may read (never write) the isolated billing state for price ids.",
                   f'resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
               ))
-          if set(found_storage) != expected_storage or len(found_storage) != len(expected_storage):
-              raise SystemExit("runtime live storage grants drifted")
+          found_storage = {label: [] for label in identities}
+          for binding in bucket.get("bindings", []):
+              condition = binding.get("condition") or {}
+              value = (binding.get("role"), condition.get("title"), condition.get("description"), condition.get("expression"))
+              for label, member in identities.items():
+                  if member in binding.get("members", []):
+                      found_storage[label].append(value)
+          for label, expected in expected_storage.items():
+              found = found_storage[label]
+              if set(found) != expected or len(found) != len(expected):
+                  raise SystemExit(f"{label} live storage grants drifted")
           print(f"verified live authority phase {operation}")
           PY
 

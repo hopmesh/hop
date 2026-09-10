@@ -53,6 +53,25 @@ try:
 finally:
     shutil.rmtree(work)
 
+# Write-capable changelog and automerge tokens must never expand to every App installation repository.
+for target_name in ("changelog.yml", "pr-automerge.yml"):
+    work = sandbox()
+    try:
+        for workflow in (root / ".github/workflows").glob("*.yml"):
+            shutil.copy(workflow, work / ".github/workflows" / workflow.name)
+        target = work / ".github/workflows" / target_name
+        text = target.read_text(encoding="utf-8")
+        assert text.count("          repositories: hop\n") == 1
+        target.write_text(text.replace("          repositories: hop\n", "", 1), encoding="utf-8")
+        try:
+            guard.check_static(work)
+        except guard.WorkflowSecretsError as error:
+            assert "App token repository or permission scope drifted" in str(error)
+        else:
+            raise AssertionError(f"{target_name} App token expanded to every installation repository")
+    finally:
+        shutil.rmtree(work)
+
 
 def rejects(label, workflow_text, manifest_edit, fragment):
     work = sandbox()

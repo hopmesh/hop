@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$ROOT" <<'PY'
 import importlib.util
+import json
 import pathlib
+import re
+import subprocess
 import tempfile
 import sys
 
@@ -76,10 +79,47 @@ expect("bootstrap replacement address set exact", "bootstrap-apply.yml", "normal
 expect("bootstrap removed state accepts exact forget only", "bootstrap-apply.yml", 'address == "google_service_account.build"', 'address.startswith("google_service_account.")')
 expect("bootstrap proof checks token creator", "bootstrap-apply.yml", '"roles/iam.serviceAccountTokenCreator"', '"roles/iam.viewer"')
 expect("bootstrap proof checks workflow mapping", "bootstrap-apply.yml", '"attribute.workflow": "assertion.workflow_ref"', '"attribute.workflow": "assertion.actor"')
-expect("bootstrap proof checks IAM conditions", "bootstrap-apply.yml", 'binding.get("condition") not in (None, {})', "False")
+expect("bootstrap proof checks IAM conditions", "bootstrap-apply.yml", 'binding.get("condition") not in (None, {})', "False", first=True)
 expect("bootstrap proof checks rollback storage", "bootstrap-apply.yml", "gcloud storage buckets get-iam-policy", "echo skip storage readback")
+expect("bootstrap proof checks project IAM", "bootstrap-apply.yml", "gcloud projects get-iam-policy", "echo skip project IAM")
+expect("bootstrap proof checks secret IAM", "bootstrap-apply.yml", "gcloud secrets get-iam-policy", "echo skip secret IAM")
+expect("bootstrap cleanup targets descriptionless duplicates only", "bootstrap-apply.yml", 'binding.get("condition") == {"title": title, "expression": expression}', "True")
 expect("bootstrap apply refuses superseded main", "bootstrap-apply.yml", "test \"$tip\" = \"$EXPECTED_SHA\"", "test \"$tip\" != \"\"")
 expect("bootstrap cannot use self-hosted", "bootstrap-apply.yml", "runs-on: ubuntu-latest", "runs-on: [self-hosted, macOS]", first=True)
 expect("bootstrap requires release environment", "bootstrap-apply.yml", "environment: release", "environment: component-sync")
+
+# Execute the embedded phase gate against the observed terminal plan shape and rollback boundaries.
+bootstrap_doc = guard.load(root / ".github/workflows/bootstrap-apply.yml")
+policy_run = guard.step_by_name(bootstrap_doc["jobs"]["bootstrap"], "Refuse unrelated bootstrap actions")[1]["run"]
+match = re.search(r"(?ms)<<'PY'\n(.*?)\n\s*PY", policy_run)
+assert match, "bootstrap plan policy heredoc not found"
+policy_script = match.group(1)
+
+def phase_plan(label, operation, changes, accepted):
+    global passed
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = pathlib.Path(directory) / "plan.json"
+        fixture.write_text(json.dumps({"resource_changes": changes}))
+        result = subprocess.run([sys.executable, "-", str(fixture), operation], input=policy_script, text=True, capture_output=True)
+        assert (result.returncode == 0) == accepted, f"{label}: {result.stderr}"
+    passed += 1
+    print(f"ok   [{label}]")
+
+phase_plan("observed terminal cutover plan accepted", "apply", [
+    {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},
+    {"address": "google_project_iam_custom_role.infra_drift", "change": {"actions": ["create"]}},
+    {"address": "google_service_account_iam_member.billing_catalog_wif_main", "change": {"actions": ["delete", "create"]}},
+    {"address": "google_storage_bucket_iam_member.deploy_billing_state_reader[0]", "previous_address": "google_storage_bucket_iam_member.deploy_billing_state_reader", "change": {"actions": ["delete"]}},
+], True)
+phase_plan("exact rollback authority plan accepted", "rollback", [
+    {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},
+    {"address": "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]", "change": {"actions": ["create"]}},
+    {"address": "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]", "change": {"actions": ["create"]}},
+    {"address": "google_service_account_iam_member.billing_catalog_wif_platform_rollback[0]", "change": {"actions": ["create"]}},
+    {"address": "google_storage_bucket_iam_member.deploy_billing_state_reader[0]", "change": {"actions": ["create"]}},
+], True)
+phase_plan("rollback cannot mutate price infrastructure", "rollback", [
+    {"address": "google_secret_manager_secret.billing_price_ids", "change": {"actions": ["create"]}},
+], False)
 print(f"secondary deployment authority guard tests passed: {passed}")
 PY

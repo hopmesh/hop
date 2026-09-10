@@ -17,6 +17,7 @@ STAGE = "Verify and stage pinned commercial source"
 PRIVATE_BUILD = "Build and push pinned account and console images"
 PLAN = "Create saved runtime plan"
 POLICY = "Refuse runtime deletion or replacement"
+STALE = "Refuse a superseded apply"
 APPLY = "Apply the saved runtime plan"
 READBACK = "Prove every live runtime came from these commits"
 
@@ -115,7 +116,7 @@ def check(root: Path) -> list[str]:
     try:
         order = [names.index(name) for name in (
             PUBLIC_BUILD, TOKEN_GATE, PRIVATE_CHECKOUT, STAGE, PRIVATE_BUILD,
-            PLAN, POLICY, APPLY, READBACK,
+            PLAN, POLICY, STALE, APPLY, READBACK,
         )]
         if order != sorted(order):
             errors.append("runtime steps violate public-build-first and plan-before-apply order")
@@ -177,13 +178,22 @@ def check(root: Path) -> list[str]:
     for required in ("verify-checkout", "stage-commercial-source.py", "--pin", "--dest-pin", "--check"):
         if required not in stage:
             errors.append(f"private source staging missing: {required}")
+    for log_name in ("private-checkout.log", "private-stage.log", "private-stage-check.log"):
+        if f'>$RUNNER_TEMP/{log_name}' not in stage.replace('>"', '>').replace('"', ''):
+            errors.append(f"private source staging output is not captured: {log_name}")
+    if stage.count("2>&1") != 3 or stage.count("detailed output withheld") != 3 or "cat " in stage:
+        errors.append("private source staging can disclose private paths or status")
     plan = named(deploy_steps, PLAN).get("run", "")
     policy = named(deploy_steps, POLICY).get("run", "")
+    stale = named(deploy_steps, STALE)
     apply = named(deploy_steps, APPLY)
     if "tofu plan" not in plan or "-out=tfplan" not in plan or "tofu show -json tfplan" not in plan:
         errors.append("runtime workflow does not create and inspect one saved plan")
     if 'allowed = {(), ("no-op",), ("read",), ("create",), ("update",)}' not in policy:
         errors.append("runtime plan policy does not reject deletion and replacement")
+    stale_text = stale.get("run", "")
+    if stale.get("if") != "env.DEPLOY_OPERATION == 'apply'" or stale.get("working-directory") != "public" or 'tip="$(git ls-remote origin refs/heads/main | cut -f1)"' not in stale_text or 'test "$tip" = "$DEPLOY_SHA"' not in stale_text:
+        errors.append("runtime apply is not rejected when hop main is superseded")
     if "tofu apply" not in apply.get("run", "") or "tfplan" not in apply.get("run", ""):
         errors.append("runtime apply does not consume the saved plan")
     if apply.get("if") != "env.DEPLOY_OPERATION == 'apply'":
@@ -193,7 +203,8 @@ def check(root: Path) -> list[str]:
         'labels.get("hop-source-sha") != hop_sha',
         'labels.get("hop-private-source-sha") != private_sha',
         'required = {"hop-example", "hop-accountd", "hop-console"}',
-        "gcloud run services list",
+        "urllib.request.Request(",
+        "locations/-/services",
     ):
         if readback.count(required) != 1:
             errors.append(f"runtime provenance readback missing exact check: {required}")
@@ -203,8 +214,10 @@ def check(root: Path) -> list[str]:
     workflow_text = path.read_text(encoding="utf-8")
     if "HOP_SYNC_TOKEN" in workflow_text:
         errors.append("runtime workflow retains the broad organization PAT")
-    if "secretmanager.googleapis.com" in workflow_text or "run.googleapis.com" in workflow_text:
-        errors.append("runtime workflow downloads API JSON through an executable fetch surface")
+    if "secretmanager.googleapis.com" in workflow_text:
+        errors.append("runtime workflow downloads Secret Manager JSON through an executable fetch surface")
+    if "curl " in readback or "gcloud run services list" in readback:
+        errors.append("runtime live readback does not use the all-region structured API path")
     if "self-hosted" in workflow_text:
         errors.append("public runtime workflow may not use a self-hosted runner")
     return errors
