@@ -144,6 +144,31 @@ jobs:
             exit 1
           }
 
+      - name: Validate drift custom-role permissions
+        run: |
+          set -euo pipefail
+          gcloud iam list-testable-permissions \
+            "//cloudresourcemanager.googleapis.com/projects/$PROJECT_ID" \
+            --format=json > "$RUNNER_TEMP/testable-permissions.json"
+          python3 - "$RUNNER_TEMP/testable-permissions.json" <<'PY'
+          import json, pathlib, re, sys
+          source = pathlib.Path("infra/bootstrap/ci_apply.tf").read_text(encoding="utf-8")
+          role = re.search(r'(?ms)resource "google_project_iam_custom_role" "infra_drift" \{(.*?)^\}', source)
+          permissions = re.search(r'(?ms)^\s*permissions\s*=\s*\[(.*?)^\s*\]', role.group(1) if role else "")
+          requested = set(re.findall(r'"([a-zA-Z0-9.]+)"', permissions.group(1) if permissions else ""))
+          raw = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not requested or not isinstance(raw, list):
+              raise SystemExit("drift permission validation input is malformed")
+          supported = {
+              item.get("name") for item in raw
+              if isinstance(item, dict) and item.get("customRolesSupportLevel") != "NOT_SUPPORTED"
+          }
+          missing = sorted(requested - supported)
+          if missing:
+              raise SystemExit(f"drift custom role has unsupported permissions: {missing}")
+          print(f"validated {len(requested)} drift custom-role permissions")
+          PY
+
       - name: Create and inspect one saved bootstrap plan
         working-directory: infra/bootstrap
         run: |

@@ -71,6 +71,7 @@ expect("drift failure output remains withheld", "infra-drift.yml", "detailed out
 expect("bootstrap cannot use opaque tfvars", "bootstrap-apply.yml", "Materialize reviewed non-secret bootstrap inputs", "Materialize BOOTSTRAP_TFVARS inputs")
 expect("bootstrap cannot target another repository", "bootstrap-apply.yml", "github_repository        = \"hopmesh/hop\"", "github_repository        = \"hopmesh/legacy\"")
 expect("bootstrap checkout pins dispatch SHA", "bootstrap-apply.yml", "ref: ${{ github.sha }}", "ref: main")
+expect("bootstrap validates custom role permissions before plan", "bootstrap-apply.yml", "gcloud iam list-testable-permissions", "echo skip permission validation")
 expect("bootstrap apply must use saved plan", "bootstrap-apply.yml", "tofu apply -input=false -auto-approve -no-color tfplan", "tofu apply -input=false -auto-approve -no-color")
 expect("bootstrap rollback phrase fixed", "bootstrap-apply.yml", "inputs.confirm == 'rollback hop authority to platform'", "inputs.confirm == 'rollback anywhere'")
 expect("bootstrap ancestor review phrase fixed", "bootstrap-apply.yml", "inputs.ancestor_review == 'owner verified no inherited non-owner auth or secret grants'", "inputs.ancestor_review != ''")

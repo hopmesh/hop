@@ -104,14 +104,14 @@ resource "google_project_iam_custom_role" "infra_drift" {
     "bigquery.datasets.get",
     "bigquery.tables.get",
     "bigquery.tables.list",
-    "certificatemanager.certificateMapEntries.get",
-    "certificatemanager.certificateMapEntries.list",
-    "certificatemanager.certificateMaps.get",
-    "certificatemanager.certificateMaps.list",
-    "certificatemanager.certificates.get",
-    "certificatemanager.certificates.list",
-    "certificatemanager.dnsAuthorizations.get",
-    "certificatemanager.dnsAuthorizations.list",
+    "certificatemanager.certmapentries.get",
+    "certificatemanager.certmapentries.list",
+    "certificatemanager.certmaps.get",
+    "certificatemanager.certmaps.list",
+    "certificatemanager.certs.get",
+    "certificatemanager.certs.list",
+    "certificatemanager.dnsauthorizations.get",
+    "certificatemanager.dnsauthorizations.list",
     "certificatemanager.locations.get",
     "certificatemanager.locations.list",
     "compute.addresses.get",
@@ -193,7 +193,7 @@ resource "terraform_data" "remove_legacy_iam_bindings" {
     migration = "remove-legacy-deploy-iam-v1"
   }
 
-  triggers_replace = ["58558461f2362c3da313d8d246c06143497f3530be9eaa9ba1b42a2bca6bd4a7"]
+  triggers_replace = ["5a0d2bb3ce619a904f32f0d347e0c9763c033b8197ff7f3e6ec969c0a95391b7"]
 
   provisioner "local-exec" {
     command = "python3 ${path.module}/remove_legacy_state_bindings.py"

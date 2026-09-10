@@ -387,7 +387,8 @@ finally:
     os.environ.update(original_environment)
 removals = [call for call in calls if "remove-iam-policy-binding" in call]
 assert len(removals) == 22, removals
-assert sum("--condition" in call for call in removals) == 2, removals
+assert sum("--condition" in call for call in removals) == 3, removals
+assert sum("--condition" in call and call[call.index("--condition") + 1] == "None" for call in removals) == 1, removals
 assert sum(call[:3] == ("gcloud", "projects", "remove-iam-policy-binding") for call in removals) == 19, removals
 disables = [call for call in calls if call[:4] == ("gcloud", "iam", "service-accounts", "disable")]
 assert len(disables) == 1, disables
