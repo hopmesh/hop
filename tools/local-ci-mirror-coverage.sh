@@ -114,6 +114,7 @@ if ! python3 - "$CI" "$MIRROR" "$ROOT" <<'PY'; then
 import re
 import shlex
 import sys
+import yaml
 from pathlib import Path
 
 ci_path, mirror_path = Path(sys.argv[1]), Path(sys.argv[2])
@@ -208,6 +209,59 @@ for job in full:
     for task in sorted(gradle_tasks(body) - mirror_gradle):
         problems.append(f"{job} is declared full but the mirror never runs the gradle task {task}")
 
+
+    ci_doc = yaml.safe_load(ci_text) or {}
+    ci_automation_steps = ci_doc.get("jobs", {}).get("automation", {}).get("steps", [])
+    ci_executed_commands = []
+    for step in ci_automation_steps:
+        run_block = step.get("run")
+        if not run_block or not isinstance(run_block, str):
+            continue
+        for line in run_block.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                tokens = shlex.split(line, comments=True)
+                if tokens:
+                    ci_executed_commands.append((tokens, step))
+            except ValueError:
+                pass
+
+    mirror_executed_steps = []
+    for line in mirror_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("step "):
+            try:
+                tokens = shlex.split(line, comments=True)
+                if len(tokens) >= 3 and tokens[0] == "step":
+                    mirror_executed_steps.append(tokens[2:])
+            except ValueError:
+                pass
+
+    def has_ci_invocation(binary, target):
+        expected = [binary, target]
+        return any(
+            tokens == expected
+            and "if" not in step
+            and step.get("continue-on-error", False) is False
+            for tokens, step in ci_executed_commands
+        )
+
+    def has_mirror_invocation(binary, target):
+        return [binary, target] in mirror_executed_steps
+
+    if not has_ci_invocation("bash", "tools/archive-readiness-guard.test.sh"):
+        problems.append("ci.yml automation job missing gating step: bash tools/archive-readiness-guard.test.sh")
+    if not has_ci_invocation("python3", "tools/archive-readiness-guard.py"):
+        problems.append("ci.yml automation job missing gating step: python3 tools/archive-readiness-guard.py")
+
+    if not has_mirror_invocation("bash", "tools/archive-readiness-guard.test.sh"):
+        problems.append("local-ci-mirror.sh missing gating step: bash tools/archive-readiness-guard.test.sh")
+    if not has_mirror_invocation("python3", "tools/archive-readiness-guard.py"):
+        problems.append("local-ci-mirror.sh missing gating step: python3 tools/archive-readiness-guard.py")
 if problems:
     print("::error::local-ci-mirror coverage: a `full` claim is not backed by what the mirror runs:")
     for problem in problems:
