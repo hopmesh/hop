@@ -75,6 +75,8 @@ def check_billing(root: Path) -> list[str]:
     if "secrets." in validate_text:
         errors.append("billing PR validation references a secret")
     catalog = jobs["catalog"]
+    if catalog.get("environment") != "release":
+        errors.append("billing deploy must use the protected release environment")
     condition = catalog.get("if", "")
     for required in (
         "github.event_name == 'workflow_dispatch'",
@@ -181,6 +183,8 @@ def check_bootstrap(root: Path) -> list[str]:
     if "secrets." in validate_text:
         errors.append("bootstrap PR validation references a secret")
     job = jobs["bootstrap"]
+    if job.get("environment") != "release":
+        errors.append("bootstrap apply must use the protected release environment")
     condition = job.get("if", "")
     for required in (
         "github.event_name == 'workflow_dispatch'",

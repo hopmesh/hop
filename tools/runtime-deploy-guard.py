@@ -74,6 +74,8 @@ def check(root: Path) -> list[str]:
     deploy = jobs["deploy"]
     if validate.get("runs-on") != "ubuntu-latest" or deploy.get("runs-on") != "ubuntu-latest":
         errors.append("runtime jobs must use GitHub-hosted ubuntu-latest")
+    if deploy.get("environment") != "release":
+        errors.append("runtime deploy must use the protected release environment")
     validate_text = yaml.safe_dump(validate, sort_keys=False)
     if "secrets." in validate_text or "id-token" in validate_text:
         errors.append("credential-free validation job references a secret or token")

@@ -58,5 +58,6 @@ expect("readback requires private source label", 'labels.get("hop-private-source
 expect("public workflow rejects self-hosted", "runs-on: ubuntu-latest", "runs-on: [self-hosted, macOS]", first=True)
 expect("pull request target prohibited", "pull_request:", "pull_request_target:")
 
+expect("runtime deploy requires release environment", "environment: release", "environment: component-sync")
 print(f"runtime deploy guard tests passed: {passed}")
 PY

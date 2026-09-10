@@ -63,5 +63,7 @@ expect("bootstrap plan rejects prior addresses", "bootstrap-apply.yml", 'previou
 expect("bootstrap plan delete allowlist fixed", "bootstrap-apply.yml", 'address == "google_storage_bucket_iam_member.deploy_billing_state_reader"', 'address.startswith("google_storage_bucket_iam_member.")')
 expect("bootstrap proof checks token creator", "bootstrap-apply.yml", '"roles/iam.serviceAccountTokenCreator"', '"roles/iam.viewer"')
 expect("bootstrap cannot use self-hosted", "bootstrap-apply.yml", "runs-on: ubuntu-latest", "runs-on: [self-hosted, macOS]", first=True)
+expect("bootstrap requires release environment", "bootstrap-apply.yml", "environment: release", "environment: component-sync")
+expect("billing requires release environment", "billing-catalog.yml", "environment: release", "environment: component-sync")
 print(f"secondary deployment authority guard tests passed: {passed}")
 PY

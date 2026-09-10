@@ -61,6 +61,7 @@ jobs:
       ((inputs.operation != 'rollback' && inputs.confirm == 'bootstrap hopmesh/hop main') ||
        (inputs.operation == 'rollback' && inputs.confirm == 'rollback hop authority to platform'))
     runs-on: ubuntu-latest
+    environment: release
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       BOOTSTRAP_WIF_PROVIDER: ${{ vars.GCP_BOOTSTRAP_WIF_PROVIDER }}
