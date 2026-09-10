@@ -5,9 +5,23 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- make every WIF retry create-first (d42ad4e)
+- order retry prerequisites before authority (3d441fe)
+- repair first canonical bootstrap apply (aad3cfa)
+- preserve rollback after cleanup failure (9e7f63e)
+- allow idempotent cleanup retry (ca950ff)
+- pin breakglass owner in policy proof (642655d)
+- retire every legacy deploy principal (9677f15)
+- make authority cutover failure-safe (e8a551c)
+- prove complete deploy identity policies (356a095)
+- bind deploy authority to exact workflows (07c80fe)
+- guard protected deployment environments (a0d356d)
+- bind deploys to release environment (e10b9f6)
 - require archive guards to remain gating (59ee5b9)
 - make the monorepo archive guard load-bearing (bfe60e0)
 - make the monorepo archive guard load-bearing (ec73706)
+- move deploy authority to hop (01fc994)
+- port runtime and bootstrap authority into hop (9a7c364)
 - guard the monorepo archive boundary (dbec94d)
 - publish the pinned artifact and stop naming a repository that does not exist (b9e54dc)
 - keep the audit report inside its viewport (8ca6003)
@@ -348,6 +362,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (b9cbd37)
 - refine deploy attribution and commercial stack reconciliation plan (efbb987)
 - document repository authority and deploy reconciliation roadmap (baab023)
 - name the real preconditions for enabling the relay fleet (0a13006)
@@ -641,6 +656,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- reject injected drift permission (7891c0c)
 - make firestore durability self-test strictly discriminating (8ff2653)
 - prove link teardown fires on delivered frames, lower the bound to 3, and record the quiet-link residual (CAND-PROTO-B) (0c51fac)
 - make the identity secret guard fixtures deterministic and pin the entropy threshold from below (PROC-008) (40cc16f)
