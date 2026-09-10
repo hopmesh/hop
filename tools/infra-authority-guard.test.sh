@@ -4,8 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$ROOT" <<'PY'
 import importlib.util
+import json
+import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -314,9 +317,65 @@ def mutate_block(repo, relative, kind, name, old, new):
 expect("catalog Stripe reader cannot broaden", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_secret_manager_secret_iam_member", "billing_catalog_stripe_api_key_reader", 'role      = "roles/secretmanager.secretAccessor"', 'role      = "roles/secretmanager.admin"'))
 expect("drift role excludes BigQuery table data", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "google_project_iam_custom_role", "infra_drift", '"bigquery.tables.get",', '"bigquery.tables.get",\n    "bigquery.tables.getData",'))
 expect("platform rollback WIF remains phase-bound", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif_platform_rollback", 'count              = var.github_authority_phase == "handoff" ? 1 : 0', "count              = 1"))
+expect("runtime WIF replacement creates before destroy", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif", "create_before_destroy = true", "create_before_destroy = false"))
+expect("runtime WIF waits for workflow mapping", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif", "depends_on = [google_iam_workload_identity_pool_provider.github]", "depends_on = []"))
+expect("planned legacy IAM cleanup script pinned", lambda r: append(r, "infra/bootstrap/remove_legacy_state_bindings.py", "\n# hostile drift\n"))
+expect("planned legacy IAM cleanup command pinned", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "terraform_data", "remove_legacy_iam_bindings", 'command = "python3 ${path.module}/remove_legacy_state_bindings.py"', 'command = "true"'))
 expect("rollback billing reader cannot widen", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_storage_bucket_iam_member", "deploy_billing_state_reader", '/objects/billing/', '/objects/'))
 expect("price ids must match private source", lambda r: replace(r, "infra/console.tf", "local.billing_prices.private_source_sha == var.private_source_sha", "true"))
 expect("drift inputs include private source provenance", lambda r: replace(r, "infra/outputs.tf", "private_source_sha        = var.private_source_sha", "other_source_sha          = var.private_source_sha"))
 
+
+# Exercise the pinned terraform_data cleanup without touching live IAM.
+cleanup_spec = importlib.util.spec_from_file_location("legacy_cleanup", root / "infra/bootstrap/remove_legacy_state_bindings.py")
+legacy_cleanup = importlib.util.module_from_spec(cleanup_spec)
+cleanup_spec.loader.exec_module(legacy_cleanup)
+bootstrap_expression = f'resource.name == "projects/_/buckets/{legacy_cleanup.BUCKET}" || resource.name.startsWith("projects/_/buckets/{legacy_cleanup.BUCKET}/objects/bootstrap/")'
+billing_expression = f'resource.name == "projects/_/buckets/{legacy_cleanup.BUCKET}" || resource.name.startsWith("projects/_/buckets/{legacy_cleanup.BUCKET}/objects/billing/")'
+initial_bucket = {"bindings": [
+    {"role": legacy_cleanup.STORAGE_ROLE, "members": [f"serviceAccount:{legacy_cleanup.BOOTSTRAP_SA}"], "condition": {"title": "bootstrap-state-prefix-only", "expression": bootstrap_expression}},
+    {"role": legacy_cleanup.STORAGE_ROLE, "members": [f"serviceAccount:{legacy_cleanup.BILLING_SA}"], "condition": {"title": "billing-state-prefix-only", "expression": billing_expression}},
+]}
+initial_project = {"bindings": [
+    {"role": legacy_cleanup.SECRET_ADMIN_ROLE, "members": [legacy_cleanup.CLOUDBUILD_MEMBER]},
+]}
+calls = []
+bucket_reads = 0
+project_reads = 0
+
+def fake_cleanup_run(*args):
+    global bucket_reads, project_reads
+    calls.append(args)
+    if args[:4] == ("gcloud", "storage", "buckets", "get-iam-policy"):
+        value = initial_bucket if bucket_reads == 0 else {"bindings": []}
+        bucket_reads += 1
+        return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+    if args[:3] == ("gcloud", "projects", "get-iam-policy"):
+        value = initial_project if project_reads == 0 else {"bindings": []}
+        project_reads += 1
+        return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+    return subprocess.CompletedProcess(args, 0, "", "")
+
+original_cleanup_run = legacy_cleanup.run
+original_environment = os.environ.copy()
+try:
+    legacy_cleanup.run = fake_cleanup_run
+    os.environ.update({
+        "PROJECT_ID": legacy_cleanup.PROJECT,
+        "STATE_BUCKET": legacy_cleanup.BUCKET,
+        "BOOTSTRAP_SERVICE_ACCOUNT": legacy_cleanup.BOOTSTRAP_SA,
+        "BILLING_SERVICE_ACCOUNT": legacy_cleanup.BILLING_SA,
+    })
+    legacy_cleanup.main()
+finally:
+    legacy_cleanup.run = original_cleanup_run
+    os.environ.clear()
+    os.environ.update(original_environment)
+removals = [call for call in calls if "remove-iam-policy-binding" in call]
+assert len(removals) == 3, removals
+assert sum("--condition" in call for call in removals) == 2, removals
+assert sum(call[:3] == ("gcloud", "projects", "remove-iam-policy-binding") for call in removals) == 1, removals
+passed += 1
+print("ok   [planned legacy IAM cleanup removes exact three bindings]")
 print(f"infra authority guard tests passed: {passed}")
 PY

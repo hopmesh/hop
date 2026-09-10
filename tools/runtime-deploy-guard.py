@@ -95,6 +95,7 @@ def check(root: Path) -> list[str]:
     for required in (
         "github.event.workflow_run.conclusion == 'success'",
         "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.path == '.github/workflows/ci.yml'",
         "github.event.workflow_run.head_branch == 'main'",
         "github.event.workflow_run.head_repository.full_name == 'hopmesh/hop'",
         "github.repository == 'hopmesh/hop'",
@@ -123,6 +124,9 @@ def check(root: Path) -> list[str]:
     except ValueError as error:
         errors.append(f"runtime required step missing: {error}")
         return errors
+    trusted = named(deploy_steps, "Prove trusted event and required configuration").get("run", "")
+    if 'test "$UPSTREAM_WORKFLOW_PATH" = .github/workflows/ci.yml' not in trusted or deploy.get("env", {}).get("UPSTREAM_WORKFLOW_PATH") != "${{ github.event.workflow_run.path }}":
+        errors.append("runtime job does not recheck the canonical upstream workflow path")
 
     public = named(deploy_steps, PUBLIC_BUILD).get("run", "")
     token_step = named(deploy_steps, TOKEN_GATE)

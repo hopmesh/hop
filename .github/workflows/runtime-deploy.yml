@@ -79,6 +79,7 @@ jobs:
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == 'hopmesh/hop') ||
       (github.event_name == 'workflow_dispatch' &&
@@ -95,6 +96,7 @@ jobs:
       UPSTREAM_EVENT: ${{ github.event.workflow_run.event }}
       UPSTREAM_BRANCH: ${{ github.event.workflow_run.head_branch }}
       UPSTREAM_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+      UPSTREAM_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
       RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}
       RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
       RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
@@ -125,6 +127,7 @@ jobs:
             test "$UPSTREAM_EVENT" = push
             test "$UPSTREAM_BRANCH" = main
             test "$UPSTREAM_REPOSITORY" = hopmesh/hop
+            test "$UPSTREAM_WORKFLOW_PATH" = .github/workflows/ci.yml
           fi
 
       - name: Check out the exact green hop commit

@@ -73,6 +73,7 @@ expect("bootstrap cannot target another repository", "bootstrap-apply.yml", "git
 expect("bootstrap checkout pins dispatch SHA", "bootstrap-apply.yml", "ref: ${{ github.sha }}", "ref: main")
 expect("bootstrap apply must use saved plan", "bootstrap-apply.yml", "tofu apply -input=false -auto-approve -no-color tfplan", "tofu apply -input=false -auto-approve -no-color")
 expect("bootstrap rollback phrase fixed", "bootstrap-apply.yml", "inputs.confirm == 'rollback hop authority to platform'", "inputs.confirm == 'rollback anywhere'")
+expect("bootstrap ancestor review phrase fixed", "bootstrap-apply.yml", "inputs.ancestor_review == 'owner verified no inherited non-owner auth or secret grants'", "inputs.ancestor_review != ''")
 expect("bootstrap plan rejects prior addresses", "bootstrap-apply.yml", 'previous = item.get("previous_address")', 'previous = None')
 expect("bootstrap rollback actions phase-specific", "bootstrap-apply.yml", 'if operation == "rollback":\n                  if address == "google_iam_workload_identity_pool_provider.github"', 'if operation in {"rollback", "apply"}:\n                  if address == "google_iam_workload_identity_pool_provider.github"')
 expect("bootstrap replacement address set exact", "bootstrap-apply.yml", "normal_replacements = {", 'normal_replacements = {\n              "google_service_account.infra_drift",')
@@ -83,7 +84,6 @@ expect("bootstrap proof checks IAM conditions", "bootstrap-apply.yml", 'binding.
 expect("bootstrap proof checks rollback storage", "bootstrap-apply.yml", "gcloud storage buckets get-iam-policy", "echo skip storage readback")
 expect("bootstrap proof checks project IAM", "bootstrap-apply.yml", "gcloud projects get-iam-policy", "echo skip project IAM")
 expect("bootstrap proof checks secret IAM", "bootstrap-apply.yml", "gcloud secrets get-iam-policy", "echo skip secret IAM")
-expect("bootstrap cleanup targets descriptionless duplicates only", "bootstrap-apply.yml", 'binding.get("condition") == {"title": title, "expression": expression}', "True")
 expect("bootstrap apply refuses superseded main", "bootstrap-apply.yml", "test \"$tip\" = \"$EXPECTED_SHA\"", "test \"$tip\" != \"\"")
 expect("bootstrap cannot use self-hosted", "bootstrap-apply.yml", "runs-on: ubuntu-latest", "runs-on: [self-hosted, macOS]", first=True)
 expect("bootstrap requires release environment", "bootstrap-apply.yml", "environment: release", "environment: component-sync")
@@ -108,7 +108,7 @@ def phase_plan(label, operation, changes, accepted):
 phase_plan("observed terminal cutover plan accepted", "apply", [
     {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},
     {"address": "google_project_iam_custom_role.infra_drift", "change": {"actions": ["create"]}},
-    {"address": "google_service_account_iam_member.billing_catalog_wif_main", "change": {"actions": ["delete", "create"]}},
+    {"address": "google_service_account_iam_member.billing_catalog_wif_main", "change": {"actions": ["create", "delete"]}},
     {"address": "google_storage_bucket_iam_member.deploy_billing_state_reader[0]", "previous_address": "google_storage_bucket_iam_member.deploy_billing_state_reader", "change": {"actions": ["delete"]}},
 ], True)
 phase_plan("exact rollback authority plan accepted", "rollback", [

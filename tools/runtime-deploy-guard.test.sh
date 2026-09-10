@@ -49,6 +49,7 @@ def expect(label, old=None, new=None, first=False, last=False):
 
 expect("clean runtime workflow")
 expect("wrong upstream repository rejected", "head_repository.full_name == 'hopmesh/hop'", "head_repository.full_name == 'hopmesh/legacy'")
+expect("canonical CI workflow path required", "github.event.workflow_run.path == '.github/workflows/ci.yml'", "github.event.workflow_run.path == '.github/workflows/fake-ci.yml'")
 expect("configuration cannot skip deploy job", "github.repository == 'hopmesh/hop'", "github.repository == 'hopmesh/hop' && vars.GCP_PROJECT_ID != ''")
 expect("guard cannot be no-op comment", "run: python3 tools/runtime-deploy-guard.py", "run: true # python3 tools/runtime-deploy-guard.py")
 expect("guard cannot tolerate failure", "run: python3 tools/runtime-deploy-guard.py", "run: python3 tools/runtime-deploy-guard.py || true")

@@ -241,6 +241,7 @@ def check_bootstrap(root: Path) -> list[str]:
         "github.event_name == 'workflow_dispatch'",
         "github.repository == 'hopmesh/hop'",
         "github.ref == 'refs/heads/main'",
+        "inputs.ancestor_review == 'owner verified no inherited non-owner auth or secret grants'",
         "inputs.confirm == 'bootstrap hopmesh/hop main'",
         "inputs.confirm == 'rollback hop authority to platform'",
     ):
@@ -260,11 +261,10 @@ def check_bootstrap(root: Path) -> list[str]:
         policy_index, policy = step_by_name(job, "Refuse unrelated bootstrap actions")
         stale_index, stale = step_by_name(job, "Refuse a superseded bootstrap apply")
         apply_index, apply = step_by_name(job, "Apply the saved bootstrap plan")
-        cleanup_index, cleanup = step_by_name(job, "Remove exact legacy duplicate state bindings")
         proof_index, proof = step_by_name(job, "Prove final or rollback authority state")
-        order = [initial_index, plan_index, policy_index, stale_index, apply_index, cleanup_index, proof_index]
+        order = [initial_index, plan_index, policy_index, stale_index, apply_index, proof_index]
         if order != sorted(order):
-            errors.append("bootstrap source, plan, policy, supersession, apply, cleanup, and proof order drifted")
+            errors.append("bootstrap source, plan, policy, supersession, apply, and proof order drifted")
         initial_text = initial.get("run", "")
         for required in ('git rev-parse HEAD)" = "$EXPECTED_SHA', '"$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main'):
             if required not in initial_text:
@@ -286,7 +286,7 @@ def check_bootstrap(root: Path) -> list[str]:
             'if operation == "rollback":',
             'address in rollback_creates and actions == ("create",)',
             'actions == ("delete",) and address in normal_deletes',
-            'actions == ("delete", "create") and address in normal_replacements',
+            'actions == ("create", "delete") and address in normal_replacements',
             'actions == ("forget",) and address == "google_service_account.build"',
             'raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")',
         ):
@@ -303,6 +303,7 @@ def check_bootstrap(root: Path) -> list[str]:
                 "google_service_account_iam_member.billing_catalog_wif_main",
                 "google_service_account.infra_drift",
                 "google_project_iam_custom_role.infra_drift",
+                "terraform_data.remove_legacy_iam_bindings",
                 "google_service_account_iam_member.infra_drift_wif",
                 "google_project_iam_member.infra_drift_viewer",
                 "google_storage_bucket_iam_member.infra_drift_state_reader",
@@ -337,16 +338,6 @@ def check_bootstrap(root: Path) -> list[str]:
             errors.append("bootstrap apply does not consume the saved plan")
         if apply.get("if") != "env.OPERATION == 'apply' || env.OPERATION == 'rollback'":
             errors.append("bootstrap apply operation gate drifted")
-        cleanup_text = cleanup.get("run", "")
-        cleanup_required = (
-            'binding.get("condition") == {"title": title, "expression": expression}',
-            '"bootstrap-state-prefix-only"',
-            '"billing-state-prefix-only"',
-            '"remove-iam-policy-binding"',
-            'raise SystemExit("legacy state IAM cleanup failed")',
-        )
-        if cleanup.get("if") != "env.OPERATION == 'apply'" or any(cleanup_text.count(item) != 1 for item in cleanup_required) or "|| true" in cleanup_text:
-            errors.append("bootstrap legacy state IAM cleanup drifted")
         proof_text = proof.get("run", "")
         required_counts = {
             '"attribute.workflow": "assertion.workflow_ref"': 1,
@@ -356,9 +347,12 @@ def check_bootstrap(root: Path) -> list[str]:
             '"roles/iam.serviceAccountTokenCreator"': 1,
             '"roles/iam.serviceAccountOpenIdTokenCreator"': 1,
             "gcloud projects get-iam-policy": 1,
+            "gcloud iam roles list": 1,
             "gcloud secrets get-iam-policy": 1,
             "gcloud storage buckets get-iam-policy": 1,
             'raise SystemExit("project IAM contains a federated principal")': 1,
+            'raise SystemExit("project IAM grants a predefined Secret Manager role")': 1,
+            'raise SystemExit("project IAM grants a custom role with secret version data access")': 1,
             "expected_project = {": 1,
             "expected_secrets = {": 1,
             'found_storage = {label: [] for label in identities}': 1,

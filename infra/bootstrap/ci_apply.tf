@@ -55,6 +55,12 @@ resource "google_service_account_iam_member" "bootstrap_apply_wif" {
   service_account_id = google_service_account.bootstrap_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.github_workflow_members.bootstrap
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_service_account_iam_member" "bootstrap_apply_wif_platform_rollback" {
@@ -62,6 +68,8 @@ resource "google_service_account_iam_member" "bootstrap_apply_wif_platform_rollb
   service_account_id = google_service_account.bootstrap_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.platform_rollback_workflow_members.bootstrap
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
 }
 
 resource "google_project_iam_member" "bootstrap_apply" {
@@ -84,6 +92,8 @@ resource "google_service_account_iam_member" "infra_drift_wif" {
   service_account_id = google_service_account.infra_drift.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.github_workflow_members.drift
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
 }
 
 resource "google_project_iam_custom_role" "infra_drift" {
@@ -173,6 +183,25 @@ resource "google_secret_manager_secret_iam_member" "infra_drift_price_ids_viewer
   secret_id = google_secret_manager_secret.billing_price_ids.secret_id
   role      = "roles/secretmanager.viewer"
   member    = "serviceAccount:${google_service_account.infra_drift.email}"
+}
+
+# One planned migration action removes two duplicate state bindings and the retired Cloud Build
+# service agent's project-wide secret admin. The terraform_data instance records completion in
+# bootstrap state, so this runs once.
+resource "terraform_data" "remove_legacy_iam_bindings" {
+  input = {
+    migration = "remove-legacy-deploy-iam-v1"
+  }
+
+  provisioner "local-exec" {
+    command = "python3 ${path.module}/remove_legacy_state_bindings.py"
+    environment = {
+      PROJECT_ID                = var.project_id
+      STATE_BUCKET              = var.runtime_state_bucket
+      BOOTSTRAP_SERVICE_ACCOUNT = google_service_account.bootstrap_apply.email
+      BILLING_SERVICE_ACCOUNT   = google_service_account.billing_catalog_apply.email
+    }
+  }
 }
 
 # Secret containers and their IAM bindings, WITHOUT any access to version payloads. Bootstrap creates

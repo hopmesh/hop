@@ -178,6 +178,12 @@ resource "google_service_account_iam_member" "billing_catalog_wif_main" {
   service_account_id = google_service_account.billing_catalog_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.github_workflow_members.billing
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_service_account_iam_member" "billing_catalog_wif_platform_rollback" {
@@ -185,6 +191,8 @@ resource "google_service_account_iam_member" "billing_catalog_wif_platform_rollb
   service_account_id = google_service_account.billing_catalog_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.platform_rollback_workflow_members.billing
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
 }
 
 resource "google_secret_manager_secret_iam_member" "billing_catalog_price_ids_writer" {

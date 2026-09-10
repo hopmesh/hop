@@ -109,6 +109,7 @@ EXPECTED_DRIFT_PERMISSIONS = {
     "run.services.list",
     "serviceusage.services.use",
 }
+LEGACY_CLEANUP_SHA256 = "15674b0d0ac92e7a612b0a77c7c9851a0716be0adffdefa5e6d74bca20f2988c"
 
 
 def resource_types(text):
@@ -793,11 +794,13 @@ def check(root):
     }
     for name, (service_account, member) in hop_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
-        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or top_level_block(block, "condition"):
-            errors.append(f"bootstrap workflow-scoped WIF binding drifted: {name}")
+        lifecycle = top_level_block(block, "lifecycle") or ""
+        needs_replacement_safety = name != "infra_drift_wif"
+        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition") or (needs_replacement_safety and not has_exact_top_level_assignment(lifecycle, "create_before_destroy", "true")):
+            errors.append(f"bootstrap workflow-scoped WIF binding drifted or risks lockout: {name}")
     for name, (service_account, member) in rollback_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
-        if not has_exact_top_level_assignment(block, "count", 'var.github_authority_phase == "handoff" ? 1 : 0') or not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or top_level_block(block, "condition"):
+        if not has_exact_top_level_assignment(block, "count", 'var.github_authority_phase == "handoff" ? 1 : 0') or not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition"):
             errors.append(f"bootstrap rollback WIF binding drifted: {name}")
     bootstrap_resources = re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE)
     wif_grants = []
@@ -904,6 +907,22 @@ def check(root):
             deploy_bucket_grants.append(name)
     if sorted(deploy_bucket_grants) != ["deploy_billing_state_reader", "deploy_state"]:
         errors.append(f"hop-deploy storage grant set drifted: {sorted(deploy_bucket_grants)}")
+
+    terraform_data_names = [name for kind, name in bootstrap_resources if kind == "terraform_data"]
+    cleanup = resource_block(bootstrap, "terraform_data", "remove_legacy_iam_bindings") or ""
+    cleanup_input = top_level_block(cleanup, "input =") or ""
+    cleanup_provisioner = top_level_block(cleanup, 'provisioner "local-exec"') or ""
+    cleanup_environment = top_level_block(cleanup_provisioner, "environment =") or ""
+    cleanup_script = bootstrap_root / "remove_legacy_state_bindings.py"
+    cleanup_digest = hashlib.sha256(cleanup_script.read_bytes()).hexdigest() if cleanup_script.is_file() and not cleanup_script.is_symlink() else ""
+    expected_cleanup_environment = [
+        ("PROJECT_ID", "var.project_id"),
+        ("STATE_BUCKET", "var.runtime_state_bucket"),
+        ("BOOTSTRAP_SERVICE_ACCOUNT", "google_service_account.bootstrap_apply.email"),
+        ("BILLING_SERVICE_ACCOUNT", "google_service_account.billing_catalog_apply.email"),
+    ]
+    if terraform_data_names != ["remove_legacy_iam_bindings"] or not has_exact_top_level_assignment(cleanup_input, "migration", '"remove-legacy-deploy-iam-v1"') or not has_exact_top_level_assignment(cleanup_provisioner, "command", '"python3 ${path.module}/remove_legacy_state_bindings.py"') or top_level_assignment_pairs(cleanup_environment) != expected_cleanup_environment or cleanup_digest != LEGACY_CLEANUP_SHA256:
+        errors.append("planned legacy state IAM cleanup resource or script drifted")
 
     bootstrap_removed_blocks = repeated_blocks(bootstrap, "removed")
     if len(bootstrap_removed_blocks) != 1:

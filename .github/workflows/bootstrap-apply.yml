@@ -20,6 +20,10 @@ on:
         description: Type bootstrap hopmesh/hop main, or rollback hop authority to platform
         required: true
         type: string
+      ancestor_review:
+        description: Confirm owner review found no inherited non-owner auth or secret grants
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -58,6 +62,7 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'hopmesh/hop' &&
       github.ref == 'refs/heads/main' &&
+      inputs.ancestor_review == 'owner verified no inherited non-owner auth or secret grants' &&
       ((inputs.operation != 'rollback' && inputs.confirm == 'bootstrap hopmesh/hop main') ||
        (inputs.operation == 'rollback' && inputs.confirm == 'rollback hop authority to platform'))
     runs-on: ubuntu-latest
@@ -160,6 +165,7 @@ jobs:
               "google_service_account_iam_member.billing_catalog_wif_main",
               "google_service_account.infra_drift",
               "google_project_iam_custom_role.infra_drift",
+              "terraform_data.remove_legacy_iam_bindings",
               "google_service_account_iam_member.infra_drift_wif",
               "google_project_iam_member.infra_drift_viewer",
               "google_storage_bucket_iam_member.infra_drift_state_reader",
@@ -208,7 +214,7 @@ jobs:
                   continue
               if actions in {("create",), ("update",)} and address in normal_mutable:
                   continue
-              if actions == ("delete", "create") and address in normal_replacements:
+              if actions == ("create", "delete") and address in normal_replacements:
                   continue
               if actions == ("delete",) and address in normal_deletes:
                   continue
@@ -236,54 +242,6 @@ jobs:
           tofu apply -input=false -auto-approve -no-color tfplan
           echo "applied=true" >> "$GITHUB_OUTPUT"
 
-      - name: Remove exact legacy duplicate state bindings
-        if: env.OPERATION == 'apply'
-        run: |
-          python3 - <<'PY'
-          import json, os, subprocess
-          project = os.environ["PROJECT_ID"]
-          bucket = f"gs://{project}-tfstate"
-          result = subprocess.run(
-              ["gcloud", "storage", "buckets", "get-iam-policy", bucket, "--format=json"],
-              capture_output=True, text=True,
-          )
-          if result.returncode != 0:
-              raise SystemExit("legacy state IAM cleanup could not read the bucket policy")
-          policy = json.loads(result.stdout)
-          targets = (
-              (
-                  f"serviceAccount:{os.environ['BOOTSTRAP_SERVICE_ACCOUNT']}",
-                  "bootstrap-state-prefix-only",
-                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
-              ),
-              (
-                  f"serviceAccount:{os.environ['BILLING_SERVICE_ACCOUNT']}",
-                  "billing-state-prefix-only",
-                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
-              ),
-          )
-          for member, title, expression in targets:
-              matches = [
-                  binding for binding in policy.get("bindings", [])
-                  if binding.get("role") == "roles/storage.objectAdmin"
-                  and member in binding.get("members", [])
-                  and binding.get("condition") == {"title": title, "expression": expression}
-              ]
-              if len(matches) > 1:
-                  raise SystemExit("legacy state IAM cleanup found duplicate legacy bindings")
-              if not matches:
-                  continue
-              remove = subprocess.run(
-                  [
-                      "gcloud", "storage", "buckets", "remove-iam-policy-binding", bucket,
-                      "--member", member, "--role", "roles/storage.objectAdmin",
-                      "--condition", f"expression={expression},title={title}", "--quiet",
-                  ],
-                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-              )
-              if remove.returncode != 0:
-                  raise SystemExit("legacy state IAM cleanup failed")
-          PY
 
       - name: Prove final or rollback authority state
         if: steps.apply.outputs.applied == 'true'
@@ -301,6 +259,7 @@ jobs:
             gcloud iam service-accounts get-iam-policy "$account" --format=json > "$RUNNER_TEMP/${label}-iam.json"
           done
           gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-iam.json"
+          gcloud iam roles list --project "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-roles.json"
           for item in \
             "hop-billing-price-ids:price" \
             "stripe-api-key:stripe" \
@@ -389,12 +348,28 @@ jobs:
               "drift": {f"projects/{project}/roles/hopInfraDriftViewer"},
           }
           project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
+          project_roles_raw = json.load(open(root / "project-roles.json", encoding="utf-8"))
+          if not isinstance(project_roles_raw, list):
+              raise SystemExit("project custom role readback is malformed")
+          custom_roles = {
+              item.get("name"): set(item.get("includedPermissions", []))
+              for item in project_roles_raw if isinstance(item, dict) and item.get("name")
+          }
+          secret_data_permissions = {
+              "secretmanager.versions.access", "secretmanager.versions.add",
+              "secretmanager.versions.destroy", "secretmanager.versions.disable",
+              "secretmanager.versions.enable",
+          }
           found_project = {label: [] for label in identities}
           for binding in project_policy.get("bindings", []):
               role = binding.get("role")
               members = binding.get("members", [])
               if any(member.startswith(("principal://", "principalSet://")) for member in members):
                   raise SystemExit("project IAM contains a federated principal")
+              if members and isinstance(role, str) and role.startswith("roles/secretmanager."):
+                  raise SystemExit("project IAM grants a predefined Secret Manager role")
+              if role in custom_roles and custom_roles[role] & secret_data_permissions:
+                  raise SystemExit("project IAM grants a custom role with secret version data access")
               for label, member in identities.items():
                   if member not in members:
                       continue

@@ -11,6 +11,12 @@ resource "google_service_account_iam_member" "deploy_runtime_wif" {
   service_account_id = google_service_account.deploy.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.github_workflow_members.runtime
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_service_account_iam_member" "deploy_runtime_wif_platform_rollback" {
@@ -18,6 +24,8 @@ resource "google_service_account_iam_member" "deploy_runtime_wif_platform_rollba
   service_account_id = google_service_account.deploy.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.platform_rollback_workflow_members.runtime
+
+  depends_on = [google_iam_workload_identity_pool_provider.github]
 }
 
 output "runtime_wif_provider" {
