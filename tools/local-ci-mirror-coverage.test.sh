@@ -141,5 +141,109 @@ case "$summary" in
   *) fail=$((fail + 1)); echo "FAIL: the mirror summary does not enumerate the uncovered CI jobs" ;;
 esac
 
+# Archive readiness step parity: dropping, commenting, or no-oping either command must FAIL.
+
+# 1. CI step dropping / no-op mutations
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP/ci-no-archive-test.yml" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = "bash tools/archive-readiness-guard.test.sh"
+assert step in text, "archive test step not found in ci.yml"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "true", 1))
+PY
+expect "ci.yml missing archive test step" fail "$TMP/ci-no-archive-test.yml" "$ROOT/tools/local-ci-mirror.sh"
+
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP/ci-no-archive-guard.yml" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = "python3 tools/archive-readiness-guard.py"
+assert step in text, "archive guard step not found in ci.yml"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "true", 1))
+PY
+expect "ci.yml missing archive guard step" fail "$TMP/ci-no-archive-guard.yml" "$ROOT/tools/local-ci-mirror.sh"
+
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP/ci-comment-archive-test.yml" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = "bash tools/archive-readiness-guard.test.sh"
+assert step in text, "archive test step not found in ci.yml"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "true # bash tools/archive-readiness-guard.test.sh", 1))
+PY
+expect "ci.yml comment-only archive test step" fail "$TMP/ci-comment-archive-test.yml" "$ROOT/tools/local-ci-mirror.sh"
+
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP/ci-comment-archive-guard.yml" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = "python3 tools/archive-readiness-guard.py"
+assert step in text, "archive guard step not found in ci.yml"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "true # python3 tools/archive-readiness-guard.py", 1))
+PY
+expect "ci.yml comment-only archive guard step" fail "$TMP/ci-comment-archive-guard.yml" "$ROOT/tools/local-ci-mirror.sh"
+
+# 2. Local mirror step dropping, commenting, and no-op mutations
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-no-archive-test.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard self-test" bash tools/archive-readiness-guard.test.sh\n'
+assert step in text, "archive test step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "", 1))
+PY
+expect "local mirror missing archive test step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-no-archive-test.sh"
+
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-no-archive-guard.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard"           python3 tools/archive-readiness-guard.py\n'
+assert step in text, "archive guard step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, "", 1))
+PY
+expect "local mirror missing archive guard step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-no-archive-guard.sh"
+
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-comment-archive-test.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard self-test" bash tools/archive-readiness-guard.test.sh'
+assert step in text, "archive test step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, '# ' + step, 1))
+PY
+expect "local mirror commented archive test step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-comment-archive-test.sh"
+
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-comment-archive-guard.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard"           python3 tools/archive-readiness-guard.py'
+assert step in text, "archive guard step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, '# ' + step, 1))
+PY
+expect "local mirror commented archive guard step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-comment-archive-guard.sh"
+
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-noop-archive-test.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard self-test" bash tools/archive-readiness-guard.test.sh'
+assert step in text, "archive test step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, 'step "archive-readiness guard self-test" true # bash tools/archive-readiness-guard.test.sh', 1))
+PY
+expect "local mirror no-op archive test step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-noop-archive-test.sh"
+
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-noop-archive-guard.sh" <<'PY'
+import sys
+source, destination = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+step = 'step "archive-readiness guard"           python3 tools/archive-readiness-guard.py'
+assert step in text, "archive guard step not found in local-ci-mirror.sh"
+open(destination, "w", encoding="utf-8").write(text.replace(step, 'step "archive-readiness guard" true # python3 tools/archive-readiness-guard.py', 1))
+PY
+expect "local mirror no-op archive guard step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-noop-archive-guard.sh"
+
 echo "local-ci-mirror-coverage.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
