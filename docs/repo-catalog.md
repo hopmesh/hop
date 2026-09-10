@@ -229,21 +229,20 @@ The other nineteen retired repos hold **zero** release assets.
 
 ### 1. Division of authority across the repository estate
 
-Four repositories partition the project estate following the 2026-08 repository split:
+Four repositories partition the project estate:
 
-1. **`hopmesh/hop` (public)**: The canonical open-source repository. Contains the protocol core (`core/hop-core`), C ABI (`core/hop`), browser WASM builds, client SDKs (`sdk/*`), platform bearers (`bearers/*`), demo applications (`apps/*`), website and developer documentation, and CI verification guards. It owns public package distribution and mirror exports via `sync-components.yml` to the three standalone SDK mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`). It owns marketing site deployment to `hopme.sh` via `pages.yml`. It has NO cloud deployment workflows, NO OpenTofu roots, and NO commercial backend code.
-2. **`hopmesh/platform` (private)**: The intended architectural owner of the production deployment estate, customer console (`apps/web/console`), and commercial backend (`services/hop-accountd`, `services/hop-billingd`). Created on 2026-08-17. It contains the OpenTofu infrastructure roots (`infra/`, `infra/bootstrap/`, `infra/billing/`) configured to write to the GCS backend bucket `hop-mesh-tfstate` under prefixes `relay-fleet`, `bootstrap`, and `billing`.
-3. **`hopmesh/monorepo` (private, legacy)**: The pre-split private monorepo. It is unarchived and active, with its last commit on 2026-09-09. While its public mirror export, release tagging, and Pages workflows were manually disabled on 2026-09-04, its CI, changelog, auto-merge, and runtime deploy workflows remain active. It carries the exact same OpenTofu roots and points to the exact same GCS state bucket (`hop-mesh-tfstate`).
+1. **`hopmesh/hop` (public)**: The canonical open-source repository and the sole workflow and deploy authority. Contains the protocol core (`core/hop-core`), C ABI (`core/hop`), browser WASM builds, client SDKs (`sdk/*`), platform bearers (`bearers/*`), demo applications (`apps/*`), website and developer documentation, CI verification guards, and deployment workflows. Public runtime and bootstrap OpenTofu move into `hop`. It owns public package distribution and mirror exports via `sync-components.yml` to the three standalone SDK mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`). It owns marketing site deployment to `hopme.sh` via `pages.yml`. All deployment and release authority originates here.
+2. **`hopmesh/platform` (private)**: Private source storage for commercial code only (`services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, and private billing configuration). The hop deploy workflow will pin one immutable platform commit in `hop` and check it out only on trusted `main`/`workflow_dispatch` runs. A platform change does not deploy until the pin changes in a hop PR.
+3. **`hopmesh/monorepo` (archived, historical trust anchor)**: The pre-split private monorepo is archived. No deployment may ever run from it. It serves strictly as an immutable historical trust anchor for releases `v0.0.1` and `v0.0.2`, and as a git reference archive for historical commits and branches. Archived GitHub repositories remain readable via Git and the web interface (their URLs do not 404), but all actions, workflows, write operations, and deployments are permanently stopped. No current or future executable edge, build, package metadata, workflow dispatch, source checkout, or post-migration trust authority may use it. Enforced by `tools/archive-readiness-guard.py`.
 4. **`hopmesh/internal` (private)**: The repository for confidential artifacts, holding adversarial audit reports, remediation ledgers, business and financial models, and private test mockups.
 
 ### 2. Source of truth per asset
 
-- **Relay fleet and console deploy**: The intended source of truth is `hopmesh/platform`. Its `runtime-deploy.yml` workflow runs on manual `workflow_dispatch` (gated behind `confirm: apply`) and checks out `hopmesh/hop` at `ref: main` for public sources, overlays commercial services, builds Docker images, and applies the OpenTofu root `infra/`. However, in practice, `hopmesh/monorepo` remains the live automated deployer: it runs an automated deploy on every push to main, building from its own frozen August 2026 tree. `hopmesh/hop` has zero deploy authority.
-- **Terraform roots**: `hopmesh/hop` has no Terraform roots. `hopmesh/platform` and `hopmesh/monorepo` share identical OpenTofu roots (`infra/`, `infra/bootstrap/`, `infra/billing/`) and share the exact same GCS state bucket (`bucket = "hop-mesh-tfstate"`). The last apply to `relay-fleet` was executed by `hopmesh/monorepo` on 2026-09-09.
-- **Commercial backend (`hop-accountd`, `hop-billingd`)**: `hopmesh/platform` is the source of truth (`hopmesh/platform/services/hop-accountd`, `hopmesh/platform/services/hop-billingd`). These crates are excluded and deleted from `hopmesh/hop`. A stale copy remains in `hopmesh/monorepo`.
-- **Stripe and Resend configuration**: Defined in `infra/billing/` (Stripe products, meters, prices, and Resend domain). Present in both `hopmesh/platform` and `hopmesh/monorepo`. Last successfully applied by `hopmesh/monorepo` via `billing-catalog.yml` on 2026-08-16.
-- **Public mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`, `hop-bearers-apple`)**: `hopmesh/hop` is the sole source of truth. Copybara export is strictly one-directional from `hopmesh/hop` to the mirror repositories via `.github/workflows/sync-components.yml`. `hopmesh/monorepo` is not upstream for anything; its sync workflow was disabled on 2026-09-04.
-
+- **Relay fleet and console deploy**: `hopmesh/hop` is the sole deploy authority. The deployment workflow in `hop` pins an immutable commit of `hopmesh/platform` for commercial backend crates and checks it out only during trusted deploy runs. `hopmesh/monorepo` is archived and has zero deployment authority.
+- **Terraform roots**: Public runtime and bootstrap OpenTofu roots reside in `hopmesh/hop`. Private billing configuration remains in `hopmesh/platform`, but apply workflows originate in `hopmesh/hop`.
+- **Commercial backend (`hop-accountd`, `hop-billingd`)**: `hopmesh/platform` is the private source storage. Deployed via `hopmesh/hop` pinning an immutable commit.
+- **Stripe and Resend configuration**: Stored in `hopmesh/platform`, applied via workflow originating in `hopmesh/hop`.
+- **Public mirrors (`hop-sdk-go`, `hop-sdk-crystal`, `hop-sdk-apple`, `hop-bearers-apple`)**: `hopmesh/hop` is the sole source of truth. Copybara export is strictly one-directional from `hopmesh/hop` to the mirror repositories via `.github/workflows/sync-components.yml`. `hopmesh/monorepo` is not upstream for anything.
 ### 3. Forensic finding: why commits still land in the old monorepo and what production actually serves
 
 Commits continue to land daily in `hopmesh/monorepo` due to an un-decommissioned automated changelog loop:
@@ -303,36 +302,32 @@ Audit of every workflow in `hopmesh/monorepo`:
 | Deploy marketing site | `.github/workflows/pages.yml` | `push` | 2026-09-04T18:57:51Z | (a) Redundant / (c) Dead | Manually disabled on 2026-09-04. Duplicated and active in hop. |
 | Release tags | `.github/workflows/release-tags.yml` | `workflow_run` | 2026-09-04T19:17:37Z | (a) Redundant / (c) Dead | Manually disabled on 2026-09-04. Duplicated and active in hop. |
 
-### 6. Reconciliation recommendation
+### 6. The Archive Invariant and Cutover Architecture
 
-Do NOT archive `hopmesh/monorepo` today. Archiving `hopmesh/monorepo` right now would remove the only active deployer of the commercial backend (`hop-accountd`) and customer console (`hop-console`), and the only active repository holding their source and live configuration.
+The owner decided that `hopmesh/monorepo` must be archived and no deployment may ever run from it; every deployment action must originate in `hopmesh/hop`.
 
-Instead, the project must sequence the transition in three distinct steps:
+#### The archive invariant
 
-#### Step 1: Settle repository ownership of the commercial stack
-Formally confirm where `services/hop-accountd`, `services/hop-billingd`, and `apps/web/console` belong. While `hopmesh/platform` was created on 2026-08-17 to hold them, `hopmesh/platform` has zero Actions secrets provisioned (`gh api repos/hopmesh/platform/actions/secrets` returns `[]`), so today it cannot deploy or even verify infrastructure drift.
+`hopmesh/monorepo` is archived. It remains a historical trust anchor and git reference archive, but no current or future executable edge may use it:
 
-#### Step 2: Arm `hopmesh/platform` so it can deploy
-Before touching `hopmesh/monorepo`'s deploy path:
-- Seed the missing repository secrets in `hopmesh/platform`: `BOOTSTRAP_TFVARS`, `STRIPE_API_KEY`, and `RESEND_API_KEY`.
-- Run `.github/workflows/infra-drift.yml` in `hopmesh/platform` and verify it transitions from red to green.
-- Execute `.github/workflows/runtime-deploy.yml` in `hopmesh/platform` via `workflow_dispatch` with `confirm: apply`, verifying that it builds public images against `hopmesh/hop@main`, builds commercial images from `hopmesh/platform`, and successfully applies `infra/` to `hop-mesh-tfstate/relay-fleet`.
+1. **Historical trust anchor**: `v0.0.1` and `v0.0.2` release assets and Sigstore certificate provenance legitimately name `hopmesh/monorepo`. `sdk/go/cmd/hop-install/main.go` pins `legacyBuilder` and `legacyRepository` exclusively for those two tags. That anchor is immutable and must stay.
+2. **Git reference archive**: GitHub archives retain all commits, branches, tags, and pull requests. Archived URLs remain readable via Git and web UI (they do not 404). This preserves the audit trail and reference history.
+3. **Zero executable authority**: No current or future executable edge, workflow run, build, deployment, workflow dispatch, source checkout, package manifest repository field, or post-migration trust authority may reference `hopmesh/monorepo`. Any post-migration tag (`v0.0.3`+) naming the legacy builder or repository is strictly rejected.
+4. **Automated enforcement**: Enforced in CI by `tools/archive-readiness-guard.py` (self-tested by `tools/archive-readiness-guard.test.sh`).
 
-#### Step 3: Transition `hopmesh/monorepo` once platform is proven
-Only after `hopmesh/platform` has demonstrated successful, repeatable deployments of all production services:
-- Neutralize monorepo's daily automated loop by disabling `changelog.yml` and `pr-automerge.yml` in `hopmesh/monorepo`.
-- Change `.github/workflows/runtime-deploy.yml` in `hopmesh/monorepo` from `workflow_run` to `workflow_dispatch` only, keeping it solely as an emergency rollback mechanism until the migration is settled.
-- At that point, and only at that point, consider retiring `hopmesh/monorepo`.
+#### Reconciled monorepo branch inventory
 
-#### What should move to `hopmesh/hop`
-- Documentation only: `CLAUDE.md`, `docs/repo-catalog.md`, and `docs/release-engineering.md` must accurately state where deploy authority lives.
-- Do NOT move `infra/` or commercial backend crates (`services/hop-accountd`, `services/hop-billingd`) to `hopmesh/hop`. Public open-source consumers do not need GCP OpenTofu infrastructure or Stripe billing logic, and carrying commercial dependencies breaks workspace reproducibility.
+The four unique monorepo branches reported by the reference audit have been reconciled by content against `hop` main:
 
-#### What should stay private
-- `hopmesh/platform`: Must remain the sole home for `services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, and `infra/` (runtime OpenTofu, bootstrap, and billing).
-- `hopmesh/internal`: Must remain the home for security audits, remediation ledgers, financial models, and mockups.
+- **`assets/email-logo` (commit `85d657b8`)**: Already present. The email-safe logo asset `apps/web/site/public/logo-email.png` in `hop` main is byte-identical (SHA-256 `e896127b6b864adaf391a2f28c9c9bf4eca0311dde87915799d1f6f559754b5c`).
+- **`rnquickstart-docs` (commit `cf7bc9b5`)**: Superseded. The React Native quickstart documentation and SDK guides were merged into `hop` via commit `9a57b16f` and subsequently updated and refined across commits `bcb3796a`, `70378e00`, and `acabb035`.
+- **Meshtastic bearer (commit `943f4db6`)**: Superseded. The Meshtastic SDK bearer implementation was merged into `hop` via PR #382 (commit `e0d0c298`), and subsequently hardened with audit PLAT-006 security fixes (`fa4bf985`, `2ed71390`, `8e5f47b6`, `c6545638`).
+- **Tor relay spike (commit `a64fa6c1`)**: Superseded. The Tor onion relay spike from `feat/tor-onion-relay` was merged into `hop` via PR #342 (commit `e15a52ed`). Commit `a64fa6c1` was a later monorepo branch worktree merge of hop main into `feat/tor-onion-relay`.
 
-#### Risk assessment
-- **Disabling monorepo deploy prematurely**: High risk. Would leave production without an operational deploy mechanism for `hop-console` and `hop-accountd`.
-- **Leaving monorepo automated deploy active**: Moderate risk. Overwrites `relay-fleet` OpenTofu state daily, ensuring any manual apply from `hopmesh/platform` is reverted on the next daily run.
-- **Seeding secrets in `hopmesh/platform`**: Zero risk. Enables existing drift checks and unlocks platform deployment capabilities.
+Because the archived monorepo retains all git references, no cherry-picking was required and no unrelated feature code is landed in this cutover.
+
+#### Transition architecture
+
+1. **Workflow authority in `hop`**: `hopmesh/hop` becomes the sole deploy and workflow authority. Public runtime and bootstrap OpenTofu roots move into `hop`.
+2. **Private source pinned in `platform`**: `hopmesh/platform` houses commercial code (`services/hop-accountd`, `services/hop-billingd`, `apps/web/console`, and private billing configuration). The `hop` deploy workflow pins an immutable commit of `platform` and checks it out only during trusted deployment runs. A platform change does not deploy until its pin changes in a `hop` PR.
+3. **Monorepo permanently deactivated**: The daily changelog loop and automated deployments in `hopmesh/monorepo` are terminated, and the repository is archived.

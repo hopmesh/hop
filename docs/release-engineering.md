@@ -90,6 +90,25 @@ canonical workflow, source SHA, ref, run attempt, GitHub-hosted runner, certific
 complete 14-target subject set before a mirror publishes. GitHub's attestation API is an additional
 storage mirror when the repository plan supports it, not the sole copy of provenance.
 
+#### Repository authority and the monorepo archive invariant
+
+`hopmesh/hop` is the sole canonical workflow, build, and deploy authority. The archived
+`hopmesh/monorepo` is retained strictly as an immutable historical trust anchor and git reference
+archive:
+
+1. **Legacy trust anchors (`v0.0.1` and `v0.0.2`)**: Pre-migration release artifacts and Sigstore
+   attestation certificates legitimately name `hopmesh/monorepo`. The installer (`sdk/go/cmd/hop-install/main.go`)
+   pins `legacyBuilder` and `legacyRepository` exclusively for those two tags.
+2. **Post-migration tags reject legacy builder**: For `v0.0.3` and all subsequent releases, the
+   builder and repository must be `hopmesh/hop`. Any manifest or artifact claiming `hopmesh/monorepo`
+   as builder for post-v0.0.2 tags is rejected.
+3. **Archived repositories remain readable**: GitHub archives remain accessible via Git and the web
+   interface (URLs do not 404), but cannot execute workflows or produce release attestations.
+4. **Zero executable edges**: No current or future executable edge, build, package manifest
+   repository field, workflow dispatch, or source checkout may target `hopmesh/monorepo`.
+5. **Enforcement**: Guarded in CI by `tools/archive-readiness-guard.py` (self-tested by
+   `tools/archive-readiness-guard.test.sh`).
+
 #### The credential that makes provenance work (and why nothing published without it)
 
 Verifying provenance means reading the CANONICAL repository from a PUBLIC mirror: every mirror's

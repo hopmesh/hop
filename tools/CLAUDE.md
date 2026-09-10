@@ -124,6 +124,10 @@ apple-cov-gate.sh           per-package Swift coverage floor. Self-test: apple-c
 check-web-links.mjs         internal-link checker for apps/web/site/dist. Self-test: check-web-links.test.mjs.
 native-artifacts.py         native release artifact pack, create, verify, and extraction tool.
                             Self-test: native-artifacts.test.sh.
+archive-readiness-guard.py   enforces that hop contains no non-historical executable, deployment,
+                            package metadata, workflow-dispatch, source checkout, or future
+                            trust-authority references to hopmesh/monorepo.
+                            Self-test: archive-readiness-guard.test.sh.
 build-xcframework.sh        builds the Apple SDK xcframework + Swift bindings into drivers/apple/HopDriver.
 build-aar.sh                generates the Android UniFFI bindings + native libs into the demo app's dir.
 smoke-test.sh               compiles + runs a Swift program against libhop on the macOS host.
