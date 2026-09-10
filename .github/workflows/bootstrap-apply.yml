@@ -211,6 +211,9 @@ jobs:
           cleanup_replacements = {
               "terraform_data.remove_legacy_iam_bindings",
           }
+          rollback_resumable = normal_replacements | {
+              "google_service_account_iam_member.infra_drift_wif",
+          }
           rollback_creates = {
               "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
               "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
@@ -221,6 +224,7 @@ jobs:
               "google_storage_bucket_iam_member.deploy_billing_state_reader",
           }
           unchanged = {(), ("no-op",), ("read",)}
+          cleanup_retry_actions = {("create", "delete"), ("delete", "create")}
           bad = []
           for item in plan.get("resource_changes", []):
               address = item.get("address")
@@ -238,7 +242,9 @@ jobs:
                       continue
                   if address in rollback_creates and actions == ("create",):
                       continue
-                  if address in cleanup_replacements and actions == ("delete", "create"):
+                  if address in cleanup_replacements and actions in cleanup_retry_actions:
+                      continue
+                  if address in rollback_resumable and actions in {("create",), ("create", "delete")}:
                       continue
                   bad.append((address, actions))
                   continue
@@ -246,7 +252,7 @@ jobs:
                   continue
               if actions == ("create", "delete") and address in normal_replacements:
                   continue
-              if actions == ("delete", "create") and address in cleanup_replacements:
+              if address in cleanup_replacements and actions in cleanup_retry_actions:
                   continue
               if actions == ("delete",) and address in normal_deletes:
                   continue

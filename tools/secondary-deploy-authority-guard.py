@@ -290,20 +290,23 @@ def check_bootstrap(root: Path) -> list[str]:
             'normal_mutable = {',
             'normal_replacements = {',
             'cleanup_replacements = {',
+            'rollback_resumable = normal_replacements | {',
             'rollback_creates = {',
+            'cleanup_retry_actions = {("create", "delete"), ("delete", "create")}',
             'if operation == "rollback":',
             'address in rollback_creates and actions == ("create",)',
-            'address in cleanup_replacements and actions == ("delete", "create")',
+            'address in rollback_resumable and actions in {("create",), ("create", "delete")}',
             'actions == ("delete",) and address in normal_deletes',
             'actions == ("create", "delete") and address in normal_replacements',
-            'actions == ("delete", "create") and address in cleanup_replacements',
             'actions == ("forget",) and address == "google_service_account.build"',
             'raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")',
         ):
             if policy_text.count(required) != 1:
                 errors.append(f"bootstrap plan policy missing exact guard: {required}")
+        if policy_text.count("address in cleanup_replacements and actions in cleanup_retry_actions") != 2:
+            errors.append("bootstrap cleanup retry is not admitted in both apply and rollback")
         def embedded_set(name):
-            match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*\{{(.*?)^\s*\}}", policy_text)
+            match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*(?:normal_replacements\s*\|\s*)?\{{(.*?)^\s*\}}", policy_text)
             return set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
         expected_sets = {
             "normal_mutable": {
@@ -333,6 +336,9 @@ def check_bootstrap(root: Path) -> list[str]:
             },
             "cleanup_replacements": {
                 "terraform_data.remove_legacy_iam_bindings",
+            },
+            "rollback_resumable": {
+                "google_service_account_iam_member.infra_drift_wif",
             },
             "rollback_creates": {
                 "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",

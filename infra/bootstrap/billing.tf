@@ -164,7 +164,18 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     allowed_audiences = []
   }
 
-  depends_on = [terraform_data.remove_legacy_iam_bindings]
+  depends_on = [
+    terraform_data.remove_legacy_iam_bindings,
+    google_project_iam_member.infra_drift_viewer,
+    google_storage_bucket_iam_member.infra_drift_state_reader,
+    google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor,
+    google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer,
+    google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer,
+    google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader,
+    google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader,
+    google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor,
+    google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer,
+  ]
 }
 
 resource "google_service_account" "billing_catalog_apply" {

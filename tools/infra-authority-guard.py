@@ -738,8 +738,22 @@ def check(root):
     provider = resource_block(bootstrap, "google_iam_workload_identity_pool_provider", "github") or ""
     if not has_exact_top_level_assignment(provider, "attribute_condition", "local.github_repository_conditions[var.github_authority_phase]"):
         errors.append("bootstrap WIF provider is not controlled by the closed authority phase")
-    if not has_exact_top_level_assignment(provider, "depends_on", "[terraform_data.remove_legacy_iam_bindings]"):
-        errors.append("bootstrap WIF provider can advance before legacy authority cleanup")
+    provider_dependencies_match = re.search(r"(?ms)^\s*depends_on\s*=\s*\[(.*?)^\s*\]", provider)
+    provider_dependencies_raw = re.findall(r"\b(?:terraform_data|google_[a-z0-9_]+)\.[A-Za-z0-9_]+", provider_dependencies_match.group(1)) if provider_dependencies_match else []
+    expected_provider_dependencies = {
+        "terraform_data.remove_legacy_iam_bindings",
+        "google_project_iam_member.infra_drift_viewer",
+        "google_storage_bucket_iam_member.infra_drift_state_reader",
+        "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
+        "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
+        "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
+        "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+        "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+        "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
+        "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
+    }
+    if set(provider_dependencies_raw) != expected_provider_dependencies or len(provider_dependencies_raw) != len(expected_provider_dependencies):
+        errors.append("bootstrap WIF provider can advance before non-authority prerequisites")
     if top_level_assignment_values(provider, "jwks_json") or top_level_assignment_values(provider, "allowed_audiences"):
         errors.append("bootstrap WIF provider may not set top-level JWKS or audiences")
     if not has_exact_top_level_assignment(provider, "disabled", "false"):

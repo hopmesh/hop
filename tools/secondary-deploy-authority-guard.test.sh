@@ -118,6 +118,16 @@ phase_plan("tainted planned cleanup retry accepted", "apply", [
 phase_plan("tainted planned cleanup retry accepted during rollback", "rollback", [
     {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
 ], True)
+phase_plan("create-before-delete cleanup retry accepted", "apply", [
+    {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["create", "delete"]}},
+], True)
+phase_plan("create-before-delete cleanup retry accepted during rollback", "rollback", [
+    {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["create", "delete"]}},
+], True)
+phase_plan("rollback can resume exact Hop WIF bindings", "rollback", [
+    {"address": "google_service_account_iam_member.bootstrap_apply_wif", "change": {"actions": ["create", "delete"]}},
+    {"address": "google_service_account_iam_member.infra_drift_wif", "change": {"actions": ["create"]}},
+], True)
 phase_plan("exact rollback authority plan accepted", "rollback", [
     {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},
     {"address": "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]", "change": {"actions": ["create"]}},
