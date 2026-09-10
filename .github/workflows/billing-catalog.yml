@@ -50,6 +50,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       inputs.confirm == 'deploy billing from hop main'
     runs-on: ubuntu-latest
+    environment: release
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       BILLING_WIF_PROVIDER: ${{ vars.GCP_BILLING_WIF_PROVIDER }}

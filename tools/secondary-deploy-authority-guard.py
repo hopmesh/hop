@@ -206,6 +206,8 @@ def check_bootstrap(root: Path) -> list[str]:
         materialize_text = materialize.get("run", "")
         if 'phase=hop' not in materialize_text or 'if [ "$OPERATION" = rollback ]; then phase=handoff; fi' not in materialize_text:
             errors.append("bootstrap workflow does not map operations to the closed authority phases")
+        if materialize_text.count('github_repository        = "hopmesh/hop"') != 1:
+            errors.append("bootstrap workflow does not pin the canonical repository input")
         if "-out=tfplan" not in plan.get("run", "") or "tofu show -json tfplan" not in plan.get("run", ""):
             errors.append("bootstrap workflow does not inspect one saved plan")
         policy_text = policy.get("run", "")
