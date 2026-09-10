@@ -208,6 +208,17 @@ for job in full:
     for task in sorted(gradle_tasks(body) - mirror_gradle):
         problems.append(f"{job} is declared full but the mirror never runs the gradle task {task}")
 
+
+    archive_steps = [
+        "bash tools/archive-readiness-guard.test.sh",
+        "python3 tools/archive-readiness-guard.py",
+    ]
+    automation_body = ci_jobs.get("automation", "")
+    for cmd in archive_steps:
+        if cmd not in automation_body:
+            problems.append(f"ci.yml automation job missing required archive step: {cmd}")
+        if cmd not in mirror_text:
+            problems.append(f"local-ci-mirror.sh missing required archive step: {cmd}")
 if problems:
     print("::error::local-ci-mirror coverage: a `full` claim is not backed by what the mirror runs:")
     for problem in problems:
